@@ -124,6 +124,8 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
             except Exception:  # noqa: BLE001 - not in the cache
                 aligner = None
             result["aligner"] = {
+                "id": QWEN3_ALIGNER.id,
+                "variant": QWEN3_ALIGNER.variant,
                 "downloaded": aligner is not None and audio_cpp_files.is_downloaded(aligner),
                 "size_bytes": (aligner and aligner.size_bytes) or _ALIGNER_SIZE_BYTES,
             }

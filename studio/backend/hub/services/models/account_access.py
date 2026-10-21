@@ -28,6 +28,7 @@ from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
 from storage.studio_db import connect_studio_db
 from utils.paths import storage_roots
+from utils.paths.path_utils import normalize_path
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
 from utils.account_context import (
@@ -284,7 +285,17 @@ def _resident_loader(modality: str) -> str | None:
         return recorded[0]
     from core.inference import gpu_arbiter
 
-    return gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
+    return gpu_arbiter.owner_account(modality) if gpu_arbiter.holds(modality) else None
+
+
+def shares_resident_with_others(modality: str) -> bool:
+    """Whether release_shared_resident would drop the caller's share, without dropping it."""
+    if not policy.installation_has_managed_accounts():
+        return False
+    account_id = current_account_id()
+    with _sharers_lock:
+        sharers = _resident_sharers.get(modality)
+        return bool(sharers) and account_id in sharers and len(sharers) > 1
 
 
 def release_shared_resident(modality: str) -> bool:
@@ -386,9 +397,14 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
         return False
     from core.inference import gpu_arbiter
 
-    owner = gpu_arbiter.current_owner()
-    if owner is not None and (modality is None or owner == modality):
-        return gpu_arbiter.owner_account() != current_account_id()
+    if modality is None:
+        resident = gpu_arbiter.residents()
+        if resident:
+            return any(
+                gpu_arbiter.owner_account(owner) != current_account_id() for owner in resident
+            )
+    elif gpu_arbiter.holds(modality):
+        return gpu_arbiter.owner_account(modality) != current_account_id()
     if reference:
         account, references = _resident_accounts.get(modality, (OWNER.account_id, frozenset()))
         if reference not in references:
@@ -773,7 +789,7 @@ def _write_grant(path: Path, key: str) -> None:
         )
 
 
-MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Studio owner to allow it."
+MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Unsloth owner to allow it."
 
 _allowlists: dict[str, tuple[int, tuple[str, ...] | None]] = {}
 _allowlists_lock = threading.Lock()
@@ -863,6 +879,16 @@ def model_visible(
     if not isinstance(reference, str) or not reference:
         return False
     reference = reference.strip()
+    normalized = normalize_path(reference)
+    if normalized != reference:
+        # Loaders open the forward-slash spelling, so both must be visible.
+        return _model_visible(reference, grants, repo_type, offline) and _model_visible(
+            normalized, grants, repo_type, offline
+        )
+    return _model_visible(reference, grants, repo_type, offline)
+
+
+def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> bool:
     access_options = {"offline": True} if offline else {}
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
@@ -910,9 +936,12 @@ def require_model_allowed(reference) -> None:
     """The allowlist alone, for routes that fetch a Hub model without the visibility gate."""
     if not isinstance(reference, str) or model_allowlist() is None:
         return
-    repo_id = _reference_repo_id(reference.strip())
-    if repo_id is not None and not model_allowed(repo_id):
-        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
+    reference = reference.strip()
+    # Loaders open the forward-slash spelling, so both must be allowed.
+    for spelling in dict.fromkeys((reference, normalize_path(reference))):
+        repo_id = _reference_repo_id(spelling)
+        if repo_id is not None and not model_allowed(repo_id):
+            raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
 
 
 def _row_reference(row):
@@ -941,6 +970,10 @@ def private_directory(path: str, folder: str) -> str:
         return path
     from utils.paths.storage_roots import studio_root
 
+    normalized = normalize_path(path)
+    if normalized != path:
+        # Scanners open the forward-slash spelling, so it must be the account's own too.
+        private_directory(normalized, folder)
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
     # The project workspace counts as the account's own, matching within_account().

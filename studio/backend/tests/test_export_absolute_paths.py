@@ -156,6 +156,12 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_utils.anonymous_and_offline = lambda _hf_token: False
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
+    utils_security = types.ModuleType("utils.security")
+    utils_security.__path__ = []
+    monkeypatch.setitem(sys.modules, "utils.security", utils_security)
+    utils_security.file_security = _load_module(
+        "utils.security.file_security", "utils/security/file_security.py", monkeypatch
+    )
 
     utils_models = types.ModuleType("utils.models")
     utils_models.__path__ = []
@@ -176,6 +182,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_models.is_embedding_model = lambda *args, **kwargs: False
     utils_models.ModelConfig = object
     monkeypatch.setitem(sys.modules, "utils.models", utils_models)
+    _load_module("utils.models.diffusion_lm", "utils/models/diffusion_lm.py", monkeypatch)
     _load_module(
         "utils.models.model_identity",
         "utils/models/model_identity.py",
@@ -208,6 +215,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "LoRAInfo",
         "ModelListResponse",
         "LoadCheckpointRequest",
+        "ExportCancelRequest",
         "ExportStatusResponse",
         "ExportOperationResponse",
         "ExportMergedModelRequest",
@@ -299,6 +307,7 @@ def _install_export_backend_stubs(monkeypatch):
     utils_model_config = sys.modules["utils.models.model_config"]
     utils_model_config.detect_audio_type = lambda *args, **kwargs: None
     utils_model_config.load_mlx_adapter_tokenizer = lambda tokenizer, *args, **kwargs: tokenizer
+    utils_model_config.load_mlx_adapter_processor = lambda processor, *args, **kwargs: processor
 
     utils_paths = sys.modules["utils.paths"]
     utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents = True, exist_ok = True)

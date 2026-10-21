@@ -24,6 +24,10 @@ type ResidentRuntime = Pick<
   | "engine"
   | "engine_parallelism"
   | "engine_precision"
+  | "engine_kv_cache_dtype"
+  | "engine_seed"
+  | "engine_gpu_memory_utilization"
+  | "load_in_4bit"
   | "context_length"
   | "requested_context_length"
   | "cache_type_kv"
@@ -609,10 +613,21 @@ export function residentRuntimeMatchesConfig(
     return true;
   }
   if ((status.engine ?? "auto") !== (config.engine ?? "auto")) return false;
+  if (
+    (status.engine ?? "auto") === "auto" &&
+    typeof status.load_in_4bit === "boolean" &&
+    status.load_in_4bit !== (config.loadIn4bit !== false)
+  )
+    return false;
   if (status.engine === "vllm" || status.engine === "sglang") {
     if (
       (status.engine_precision ?? "auto") !== (config.enginePrecision ?? "auto") ||
-      (status.engine_parallelism ?? "tensor") !== (config.engineParallelism ?? "tensor")
+      (status.engine_parallelism ?? "tensor") !== (config.engineParallelism ?? "tensor") ||
+      (status.engine_kv_cache_dtype ?? "auto") !==
+        (config.engineKvCacheDtype ?? "auto") ||
+      (status.engine_seed ?? null) !== (config.engineSeed ?? null) ||
+      (status.engine_gpu_memory_utilization ?? null) !==
+        (config.engineGpuMemoryUtilization ?? null)
     )
       return false;
     if (

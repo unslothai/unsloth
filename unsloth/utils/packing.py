@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import types
 import logging
 import os
 import sys
@@ -203,10 +204,14 @@ def _enable_hf_packed_attention() -> None:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 
 
-def _scope_flash_attention_impl(model, trainer) -> None:
+def _scope_flash_attention_impl(
+    model,
+    trainer,
+    sequence_lengths_key = "seq_lengths",
+) -> None:
     try:
         from .flash_impl import scope_flash_attention_impl_to_train
-        scope_flash_attention_impl_to_train(trainer, model)
+        scope_flash_attention_impl_to_train(trainer, model, sequence_lengths_key)
     except Exception as exc:
         logging.getLogger(__name__).info(f"Unsloth: flash attention impl not scoped ({exc})")
 
@@ -237,7 +242,7 @@ def enable_sample_packing(
     if collator is None or not hasattr(collator, "torch_call"):
         return
     _enable_hf_packed_attention()
-    _scope_flash_attention_impl(model, trainer)
+    _scope_flash_attention_impl(model, trainer, sequence_lengths_key)
     if getattr(collator, "_unsloth_packing_wrapped", False):
         return
 
@@ -347,7 +352,7 @@ def _hybrid_packing_enabled() -> bool:
 
 
 # Auto-packed mixers (CUDA only). MoE router aux loss is computed over the whole packed row, not per document.
-_HYBRID_AUTO_KINDS = ("gated_delta",)
+_HYBRID_AUTO_KINDS = ("gated_delta", "ple")
 
 HYBRID_PACKING_STATS = {
     "probe_runs": 0,
@@ -392,9 +397,11 @@ _QKV_CONVS = ("q_conv1d", "k_conv1d", "v_conv1d")
 
 def _stateful_mixer_kind(module) -> Optional[str]:
     """How a token mixer carries state across positions: "gated_delta" / "ssd" (Mamba2-style
-    chunked scan) / "short_conv" take boundary metadata, "unsupported" leaks with no kernel
+    chunked scan) / "short_conv" / "ple" take boundary metadata, "unsupported" leaks with no kernel
     fix (Mamba1 selective scan, lightning attention, RWKV), None is stateless."""
     name = type(module).__name__
+    if name == "Qwen4ExpTextPLELayer":
+        return "ple"
     if name.endswith("GatedDeltaNet"):
         if hasattr(module, "conv1d"):
             return "gated_delta"
@@ -715,6 +722,11 @@ def _hybrid_varlen_dispatched(module) -> bool:
     kind = _stateful_mixer_kind(module)
     if kind == "short_conv":
         return bool(getattr(module, "_unsloth_varlen_conv_hit", False))
+    if kind == "ple":
+        return bool(
+            getattr(module, "_unsloth_varlen_conv_hit", False)
+            and getattr(module, "_unsloth_varlen_embedding_hit", False)
+        )
     if kind == "ssd":
         if getattr(module, "_unsloth_varlen_fused_hit", False):
             return True
@@ -755,8 +767,9 @@ def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
     tensor = _varlen_input(args, kwargs)
     if tensor is None or tensor.dim() < 2 or seq_idx.shape[0] != tensor.shape[0]:
         return False
-    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...).
-    return total in (tensor.shape[1], tensor.shape[-1])
+    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...). Compared with ==:
+    # after a dynamic-shape recompile Dynamo evaluated `total in (...)` False for a matching row.
+    return total == tensor.shape[1] or total == tensor.shape[-1]
 
 
 def _wrap_mamba2_seq_idx_call(orig, *, hit_attr = "_unsloth_varlen_fused_hit"):
@@ -919,6 +932,13 @@ def _kwargs_kernels_available(modules, recurrent_ids = ()) -> Optional[str]:
     return None
 
 
+def _kwargs_alias_namespace(namespace):
+    """The namespace Dynamo resolves `namespace`'s globals through (sys.modules[__name__]), when it differs."""
+    name = namespace.get("__name__") if isinstance(namespace, dict) else None
+    alias = getattr(sys.modules.get(name), "__dict__", None) if isinstance(name, str) else None
+    return alias if isinstance(alias, dict) and alias is not namespace else None
+
+
 def _install_kwargs_probes(namespace) -> None:
     if not isinstance(namespace, dict):
         return
@@ -941,6 +961,33 @@ def _install_kwargs_probes(namespace) -> None:
 
         probe._unsloth_varlen_probe_of = fn
         namespace[name] = probe
+        # Dynamo reads an inlined function's globals through sys.modules[__name__]; Unsloth's compiled
+        # modules import transformers' __name__, so both namespaces must hold the same probe or the
+        # block compile guards one object and traces the other.
+        alias = _kwargs_alias_namespace(namespace)
+        if alias is not None and callable(alias.get(name)):
+            alias[name] = probe
+
+
+_FOLDS_IS_EXPORTING = []
+
+
+def _dynamo_folds_is_exporting() -> bool:
+    # torch 2.10 / 2.11 Dynamo constant-folds torch.compiler.is_exporting() to True inside any
+    # compiled region; 2.12+ reads the real flag. Probed once, eagerly, outside any trace.
+    if not _FOLDS_IS_EXPORTING:
+
+        def probe(x):
+            return x + 1 if torch.compiler.is_exporting() else x
+
+        try:
+            folds = bool(
+                torch.compile(probe, backend = "eager", fullgraph = True)(torch.zeros(1)).item()
+            )
+        except Exception:
+            folds = True  # unknown: keep the packed mixer eager, which is always correct
+        _FOLDS_IS_EXPORTING.append(folds)
+    return _FOLDS_IS_EXPORTING[0]
 
 
 def _wrap_kwargs_mixer_forward(module) -> None:
@@ -951,6 +998,9 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         varlen = getattr(module, "_unsloth_varlen", None)
         if varlen is None or not _varlen_seq_idx_applies(varlen[1], args, kwargs):
             return forward_orig(*args, **kwargs)
+        return _packed_forward(varlen, args, kwargs)
+
+    def _packed_forward(varlen, args, kwargs):
         varlen = _varlen_on(varlen, args, kwargs)
         if kwargs.get("seq_idx") is None:
             kwargs["seq_idx"] = varlen[1]
@@ -965,6 +1015,13 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         if all(ok for _, ok in trace) and any(n != "causal_conv1d_fn" for n, _ in trace):
             module._unsloth_varlen_kwargs_hit = True
         return out
+
+    if _dynamo_folds_is_exporting():
+        # Eager even inside a compiled block: Dynamo folds torch.compiler.is_exporting() to True, so
+        # the hub-kernel wrappers trace their torch reference, which drops seq_idx / cu_seqlens and
+        # runs the packed documents into each other (Qwen3.5-0.8B per-document cosine 0.71). Newer
+        # torch traces the real kernels, and the eager mixer costs 6-20% per step there.
+        _packed_forward = torch.compiler.disable(_packed_forward)
 
     module.forward = forward
     module._unsloth_varlen_kwargs_mode = True
@@ -1049,6 +1106,55 @@ def _wrap_short_conv_forward(module) -> None:
     module.forward = forward
 
 
+def _ple_input_with_gaps(tensor, varlen, gap, fill_value):
+    positions = torch.arange(tensor.shape[1], device = tensor.device)
+    positions = positions + varlen[1][0].to(device = tensor.device, dtype = torch.long) * gap
+    length = tensor.shape[1] + (varlen[0].numel() - 2) * gap
+    expanded = tensor.new_full((tensor.shape[0], length, *tensor.shape[2:]), fill_value)
+    return expanded.index_copy(1, positions, tensor), positions
+
+
+def _wrap_ple_boundaries(module) -> None:
+    # PLE's dilated conv has no seq_idx kernel: pad zero history before each document, gather real outputs.
+    conv_orig = module._short_conv
+    embedding = module.ple_embedding
+    embedding_orig = embedding.forward
+
+    def packed_input(tensor, past_key_values):
+        varlen = getattr(module, "_unsloth_varlen", None)
+        if past_key_values is not None or varlen is None or tensor.shape[:2] != varlen[1].shape:
+            return None
+        return varlen
+
+    @wraps(conv_orig)
+    def short_conv(hidden_states, past_key_values):
+        varlen = packed_input(hidden_states, past_key_values)
+        if varlen is None:
+            return conv_orig(hidden_states, past_key_values)
+        expanded, positions = _ple_input_with_gaps(
+            hidden_states, varlen, module.short_conv_state_len, 0
+        )
+        output = conv_orig(expanded, past_key_values)
+        module._unsloth_varlen_conv_hit = True
+        return output.index_select(1, positions)
+
+    @wraps(embedding_orig)
+    def ngram_embedding(input_ids, past_key_values):
+        varlen = packed_input(input_ids, past_key_values)
+        if varlen is None:
+            return embedding_orig(input_ids, past_key_values)
+        # Boundaries need not hold EOS: synthetic EOS history resets the n-gram hash like a separate forward.
+        expanded, positions = _ple_input_with_gaps(
+            input_ids, varlen, embedding.context_len, embedding.eos_token_id
+        )
+        output = embedding_orig(expanded, past_key_values)
+        module._unsloth_varlen_embedding_hit = True
+        return output.index_select(1, positions)
+
+    module._short_conv = short_conv
+    embedding.forward = ngram_embedding
+
+
 def _uses_hub_conv(module) -> bool:
     globs = getattr(inspect.getmodule(type(module)), "__dict__", {})
     return "implementation" in _hub_closure(globs.get("causal_conv1d_fn"))
@@ -1118,6 +1224,12 @@ def _hybrid_varlen_metadata(kwargs):
         return None
     if kwargs.get("past_key_values") is not None or kwargs.get("cache_params") is not None:
         return None
+    from ..context_parallel import get_cp_manager
+
+    # Under context parallelism the model sees one sequence shard, so shard-local boundaries are wrong;
+    # the Ulysses mixer forward builds global ones from packed_seq_lengths itself.
+    if get_cp_manager() is not None:
+        return None
     total, device = None, None
     for key in ("input_ids", "inputs_embeds", "position_ids"):
         tensor = kwargs.get(key)
@@ -1143,6 +1255,7 @@ _HYBRID_PROBE_LENGTHS = (5, 1, 70, 7)
 _HYBRID_PROBE_RTOL = {torch.float32: 1e-4, torch.bfloat16: 2e-2, torch.float16: 1e-2}
 _HYBRID_SNAPSHOT_ATTRS = (
     "forward",
+    "_short_conv",
     "causal_conv1d_fn",
     "chunk_gated_delta_rule",
     "_unsloth_varlen",
@@ -1153,6 +1266,7 @@ _HYBRID_SNAPSHOT_ATTRS = (
     "_unsloth_varlen_conv_hit",
     "_unsloth_varlen_scan_hit",
     "_unsloth_varlen_kwargs_hit",
+    "_unsloth_varlen_embedding_hit",
 )
 _MISSING = object()
 
@@ -1161,6 +1275,8 @@ def _snapshot_mixers(modules):
     saved = []
     for module in modules:
         owners = [module] + [getattr(module, c, None) for c in _QKV_CONVS]
+        if _stateful_mixer_kind(module) == "ple":
+            owners.append(module.ple_embedding)
         for owner in owners:
             if isinstance(owner, torch.nn.Module):
                 state = {k: owner.__dict__.get(k, _MISSING) for k in _HYBRID_SNAPSHOT_ATTRS}
@@ -1178,6 +1294,9 @@ def _restore_mixers(saved) -> None:
 
 
 def _auto_hybrid_device_ok(module) -> bool:
+    # Native torch ops; the n-gram table may stay on CPU.
+    if _stateful_mixer_kind(module) == "ple":
+        return True
     weight = next(module.parameters(), None)
     return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
 
@@ -1258,11 +1377,11 @@ def _hybrid_exactness_probe(module) -> Optional[str]:
 def patch_hybrid_linear_attention_varlen(model) -> bool:
     """Feed seq_idx / cu_seqlens to hybrid mixers; True when packing is active. Fail-closed, idempotent."""
     mixers = _iter_stateful_mixers(model)
-    # Short-conv-only models (LFM2) reset at seq_idx on both kernel and torch paths, so they pack by default.
-    short_conv_only = bool(mixers) and all(kind == "short_conv" for _, kind in mixers)
+    # LFM2 short convs and PLE have boundary-safe torch paths, so they also pack without CUDA.
+    torch_varlen_only = bool(mixers) and all(kind in ("short_conv", "ple") for _, kind in mixers)
     mode = _hybrid_packing_mode()
     auto_eligible = bool(mixers) and all(kind in _HYBRID_AUTO_KINDS for _, kind in mixers)
-    if not short_conv_only:
+    if not torch_varlen_only:
         if mode == "off" or (mode == "auto" and not auto_eligible):
             return False
     unsupported = sorted({type(m).__name__ for m, kind in mixers if kind == "unsupported"})
@@ -1271,7 +1390,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     gated_delta_modules = [m for m, kind in mixers if kind in ("gated_delta", "gated_delta_qkv")]
     mamba2_modules = [m for m, kind in mixers if kind == "ssd"]
     short_conv_modules = [m for m, kind in mixers if kind == "short_conv"]
-    hybrid_modules = gated_delta_modules + mamba2_modules + short_conv_modules
+    ple_modules = [m for m, kind in mixers if kind == "ple"]
+    hybrid_modules = gated_delta_modules + mamba2_modules + short_conv_modules + ple_modules
     if not hybrid_modules:
         return _hybrid_reject("no stateful mixers found")
     kwargs_modules = [
@@ -1291,7 +1411,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
 
     hub_short_convs = [m for m in short_conv_modules if _uses_hub_conv(m)]
     probe_target = _probe_target(gated_delta_modules + kwargs_modules)
-    if mode == "auto" and not short_conv_only:
+    if mode == "auto" and not torch_varlen_only:
         if probe_target is None:
             return _hybrid_reject("no gated-delta mixer the exactness probe can run")
         # Every stateful mixer, kwargs-mode ones included (transformers 5.16+ Qwen mixers move there).
@@ -1367,9 +1487,14 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     kwargs_namespaces = list(_iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs))
     namespace_rollback = {}
     for ns in mask_namespaces + kwargs_namespaces:
-        if isinstance(ns, dict) and id(ns) not in namespace_rollback:
-            names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
-            namespace_rollback[id(ns)] = (ns, {name: ns[name] for name in names if name in ns})
+        # The alias namespace too: _install_kwargs_probes mirrors into it, and a failed probe must undo that.
+        for space in (ns, _kwargs_alias_namespace(ns)):
+            if isinstance(space, dict) and id(space) not in namespace_rollback:
+                names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
+                namespace_rollback[id(space)] = (
+                    space,
+                    {name: space[name] for name in names if name in space},
+                )
     for ns in mask_namespaces:
         _install_packed_mask_positions(ns, lambda: _PACKED[0])
     for ns in kwargs_namespaces:
@@ -1382,6 +1507,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     for module in short_conv_modules:
         if not getattr(module, "_unsloth_varlen_wrapped", False):
             _wrap_short_conv_forward(module)
+            module._unsloth_varlen = None
+            module._unsloth_varlen_wrapped = True
+    for module in ple_modules:
+        if not getattr(module, "_unsloth_varlen_wrapped", False):
+            _wrap_ple_boundaries(module)
             module._unsloth_varlen = None
             module._unsloth_varlen_wrapped = True
 
@@ -1454,8 +1584,12 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         except (TypeError, ValueError):
             forward_sig = None
 
-        @wraps(forward_orig)
-        def forward_with_varlen(*args, **kwargs):
+        # A bound method with no __wrapped__: accelerate's unwrap_model(keep_fp32_wrapper = False),
+        # run by TRL every step, rebinds the forward it finds with MethodType(forward, model), which
+        # passes the model as input_ids to a plain function. The self check covers a double bind.
+        def forward_with_varlen(self, *args, **kwargs):
+            if args and args[0] is self:
+                args = args[1:]
             try:
                 bound = dict(kwargs)
                 if forward_sig is not None and args:
@@ -1475,6 +1609,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_scan_hit = False
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
+                    module._unsloth_varlen_embedding_hit = False
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
@@ -1502,7 +1637,18 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     )
             return out
 
-        model.forward = forward_with_varlen
+        for attribute in ("__name__", "__qualname__", "__doc__", "__module__"):
+            try:
+                setattr(forward_with_varlen, attribute, getattr(forward_orig, attribute))
+            except Exception:
+                pass
+        if forward_sig is not None:
+            # Bound below, so callers see forward_orig's parameters once `self` is dropped.
+            self_param = inspect.Parameter("self", inspect.Parameter.POSITIONAL_ONLY)
+            forward_with_varlen.__signature__ = forward_sig.replace(
+                parameters = [self_param, *forward_sig.parameters.values()]
+            )
+        model.forward = types.MethodType(forward_with_varlen, model)
         model._unsloth_varlen_forward_wrapped = True
 
     _wrap_generate_clears_varlen(model, hybrid_modules)
@@ -1532,13 +1678,22 @@ def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
 
 
 def get_packed_info_from_kwargs(
-    kwargs: dict, device: torch.device
+    kwargs: dict,
+    device: torch.device,
+    position_ids: Optional[torch.Tensor] = None,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
-    """Return packed sequence metadata expected by the attention kernels."""
+    """Return packed metadata, optionally inferring a mask-free prefill's boundaries."""
 
     seq_lengths = kwargs.get("packed_seq_lengths")
     if seq_lengths is None:
-        return None
+        # Callers must exclude padding masks and cached decoding before opting in.
+        if position_ids is None or position_ids.dim() != 2:
+            return None
+        varlen = _varlen_from_position_ids(position_ids)
+        if varlen is None:
+            return None
+        cu_seqlens, _ = varlen
+        seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1]
 
     entry = _PACKED_INFO_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths:

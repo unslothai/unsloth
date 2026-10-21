@@ -162,7 +162,7 @@ def load_mentioned_skills(
         gate += (
             " No local python or terminal tool is available, so its bundled scripts cannot run;"
             " never claim to have run one, and tell the user a script needs Unsloth Studio's"
-            " local Code tool."
+            " local Tools."
         )
     # @john is a person, not a skill: no card or approval. Known-but-unusable skills report unavailable.
     try:
@@ -225,7 +225,7 @@ def load_mentioned_skills(
                         "Complete SKILL.md exceeds this request's skill context budget; shorten the skill or increase context."
                     )
                 block = (
-                    f"\n\n[Studio loaded Agent Skill @{name} · SKILL.md]\n"
+                    f"\n\n[Unsloth loaded Agent Skill @{name} · SKILL.md]\n"
                     f"{gate}\n"
                     f"{content}\n[End Agent Skill @{name}]"
                 )

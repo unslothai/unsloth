@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const SOURCE = fileURLToPath(
   new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),

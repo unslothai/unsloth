@@ -15,6 +15,8 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from ..utils.packing import get_packed_info_from_kwargs
+from ..kernels import qk_norm_rope as _qk_norm_rope
+from ..kernels.qk_norm_rope import fast_qk_norm_rope
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -26,6 +28,8 @@ from ..utils.attention_dispatch import (
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    _gqa_decode_scores,
+    _gqa_decode_values,
     _LlamaModel_fast_forward_inference,
     original_apply_qkv,
     original_apply_o,
@@ -99,15 +103,7 @@ def Qwen3Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Qwen3 adds QKNorm, the only difference from Qwen2. A compiled norm mismatches Transformers'
-    # numbers, so use fast_rms_layernorm.
-    Q = fast_rms_layernorm(self.q_norm, Q)
-    K = fast_rms_layernorm(self.k_norm, K)
-
-    Q = Q.transpose(1, 2)
-    K = K.transpose(1, 2)
-
-    kv_seq_len = K.shape[-2]
+    kv_seq_len = q_len
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
@@ -120,7 +116,16 @@ def Qwen3Attention_fast_forward(
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
-    Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
+    if _qk_norm_rope.QK_NORM_ROPE_ENABLED:
+        Q, K = fast_qk_norm_rope(self.q_norm, self.k_norm, Q, K, cos, sin, rope_position_ids)
+    else:
+        # Qwen3 adds QKNorm, the only difference from Qwen2. A compiled norm mismatches Transformers'
+        # numbers, so use fast_rms_layernorm.
+        Q = fast_rms_layernorm(self.q_norm, Q, reuse_grad = True)
+        K = fast_rms_layernorm(self.k_norm, K, reuse_grad = True)
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -222,7 +227,9 @@ def Qwen3Attention_fast_forward_inference(
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -254,8 +261,12 @@ def Qwen3Attention_fast_forward_inference(
     Kn = Kn.transpose(1, 2)
 
     # Must be done 2 steps before hitting full on a short KV cache, or it errors.
-    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (from the model-level decode loop, no extra sync) covers explicit positions
+    # past the KV length, since the cache only builds the rows asked for.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    rope_len = kv_seq_len if rotary_seq_len is None else max(kv_seq_len, rotary_seq_len)
+    self.rotary_emb.extend_rope_embedding(Vn, max(seq_len + 2, rope_len + 1))
+    cos, sin = self.rotary_emb.get_cached(rope_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
@@ -318,9 +329,9 @@ def Qwen3Attention_fast_forward_inference(
         # Avoid SDPA GQA drift for batched masked decode.
         use_sdpa_gqa = False
 
-    # Grouped query attention.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or ((not use_sdpa_gqa) and n_groups != 1):
+    if bsz != 1 and (not use_sdpa_gqa) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -330,11 +341,11 @@ def Qwen3Attention_fast_forward_inference(
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
         # (comment 2153349963).
-        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         if attention_mask is not None:
             A.masked_fill_(~attention_mask, float("-inf"))
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vnn, out = Qn)
+        A = _gqa_decode_values(A, Vnn, Qn)
     else:
         if use_sdpa_gqa:
             A = scaled_dot_product_attention(

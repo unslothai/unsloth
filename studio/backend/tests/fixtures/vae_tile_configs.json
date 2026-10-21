@@ -132,6 +132,96 @@
     "use_quant_conv": true
    }
   },
+  "flux.3-klein": {
+   "kind": "image",
+   "repo": "unsloth/flux-3-image-klein-FP8",
+   "revision": "0e7c103d8ffafb0d4ccd8d82122375c878cdaf4d",
+   "config": {
+    "_class_name": "AutoencoderKLFlux2",
+    "_diffusers_version": "0.41.0.dev0",
+    "act_fn": "silu",
+    "batch_norm_eps": 0.0001,
+    "batch_norm_momentum": 0.1,
+    "block_out_channels": [
+     128,
+     256,
+     512,
+     512
+    ],
+    "decoder_block_out_channels": null,
+    "down_block_types": [
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D"
+    ],
+    "force_upcast": true,
+    "in_channels": 3,
+    "latent_channels": 32,
+    "layers_per_block": 2,
+    "mid_block_add_attention": true,
+    "norm_num_groups": 32,
+    "out_channels": 3,
+    "patch_size": [
+     2,
+     2
+    ],
+    "sample_size": 1024,
+    "up_block_types": [
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D"
+    ],
+    "use_post_quant_conv": true,
+    "use_quant_conv": true
+   }
+  },
+  "flux.3-klein-base": {
+   "kind": "image",
+   "repo": "unsloth/flux-3-image-klein-base-FP8",
+   "revision": "b96dfc4e77c3f4412183348f90fd9fd4901102a3",
+   "config": {
+    "_class_name": "AutoencoderKLFlux2",
+    "_diffusers_version": "0.41.0.dev0",
+    "act_fn": "silu",
+    "batch_norm_eps": 0.0001,
+    "batch_norm_momentum": 0.1,
+    "block_out_channels": [
+     128,
+     256,
+     512,
+     512
+    ],
+    "decoder_block_out_channels": null,
+    "down_block_types": [
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D"
+    ],
+    "force_upcast": true,
+    "in_channels": 3,
+    "latent_channels": 32,
+    "layers_per_block": 2,
+    "mid_block_add_attention": true,
+    "norm_num_groups": 32,
+    "out_channels": 3,
+    "patch_size": [
+     2,
+     2
+    ],
+    "sample_size": 1024,
+    "up_block_types": [
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D"
+    ],
+    "use_post_quant_conv": true,
+    "use_quant_conv": true
+   }
+  },
   "flux.1-kontext": {
    "kind": "image",
    "repo": "unsloth/FLUX.1-Kontext-dev",
@@ -925,6 +1015,104 @@
      3.1627357006073,
      2.2816812992095947,
      2.6127843856811523
+    ]
+   }
+  },
+  "ltx-2.5": {
+   "kind": "video",
+   "repo": "Lightricks/LTX-2.5-Diffusers",
+   "revision": "da0b690960026eab794b8ceaf841233cf7064478",
+   "config": {
+    "_class_name": "AutoencoderKLLTX2Video",
+    "_diffusers_version": "0.40.0.dev0",
+    "block_out_channels": [
+     256,
+     512,
+     1024,
+     1024
+    ],
+    "decoder_block_out_channels": [
+     256,
+     512,
+     512,
+     1024
+    ],
+    "decoder_causal": false,
+    "decoder_inject_noise": [
+     false,
+     false,
+     false,
+     false,
+     false
+    ],
+    "decoder_layers_per_block": [
+     4,
+     6,
+     4,
+     2,
+     2
+    ],
+    "decoder_spatial_padding_mode": "zeros",
+    "decoder_spatio_temporal_scaling": [
+     true,
+     true,
+     true,
+     true
+    ],
+    "down_block_types": [
+     "LTX2VideoDownBlock3D",
+     "LTX2VideoDownBlock3D",
+     "LTX2VideoDownBlock3D",
+     "LTX2VideoDownBlock3D"
+    ],
+    "downsample_type": [
+     "spatial",
+     "temporal",
+     "spatiotemporal",
+     "spatiotemporal"
+    ],
+    "encoder_causal": true,
+    "encoder_spatial_padding_mode": "zeros",
+    "in_channels": 3,
+    "latent_channels": 128,
+    "layers_per_block": [
+     4,
+     6,
+     4,
+     2,
+     2
+    ],
+    "out_channels": 3,
+    "patch_size": 4,
+    "patch_size_t": 1,
+    "resnet_norm_eps": 1e-06,
+    "scaling_factor": 1.0,
+    "spatial_compression_ratio": 32,
+    "spatio_temporal_scaling": [
+     true,
+     true,
+     true,
+     true
+    ],
+    "temporal_compression_ratio": 8,
+    "timestep_conditioning": false,
+    "upsample_factor": [
+     2,
+     2,
+     1,
+     2
+    ],
+    "upsample_residual": [
+     false,
+     false,
+     false,
+     false
+    ],
+    "upsample_type": [
+     "spatiotemporal",
+     "spatiotemporal",
+     "temporal",
+     "spatial"
     ]
    }
   },

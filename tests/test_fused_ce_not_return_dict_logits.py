@@ -11,11 +11,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Drift detector for unsloth#2068.
-
-The fused-CE path never materializes ``logits``, so its ``not return_dict``
-return must use ``EMPTY_LOGITS`` (it once used ``logits`` -> UnboundLocalError).
-Pure text inspection, so it runs GPU-free (the fused path is GPU/triton only)."""
+"""Fused-CE's not return_dict path must return EMPTY_LOGITS, since logits is never materialized."""
 
 from __future__ import annotations
 

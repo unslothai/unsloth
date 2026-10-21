@@ -79,7 +79,7 @@ test("the unscoped badge column is sized per list, not to the union of both", ()
   // Hub keeps it in the slot, beside the vision badge.
   assert.match(
     PICKERS,
-    /\{showVision && <VisionBadge \/>\}\n\s*\{partial && alignMeta !== "device" \? \(\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
+    /\{visionShown && <VisionBadge \/>\}\n\s*\{partial && alignMeta !== "device" \? \(\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
   );
   assert.match(
     PICKERS,
@@ -132,8 +132,10 @@ test("the parameter chip leads its column, so the modality gap is the cluster's 
     PICKERS,
     /alignMeta === "hub"\n\s*\? cn\("justify-end", META_COLUMN\.paramWide\)\n\s*: cn\("justify-start", META_COLUMN\.param\)/,
   );
-  // Every On Device section ends its rows at one inset, so chips line up across sections.
-  assert.equal(PICKERS.split('className="pr-1"').length - 1, 3, "the custom folder rows");
+  // Local rows share the downloaded rows' button and shell: same inset, full-width hover.
+  assert.match(PICKERS, /downloadedRowButtonClassName =\s*"bg-transparent pr-1/);
+  assert.equal(PICKERS.split('className="pr-1"').length - 1, 0);
+  assert.equal(PICKERS.split("{renderLocalRowMenu(m)}").length - 1, 3);
 });
 
 
@@ -372,7 +374,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   // once per host GPU against that one card scored an audio quant at 23.28 GiB where the loader
   // offers the selected card's 23.5.
   assert.ok(RECOMMENDED.includes("deviceCount: 1,"), "scoped to one device");
-  assert.ok(PICKERS.includes("gpuCount: rowInferenceGpu.deviceCount"));
+  assert.ok(PICKERS.includes("gpuCount: source.deviceCount"));
   assert.ok(
     RECOMMENDED.includes("gpuCount: source.deviceCount ?? opts.gpuCount"),
   );

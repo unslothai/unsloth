@@ -42,6 +42,64 @@ function runsCode(name: string): boolean {
   return DANGEROUS.has(extension.toLowerCase()) || DANGEROUS.has(extension.toUpperCase().toLowerCase());
 }
 
+const PROGRAM_TYPES: Record<string, string> = {
+  "application/x-msdownload": "exe",
+  "application/x-msdos-program": "exe",
+  "application/x-ms-dos-executable": "exe",
+  "application/vnd.microsoft.portable-executable": "exe",
+  "application/x-dosexec": "exe",
+  "application/x-msi": "msi",
+  "application/x-ms-installer": "msi",
+  "application/x-apple-diskimage": "dmg",
+  "application/x-sh": "sh",
+  "application/x-shellscript": "sh",
+  "text/x-sh": "sh",
+  "application/java-archive": "jar",
+  "application/x-java-archive": "jar",
+  "application/vnd.debian.binary-package": "deb",
+  "application/x-debian-package": "deb",
+  "application/x-rpm": "rpm",
+  "application/x-redhat-package-manager": "rpm",
+  "application/hta": "hta",
+  "text/javascript": "js",
+  "application/javascript": "js",
+  "application/x-javascript": "js",
+};
+
+const COMMON_TYPES: Record<string, string> = {
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/csv": "csv",
+  "text/tab-separated-values": "tsv",
+  "application/json": "json",
+  "text/markdown": "md",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac",
+  "audio/mp4": "m4a",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "application/zip": "zip",
+  "application/gzip": "gz",
+};
+
+export function withTypeExtension(name: string, contentType: string, includeCommonTypes = false): string {
+  const type = contentType.split(";")[0].trim().toLowerCase();
+  const extension = PROGRAM_TYPES[type] ?? (includeCommonTypes ? COMMON_TYPES[type] : undefined);
+  const stem = name.replace(/^\.+/, "").replace(/[. ]+$/, "");
+  return extension && !/\.[^./\\]+$/.test(stem) ? `${stem || "download"}.${extension}` : name;
+}
+
 /** As the desktop app cleans a name before the cut: controls, bidi controls and reserved characters become
  *  one-byte "_", trailing dots and spaces go. */
 function cleaned(name: string): string {

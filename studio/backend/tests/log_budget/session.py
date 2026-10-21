@@ -54,6 +54,11 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
     "/api/providers/registry": (10.0, "declared"),
     "/api/settings/personalization": (10.0, "declared"),
     "/api/system": (10.0, "declared"),
+    # The globally mounted download manager re-reads it every 30s in the background (useEngines(enabled, true)).
+    # Faster bursts of the same path: 3s while Settings > Inference engines is open, 1s during an install, and the
+    # Hub's 5s vLLM availability retry while the GPU probe still answers "Checking...". A path sits in one scenario
+    # only, and every 2xx read is dropped by _QUIET_SUCCESS_PATHS, so the faster cadences cost no lines either.
+    "/api/engines": (30.0, "declared"),
 }
 
 # Polls that only exist while an operation is in flight: a download running, a generation
@@ -68,6 +73,9 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/inference/video/generate-progress": (0.3, "declared"),
     "/api/inference/images/load-progress": (1.0, "declared"),
     "/api/inference/video/load-progress": (1.0, "declared"),
+    # The Images page reads it once, then every second only while the FLUX.3 prompt upsampler
+    # downloads (prompt-enhance-panel.tsx, usePromptUpsamplerStatus).
+    "/api/inference/images/prompt-upsampler/status": (1.0, "declared"),
     "/api/train/diffusion/status": (1.5, "declared"),
     # Suppressed entirely on success, but still polled, and still logged on failure.
     "/api/export/logs": (1.0, "declared"),

@@ -15,7 +15,7 @@ from core.inference.audio_workflows import inventory_audio_workflows
 ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 LocalArtifactKind = Literal[
     "diffusers_pipeline",
@@ -145,6 +145,13 @@ class GgufVariantsResponse(BaseModel):
     loadable: Optional[bool] = Field(
         None,
         description = "Whether a variantless load resolves GGUF weights; None when unanswered",
+    )
+    variant_format: Optional[str] = Field(
+        None,
+        description = (
+            "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
+            "quants; None for GGUF"
+        ),
     )
 
 
@@ -334,6 +341,7 @@ class CachedGgufRepo(CachedRepoBase):
             "watching for on-disk change need this to notice it."
         ),
     )
+    umbrella_folder: bool = False
 
 
 class CachedGgufResponse(BaseModel):

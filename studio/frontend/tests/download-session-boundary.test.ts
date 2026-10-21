@@ -83,6 +83,7 @@ for (const [name, eventType, event] of boundaries) {
       ],
     });
     store.set(PERSIST_KEY, "prior-session-downloads");
+    const resets = useStagedDownloadQueues.getState().resets;
 
     try {
       fireWindowEvent(eventType, event);
@@ -90,6 +91,8 @@ for (const [name, eventType, event] of boundaries) {
       assert.equal(runtimeRegistry.pendingStartRepoKeys.size, 0);
       assert.equal(store.has(PERSIST_KEY), false);
       assert.deepEqual(useStagedDownloadQueues.getState().queues, {});
+      // Mounted staging hooks watch this to drop the plans whose jobs just went away.
+      assert.equal(useStagedDownloadQueues.getState().resets, resets + 1);
     } finally {
       controller.__resetDownloadManagerForTests();
       await useDownloadManagerStore.persist.clearStorage();

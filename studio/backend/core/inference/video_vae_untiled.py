@@ -8,34 +8,27 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from .family_profile import profile_table as _profile_table
+
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
-# Untiled fp16 decode peak per latent pixel (h x w), measured on a B200; frame count does not enter (Wan's causal cache
-# decodes one latent frame at a time). Scaled by the decoder's element size: fp32 peaked at 21.1 GiB vs fp16 9.6 GiB.
-# A14B: Wan2.1 VAE (8x spatial), measured <= 0.58 MiB per latent pixel at 480p / 720p.
+# Untiled decode peak models per family (``FamilyProfile.untiled_vae`` on the video registry, measured on a B200; the
+# reasoning sits next to the data). Per latent pixel (h x w) + the (spatial, temporal) RGB output for a causal decoder
+# (Wan), or per output frame x latent pixel + the temporal scale for a decoder holding every frame (LTX-2 / 2.3 / 2.5).
+_UNTILED = _profile_table("untiled_vae")
 _BYTES_PER_LATENT_PIXEL = {
-    "wan2.2-ti2v-5b": 2.5 * 2**20,
-    "wan2.2-t2v-a14b": 0.6 * 2**20,
-    "wan2.1-t2v-1.3b": 0.6 * 2**20,
-    "wan2.1-t2v-14b": 0.6 * 2**20,
+    name: m.bytes_per_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_latent_pixel is not None
 }
-# (spatial, temporal) upsampling to the RGB output, which Wan's decode holds about twice (per-frame torch.cat, then
-# clamp) and which grows with frames: 1021 frames at 1280x704 is 5.2 GiB per fp16 copy.
-_OUTPUT_SCALE = {
-    "wan2.2-ti2v-5b": (16, 4),
-    "wan2.2-t2v-a14b": (8, 4),
-    "wan2.1-t2v-1.3b": (8, 4),
-    "wan2.1-t2v-14b": (8, 4),
-}
-# LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200).
+_OUTPUT_SCALE = {name: m.output_scale for name, m in _UNTILED.items() if m.output_scale is not None}
 _BYTES_PER_FRAME_LATENT_PIXEL = {
-    "ltx-2": 0.11 * 2**20,
-    # Same conv decoder layout as 2.3 (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
-    "ltx-2.5": 0.11 * 2**20,
+    name: m.bytes_per_frame_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_frame_latent_pixel is not None
 }
 _TEMPORAL_SCALE = {
-    "ltx-2": 8,
-    "ltx-2.5": 8,
+    name: m.temporal_scale for name, m in _UNTILED.items() if m.temporal_scale is not None
 }
 _MARGIN = 1.25
 _MARGIN_BYTES = 2 * 2**30
@@ -91,6 +84,35 @@ def _free_bytes(device: Any) -> Optional[int]:
         return None
 
 
+def _in_chain(fn: Any, target: Any) -> bool:
+    for _ in range(16):
+        if fn is None:
+            return False
+        if fn is target:
+            return True
+        from .decode_layers import next_layer  # noqa: PLC0415
+
+        fn = next_layer(fn)
+    return False
+
+
+def _decode_device(vae: Any, z: Any) -> Any:
+    """Where the decode allocates: the latent's card, unless a multi-GPU split put the VAE on another CUDA card (its
+    boundary moves the latent there inside this wrapper). An offloaded VAE (weights on the host) keeps the latent's."""
+    device = getattr(z, "device", None)
+    try:
+        vae_device = next(vae.parameters()).device
+    except Exception:  # noqa: BLE001
+        return device
+    if (
+        getattr(vae_device, "type", None) == "cuda"
+        and getattr(device, "type", None) == "cuda"
+        and vae_device != device
+    ):
+        return vae_device
+    return device
+
+
 def install_untiled_decode(
     pipe: Any,
     family: str,
@@ -118,7 +140,7 @@ def install_untiled_decode(
         need = untiled_decode_bytes(
             family, tuple(getattr(z, "shape", ())), itemsize = _decoder_itemsize(vae)
         )
-        free = _free_bytes(getattr(z, "device", None))
+        free = _free_bytes(_decode_device(vae, z))
         fits = (
             need is not None
             and free is not None
@@ -152,6 +174,11 @@ def install_untiled_decode(
         # Retried outside the handler so the failed attempt's tensors (held by the traceback) are gone first.
         stats["oom_fallback"] += 1
         oom_need[:] = [min([need, *oom_need])]
+        from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
+
+        clear_partial_decode(
+            vae, z
+        )  # the untiled attempt's causal state goes before the tiled decode
         torch.cuda.empty_cache()
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")
@@ -162,7 +189,8 @@ def install_untiled_decode(
             return gated(*args, **kwargs)
         finally:
             # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.
-            if vae.__dict__.get("decode") is not untiled_when_fits:
+            # (a layer installed over this one, e.g. the OOM retry's decode scope, keeps it in its __wrapped__ chain)
+            if not _in_chain(vae.__dict__.get("decode"), untiled_when_fits):
                 vae.decode = untiled_when_fits
 
     untiled_when_fits._unsloth_untiled_decode = True

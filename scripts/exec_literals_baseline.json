@@ -10,6 +10,20 @@
   ],
   "entries": [
     {
+      "file": "studio/backend/core/inference/diffusion_autoopt/patches.py",
+      "sink": "compile",
+      "digest": "5ae0e330a5c3c7ad",
+      "count": 1,
+      "reason": "splice_function: compiles an AST parsed from the library function's own inspect.getsource, edited only by exact-once literal needle replacements, checked to be one function whose globals all resolve"
+    },
+    {
+      "file": "studio/backend/core/inference/diffusion_autoopt/patches.py",
+      "sink": "exec",
+      "digest": "1c33653a1d0bca74",
+      "count": 1,
+      "reason": "splice_function: executes the code object compiled on the line above into a copy of the original function's globals; never sees user or model input"
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_capture_safe.py",
       "sink": "compile",
       "digest": "1f39880672dc563b",
@@ -277,6 +291,13 @@
     },
     {
       "file": "unsloth/models/rl.py",
+      "sink": "compile",
+      "digest": "4be3a8fe5e437a0c",
+      "count": 1,
+      "reason": "Compiles TRL's own AsyncGRPOTrainer.compute_loss, read with inspect.getsource from the installed trl package, with the PPO loss line swapped for the masked one only when it is present exactly once (two metric lines likewise); built only when a caller passes importance_sampling_mask=True. Never user input or a network fetch. See tests/test_async_grpo_patch.py."
+    },
+    {
+      "file": "unsloth/models/rl.py",
       "sink": "eval",
       "digest": "040bea2f53f4a4a8",
       "count": 1,
@@ -372,6 +393,13 @@
       "digest": "cf3b35303f787f60",
       "count": 1,
       "reason": "Re-imports TRL trainer and config classes by name, and installs the RL trainer source this file generates. The names come from this file's own tables."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "sink": "exec",
+      "digest": "dc0878fa52de4e4f",
+      "count": 1,
+      "reason": "Executes the code object compiled on the line above against TRL's own module globals into a fresh namespace, defining only the rewritten compute_loss. The source is the installed trl package's code, not user or network input."
     },
     {
       "file": "unsloth/models/rl.py",

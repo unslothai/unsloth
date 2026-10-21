@@ -13,6 +13,7 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { HfTokenIndicator } from "../components/hf-token-indicator";
 import { PageHeading } from "../components/page-heading";
+import { DownloadLocationPicker } from "./download-location-picker";
 import { TransportToggle } from "./transport-toggle";
 
 function StatPill({
@@ -74,6 +75,7 @@ export function ModelsHeader({
       >
         <HfTokenIndicator onOpenSettings={() => openSettings("general")} />
         <TransportToggle />
+        {isDataset ? null : <DownloadLocationPicker />}
         <StatPill
           icon={PackageIcon}
           label="Cache"

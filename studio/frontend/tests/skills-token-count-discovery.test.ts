@@ -26,7 +26,7 @@ test("token counting waits for the initial skills discovery", () => {
   assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(userTexts\(messages\)\.join\("\\n"\)\);/);
   assert.match(
     CHAT_ADAPTER_SOURCE,
-    /const skillTools = skillToolNames\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*userTexts\(messages\),\s*\);/,
+    /const skillTools = skillToolNames\(\s*skillsForTools\(\),\s*codeToolsEnabled,\s*userTexts\(messages\),\s*\);/,
   );
 });
 
@@ -63,7 +63,7 @@ test("request building waits for skills and preserves the launcher tool catalog"
   );
   assert.match(
     payloadBuilder,
-    /const skillTools = skillToolNames\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*userTexts\(outboundMessages\),\s*\);/,
+    /const skillTools = skillToolNames\(\s*skillsForTools\(\),\s*codeToolsEnabled,\s*userTexts\(outboundMessages\),\s*\);/,
   );
   assert.match(
     payloadBuilder,
@@ -81,7 +81,7 @@ test("a sign-out drops the module-level skills snapshot", () => {
   assert.ok(SKILLS_API_SOURCE.includes("publish(EMPTY_SNAPSHOT)"));
 });
 
-test("the count passes the counted history so a Code-off @mention is priced like the send", () => {
+test("the count passes the counted history so a Tools-off @mention is priced like the send", () => {
   const refresh = readFileSync(
     new URL("../src/features/chat/utils/refresh-context-usage.ts", import.meta.url),
     "utf8",

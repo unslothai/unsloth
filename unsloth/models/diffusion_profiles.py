@@ -50,6 +50,8 @@ class DiffusionProfile:
     quant_skip_modules: Optional[list] = None
     # Profile-specific defaults a DiffusionConfig field left at None falls back to.
     defaults: dict = field(default_factory = dict)
+    # diffusion_compile = "full" allowed; off for data-dependent MoE dispatch (per-expert token gathers).
+    compile_backbone: bool = False
 
     def matches(self, config) -> bool:
         model_type = getattr(config, "model_type", None)
@@ -89,7 +91,7 @@ class DiffusionProfile:
         args,
         num_items_in_batch = None,
     ):
-        """Returns (loss, outputs_or_None, metrics: dict[str, float])."""
+        """Returns (loss, outputs_or_None, metrics: dict[str, float | 0-dim tensor])."""
         raise NotImplementedError(
             f"Unsloth: diffusion profile {self.name} has no training objective."
         )

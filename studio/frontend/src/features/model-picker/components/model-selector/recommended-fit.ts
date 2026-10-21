@@ -5,6 +5,15 @@
 // the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import {
+  LOADING_OVERHEAD_GB,
+  checkVramFit,
+  estimateLoadingVram,
+} from "../../../../lib/vram.ts";
+import {
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
 import { matchesRecommended } from "../../../hub/lib/format-filters.ts";
 import {
   classifyMediaGgufFit,
@@ -84,6 +93,48 @@ export function matchesFormatFilter(
     default:
       return true;
   }
+}
+
+/** The format filters a picker offers, in menu order. MLX only where it can run, NPU only with a
+ *  catalog to show. */
+export function formatFilterValues(opts: { npu: boolean; mlx: boolean }): FormatFilter[] {
+  return (["all", "gguf", "mlx", "safetensors", "npu"] as const).filter(
+    (value) => (value !== "mlx" || opts.mlx) && (value !== "npu" || opts.npu),
+  );
+}
+
+/** A remembered filter the picker no longer offers falls back to "all". */
+export function coerceFormatFilter(
+  chosen: FormatFilter,
+  offered: readonly FormatFilter[],
+): FormatFilter {
+  return offered.includes(chosen) ? chosen : "all";
+}
+
+const normalizeSearchText = (s: string): string =>
+  s.toLowerCase().replace(/[\s_.-]/g, "");
+
+/** Whether a picker search matches a row on what the row shows. A bundled folder shows only its
+ *  folder name, so its package repo id matches nothing, and neither does a query that is just
+ *  part of the -GGUF every folder name ends in. */
+export function pickerSearchMatches(
+  id: string,
+  aliases: readonly string[],
+  label: string | null | undefined,
+  query: string,
+): boolean {
+  const q = normalizeSearchText(query);
+  if (!q) return true;
+  if (isAudioCppFolderId(id)) {
+    const name = audioCppDisplayName(id);
+    return (
+      normalizeSearchText(name.replace(/-gguf$/i, "")).includes(q) ||
+      (!"gguf".includes(q) && normalizeSearchText(name).includes(q))
+    );
+  }
+  return (label ? [...aliases, label] : aliases).some((term) =>
+    normalizeSearchText(term).includes(q),
+  );
 }
 
 // First "<n>B" token in a repo id, e.g. "Qwen3-30B-A3B" -> 30. Digits must be
@@ -170,11 +221,35 @@ export function fitsDevice(opts: {
   return requireKnown ? false : true;
 }
 
+/** A safetensors load on a discrete GPU: a prequantized checkpoint as stored (Studio rebuilds none
+ *  of them as bnb), anything else at the row badge's 4-bit estimate. `raise_if_offloaded` refuses
+ *  CPU offload, except that one CUDA / ROCm card block-swaps 16-bit or bnb layers into host RAM. */
+function fitsTransformersLoad(
+  model: { totalParams: number; estimatedSizeBytes?: number; quantMethod?: string },
+  gpu: { memoryTotalGb: number; systemRamAvailableGb: number; backend?: string },
+  gpuCount = 1,
+): boolean {
+  const quant = model.quantMethod?.toLowerCase();
+  const swapGb =
+    gpuCount <= 1 && (gpu.backend === "cuda" || gpu.backend === "rocm")
+      ? Math.max(0, gpu.systemRamAvailableGb)
+      : 0;
+  const fits = (requiredGb: number, budgetGb: number) =>
+    checkVramFit(requiredGb, budgetGb) !== "exceeds";
+  if (!quant)
+    return fits(estimateLoadingVram(model.totalParams, "qlora"), gpu.memoryTotalGb + swapGb);
+  const storedBytes =
+    model.estimatedSizeBytes ?? estimateQuantBytes(model.totalParams);
+  return fits(
+    storedBytes / 1024 ** 3 + LOADING_OVERHEAD_GB,
+    gpu.memoryTotalGb + (quant === "bitsandbytes" ? swapGb : 0),
+  );
+}
+
 /** Fit predicate for one Hub listing row, shared by the chat model selector and the Hub page
- *  filter. GGUF repos use metadata size or the smallest-quant estimate. Safetensors / MLX
- *  always use the params-based estimate, matching the badge's quantized-load assumption,
- *  since their estimatedSizeBytes is the full-precision checkpoint. `curatedSizeBytes`
- *  outranks both. Anything still unsizable is hidden; an unknown device budget keeps all. */
+ *  filter. GGUF repos use metadata size or the smallest-quant estimate, safetensors on a discrete
+ *  GPU `fitsTransformersLoad`, and MLX / host-pool rows the params-based quant estimate.
+ *  `curatedSizeBytes` outranks all. Unsizable rows are hidden; an unknown budget keeps all. */
 export function hfModelFitsDevice(
   model: {
     id: string;
@@ -182,11 +257,13 @@ export function hfModelFitsDevice(
     estimatedSizeBytes?: number;
     curatedSizeBytes?: number;
     isGguf?: boolean;
+    quantMethod?: string;
   },
   gpu: {
     memoryTotalGb: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
+    backend?: string;
   },
   /** `budgetFraction` is the user's saved VRAM Budget: omitted scores against the loader's
    *  default, so a caller that forgets it judges rows on a replaced budget. `mediaLoad` picks
@@ -205,10 +282,21 @@ export function hfModelFitsDevice(
   )
     return true;
   const params = model.totalParams ?? paramsFromId(model.id);
+  const isGguf = isGgufId(model.id, model.isGguf);
+  if (
+    params &&
+    model.curatedSizeBytes == null &&
+    !isGguf &&
+    !isMlxId(model.id) &&
+    !opts.mediaLoad &&
+    !opts.hostPooledMemory &&
+    gpu.memoryTotalGb > 0
+  )
+    return fitsTransformersLoad({ ...model, totalParams: params }, gpu, opts.gpuCount);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
   const sizeBytes =
     model.curatedSizeBytes ??
-    (isGgufId(model.id, model.isGguf)
+    (isGguf
       ? (model.estimatedSizeBytes ?? quantBytes)
       : (quantBytes ?? model.estimatedSizeBytes));
   return fitsDevice({
@@ -287,6 +375,7 @@ export function searchRowFitsDevice<
     totalParams?: number;
     estimatedSizeBytes?: number;
     curatedSizeBytes?: number;
+    quantMethod?: string;
   },
   opts: {
     isGguf: boolean;
@@ -368,6 +457,9 @@ export function orderRecommendedRows<
   /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort.
    *  Their rows interleave by position: every pinned family's first row, then every second one. */
   pinnedFamilies?: readonly string[];
+  /** Pinned family keys whose rows stay together instead of interleaving: all of them come before
+   *  the next pinned family's, so a GGUF sits right under its own lead row. */
+  pinnedTogether?: readonly string[];
 }): T[] {
   const {
     seeds,
@@ -377,6 +469,7 @@ export function orderRecommendedRows<
     fits,
     familyOf,
     pinnedFamilies = [],
+    pinnedTogether = [],
   } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
@@ -416,6 +509,7 @@ export function orderRecommendedRows<
     if (!firstSeen.has(key)) firstSeen.set(key, i);
   });
   const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
+  const together = new Set(pinnedTogether);
   // Row position within its family: pinned families' lead rows ("Fast FP8") come before their GGUFs.
   const slotOf = new Map<number, number>();
   const seenPerFamily = new Map<string, number>();
@@ -430,7 +524,10 @@ export function orderRecommendedRows<
     // Pinned families lead, ahead of first-party rows that trend higher.
     const pin = pinIndex.get(key);
     if (pin != null) {
-      return [slotOf.get(i) ?? 0, pin, 0, firstSeen.get(key) ?? i, i];
+      const slot = slotOf.get(i) ?? 0;
+      return together.has(key)
+        ? [0, pin, slot, firstSeen.get(key) ?? i, i]
+        : [slot, pin, 0, firstSeen.get(key) ?? i, i];
     }
     const ours = firstParty(r.id);
     const unranked = ours && !listable.has(key) ? -1 : Infinity;

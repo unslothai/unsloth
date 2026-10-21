@@ -49,6 +49,9 @@ _VALIDATED_MARKER = "npu_validated.json"
 # Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
 # and a single-turn ("flash") model answers only the first message of a conversation.
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
+# Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
+# limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
+_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -220,6 +223,14 @@ def _positive_int(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _max_context_length(checkpoint: str, reported: Any) -> Optional[int]:
+    reported = _positive_int(reported)
+    limit = _FLM_CONTEXT_LIMITS.get(checkpoint)
+    if limit is None:
+        return reported
+    return min(reported, limit) if reported else limit
 
 
 class LemonadeNpuBackend:
@@ -425,6 +436,11 @@ class LemonadeNpuBackend:
         hardware = self.hardware()
         if not hardware.get("present"):
             raise NpuError("No AMD Ryzen AI NPU was found on this machine.")
+        if hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
+            raise NpuError(
+                "The AMD NPU is off by default. Start Unsloth Studio with "
+                "UNSLOTH_STUDIO_ENABLE_NPU=1 to use it."
+            )
         if not hardware.get("supported"):
             raise NpuError(
                 "FastFlowLM needs an XDNA 2 NPU (Ryzen AI 300/400 or Ryzen AI Max); "
@@ -433,6 +449,8 @@ class LemonadeNpuBackend:
 
     def _ensure_running(self) -> LemonadeServer:
         """Start the installed runtime if needed and return its server."""
+        # A runtime enabled before the flag was turned off must not start again.
+        self._require_supported()
         with self._lock:
             if self._server is not None and self._server.is_alive():
                 return self._server
@@ -601,7 +619,9 @@ class LemonadeNpuBackend:
                     size_gb = float(size) if isinstance(size, (int, float)) else None,
                     downloaded = downloaded,
                     labels = labels,
-                    max_context_length = _positive_int(row.get("max_context_window")),
+                    max_context_length = _max_context_length(
+                        checkpoint, row.get("max_context_window")
+                    ),
                     resume_percent = files.resume_percent() if files else None,
                 )
             )

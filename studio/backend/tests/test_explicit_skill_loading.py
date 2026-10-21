@@ -42,6 +42,7 @@ def mention_client(tmp_path, monkeypatch):
     root = tmp_path / "skills"
     manifest = root / "skill-creator" / "SKILL.md"
     manifest.parent.mkdir(parents = True)
+    # Compared as bytes: write_text stores CRLF on Windows, read_text would turn it back to LF.
     manifest.write_text(
         "---\nname: skill-creator\ndescription: Test instructions.\n---\n"
         "Complete manifest sentinel: do not execute or create anything.\n",
@@ -82,7 +83,7 @@ def test_reporter_manifest_is_in_first_generation_without_model_read(mention_cli
     assert response.status_code == 200, response.text
     assert backend.requests, response.text
     first_context = json.dumps(backend.requests[0]["messages"], ensure_ascii = False)
-    assert manifest.read_text() in "\n".join(
+    assert manifest.read_bytes().decode() in "\n".join(
         message.get("content", "") for message in backend.requests[0]["messages"]
     ), f"complete SKILL.md absent from first generation: {first_context}"
     assert '"type": "skill_load"' in response.text
@@ -113,7 +114,7 @@ def test_actual_local_request_gates_do_not_load(mention_client, gate):
     )
     assert response.status_code == 200, response.text
     assert backend.requests
-    assert manifest.read_text() not in "\n".join(
+    assert manifest.read_bytes().decode() not in "\n".join(
         m.get("content", "") for m in backend.requests[0]["messages"]
     )
     assert '"status": "loaded"' not in response.text
@@ -128,7 +129,7 @@ def test_code_off_mention_loads_and_says_scripts_need_code(mention_client, code_
             "messages": [{"role": "user", "content": "@skill-creator what did i just paste?"}],
             "stream": True,
             "enable_tools": True,
-            # a Code-off mention sends read_skill alone.
+            # a Tools-off mention sends read_skill alone.
             "enabled_tools": ["read_skill", "python", "terminal"] if code_on else ["read_skill"],
             "permission_mode": "auto",
         },
@@ -136,7 +137,7 @@ def test_code_off_mention_loads_and_says_scripts_need_code(mention_client, code_
     )
     assert response.status_code == 200, response.text
     context = "\n".join(m.get("content", "") for m in backend.requests[0]["messages"])
-    assert manifest.read_text() in context
+    assert manifest.read_bytes().decode() in context
     assert '"status": "loaded"' in response.text
     names = {t["function"]["name"] for t in backend.requests[0]["tools"]}
     assert ("python" in names) is code_on
@@ -144,4 +145,4 @@ def test_code_off_mention_loads_and_says_scripts_need_code(mention_client, code_
     note = "bundled scripts cannot run"
     assert (note in context) is not code_on
     if not code_on:
-        assert "Unsloth Studio's local Code tool" in context
+        assert "Unsloth Studio's local Tools" in context

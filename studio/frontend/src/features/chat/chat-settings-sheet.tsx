@@ -216,7 +216,7 @@ export function ParamSlider({
           max={max}
           step={step}
           {...sliderProps}
-          className="panel-slider min-w-0 flex-1"
+          className="min-w-0 flex-1"
           disabled={disabled}
         />
         <NumericValueInput
@@ -261,7 +261,6 @@ export function ParamSlider({
         max={max}
         step={step}
         {...sliderProps}
-        className="panel-slider"
         disabled={disabled}
       />
     </div>
@@ -1140,7 +1139,7 @@ export function ChatSettingsPanel({
             <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
-            <Tooltip>
+            <Tooltip key={open ? "open" : "closed"}>
                 <TooltipPrimitive.Trigger asChild={true}>
                 {/* Centred in the control row, as the header's open button is, so the toggle doesn't jump. */}
                 <button
@@ -1213,7 +1212,7 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length is above Studio&apos;s free-memory estimate
+                      Context length is above Unsloth&apos;s free-memory estimate
                       ({maxContextLength?.toLocaleString()} tokens). It may
                       still load, but macOS may have to compress or swap other
                       apps and generation may slow down. Lower the context,
@@ -1909,6 +1908,7 @@ export function ChatSettingsPanel({
       ref={asideRef}
       data-tour="chat-settings"
       data-slot="chat-settings-panel"
+      inert={!open}
       className={cn(
         "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
         open ? "w-(--chat-settings-width)" : "w-0 overflow-hidden",

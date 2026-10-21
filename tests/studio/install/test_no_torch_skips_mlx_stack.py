@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth studio update` must not hand a --no-torch install the MLX stack back.
-
-The updater clears SKIP_STUDIO_BASE (`unsloth_cli/commands/studio.py`), so without the
-`not NO_TORCH` guard a routine update reinstalls MLX into a GGUF-only venv and the next
-launch enables Train before the no_torch verdict is reached. Invisible to the backend
-tests. Structural, like test_diffusers_pin.py: running the installer needs a Mac, and
-what must hold is a property of the gate, not of one run.
-"""
+"""The not NO_TORCH guard stops unsloth studio update reinstalling MLX into a --no-torch venv."""
 
 from __future__ import annotations
 
@@ -27,11 +20,7 @@ def _source() -> str:
 
 
 def _guard_chains_of_calls_mentioning(source: str, needle: str) -> list[list[str]]:
-    """Every enclosing `if` test, outermost first, for each call mentioning ``needle``.
-
-    A chain because the step sits under the platform gate and then under a wheel-floor
-    branch; only the outermost is the gate this file is about.
-    """
+    """Enclosing if-test chains for each call mentioning needle, outermost first."""
     tree = ast.parse(source)
     chains: list[list[str]] = []
 
@@ -81,8 +70,7 @@ def test_the_progress_total_uses_the_same_gate_as_the_step():
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
             continue
-        # Sliced by line: what names this branch is the trailing comment on the += 1,
-        # which a node's extent stops before.
+        # Sliced by line: the trailing comment on the += 1 lies past the node's extent.
         segment = "\n".join(lines[node.lineno - 1 : node.end_lineno])
         # The += 1 whose comment names the MLX stack, i.e. the accounting twin.
         if "base_total += 1" in segment and "MLX stack" in segment:

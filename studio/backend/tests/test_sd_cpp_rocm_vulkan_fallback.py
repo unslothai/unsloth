@@ -106,6 +106,14 @@ def fake_settings(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _roomy_host_ram(monkeypatch):
+    """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
+    Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
+    from utils import host_memory
+    monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
+
+
+@pytest.fixture(autouse = True)
 def _clean_process_state(monkeypatch):
     """raising = False so these still report what they measured on a tree without the note."""
     from core.inference import sd_cpp_backend
@@ -309,9 +317,9 @@ def test_clearing_the_note_restores_the_host_accelerator(fake_settings):
 
 @pytest.mark.parametrize(
     "accelerator,expected",
-    [("rocm", "vulkan"), ("vulkan", None), ("cuda", None), ("cpu", None), ("auto", None)],
+    [("rocm", "vulkan"), ("vulkan", "cpu"), ("cuda", None), ("cpu", None), ("auto", None)],
 )
-def test_only_rocm_has_a_rung_below_it(accelerator, expected):
+def test_only_rocm_and_vulkan_have_a_rung_below_them(accelerator, expected):
     from core.inference.sd_cpp_backend import fallback_accelerator_for
     assert fallback_accelerator_for(accelerator) == expected
 
@@ -2301,7 +2309,7 @@ def test_the_route_tells_the_selection_which_card_it_picked(fake_settings):
     body = inspect.getsource(router.select_and_activate_engine)
     assert "_selected_card(gpu_ordinal)" in body
     assert (
-        "preferred_accelerator(\n            _install_accelerator_for(backend), selected_card\n        )"
+        "preferred_accelerator(\n            image_install_accelerator(backend), selected_card\n        )"
         in body
     )
 
@@ -2467,7 +2475,8 @@ def test_the_h3_load_scopes_its_record_lookup_to_the_card_it_selected(fake_setti
     source = inspect.getsource(video_mod)
     load = source[source.index("allow_install = _install_allowed()") :]
     assert "selected_card = selected_card_identity(gpu_ordinal)" in load
-    assert "preferred_accelerator(_install_accelerator_for(target.backend), selected_card)" in load
+    assert "requested_accelerator = _install_accelerator_for(target.backend)" in load
+    assert "preferred_accelerator(requested_accelerator, selected_card)" in load
     start = 0
     guarded = 0
     while True:
@@ -2746,6 +2755,34 @@ class TestSelectedCardIndexSpaces:
 
         # Composing the stale ROCR mask in would have made this 3 rather than 2.
         assert sd_cpp_backend._physical_index_of(0, env = env) == (2, True)
+
+    def test_an_empty_hip_mask_does_not_shadow_the_cuda_mask(self, monkeypatch):
+        """ROCm ignores an empty HIP_VISIBLE_DEVICES and reads CUDA_VISIBLE_DEVICES."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+        env = {"HIP_VISIBLE_DEVICES": "", "CUDA_VISIBLE_DEVICES": "4,5"}
+        assert sd_cpp_backend._physical_index_of(1, env = env) == (5, True)
+        # Every present mask empty still hides every card.
+        assert sd_cpp_backend._physical_index_of(0, env = {"HIP_VISIBLE_DEVICES": ""}) == (None, True)
+
+    def test_repeated_mask_entries_follow_hip_and_rocr_rules(self, monkeypatch):
+        """clr keeps the first of a repeated HIP entry; ROCr ends the list at a repeat."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+        assert sd_cpp_backend._physical_index_of(1, env = {"HIP_VISIBLE_DEVICES": "0,0,1"}) == (
+            1,
+            True,
+        )
+        assert sd_cpp_backend._physical_index_of(0, env = {"ROCR_VISIBLE_DEVICES": "2,2,3"}) == (
+            2,
+            True,
+        )
+        assert sd_cpp_backend._physical_index_of(1, env = {"ROCR_VISIBLE_DEVICES": "2,2,3"}) == (
+            None,
+            True,
+        )
 
 
 def _recorded_proven(store: dict, klass: str = "rocm") -> bool:

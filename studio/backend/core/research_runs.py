@@ -66,6 +66,7 @@ from core.research.prompts import (
     _system_prompt_with_instructions,
 )
 from loggers import get_logger
+from state.tool_policy import get_tool_policy
 from storage import providers_db
 from storage import research_runs_db as db
 from storage.studio_db import (
@@ -1531,6 +1532,11 @@ class ResearchSupervisor:
         return host
 
     def _endpoint(self) -> str:
+        from utils.studio_tls import loopback_http_port
+
+        loopback_port = loopback_http_port(self.app.state)
+        if loopback_port is not None:
+            return f"http://127.0.0.1:{loopback_port}/v1/chat/completions"
         port = self._server_port()
         if port is None:
             raise RuntimeError("Research is waiting for the Unsloth server port")
@@ -1761,7 +1767,13 @@ class ResearchSupervisor:
             )
         if not omit_sampling and inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
-        if inference.get("providerType") in ("deepseek", "huggingface", "qwen", "mistral"):
+        if inference.get("providerType") in (
+            "deepseek",
+            "huggingface",
+            "qwen",
+            "qwencloud",
+            "mistral",
+        ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
             # planner opt-out must not reach mistral-large and the other non-reasoning models.
@@ -2393,6 +2405,10 @@ class ResearchSupervisor:
 
     # The structured inline card renders the plan; no second markdown copy below it.
     async def _research(self, run: dict) -> None:
+        # The routes refuse to start a run while tools are off; a durable run approved before a
+        # restart under `--disable-tools` is still claimed here.
+        if get_tool_policy() is False:
+            raise RuntimeError("Tools are disabled on this server")
         # Completed steps on a queued run are ones a Retry kept (a fresh plan's steps are all pending).
         resuming = run.get("claimedFromStatus") == "running" or any(
             step.get("status") == "completed" for step in run.get("steps") or ()

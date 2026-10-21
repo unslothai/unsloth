@@ -94,10 +94,10 @@ on:
 
 concurrency:
   # The event is in the group so a scheduled run and a push to main, which share a ref,
-  # cannot cancel each other; the sha makes it unique per commit on main so a merge burst
-  # cannot cancel a pending run (see studio-backend-ci.yml). On a PR branch the group is
-  # the ref, so a new push cancels the run for the previous one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # cannot replace each other. On main a merge burst runs the executing commit plus the
+  # tip (see studio-backend-ci.yml). On a PR branch the group is the ref, so a new push
+  # cancels the run for the previous one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -315,7 +315,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: interrupted-${{ matrix.os }}-${{ matrix.label }}
           path: |
@@ -473,7 +473,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: interrupted-windows-${{ matrix.label }}
           path: |

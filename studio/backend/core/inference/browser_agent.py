@@ -18,8 +18,9 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import unicodedata
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from loggers import get_logger
 
@@ -92,15 +93,90 @@ BROWSER_FIND_TOOL = {
     },
 }
 
+_POINT_NOTE = (
+    "x and y are pixels in the latest browser_screenshot, from its top-left corner; without one, "
+    "CSS pixels of the visible page."
+)
+
 BROWSER_CLICK_TOOL = {
     "type": "function",
     "function": {
         "name": "browser_click",
-        "description": "Click an element by its ref from the latest snapshot.",
+        "description": (
+            "Click an element by its ref from the latest snapshot, or click at a point (x and y) "
+            "for what has no ref, such as a canvas or a map. " + _POINT_NOTE
+        ),
         "parameters": {
             "type": "object",
-            "properties": {"ref": {"type": "string", "description": "For example r12."}},
-            "required": ["ref"],
+            "properties": {
+                "ref": {"type": "string", "description": "For example r12."},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+            },
+        },
+    },
+}
+
+BROWSER_MOVE_MOUSE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_move_mouse",
+        "description": (
+            "Move the mouse over an element (ref) or to a point (x and y), for example to open a "
+            "menu that shows on hover. " + _POINT_NOTE
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+            },
+        },
+    },
+}
+
+BROWSER_DRAG_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_drag",
+        "description": (
+            "Press the mouse on an element or point, move it to another, and release: to drag an "
+            "item or a map. Start at ref or x and y, end at to_ref or to_x and to_y. " + _POINT_NOTE
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "to_ref": {"type": "string"},
+                "to_x": {"type": "number"},
+                "to_y": {"type": "number"},
+            },
+        },
+    },
+}
+
+BROWSER_EVALUATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_evaluate",
+        "description": (
+            "Run JavaScript in the current page and get back what it returns, for what the other "
+            "browser tools cannot do. script is the body of an async function: use return to give "
+            "a value (made into JSON), and await if needed. The user sees the script and is asked "
+            "first every time, so keep it short and plain. " + _UNTRUSTED_NOTE
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": "For example: return document.querySelectorAll('tr').length;",
+                }
+            },
+            "required": ["script"],
         },
     },
 }
@@ -131,7 +207,8 @@ BROWSER_SELECT_TOOL = {
         "name": "browser_select",
         "description": (
             "Choose an option in a dropdown, or set a checkbox or radio button, by ref. value is "
-            'the option text, or "true"/"false" for a checkbox.'
+            'the option text, or "true"/"false" for a checkbox or radio button, whose own ref '
+            "is the one to pass."
         ),
         "parameters": {
             "type": "object",
@@ -224,10 +301,13 @@ BROWSER_TOOLS = [
     BROWSER_SNAPSHOT_TOOL,
     BROWSER_FIND_TOOL,
     BROWSER_CLICK_TOOL,
+    BROWSER_MOVE_MOUSE_TOOL,
+    BROWSER_DRAG_TOOL,
     BROWSER_TYPE_TOOL,
     BROWSER_SELECT_TOOL,
     BROWSER_SCROLL_TOOL,
     BROWSER_PRESS_KEY_TOOL,
+    BROWSER_EVALUATE_TOOL,
     BROWSER_SCREENSHOT_TOOL,
     BROWSER_HISTORY_TOOL,
 ]
@@ -241,9 +321,22 @@ _ACTION_TIMEOUT_S = 600.0
 _MIN_ACTION_TIMEOUT_S = 30.0
 _MAX_URL_CHARS = 4096
 _MAX_TEXT_CHARS = 8000
+_MAX_SCRIPT_CHARS = 8000
+_HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
+# Past any real screen: a point there is a mistake, not a far corner.
+_MAX_POINT = 100_000
 _MAX_MODEL_CHARS = 24000
 _REF_RE = re.compile(r"^\[?r?(\d{1,9})\]?$", re.IGNORECASE)
-_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home", ".home.arpa", ".corp")
+_LOCAL_SUFFIXES = (
+    ".local",
+    ".localhost",
+    ".internal",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".corp",
+    ".intranet",
+)
 _FENCE = "untrusted_web_content"
 
 
@@ -263,6 +356,33 @@ def _ref(arguments: dict) -> Optional[str]:
     return f"r{int(match.group(1))}"
 
 
+def _coordinate(arguments: dict, key: str) -> Optional[float]:
+    raw = arguments.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{key} must be a number of pixels.")
+    if not (0 <= value <= _MAX_POINT):
+        raise ValueError(f"{key} must be a number of pixels from 0 to {_MAX_POINT}.")
+    return round(value, 1)
+
+
+def _target(arguments: dict, prefix: str = "") -> dict:
+    """A ref or an x/y point, as `{"ref": ...}` or `{"x": ..., "y": ...}`, keyed with `prefix`."""
+    ref = _ref({"ref": arguments.get(f"{prefix}ref")})
+    if ref:
+        return {f"{prefix}ref": ref}
+    x = _coordinate(arguments, f"{prefix}x")
+    y = _coordinate(arguments, f"{prefix}y")
+    if x is None or y is None:
+        raise ValueError(
+            f"give {prefix}ref from the latest snapshot, or both {prefix}x and {prefix}y."
+        )
+    return {f"{prefix}x": x, f"{prefix}y": y}
+
+
 def _host_problem(hostname: str) -> Optional[str]:
     """Why the browser must not open this host, or None. Literal and naming checks only; the
     resolver check runs after (``_validate_and_resolve_host``)."""
@@ -275,9 +395,50 @@ def _host_problem(hostname: str) -> Optional[str]:
         ip = None
     if ip is not None:
         return None if ip.is_global else f"{host} is not a public address"
-    if host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES):
+    if host == "localhost" or "." not in host or f".{host}".endswith(_LOCAL_SUFFIXES):
         return f"{host} is a local name"
     return None
+
+
+def _whatwg_path(path: str) -> str:
+    """The path as the tab's URL parser leaves it: `\\` is `/`, and `.` / `..` (also as %2e)
+    segments are resolved, with no network-path meaning for a leading `//`."""
+    segments: list[str] = []
+    parts = path.replace("\\", "/").split("/")[1:]
+    for index, part in enumerate(parts):
+        dots = re.sub(r"%2e", ".", part, flags = re.IGNORECASE)
+        last = index == len(parts) - 1
+        if dots == "..":
+            if segments:
+                segments.pop()
+            if last:
+                segments.append("")
+        elif dots == ".":
+            if last:
+                segments.append("")
+        else:
+            segments.append(part)
+    return "/" + "/".join(segments)
+
+
+def _redirect_target(url: str) -> Optional[str]:
+    """The page a search engine's redirect link lands on, as the browser tab unwraps it
+    (``unwrapRedirect`` in features/browser/address.ts), or None."""
+    try:
+        parsed = urlsplit(url)
+        # The tab's URL parser maps the host (UTS 46): full-width letters and ideographic dots too.
+        host = unicodedata.normalize("NFKC", parsed.hostname or "").replace("\u3002", ".").lower()
+        host = host.rstrip(".").removeprefix("www.")
+    except ValueError:
+        return None
+    query = parse_qs(parsed.query)
+    path = _whatwg_path(parsed.path)
+    target = None
+    if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
+        target = (query.get("uddg") or [None])[0]
+    elif re.fullmatch(r"google\.[a-z.]+", host) and path == "/url":
+        target = (query.get("q") or query.get("url") or [None])[0]
+    return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
 
 
 def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
@@ -305,6 +466,10 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     ok, reason, _ips = _validate_and_resolve_host(hostname, port)
     if not ok:
         raise ValueError(reason.removeprefix("Blocked: "))
+    # The tab opens a redirect link's target, so the target has to pass the same checks.
+    target = _redirect_target(url)
+    if target is not None:
+        normalize_navigation_url(target, website_policy)
     return url
 
 
@@ -326,7 +491,27 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
         if not query:
             raise ValueError("query is empty.")
         return {"op": op, "query": query[:200]}
-    if name in ("browser_click", "browser_type", "browser_select"):
+    if name == "browser_click":
+        return {"op": op, **_target(arguments)}
+    if name == "browser_move_mouse":
+        return {"op": "move", **_target(arguments)}
+    if name == "browser_drag":
+        return {"op": op, **_target(arguments), **_target(arguments, "to_")}
+    if name == "browser_evaluate":
+        script = arguments.get("script")
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("script must be the JavaScript to run.")
+        if len(script) > _MAX_SCRIPT_CHARS:
+            raise ValueError(f"script is longer than {_MAX_SCRIPT_CHARS} characters.")
+        # Approved as shown: no bidi overrides, invisible marks, or blank runs hiding a tail.
+        if any(unicodedata.category(char) == "Cf" for char in script):
+            raise ValueError(
+                "script has invisible or direction-changing characters; write them as \\u escapes."
+            )
+        if _HIDDEN_TAIL_RE.search(script):
+            raise ValueError("script has a long run of blank space; remove it.")
+        return {"op": op, "script": script}
+    if name in ("browser_type", "browser_select"):
         ref = _ref(arguments)
         if not ref:
             raise ValueError("ref is required. Take one from the latest snapshot, for example r12.")
@@ -340,7 +525,10 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             request["text"] = text
             request["submit"] = arguments.get("submit") is True
         if name == "browser_select":
-            request["value"] = str(arguments.get("value") or "")[:500]
+            value = arguments.get("value")
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            request["value"] = ("" if value is None else str(value))[:500]
         return request
     if name == "browser_scroll":
         direction = str(arguments.get("direction") or "down").lower()
@@ -442,12 +630,28 @@ def _with_screenshot(body: str, image: Any) -> str:
     url = _png_data_url(data)
     if url is None:
         return "Error: the screenshot was not a readable image."
+    size = _png_size(url)
+    if size:
+        body += (
+            f"\nThe picture is {size[0]}x{size[1]} pixels; browser_click, browser_move_mouse and "
+            "browser_drag take x and y in these pixels."
+        )
     return (
         body
         + "\n"
         + SENTINEL
         + json.dumps([{"data": url.split(",", 1)[1], "mimeType": "image/png"}])
     )
+
+
+def _png_size(url: str) -> Optional[tuple[int, int]]:
+    import base64
+    import struct
+
+    head = base64.b64decode(url.split(",", 1)[1][:44])
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return struct.unpack(">II", head[16:24])
 
 
 def execute_browser_tool(
@@ -469,7 +673,7 @@ def execute_browser_tool(
 
     if output_callback is None:
         return (
-            "Error: the browser is only available in a Studio chat, where the browser panel runs "
+            "Error: the browser is only available in an Unsloth chat, where the browser panel runs "
             "these actions."
         )
     if not isinstance(arguments, dict):

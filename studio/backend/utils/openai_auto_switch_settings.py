@@ -237,8 +237,8 @@ def set_openai_auto_switch(
     media_auto_switch: Any = None,
 ) -> tuple[bool, int, bool, bool, bool, int, bool]:
     """One-transaction write; ``None`` leaves a stored value untouched."""
-    parsed_enabled = _coerce_bool(enabled)
-    if parsed_enabled is None:
+    parsed_enabled = None if enabled is None else _coerce_bool(enabled)
+    if enabled is not None and parsed_enabled is None:
         raise ValueError("OpenAI auto-switch must be true or false.")
     parsed_idle = None
     if idle_seconds is not None:
@@ -282,7 +282,9 @@ def set_openai_auto_switch(
             raise ValueError("Media auto-switch must be true or false.")
     from storage.studio_db import upsert_app_settings
 
-    updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
+    updates: dict[str, Any] = {}
+    if parsed_enabled is not None:
+        updates[OPENAI_AUTO_SWITCH_SETTING_KEY] = parsed_enabled
     if parsed_idle is not None:
         updates[AUTO_UNLOAD_IDLE_SETTING_KEY] = parsed_idle
     if parsed_media_idle is not None:
@@ -296,7 +298,8 @@ def set_openai_auto_switch(
     if parsed_media_auto_switch is not None:
         updates[MEDIA_AUTO_SWITCH_SETTING_KEY] = parsed_media_auto_switch
     upsert_app_settings(updates)
-    _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
+    if parsed_enabled is not None:
+        _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     if parsed_idle is not None:
         _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
     if parsed_media_idle is not None:
@@ -310,7 +313,7 @@ def set_openai_auto_switch(
     if parsed_media_auto_switch is not None:
         _invalidate(MEDIA_AUTO_SWITCH_SETTING_KEY)
     return (
-        parsed_enabled,
+        parsed_enabled if parsed_enabled is not None else get_openai_auto_switch_enabled(),
         parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
         parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv(),
         (
@@ -446,6 +449,18 @@ def normalize_model_override(
         entry["engine_precision"] = payload["engine_precision"]
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
+    if payload.get("engine_kv_cache_dtype") == "fp8":
+        entry["engine_kv_cache_dtype"] = "fp8"
+    seed = _bounded_int(payload.get("engine_seed"), minimum = 0, maximum = 2**31 - 1)
+    if seed is not None:
+        entry["engine_seed"] = seed
+    utilization = payload.get("engine_gpu_memory_utilization")
+    if (
+        isinstance(utilization, (int, float))
+        and not isinstance(utilization, bool)
+        and 0.05 <= utilization <= 0.99
+    ):
+        entry["engine_gpu_memory_utilization"] = round(float(utilization), 3)
 
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
@@ -534,6 +549,10 @@ def normalize_model_override(
 
     if _coerce_bool(payload.get("mlx_int8_prefill")):
         entry["mlx_int8_prefill"] = True
+
+    # Stored only when off: absent is the 4-bit default, so an untouched model follows it.
+    if payload.get("load_in_4bit") is False:
+        entry["load_in_4bit"] = False
 
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
@@ -637,9 +656,14 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         kwargs["engine"] = override["engine"]
         kwargs["engine_parallelism"] = override.get("engine_parallelism", "tensor")
         kwargs["engine_precision"] = override.get("engine_precision", "auto")
+        for key in ("engine_kv_cache_dtype", "engine_seed", "engine_gpu_memory_utilization"):
+            if key in override:
+                kwargs[key] = override[key]
         kwargs["load_in_4bit"] = False
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+    elif not is_gguf and override.get("load_in_4bit") is False:
+        kwargs["load_in_4bit"] = False
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:

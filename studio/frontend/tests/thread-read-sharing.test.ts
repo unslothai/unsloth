@@ -14,7 +14,7 @@ type Module = {
     threadId: string,
     options?: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal; share?: boolean },
   ) => Promise<Row | null>;
-  updateChatThread: (threadId: string, patch: object) => Promise<Row>;
+  updateChatThread: (threadId: string, patch: object, options?: { expectedTitle?: string; preserveTitleModifiedAt?: boolean }) => Promise<Row>;
   saveChatMessage: (message: { id: string; threadId: string }) => Promise<unknown>;
 };
 
@@ -225,4 +225,19 @@ test("a read started under one auth session is never joined by the next", async 
   requests()[1].resolve(200, row);
   assert.deepEqual(await before, { id: "t1", title: "first session" });
   assert.deepEqual(await after, row);
+});
+
+test("title regeneration sends the recency option while an ordinary rename omits it", async () => {
+  for (const regenerate of [false, true]) {
+    const { module, pending } = harness();
+    const write = module.updateChatThread("t1", { title: "New title" },
+      regenerate ? { expectedTitle: "T", preserveTitleModifiedAt: true } : undefined);
+    await tick();
+    const request = pending.find((p) => p.init?.method === "PATCH")!;
+    assert.deepEqual(JSON.parse(String(request.init?.body)), regenerate
+      ? { title: "New title", expectedTitle: "T", preserveTitleModifiedAt: true }
+      : { title: "New title" });
+    request.resolve(200, { ...row, title: "New title" });
+    assert.equal((await write).title, "New title");
+  }
 });
