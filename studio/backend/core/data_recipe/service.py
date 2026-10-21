@@ -691,9 +691,9 @@ def validate_recipe_names(recipe: dict[str, Any]) -> None:
             # A validator's targets can be seed columns, named by the seed file rather than the recipe.
             targets = item.get("target_columns")
             for name in [item.get("name"), *(targets if isinstance(targets, list) else ())]:
-                if isinstance(name, str) and ("/" in name or "\\" in name):
+                if isinstance(name, str) and ("/" in name or "\\" in name or name in (".", "..")):
                     raise ValueError(
-                        f"Column and processor names can't contain '/' or '\\': {name!r}"
+                        f"Column and processor names can't contain '/' or '\\' or be '.' / '..': {name!r}"
                     )
 
 

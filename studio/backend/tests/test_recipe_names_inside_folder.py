@@ -44,6 +44,14 @@ def test_a_validator_target_that_names_a_path_is_refused(name):
         service.build_config_builder({"columns": [column]})
 
 
+@pytest.mark.parametrize("name", [".", ".."])
+def test_a_dot_only_processor_name_is_refused(name):
+    # Data Designer writes processor batches under processors-files/<name>/.
+    recipe = {"processors": [{"name": name, "processor_type": "schema_transform"}]}
+    with pytest.raises(ValueError):
+        service.validate_recipe_names(recipe)
+
+
 @pytest.mark.parametrize("name", ["answer", "code_v2", "a.b", "Question 1", "Step 1: answer"])
 def test_ordinary_column_names_pass(name):
     service.validate_recipe_names({"columns": [{"name": name}], "processors": [{"name": "drop"}]})
