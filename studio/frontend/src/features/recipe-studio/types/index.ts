@@ -366,7 +366,7 @@ export type SeedConfig = {
   resolved_paths?: string[];
   // ui-only
   seed_preview_rows?: Record<string, unknown>[];
-  // ui-only: every chunk an unstructured seed yields, not just the preview
+  // ui-only
   seed_total_rows?: number;
   // ui-only (string for input ergonomics)
   unstructured_chunk_size?: string;

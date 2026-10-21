@@ -115,7 +115,6 @@ class SeedInspectResponse(BaseModel):
     split: str | None = None
     subset: str | None = None
     resolved_paths: list[str] | None = None
-    # Every row the seed yields (document chunks); preview_rows holds only the first few.
     total_rows: int | None = None
 
 
