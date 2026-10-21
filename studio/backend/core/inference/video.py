@@ -523,7 +523,7 @@ def _video_comfy_resident_mib(
     int8 runtime runs here, fp8 layers as fp8 when the resident fp8 path does, the rest at bf16 (a dequantized fp8
     file is twice its size on disk). ``offload`` prices what an offloaded load keeps instead."""
     name = getattr(fam, "name", None)
-    keep_int8 = keep_fp8 = False
+    keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
     filters: dict = {}
     if keep:
@@ -542,14 +542,14 @@ def _video_comfy_resident_mib(
             exclude = ()
         # Only a resident runtime keeps codes in a resident plan; an offloaded plan is re-priced.
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
-        keep_fp8 = comfy_fp8_backend(
-            target, name, base, offload = offload
-        ) is not None or _video_fp8_storage(fam, target, offload)
+        keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
+        fp8_stored = _video_fp8_storage(fam, target, offload)
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
+        fp8_stored = fp8_stored,
         keep_key = keep_key,
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),
@@ -9512,8 +9512,10 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
-            if not speed_offload and _video_denoiser_hooked(pipe):
-                # compiled for a resident denoiser but it landed hooked: move the compile below the offload hooks (as the image backend)
+            if _video_denoiser_hooked(pipe):
+                # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split
+                # fell back to a hooked placement: compiled through them, each block splits at the hook's
+                # torch.compiler.disable'd pre / post forward.
                 compile_pipe_below_offload_hooks(pipe, logger)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(

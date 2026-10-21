@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
+from .diffusion_single_file_converters import host_ram_budget_scope
 
 COMFY_QUANT_SUFFIX = ".comfy_quant"
 QUANT_METADATA_KEY = "_quantization_metadata"
@@ -274,12 +275,30 @@ _DTYPE_BYTES = {
 }
 
 
+def fp8_stored_by_header(
+    fmt: str,
+    shape: Any,
+    name: str = "",
+    keep_fp32: Any = (),
+) -> bool:
+    """The header-side rule for which fp8 layers fp8 storage keeps as codes, shared by the host RAM estimate
+    (``load_comfy_quant_transformer``) and the planner's size (``comfy_resident_mib(fp8_stored=True)``): a 2-D
+    float8 weight outside the fp32-kept modules. The loader's own test (an ``nn.Linear`` after conversion) can only
+    widen more, and that widen is still charged live."""
+    return (
+        fmt in FP8_FORMATS
+        and len(shape or ()) == 2
+        and not any(m in str(name).split(".") for m in (keep_fp32 or ()))
+    )
+
+
 def comfy_resident_mib(
     path: Optional[str],
     scan: Optional[ComfyQuantScan] = None,
     *,
     keep_int8: bool,
     keep_fp8: bool,
+    fp8_stored: bool = False,
     keep_nvfp4: bool = False,
     keep_mxfp8: bool = False,
     compute_bytes: int = 2,
@@ -340,6 +359,7 @@ def comfy_resident_mib(
             and _fits(shape, 0)
         ) or (
             (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
+            or (fp8_stored and fp8_stored_by_header(layer.format, shape))
             or (
                 {NVFP4: keep_nvfp4, MXFP8: keep_mxfp8}.get(layer.format, False)
                 # input smoothing has no runtime Linear: the loader dequantizes such a layer
@@ -448,11 +468,29 @@ def refuse_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
     return scan
 
 
+def _nbytes(tensors: Any) -> int:
+    return sum(int(t.numel()) * int(t.element_size()) for t in tensors)
+
+
+def _charge_contiguous(tensor: Any) -> None:
+    """Check the copy ``tensor.contiguous()`` makes of a non-contiguous host tensor (a view costs nothing)."""
+    if not tensor.is_contiguous():
+        from .diffusion_single_file_converters import charge_host_ram
+        charge_host_ram(_nbytes([tensor]))
+
+
 def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     """``codes * scale`` in float32, the ConvRot rotation undone, cast to ``dtype``."""
     import torch
 
+    from .diffusion_single_file_converters import charge_host_ram
+
     rows = codes.shape[0]
+    # Peak, not just the output: the float32 codes and their float32 product are live together (8 bytes per
+    # element); ConvRot's batched matmul holds the product, a float32 copy of it and its float32 result (12,
+    # measured); last the product and the output.
+    out_size = torch.empty((), dtype = dtype).element_size()
+    charge_host_ram(codes.numel() * max(12 if group else 8, 4 + out_size))
     weight = codes.to(torch.float32) * scale.to(torch.float32).reshape(-1, 1).expand(rows, 1)
     if group:
         from .diffusion_convrot import build_convrot_hadamard
@@ -488,7 +526,12 @@ def _dequant_parts(fmt: str, parts: list, dtype: Any) -> Any:
         )
         for codes, scale, extra in parts
     ]
-    return dense[0] if len(dense) == 1 else torch.cat(dense)
+    if len(dense) == 1:
+        return dense[0]
+    from .diffusion_single_file_converters import charge_host_ram
+
+    charge_host_ram(_nbytes(dense))
+    return torch.cat(dense)
 
 
 def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
@@ -497,6 +540,11 @@ def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
     import torch
 
     extras = [extra for _c, _s, extra in value.parts]
+    if len(value.parts) > 1:
+        from .diffusion_single_file_converters import charge_host_ram
+        charge_host_ram(
+            _nbytes([c for c, _s, _e in value.parts]) + _nbytes([s for _c, s, _e in value.parts])
+        )
     codes = (
         torch.cat([c for c, _s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][0]
     )
@@ -540,6 +588,7 @@ def _int8_tensor(name: str, codes: Any, scale: Any, dtype: Any) -> Optional[Any]
         "_tensor_data_names": ["zero_point", "qdata", "scale"],
     }
     stem = name.rsplit(".", 1)[0]
+    _charge_contiguous(codes)
     tensors = {
         f"{stem}._weight_qdata": codes.contiguous(),
         f"{stem}._weight_scale": scale.to(torch.float32).reshape(rows, 1).contiguous(),
@@ -597,6 +646,7 @@ def _fp8_tensor(
         "_tensor_data_names": ["qdata", "scale"],
     }
     stem = name.rsplit(".", 1)[0]
+    _charge_contiguous(codes)
     tensors = {
         f"{stem}._weight_qdata": codes.contiguous(),
         f"{stem}._weight_scale": scale.to(torch.float32)
@@ -732,7 +782,13 @@ def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
             # float8: concatenation goes through uint8 (not implemented for float8 on every torch)
             return take(value.view(torch.uint8), rows).view(value.dtype)
         parts = [value[int(r) : int(r) + int(n)] for r, n in rows]
-        return parts[0] if len(parts) == 1 else torch.cat(parts)
+        if len(parts) == 1:
+            return parts[0]
+        from .diffusion_single_file_converters import charge_host_ram
+
+        # a reordered selection (H3's [gate; value] fc1) is a full copy of the rows it joins
+        charge_host_ram(_nbytes(parts))
+        return torch.cat(parts)
 
     converted: dict = {}
     for key in list(state):
@@ -993,6 +1049,7 @@ def load_comfy_prequant(
     return model
 
 
+@host_ram_budget_scope
 def load_comfy_quant_transformer(
     transformer_cls: Any,
     path: str,
@@ -1115,6 +1172,69 @@ def load_comfy_quant_transformer(
         NVFP4: nvfp4_backend,
         MXFP8: mxfp8_backend,
     }
+    # Without a runtime (fp8 below sm_89) layers widen to ``dtype`` in host RAM: refuse before an OOM.
+    from .diffusion_single_file_converters import (
+        HostRamBudget,
+        HostRamShortfallError,
+        charge_cast,
+        charge_host_ram,
+        converted_host_bytes,
+    )
+
+    # Mirrors the source loop below: a layer is kept as codes only with a runtime for its format (fp16_keep
+    # merely defers the dtype choice; the layer is still expanded) and, for a block format, no key map.
+    # nvfp4 headers describe packed uint8 (K / 2 columns); the dense weight is N x K.
+    # fp8 storage keeps its layers as the memory-mapped codes (0 here); their fp32 row scales are added below.
+    header_shapes = {}
+    if fp8_storage:
+        try:
+            _hdr, _ = _read_header(str(path))
+            header_shapes = {
+                k: (v or {}).get("shape") for k, v in _hdr.items() if k != "__metadata__"
+            }
+        except Exception:  # noqa: BLE001 -- the estimate then prices them widened (conservative)
+            header_shapes = {}
+
+    def _stored(layer: Any) -> bool:
+        shape = header_shapes.get(layer.name + ".weight")
+        return (
+            bool(fp8_storage)
+            and shape is not None
+            and fp8_stored_by_header(
+                layer.format, shape, layer.name, keep_fp32 if fp16_keep else ()
+            )
+        )
+
+    _widened = {
+        layer.name + ".weight": (
+            (2 if layer.format == NVFP4 else 1)
+            if not (backends.get(layer.format) or _stored(layer))
+            or (layer.format in BLOCK_SIZES and key_map is not None)
+            else 0
+        )
+        for layer in scan.layers.values()
+    }
+    _stored_scale_bytes = sum(
+        4 * int(header_shapes[layer.name + ".weight"][0])
+        for layer in scan.layers.values()
+        if _stored(layer) and not backends.get(layer.format)
+    )
+    # The header estimate refuses early; the budget it activates is charged by every allocating helper
+    # below, so a layer the estimate cannot see (runtime filters, nibble swaps) still cannot OOM the host.
+    budget = HostRamBudget(
+        path, f"expanding its quantized weights to {str(dtype).replace('torch.', '')}", logger
+    )
+    budget.check(
+        converted_host_bytes(
+            path,
+            dtype,
+            keep_fp32 = keep_fp32 if fp16_keep else (),
+            dequantized = _widened.get,
+            keep_key = keep_key,
+        )
+        + _stored_scale_bytes
+    )
+    budget.activate()
     sources: list = []  # (layer, codes, scale, block extras or None) kept for a runtime
     dequantized = 0
     for layer in scan.layers.values():
@@ -1157,10 +1277,12 @@ def load_comfy_quant_transformer(
             continue
         wanted_dtype = keep_dtype(key) if keep_dtype is not None else None
         if wanted_dtype is not None:
+            charge_cast(value, wanted_dtype)
             state[key] = value.to(wanted_dtype)
             continue
         if fp16_keep or value.dtype == dtype:
             continue
+        charge_cast(value, dtype)
         state[key] = value.to(dtype)
     from accelerate import init_empty_weights
 
@@ -1225,14 +1347,15 @@ def load_comfy_quant_transformer(
                 out[name] = _BlockWeight(fmt, blocks)
                 continue
             parts = [sources[i][1][r : r + n] for i, r, n in segments]
-            # one segment (a split or renamed layer) is a row slice of a contiguous tensor: no copy
+            scale_parts = [
+                sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
+                for i, r, n in segments
+            ]
+            # one segment (a split or renamed layer) is a row slice of a contiguous tensor: no copy; a
+            # reorder (a stock converter swapping gate / proj halves) is a full copy of the kept codes
+            charge_host_ram((_nbytes(parts) if len(parts) > 1 else 0) + _nbytes(scale_parts))
             codes = parts[0] if len(parts) == 1 else torch.cat(parts)
-            scale = torch.cat(
-                [
-                    sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
-                    for i, r, n in segments
-                ]
-            )
+            scale = torch.cat(scale_parts)
             if name in wanted and tuple(wanted[name].shape) != tuple(codes.shape):
                 raise ValueError(
                     f"{name}: rebuilt as {tuple(codes.shape)}, the model expects {tuple(wanted[name].shape)}"
@@ -1253,12 +1376,18 @@ def load_comfy_quant_transformer(
         try:
             # Narrow tags first (full width is slow on a large DiT); anything unproven reruns at full width.
             converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
+        except HostRamShortfallError:
+            raise  # a refusal, not an unproven tag: the full-width retry would only allocate more
         except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
+            # Full-width float64 tags are views, but a converter that joins or splits rows materializes them
+            # (8 bytes per weight element) before any checked helper runs: check that before retrying.
+            charge_host_ram(8 * sum(int(codes.numel()) for _layer, codes, *_rest in sources))
             converted = _convert_tagged(None)
     del state
     if fp16_keep:
         for key, value in list(converted.items()):
             if torch.is_tensor(value) and value.is_floating_point():
+                charge_cast(value, _dtype_for(key))
                 converted[key] = value.to(_dtype_for(key))
 
     min_features = DEFAULT_MIN_LINEAR_FEATURES if min_features is None else int(min_features)
@@ -1377,6 +1506,9 @@ def load_comfy_quant_transformer(
         for fqn, (codes, scale) in stored.items():
             parent_name, _, leaf = fqn.rpartition(".")
             parent = model.get_submodule(parent_name) if parent_name else model
+            charge_host_ram(
+                4 * int(codes.shape[0])
+            )  # the fp32 row scale; the codes stay as read (a view)
             layer = cls(getattr(parent, leaf).to(dtype), TQ_FP8, codes = codes, scale = scale)
             setattr(parent, leaf, layer)
             converted[fqn + ".weight_q"] = layer.weight_q
