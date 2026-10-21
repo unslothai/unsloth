@@ -881,7 +881,9 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     recorded, pinned = _recorded_install_flavor()
     if recorded == "cpu" and not pinned:
         # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
-        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair. A stated GPU index wins.
+        if _stated_torch_index_source():
+            return False
         from utils.tegra import tegra_before_cuda13
         return tegra_before_cuda13()
     return recorded == "cpu" and pinned

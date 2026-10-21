@@ -269,6 +269,22 @@ def test_an_automatic_cpu_record_counts_as_chosen_only_on_a_jetson(monkeypatch, 
 
 
 @pytest.mark.parametrize(
+    "var, value",
+    [("UNSLOTH_TORCH_INDEX_FAMILY", "cu126"), ("UNSLOTH_TORCH_INDEX_URL", "https://example.test/whl/cu126")],
+)
+def test_a_stated_gpu_index_beats_the_jetson_cpu_record(monkeypatch, var, value):
+    # An explicit GPU pin wins over the automatic cpu history: the CPU build is reported as before.
+    from utils import tegra as tegra_mod
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setenv(var, value)
+    monkeypatch.setattr(hw, "_recorded_install_flavor", lambda: ("cpu", False))
+    monkeypatch.setattr(tegra_mod, "tegra_before_cuda13", lambda: True)
+    assert hw._expected_cpu_flavor_was_chosen() is False
+
+
+@pytest.mark.parametrize(
     "release, compatible, expected",
     [
         ("# R36 (release), REVISION: 4.3\n", b"nvidia,tegra234\0", True),  # JetPack 6 Orin
