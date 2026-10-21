@@ -3013,6 +3013,9 @@ class _MLXPromptCacheHistory:
             return None
         return cache, list(tokens[prefix:])
 
+    def release_oversized(self):
+        self._oversized = None
+
     def fetch(self, model, key, tokens):
         held = self._take_oversized(key, tokens)
         if held is not None:
@@ -3952,6 +3955,10 @@ class _TextBatchSession:
     def _retire(self, row, *, cancelled):
         self._rows.pop(row.handle, None)
         self._by_uid.pop(row.uid, None)
+        history = self.backend._prompt_cache_history
+        if self._rows and history is not None:
+            # Held next to a row still decoding, it would raise peak memory over the merge base's.
+            history.release_oversized()
         stream = row.plan.stream
         yield from ((row.handle, snap) for snap in stream.settle())
         yield from ((row.handle, snap) for snap in stream.drain(cancelled = cancelled))
