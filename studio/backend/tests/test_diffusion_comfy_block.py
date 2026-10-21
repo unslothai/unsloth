@@ -683,7 +683,7 @@ def test_kept_nvfp4_codes_are_charged_for_their_nibble_swapped_copy(block_file, 
     except ImportError:
         pass  # no flashinfer here: the checks ran while decoding, before any runtime Linear is built
     packed = tensors["blocks.0.out.weight"]
-    assert packed.numel() * packed.element_size() in seen
+    assert any(n >= packed.numel() * packed.element_size() for n in seen), seen
 
 
 def test_a_runtime_linear_checks_its_tiled_scale_buffer(block_file, monkeypatch):
@@ -939,4 +939,53 @@ def test_int8_fp8_dequant_is_checked_for_its_float32_peak(monkeypatch, kind):
     thread.join()
     growth = peak[0] - start
     assert out.shape == (rows, cols) and out.dtype == torch.bfloat16
+    assert seen and max(seen) >= 0.9 * growth, (seen, growth)
+
+
+def test_a_load_under_the_floor_is_checked_once_its_allocations_reach_it(block_file, monkeypatch):
+    """File and estimate both under the floor (the estimate assumed the mxfp8 runtime keeps every layer),
+    but the runtime filter rejects them all and they are dequantized: once those allocations reach the
+    floor the check must run."""
+    import os
+
+    conv = _tight_host(monkeypatch, headroom_mib = 0)
+    path, _tensors, _expected = block_file("mxfp8")
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", os.path.getsize(path) // (1 << 20) + 1)
+    with pytest.raises(conv.HostRamShortfallError, match = "needs at least"):
+        _load(path, dtype = torch.bfloat16, mxfp8_backend = "kept", min_features = 1 << 20)
+
+
+def test_swap_nibbles_is_bit_identical_and_checked_for_its_peak(monkeypatch):
+    import threading
+    import time
+
+    import core.inference.diffusion_single_file_converters as conv
+
+    gen = torch.Generator().manual_seed(4)
+    small = torch.randint(0, 256, (37, 19), dtype = torch.uint8, generator = gen)
+    for chunk_bytes in (1, 64, 1 << 30):
+        monkeypatch.setattr(cb, "_DEQUANT_CHUNK_BYTES", chunk_bytes, raising = False)
+        assert torch.equal(cb.swap_nibbles(small), ((small << 4) | (small >> 4)).to(torch.uint8))
+    monkeypatch.undo()
+    if _rss_anon_bytes() is None:
+        pytest.skip("needs /proc/self/status RssAnon")
+    packed = torch.randint(0, 256, (8192, 8192), dtype = torch.uint8, generator = gen)
+    seen = []
+    monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
+    peak, stop = [0], [False]
+
+    def sample():
+        while not stop[0]:
+            peak[0] = max(peak[0], _rss_anon_now())
+            time.sleep(0.0005)
+
+    _rss_anon_bytes()
+    start = _rss_anon_now()
+    thread = threading.Thread(target = sample, daemon = True)
+    thread.start()
+    out = cb.swap_nibbles(packed)
+    stop[0] = True
+    thread.join()
+    growth = peak[0] - start
+    assert out.shape == packed.shape
     assert seen and max(seen) >= 0.9 * growth, (seen, growth)

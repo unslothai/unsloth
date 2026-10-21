@@ -380,8 +380,12 @@ def converted_host_bytes(
     *,
     keep_fp32: Any = (),
     dequantized: Any = None,
+    keep_key: Any = None,
 ) -> int:
     """Anonymous host RAM bytes loading ``path`` at ``dtype`` writes, from the header alone.
+
+    ``keep_key(key)``: the loader's own key filter (a file bundling other components), so tensors it never
+    reads are not priced.
 
     Tensors already at the target dtype stay memory-mapped (droppable page cache) and cost 0.
     ``dequantized(key)``: None = not quantized, 0 / False = kept as codes, else the dense elements each
@@ -398,6 +402,8 @@ def converted_host_bytes(
     keep = tuple(keep_fp32 or ())
     total = 0
     for key, meta in header.items():
+        if keep_key is not None and not keep_key(key):
+            continue
         try:
             stored = str(meta.get("dtype"))
             numel = 1
@@ -446,6 +452,9 @@ class HostRamBudget:
         self.available_mib: Optional[int] = None
         self.reserve_mib = 0
         self.armed = False
+        self.requested = (
+            0  # only to arm a load that started under the floor; the check reads live memory
+        )
         if host_ram_check_disabled():
             return
         try:
@@ -492,8 +501,15 @@ class HostRamBudget:
 
     def charge(self, nbytes: int) -> None:
         """Refuse before allocating ``nbytes`` when they and the reserve exceed live available memory."""
-        if self.available_mib is None or not self.armed or nbytes <= 0:
+        if self.available_mib is None or nbytes <= 0:
             return
+        if not self.armed:
+            # A load small on disk and in its estimate can still write a lot (a runtime filter rejecting
+            # layers the estimate assumed kept): arm once the checked allocations reach the floor.
+            self.requested += int(nbytes)
+            if self.requested < HOST_RAM_CHECK_MIN_MIB * _MIB:
+                return
+            self.armed = True
         from .diffusion_small_host import host_ram_mib
 
         try:

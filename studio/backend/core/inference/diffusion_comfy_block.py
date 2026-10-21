@@ -78,8 +78,19 @@ def swap_nibbles(packed: Any) -> Any:
     from .diffusion_single_file_converters import charge_host_ram
 
     u = packed.view(torch.uint8) if packed.dtype != torch.uint8 else packed
-    charge_host_ram(u.numel())  # a new packed copy, the source stays memory-mapped
-    return ((u << 4) | (u >> 4)).to(torch.uint8)
+    # One output (the source stays memory-mapped), filled in bounded row chunks: the expression form held
+    # the left shift, the right shift and their OR at once, three packed copies.
+    flat = u.reshape(u.shape[0], -1) if u.dim() > 1 else u.reshape(-1, 1)
+    row = max(1, int(flat.shape[1]))
+    chunk = max(1, min(int(flat.shape[0]), _DEQUANT_CHUNK_BYTES // row))
+    charge_host_ram(u.numel() + chunk * row)
+    out = torch.empty_like(flat)
+    for start in range(0, int(flat.shape[0]), chunk):
+        part = flat[start : start + chunk]
+        dst = out[start : start + chunk]
+        torch.bitwise_left_shift(part, 4, out = dst)
+        dst |= part >> 4
+    return out.reshape(u.shape)
 
 
 def decode_layer(fmt: str, weight: Any, weight_scale: Any) -> tuple[Any, Any]:

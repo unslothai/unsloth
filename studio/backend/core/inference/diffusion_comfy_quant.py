@@ -1106,6 +1106,7 @@ def load_comfy_quant_transformer(
             dtype,
             keep_fp32 = keep_fp32 if fp16_keep else (),
             dequantized = _widened.get,
+            keep_key = keep_key,
         )
     )
     budget.activate()

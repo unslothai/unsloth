@@ -868,3 +868,48 @@ def test_a_host_ram_refusal_in_the_narrow_pass_is_not_retried_at_full_width(
             int8_backend = "native",
         )
     assert len(calls) == 1  # refused in the narrow pass, never converted again at full width
+
+
+def test_the_up_front_estimate_skips_tensors_the_key_filter_never_reads(tmp_path, monkeypatch):
+    """A bundled checkpoint (LTX-2.3 / LTX-2.5) is read through ``keep_key``: only the DiT. Its VAE stored in
+    float32 must not be priced as widened to the compute dtype and refuse a DiT load that fits."""
+    import core.inference.diffusion_single_file_converters as conv
+    import core.inference.diffusion_small_host as small_host
+
+    torch.manual_seed(3)
+    dense = _H3Like()
+    tensors = {"head.weight": dense.head.weight.detach(), "head.bias": dense.head.bias.detach()}
+    for name, w in (("attn.to_q", dense.attn.to_q.weight), ("ff.proj", dense.ff.proj.weight)):
+        q, s = _int8(w.detach())
+        tensors[f"{name}.weight"], tensors[f"{name}.weight_scale"] = q, s
+        tensors[f"{name}.comfy_quant"] = _conf(format = "int8_tensorwise")
+    tensors["attn.to_k.weight"] = dense.attn.to_k.weight.detach()
+    tensors["attn.to_v.weight"] = dense.attn.to_v.weight.detach()
+    tensors["vae.decoder.weight"] = torch.zeros(2048, 2048)  # 16 MiB fp32, 8 MiB widened to bf16
+    path = _save(tmp_path / "bundled.safetensors", tensors)
+    monkeypatch.setattr(
+        cq,
+        "_mapping",
+        lambda cls: (
+            lambda checkpoint = None, **_kw: checkpoint,
+            types.SimpleNamespace(
+                _should_convert_state_dict_to_diffusers = lambda a, b: False,
+                _get_mapping_function_kwargs = lambda fn, **kw: {},
+            ),
+        ),
+    )
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    total = 1 << 20
+    monkeypatch.setattr(
+        small_host, "host_ram_mib", lambda: (total, small_host.host_reserve_mib(total) + 4)
+    )
+    model = cq.load_comfy_quant_transformer(
+        _H3Like,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+        int8_backend = None,
+        keep_key = lambda key: not key.startswith("vae."),
+    )
+    assert model.attn.to_q.weight.dtype == torch.bfloat16
