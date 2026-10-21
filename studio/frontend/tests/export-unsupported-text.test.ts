@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -32,4 +32,15 @@ test("other reasons keep the backend's message even when Repair is available", (
 
 test("no backend message falls back to the generic accelerator text", () => {
   assert.match(exportUnsupportedText(null, null, false), /^Export requires a supported accelerator/);
+});
+
+test("a successful repair drops the cached hardware verdict before the backend restarts", async () => {
+  // The hook cannot be rendered here, so the order is read off the source as in
+  // repair-single-flight.test.ts.
+  const hook = await readSrcAsync("hooks/use-tauri-backend.ts");
+  const body = hook.slice(hook.indexOf("async function runRepair("), hook.indexOf("async function startServer()"));
+  const native = body.indexOf('invoke("start_managed_repair"');
+  const invalidate = body.indexOf("invalidateHardwareInfo();");
+  const start = body.indexOf("await startManagedServer();");
+  assert.ok(native > 0 && invalidate > native && start > invalidate);
 });
