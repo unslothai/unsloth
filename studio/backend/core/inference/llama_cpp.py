@@ -6781,14 +6781,17 @@ def _draft_card_share_unknown(
     source_env = os.environ if env is None else env
     if source_env.get("LLAMA_ARG_SPEC_DRAFT_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES:
         return True
-    count = source_env.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE")
+    # Each positive count APPENDS draft CPU overrides (a later 0 does not remove them), so
+    # any positive one anywhere is a placement, not just the last.
+    if _is_positive_int(source_env.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE")):
+        return True
     args = [str(a) for a in extra_args] if extra_args else []
     for i, raw in enumerate(args):
         name, eq, inline = raw.partition("=")
-        if name in _DRAFT_N_CPU_MOE_FLAGS:
-            count = inline if eq else (args[i + 1] if i + 1 < len(args) else None)
-    if _is_positive_int(count):
-        return True
+        if name in _DRAFT_N_CPU_MOE_FLAGS and _is_positive_int(
+            inline if eq else (args[i + 1] if i + 1 < len(args) else None)
+        ):
+            return True
     return _draft_is_split_across_host(extra_args, env, n_draft_layers = n_draft_layers)
 
 

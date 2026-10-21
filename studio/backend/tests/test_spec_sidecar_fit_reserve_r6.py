@@ -428,3 +428,10 @@ def test_native_measurement_is_read_through_the_installer_wrapper(tmp_path):
     wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
     wrapper.chmod(0o755)
     assert _lc._fit_measures_borrowed_drafts(str(wrapper))
+
+
+def test_a_positive_draft_cpu_moe_count_is_not_undone_by_a_later_zero():
+    """llama.cpp appends the draft CPU overrides per positive count; a later 0 adds none
+    but removes none either."""
+    assert _lc._draft_card_share_unknown(["--spec-draft-n-cpu-moe", "8", "-ncmoed", "0"], {})
+    assert not _lc._draft_card_share_unknown(["-ncmoed", "0"], {})
