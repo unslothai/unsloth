@@ -4316,6 +4316,55 @@ def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(
     assert mm._lazy_checkpoint("/x", {"model_type": "llama"}) == "mlx-lm"
 
 
+def test_the_offload_probe_never_evaluates_a_converted_checkpoint(tmp_path, monkeypatch):
+    if not _HAVE_MLX:
+        pytest.skip("needs MLX to build and load a checkpoint")
+    checkpoint = pytest.importorskip("mlx_vlm.quantization.checkpoint")
+    if not hasattr(checkpoint, "transform_quantized_weights"):
+        pytest.skip("this mlx-vlm converts no ModelOpt checkpoint")
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from mlx_lm.models import qwen3
+
+    config = {
+        "model_type": "qwen3",
+        "hidden_size": 128,
+        "intermediate_size": 256,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 64,
+        "vocab_size": 64,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 1e6,
+        "max_position_embeddings": 512,
+        "tie_word_embeddings": True,
+        # mlx-vlm decodes ModelOpt's lone-scale FP8 linears to dense weights, evaluating them.
+        "quantization_config": {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION"},
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    weights = {}
+    for name, value in tree_flatten(qwen3.Model(qwen3.ModelArgs.from_dict(config)).parameters()):
+        if name.endswith("proj.weight"):
+            weights[name] = mx.zeros(value.shape, dtype = mx.uint8)
+            weights[name[: -len("weight")] + "weight_scale"] = mx.array(0.5)
+        else:
+            weights[name] = value
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+    evaluated = []
+    real_eval = mx.eval
+    monkeypatch.setattr(mx, "eval", lambda *a, **k: evaluated.append(1) or real_eval(*a, **k))
+    with mm._on_route(True):
+        mm._lazy_checkpoint(str(tmp_path), json.loads((tmp_path / "config.json").read_text()))
+    assert evaluated == []
+
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"lm_head.weight": "../outside.safetensors"}})
+    )
+    with pytest.raises(ValueError, match = "outside the snapshot"):
+        mm._lazy_checkpoint(str(tmp_path), config)
+
+
 try:
     import importlib
 

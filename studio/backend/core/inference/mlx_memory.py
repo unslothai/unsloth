@@ -1142,13 +1142,16 @@ def _lazy_checkpoint(model_dir: str, config: dict):
     # mlx-vlm imports a checkpoint's own module unasked; pricing must never run it.
     if config.get("model_file"):
         raise ValueError("this checkpoint carries its own model module")
-    # Not strict: unsloth_zoo loads past known unused tensors (Gemma 4's).
-    if _builds_on_mlx_vlm(config):
-        from mlx_vlm.utils import load_model
-        return load_model(Path(model_dir), lazy = True, strict = False)
-    from mlx_lm.utils import load_model
-
-    return load_model(Path(model_dir), lazy = True, strict = False)[0]
+    # Refuses an index naming a shard outside the snapshot, as every other read here does.
+    _indexed_shards(model_dir)
+    # Not strict: unsloth_zoo loads past known unused tensors (Gemma 4's). Weightless: mlx-vlm's
+    # checkpoint conversion (ModelOpt FP8) evaluates its dense weights even on a lazy load.
+    with weightless_forward():
+        if _builds_on_mlx_vlm(config):
+            from mlx_vlm.utils import load_model
+            return load_model(Path(model_dir), lazy = True, strict = False)
+        from mlx_lm.utils import load_model
+        return load_model(Path(model_dir), lazy = True, strict = False)[0]
 
 
 @functools.lru_cache(maxsize = 4)
