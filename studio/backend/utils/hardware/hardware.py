@@ -1563,6 +1563,12 @@ def _detect_hardware_locked() -> DeviceType:
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
         force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
+        # cuInit off the GIL first: torch's probe below holds it for the whole driver init.
+        try:
+            from utils.cuda_driver_prime import prime_cuda_driver
+            prime_cuda_driver(torch)
+        except Exception:  # noqa: BLE001 - never fatal (also loaded standalone, without the package)
+            pass
         try:
             cuda_unavailable = not torch.cuda.is_available()
         except Exception:
