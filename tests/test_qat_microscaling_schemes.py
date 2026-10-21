@@ -132,3 +132,81 @@ def test_peft_save_merges_plain_linears(monkeypatch, tmp_path):
     # The 16-bit merge sees plain modules, as for the quantizer-child schemes.
     assert not any(isinstance(m, _mx_linear()) for m in model.modules())
     assert seen["torchao_config"] is not None
+
+
+def _probe_ok(monkeypatch, bias_grad = True, calls = None):
+    def forward_runs(base_config, device, dtype = torch.bfloat16):
+        if calls is not None:
+            calls.append((str(device), dtype))
+        return True
+
+    monkeypatch.setattr(qat_utils, "_qat_forward_runs", forward_runs)
+    monkeypatch.setattr(qat_utils, "_qat_bias_grad_supported", lambda *a: bias_grad, raising = False)
+
+
+def test_nvfp4_refuses_float16_layers(monkeypatch):
+    # torchao's non-Triton NVFP4 quantizer asserts bfloat16 / float32 at the first forward.
+    _probe_ok(monkeypatch)
+    model = _tiny_qwen3().to(torch.float16)
+    with pytest.raises(RuntimeError, match = "bfloat16 or float32"):
+        _prepare_model_for_qat(model, "nvfp4")
+    assert not any(isinstance(m, _nvfp4_linear()) for m in model.modules())
+
+
+def test_nvfp4_skips_peft_modules_to_save_head(monkeypatch):
+    from peft import LoraConfig, get_peft_model
+
+    _probe_ok(monkeypatch)
+    model = get_peft_model(
+        _tiny_qwen3(),
+        LoraConfig(r = 16, target_modules = ["q_proj"], modules_to_save = ["lm_head"]),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    head = model.base_model.model.lm_head
+    assert not any(isinstance(m, _nvfp4_linear()) for m in head.modules())
+    assert isinstance(model.base_model.model.model.layers[0].mlp.down_proj, _nvfp4_linear())
+
+
+def test_nvfp4_probes_every_layer_placement(monkeypatch):
+    calls = []
+    _probe_ok(monkeypatch, calls = calls)
+    model = _tiny_qwen3()
+    model.model.layers[0].mlp.down_proj.to(torch.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _prepare_model_for_qat(model, "nvfp4")
+    assert sorted(calls, key = str) == sorted(
+        [("cpu", torch.bfloat16), ("cpu", torch.float32)], key = str
+    )
+
+
+@pytest.mark.parametrize("bias_grad", [False, True])
+def test_nvfp4_biased_layers_need_bias_grad(monkeypatch, bias_grad):
+    _probe_ok(monkeypatch, bias_grad = bias_grad)
+    model = _tiny_qwen3()
+    layer = model.model.layers[0]
+    layer.self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    assert isinstance(layer.self_attn.q_proj, _nvfp4_linear()) is bias_grad
+    assert isinstance(layer.mlp.down_proj, _nvfp4_linear())
+    assert any("no bias" in str(w.message) for w in caught) is not bias_grad
+
+
+def test_nvfp4_accepts_rank4_inputs(monkeypatch):
+    linear_cls = _nvfp4_linear()
+
+    def fake_2d_forward(self, x):
+        assert x.dim() == 2, x.shape  # torchao's addmm dispatch takes 2D operands only
+        return x @ self.weight.t()
+
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(linear_cls, "forward", fake_2d_forward)
+    for shape in [(6, 64), (2, 3, 64), (2, 3, 5, 64)]:
+        out = model(torch.randn(*shape, dtype = torch.bfloat16))
+        assert out.shape == (*shape[:-1], 128)
