@@ -125,6 +125,15 @@ def make_selection(
         pass
     if not others:
         return None
+    if _rocm_torch():
+        # ROCm's capability is the gfx target (gfx942 (9, 4)), which does not order; match the primary's load dtype
+        # instead (arch-pinned attention kernels are gated per card in diffusion_layer_split_plan).
+        others = tuple(o for o in others if _rocm_dtype_parity(int(primary), o))
+        return (
+            MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
+            if others
+            else None
+        )
     # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
     # from Ada): a card of a lower compute capability may not run them, so it takes no component.
     need = _capability(int(primary))
@@ -171,6 +180,35 @@ def _capability(ordinal: int) -> Optional[tuple[int, int]]:
         return int(major), int(minor)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _rocm_torch() -> bool:
+    """A ROCm torch build (AMD SDK / Radeon wheels included, which leave ``torch.version.hip`` unset)."""
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+        return is_rocm_torch(torch)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rocm_bf16(ordinal: int) -> Optional[bool]:
+    try:
+        import torch
+
+        from .rocm_bf16 import rocm_bf16_supported
+        return bool(rocm_bf16_supported(torch, int(ordinal)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rocm_dtype_parity(primary: int, ordinal: int) -> bool:
+    """A ROCm card runs the dtype the load resolves for the primary: bf16 when the primary has native bf16 (RDNA1/2,
+    GCN and Vega emulate it), anything otherwise. An unreadable card is kept, like an unknown CUDA capability."""
+    if _rocm_bf16(primary) is not True:
+        return True
+    return _rocm_bf16(ordinal) is not False
 
 
 @contextlib.contextmanager
@@ -383,12 +421,14 @@ def choose_component_assignment(
     overhead_mib: int,
     primary_limit_mib: int,
     secondary_limit_mib: int,
+    move_denoisers: bool = True,
 ) -> Optional[tuple[str, ...]]:
     """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
     -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
     component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
     Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
-    companions. The first denoiser always stays on the primary."""
+    companions. The first denoiser always stays on the primary; ``move_denoisers=False`` (the secondary cannot run the
+    denoiser's attention backend) keeps every denoiser there."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
     if not dits:
         return None
@@ -405,7 +445,7 @@ def choose_component_assignment(
         candidates.append(tuple(companions))
     if encoders and len(encoders) < len(companions):
         candidates.append(tuple(encoders))
-    if seconds:
+    if seconds and move_denoisers:
         candidates.append(tuple(seconds))
         if companions:
             candidates.append(tuple(seconds + companions))
@@ -420,6 +460,32 @@ def choose_component_assignment(
         if need(on_primary) <= primary_limit_mib and need(list(moved)) <= secondary_limit_mib:
             return moved
     return None
+
+
+def _secondary_runs_denoiser(
+    pipe: Any, selection: MultiGpuSelection, secondary: int, sizes: dict, logger: Any
+) -> bool:
+    """Whether a second denoiser may move wholesale to ``secondary``. ROCm admits mixed gfx targets (make_selection),
+    so the card must pass the layer split's per-card attention gate: an arch-pinned kernel (flash_attn, AITER) only on
+    the primary's gfx target, native SDPA not math-only beside a fused primary. CUDA's capability order already holds."""
+    if not _rocm_torch() or sum(1 for _m, role in sizes.values() if role == "dit") < 2:
+        return True
+    try:
+        from .diffusion_layer_split_plan import _rocm_backend_cards
+        kept, _backend = _rocm_backend_cards(
+            pipe, int(selection.primary), (int(secondary),), logger
+        )
+    except Exception:  # noqa: BLE001 - unverifiable: keep the denoisers on the primary
+        return False
+    if int(secondary) in kept:
+        return True
+    if logger is not None:
+        logger.info(
+            "diffusion.multigpu: second denoiser stays on cuda:%s (attention backend not verified on cuda:%s)",
+            selection.primary,
+            secondary,
+        )
+    return False
 
 
 def refine_plan_for_multigpu(
@@ -451,6 +517,9 @@ def refine_plan_for_multigpu(
         return plan
     memory = plan.device_memory
     if memory.is_unified or getattr(memory, "device", None) != "cuda":
+        if memory.is_unified:
+            from .diffusion_layer_split_plan import note_unified_primary
+            note_unified_primary(pipe, selection, logger)
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
     if budget is None:
@@ -503,6 +572,7 @@ def refine_plan_for_multigpu(
         overhead_mib = overhead,
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
+        move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger),
     )
     if moved is None:
         return layer_split_or_plan()
