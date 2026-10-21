@@ -16303,6 +16303,8 @@ class LlamaCppBackend:
     #     one are still tagged unsupported (that family ships no ``gguf_repo``).
     #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": unsupported on the image side for
     #     the same reason, so "use the Images page" was always an empty promise.
+    #   * "krea2": Krea 2 is pipeline-only in Studio (no GGUF / sd.cpp mapping). Without this
+    #     a custom-folder GGUF was offered as chat RUN and failed in llama.cpp (#14474).
     # Kept inside _DIFFUSION_ARCHES so the pre-launch refusal still fires, it just names no
     # destination. Mirrors the whole set: a partial mirror leaves the same dead end.
     _UNRUNNABLE_MEDIA_ARCHES = frozenset(
@@ -16314,6 +16316,7 @@ class LlamaCppBackend:
             "sdxl",
             "aura",
             "hidream",
+            "krea2",
         )
     )
     _DIFFUSION_ARCHES = (

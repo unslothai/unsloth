@@ -22,7 +22,10 @@ from utils.paths.path_utils import file_contents_available_locally
 
 _DIFFUSION_GGUF_ARCHS = frozenset({"flux", "flux2", "qwen_image", "qwenimage", "z_image", "zimage"})
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
-    {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
+    # krea2: Krea 2 is diffusers pipeline-only (no GGUF / sd.cpp mapping). Without this entry a
+    # custom ``general.architecture = krea2`` GGUF falls through to text-generation, Hub offers
+    # RUN as chat, and llama.cpp dies with "does not recognise ... ('krea2')" (#14474).
+    {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid", "krea2"}
 )
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
