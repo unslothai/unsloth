@@ -270,7 +270,7 @@ function parseErrorText(status: number, body: unknown): string {
  *  which commits the status early: a later failure can only arrive as `_deferred_error`. */
 function deferredError(
   body: unknown,
-): { status: number; message: string } | null {
+): { status: number; message: string; detail: unknown } | null {
   const deferred =
     body && typeof body === "object"
       ? (
@@ -285,7 +285,19 @@ function deferredError(
   return {
     status,
     message: parseErrorText(status, { detail: deferred.detail }),
+    detail: deferred.detail,
   };
+}
+
+/** Keeps the server's `detail`, so a structured audio.cpp failure (`{code, message}`) reaches the caller. */
+export class LoadModelError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+  }
 }
 
 /** `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
@@ -296,11 +308,12 @@ async function parseJsonOrThrow<T>(
 ): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(parseErrorText(response.status, body));
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    throw new LoadModelError(parseErrorText(response.status, body), response.status, detail);
   }
   const deferred = deferredError(body);
   if (deferred) {
-    throw new Error(deferred.message);
+    throw new LoadModelError(deferred.message, deferred.status, deferred.detail);
   }
   if (paddedLabel !== undefined) {
     assertCompletedPaddedBody(body, paddedLabel);
@@ -380,6 +393,8 @@ export async function loadModel(
   options?: {
     signal?: AbortSignal;
     onRequestStart?: () => void;
+    /** Awaited once the load is going out, after the token prompt and abort check. */
+    beforeRequest?: () => Promise<void>;
     /** What is taking the slot. Chat ignores its own loads when reconciling, so an Audio load
      *  announced as "chat" left chat naming a model it had evicted. */
     runtime?: ModelRuntime;
@@ -393,6 +408,7 @@ export async function loadModel(
     });
   if (options?.signal?.aborted)
     throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  await options?.beforeRequest?.();
   options?.onRequestStart?.();
   // Announced after the token prompt, so a cancelled load never shows a row. The indicator
   // otherwise had nothing to show until its next 5s poll.
@@ -456,11 +472,11 @@ export async function countChatInputTokens(payload: {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: serializedPayload,
   });
   return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
@@ -1366,11 +1382,12 @@ export async function getChatAgentsMd(
 
 export async function saveChatProject(
   project: ProjectRecord,
+  nativePathLease?: string,
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(project),
+    body: JSON.stringify({ ...project, ...(nativePathLease ? { nativePathLease } : {}) }),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();

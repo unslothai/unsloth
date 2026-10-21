@@ -18,6 +18,7 @@ import triton.language as tl
 import torch
 from typing import Tuple
 from .utils import calculate_settings, long_indexing, torch_gpu_device
+from . import triton_launch
 from .triton_launch import launch
 
 
@@ -482,7 +483,13 @@ def _settings(n_cols):
 
 def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
     # Eager CUDA skips Triton's arg binding (triton_launch.py); traced / non-Triton keep kernel[grid].
-    if wrap is _eager_kernel and device.type == "cuda" and not torch.compiler.is_compiling():
+    # is_compiling first: Dynamo must not read (and guard on) the mutable _ENABLED.
+    if (
+        not torch.compiler.is_compiling()
+        and triton_launch._ENABLED
+        and wrap is _eager_kernel
+        and device.type == "cuda"
+    ):
         fn = kernel
         if isinstance(kernel, triton.runtime.autotuner.Heuristics):
             # What Heuristics.run does; these heuristics only read their own constexpr.

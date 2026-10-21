@@ -85,8 +85,12 @@ def collect_gpus(torch) -> dict:
         "hip": hip,
         "nccl": None,
         "gpus": [],
+        "accelerator": None,
     }
     if not torch.cuda.is_available():
+        # A CUDA build that sees no device stays a failure.
+        if not info["cuda"] and not hip:
+            info["accelerator"] = _non_cuda_accelerator(torch)
         return info
     try:
         nccl = torch.cuda.nccl.version()
@@ -117,6 +121,22 @@ def collect_gpus(torch) -> dict:
     return info
 
 
+def _non_cuda_accelerator(torch) -> Optional[str]:
+    for name, probe in (
+        (
+            "mps",
+            getattr(getattr(getattr(torch, "backends", None), "mps", None), "is_available", None),
+        ),
+        ("xpu", getattr(getattr(torch, "xpu", None), "is_available", None)),
+    ):
+        try:
+            if callable(probe) and probe():
+                return name
+        except Exception:
+            pass
+    return None
+
+
 def driver_version(pynvml = None) -> Optional[str]:
     if pynvml is not None:
         try:
@@ -143,6 +163,18 @@ def driver_version(pynvml = None) -> Optional[str]:
         return None
 
 
+def _nvml_int(pynvml, name, default):
+    """An NVML enum constant as an int. nvidia-ml-py defines NVML_P2P_CAPS_INDEX_READ = 0, (a
+    1-tuple, stray comma), which ctypes refuses, so every P2P read query would fail."""
+    value = getattr(pynvml, name, default)
+    if isinstance(value, (tuple, list)):
+        value = value[0] if len(value) == 1 else default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def nvml_topology(pynvml, gpus: List[dict]):
     """({(a, b): {"level": "PHB", "nvlink": bool, "p2p_read": bool}} keyed by torch index, error).
 
@@ -154,9 +186,9 @@ def nvml_topology(pynvml, gpus: List[dict]):
         return None, "nvidia-ml-py is not installed"
     if len(gpus) < 2 or any(g["pci"] is None and not g.get("uuid") for g in gpus):
         return None, "torch reports neither PCI bus ids nor device UUIDs"
-    read_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
-    nvlink_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
-    status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
+    read_idx = _nvml_int(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
+    nvlink_idx = _nvml_int(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
+    status_ok = _nvml_int(pynvml, "NVML_P2P_STATUS_OK", 0)
 
     def query(fn, *args):
         try:
@@ -391,6 +423,9 @@ def verdict(
     """(healthy, hints). Pure, so every branch is testable without GPUs."""
     hints = []
     gpus = info["gpus"]
+    if not gpus and info.get("accelerator"):
+        name = "Metal (MPS)" if info["accelerator"] == "mps" else "Intel XPU"
+        return True, [f"{name} detected: multi-GPU CUDA checks skipped."]
     if not gpus:
         return False, [
             "No GPU is visible to torch. Check `nvidia-smi`, CUDA_VISIBLE_DEVICES, and "
@@ -475,10 +510,22 @@ def _load_pynvml():
 
 
 def doctor(
+    ctx: typer.Context,
     gpus: bool = typer.Option(
         True,
         "--gpus/--no-gpus",
         help = "Check GPUs, interconnect and a multi-GPU all_reduce (the default check).",
+    ),
+    mcp: bool = typer.Option(
+        False,
+        "--mcp",
+        help = "Check the Unsloth Studio MCP server, the API key and agent timeouts. "
+        "Skips the GPU checks unless --gpus is also given.",
+    ),
+    env_var: str = typer.Option(
+        "UNSLOTH_API_KEY",
+        "--env-var",
+        help = "With --mcp: the environment variable that holds the Unsloth Studio API key.",
     ),
     timeout: float = typer.Option(
         60.0,
@@ -487,9 +534,27 @@ def doctor(
     ),
 ):
     """Preflight checks for this machine. Exit status 1 means a problem was found."""
-    if not gpus:
-        typer.echo("Nothing to check.")
-        raise typer.Exit()
+    # Plain --mcp skips the GPU checks; an explicit --gpus keeps them.
+    # By name: newer typer ships its own copy of click's ParameterSource.
+    explicit = getattr(ctx.get_parameter_source("gpus"), "name", "") != "DEFAULT"
+    run_gpus = gpus if explicit else not mcp
+    code = 0
+    if mcp:
+        from unsloth_cli.commands.mcp import mcp_doctor
+        code = mcp_doctor(env_var)
+    if not run_gpus:
+        if not mcp:
+            typer.echo("Nothing to check.")
+        raise typer.Exit(code)
+    if mcp:
+        typer.echo("")
+    try:
+        _gpu_checks(timeout)
+    except typer.Exit as e:
+        raise typer.Exit(max(e.exit_code, code))
+
+
+def _gpu_checks(timeout: float):
     try:
         import torch
     except ImportError:

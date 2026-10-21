@@ -257,11 +257,14 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 
 
 def _variant_matches(relative_path: str, needle: str) -> bool:
-    from hub.utils.gguf import gguf_variant_key
+    from hub.utils.gguf import gguf_variant_family, gguf_variant_key
 
     # The variant's own key first: in a repo holding several checkpoints at one quant
     # the bare label names every one of them, so it cannot pick between them.
-    if gguf_variant_key(relative_path).lower() == needle:
+    if gguf_variant_key(relative_path).lower() == needle or relative_path.lower() == needle:
+        return True
+    # custom folders key a second same-quant build by its file family (#13926)
+    if gguf_variant_family(relative_path).lower() == needle:
         return True
     quant = _extract_quant_label(relative_path).lower()
     if quant == needle:

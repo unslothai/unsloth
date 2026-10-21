@@ -114,13 +114,17 @@ def test_layernorm_only_weight_trainable():
     _close(dw, _exact(layer, inputs, grad)[2], torch.bfloat16)
 
 
-def test_layernorm_compiled_matches_eager_bytes():
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_layernorm_compiled_matches_eager_bytes(dtype):
     from unsloth.kernels.layernorm import fast_layernorm
 
+    # Inductor raises SkipFrame for bf16 graphs without native bf16 (T4, sm_75), so fullgraph fails.
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported(including_emulation = False):
+        pytest.skip("Inductor does not compile bf16 without native bf16 support")
     torch.manual_seed(6)
-    inputs = torch.randn(3000, 1000, device = "cuda", dtype = torch.bfloat16)
-    grad = torch.randn(3000, 1000, device = "cuda", dtype = torch.bfloat16)
-    layer = _layer(1000, torch.bfloat16)
+    inputs = torch.randn(3000, 1000, device = "cuda", dtype = dtype)
+    grad = torch.randn(3000, 1000, device = "cuda", dtype = dtype)
+    layer = _layer(1000, dtype)
     eager = _fast(layer, inputs, grad)
     layer.zero_grad(set_to_none = True)
     compiled = torch.compile(lambda x: fast_layernorm(layer, x), fullgraph = True)

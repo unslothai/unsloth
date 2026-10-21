@@ -50,6 +50,11 @@ export const zhCN = {
     removeFromMessage: "从消息中移除",
   },
   browser: {
+    drafts: {
+      title: "卸载含有已输入文本的页面？",
+      description: "为保持聊天响应流畅，最多仅保留三个含有已输入文本的隐藏页面继续运行。继续将卸载 {pages}，其中未保存的文本可能丢失。取消将返回上一个标签页。",
+      confirm: "卸载并继续",
+    },
     agentSettings: {
       title: "浏览器操作",
       enable: "允许模型使用浏览器",
@@ -1603,9 +1608,9 @@ export const zhCN = {
         autoDescription: "每条回复完成后立即朗读",
         engineLabel: "TTS 引擎",
         engineSystemDescription: "设备内置语音",
-        engineStudioDescription: "使用在音频中加载的语音模型",
+        engineStudioDescription: "使用在音频 › 文字转语音中加载的模型朗读",
         engineSystem: "系统语音",
-        engineStudio: "加载 TTS 模型",
+        engineStudio: "Unsloth 模型",
         engineCustom: "自定义端点",
         engineCustomDescription:
           "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",
@@ -1615,7 +1620,11 @@ export const zhCN = {
         customModelLabel: "模型",
         customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
-        modelDescription: "在音频中加载语音模型。它会替换聊天模型。",
+        modelDescription: "尚未加载。请在音频 › 文字转语音中加载一个。",
+        modelLoaded: "已加载 {model}",
+        keepBothLabel: "保持聊天模型加载",
+        keepBothDescription: "“保持多个模型加载”已设为“关闭”，因此加载语音模型会卸载聊天模型。",
+        keepBothAction: "两者都保持加载",
         openAudioAction: "打开音频",
         voiceLabel: "音色",
         voiceDescription: "此设备上效果最好的音色",
@@ -1685,6 +1694,23 @@ export const zhCN = {
         loadError: "加载辅助 LLM 设置失败。",
         saveError: "保存辅助 LLM 设置失败。",
       },
+      developerMode: {
+        sectionTitle: "开发者模式",
+        videoCpu: "允许在 CPU 上生成视频（实验性）",
+        videoCpuDescription: "允许在没有受支持 GPU 的主机上运行视频页面。默认关闭；不受支持且速度非常慢。",
+        notApplicable: "在此机器上无效：视频要么已在其 GPU 上运行，要么被 CPU 无法绕过的问题阻止。",
+        forcedOnByEnv: "已由后端环境中的 UNSLOTH_VIDEO_ALLOW_CPU 开启。",
+        forcedOffByEnv: "已由后端环境中的 UNSLOTH_VIDEO_ALLOW_CPU 关闭。",
+        confirmTitle: "启用 CPU 视频生成？",
+        confirmWarning: "CPU 视频生成可能耗时数小时，占用大量 RAM，并可能导致系统卡死。继续操作风险自负。",
+        ramBelowMinimum: "此机器有 {host} GB RAM，低于最小视频模型在 CPU 上所需的 {min} GB。加载很可能失败或导致系统卡死。",
+        ramOk: "此机器有 {host} GB RAM。最小的视频模型在 CPU 上约需 {min} GB；更大的模型需要多得多。",
+        ramUnknown: "最小的视频模型在 CPU 上约需 {min} GB RAM；更大的模型需要多得多。",
+        performanceEstimate: "每个去噪步骤预计需要数分钟：使用 Wan2.1 1.3B 以 3 步生成 5 帧 832x480 片段，在 16 个 CPU 线程上约耗时 4 分钟，而默认设置下的完整长度片段可能需要数小时。",
+        confirmAction: "仍然启用",
+        loadError: "加载开发者模式设置失败。",
+        saveError: "保存开发者模式设置失败。",
+      },
       modelAutoSwitch: {
         sectionTitle: "模型自动切换（OpenAI API）",
         enable: "按请求切换模型",
@@ -1711,9 +1737,10 @@ export const zhCN = {
         autoDownload: "下载缺失的模型",
         autoDownloadDescription:
           "获取 API 请求中指定但尚未下载的 GGUF。开启后，任何持有 API 密钥的人都可以占用你的磁盘空间和带宽。",
-        keepKv: "空闲卸载后保留聊天上下文",
+        keepKv: "卸载后保留聊天上下文",
         keepKvDescription:
-          "在空闲卸载前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
+          "在空闲卸载前，或在图像或视频模型占用 GPU 前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
+        keepKvKeywords: "kv 缓存 上下文 切换 恢复 图像 视频",
         apiOnly: "仅卸载由 API 加载的模型",
         apiOnlyDescription:
           "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
@@ -1796,6 +1823,11 @@ export const zhCN = {
         closeToTrayDescription:
           "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
         closeToTraySaveError: "无法更新关闭到系统托盘设置。",
+
+        menuBarIcon: "在菜单栏中显示",
+        menuBarIconDescription:
+          "在 macOS 菜单栏中显示 Unsloth 图标。隐藏后，Unsloth 会保留在程序坞（Dock）中，包括在登录时启动的情况。",
+        menuBarIconSaveError: "无法更新菜单栏图标设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
@@ -1891,8 +1923,8 @@ export const zhCN = {
         downloadFailed: "无法开始下载",
         downloadConflict: "请在 Hub 中继续此下载",
         downloadBusy: "下载已在进行中",
-        pin: "固定到 RAG 菜单",
-        unpin: "从 RAG 菜单取消固定",
+        pin: "固定到 Files 菜单",
+        unpin: "从 Files 菜单取消固定",
         menuChip: "模型",
         moreModels: "更多模型",
         pinMoreModels: "固定更多模型",
@@ -2000,6 +2032,8 @@ export const zhCN = {
         subtitle:
           "下面的内容全部根据你自己的历史记录统计。不会收集任何数据，也不会发送给 Unsloth。",
         retry: "重试",
+        exportCsv: "导出 CSV",
+        exportError: "无法导出 token 用量",
         privacyNote:
           "统计数据由本地 Unsloth 的聊天、API 使用和训练历史计算得出。统计功能绝不会保存 API 提示词、回复或密钥，也不会向 Unsloth 或任何第三方发送数据。",
         emptyChats: "暂无聊天或 API 使用记录。请开始一段对话，或发起经过认证的本地 API 请求。",
@@ -2323,8 +2357,20 @@ export const zhCN = {
         noRamReserveDescription: "减少模型权重占用的内存。",
         noRamReserveHint: "当模型完全卸载到 GPU 时，在受支持的 Windows 版本上跳过内存映射加载，使其页面不再常驻；否则保持内存映射加载。必要的 CPU 缓冲区仍可能占用内存。移除 --no-mmap 和 --mlock。",
         multiModel: "保持多个模型加载",
-        multiModelDescription: "加载模型时，其他模型仍保留在内存中。",
-        multiModelHint: "每个已加载的模型都会响应指定它的请求。在多 GPU 机器上，如果有空间，新模型会放到没有其他模型使用的 GPU 上。如果无法与其他模型同时容纳，会先卸载未在使用的模型，然后替换当前模型。训练会先卸载额外的模型，再卸载当前模型。",
+        multiModelOff: "关闭",
+        multiModelFit: "能容纳时",
+        multiModelAlways: "总是",
+        multiModelDescription: "加载聊天、语音、图像或视频模型时，会卸载其他模型。",
+        multiModelDescriptionFit:
+          "加载模型时，如果能容纳就保留其他模型。无法容纳时，先卸载未在使用的模型，再卸载当前模型。",
+        multiModelDescriptionAlways:
+          "加载模型时绝不卸载其他模型。无法容纳的模型不会被加载。空闲自动卸载和训练仍会释放内存。",
+        multiModelHint: "适用于聊天、语音、图像和视频模型。每个已加载的聊天模型都会响应指定它的请求。在多 GPU 机器上，Unsloth 会尽量把新模型放到没有其他模型使用的 GPU 上。“能容纳时”会预留约 1 GB 空间。“能容纳时”和“总是”都不会卸载其他 GPU 上的模型。",
+        allowOversizedLoad: "允许加载超大模型",
+        allowOversizedLoadDescription: "即使内存检查认为放不下，也加载图像和视频模型。",
+        allowOversizedLoadHint: "适用于 CPU 和 GPU 共用一块内存的设备（Apple Silicon、集成显卡）。当模型权重的估算值大于为操作系统预留空间后剩余的内存时，Studio 会拒绝加载。开启后仍会尝试加载。估算可能偏高也可能偏低：超大加载可能失败、耗尽内存、导致电脑大量换页或无响应，或使 Studio 停止运行。默认关闭。",
+        mediaIdleUnloadDescription:
+          "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
         mlockNotApplicable: "已完全位于 GPU 上：系统内存中没有需要锁定的内容。空闲自动卸载保持关闭。",
         memlockCapped: "本系统将锁定内存限制为 {limit}。更大的模型无法被完全锁定；请使用 ulimit -l 提高上限。",
@@ -2334,6 +2380,8 @@ export const zhCN = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 内存 显存 常驻 固定 锁定 保持 已加载 卸载 空闲 mmap no-mmap load-mode 交换 分页",
+        multiModelKeywords: "多个 模型 同时 一起 切换 容纳 卸载 驱逐 vram gpu 图像 视频 聊天 总是 空闲 语音 朗读 tts",
+        mediaIdleUnloadKeywords: "图像 视频 扩散 空闲 卸载 ttl 超时 秒 释放 vram gpu 内存 显存",
       },
       storage: {
         title: "存储",
@@ -2632,6 +2680,13 @@ export const zhCN = {
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "关闭标签页后继续运行",
+      keepRunningWhenTabClosedDescription:
+        "关闭标签页后，回复、网页搜索和 Deep Research 会继续在服务器上运行。关闭此项则改为停止它们。",
+      keepRunningWhenTabClosedHint:
+        "在任意设备上重新打开聊天即可查看继续运行的任务。关闭此项时，任务会在最后一个标签页关闭后约一分钟内停止，因此刷新页面不会停止它。仅适用于更改后开始的任务。临时聊天、API 模型的回复或针对附件的回复，以及使用浏览器面板的回合，始终随标签页一起停止。",
+      keepRunningWhenTabClosedKeywords:
+        "后台 标签页 关闭 离开 继续运行 停止 取消 网页搜索 设备 手机 background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "首个 token 等待上限",
       firstTokenDescription: "本地 GGUF 模型在提示词处理没有进展时，最多可等待首个 token 多久。适用于所有账户的新等待。选择“无限制”会一直等待，直到你手动停止。",
       firstTokenDefault: "20 分钟（默认）",
@@ -3074,14 +3129,14 @@ export const zhCN = {
       },
       mcp: {
         title: "智能体访问 (MCP)",
-        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth。智能体使用本页的访问 token 登录。",
+        description: "允许 Claude Code、Codex 等编程智能体通过 MCP 使用 Unsloth。智能体使用本页的 Unsloth API 密钥登录。",
         enable: "允许智能体连接",
-        enableDescription: "为携带 Unsloth 访问 token 的请求提供 /mcp/。",
+        enableDescription: "为携带 Unsloth API 密钥的请求提供 /mcp/。",
         lockedByEnv: "由 {name} 设置。",
         loadError: "无法加载智能体访问设置。",
         saveError: "无法保存智能体访问设置。",
         agent: "智能体",
-        exportKeyHint: "启动智能体前，请将 {name} 设置为本页的访问 token。",
+        exportKeyHint: "启动智能体前，请将 {name} 设置为本页的 Unsloth API 密钥。",
         configFileHint: "将此内容添加到 {path}。",
         keywords: "mcp model context protocol agents claude codex tools 智能体 代理 工具 模型上下文协议",
       },
@@ -3099,6 +3154,7 @@ export const zhCN = {
       audioCppVersion: "audio.cpp 版本",
       hardware: "硬件",
       gpu: "GPU",
+      gpuIntegrated: "集成",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -4312,6 +4368,7 @@ export const zhCN = {
       moreActions: "更多操作",
       chatAboutThis: "就此聊天",
       chatWithModel: "与此模型聊天",
+      editImage: "编辑图片",
       addToFavorites: "加入收藏",
       regenerateTitle: "重新生成标题",
       removeFromFavorites: "取消收藏",
@@ -4507,6 +4564,7 @@ export const zhCN = {
       skippedOverLimit: "另有 {count} 个超出 {limit} 个文件的上限。",
       chatFilesWaiting: "{count} 个文件将在加载可读取它们的模型后附加。",
       openFilesFailed: "无法打开这些文件",
+      editImageFailed: "无法打开图片进行编辑",
       speechModel: "{name} 是语音模型",
       speechModelDescription: "请在音频页面的模型菜单中选择它。",
       noMediaLink: "服务器未返回用于播放此文件的链接。",

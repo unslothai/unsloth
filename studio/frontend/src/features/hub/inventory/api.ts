@@ -273,6 +273,13 @@ export async function listLocalModels(): Promise<LocalModelListResponse> {
   return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
+export async function listUnslothModels(): Promise<LocalModelListResponse> {
+  const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
+    authFetch("/api/hub/unsloth-models", { signal }),
+  );
+  return parseJsonOrThrow<LocalModelListResponse>(response);
+}
+
 export async function fetchCachedGgufInventory(
   hfToken?: string | null,
 ): Promise<CachedInventoryResponse<CachedGgufRepo>> {

@@ -294,6 +294,14 @@ def test_python_strix_keeps_its_index_when_the_rocm_version_is_unreadable():
     assert _STRIX_INDEX in calls, calls
 
 
+@pytest.mark.parametrize("devices", [("gfx1151", "gfx1100"), ("gfx1151", "gfx942")])
+def test_python_strix_keeps_its_index_when_rocm_has_no_generic_tag(devices):
+    # ROCm 5.7 maps to no generic tag: deferring would install nothing and leave CPU torch.
+    assert stack_mod._generic_pytorch_rocm_tag((5, 7)) is None
+    calls = routing._run_install(gfx_devices = devices, rocm_version = (5, 7))
+    assert _STRIX_INDEX in calls, calls
+
+
 @pytest.mark.parametrize("devices", [("gfx1151", "gfx1100"), ("gfx1151", "gfx1201")])
 def test_python_strix_keeps_its_index_under_an_hsa_override(devices):
     # The override spoofs every agent, the dGPU included, so dGPU wheels would never load.
@@ -311,6 +319,33 @@ def test_python_inferred_install_uses_the_deferred_discrete_card():
         rocm_gpu_visible = False,
     )
     assert "repo.amd.com/rocm/whl/gfx120X-all" in calls and _STRIX_INDEX not in calls, calls
+
+
+@pytest.mark.parametrize(
+    "devices,inferred,expected",
+    [
+        (("gfx942", "gfx1151"), "gfx1151", _STRIX_INDEX),
+        (("gfx1103", "gfx942"), "gfx1103", "repo.amd.com/rocm/whl/gfx110X-all"),
+        (("gfx942", "gfx1103"), "gfx1103", "repo.amd.com/rocm/whl/gfx110X-all"),
+    ],
+)
+def test_python_versionless_inferred_install_keeps_an_installable_arch(devices, inferred, expected):
+    # No ROCm version and no per-arch index for the KFD pick: switching to it installed nothing.
+    calls = routing._run_install(
+        gfx_devices = devices, inferred = inferred, rocm_version = None, rocm_gpu_visible = False
+    )
+    assert expected in calls, calls
+
+
+def test_python_versionless_gfx950_ahead_of_an_apu_keeps_the_generic_fallback():
+    # gfx950 has no per-arch index, but a known minimum generic tag the versionless fallback picks.
+    calls = routing._run_install(
+        gfx_devices = ("gfx950", "gfx1151"),
+        inferred = "gfx1151",
+        rocm_version = None,
+        rocm_gpu_visible = False,
+    )
+    assert _STRIX_INDEX not in calls and "download.pytorch.org/whl/rocm" in calls, calls
 
 
 @_POSIX

@@ -161,17 +161,24 @@ def _gemv_nf4_words_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
-_TRITON_37 = tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 7)
+_TRITON_VERSION = tuple(int(x) for x in triton.__version__.split(".")[:2])
+_TRITON_37 = _TRITON_VERSION >= (3, 7)
 # None picks per GPU and Triton version below; "bytes" or "words" forces one kernel (tests, sweeps).
 _FORCE_KERNEL = None
+# Oldest Triton whose eager GEMV was measured faster than bitsandbytes' on HIP (gfx1151, Triton 3.6).
+_HIP_EAGER_MIN_TRITON = (3, 6)
 
 
 def triton_gemv_eager(device = None):
     """Whether eager (uncompiled) decode should take the Triton GEMV. On CUDA it does: with the
     direct launch (triton_launch.py) it beat bitsandbytes' GEMV in batch-1 decode on T4, L4, A100,
-    RTX PRO 6000 and B200. HIP launches through Triton's own path, which only paid off from
-    Triton 3.7."""
-    return torch.version.hip is None or _TRITON_37
+    RTX PRO 6000 and B200. HIP launches through Triton's own path; on gfx1151 with Triton 3.6 the
+    words kernel still ran Llama 8B decode shapes 1.5x to 3.4x faster than bitsandbytes' GEMV.
+    UNSLOTH_TRITON_GEMV_EAGER=0 keeps bitsandbytes' GEMV, =1 takes the Triton GEMV on any GPU."""
+    env = os.environ.get("UNSLOTH_TRITON_GEMV_EAGER")
+    if env in ("0", "1"):
+        return env == "1"
+    return torch.version.hip is None or _TRITON_VERSION >= _HIP_EAGER_MIN_TRITON
 
 
 def _word_aligned(W):
@@ -205,6 +212,11 @@ def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, for
     block_k = max(blocksize, min(1024, triton.next_power_of_2(K)))
     block_n, num_warps = (2, 4) if N <= 2048 else (4, 2)
     return False, (-(-N // block_n),), block_n, block_k, num_warps
+
+
+def _lut_mode(block_k):
+    # 2 = register tl.gather, 0 = L1 table load; a 256 wide tile is too small to pay for the gather.
+    return 2 if _HAS_TL_GATHER and block_k >= 512 else 0
 
 
 @functools.lru_cache(maxsize = None)
@@ -264,7 +276,7 @@ def _launch(
     if not use_words:
         # Even K skips K masks; register gather replaces LUT loads: 16-23% faster (A100/L4/T4, Triton 3.7).
         constexprs["EVEN_K"] = K % block_k == 0
-        constexprs["LUT_MODE"] = 2 if _HAS_TL_GATHER else 0
+        constexprs["LUT_MODE"] = _lut_mode(block_k)
     if kernel is _gemv_nf4_kernel or kernel is _gemv_nf4_words_kernel:
         entry = launch(
             kernel,
