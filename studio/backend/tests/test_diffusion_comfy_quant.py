@@ -1230,3 +1230,53 @@ def test_fnuz_krea2_file_is_not_planned_at_the_stored_size(monkeypatch, tmp_path
         )
         assert backend._fp8_storage_picks[p] is picked, dtype
         assert seen[-1] == (1000 if picked else 2000)
+
+
+def test_a_plan_priced_with_the_offload_only_backend_keeps_it_when_resident(monkeypatch, tmp_path):
+    """Torchao int8 missing, the native offload twin usable: resident prices widened (2000), offloaded at one byte
+    (1000), so the re-plan fits resident. The loader must still probe offloaded, not dequantize past the plan."""
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        return 1000 if offload else 2000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 1500, comfy_mib = comfy_mib
+    )
+    assert seen == [2000, 1000] and final.resident is True
+    assert backend._comfy_offload_for(final, path) is True
+    # Not priced offloaded: a resident plan probes resident.
+    backend._comfy_priced_offload[path] = False
+    assert backend._comfy_offload_for(final, path) is False
+
+
+def test_a_plan_repriced_larger_under_offload_does_not_force_the_offload_probe(
+    monkeypatch, tmp_path
+):
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        return 2000 if offload else 1000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 500, comfy_mib = comfy_mib
+    )
+    assert backend._comfy_priced_offload[path] is False
+    assert backend._comfy_offload_for(types.SimpleNamespace(resident = True), path) is False

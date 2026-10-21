@@ -8744,7 +8744,7 @@ class DiffusionBackend:
                                 _install_gguf_dim_restore(logger)
                             if comfy_scan is not None:
                                 # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
-                                _comfy_offload = not plan_keeps_transformer_resident(plan)
+                                _comfy_offload = self._comfy_offload_for(plan, single_file_path)
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -10080,6 +10080,11 @@ class DiffusionBackend:
             return bool(scan is not None and not scan.problems and scan.counts().get("nvfp4"))
         except Exception:  # noqa: BLE001 - an install hint only: the load decides on its own
             return False
+
+    def _comfy_offload_for(self, plan: Any, single_file_path: Any) -> bool:
+        """Probe the ComfyUI backends as offloaded: the plan offloads, or it was priced with the offloaded backends."""
+        priced = getattr(self, "_comfy_priced_offload", None) or {}
+        return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
 
     def _fp8_storage_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_storage_wanted`` pick for this file, re-checked against device / LoRA / env."""
@@ -11482,6 +11487,8 @@ class DiffusionBackend:
             )
 
         plan = _plan(model_dense_mib)
+        if kind == "single_file" and single_file_path:
+            self.__dict__.setdefault("_comfy_priced_offload", {})[str(single_file_path)] = False
         if (
             single_file_resident_at is not None
             and model_dense_mib is not None
@@ -11492,6 +11499,11 @@ class DiffusionBackend:
             # price what that load builds, widened and fp8-stored, before choosing storage.
             offloaded = single_file_resident_at(False, True)
             if offloaded is not None and offloaded != transformer_resident:
+                # Smaller (the int8 / fp8 twin only offload runs): the load keeps those backends even if the new plan
+                # fits resident, else it dequantizes past the size it was planned at.
+                self.__dict__.setdefault("_comfy_priced_offload", {})[str(single_file_path)] = int(
+                    offloaded
+                ) < int(transformer_resident)
                 model_dense_mib = model_dense_mib - int(transformer_resident) + int(offloaded)
                 transformer_resident = offloaded
                 single_file_fp8_stored_mib = single_file_stored_at(offloaded, True)
