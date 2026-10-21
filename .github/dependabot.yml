@@ -2,7 +2,12 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" only scans .github/workflows. The composite actions under
+    # .github/actions pin the same actions (setup-node, cache) and must
+    # move in the same PR, or two SHAs of one action end up in the tree.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     cooldown:
@@ -14,6 +19,9 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        # One PR per action across both directories; tests/studio/
+        # test_actions_are_pinned_to_commits.py wants one SHA per action.
+        group-by: dependency-name
       actions-security:
         applies-to: security-updates
         patterns: ["*"]
