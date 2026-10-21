@@ -378,7 +378,6 @@ def test_api_system_memory_without_a_limit_is_unchanged(fake_cgroup, host, monke
     assert memory["percent_used"] == 20.0
 
 
-# Page cache accounting: reclaimable file LRU pages are not used memory, shmem / tmpfs always is.
 
 
 def _stat(directory: Path, **counters) -> None:
@@ -387,8 +386,7 @@ def _stat(directory: Path, **counters) -> None:
 
 @reader
 def test_v2_active_file_cache_is_reclaimable(fake_cgroup, host):
-    """Kaggle: model files read twice sit on the ACTIVE file list. Counting them as used dropped the headroom from
-    ~17 GiB to ~3 GiB across runs while nothing but reclaimable cache had grown."""
+    """Kaggle: twice-read model files sit on active_file; counting them as used shrank headroom 17 -> 3 GiB."""
     fake_cgroup.membership("0::/\n")
     _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 30 * GIB)
     _stat(
@@ -407,7 +405,7 @@ def test_v2_active_file_cache_is_reclaimable(fake_cgroup, host):
 
 @reader
 def test_v2_shmem_is_never_counted_as_free(fake_cgroup, host):
-    """tmpfs / shared memory is in ``file`` but on the anon LRU lists; it cannot be dropped, only swapped."""
+    """shmem/tmpfs is in ``file`` but on the anon LRU: not droppable."""
     fake_cgroup.membership("0::/\n")
     _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 28 * GIB)
     _stat(
@@ -444,7 +442,7 @@ def test_v2_mapped_dirty_and_writeback_active_pages_are_not_credited(fake_cgroup
 
 @reader
 def test_v2_never_below_the_inactive_only_reading(fake_cgroup, host):
-    """Over-subtraction clamps at zero, so the estimate never drops below the old usage - inactive_file one."""
+    """Over-subtraction clamps at zero."""
     fake_cgroup.membership("0::/\n")
     _v2(fake_cgroup.root, "/", limit = 32 * GIB, current = 30 * GIB)
     _stat(fake_cgroup.root, inactive_file = 2 * GIB, active_file = 3 * GIB, file_mapped = 9 * GIB)
@@ -479,7 +477,6 @@ def test_v1_hierarchical_active_file_is_reclaimable_and_shmem_is_not(fake_cgroup
     _write(d / "memory.usage_in_bytes", str(14 * GIB))
     _stat(
         d,
-        # Per-level counters must not be mixed into the hierarchical reading.
         inactive_file = 50 * GIB,
         active_file = 50 * GIB,
         total_cache = 9 * GIB,

@@ -38,8 +38,7 @@ def _integer(raw: Optional[str], *, limit: bool = False) -> Optional[int]:
     return value
 
 
-# memory.stat keys per hierarchy: (inactive file LRU, active file LRU, mapped, dirty, writeback). v1 hierarchical
-# ``total_*`` counters pair with ``*.usage_in_bytes``; the per-level ones are the fallback for kernels without them.
+# (inactive, active, mapped, dirty, writeback); v1 total_* pairs with usage_in_bytes, per-level is the fallback.
 _V2_FILE_KEYS = ("inactive_file", "active_file", "file_mapped", "file_dirty", "file_writeback")
 _V1_TOTAL_FILE_KEYS = (
     "total_inactive_file",
@@ -52,13 +51,9 @@ _V1_LOCAL_FILE_KEYS = ("inactive_file", "active_file", "mapped_file", "dirty", "
 
 
 def _reclaimable_file_bytes(path: str, *, v1: bool) -> int:
-    """Page cache in a ``memory.stat`` the kernel can drop before the cgroup's limit binds, in bytes.
+    """Droppable page cache in bytes: inactive_file + (active_file - mapped - dirty - writeback, conservative).
 
-    All of ``inactive_file``, plus ``active_file`` less what is mapped, dirty or under writeback (over-subtracted, so
-    conservative: those counters can overlap each other and include tmpfs pages). The kernel ages active file pages
-    onto the inactive list under limit pressure, and MemAvailable counts both file LRU lists as available. shmem /
-    tmpfs is never counted: it sits on the anon LRU lists, so it is in neither ``*_file`` list (cgroup-v2.rst,
-    memory.stat). ``usage - inactive_file`` alone counted every twice-read model file as used."""
+    shmem/tmpfs is on the anon LRU, never counted. Not crediting active_file counted twice-read models as used."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:
@@ -101,8 +96,7 @@ def cgroup_memory_budgets(
     cgroup_root: Optional[str] = None, proc_self_cgroup: Optional[str] = None
 ) -> list[tuple[int, int]]:
     """``(remaining, limit)`` bytes per enforcing limit on this cgroup and its ancestors (an ancestor
-    can bind through sibling usage). Usage excludes reclaimable page cache (``_reclaimable_file_bytes``); empty = no
-    finite limit."""
+    can bind through sibling usage), less reclaimable page cache; empty = no finite limit."""
     cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
     try:
@@ -138,7 +132,6 @@ def cgroup_memory_budgets(
             continue
         used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
         if used is not None:
-            # Hierarchical v1 usage pairs with the total_* file counters.
             used = max(
                 0, used - _reclaimable_file_bytes(os.path.join(directory, "memory.stat"), v1 = True)
             )
@@ -147,8 +140,7 @@ def cgroup_memory_budgets(
 
 
 def _v1_reclaimable_usage(directory: str, raw: Optional[int]) -> Optional[int]:
-    """A v1 ``*.usage_in_bytes`` reading less the level's reclaimable file cache (``_reclaimable_file_bytes``, which
-    the kernel reclaims before it charges against the limit), as ``cgroup_memory_budgets`` reads RAM usage."""
+    """A v1 ``*.usage_in_bytes`` reading less reclaimable file cache, as ``cgroup_memory_budgets`` reads it."""
     if raw is None:
         return None
     reclaimable = _reclaimable_file_bytes(os.path.join(directory, "memory.stat"), v1 = True)
