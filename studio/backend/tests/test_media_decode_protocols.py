@@ -77,6 +77,22 @@ def test_a_saved_playlist_upload_does_not_read_a_host_file(module, host_wav, tmp
 @pytest.mark.parametrize(
     "module", [audio_inputs, audio_decode], ids = ["audio_inputs", "audio_decode"]
 )
+def test_a_saved_dash_manifest_upload_is_refused(module, host_wav, tmp_path):
+    from utils.media_playlist import PlaylistRefused
+
+    upload = tmp_path / "upload.m4a"
+    upload.write_bytes(
+        b'<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" '
+        b'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"><Period><AdaptationSet>'
+        b"<Representation><BaseURL>host.wav</BaseURL></Representation></AdaptationSet></Period></MPD>\n"
+    )
+    with pytest.raises(PlaylistRefused):
+        module._av_open(av, str(upload))
+
+
+@pytest.mark.parametrize(
+    "module", [audio_inputs, audio_decode], ids = ["audio_inputs", "audio_decode"]
+)
 def test_path_sources_may_open_files_only(module, tmp_path, monkeypatch):
     seen = []
     real_open = av.open
@@ -135,6 +151,10 @@ def test_chat_video_ffmpeg_and_ffprobe_get_a_file_only_whitelist(monkeypatch):
     [
         b"#EXTM3U\n#EXTINF:1,\n/etc/hostname\n",
         b"\xef\xbb\xbf  ffconcat version 1.0\nfile '/etc/hostname'\n",
+        # DASH is probed by "<MPD" anywhere in the buffer, after an XML prolog here.
+        b'<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" '
+        b'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"><Period><AdaptationSet>'
+        b"<Representation><BaseURL>host.wav</BaseURL></Representation></AdaptationSet></Period></MPD>\n",
     ],
 )
 def test_a_playlist_upload_is_refused_before_ffmpeg_sees_it(tmp_path, head):

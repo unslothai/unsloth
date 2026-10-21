@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Refuse uploads that FFmpeg would probe as a playlist (HLS, concat), which open the files they name."""
+"""Refuse uploads that FFmpeg would probe as a playlist (HLS, concat, DASH), which open the files they name."""
 
 from __future__ import annotations
 
@@ -36,7 +36,8 @@ def _head(source: Any) -> bytes:
 
 
 def refuse_playlist(source: Any) -> None:
-    """Raise ``PlaylistRefused`` when ``source`` starts like an HLS or concat playlist."""
+    """Raise ``PlaylistRefused`` when ``source`` looks like an HLS, concat or DASH playlist."""
     head = _head(source).lstrip(b"\xef\xbb\xbf \t\r\n")
-    if head.startswith(_PLAYLIST_MARKS):
+    # FFmpeg's DASH probe looks for "<MPD" anywhere in the probe buffer, not only at the start.
+    if head.startswith(_PLAYLIST_MARKS) or b"<MPD" in head:
         raise PlaylistRefused("Playlists are not accepted as media uploads.")
