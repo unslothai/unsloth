@@ -333,8 +333,11 @@ export const BUDGET = {
   // Picking a preset forgetting a model's remembered sampling (#14128) keeps its preset marks in the eager chat
   // runtime store, about 1,860 B raw / 440 B transfer: merged with main at acb31d909b the build measures
   // 6,876,062 B raw / 2,070,545 B transfer (Node 24, 97 chunks). Raised to that plus the same margin.
-  transferBytes: 2_070_734,
-  rawBytes: 6_876_222,
+  // Sharing a connection with every account adds the shared flags to the eager provider mapping: 180 B raw /
+  // 20 B transfer (6,862,624 -> 6,862,804 B raw, 2,066,394 -> 2,066,414 B transfer against 723a43b02, one
+  // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
+  transferBytes: 2_070_754,
+  rawBytes: 6_876_402,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
