@@ -739,7 +739,7 @@ def acquire_for(
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
-        if owner != DECISIONS and (register is not None or replacing):
+        if owner != DECISIONS and (register is not None or replacing) and policy == "off":
             _release_idle_decision_worker()
         if owner != DIFFUSION or register is not None or replacing:
             # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.

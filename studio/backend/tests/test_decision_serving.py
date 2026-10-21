@@ -695,6 +695,26 @@ def test_a_load_claimed_as_the_eviction_starts_keeps_the_idle_worker(
     assert laya_runtime._unloads == unloads
 
 
+@pytest.mark.parametrize("owner", ["chat", "diffusion"])
+@pytest.mark.parametrize("policy, ends", [("off", True), ("fit", False), ("always", False)])
+def test_only_off_ends_an_idle_worker_on_a_load(
+    home, client, clef, monkeypatch, owner, policy, ends
+):
+    from core.inference import gpu_arbiter
+
+    for name in ("_residents", "_media_needs", "_accounts"):
+        monkeypatch.setattr(gpu_arbiter, name, {})
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(owner, lambda: None, policy = policy)
+    assert clef.agents[0].closed is ends
+    assert (client.get("/api/settings/systemone").json()["loaded_model"] is None) is ends
+    if not ends:
+        assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
 def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
     from core.systemone import clef_runtime
 
