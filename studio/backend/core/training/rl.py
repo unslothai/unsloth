@@ -167,7 +167,27 @@ def _content_text(content: Any) -> str:
     return str(content)
 
 
+# ShareGPT speakers, as utils/datasets/format_conversion.py maps them for SFT.
+_SHAREGPT_ROLES = {
+    "human": "user",
+    "gpt": "assistant",
+    "observation": "tool",
+    "function_call": "assistant",
+}
+
+
 def _as_messages(value: Any, role: str) -> list[dict]:
+    if isinstance(value, dict) and ({"content", "role", "from", "value"} & value.keys()):
+        value = [value]  # one message per cell, as some preference sets store chosen/rejected
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(m, dict) and "from" in m and "value" in m for m in value)
+    ):
+        value = [
+            {"role": _SHAREGPT_ROLES.get(str(m["from"]), str(m["from"])), "content": m["value"]}
+            for m in value
+        ]
     if isinstance(value, list) and all(
         isinstance(m, dict) and ("content" in m or "role" in m) for m in value
     ):
@@ -223,7 +243,19 @@ def format_rl_dataset(
             )
 
     def convert(row: dict) -> dict:
-        prompt = _as_messages(row[roles["prompt"]], "user")
+        value = row[roles["prompt"]]
+        extra_input = row.get("input")
+        if (
+            roles["prompt"] == "instruction"
+            and "input" not in roles.values()
+            and (mapping or {}).get("input") != _IGNORE_ROLE
+            and isinstance(value, str)
+            and isinstance(extra_input, str)
+            and extra_input.strip()
+        ):
+            # Alpaca: the input column holds the instruction's material.
+            value = f"{value}\n\n{extra_input}"
+        prompt = _as_messages(value, "user")
         mapped = list(prompt)
         system = row.get(roles["system"]) if "system" in roles else None
         system = system or system_prompt
