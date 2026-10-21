@@ -7195,10 +7195,13 @@ def _widen_pin_ids_for_companion_devices(
     allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
     all_sites = _device_list_sites(cmd, env)
     # A later --no-mmproj-offload keeps the projector in host RAM whatever device it named,
-    # so every projector value is then only parsed, like an overridden one.
+    # so every projector value is then only parsed, like an overridden one. Its final value
+    # still numbers the cards a tensor override names, as with the projector on a card.
+    host_mmproj = None
     if any(s.group == "mmproj" for s in all_sites) and (
         _mmproj_placement(cmd, env if env is not None else {}) == "host"
     ):
+        host_mmproj = next((s for s in all_sites if s.group == "mmproj" and s.final), None)
         all_sites = [s._replace(final = False) if s.group == "mmproj" else s for s in all_sites]
     final_main = next((s for s in all_sites if s.group == "main" and s.final), None)
     # A main device past the pinned positions would resolve to a widened companion card.
@@ -7210,7 +7213,11 @@ def _widen_pin_ids_for_companion_devices(
     sites: list[tuple[_DeviceListSite, list[tuple[str, Optional[int]]]]] = []
     excluded_sites: list[_DeviceListSite] = []
     prefix_word = None
-    for site in all_sites:
+    # Companions widen the child mask first; a tensor-override buffer that was a valid
+    # position in that mask before tensor overrides were read keeps naming that card, so
+    # tensor sites resolve after every companion, before the allowed-card filter.
+    companion_mask = list(main_ids)
+    for site in sorted(all_sites, key = lambda s: s.group == "tensor"):
         if site is final_main or (site.at is None and site.env_name is None):
             continue
         tokens: list[tuple[str, Optional[int]]] = []
@@ -7221,11 +7228,12 @@ def _widen_pin_ids_for_companion_devices(
             if match:
                 prefix_word = prefix_word or match.group(1)
                 n = int(match.group(2))
-                if n < len(main_ids) and (site.group in ("main", "tensor") or not site.final):
+                if site.group == "tensor" and n < len(companion_mask):
+                    physical = companion_mask[n]
+                elif n < len(main_ids) and (site.group == "main" or not site.final):
                     # An overridden main value is parsed by the child like the final one,
-                    # a tensor-override buffer on the pin keeps the child numbering it had
-                    # before widening existed, and an overridden companion value only has
-                    # to parse, so a position on the pin resolves there as it is.
+                    # and an overridden companion value only has to parse, so a position
+                    # on the pin resolves there as it is.
                     physical = main_ids[n]
                 elif inherited_ids is None:
                     physical = n
@@ -7235,6 +7243,17 @@ def _widen_pin_ids_for_companion_devices(
                     excluded = excluded or physical is not None
                     physical = None
             tokens.append((token, physical))
+        if host_mmproj is not None and site == host_mmproj._replace(final = False):
+            for token in site.value.split(","):
+                match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+                n = int(match.group(2)) if match else None
+                if n is None or (inherited_ids is not None and n >= len(inherited_ids)):
+                    continue
+                numbered = n if inherited_ids is None else int(inherited_ids[n])
+                if allowed is not None and numbered not in main_ids and numbered not in allowed:
+                    continue
+                if numbered not in companion_mask:
+                    companion_mask.append(numbered)
         # An overridden value places nothing: one needing a card off the pin is
         # cleared, never widened onto (the extra card could be one the gate excludes).
         if not site.final and (
@@ -7244,26 +7263,12 @@ def _widen_pin_ids_for_companion_devices(
             excluded_sites.append(site)
         elif any(physical is not None for _, physical in tokens):
             sites.append((site, tokens))
+            if site.group != "tensor":
+                for _, physical in tokens:
+                    if physical is not None and physical not in companion_mask:
+                        companion_mask.append(physical)
     if not sites and not excluded_sites:
         return list(main_ids), ""
-    # Companions widen the child mask first; a tensor-override buffer that was a valid
-    # position in that mask before tensor overrides were read keeps naming that card.
-    companion_mask = list(main_ids)
-    for site, tokens in sites:
-        if site.group != "tensor":
-            for _, physical in tokens:
-                if physical is not None and physical not in companion_mask:
-                    companion_mask.append(physical)
-    for index, (site, tokens) in enumerate(sites):
-        if site.group != "tensor":
-            continue
-        corrected = []
-        for token, physical in tokens:
-            match = _GPU_DEVICE_TOKEN_RE.match(_site_device_name(site, token))
-            if match and int(match.group(2)) < len(companion_mask):
-                physical = companion_mask[int(match.group(2))]
-            corrected.append((token, physical))
-        sites[index] = (site, corrected)
     widened = list(main_ids)
     for _, tokens in sites:
         for _, physical in tokens:
