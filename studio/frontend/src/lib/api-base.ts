@@ -64,4 +64,9 @@ export function isStudioUrl(url: string): boolean {
   }
 }
 
+// Media tools link to the backend origin-relative; Desktop's webview origin is not the backend's.
+export function backendPathUrl(url: string): string {
+  return /^\/(v1|api)\//.test(url) ? apiUrl(url) : url
+}
+
 export { isTauri }

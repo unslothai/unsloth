@@ -317,8 +317,10 @@ export const BUDGET = {
   // The chat's Unsloth Studio tools preset and the "Not in chat" note add 233 B raw / 15 B transfer (measured
   // against the MCP tab build, one machine and build, Node 24, 97 chunks), in the eager chat chunk and English
   // catalog. Raised by that.
+  // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
+  // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
   transferBytes: 2_066_397,
-  rawBytes: 6_861_851,
+  rawBytes: 6_861_933,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
