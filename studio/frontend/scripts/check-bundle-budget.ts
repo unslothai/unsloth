@@ -320,13 +320,13 @@ export const BUDGET = {
   // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
   // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  // The browser panel's page history and scroll restore (#14283), merged with main
-  // at 664fe02d8 the build measures 6,863,867 B raw / 2,066,704 B transfer (Node 24, 97 chunks). Raised to that
-  // build plus the same 160 B raw / 189 B transfer margin.
   // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
   // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
-  transferBytes: 2_067_239,
-  rawBytes: 6_864_373,
+  // The API page redesign (#14455) landed without a raise: main at 97d38c788 measures 6,870,290 B raw / 2,068,951 B
+  // transfer (Node 24, 97 chunks). The browser panel's page history and scroll restore (#14283) add 349 B raw / 34 B
+  // transfer on top (6,870,639 B raw / 2,068,985 B transfer merged). Raised to that build plus the same margin.
+  transferBytes: 2_069_174,
+  rawBytes: 6_870_799,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
