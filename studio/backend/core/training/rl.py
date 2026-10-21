@@ -420,10 +420,15 @@ def _without_nulls(value: Any) -> Any:
     # Arrow gives every message every field another one has, as None; templates would render
     # those as real values. A message's own null content and its tool-call arguments stay.
     if isinstance(value, list):
-        return [
-            {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m
-            for m in value
-        ]
+        from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
+        # JSON-string arguments as mappings, as SFT renders them: templates `tojson` a string twice.
+        return _normalize_tool_call_arguments(
+            [
+                {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m
+                for m in value
+            ]
+        )
     return value
 
 
@@ -463,8 +468,8 @@ def render_preference_rows(dataset, tokenizer):
             }
             if not all(f.startswith(text) for f in full.values()):
                 # The generation header differs from the reply's (Qwen3's empty think block):
-                # the prompt is then what both rendered branches share.
-                text = os.path.commonprefix(list(full.values()))
+                # the prompt is then what both branches share, never past the prompt's own text.
+                text = os.path.commonprefix([text, *full.values()])
             return {"prompt": text, **{key: f[len(text) :] for key, f in full.items()}}
         return maybe_apply_chat_template(row, tokenizer, tools = tools, **kwargs)
 

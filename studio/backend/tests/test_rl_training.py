@@ -1369,3 +1369,69 @@ def test_tool_ended_preference_rows_never_repeat_the_prompt_in_a_completion():
     row = render_preference_rows(ds, _Tok())[0]
     assert "w?" not in row["chosen"] and "w?" not in row["rejected"]
     assert row["prompt"] + row["chosen"] == "<user>w?<tool>sunny<assistant>Sunny."
+
+
+def test_tool_ended_preference_prompt_never_takes_shared_reply_text():
+    pytest.importorskip("trl")
+    from core.training.rl import render_preference_rows
+
+    class _Tok:
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            text = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+            return text + ("<assistant><think></think>" if add_generation_prompt else "")
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "w?"}, {"role": "tool", "content": "sunny"}],
+                "chosen": [{"role": "assistant", "content": "It is sunny in Paris."}],
+                "rejected": [{"role": "assistant", "content": "It is sunny in London."}],
+            }
+        ]
+    )
+    row = render_preference_rows(ds, _Tok())[0]
+    assert row["prompt"] == "<user>w?<tool>sunny<assistant>"
+    assert row["chosen"] == "It is sunny in Paris."
+
+
+def test_preference_tool_call_arguments_render_as_mappings():
+    pytest.importorskip("trl")
+    from core.training.rl import render_preference_rows
+
+    seen = []
+
+    class _Tok:
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            for m in messages:
+                for call in m.get("tool_calls") or []:
+                    seen.append(call["function"]["arguments"])
+            return "".join(f"<{m['role']}>{m.get('content')}" for m in messages) + (
+                "<assistant>" if add_generation_prompt else ""
+            )
+
+    call = {"type": "function", "function": {"name": "weather", "arguments": '{"city": "Paris"}'}}
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "w?"}],
+                "chosen": [{"role": "assistant", "content": "", "tool_calls": [call]}],
+                "rejected": [{"role": "assistant", "content": "No idea."}],
+            }
+        ]
+    )
+    render_preference_rows(ds, _Tok())
+    assert seen and all(args == {"city": "Paris"} for args in seen)
