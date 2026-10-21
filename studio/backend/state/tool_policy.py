@@ -48,13 +48,20 @@ def require_tool_access(
 ) -> None:
     if permission_mode != "full" and not bypass_permissions and not disable_sandbox:
         return
-    from auth.policy import full_access_permitted
+    from auth.policy import api_full_access_refused, full_access_permitted
     from fastapi import HTTPException
 
     if not full_access_permitted():
         raise HTTPException(
             status_code = 400,
             detail = "Full access is only available to the installation owner.",
+        )
+    if api_full_access_refused():
+        raise HTTPException(
+            status_code = 400,
+            detail = "Full access (bypass_permissions, permission_mode 'full', disable_sandbox) is off for "
+            "API keys: tools run in the sandbox. Use permission_mode 'auto', 'ask' or 'off', or set "
+            "UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on the server to allow it.",
         )
 
 

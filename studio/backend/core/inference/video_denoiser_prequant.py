@@ -169,6 +169,10 @@ def denoiser_prequant_pipe_kwargs(
                     )
                 return {}
             seeded[component] = module
+            from .diffusion_prequant_cache import note_hit, path_in_cache
+
+            if getattr(source, "kind", None) == "path" and path_in_cache(source.location):
+                note_hit(source.location, logger)
             gc.collect()
         if logger is not None:
             logger.info(

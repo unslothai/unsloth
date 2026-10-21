@@ -52,8 +52,11 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
     apply_attention_backend,
+    attention_status_reason,
     install_hunyuan_attention_trim,
     sdpa_math_only,
+    begin_attention_run,
+    report_attention_run,
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
@@ -106,6 +109,7 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinal,
     resolve_selected_cuda_ordinals,
 )
+from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
@@ -135,6 +139,8 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_keeps_transformer_resident,
     raise_on_unified_memory_shortfall,
+    scoped_allow_oversized_load,
+    unified_memory_refusal_code,
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
@@ -273,6 +279,7 @@ from .video_minimax_h3_te import (
 )
 from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
+from .video_stream_encode import claim_stream, offer_stream, open_stream_encode
 from utils.hardware import clear_gpu_cache
 
 # Shared with the image backend so both pin every loader call to the same live cache root
@@ -428,6 +435,15 @@ def _video_comfy_key_map(fam: Any) -> Any:
         from .video_hv15_comfy import hv15_comfy_key_map
         return hv15_comfy_key_map
     return None
+
+
+def _h3_pdd_default_steps(fam: Any, pipe: Any, default_steps: int) -> int:
+    """ComfyUI's 8 steps for a loaded MiniMax-H3 PDD head bank whatever the file is called, else ``default_steps``."""
+    if getattr(fam, "name", None) != "minimax-h3" or pipe is None:
+        return default_steps
+    from .video_minimax_h3_pdd import H3_PDD_DEFAULT_STEPS, pipe_h3_pdd_heads
+
+    return H3_PDD_DEFAULT_STEPS if pipe_h3_pdd_heads(pipe) else default_steps
 
 
 def _h3_single_file_task(
@@ -1471,6 +1487,7 @@ class _VideoLoadingState:
     base_repo: str
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3 GGUF and component
     # repos). Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
@@ -1746,6 +1763,164 @@ def _h3_launch_flags(
         return h3_native_with_max_vram(render_flags, fit.max_vram)
     flags = tuple(fit.flags)
     return list(flags + tuple(device_backend_flags(inputs.device_name, list(flags))))
+
+
+def _h3_budgeted_launch_flags(
+    runtime: Any,
+    flags: "Sequence[str]",
+    *,
+    cap: Any = None,
+) -> list[str]:
+    """Swap ``--max-vram -1`` for a budget from free VRAM read now, never above ``cap``; anything unknown keeps -1."""
+    from .sd_cpp_args import (
+        explicit_vram_budget_enabled,
+        graph_cut_budget_gib,
+        max_vram_is_placeholder,
+        max_vram_value,
+        with_max_vram_budget,
+    )
+
+    out = list(flags)
+    # Never replace a UMA pinned-weight reserve (-17.05): it would hand sd.cpp the memory those weights take.
+    if not explicit_vram_budget_enabled() or not max_vram_is_placeholder(max_vram_value(out)):
+        return out
+    probe = getattr(runtime, "vram_free_probe", None)
+    try:
+        free = probe() if probe is not None else None
+    except Exception:  # noqa: BLE001 -- an unreadable card keeps sd.cpp's own reading
+        free = None
+    # Too little free now: "-1" is already below this reading, while an earlier retry cap could exceed it.
+    known_small = False
+    if isinstance(free, dict):
+        budget: Any = {}
+        for name, value in free.items():
+            gib = graph_cut_budget_gib(value)
+            limit = cap.get(name) if isinstance(cap, dict) else cap
+            if gib is None:
+                known_small = known_small or value is not None
+                budget = None
+                break
+            budget[name] = min(gib, float(limit)) if limit is not None else gib
+    else:
+        budget = graph_cut_budget_gib(free)
+        known_small = budget is None and free is not None
+        if budget is not None and cap is not None and not isinstance(cap, dict):
+            budget = min(budget, float(cap))
+    if not budget:
+        if cap is not None and not known_small:
+            out = with_max_vram_budget(out, cap)
+        logger.info(
+            "video.h3_native_vram_budget: free VRAM unreadable or too small (%s); %s",
+            free,
+            f"--max-vram {max_vram_value(out)}" if cap is not None else "keeping --max-vram -1",
+        )
+        return out
+    out = with_max_vram_budget(out, budget)
+    logger.info(
+        "video.h3_native_vram_budget: --max-vram %s (free %s at launch%s)",
+        max_vram_value(out),
+        free,
+        f", capped by retry budget {cap}" if cap is not None else "",
+    )
+    return out
+
+
+def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
+    """Stop for a retry unless a release is pending; under the slot lock so a racing release is not lost."""
+    restart = getattr(slot, "restart_for_retry", None)
+    if restart is not None:
+        return bool(restart(reason))
+    if getattr(slot, "release_pending", None) is not None:
+        return False
+    slot.stop(reason)
+    return True
+
+
+def _h3_retry_vram_cap(launched: "Optional[Sequence[str]]", error: str) -> Any:
+    from .sd_cpp_args import (
+        GRAPH_CUT_RETRY_SCALE,
+        explicit_max_vram_gib,
+        is_device_oom_text,
+        scaled_vram_budget,
+    )
+
+    if not launched or not is_device_oom_text(error):
+        return None
+    budget = explicit_max_vram_gib(launched)
+    if budget is None:
+        return None
+    return scaled_vram_budget(budget, GRAPH_CUT_RETRY_SCALE)
+
+
+def _h3_cuda_cc_fallback(
+    cuda_cc: "Optional[tuple[int, int]]",
+    *,
+    binary: Optional[str],
+    native_device: Optional[str],
+    listed_accelerator: Optional[bool],
+    accelerator_names: "Sequence[Any]",
+    device_name: Optional[str],
+) -> "Optional[tuple[int, int]]":
+    """torch's compute capability when ``--list-devices`` was unreadable (else sm80+ fell to exact kernels: 29.3 vs
+    ~5 s/step). Unpinned reads visible ordinal 0, sd.cpp's default, never the lowest across a mixed host."""
+    from .sd_cpp_backend import (
+        _accelerator_class_of,
+        sd_cpp_device_listing_known,
+        torch_cuda_compute_capability,
+    )
+
+    if cuda_cc is not None or native_device == "cpu" or listed_accelerator is None:
+        return cuda_cc
+    if sd_cpp_device_listing_known(binary):
+        return cuda_cc
+    # Only the install record says what the build targets; an unowned SD_CLI_PATH build may be Vulkan / CPU.
+    if not any(
+        isinstance(name, str) and _accelerator_class_of(name) == "cuda"
+        for name in accelerator_names
+    ):
+        return cuda_cc
+    ordinal: Optional[int] = 0
+    if device_name:
+        head = device_name.rstrip("0123456789")
+        if head.upper() != "CUDA" or not device_name[len(head) :]:
+            return cuda_cc
+        ordinal = int(device_name[len(head) :])
+    fallback = torch_cuda_compute_capability(ordinal)
+    logger.warning(
+        "video.h3_cuda_cc_fallback: sd-cli --list-devices was unreadable; compute capability %s from torch "
+        "(device %s)",
+        fallback,
+        device_name or "CUDA0, sd.cpp's default",
+    )
+    return fallback
+
+
+def _pairs(flags: "Sequence[str]") -> "list[tuple[str, str]]":
+    items = list(flags or ())
+    return [(items[i], items[i + 1]) for i in range(len(items) - 1) if items[i].startswith("--")]
+
+
+def _h3_one_shot_with_vram_retry(
+    runtime: Any,
+    run: "Callable[[list[str]], Any]",
+    render_flags: "Sequence[str]",
+    cancel: threading.Event,
+) -> Any:
+    launch = _h3_budgeted_launch_flags(runtime, render_flags)
+    try:
+        return run(launch)
+    except RuntimeError as exc:
+        if cancel.is_set():
+            raise
+        cap = _h3_retry_vram_cap(launch, str(exc))
+        if cap is None:
+            raise
+        logger.warning(
+            "video.h3_native_vram_retry: device out of memory under --max-vram %s (sd-cli); retrying once with %s",
+            dict(_pairs(launch)).get("--max-vram"),
+            cap,
+        )
+    return run(_h3_budgeted_launch_flags(runtime, render_flags, cap = cap))
 
 
 def _torch_pci_slot(ordinal: Optional[int]) -> Optional[str]:
@@ -2302,7 +2477,7 @@ def _h3_card_memory_bytes(
         from utils.hardware import get_visible_gpu_utilization, gpu_query
 
         with gpu_query.fresh_reads():
-            devices = get_visible_gpu_utilization().get("devices", [])
+            devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
         want = 0 if ordinal is None else int(ordinal)
         for entry in devices:
             if entry.get("visible_ordinal") != want:
@@ -2318,9 +2493,28 @@ def _h3_card_memory_bytes(
     return None, None
 
 
-def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
-    """Free VRAM of the H3 render card, or None (keeps the committed offload flags)."""
+def _h3_card_free_bytes(
+    device: Optional[str],
+    ordinal: Optional[int],
+    *,
+    single_card_only: bool = False,
+) -> Optional[int]:
+    """Free VRAM of the H3 render card, or None. ``single_card_only``: None on multi-card boxes, where one card's
+    scalar budget applied to every card would steer sd.cpp's own device pick."""
+    if single_card_only and _h3_visible_card_count(device) != 1:
+        return None
     return _h3_card_memory_bytes(device, ordinal)[0]
+
+
+def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
+    if device != "cuda":
+        return None
+    try:
+        from utils.hardware import get_visible_gpu_utilization, gpu_query
+        with gpu_query.fresh_reads():
+            return len(get_visible_gpu_utilization(no_context = True).get("devices", []))
+    except Exception:  # noqa: BLE001 -- unknown count reads as not single
+        return None
 
 
 def _h3_native_server_pressure(device: Optional[str], ordinal: Optional[int]) -> Optional[str]:
@@ -2574,6 +2768,16 @@ def _video_auto_denoiser_scheme(
             for s in video_family_prequant_schemes(fam)
             if denoiser_prequant_sources(fam, s, base_repo, hf_token = hf_token) is not None
         )
+        if not auto and normalize_transformer_quant(requested) not in hosted:
+            # An EXPLICIT unhosted scheme may seed from the local cache; never under auto, so the cache can't change
+            # auto's pick.
+            from .diffusion_prequant_cache import CACHEABLE_SCHEMES
+            wanted = normalize_transformer_quant(requested)
+            if (
+                wanted in CACHEABLE_SCHEMES
+                and denoiser_prequant_sources(fam, wanted, base_repo, hf_token = hf_token) is not None
+            ):
+                hosted = hosted + (wanted,)
         if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
             return None
 
@@ -2598,6 +2802,37 @@ def _video_auto_denoiser_scheme(
         return scheme
     except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense denoiser
         return None
+
+
+def _save_runtime_quant_to_cache(
+    fam: Any,
+    views: Any,
+    *,
+    base: Optional[str],
+    source: Optional[str],
+    cancel_check: Any = None,
+) -> None:
+    """Cache a runtime-quantized single denoiser; MoE is skipped (no lookup slot for the second expert)."""
+    try:
+        from .video_denoiser_prequant import denoiser_components
+
+        views = list(views or ())
+        if len(denoiser_components(fam)) != 1 or len(views) != 1:
+            logger.info("diffusion.prequant_cache: skipped (multi-denoiser video family)")
+            return
+        from .diffusion_prequant_cache import save_runtime_quant
+
+        save_runtime_quant(
+            getattr(views[0], "transformer", None),
+            fam,
+            base_repo = base,
+            source_base = source,
+            component = "transformer",
+            logger = logger,
+            cancel_check = cancel_check,
+        )
+    except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
+        logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
 
 
 # The planner DECIDED against the seed (not "never ran"); a load must not re-take it after teardown.
@@ -4064,6 +4299,7 @@ class VideoBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
+        allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -4187,6 +4423,7 @@ class VideoBackend:
                 model_kind = model_kind,
                 h3_task = h3_task,
                 gpu_ordinal = gpu_ordinal,
+                allow_oversized_load = bool(allow_oversized_load),
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
@@ -4195,6 +4432,7 @@ class VideoBackend:
         ).start()
         return self.status()
 
+    @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
     @scoped_local_files_only
@@ -4687,6 +4925,7 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = modelscope_missing(exc) or redact_native_paths(str(exc))
+                    self._loading.error_code = unified_memory_refusal_code(exc)
 
     def _run_load_h3_native(
         self,
@@ -5074,6 +5313,14 @@ class VideoBackend:
                 if native_device != "cpu" and listed_accelerator is not None
                 else None
             )
+            native_cuda_cc = _h3_cuda_cc_fallback(
+                native_cuda_cc,
+                binary = binary,
+                native_device = native_device,
+                listed_accelerator = listed_accelerator,
+                accelerator_names = (decided_accelerator,),
+                device_name = native_device_name,
+            )
             # What the executable itself renders on: an unowned build (SD_CLI_PATH) has no install record.
             native_listed_class, native_listed_description = (
                 sd_cpp_listed_device(binary, native_device_name, probe = False)
@@ -5280,6 +5527,16 @@ class VideoBackend:
             offloaded_flags = native_fit_flags,
             offload_refusal = native_fit_refusal,
             fit_inputs = native_fit_inputs,
+            vram_free_probe = (
+                functools.partial(
+                    _h3_card_free_bytes,
+                    native_device,
+                    native_ordinal if native_device_name else None,
+                    single_card_only = not native_device_name,
+                )
+                if native_device != "cpu"
+                else None
+            ),
             env = native_env,
             cudnn = native_cudnn,
             server_slot = (
@@ -7404,7 +7661,7 @@ class VideoBackend:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
         loading = self._loading
         if loading is not None and loading.error:
-            return _progress("error", error = loading.error)
+            return _progress("error", error = loading.error, error_code = loading.error_code)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
         # The load's own plan, settled once at estimate time by the worker that owns this state: the repo + revision
@@ -7479,7 +7736,12 @@ class VideoBackend:
 
     # ── the load itself ──────────────────────────────────────────────────────
 
+    def _raise_if_video_load_superseded(self, token: Optional[int]) -> None:
+        if token is not None and token != self._load_token:
+            raise RuntimeError("Video load was cancelled or superseded.")
+
     @_invalidates_gpu_memory("video load")
+    @scoped_allow_oversized_load
     @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(
@@ -7502,6 +7764,8 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        # Read by ``scoped_allow_oversized_load``.
+        allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _base_fetch_repo: Optional[str] = None,
@@ -8774,6 +9038,16 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
+                # Only explicit schemes read the cache back, so an auto save would be a write nothing opens.
+                if transformer_quant_pinned is not None:
+                    _save_runtime_quant_to_cache(
+                        fam,
+                        views,
+                        base = base,
+                        source = _base_local_dir or fetch_base,
+                        cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                    )
+                    self._raise_if_video_load_superseded(_load_token)
             elif transformer_quant_pinned is not None:
                 transformer_quant_decline = (
                     f"'{transformer_quant_pinned}' did not engage on family '{fam.name}' with this "
@@ -9167,6 +9441,14 @@ class VideoBackend:
                 vae_bf16_mode = install_rocm_vae_bf16_decode(pipe, target, logger = logger)
                 if vae_bf16_mode:
                     speed_optims += ("vae_bf16_decode", f"vae_bf16_{vae_bf16_mode}")
+            # Offload-first retry on a decode OOM, installed last: its decode scope is the outermost decode layer
+            # (one recovery session per logical decode) and every inner wrapper that falls back on an OOM (wide
+            # tiles, untiled-when-fits) frees the card through it first (diffusion_vae_oom.free_first).
+            try:
+                from .diffusion_vae_oom import install as install_vae_oom_retry
+                install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
+            except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+                logger.warning("video.vae_oom: not installed: %s", exc)
 
             resolved = build_resolved_record(
                 {
@@ -9184,7 +9466,7 @@ class VideoBackend:
                     "attention_backend": (
                         attention_backend,
                         attention_engaged or "native",
-                        "cuDNN fused attention on NVIDIA when a speed profile is active",
+                        attention_status_reason(attention_backend, attention_engaged),
                     ),
                     "transformer_cache": (
                         None if cache_auto else transformer_cache,
@@ -9283,6 +9565,8 @@ class VideoBackend:
                 logger = logger,
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
+            # both branches through one offloaded forward; declines when CFG-parallel took the slot
+            install_cfg_batch(pipe, offload_policy = offload_policy, logger = logger)
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
@@ -10386,6 +10670,12 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        # the H3 VAE speedups rewrap vae.decode: the OOM retry's scope (when installed) goes back on top
+        try:
+            from .diffusion_vae_oom import ensure_outermost
+            ensure_outermost(getattr(pipe, "vae", None), logger)
+        except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+            logger.warning("video.vae_oom: scope not restored after the H3 VAE speedups: %s", exc)
         if "cudnn_benchmark" in speed_optims:
             try:
                 from .video_minimax_h3_vae import install_audio_vae_without_cudnn_benchmark
@@ -10484,7 +10774,7 @@ class VideoBackend:
                 "attention_backend": (
                     attention_backend,
                     attention_engaged or "native",
-                    "cuDNN fused attention on NVIDIA when a speed profile is active",
+                    attention_status_reason(attention_backend, attention_engaged),
                 ),
                 "transformer_cache": (
                     (
@@ -11169,6 +11459,7 @@ class VideoBackend:
                 if _resolved_inputs is not None and _resolved_inputs.state is not state:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
+                begin_attention_run(state)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
@@ -11180,6 +11471,8 @@ class VideoBackend:
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
             # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
             i2v_swap = contextlib.ExitStack()
+            # Encodes Wan chunks while the VAE decodes; closed in the finally on cancel or failure.
+            stream_session = None
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
@@ -11238,6 +11531,7 @@ class VideoBackend:
                     fallback = (fam.default_steps, fam.default_guidance),
                     family = fam.name,
                 )
+                default_steps = _h3_pdd_default_steps(fam, state.pipe, default_steps)
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
                 # A guidance-free family (supports_cfg=False, MiniMax-H3) forwards no CFG control to either engine: the
@@ -11637,6 +11931,18 @@ class VideoBackend:
                     setter = getattr(getattr(pipe, component, None), "set_shift", None)
                     if callable(setter) and value is not None:
                         setter(float(value))
+                if fam.name == "minimax-h3":
+                    from .video_minimax_h3_pdd import (
+                        bind_h3_pdd_render,
+                        h3_pdd_num_inference_steps,
+                    )
+
+                    # A PDD head bank reads each step's (sigma, sigma_next) off this render's video schedule. The
+                    # H3 scheduler's grid holds the terminal 0, so `steps` model evaluations (ComfyUI's count, which
+                    # the bank's 8-step partition is distilled for) is a grid of steps + 1.
+                    if bind_h3_pdd_render(pipe, shift, audio_shift):
+                        kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
+                        request_shape["pdd"] = True
 
                 # What the clip records; LTX-2.5's two-stage render reports its stage-2 steps in the progress below.
                 recorded_steps = steps
@@ -11825,6 +12131,8 @@ class VideoBackend:
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
+                        if stream_session is not None:
+                            stack.enter_context(stream_session.hooks())
                         stack.enter_context(_completed_step_poller(_pump))
                         yield
 
@@ -11882,6 +12190,14 @@ class VideoBackend:
                     else torch.inference_mode()
                     if not _render_under_no_grad(state)
                     else torch.no_grad()
+                )
+                stream_session = open_stream_encode(
+                    pipe,
+                    out_fps,
+                    engage = not fam.modular_workflow
+                    and not fam.has_audio
+                    and ltx25_render_call is None,
+                    logger = logger,
                 )
                 previewer = LatentPreviewer.create(
                     family = fam.name,
@@ -11942,21 +12258,25 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
-                if audio_sample_rate is None:
-                    mp4_bytes = self._encode_mp4(
-                        video_frames, out_fps, audio_track, pipe if fam.has_audio else None
-                    )
-                else:
-                    mp4_bytes = self._encode_mp4(
-                        video_frames,
-                        out_fps,
-                        audio_track,
-                        pipe if fam.has_audio else None,
-                        audio_sample_rate = int(audio_sample_rate),
-                    )
+                # Encoded during the decode when its frames are exactly these (_encode_mp4 claims it).
+                with offer_stream(stream_session if audio_track is None else None):
+                    if audio_sample_rate is None:
+                        mp4_bytes = self._encode_mp4(
+                            video_frames, out_fps, audio_track, pipe if fam.has_audio else None
+                        )
+                    else:
+                        mp4_bytes = self._encode_mp4(
+                            video_frames,
+                            out_fps,
+                            audio_track,
+                            pipe if fam.has_audio else None,
+                            audio_sample_rate = int(audio_sample_rate),
+                        )
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                # The status badge reports the attention routes this run took (report only, keys are unchanged).
+                report_attention_run(state)
                 if len(video_frames) and not fam.modular_workflow:
                     from . import video_stream_residency
 
@@ -12021,7 +12341,10 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                if stream_session is not None:
+                    stream_session.close()
                 end_cfg_render(getattr(state, "pipe", None))
+                end_cfg_batch_render(getattr(state, "pipe", None))
                 try:
                     from . import video_stream_residency
                     video_stream_residency.discard_request(getattr(state, "pipe", None))
@@ -12294,53 +12617,94 @@ class VideoBackend:
         )
         render_flags = list(runtime.offload_flags) if flags is None else list(flags)
         render_env = dict(runtime.env) if env is None else dict(env)
+        from .sd_cpp_args import is_device_oom_text
+
         slot.begin_render()
         try:
-            try:
-                server = slot.get(
-                    render_flags,
-                    render_env,
-                    cancel_event = cancel,
-                    pre_spawn = functools.partial(
-                        _h3_launch_flags,
-                        runtime,
+            retry_cap: Any = None
+            while True:
+                try:
+                    server = slot.get(
                         render_flags,
-                        memory_mode,
-                        compute_bytes = h3_native_compute_bytes(
-                            params.width, params.height, params.num_frames
+                        render_env,
+                        cancel_event = cancel,
+                        pre_spawn = functools.partial(
+                            _h3_launch_flags,
+                            runtime,
+                            render_flags,
+                            memory_mode,
+                            compute_bytes = h3_native_compute_bytes(
+                                params.width, params.height, params.num_frames
+                            ),
                         ),
-                    ),
-                )
-            except (SdCppCancelled, H3NativeMemoryRefusal):
-                raise
-            except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
-                if cancel.is_set():
-                    raise SdCppCancelled("sd-server start was cancelled.") from exc
-                logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
-                slot.disable(f"start failed: {exc}")
-                return None
-            try:
-                data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
-            except SdCppServerUnsupported as exc:
-                logger.warning("video.h3_native_server_unsupported (using sd-cli): %s", exc)
-                slot.disable(str(exc))
-                return None
-            except SdCppCancelled:
-                raise
-            except RuntimeError as exc:
-                if cancel.is_set():
-                    raise SdCppCancelled("sd-server generation was cancelled.") from exc
-                if not server.is_alive():
-                    logger.warning(
-                        "video.h3_native_server_died (retrying once on sd-cli, staying one-shot): %s",
-                        exc,
+                        launch_transform = functools.partial(
+                            _h3_budgeted_launch_flags, runtime, cap = retry_cap
+                        ),
                     )
-                    slot.disable(f"server died: {exc}")
+                except (SdCppCancelled, H3NativeMemoryRefusal):
+                    raise
+                except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
+                    if cancel.is_set():
+                        raise SdCppCancelled("sd-server start was cancelled.") from exc
+                    if retry_cap is not None and is_device_oom_text(str(exc)):
+                        slot.stop("render failed")
+                        raise
+                    # A start-time device OOM gets one smaller retry instead of disabling the server.
+                    cap = _h3_retry_vram_cap(getattr(slot, "attempted_flags", None), str(exc))
+                    if cap is not None and _h3_restart_for_retry(
+                        slot, "server start out of memory"
+                    ):
+                        logger.warning(
+                            "video.h3_native_vram_retry: server start out of device memory; retrying once with %s",
+                            cap,
+                        )
+                        retry_cap = cap
+                        continue
+                    logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
+                    slot.disable(f"start failed: {exc}")
                     return None
-                slot.stop("render failed")
-                raise
-            Path(output_path).write_bytes(data)
-            return Path(output_path)
+                try:
+                    data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
+                except SdCppServerUnsupported as exc:
+                    logger.warning("video.h3_native_server_unsupported (using sd-cli): %s", exc)
+                    slot.disable(str(exc))
+                    return None
+                except SdCppCancelled:
+                    raise
+                except RuntimeError as exc:
+                    if cancel.is_set():
+                        raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                    cap = (
+                        _h3_retry_vram_cap(getattr(slot, "launched_flags", None), str(exc))
+                        if retry_cap is None
+                        else None
+                    )
+                    if cap is not None and _h3_restart_for_retry(
+                        slot, "device out of memory; retrying with a smaller VRAM budget"
+                    ):
+                        logger.warning(
+                            "video.h3_native_vram_retry: device out of memory under --max-vram %s; "
+                            "retrying once with %s: %s",
+                            dict(_pairs(getattr(slot, "launched_flags", ()))).get("--max-vram"),
+                            cap,
+                            str(exc).splitlines()[0] if str(exc) else exc,
+                        )
+                        retry_cap = cap
+                        continue
+                    if retry_cap is not None and is_device_oom_text(str(exc)):
+                        slot.stop("render failed")
+                        raise
+                    if not server.is_alive():
+                        logger.warning(
+                            "video.h3_native_server_died (retrying once on sd-cli, staying one-shot): %s",
+                            exc,
+                        )
+                        slot.disable(f"server died: {exc}")
+                        return None
+                    slot.stop("render failed")
+                    raise
+                Path(output_path).write_bytes(data)
+                return Path(output_path)
         finally:
             try:
                 slot.end_render()
@@ -12563,14 +12927,22 @@ class VideoBackend:
                                 reuse_live_server = False,
                                 compute_bytes = compute_bytes,
                             )
-                            generated = runtime.engine.generate_video(
-                                runtime.files,
-                                video_params,
-                                output_path = str(output_path),
-                                offload = render_flags,
-                                env = dict(runtime.env) or None,
-                                on_log = on_log,
-                                cancel_event = cancel,
+                            from .sd_cpp_backend import _explicit_threads
+                            generated = _h3_one_shot_with_vram_retry(
+                                runtime,
+                                lambda launch_flags: runtime.engine.generate_video(
+                                    runtime.files,
+                                    video_params,
+                                    output_path = str(output_path),
+                                    offload = launch_flags,
+                                    # sd.cpp's default undercounts M5 Pro / Max and ignores env / cgroup quota
+                                    threads = _explicit_threads(),
+                                    env = dict(runtime.env) or None,
+                                    on_log = on_log,
+                                    cancel_event = cancel,
+                                ),
+                                render_flags,
+                                cancel,
                             )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
@@ -12635,6 +13007,10 @@ class VideoBackend:
         """Encode frames (+ optional audio) to H.264 MP4 bytes via diffusers' PyAV
         exporter. A temp file bridges the exporter's path-based API; the bytes are
         what the gallery persists."""
+        if audio is None:
+            streamed = claim_stream(video_frames, fps)
+            if streamed is not None:
+                return streamed
         from diffusers.utils.export_utils import encode_video
 
         tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
@@ -12903,6 +13279,7 @@ class VideoBackend:
             fallback = (fam.default_steps, fam.default_guidance),
             family = fam.name,
         )
+        default_steps = _h3_pdd_default_steps(fam, getattr(state, "pipe", None), default_steps)
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -12978,6 +13355,7 @@ class VideoBackend:
                 and state.engine != "sd_cpp",
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
+            "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
