@@ -2538,7 +2538,6 @@ def in_tree_pipeline(pipeline_class: Optional[str]) -> bool:
 def _installed_transformers_version() -> Optional[str]:
     try:
         from importlib.metadata import version
-
         installed = version("transformers")
     except Exception:  # noqa: BLE001 - not installed / unreadable metadata
         return None

@@ -1872,16 +1872,15 @@ def _install_gguf_dim_restore(logger: Any) -> None:
         logger.warning("diffusion.gguf: dim-restore shim not installed: %s", exc)
 
 
-@functools.lru_cache(maxsize = None)
 def _family_model_class(diffusers: Any, name: str) -> Any:
     """``getattr(diffusers, name)``, or Studio's in-tree class of that name (MOSS-Image), imported on first use."""
     if name in ("MOSSImagePipeline", "MOSSImageTransformer", "MOSSImageScheduler"):
         from .diffusion_moss_image import in_tree_class
-
         return in_tree_class(name)
     return getattr(diffusers, name)
 
 
+@functools.lru_cache(maxsize = None)
 def _no_recast_pipeline_class(pipe_cls: Any) -> Any:
     """``pipe_cls`` with the dtype half of ``.to()`` dropped; device moves still work. Pipelines
     built by ``from_pipe`` share the resident pipeline's module objects, so a dtype cast through
@@ -8435,7 +8434,6 @@ class DiffusionBackend:
                                     # The repos ship remote code: assemble the in-tree port per component (safetensors
                                     # and JSON only), from the staged dir when there is one.
                                     from .diffusion_moss_image import load_moss_image_pipeline
-
                                     try:
                                         pipe = load_moss_image_pipeline(
                                             _base_local_dir or fetch_base,

@@ -290,8 +290,8 @@ class _RoPE(nn.Module):
         text = _rope_tables(rope[:, height * width :])
         if len(self._tables) >= self._MAX_CACHED:
             self._tables.pop(next(iter(self._tables)))
-        self._tables[key] = (full, text)
-        return full, text
+        entry = self._tables[key] = (full, text)
+        return entry
 
 
 def _model_bases():
@@ -590,7 +590,9 @@ def comfy_noise(shape, generator, device):
         noise = torch.randn(shape, generator = _cpu(gens[0]), dtype = torch.float32)
     else:
         if len(gens) != shape[0]:
-            raise ValueError(f"Got {len(gens)} generators for {shape[0]} images; pass one per image.")
+            raise ValueError(
+                f"Got {len(gens)} generators for {shape[0]} images; pass one per image."
+            )
         row = (1, *shape[1:])
         noise = torch.cat([torch.randn(row, generator = _cpu(g), dtype = torch.float32) for g in gens])
     return noise.to(device)
@@ -801,7 +803,9 @@ class MOSSImagePipeline(DiffusionPipeline):
             skip_active = slg_start <= step_index / num_steps < slg_stop
             # CFG combines fp32 predictions, even when the DiT runs in bf16.
             # return_dict=False: a CUDA-graph replay hands back a tuple, never a dataclass.
-            prediction = self.transformer(latents, timestep, **cond_kw, return_dict = False)[0].float()
+            prediction = self.transformer(latents, timestep, **cond_kw, return_dict = False)[
+                0
+            ].float()
             conditional = prediction
             if do_cfg:
                 skip_kwargs = (
@@ -914,6 +918,48 @@ def drop_vision_tower(text_encoder: Any) -> bool:
     return True
 
 
+def _conv_offload_hook(conv: Any) -> Any:
+    registry = getattr(conv, "_diffusers_hook", None)
+    get = getattr(registry, "get_hook", None)
+    return get("group_offloading") if callable(get) else None
+
+
+def _gdn_conv_onload(module: Any, args: Any) -> None:
+    hook = _conv_offload_hook(module.conv1d)
+    if hook is None:
+        return
+    hook.pre_forward(module.conv1d)
+    stream = getattr(getattr(hook, "group", None), "stream", None)
+    if stream is not None:
+        stream.synchronize()
+
+
+def _gdn_conv_offload(module: Any, args: Any, output: Any) -> None:
+    hook = _conv_offload_hook(module.conv1d)
+    if hook is not None:
+        hook.post_forward(module.conv1d, None)
+
+
+def install_gdn_offload_guard(text_encoder: Any) -> int:
+    """Qwen3.5's gated-delta layers read ``self.conv1d.weight`` straight into the causal-conv kernel and never call
+    ``conv1d``, so a leaf-level group offload (Studio's text-encoder streaming) never onloads that weight. Hooks on each
+    gated-delta layer onload its conv for the layer's forward and offload it after; without a group-offload hook on the
+    conv they do nothing. Returns the number of layers guarded."""
+    count = 0
+    for module in text_encoder.modules():
+        if not type(module).__name__.endswith("GatedDeltaNet") or not isinstance(
+            getattr(module, "conv1d", None), nn.Module
+        ):
+            continue
+        if getattr(module, "_unsloth_conv_guard", False):
+            continue
+        module.register_forward_pre_hook(_gdn_conv_onload)
+        module.register_forward_hook(_gdn_conv_offload)
+        module._unsloth_conv_guard = True
+        count += 1
+    return count
+
+
 def load_moss_image_text_encoder(source: str, dtype, **common):
     from transformers import Qwen3_5Model
 
@@ -921,6 +967,7 @@ def load_moss_image_text_encoder(source: str, dtype, **common):
         source, subfolder = "text_encoder", dtype = dtype, **common
     )
     drop_vision_tower(text_encoder)
+    install_gdn_offload_guard(text_encoder)
     return text_encoder.eval()
 
 
