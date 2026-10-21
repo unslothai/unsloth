@@ -1100,6 +1100,17 @@ def _read_preview_rows_from_multi_files(
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
 
+    return chunking.build_multi_file_preview_rows(
+        file_entries = _multi_file_entries(block_id, file_ids, file_names),
+        preview_size = preview_size,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
+    )
+
+
+def _multi_file_entries(
+    block_id: str, file_ids: list[str], file_names: list[str]
+) -> list[tuple[Path, str]]:
     _validate_safe_id(block_id, "block_id")
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     file_entries: list[tuple[Path, str]] = []
@@ -1108,13 +1119,7 @@ def _read_preview_rows_from_multi_files(
         if not extracted.exists():
             raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
         file_entries.append((extracted, fname))
-
-    return chunking.build_multi_file_preview_rows(
-        file_entries = file_entries,
-        preview_size = preview_size,
-        chunk_size = chunk_size,
-        chunk_overlap = chunk_overlap,
-    )
+    return file_entries
 
 
 def _require_own_seed_source(dataset_name: str) -> None:
@@ -1280,6 +1285,7 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
 
 
 _pdf_extraction_limiter = CapacityLimiter(2)
+_document_extraction_limiter = CapacityLimiter(2)
 
 
 async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
@@ -1295,8 +1301,10 @@ async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
         chunking = _chunking()
         return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
     if ext != ".pdf":
-        # A large spreadsheet must not stall the event loop.
-        return await to_thread.run_sync(_extract_text_from_file, file_path, ext)
+        # A large spreadsheet must not stall the event loop, nor several fill the shared thread pool.
+        return await to_thread.run_sync(
+            _extract_text_from_file, file_path, ext, limiter = _document_extraction_limiter
+        )
     from core.rag import config, pdf_ocr
 
     # MuPDF is not thread-safe; each worker owns its document and OCR state.
@@ -1606,6 +1614,14 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             chunk_overlap = payload.unstructured_chunk_overlap,
         )
         columns = ["chunk_text", "source_file"] if preview_rows else []
+        # The preview holds at most preview_size rows; the total tells a user how many rows export every chunk once.
+        total_rows = _chunking().count_multi_file_chunks(
+            file_entries = _multi_file_entries(
+                payload.block_id, payload.file_ids, payload.file_names
+            ),
+            chunk_size = payload.unstructured_chunk_size,
+            chunk_overlap = payload.unstructured_chunk_overlap,
+        )
         resolved_paths = [
             str(UNSTRUCTURED_UPLOAD_ROOT / payload.block_id / f"{fid}.extracted.txt")
             for fid in payload.file_ids
@@ -1616,6 +1632,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             resolved_paths = resolved_paths,
             columns = columns,
             preview_rows = _serialize_preview_rows(preview_rows),
+            total_rows = total_rows,
         )
 
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"

@@ -1879,3 +1879,52 @@ def test_recipe_upload_names_pymupdf_when_an_ebook_reader_is_missing(monkeypatch
     assert result.status == "error"
     assert result.error == "Cannot read .mobi files: the 'pymupdf' package is not installed."
     assert _block_files(seed_route) == []
+
+
+def test_document_seed_preview_reports_every_chunk_not_just_the_preview(monkeypatch, tmp_path):
+    chunking = pytest.importorskip("data_designer_unstructured_seed.chunking")
+    from models.data_recipe import SeedInspectUploadRequest
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(chunking, "_CACHE_DIR", tmp_path / "chunk-cache")
+    sentence = "A sentence long enough to fill most of a small chunk on its own. "
+    ids, names = [], []
+    for name in ("one.txt", "two.txt"):
+        result = _run_upload(seed_route, name, ("\n\n".join([sentence] * 30)).encode())
+        ids.append(result.file_id)
+        names.append(name)
+
+    response = seed_route.inspect_seed_upload(
+        SeedInspectUploadRequest(
+            block_id = "block",
+            file_ids = ids,
+            file_names = names,
+            preview_size = 3,
+            seed_source_type = "unstructured",
+            unstructured_chunk_size = 100,
+            unstructured_chunk_overlap = 0,
+        )
+    )
+
+    assert len(response.preview_rows) == 3
+    assert response.total_rows == 60
+
+
+def test_document_extraction_threads_are_bounded(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+    seen = []
+
+    async def run_sync(
+        fn,
+        *args,
+        limiter = None,
+        **kwargs,
+    ):
+        seen.append(limiter)
+        return fn(*args)
+
+    monkeypatch.setattr(seed_route.to_thread, "run_sync", run_sync)
+
+    assert _run_upload(seed_route, "notes.txt", b"hello").status == "ok"
+    assert seen == [seed_route._document_extraction_limiter]
+    assert seed_route._document_extraction_limiter.total_tokens == 2

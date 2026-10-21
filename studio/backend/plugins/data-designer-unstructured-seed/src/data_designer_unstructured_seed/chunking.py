@@ -79,6 +79,17 @@ def build_multi_file_preview_rows(
     return _round_robin_preview(rows, preview_size)
 
 
+def count_multi_file_chunks(
+    *, file_entries: list[tuple[Path, str]], chunk_size: int | None, chunk_overlap: int | None
+) -> int:
+    _, rows = materialize_multi_file_unstructured_seed(
+        file_entries = file_entries,
+        chunk_size = _to_int(chunk_size, DEFAULT_CHUNK_SIZE),
+        chunk_overlap = _to_int(chunk_overlap, DEFAULT_CHUNK_OVERLAP),
+    )
+    return len(rows)
+
+
 def _round_robin_preview(rows: list[dict[str, str]], preview_size: int) -> list[dict[str, str]]:
     """Pick preview rows round-robin across source files so each is represented."""
     if not rows or preview_size <= 0:
