@@ -1216,7 +1216,7 @@ def test_wired_auto_tensor_torn_down_mid_load_is_not_retried(tmp_path, monkeypat
         result, spawns = _launch_scripted(backend, gguf, behave, gpu_memory_mode = "auto", n_ctx = 4096)
     finally:
         backend._shutting_down = False
-    assert not isinstance(result, bool) or result is False
+    assert result is False
     assert [_split_flag(c) for c in spawns] == ["tensor"]
     assert not [w for w in warnings if "loading without it" in w]
     _assert_no_split_state(backend)
@@ -2071,3 +2071,173 @@ def test_module_keeps_the_real_loggers_package_without_structlog():
         [sys.executable, "-c", code], capture_output = True, text = True, timeout = 300
     )
     assert result.returncode == 0, result.stderr[-2000:]
+
+
+def test_wired_fits_one_probe_prices_the_runtime_footprint(tmp_path, monkeypatch):
+    # 13.2 GiB of weights fit one T4's usable budget bare, but not with the CUDA context and the
+    # drafter's reserves, so the MoE needs the pair; the probe must not call it a one-card fit.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 13.2, names = TWO_T4_NAMES
+    )
+    _with_mtp_caps(backend)
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    cmd = _launch(backend, gguf, model_identifier = _MTP_MODEL, gpu_memory_mode = "auto", n_ctx = 4096)[
+        "cmd"
+    ]
+    assert "fits one GPU" not in backend._auto_split_decision.reason
+    assert _split_flag(cmd) == "tensor"
+
+
+def _arbiter(residents):
+    def setup(monkeypatch):
+        from core.inference import gpu_arbiter
+        monkeypatch.setattr(gpu_arbiter, "residents", lambda: dict(residents))
+
+    return setup
+
+
+def _primary(**kw):
+    def setup(monkeypatch):
+        import core.inference.orchestrator as orchestrator_module
+
+        fake = _orchestrator(alive = kw.pop("alive", False))
+        for key, value in kw.items():
+            setattr(fake, key, value)
+        monkeypatch.setattr(orchestrator_module, "_inference_backend", fake)
+
+    return setup
+
+
+def _slot_worker(monkeypatch):
+    from core.inference import model_slots
+    monkeypatch.setattr(
+        model_slots, "slots", [types.SimpleNamespace(orchestrator = _orchestrator(alive = True))]
+    )
+
+
+def _st_embedder(device):
+    def setup(monkeypatch):
+        import core.rag.embeddings as embeddings
+        monkeypatch.setattr(embeddings, "_model", types.SimpleNamespace(device = device))
+
+    return setup
+
+
+def _gguf_embedder(on_gpu, *, starting = False):
+    def setup(monkeypatch):
+        import threading
+
+        import core.rag.embeddings as embeddings
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        backend = object.__new__(LlamaServerBackend)
+        backend._lifecycle_lock = threading.Lock()
+        if starting:
+            backend._lifecycle_lock.acquire()
+        backend._process = types.SimpleNamespace(poll = lambda: None, pid = _FAKE_SERVER_PID)
+        backend._on_gpu = on_gpu
+        monkeypatch.setattr(embeddings, "_backend", backend)
+
+    return setup
+
+
+def _embedder_loading(monkeypatch):
+    import threading
+
+    import core.rag.embeddings as embeddings
+
+    lock = threading.Lock()
+    lock.acquire()
+    monkeypatch.setattr(embeddings, "_lock", lock)
+
+
+def _decision_worker(device):
+    def setup(monkeypatch):
+        import core.systemone.laya_runtime as laya
+        monkeypatch.setattr(laya, "_device_name", device)
+
+    return setup
+
+
+@pytest.mark.parametrize(
+    "setup, tensor",
+    [
+        # Image/video/decision residents the arbiter tracks: unknown ids may be either card, and
+        # known ones are off limits even when their price is empty (Off, or no estimate).
+        pytest.param(_arbiter({"diffusion": None}), False, id = "media-unknown-gpus"),
+        pytest.param(_arbiter({"decisions": None}), False, id = "decisions-unknown-gpus"),
+        pytest.param(_arbiter({"video": frozenset({1})}), False, id = "media-on-gpu1"),
+        pytest.param(_arbiter({"chat": None}), True, id = "chat-claim-alone"),
+        # Transformers side: a managed engine whose stop failed, a worker that survived its model.
+        pytest.param(_primary(_managed_engine = object()), False, id = "managed-engine"),
+        pytest.param(_primary(alive = True), False, id = "primary-worker-alive"),
+        pytest.param(_slot_worker, False, id = "kept-slot-worker-alive"),
+        # RAG embedders, loaded or loading off the CPU.
+        pytest.param(_st_embedder("cuda:0"), False, id = "st-embedder-gpu"),
+        pytest.param(_st_embedder("cpu"), True, id = "st-embedder-cpu"),
+        pytest.param(_gguf_embedder(True), False, id = "gguf-embedder-gpu"),
+        pytest.param(_gguf_embedder(False, starting = True), False, id = "gguf-embedder-starting"),
+        pytest.param(_gguf_embedder(False), True, id = "gguf-embedder-cpu"),
+        pytest.param(_embedder_loading, False, id = "embedder-loading"),
+        # The PyTorch decision worker the arbiter does not track.
+        pytest.param(_decision_worker("cuda"), False, id = "decision-worker-gpu"),
+        pytest.param(_decision_worker("cpu"), True, id = "decision-worker-cpu"),
+    ],
+)
+def test_wired_any_resident_without_gpu_ids_keeps_layer(tmp_path, monkeypatch, setup, tensor):
+    from core.inference import model_slots
+    import core.inference.orchestrator as orchestrator_module
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    monkeypatch.setattr(orchestrator_module, "_inference_backend", None)
+    monkeypatch.setattr(model_slots, "slots", [])
+    setup(monkeypatch)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert (_split_flag(cmd) == "tensor") is tensor
+
+
+@pytest.mark.parametrize(
+    "lines, rc, when",
+    [
+        # The split-axis abort and the quantized-KV refusal, cancelled while their exit kills the child.
+        (["GGML_ASSERT(split_axis == GGML_BACKEND_SPLIT_AXIS_0) failed"], -6, "kill"),
+        (["split_mode_tensor and kv cache quantization not implemented"], 1, "kill"),
+        # Any other unhealthy start, cancelled after its health wait returned.
+        (["boom"], 1, "health"),
+    ],
+    ids = ["split-axis-abort", "quantized-kv-refusal", "unhealthy-start"],
+)
+def test_wired_auto_tensor_exit_cancelled_reports_a_cancelled_load(
+    tmp_path, monkeypatch, lines, rc, when
+):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_tensor_split_abort_keys", set())
+    monkeypatch.setattr(LlamaCppBackend, "_tensor_quant_kv_unsupported_binaries", set())
+    kill = backend._kill_process
+
+    def kill_then_cancel(*a, **k):
+        proc = backend._process
+        kill(*a, **k)
+        if proc is not None and not getattr(proc, "healthy", True):
+            backend._cancel_event.set()
+
+    if when == "kill":
+        backend._kill_process = kill_then_cancel
+        behave = _tensor_crashes(lines, rc = rc)
+    else:
+        crash = _tensor_crashes(lines, rc = rc)
+
+        def behave(cmd):
+            # Set before the attempt reads its health result.
+            backend._cancel_event.set()
+            return crash(cmd)
+
+    result, spawns = _launch_scripted(backend, gguf, behave, gpu_memory_mode = "auto", n_ctx = 4096)
+    # The route answers a False as a cancelled load; a raise would be a 500.
+    assert result is False
+    assert [_split_flag(c) for c in spawns] == ["tensor"]
+    _assert_no_split_state(backend)
