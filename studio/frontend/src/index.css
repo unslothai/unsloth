@@ -5248,6 +5248,19 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
+/* Settings > Appearance contrast: one ramp along the whole track instead of a
+   fill, since the value is a strength rather than an amount used. */
+.contrast-slider [data-slot="slider-track"] {
+	background: linear-gradient(
+		to right,
+		color-mix(in srgb, var(--slider-fill) 35%, transparent),
+		var(--slider-fill) 40%
+	);
+}
+.contrast-slider [data-slot="slider-track"] > * {
+	background: none;
+}
+
 /* Native <input type="range"> in the shared slider look (components/ui/slider.tsx).
    --range-ratio (0..1) places the fill's end under the thumb's centre, which sits
    half a thumb in from each end. */
