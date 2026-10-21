@@ -1524,17 +1524,15 @@ def evict_idle_worker() -> None:
     global _agent, _loaded, _device_name, _generation, _unloads
     from .clef_runtime import ClefAgent
 
-    with _state_lock:
-        if _loading is not None:
-            return
     if not _run_lock.acquire(blocking = False):
         return
     try:
-        if not isinstance(_agent, (LayaWorker, ClefAgent)):
-            return
-        agent, _agent, _loaded, _device_name = _agent, None, None, None
-        _generation += 1
-        _unloads += 1
+        with _state_lock:
+            if _loading is not None or not isinstance(_agent, (LayaWorker, ClefAgent)):
+                return
+            agent, _agent, _loaded, _device_name = _agent, None, None, None
+            _generation += 1
+            _unloads += 1
     finally:
         _run_lock.release()
     logger.info("System One unloaded the idle decision model to free the GPU")

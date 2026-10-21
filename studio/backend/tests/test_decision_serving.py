@@ -668,6 +668,33 @@ def test_an_image_load_ends_an_idle_clef_worker(home, client, clef):
     assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
+def test_a_load_claimed_as_the_eviction_starts_keeps_the_idle_worker(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    run_lock, claimed = laya_runtime._run_lock, laya_runtime._loaded
+
+    class ClaimedInTheGap:
+        def acquire(self, *args, **kwargs):
+            laya_runtime._loading = claimed
+            return run_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            run_lock.release()
+
+    monkeypatch.setattr(laya_runtime, "_loading", None)
+    monkeypatch.setattr(laya_runtime, "_run_lock", ClaimedInTheGap())
+    unloads = laya_runtime._unloads
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert not clef.agents[0].closed
+    assert laya_runtime._unloads == unloads
+
+
 def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
     from core.systemone import clef_runtime
 
