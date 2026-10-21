@@ -70,9 +70,12 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
         with open(cache_file, "r", encoding = "utf-8") as f:
             cached_data = json.load(f)
 
-        # Invalidate if device capability changed.
-        current_device_capability = torch.cuda.get_device_capability()
-        if cached_data.get("device_capability") != current_device_capability:
+        # Invalidate if device capability changed. JSON stores the tuple as a list, so compare as tuples.
+        current_device_capability = tuple(torch.cuda.get_device_capability())
+        cached_device_capability = cached_data.get("device_capability")
+        if not isinstance(cached_device_capability, (list, tuple)) or (
+            tuple(cached_device_capability) != current_device_capability
+        ):
             logger.info("Device capability changed, invalidating cache")
             os.remove(cache_file)
             return None
