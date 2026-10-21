@@ -215,6 +215,20 @@ def test_load_then_status_and_guards(env):
     assert calls["dense_bits"] == 4
 
 
+@pytest.mark.parametrize("guided, threshold", [(False, None), (True, 1.0)])
+def test_status_reports_the_guidance_controls(env, monkeypatch, guided, threshold):
+    from models.inference import DiffusionStatusResponse
+
+    backend, runtime, _calls = env
+    monkeypatch.setattr(runtime, "supports_guidance", lambda model: guided)
+    _load(backend)
+    status = DiffusionStatusResponse(**backend.status())
+    assert status.supports_guidance is guided and status.supports_negative_prompt is guided
+    # generate() only passes a negative prompt above guidance 1.
+    assert status.negative_prompt_min_guidance == threshold
+    assert status.supports_live_preview is False
+
+
 def test_conversion_is_cached_across_loads(env):
     backend, runtime, calls = env
     _load(backend)

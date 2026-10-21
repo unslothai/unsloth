@@ -1673,13 +1673,22 @@ def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
 
 
 def get_packed_info_from_kwargs(
-    kwargs: dict, device: torch.device
+    kwargs: dict,
+    device: torch.device,
+    position_ids: Optional[torch.Tensor] = None,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
-    """Return packed sequence metadata expected by the attention kernels."""
+    """Return packed metadata, optionally inferring a mask-free prefill's boundaries."""
 
     seq_lengths = kwargs.get("packed_seq_lengths")
     if seq_lengths is None:
-        return None
+        # Callers must exclude padding masks and cached decoding before opting in.
+        if position_ids is None or position_ids.dim() != 2:
+            return None
+        varlen = _varlen_from_position_ids(position_ids)
+        if varlen is None:
+            return None
+        cu_seqlens, _ = varlen
+        seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1]
 
     entry = _PACKED_INFO_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths:

@@ -208,6 +208,60 @@ def cuda_gate_capabilities():
         return []
 
 
+def cuda_order_mismatch_names():
+    """Visible NVIDIA names when they differ and CUDA_DEVICE_ORDER is unset, else []."""
+    if is_hip() or os.environ.get("CUDA_DEVICE_ORDER", "").strip():
+        return []
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    if count <= 1:
+        return []
+    names = []
+    for i in range(count):
+        try:
+            names.append(str(torch.cuda.get_device_name(i)))
+        except Exception:
+            continue
+    names = list(dict.fromkeys(names))
+    return names if len(names) > 1 else []
+
+
+def xpu_supports_native_bf16():
+    """Without libocloc (absent in torch-xpu wheels) every aspect reads False, so trust the probe
+    only once some aspect reads True. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
+    aspects = (
+        "has_bfloat16_conversions",
+        "has_subgroup_matrix_multiply_accumulate",
+        "has_subgroup_matrix_multiply_accumulate_tensor_float32",
+        "has_subgroup_2d_block_io",
+    )
+    try:
+        count = torch.xpu.device_count()
+    except Exception:
+        return True
+    lacks_bf16 = probe_works = False
+    for index in range(count):
+        try:
+            props = torch.xpu.get_device_properties(index)
+        except Exception:
+            continue
+        lacks_bf16 |= getattr(props, "has_bfloat16_conversions", True) is False
+        probe_works |= any(getattr(props, name, False) is True for name in aspects)
+    return not (lacks_bf16 and probe_works)
+
+
+def zoo_shares_xpu_bf16():
+    """True once unsloth_zoo has _xpu_bf16_supported. An older zoo still counts emulated bf16 for
+    trainer AMP, gradient checkpointing and vLLM, so keep the old XPU answer there to load alike."""
+    try:
+        import unsloth_zoo.device_type as zoo_device_type
+    except Exception:
+        return False
+    return hasattr(zoo_device_type, "_xpu_bf16_supported")
+
+
 # Pre-Volta NVIDIA (Maxwell / Pascal, sm < 7.0): Inductor refuses to emit Triton for these
 # (GPUTooOldForTriton mid-training), while Unsloth's own Triton kernels still run, so train eagerly.
 def apply_pre_volta_compile_workaround(

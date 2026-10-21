@@ -4658,7 +4658,7 @@ def _connect(
                 key = _agent_api_key(base, None, minted_only = True)
             if key not in _cached_keys(_key_cache_path(), base, "minted"):
                 typer.echo(
-                    "Warning: Studio only sends a Connection's saved API key for the key "
+                    "Warning: Unsloth Studio only sends a Connection's saved API key for the key "
                     "`unsloth start` issues, so drop --api-key / UNSLOTH_API_KEY unless this "
                     "Connection needs no key.",
                     err = True,
@@ -5149,7 +5149,7 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
         return {}
     if not window:
         typer.echo(
-            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            "Warning: Unsloth Studio did not report the model's context length, so --max-tokens is ignored.",
             err = True,
         )
         return {}

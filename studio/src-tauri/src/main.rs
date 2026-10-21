@@ -2380,7 +2380,7 @@ fn main() {
         .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(|invoke| {
             if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
-                invoke.resolver.reject("Studio commands are only available to the main webview");
+                invoke.resolver.reject("Unsloth Studio commands are only available to the main webview");
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
