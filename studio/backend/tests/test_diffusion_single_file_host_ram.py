@@ -148,7 +148,12 @@ def _spy_need(monkeypatch):
     seen = []
     real = conv.refuse_host_ram_shortfall
 
-    def spy(path, need_bytes, why, logger = None):
+    def spy(
+        path,
+        need_bytes,
+        why,
+        logger = None,
+    ):
         seen.append(need_bytes)
         return real(path, need_bytes, why, logger)
 
