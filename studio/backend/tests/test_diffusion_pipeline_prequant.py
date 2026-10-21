@@ -1910,3 +1910,42 @@ def test_a_small_dit_kept_bf16_compiles_from_render_1(
     assert status["resolved"]["transformer_quant"]["value"] == "off"
     assert backend._state.speed_mode == expect_speed
     assert backend._state.speed_deferred is expect_deferred
+
+
+@pytest.mark.parametrize(
+    "repo, kept",
+    [
+        ("black-forest-labs/FLUX.2-klein-4B", True),
+        ("black-forest-labs/FLUX.2-klein-base-4B", True),
+        ("unsloth/FLUX.2-klein-4B", True),
+        # 9B variants share the family but are not small (18.2 GB bf16 transformer): the quantized default stays.
+        ("black-forest-labs/FLUX.2-klein-9B", False),
+        ("black-forest-labs/FLUX.2-klein-base-9B", False),
+        ("unsloth/FLUX.2-klein-9B", False),
+        ("unsloth/FLUX.2-klein-base-9B", False),
+    ],
+)
+def test_the_small_dit_rule_skips_the_9b_klein_variants(repo, kept):
+    fam = detect_family_for_pick(repo, None, None)
+    assert fam is not None and fam.name == "flux.2-klein"
+    assert (dmod._auto_keeps_bf16_reason(fam, "pipeline", repo) is not None) is kept
+    fits = types.SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"safe_device_budget_mib": 60_000, "resident_required_mib": 30_000},
+    )
+    assert (dmod._auto_quant_eager_reason(fam, fits, None, "pipeline", repo) is not None) is kept
+
+
+def test_a_large_variant_of_a_small_dit_family_quantises_under_auto(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _small_dit_kept_bf16(monkeypatch, dmod.SMALL_DIT_BF16_WHEN_RESIDENT)
+    seen = []
+
+    def excludes(base):
+        seen.append(base)
+        return base == Z_IMAGE_REPO
+
+    monkeypatch.setattr(dmod, "small_dit_rule_excludes", excludes)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+    assert Z_IMAGE_REPO in seen  # the load hands the decider its resolved base
+    assert spy.quantised == ["auto"]

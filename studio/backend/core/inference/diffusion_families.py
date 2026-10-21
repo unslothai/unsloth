@@ -324,6 +324,20 @@ SMALL_DIT_BF16_WHEN_RESIDENT = (
     "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
     "0.103 on Z-Image-Turbo)"
 )
+# Bases of a small-DiT family that are not small: FLUX.2 klein 9B / base 9B (18.2 GB bf16 transformer, unmeasured)
+# keep the quantized auto default. Upstream ids; mirrors fold back through ``canonical_base``.
+_SMALL_DIT_LARGE_BASES = frozenset(
+    {
+        "black-forest-labs/flux.2-klein-9b",
+        "black-forest-labs/flux.2-klein-base-9b",
+    }
+)
+
+
+def small_dit_rule_excludes(base_repo: Optional[str]) -> bool:
+    """True when ``base_repo`` (vendor id or mirror) is a large variant the small-DiT bf16 rule must not cover."""
+    return canonical_base(base_repo).lower() in _SMALL_DIT_LARGE_BASES
+
 
 # FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
 # sharded T5 through its index (the shards sit beside it in the snapshot). The shards are listed so every fetch,

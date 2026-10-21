@@ -55,6 +55,7 @@ from .diffusion_content import (
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
 from .diffusion_families import (
     SMALL_DIT_BF16_WHEN_RESIDENT,
+    small_dit_rule_excludes,
     named_variant_base,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -2963,8 +2964,13 @@ def _plan_proves_resident(plan: Any) -> bool:
     )
 
 
-def _auto_keeps_bf16_reason(fam: Any, kind: Optional[str] = "pipeline") -> Optional[str]:
-    """Why AUTO keeps bf16 when it fits (measured rule: pipeline loads only), or None; both deciders read this."""
+def _auto_keeps_bf16_reason(
+    fam: Any,
+    kind: Optional[str] = "pipeline",
+    base: Optional[str] = None,
+) -> Optional[str]:
+    """Why AUTO keeps bf16 when it fits (measured rule: pipeline loads only), or None; both deciders read this.
+    ``base`` is the resolved base repo: the small-DiT rule skips a family's large variants (FLUX.2 klein 9B)."""
     if not family_compiles_regionally(fam):
         return (
             f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
@@ -2976,6 +2982,8 @@ def _auto_keeps_bf16_reason(fam: Any, kind: Optional[str] = "pipeline") -> Optio
     measured = auto_bf16_when_resident_reason(getattr(fam, "name", None))
     if measured is None:
         return None
+    if measured == SMALL_DIT_BF16_WHEN_RESIDENT and small_dit_rule_excludes(base):
+        return None
     return (
         f"'{getattr(fam, 'name', None)}': {measured}; the bf16 weights fit on this GPU as they are"
     )
@@ -2986,11 +2994,12 @@ def _auto_quant_eager_reason(
     plan: Any,
     prequant_path: Optional[str] = None,
     kind: Optional[str] = "pipeline",
+    base: Optional[str] = None,
 ) -> Optional[str]:
     """Why AUTO keeps bf16 for this load, or None; an operator's own checkpoint wins."""
     if not _plan_proves_resident(plan):
         return None
-    reason = _auto_keeps_bf16_reason(fam, kind)
+    reason = _auto_keeps_bf16_reason(fam, kind, base)
     if reason is None:
         return None
     if prequant_path and local_prequant_path_ready(prequant_path):
@@ -5264,7 +5273,7 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                if auto and _auto_keeps_bf16_reason(fam) is not None:
+                if auto and _auto_keeps_bf16_reason(fam, base = base or repo_id) is not None:
                     bf16_memory = snapshot_device_memory(target)
                     bf16_plan = self._bf16_table_plan(
                         target,
@@ -5281,7 +5290,9 @@ class DiffusionBackend:
                     # Offline without the released shards, bf16 cannot assemble: a cached seed is the only way.
                     if (
                         bf16_plan is not None
-                        and _auto_quant_eager_reason(fam, bf16_plan, transformer_prequant_path)
+                        and _auto_quant_eager_reason(
+                            fam, bf16_plan, transformer_prequant_path, base = base or repo_id
+                        )
                         is not None
                         and not (
                             local_files_only
@@ -7561,7 +7572,7 @@ class DiffusionBackend:
                     and dense_quant_supported_kind(kind)
                     and dense_transformer_supported(target)
                     and not (kind == "gguf" and _has_active_lora(loras))
-                    and _auto_keeps_bf16_reason(fam, kind) is not None
+                    and _auto_keeps_bf16_reason(fam, kind, base) is not None
                     and (
                         eager_reason := _auto_quant_eager_reason(
                             fam,
@@ -7582,6 +7593,7 @@ class DiffusionBackend:
                             ),
                             transformer_prequant_path,
                             kind,
+                            base,
                         )
                     )
                     is not None
