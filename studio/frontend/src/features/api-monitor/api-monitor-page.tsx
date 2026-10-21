@@ -546,6 +546,12 @@ const RequestRow = memo(function RequestRow({
           {entry.model}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-ui-11 tabular-nums text-muted-foreground">
+          {entry.prompt_tokens != null || entry.completion_tokens != null ? (
+            <span title="Tokens in (prompt) and out (completion)">
+              {optionalCount(entry.prompt_tokens)} in ·{" "}
+              {optionalCount(entry.completion_tokens)} out
+            </span>
+          ) : null}
           <span
             className="flex items-center gap-1"
             title="Total time: queue wait, prompt processing and generation"
@@ -772,9 +778,12 @@ function RequestDetail({
       <MetricGroup
         title="Tokens"
         items={[
-          { label: "Prompt", value: optionalCount(entry.prompt_tokens) },
           {
-            label: "Completion",
+            label: "Input (prompt)",
+            value: optionalCount(entry.prompt_tokens),
+          },
+          {
+            label: "Output (completion)",
             value: optionalCount(entry.completion_tokens),
           },
           { label: "Total", value: optionalCount(entry.total_tokens) },
@@ -1317,20 +1326,20 @@ export function ApiMonitorPage(): ReactElement {
             each request live.
           </p>
         </div>
-        <ToolbarTooltip label="API keys, usage examples, access and model switching">
+        <ToolbarTooltip label="API settings: keys, usage examples, access and model switching">
           <Button
             type="button"
             variant="outline"
-            size="sm"
+            size="icon"
             onClick={openApiSettings}
-            className="h-9 gap-1.5 rounded-full px-3.5"
+            aria-label="API settings"
+            className="rounded-full"
           >
             <HugeiconsIcon
               icon={Settings02Icon}
               strokeWidth={1.75}
               className="size-4"
             />
-            API settings
           </Button>
         </ToolbarTooltip>
       </header>
@@ -1538,9 +1547,9 @@ export function ApiMonitorPage(): ReactElement {
           hint="while decoding"
         />
         <Stat
-          label="Tokens"
-          value={formatCount(modelStats.totalTokens)}
-          hint="prompt + completion"
+          label="Tokens in / out"
+          value={`${formatCount(modelStats.inputTokens)} / ${formatCount(modelStats.outputTokens)}`}
+          hint={`${formatCount(modelStats.totalTokens)} total`}
         />
       </section>
 
