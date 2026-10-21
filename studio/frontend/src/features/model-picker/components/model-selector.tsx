@@ -200,7 +200,7 @@ function ModelSelectorTrigger({
   // The names alone: one model's format and quant beside a count read as if only it were loaded.
   const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
   const triggerTitle = listsNames
-    ? loadedNames?.join(", ")
+    ? loadedNames?.join(" • ")
     : severalLoaded
       ? `${loadedCount} models loaded`
       : (currentModel?.name ?? placeholder);
