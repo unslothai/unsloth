@@ -72,7 +72,6 @@ def test_generation_skips_the_old_forward_and_marks_the_batch():
         patched,
     )
     assert skip is not None and skip.start() > decision
-    # The old-policy forward sits in the elif branch, the rollout logprobs are already built.
     assert patched.index("self._get_per_token_logps_and_entropies(", skip.end()) > skip.end()
     assert patched.index("sampling_per_token_logps", 0) < decision
     marker = patched.index('output["unsloth_rollout_logps_as_old"] = torch.ones(')
@@ -80,7 +79,6 @@ def test_generation_skips_the_old_forward_and_marks_the_batch():
 
 
 def test_trl_gate_is_untouched_when_the_flag_is_off():
-    # The rewritten branch still carries TRL's own condition verbatim.
     patched = _patched_generate_and_score()
     match = re.search(
         r"elif (self\.args\.gradient_accumulation_steps % generate_every != 0[^:]*):\n", patched
@@ -123,7 +121,6 @@ def test_engages_and_counts(monkeypatch):
     _Zoo(monkeypatch, True)
     trainer = _trainer()
     sampling, mask = _batch()
-    # Non-finite values outside the loss tokens (padding, tool output) do not matter.
     sampling[0, 4] = float("nan")
     tool_mask = torch.ones_like(mask)
     tool_mask[1, 2] = 0
@@ -156,7 +153,6 @@ def test_falls_back_to_the_trainer_old_forward(monkeypatch, case):
         assert decide(trainer, sampling, mask) is False
     assert trainer._unsloth_rollout_logps_as_old_fallbacks == 2
     assert not hasattr(trainer, "_unsloth_rollout_logps_as_old_batches")
-    # Warned once per reason, not per batch.
     assert sum("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD" in str(w.message) for w in caught) == 1
 
 
@@ -237,9 +233,7 @@ def test_marked_batch_keeps_its_rollout_logprobs_on_older_trl():
 
 
 def test_missing_rollout_logprobs_still_join_the_rank_reduction(monkeypatch):
-    # A rollout_func can return logprobs on one rank and None on another. The None rank must still
-    # take part in the reduction, or the other rank blocks in gather while it runs the collective
-    # old-policy forward.
+    # A None rank must still join the reduction, or the other ranks deadlock.
     monkeypatch.setenv("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", "1")
     _Zoo(monkeypatch, True)
     sampling, mask = _batch()

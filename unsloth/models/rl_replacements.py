@@ -2375,8 +2375,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "not be installed for this TRL version and are ignored.",
         )
 
-    # Opt-in UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1 (verl bypass_mode, vime --use-rollout-logprobs):
-    # decided once per generation batch, before the old-policy forward it replaces.
     _old_logps_if = re.search(
         r"\n([ \t]*)if self\.args\.gradient_accumulation_steps % generate_every != 0",
         function,
@@ -3657,7 +3655,6 @@ def _unsloth_grpo_rollout_logps_as_old(
 
     reason = None
     if sampling_per_token_logps is None:
-        # A custom rollout_func may return logprobs on some processes only.
         reason = "there are no rollout logprobs (needs use_vllm=True or a rollout_func)"
     elif getattr(trainer.args, "loss_type", None) == "vespo":
         reason = "loss_type='vespo' weights by the vLLM importance ratio itself"
@@ -3673,7 +3670,6 @@ def _unsloth_grpo_rollout_logps_as_old(
         if tool_mask is not None:
             loss_mask = loss_mask & tool_mask.to(device = loss_mask.device, dtype = torch.bool)
         if not bool(torch.isfinite(sampling_per_token_logps[loss_mask]).all()):
-            # vLLM could not score some tokens (NaN): those need the trainer's own pi_old.
             reason = "some rollout logprobs on loss tokens are not finite"
     accelerator = getattr(trainer, "accelerator", None)
     if getattr(accelerator, "num_processes", 1) > 1:
@@ -3927,12 +3923,10 @@ def grpo_trainer_compute_loss(function_name, function):
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
-        # Marked in generation under UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1: pi_old is the rollout policy.
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
-            # verl's dual-clip default (clip_ratio_c = 3.0), which TRL's delta matches: it bounds
-            # pi_theta / pi_rollout where the rollout engine gave a token far less mass.
+            # verl's dual-clip default (clip_ratio_c = 3.0).
             _loss_delta = 3.0
         current_gradient_accumulation_steps = _unsloth_grpo_accumulation_steps(self)
         num_processes = self.accelerator.num_processes
@@ -4231,7 +4225,6 @@ def grpo_trainer_compute_loss(function_name, function):
                 delta,
                 flat_is_ratio,
                 completion_mask,
-                # Rollout logprobs as pi_old report the clipped token ratio pi_theta / pi_rollout.
                 (not _rollout_logps_as_old)
                 and _unsloth_grpo_is_sequence_level(
                     getattr(self.args, "vllm_importance_sampling_mode", None)
