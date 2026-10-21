@@ -240,4 +240,7 @@ test("FileSaver.js's blank popup, pointed at the file, saves it", async () => {
   const page = shellNavigation(true);
   (page.open() as { location: string }).location = "https://b.example/next";
   assert.deepEqual(page.posted, [{ type: "navigate", url: "https://b.example/next", newTab: true, background: false }]);
+  const late = shellNavigation(false);
+  (late.open() as { location: string }).location = "https://b.example/next";
+  assert.deepEqual(late.posted, [{ type: "navigate", url: "https://b.example/next", newTab: false, background: false }]);
 });

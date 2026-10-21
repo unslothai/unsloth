@@ -549,7 +549,8 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // A blank popup the page then points somewhere (FileSaver.js sends it the file): open or save that.
         const blankPopup = () => {
-          const go = (url) => navigate(String(url), true);
+          // Pointed there after the click's activation ran out, a new tab would be refused: open it here instead.
+          const go = (url) => navigate(String(url), navigator.userActivation?.isActive !== false);
           const location = { set href(url) { go(url); }, assign: go, replace: go };
           return { closed: false, document: { title: "", body: {} }, get location() { return location; }, set location(url) { go(url); }, close() {}, focus() {} };
         };
