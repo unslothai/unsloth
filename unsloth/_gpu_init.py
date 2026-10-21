@@ -330,8 +330,11 @@ try:
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
         cuda_gate_capabilities,
+        cuda_order_mismatch_names,
         cuda_visible_capabilities,
         hip_visible_archs,
+        xpu_supports_native_bf16,
+        zoo_shares_xpu_bf16,
     )
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
@@ -347,6 +350,7 @@ from .import_fixes import (
     fix_transformers_flash_attention_mrope_packed_sequence,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
+    fix_transformers_tokenizer_config_vocab_file_override,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
@@ -410,9 +414,11 @@ fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
-# CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
+# CVE-2026-4372 / 5241 / 9856 and the tokenizer_config.json vocab path traversal, no-ops once
+# transformers carries the fix; before any config or tokenizer loads.
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
+fix_transformers_tokenizer_config_vocab_file_override()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -506,6 +512,7 @@ del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
+del fix_transformers_tokenizer_config_vocab_file_override
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
@@ -588,6 +595,21 @@ elif DEVICE_TYPE == "cuda":
             return SUPPORTS_BFLOAT16
 
         torch.cuda.is_bf16_supported = is_bf16_supported
+
+    _mixed_names = cuda_order_mismatch_names()
+    if _mixed_names:
+        _order_hint = (
+            "$env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'"
+            if os.name == "nt"
+            else "export CUDA_DEVICE_ORDER=PCI_BUS_ID"
+        )
+        print(
+            f"Unsloth: visible GPUs differ ({', '.join(_mixed_names)}), so CUDA's device indices may "
+            "not match nvidia-smi's and CUDA_VISIBLE_DEVICES can select another card. "
+            f"Run `{_order_hint}` before starting Python to make them match."
+        )
+        del _order_hint
+    del _mixed_names
 elif DEVICE_TYPE == "hip":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
 
@@ -602,9 +624,10 @@ elif DEVICE_TYPE == "hip":
     torch.cuda.is_bf16_supported = is_bf16_supported
     del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
-    # torch.xpu.is_bf16_supported() does not have including_emulation set SUPPORTS_BFLOAT16 as
-    # torch.xpu.is_bf16_supported()
-    SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+    # Don't patch torch.xpu.is_bf16_supported: Studio reads its strict answer.
+    SUPPORTS_BFLOAT16 = (
+        xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else torch.xpu.is_bf16_supported()
+    )
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()

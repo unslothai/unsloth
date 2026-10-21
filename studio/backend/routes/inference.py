@@ -4526,7 +4526,7 @@ async def create_artifact_preview_page(
 
 @studio_router.get("/artifact-preview-page/{token}", include_in_schema = False)
 async def artifact_preview_page(token: str):
-    """Unauthenticated: an outside browser has no Studio session, so the token is the capability."""
+    """Unauthenticated: an outside browser has no Unsloth session, so the token is the capability."""
     entry = _artifact_pages.get(token)
     if entry is None or time.monotonic() - entry[0] > _ARTIFACT_PAGE_TTL_SECONDS:
         _artifact_pages.pop(token, None)
@@ -5280,6 +5280,7 @@ def _admit_tool_access(payload) -> None:
         getattr(payload, "permission_mode", None),
         bypass_permissions = bool(getattr(payload, "bypass_permissions", False)),
         disable_sandbox = bool(getattr(payload, "disable_sandbox", False)),
+        sandbox_level = getattr(payload, "sandbox_level", None),
     )
 
 
@@ -6282,7 +6283,7 @@ def _skill_tool_tip(
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
         "helpful, then call read_skill before following its instructions unless the complete "
-        "SKILL.md is already in context. Studio loads explicit @skill-name mentions before "
+        "SKILL.md is already in context. Unsloth loads explicit @skill-name mentions before "
         "generation when permitted; do not read an already loaded manifest again or claim a "
         "failed/denied load succeeded."
         + create_tip
@@ -11634,12 +11635,23 @@ async def _maybe_auto_switch_model(
         return
 
     async def _refuse_foreign_resident() -> None:
-        """Serve a named model only if the resident is the caller's own or answers to the name."""
+        """Serve a named model only if the resident is the caller's own, or answers to the name
+        and is itself a model the caller may load."""
         if not named_model or not account_access.managed_account():
             return
         if not account_access.resident_hidden("chat", _loaded_slot_ident()):
             return
         if await asyncio.to_thread(_loaded_identity_satisfies, named_model):
+            # The name was authorized, not the resident: a caller's own file can carry any id.
+            resident = _loaded_slot_ident()
+            try:
+                await asyncio.to_thread(account_access.require_model_access, resident)
+            except HTTPException as refusal:
+                # A Hub resident the caller's own token can fetch is theirs to use as well.
+                if refusal.status_code != 404 or not await _caller_token_authorizes_download(
+                    str(resident or ""), fastapi_request
+                ):
+                    raise
             return
         raise HTTPException(status_code = 404, detail = "Model not found")
 
@@ -11746,6 +11758,7 @@ async def _maybe_auto_switch_model(
     # from resident state before consulting the filesystem index: rebuilding a stale
     # multi-root index here used to hold the request for seconds before streaming.
     if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+        await _refuse_foreign_resident()
         warm_index_soon()
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
@@ -19432,7 +19445,7 @@ def _reject_unsupported_managed_kind(request, config) -> None:
         status_code = 400,
         detail = (
             f"This model was detected as {detected_kind}. "
-            f"The Studio {request.engine} integration currently supports text and vision checkpoints. "
+            f"The Unsloth {request.engine} integration currently supports text and vision checkpoints. "
             "Choose Default for this model, or select a supported text checkpoint."
         ),
     )
@@ -23090,6 +23103,45 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         "logging_enabled": api_monitor.enabled,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
+
+
+@studio_router.get("/sampling-defaults")
+async def get_sampling_defaults(model: str, current_subject: str = Depends(get_current_subject)):
+    """The sampling a /v1 request naming ``model`` gets for every field it leaves out.
+
+    The same resolution the request path applies (operator ``UNSLOTH_SAMPLING_*`` pins, then the
+    model's recommendation, then the schema default), so the API page's example request shows the
+    values a client would actually get. Off-loop: the first read of a model loads its YAML.
+    """
+    # A kept model answers its own requests: route as the request path does, so the backend getters
+    # below read that slot rather than the primary.
+    await _route_to_extra_slot(model)
+    return await asyncio.to_thread(_sampling_defaults_for, model)
+
+
+def _sampling_defaults_for(model: str) -> dict:
+    """``resolve_effective_sampling`` as the request path calls it. For the loaded llama model that
+    keys on its identifier and passes its default thinking mode: Qwen3-family recommendations
+    differ between thinking and non-thinking, and leaving it out shows values a request never gets.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling
+
+    model_id, thinking = model, None
+    llama_backend = get_llama_cpp_backend()
+    # Another account's resident stays hidden, as on the monitor: resolving against it would tell
+    # the caller which model that account has loaded.
+    if getattr(llama_backend, "is_loaded", False) and not account_access.resident_hidden(
+        "chat", _monitor_active_model()
+    ):
+        identifier = getattr(llama_backend, "model_identifier", None)
+        names = {n for n in (identifier, _llama_public_model_id(llama_backend)) if n}
+        if model in names or model.rsplit(":", 1)[0] in names:
+            model_id = identifier or model
+            thinking = _sampling_thinking_mode(
+                llama_backend,
+                ChatCompletionRequest(messages = [{"role": "user", "content": "Hello!"}]),
+            )
+    return resolve_effective_sampling(model_id, {}, thinking = thinking)
 
 
 @studio_router.delete("/monitor")
@@ -28729,8 +28781,28 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     finds the same way, honouring ``file://`` under ``--media-path``. Forwarding such a clip as
     opaque payload is therefore still a local file read, so refuse it by name instead.
     """
-    if not clip or clip[:5].lower() == "data:" or _is_remote_video(clip):
+    if not clip or _is_remote_video(clip):
         return None
+    if clip[:5].lower() == "data:":
+        # Skip every data: header (bounded) and judge what follows like any other clip.
+        pos = 0
+        while clip[pos : pos + 5].lower() == "data:":
+            comma = clip.find(",", pos, pos + 256)
+            if comma < 0:
+                # No payload separator within a real header's length: never forward it as data.
+                return (400, "Unsupported video payload in data URI. Send the clip as base64 data.")
+            pos = comma + 1
+        rest = clip[pos : pos + _MAX_VIDEO_SCHEME_CHARS + 1]
+        if ":" not in rest:
+            return None
+        return (
+            _REMOTE_VIDEO_REFUSAL
+            if _is_remote_video(rest)
+            else (
+                400,
+                "Unsupported video payload in data URI. Send the clip as base64 data.",
+            )
+        )
     # ':' is not in the base64 alphabet, so an early colon marks a URL, not payload.
     head = clip[: _MAX_VIDEO_SCHEME_CHARS + 1]
     if ":" not in head:
@@ -34101,9 +34173,10 @@ async def produce_openai_chat_completions(
                             _tool_decode_finished = True
                             break
 
-                        # Anything after the gated tool_start means the user answered.
+                        # Anything after the gated tool_start is the answer, except the context meter sent before the wait.
                         if not (
                             (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
+                            or event["type"] == "context_usage"
                             or (
                                 event["type"] == "skill_load"
                                 and event.get("status") == "awaiting_approval"
@@ -37651,7 +37724,7 @@ async def open_sandbox_file(
         await run_in_threadpool(open_in_default_app, Path(path), Path(root))
     except PermissionError:
         raise HTTPException(
-            status_code = 415, detail = "This kind of file does not open outside Studio"
+            status_code = 415, detail = "This kind of file does not open outside Unsloth"
         ) from None
     except FileNotFoundError:
         raise HTTPException(status_code = 404, detail = "Not found") from None
@@ -40084,7 +40157,16 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
         raise HTTPException(
             status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
         )
+    _embeddings_truncate(body)
     return items
+
+
+def _embeddings_truncate(body: dict) -> bool:
+    """``truncate`` (Ollama / TEI spelling), default on (#14309)."""
+    truncate = body.get("truncate", True)
+    if not isinstance(truncate, bool):
+        raise HTTPException(status_code = 400, detail = "'truncate' must be a boolean.")
+    return truncate
 
 
 def _embeddings_texts(body: dict) -> list[str]:
@@ -40327,12 +40409,19 @@ async def _studio_embeddings(
         # setting, mixing one model's limit and dimension with another's vectors.
         limit = rag_embeddings.max_tokens(model_name)
         count = rag_embeddings.token_counter(model_name)
-        token_counts = [count(text) for text in texts]
+        inputs = texts
+        token_counts = [count(text) for text in inputs]
         if limit and max(token_counts) > limit:
-            raise HTTPException(
-                status_code = 400,
-                detail = f"'input' exceeds the {limit}-token limit of {label}.",
+            if not _embeddings_truncate(body):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"'input' exceeds the {limit}-token limit of {label}.",
+                )
+            inputs = [rag_embeddings.clip_to_limit(text, count, limit)[0] for text in inputs]
+            logger.warning(
+                "Embedding input over the %d-token limit of %s truncated to fit", limit, label
             )
+            token_counts = [count(text) for text in inputs]
         if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {label}."
@@ -40340,7 +40429,7 @@ async def _studio_embeddings(
         # encode_with_identity: an ST failure swaps the process to llama-server mid-encode, and
         # reporting the configured name anyway files two spaces under one label.
         vectors, identity = rag_embeddings.encode_with_identity(
-            texts, model_name = model_name, normalize = True
+            inputs, model_name = model_name, normalize = True
         )
         return vectors, identity, sum(token_counts), limit
 
@@ -40437,6 +40526,75 @@ async def _studio_embeddings(
     return Response(content = json.dumps(payload), media_type = "application/json")
 
 
+# llama-server's refusals past one micro-batch (500) or the slot context (400), server-context.cpp;
+# a splittable slot (LAST pooling, e.g. Qwen3-Embedding) refuses n_tokens >= n_ctx instead.
+_LLAMA_EMBED_OVERFLOW_RE = re.compile(
+    r"input \(\d+ tokens\) is (?:too large to process\. increase the physical batch size "
+    r"\(current batch size: (\d+)\)|larger than the max context size \((\d+) tokens\))"
+    r"|request \(\d+ tokens\) exceeds the available context size \((\d+) tokens\)"
+)
+
+
+def _llama_embedding_overflow_limit(resp) -> Optional[int]:
+    if resp.status_code not in (400, 500):
+        return None
+    try:
+        match = _LLAMA_EMBED_OVERFLOW_RE.search(resp.json()["error"]["message"])
+    except Exception:  # noqa: BLE001
+        return None
+    if not match:
+        return None
+    if match.group(3):
+        return int(match.group(3)) - 1
+    return int(match.group(1) or match.group(2))
+
+
+async def _truncated_llama_embedding_inputs(
+    client, base_url, headers, value, limit, cache: dict
+) -> Optional[list]:
+    """Strings past ``limit`` cut to their first tokens, keeping the special tokens llama-server
+    adds around a string. None when nothing was cut. ``cache`` spans the retries."""
+    items = [value] if isinstance(value, str) else value
+    # A top-level array holding numbers is one prompt (tokens, or tokens mixed with strings).
+    if not isinstance(items, list) or any(not isinstance(item, (str, list)) for item in items):
+        return None
+
+    async def tokenize(text: str, add_special: bool) -> Optional[list]:
+        r = await client.post(
+            f"{base_url}/tokenize",
+            json = {"content": text, "add_special": add_special},
+            headers = headers,
+            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        )
+        try:
+            tokens = r.json()["tokens"] if r.status_code == 200 else None
+        except (ValueError, KeyError, TypeError):
+            tokens = None
+        return tokens if isinstance(tokens, list) else None
+
+    out, cut = [], False
+    for index, item in enumerate(items):
+        # Short ASCII skips /tokenize (>= 1 byte per token); normalization can expand non-ASCII.
+        if isinstance(item, str) and (not item.isascii() or len(item) + 8 > limit):
+            if index not in cache:
+                cache[index] = [await tokenize(item, True), None]
+            full, bare = cache[index]
+            if full is None:
+                return None
+            if len(full) > limit:
+                if bare is None:
+                    bare = cache[index][1] = await tokenize(item, False)
+                    if bare is None:
+                        return None
+                extra = len(full) - len(bare)
+                head = next((h for h in range(extra + 1) if full[h : h + len(bare)] == bare), None)
+                if head is not None and limit > extra:
+                    item = full[:head] + bare[: limit - extra] + full[head + len(bare) :]
+                    cut = True
+        out.append(item)
+    return out if cut else None
+
+
 def _embedding_width(resp) -> Optional[int]:
     try:
         embedding = resp.json()["data"][0]["embedding"]
@@ -40461,7 +40619,7 @@ def _embeddings_input_present(body: dict) -> bool:
 @account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
-    else Studio's configured embedding model."""
+    else Unsloth's configured embedding model."""
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))
@@ -40552,7 +40710,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
     # llama-server ignores `dimensions`; checked against the returned width below.
     body = dict(body)
+    if account_access.managed_account():
+        # llama-server fetches media URLs inside multimodal items; a managed account sends text or tokens only.
+        _embeddings_items(body, tokens_ok = True)
     dimensions = body.pop("dimensions", None)
+    truncate = _embeddings_truncate(body)
+    body.pop("truncate", None)
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
@@ -40591,13 +40754,35 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     _direct_llama_request_started()
     try:
         try:
+            upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
             resp = await _client.post(
                 target_url,
                 json = body,
-                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+                headers = upstream_headers,
                 timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             )
-        except httpx.RequestError:
+            original, cache, limit = body.get("input"), {}, None
+            for _ in range(2):
+                reported = _llama_embedding_overflow_limit(resp) if truncate else None
+                if not reported:
+                    break
+                # Cut the client's inputs, not the token arrays the first retry sent.
+                limit = min(limit or reported, reported)
+                inputs = await _truncated_llama_embedding_inputs(
+                    _client, llama_backend.base_url, upstream_headers, original, limit, cache
+                )
+                if not inputs:
+                    break
+                logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
+                body["input"] = inputs
+                resp = await _client.post(
+                    target_url,
+                    json = body,
+                    headers = upstream_headers,
+                    timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+                )
+        # RuntimeError: a retry or /tokenize call sent after the watcher already closed the client.
+        except (httpx.RequestError, RuntimeError):
             # The watcher closed the client out from under the request: report the cancel, not a transport failure.
             _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise
@@ -44396,6 +44581,72 @@ def _count_model_id(model_id, via_api_key):
     ]
 
 
+def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
+    from core.inference.llama_cpp import (
+        _can_reset_epoch,
+        _compaction_fit_kwargs,
+        _fit_with_instruction_pins,
+        _memory_tool_withheld,
+        _sticky_compaction_details,
+    )
+
+    def count_tokens(candidate):
+        return backend.count_chat_tokens(
+            candidate,
+            None,
+            tools,
+            strict = True,
+            chat_template_kwargs = template_kwargs,
+            # A generation can start between /apply-template and /tokenize.
+            should_abort = lambda: model_slots.routed_generation_count() > 0,
+        )
+
+    context_length = getattr(backend, "_effective_context_length", None)
+    thread_id = getattr(payload, "thread_id", None)
+    if (
+        _rolling_context_policy(payload) is not None
+        and context_length
+        and thread_id
+        and not _takes_tool_passthrough(payload, backend)
+    ):
+        policy = _request_context_policy(payload)
+        ratio = _request_compaction_headroom_ratio(payload)
+        can_reset = _can_reset_epoch(
+            thread_id,
+            backend.supports_tools,
+            tools_withheld = _memory_tool_withheld(thread_id, tools),
+        )
+        sticky, checkpoint, manual = _sticky_compaction_details(
+            thread_id,
+            messages,
+            context_policy = policy,
+            can_reset = can_reset,
+            compaction_headroom_ratio = ratio,
+        )
+        if sticky > 0:
+            fitted, truncation = _fit_with_instruction_pins(
+                messages,
+                context_length = context_length,
+                max_tokens = getattr(payload, "max_tokens", None),
+                count_tokens = count_tokens,
+                sticky_dropped = sticky,
+                sticky_is_checkpoint = checkpoint,
+                sticky_manual = manual,
+                can_reset = can_reset,
+                keeps_boundary = True,
+                recall_offered = any(
+                    (tool.get("function") or {}).get("name") == "search_conversation"
+                    for tool in tools or []
+                ),
+                replay_only = True,
+                **_compaction_fit_kwargs(policy, ratio),
+            )
+            if truncation is not None:
+                return int(truncation["prompt_tokens_after"])
+            messages = fitted
+    return count_tokens(messages)
+
+
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
@@ -44600,12 +44851,25 @@ async def chat_count_tokens(
                 status_code = 503,
                 detail = "Cannot count tokens until enabled MCP tools have been discovered.",
             )
-    if not _takes_passthrough and (_tools_on or _mcp_on) and llama_backend.supports_tools:
+    if (
+        not _takes_passthrough
+        and llama_backend.supports_tools
+        and (
+            _tools_on
+            or _mcp_on
+            or (
+                not _client_disabled_tool_calls
+                and payload.max_tool_calls_per_message != 0
+                and await asyncio.to_thread(_checkpoint_recall_may_enable_tools, payload)
+            )
+        )
+    ):
         tools_to_use = await _select_request_tools(
             payload,
             tools_on = _tools_on,
             mcp_allowed = _mcp_allowed,
             supports_vision = bool(getattr(llama_backend, "is_vision", False)),
+            checkpoint_fitted = _rolling_context_policy(payload) is not None,
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
@@ -44630,6 +44894,12 @@ async def chat_count_tokens(
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
+            )
+            _count_nudge = _apply_compaction_nudge(
+                _count_nudge,
+                tools_to_use,
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                payload = payload,
             )
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
@@ -44684,15 +44954,12 @@ async def chat_count_tokens(
 
     try:
         count = await asyncio.to_thread(
-            llama_backend.count_chat_tokens,
+            _count_chat_context_tokens,
+            llama_backend,
+            payload,
             openai_messages,
-            None,
             openai_tools,
-            strict = True,
-            chat_template_kwargs = _template_kwargs,
-            # Polled between /apply-template and /tokenize: admission and the work are separate
-            # steps, so a run starting in between is caught here and the second round trip is not.
-            should_abort = lambda: model_slots.routed_generation_count() > 0,
+            _template_kwargs,
         )
     except CountAborted:
         raise HTTPException(
@@ -50874,8 +51141,10 @@ async def diffusion_download_plan(
                     text_encoder_files = request.supplied_text_encoder_files(),
                     gguf_filename = request.gguf_filename,
                 )
+        from core.inference.diffusion_memory import unified_oversize_scoped
+
         plan = await asyncio.to_thread(
-            planner.download_plan,
+            unified_oversize_scoped(request.allow_oversized_load, planner.download_plan),
             request.model_path,
             gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
@@ -51392,6 +51661,8 @@ async def load_diffusion_model_gated(
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
                 **_component_file_kwargs(request),
+                # Only when set: the native engines take no such argument.
+                **({"allow_oversized_load": True} if request.allow_oversized_load else {}),
             )
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would
             # bring the old model's upsampler up beside this one: cancel it now that the load is visible.

@@ -215,7 +215,7 @@ export const fr = {
     importBookmarksDoneOne: "{count} favori importé.",
     importBookmarksDoneMany: "{count} favoris importés.",
     importBookmarksNone: "Aucun nouveau favori dans ce fichier.",
-    importBookmarksPartial: "{count} importés, mais {leftOut} autres n'ont pas pu être ajoutés : Studio conserve jusqu'à {max} favoris.",
+    importBookmarksPartial: "{count} importés, mais {leftOut} autres n'ont pas pu être ajoutés : Unsloth conserve jusqu'à {max} favoris.",
     importBookmarksFailed: "Impossible de lire ce fichier. Choisissez un fichier HTML de favoris exporté depuis un navigateur.",
     downloadsTitle: "Téléchargements",
     askWhereToSaveSetting: "Demander où enregistrer chaque fichier",
@@ -266,7 +266,7 @@ export const fr = {
     annotationScreenshotsAlways: "Toujours inclure",
     annotationScreenshotsNever: "Ne jamais inclure",
     clearDataSetting: "Effacer les données de navigation",
-    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Studio.",
+    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Unsloth.",
     manage: "Gérer",
     fullView: {
       enter: "Plein écran",
@@ -848,6 +848,7 @@ export const fr = {
       byProject: "Par projet",
       inOneList: "Dans une seule liste",
       sortChatsBy: "Trier les discussions par",
+      projectsHome: "Accueil des projets",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
@@ -1450,15 +1451,15 @@ export const fr = {
       dictation: {
         audioUploadTitle: "Dicter avec un enregistrement",
         audioUploadDescription:
-          "Votre navigateur nécessite une connexion sécurisée (HTTPS) pour enregistrer directement dans Studio. Avec cette connexion HTTP, utilisez plutôt l'enregistreur de votre téléphone ou choisissez un enregistrement sauvegardé. Votre serveur Studio transcrira l'audio et ajoutera le texte à votre message.",
+          "Votre navigateur nécessite une connexion sécurisée (HTTPS) pour enregistrer directement dans Unsloth. Avec cette connexion HTTP, utilisez plutôt l'enregistreur de votre téléphone ou choisissez un enregistrement sauvegardé. Votre serveur Unsloth transcrira l'audio et ajoutera le texte à votre message.",
         audioUploadChooseFile: "Choisir un enregistrement",
         audioUploadRecord: "Enregistrer l'audio",
         audioUploadIphoneHint:
           "Sur iPhone, sauvegardez un enregistrement depuis Dictaphone ou une autre application d'enregistrement, puis choisissez-le ici.",
         audioUploadServerModelNote:
-          "Cet enregistrement utilise le modèle local indiqué ci-dessus sur le serveur Studio, même si la dictée habituelle utilise un autre moteur.",
+          "Cet enregistrement utilise le modèle local indiqué ci-dessus sur le serveur Unsloth, même si la dictée habituelle utilise un autre moteur.",
         audioUploadAutomatic: "Automatique",
-        audioUploadModelReady: "Prêt sur ce serveur Studio",
+        audioUploadModelReady: "Prêt sur ce serveur Unsloth",
         audioUploadRetryTitle: "Impossible de transcrire {file}",
         audioUploadRetry: "Réessayer la transcription",
         audioUploadChooseModel:
@@ -1988,7 +1989,7 @@ export const fr = {
         menuSubtitle: "Pour la recherche de fichiers",
         device: "Appareil d'embedding",
         deviceDescription:
-          "Où s'exécute le modèle d'embedding, pour tous les modèles. Le GPU indexe plus vite les grands ensembles de documents, mais garde un peu de VRAM occupée jusqu'au redémarrage de Studio.",
+          "Où s'exécute le modèle d'embedding, pour tous les modèles. Le GPU indexe plus vite les grands ensembles de documents, mais garde un peu de VRAM occupée jusqu'au redémarrage de Unsloth.",
         deviceAuto: "Automatique",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2426,6 +2427,9 @@ export const fr = {
         multiModelDescriptionAlways:
           "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
         multiModelHint: "Concerne les modèles de discussion, vocaux, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        allowOversizedLoad: "Autoriser le chargement de modèles trop grands",
+        allowOversizedLoadDescription: "Charger les modèles d'image et de vidéo même si la vérification de mémoire indique qu'ils ne tiennent pas.",
+        allowOversizedLoadHint: "S'applique lorsque le CPU et le GPU partagent une seule mémoire (Apple Silicon, GPU intégrés). Unsloth refuse un chargement quand son estimation des poids du modèle dépasse la mémoire restante après la réserve pour le système d'exploitation. Si cette option est activée, le chargement est tenté quand même. L'estimation peut se tromper dans les deux sens : un chargement trop grand peut échouer, épuiser la mémoire, faire beaucoup swapper l'ordinateur ou le bloquer, ou arrêter Unsloth. Désactivé par défaut.",
         mediaIdleUnloadDescription:
           "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
@@ -2876,7 +2880,7 @@ export const fr = {
       importFailed: "Échec de l'importation.",
       importFromSource: "Importer depuis {source}",
       importFromSourceDescription:
-        "Copiez vos conversations {source} dans Studio, regroupées par projet.",
+        "Copiez vos conversations {source} dans Unsloth, regroupées par projet.",
       importingAction: "Importation...",
       importedSourceOneChat: "1 conversation importée depuis {source}.",
       importedSourceChatCount:
@@ -3314,7 +3318,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "L’application est connectée à un serveur Studio déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
+          "L’application est connectée à un serveur Unsloth déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",
@@ -3936,7 +3940,7 @@ export const fr = {
         decisionColumnsMissing:
           "Les modèles de décision ont besoin des colonnes state, questions et gold (ou answers). Colonnes manquantes : {columns}.",
         decisionOwnerOnly:
-          "Seul le propriétaire de Studio peut affiner des modèles de décision.",
+          "Seul le propriétaire de Unsloth peut affiner des modèles de décision.",
         hfDatasetRequired:
           "Sélectionnez d'abord un jeu de données Hugging Face.",
         hfDatasetSplitRequired:

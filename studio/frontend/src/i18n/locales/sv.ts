@@ -226,7 +226,7 @@ export const sv = {
     importBookmarksDoneOne: "Importerade {count} bokmärke.",
     importBookmarksDoneMany: "Importerade {count} bokmärken.",
     importBookmarksNone: "Inga nya bokmärken i den filen.",
-    importBookmarksPartial: "Importerade {count}, men {leftOut} till fick inte plats: Studio sparar högst {max} bokmärken.",
+    importBookmarksPartial: "Importerade {count}, men {leftOut} till fick inte plats: Unsloth sparar högst {max} bokmärken.",
     importBookmarksFailed: "Det gick inte att läsa filen. Välj en HTML-fil med bokmärken som exporterats från en webbläsare.",
     downloadsTitle: "Hämtade filer",
     askWhereToSaveSetting: "Fråga var varje fil ska sparas",
@@ -278,7 +278,7 @@ export const sv = {
     annotationScreenshotsNever: "Ta aldrig med",
     clearDataSetting: "Rensa webbdata",
     clearDataSettingDescription:
-      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar cookies och webbplatsdata bara tills Studio laddas om.",
+      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar cookies och webbplatsdata bara tills Unsloth laddas om.",
     manage: "Hantera",
     fullView: {
       enter: "Öppna helvy",
@@ -534,7 +534,7 @@ export const sv = {
     seedHelp: "Anger motorns slumpfrö. Samtidiga chattar kan fortfarande ändra samplade svar.",
     default: "Standard",
     installRequired: "installation krävs",
-    ownerRequired: "Be Studio-ägaren att installera den här motorn.",
+    ownerRequired: "Be Unsloth-ägaren att installera den här motorn.",
     cancelInstall: "Avbryt installationen",
     installed: "Installerad {version}",
     repair: "Reparera",
@@ -548,8 +548,8 @@ export const sv = {
     confirm: "Installera {engine} {version}? Detta kan hämta flera GB.",
     confirmSized: "Installera {engine} {version}? Cirka {size} att hämta.",
     wslSetup:
-      "I Windows körs {engine} i en privat WSL2-miljö som Studio konfigurerar. Räkna med en administratörsfråga och eventuellt en omstart.",
-    wslReady: "I Windows körs {engine} inuti Studios privata WSL2-miljö.",
+      "I Windows körs {engine} i en privat WSL2-miljö som Unsloth konfigurerar. Räkna med en administratörsfråga och eventuellt en omstart.",
+    wslReady: "I Windows körs {engine} inuti Unsloths privata WSL2-miljö.",
     wslRestart:
       "Starta om Windows för att slutföra aktiveringen av WSL2 och klicka sedan på Installera igen.",
     background: "Installeras i bakgrunden.",
@@ -944,6 +944,7 @@ export const sv = {
       byProject: "Efter projekt",
       inOneList: "I en lista",
       sortChatsBy: "Sortera chattar efter",
+      projectsHome: "Projektöversikt",
       lastUpdated: "Senast uppdaterad",
       manualOrder: "Manuell ordning",
       switchedToManual: "Manuell sortering: dra rader för att ändra ordning",
@@ -1594,15 +1595,15 @@ export const sv = {
       dictation: {
         audioUploadTitle: "Diktera med en inspelning",
         audioUploadDescription:
-          "Din webbläsare kräver en säker anslutning (HTTPS) för att spela in direkt i Studio. På den här HTTP-anslutningen kan du använda telefonens inspelningsapp eller välja en sparad inspelning i stället. Din Studio-server transkriberar ljudet och lägger till texten i ditt meddelande.",
+          "Din webbläsare kräver en säker anslutning (HTTPS) för att spela in direkt i Unsloth. På den här HTTP-anslutningen kan du använda telefonens inspelningsapp eller välja en sparad inspelning i stället. Din Unsloth-server transkriberar ljudet och lägger till texten i ditt meddelande.",
         audioUploadChooseFile: "Välj inspelning",
         audioUploadRecord: "Spela in ljud",
         audioUploadIphoneHint:
           "På iPhone sparar du en inspelning från Röstmemon eller en annan inspelningsapp och väljer den sedan här.",
         audioUploadServerModelNote:
-          "Den här inspelningen använder den lokala modellen som visas ovan på Studio-servern, även om vanlig diktering använder en annan motor.",
+          "Den här inspelningen använder den lokala modellen som visas ovan på Unsloth-servern, även om vanlig diktering använder en annan motor.",
         audioUploadAutomatic: "Automatisk",
-        audioUploadModelReady: "Redo på den här Studio-servern",
+        audioUploadModelReady: "Redo på den här Unsloth-servern",
         audioUploadRetryTitle: "Det gick inte att transkribera {file}",
         audioUploadRetry: "Försök transkribera igen",
         audioUploadChooseModel:
@@ -2149,7 +2150,7 @@ export const sv = {
         menuSubtitle: "Används för filsökning",
         device: "Enhet för inbäddning",
         deviceDescription:
-          "Var inbäddningsmodellen körs, för alla modeller. GPU indexerar stora dokumentmängder snabbare men håller en del VRAM upptaget tills Studio startas om.",
+          "Var inbäddningsmodellen körs, för alla modeller. GPU indexerar stora dokumentmängder snabbare men håller en del VRAM upptaget tills Unsloth startas om.",
         deviceAuto: "Automatiskt",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2579,6 +2580,9 @@ export const sv = {
           "När en modell läses in avlastas aldrig en annan. En modell som inte får plats läses inte in. Avlastning efter inaktivitet och träning frigör fortfarande minne.",
         multiModelHint:
           "Gäller chatt-, tal-, bild- och videomodeller. Varje inläst chattmodell besvarar de förfrågningar som anger den. Med flera GPU:er försöker Unsloth placera en ny modell på en GPU som ingen annan modell använder. ”När de får plats” lämnar ungefär 1 GB ledigt. ”När de får plats” och ”Alltid” avlastar aldrig en modell på en annan GPU.",
+        allowOversizedLoad: "Tillåt inläsning av för stora modeller",
+        allowOversizedLoadDescription: "Läs in bild- och videomodeller även när minneskontrollen säger att de inte får plats.",
+        allowOversizedLoadHint: "Gäller när CPU och GPU delar ett minne (Apple Silicon, integrerade GPU:er). Unsloth vägrar en inläsning när uppskattningen av modellvikterna är större än minnet som finns kvar efter reserven för operativsystemet. Med detta påslaget görs inläsningen ändå. Uppskattningen kan fela åt båda hållen: en för stor inläsning kan misslyckas, ta slut på minnet, få datorn att swappa kraftigt eller sluta svara, eller stoppa Unsloth. Av som standard.",
         mediaIdleUnloadDescription:
           "Frigör VRAM genom att avlasta bild- och videomodeller efter så många inaktiva sekunder. 0 behåller dem inlästa; minst 60.",
         mlockVetoed:
@@ -3046,7 +3050,7 @@ export const sv = {
       importFailed: "Importen misslyckades.",
       importFromSource: "Importera från {source}",
       importFromSourceDescription:
-        "Kopiera dina {source}-konversationer till Studio, grupperade efter projektet de hör till.",
+        "Kopiera dina {source}-konversationer till Unsloth, grupperade efter projektet de hör till.",
       importingAction: "Importerar...",
       importedSourceOneChat: "Importerade 1 konversation från {source}.",
       importedSourceChatCount: "Importerade {count} konversationer från {source}.",
@@ -3490,7 +3494,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Studio-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -4082,7 +4086,7 @@ export const sv = {
         decisionColumnsMissing:
           "Beslutsmodeller behöver kolumnerna state, questions och gold (eller answers). Saknas: {columns}.",
         decisionOwnerOnly:
-          "Endast ägaren av Studio kan finjustera beslutsmodeller.",
+          "Endast ägaren av Unsloth kan finjustera beslutsmodeller.",
         hfDatasetRequired: "Välj först en Hugging Face-datauppsättning.",
         hfDatasetSplitRequired: "Välj eller ange först en träningsdelning.",
         localDatasetRequired: "Välj först en lokal datauppsättning.",

@@ -545,7 +545,6 @@ function MaxSeqLengthSetting({
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
         {...sliderProps}
-        className="panel-slider"
         aria-label={label}
       />
     </div>
@@ -616,7 +615,6 @@ function GgufContextLengthSetting({
               max={max}
               step={128}
               {...sliderProps}
-              className="panel-slider"
               aria-label="Context Length"
               thumbValueText={(v) =>
                 v !== 0
@@ -697,7 +695,6 @@ function AdvancedGpuSlider({
         max={max}
         step={step}
         {...sliderProps}
-        className="panel-slider"
         aria-label={label}
         disabled={disabled}
       />
@@ -3805,7 +3802,7 @@ export function ModelConfigPage({
                   <p className="text-ui-11 text-amber-500">
                     {isAppleUnifiedMemory ? (
                       <>
-                        Above Studio&apos;s free-memory estimate (
+                        Above Unsloth&apos;s free-memory estimate (
                         {loadedMaxContextLength.toLocaleString()} tokens). It
                         may still load, but macOS may have to compress or swap
                         other apps and generation may slow down.
@@ -3907,7 +3904,7 @@ export function ModelConfigPage({
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
-      <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
+      <div className="mt-5 flex flex-col gap-3.5 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}

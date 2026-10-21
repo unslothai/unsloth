@@ -77,11 +77,11 @@ class LoadRequest(BaseModel):
         ge = 0.05,
         le = 0.99,
         description = "Upper bound on the share of each selected GPU the managed engine may claim "
-        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+        "(vLLM --gpu-memory-utilization). Unset lets Unsloth size it from free memory.",
     )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
-        description = "Inference engine to use. 'auto' selects Studio's default backend; "
+        description = "Inference engine to use. 'auto' selects Unsloth's default backend; "
         "'vllm' and 'sglang' require an installed optional engine.",
     )
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -629,7 +629,7 @@ class ValidateModelRequest(BaseModel):
         ge = 0.05,
         le = 0.99,
         description = "Upper bound on the share of each selected GPU the managed engine may claim "
-        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+        "(vLLM --gpu-memory-utilization). Unset lets Unsloth size it from free memory.",
     )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -1287,7 +1287,7 @@ class EstimateMemoryResponse(BaseModel):
 class MemoryEstimate(BaseModel):
     """The canonical answer to "what would this load occupy".
 
-    Studio grew two routes that answer this -- ``POST /inference/estimate-memory``
+    Unsloth grew two routes that answer this -- ``POST /inference/estimate-memory``
     for the Load Model panel and ``GET /models/kv-cache-estimate`` for the Hub
     memory bar. They share the ``_gguf_memory_breakdown`` planner, so their
     arithmetic already agrees; this is the shared CONTRACT, so their vocabulary
@@ -1477,7 +1477,7 @@ class _InferenceRuntimeFields(BaseModel):
     engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
-        description = "Active inference engine. 'auto' denotes Studio's default backend; "
+        description = "Active inference engine. 'auto' denotes Unsloth's default backend; "
         "'vllm' and 'sglang' denote optional managed engines.",
     )
 
@@ -1862,7 +1862,7 @@ class _InferenceRuntimeFields(BaseModel):
     gpu_backend_unavailable: bool = Field(
         False,
         description = (
-            "Studio detected a GPU for this load but llama.cpp's own device table "
+            "Unsloth detected a GPU for this load but llama.cpp's own device table "
             "reported none, meaning its GPU backend did not initialise. Separates a "
             "backend failure from a fit that placed no layers; both log 0/M."
         ),
@@ -2969,7 +2969,7 @@ class ChatCompletionRequest(BaseModel):
     compact_context: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "[x-unsloth] Compact now (Unsloth's /compact). A local GGUF or MLX chat starts "
             "a checkpoint on this request even when it still fits: older turns are "
             "archived and searchable, and the model keeps the newest turn plus standing "
             "instructions until the chat outgrows the window again. Needs "
@@ -3382,6 +3382,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    max_tokens: Optional[int] = Field(None, ge = 1)
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = None
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = None
+    compaction_headroom_ratio: Optional[float] = Field(None, ge = 0.0, le = 0.9)
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
@@ -4589,6 +4593,13 @@ class DiffusionLoadRequest(BaseModel):
         "cut), low_vram (offload every component, lowest VRAM, slower). "
         "Overrides cpu_offload when set.",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -5411,6 +5422,11 @@ class DiffusionLoadProgressResponse(BaseModel):
     bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
     fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class DiffusionResolvedControl(BaseModel):
@@ -5512,6 +5528,11 @@ class DiffusionDownloadPlanResponse(BaseModel):
         "/images/load on any plan failure, which would start that very download. Null means "
         "nothing is known to be wrong -- the check reads metadata only and stays silent on an "
         "unreadable header, an unmapped base or an offline host.",
+    )
+    incompatible_code: Optional[str] = Field(
+        None,
+        description = "Stable code for incompatible_reason: 'unified-memory-load' when the unified-memory "
+        "check refused the pick (send allow_oversized_load to attempt it anyway); null otherwise.",
     )
 
 
@@ -5653,6 +5674,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "LoRA is unavailable on the current engine for this GGUF, but reloading it on the "
         "native sd.cpp engine would apply LoRAs.",
     )
+    lora_after_reload: bool = Field(
+        False,
+        description = "LoRA is off only because Speed=Auto compiled the model on its 3rd image; "
+        "reloading it (still Speed=Auto) brings LoRAs back until then.",
+    )
     supports_lora: bool = Field(
         False,
         description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "
@@ -5675,7 +5701,7 @@ class DiffusionStatusResponse(BaseModel):
     )
     negative_prompt_min_guidance: Optional[float] = Field(
         None,
-        description = "The guidance Studio passes a negative prompt above (1 for classifier-free guidance, 0 "
+        description = "The guidance Unsloth passes a negative prompt above (1 for classifier-free guidance, 0 "
         "for Z-Image and Krea 2 on diffusers); null when guidance does not gate it. Drives the Negative prompt hint.",
     )
     supports_guidance: bool = Field(
@@ -6615,6 +6641,13 @@ class VideoLoadRequest(BaseModel):
         "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
         "(offload every component, lowest VRAM, slower).",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -7050,6 +7083,11 @@ class VideoLoadProgressResponse(BaseModel):
         None, description = "Estimated total bytes to download (null = unknown)"
     )
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class VideoGenerationDefaults(BaseModel):

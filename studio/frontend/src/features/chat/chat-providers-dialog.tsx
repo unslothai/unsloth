@@ -1750,7 +1750,7 @@ export function ChatProvidersSettings({
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
                       {decisionsOnly
-                        ? "Up to the version, such as /v1. Studio adds /systemone."
+                        ? "Up to the version, such as /v1. Unsloth adds /systemone."
                         : "OpenAI-compatible endpoint."}
                     </p>
                   </div>
@@ -1833,7 +1833,7 @@ export function ChatProvidersSettings({
                       id="provider-auto-reload-models-help"
                       className="text-xs text-muted-foreground"
                     >
-                      Refresh once on connect and after a disconnect while Studio is open.
+                      Refresh once on connect and after a disconnect while Unsloth is open.
                       New model IDs are enabled automatically. Saved in this browser.
                     </p>
                   </div>

@@ -22,7 +22,7 @@ from utils.utils import hf_env_offline
 INSTALL_COMMAND = 'python -m pip install "unsloth[s3]"'
 # Studio venvs are created by uv without pip, so also name the uv spelling.
 S3_INSTALL_MESSAGE = (
-    "S3 dataset loading requires boto3. Install it in the Studio environment with: "
+    "S3 dataset loading requires boto3. Install it in the Unsloth environment with: "
     f'{INSTALL_COMMAND} (or: uv pip install --python "{sys.executable}" "unsloth[s3]")'
 )
 logger = logging.getLogger(__name__)
