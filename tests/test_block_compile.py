@@ -132,8 +132,7 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
 
 
 def test_stop_recomputation_does_not_demote(monkeypatch):
-    """#14063: a non-reentrant checkpoint ends its recompute by raising through the forward;
-    demoting on it left the stock forward for the rest of the recompute (CheckpointError)."""
+    """#14063: checkpoint early-stop is control flow; demoting on it raised CheckpointError."""
     from torch.utils.checkpoint import _StopRecomputationError
 
     M = _load()
