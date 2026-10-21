@@ -915,6 +915,9 @@ def _close(agent, release_gpu: bool = True) -> None:
 
 def _evict(external: bool = False) -> None:
     global _agent, _loaded, _device_name, _generation, _unloads
+    # Every load evicts once its files are on disk: one unloaded meanwhile stops here.
+    if _unloads != getattr(_load_generation, "unloads", _unloads):
+        raise RuntimeError("It was unloaded while it downloaded.")
     with _run_lock:
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1
@@ -1440,6 +1443,8 @@ def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
         else:
             logger.warning("System One load failed: %s", message, exc_info = True)
         return
+    finally:
+        del _load_generation.unloads
     with _state_lock:
         stale = _unloads != unloads
         if not stale:
@@ -1586,6 +1591,8 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
             raise Unavailable(503, "model_loading", f"{checkpoint.name} is loading", retry_after = 5)
         # Claimed before the registry probe, so a Hub download admitted from now on sees this load.
         _loading = checkpoint
+        if unloads is None:
+            unloads = _unloads
     # Outside _state_lock: the registry calls loading_repo_ids() while holding its own lock.
     if _hub_download_active(checkpoint):
         with _state_lock:
@@ -2387,18 +2394,8 @@ def status() -> dict[str, Any]:
         }
 
 
-def ensure_can_unload() -> None:
-    with _state_lock:
-        if _reloading is not None and _reloading == _loading:
-            return
-        # _loading: a load claimed but not yet started would otherwise land after this unload.
-        if _loading is not None or (_loader is not None and _loader.is_alive()):
-            raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
-
-
 def unload(reload_after_training: bool = False) -> bool:
     global _agent, _loaded, _device_name, _failure, _generation, _unloads
-    ensure_can_unload()
     with _run_lock:
         agent, was_loaded, checkpoint = _agent, _agent is not None, _loaded
         _agent = _loaded = _device_name = None

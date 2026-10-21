@@ -490,12 +490,13 @@ def test_stale_check_uses_the_display_name_for_a_local_env_model(client, monkeyp
     assert response.status_code == 204
 
 
-def test_settings_change_waits_for_a_running_load(client, monkeypatch):
+def test_settings_change_cancels_a_running_load(client, monkeypatch, runtime):
     release = threading.Event()
 
     def slow(checkpoint):
+        runtime.append(checkpoint.name)
         release.wait(5)
-        return FakeAgent(), "cpu"
+        return FakeAgent(checkpoint.name), "cpu"
 
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
     monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
@@ -509,15 +510,18 @@ def test_settings_change_waits_for_a_running_load(client, monkeypatch):
                 "expected_model": "laya-multilingual",
             },
         ).status_code
-        == 409
+        == 204
     )
-    assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 409
-    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+    assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 200
     release.set()
     laya_runtime._loader.join(5)
+    assert laya_runtime.status()["loaded_model"] is None
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 5.0)
+    assert _post(client).json()["model"] == "laya-english"
+    assert runtime == ["laya-multilingual", "laya-english"]
 
 
-def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
+def test_turning_it_off_cancels_a_claimed_load(client, monkeypatch, runtime):
     probing, release = threading.Event(), threading.Event()
 
     def probe(checkpoint):
@@ -531,11 +535,40 @@ def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
     )
     claim.start()
     assert probing.wait(5)
-    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 409
+    response = client.put("/api/settings/systemone", json = {"enabled": False})
+    assert response.status_code == 200 and response.json()["enabled"] is False
     release.set()
     claim.join(5)
     laya_runtime._loader.join(5)
-    assert client.get("/api/settings/systemone").json()["enabled"] is True
+    assert laya_runtime.status()["loaded_model"] is None
+    assert runtime == []
+
+
+def test_a_load_turned_off_while_it_downloads_never_builds(client, monkeypatch, tmp_path):
+    downloading, release, built = threading.Event(), threading.Event(), []
+
+    def download(checkpoint, **kwargs):
+        downloading.set()
+        release.wait(5)
+        return tmp_path
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", download)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cpu")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert downloading.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    release.set()
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
 
 
 def test_keyless_callers_only_reach_the_configured_model(client, monkeypatch, runtime):
