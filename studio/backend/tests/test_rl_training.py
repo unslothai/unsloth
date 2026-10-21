@@ -1590,3 +1590,31 @@ def test_grpo_prefill_prompts_are_continued_and_scored_with_their_prefill():
         prefill = list(out["prefill"]),
     )
     assert scores == [2.0, 2.0]
+
+
+def test_prefill_prompts_are_measured_as_continued():
+    from core.training.rl import drop_long_prompts
+
+    class _Tok:
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": text.split()}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            continue_final_message = False,
+            **kw,
+        ):
+            text = " ".join(m["content"] for m in messages)
+            return text + (" HEADER" if add_generation_prompt else "")
+
+    rows = Dataset.from_list(
+        [{"prompt": [{"role": "user", "content": "a b"}, {"role": "assistant", "content": "c"}]}]
+    )
+    assert len(drop_long_prompts(rows, _Tok(), 3)) == 1
