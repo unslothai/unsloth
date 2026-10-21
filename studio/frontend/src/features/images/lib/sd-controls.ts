@@ -119,10 +119,14 @@ export function varyBlockedReason(
     prompt_weighting?: boolean | null;
     clip_skip?: number | null;
     cfg_rescale?: number | null;
+    variation_strength?: number | null;
   },
   loraCapable: boolean,
   capability: SdControlsCapability | null | undefined,
 ): string | null {
+  // Its noise was a blend of its seed and its variation seed, which no single seed reproduces.
+  if (image.variation_strength)
+    return "This image already used a variation seed, so Vary cannot start from its noise. Restore it and change the variation seed instead.";
   const missing: string[] = [];
   if (image.loras?.length && !loraCapable) missing.push("its LoRAs");
   if (image.prompt_weighting === false && !capability?.prompt_weighting) missing.push("prompt weighting off");

@@ -385,3 +385,10 @@ test("an imported CFG rescale outside the accepted range is named with its clamp
   assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: 0.7 }, "sdxl", false, narrow), ["CFG rescale 0.7 (clamped to 0.5)"]);
   assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: 0.7 }, "sdxl", false, null), ["CFG rescale 0.7"]);
 });
+
+test("Vary is disabled for an image that already used a variation seed", async () => {
+  const { varyBlockedReason } = await import("../src/features/images/lib/sd-controls.ts");
+  assert.equal(varyBlockedReason({ variation_strength: 0 }, true, SDXL), null);
+  assert.match(varyBlockedReason({ variation_strength: 1 }, true, SDXL) ?? "", /already used a variation seed/);
+  assert.match(varyBlockedReason({ variation_strength: 0.15 }, true, SDXL) ?? "", /already used a variation seed/);
+});
