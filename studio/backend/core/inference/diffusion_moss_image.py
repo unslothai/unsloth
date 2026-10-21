@@ -871,9 +871,10 @@ class MOSSImagePipeline(DiffusionPipeline):
                 prediction = prediction + slg_scale * (conditional - skipped)
             latents = self.scheduler.step(prediction, timestep, latents, return_dict = False)[0]
             if callback_on_step_end is not None:
-                callback_kwargs = {
-                    name: locals()[name] for name in callback_on_step_end_tensor_inputs
-                }
+                # A loop, not a comprehension: before Python 3.12 a comprehension's locals() is its own scope.
+                callback_kwargs = {}
+                for name in callback_on_step_end_tensor_inputs:
+                    callback_kwargs[name] = locals()[name]
                 callback_outputs = callback_on_step_end(self, step_index, timestep, callback_kwargs)
                 if callback_outputs is not None:
                     latents = callback_outputs.pop("latents", latents)

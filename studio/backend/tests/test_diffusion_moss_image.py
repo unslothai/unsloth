@@ -496,3 +496,82 @@ def test_loader_never_reads_repo_code(moss):
     source = Path(moss.__file__).read_text(encoding = "utf-8")
     assert "trust_remote_code" not in source.replace("no ``trust_remote_code``", "")
     assert "custom_pipeline =" not in source and "custom_pipeline=" not in source
+
+
+def _callback_block_source() -> str:
+    """The pipeline's step-end callback block, wrapped as a function of the names it reads."""
+    import ast
+    import textwrap
+
+    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion_moss_image.py").read_text())
+    pipe = next(
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MOSSImagePipeline"
+    )
+    call = next(n for n in pipe.body if isinstance(n, ast.FunctionDef) and n.name == "__call__")
+    block = next(
+        n
+        for n in ast.walk(call)
+        if isinstance(n, ast.If) and ast.unparse(n.test) == "callback_on_step_end is not None"
+    )
+    return (
+        "def run(self, step_index, timestep, latents, callback_on_step_end, callback_on_step_end_tensor_inputs):\n"
+        + textwrap.indent(ast.unparse(block), "    ")
+        + "\n    return latents\n"
+        + "seen = []\n"
+        + "out = run(None, 0, 1, 'L', lambda p, i, t, kw: seen.append(dict(kw)), ['latents'])\n"
+        + "assert seen == [{'latents': 'L'}] and out == 'L', (seen, out)\n"
+    )
+
+
+def _old_pythons():
+    import shutil
+
+    found = []
+    for name in ("python3.9", "python3.10", "python3.11"):
+        path = os.environ.get("MOSS_OLD_PYTHON") if name == "python3.11" else None
+        path = path or shutil.which(name)
+        if path:
+            found.append(path)
+    return found
+
+
+def test_step_callback_reads_tensors_from_the_call_scope():
+    """Studio always passes a step-end callback. Before Python 3.12 (no PEP 709 inlining) a dict comprehension's
+    ``locals()`` is the comprehension's own scope, so ``locals()["latents"]`` there raised KeyError on step one."""
+    import subprocess
+
+    import ast
+
+    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion_moss_image.py").read_text())
+    comps = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+    for comp in (n for n in ast.walk(tree) if isinstance(n, comps)):
+        calls = [
+            c for c in ast.walk(comp) if isinstance(c, ast.Call) and ast.unparse(c.func) == "locals"
+        ]
+        assert not calls, f"locals() inside a comprehension at line {comp.lineno}"
+    src = _callback_block_source()
+    exec(compile(src, "<moss-callback>", "exec"), {})
+    for exe in _old_pythons():
+        proc = subprocess.run([exe, "-I", "-c", src], capture_output = True, text = True, timeout = 60)
+        assert proc.returncode == 0, f"{exe}: {proc.stderr}"
+
+
+def test_step_callback_latents_are_bchw(pipelines):
+    _, our_pipe = pipelines
+    _, embeds, _ = _inputs(lengths = (9,), seed = 3)
+    shapes = []
+
+    def on_step(pipe, i, t, kw):
+        shapes.append(tuple(kw["latents"].shape))
+        return kw
+
+    our_pipe(
+        prompt_embeds = embeds,
+        guidance_scale = 1.0,
+        height = 32,
+        width = 48,
+        num_inference_steps = 2,
+        output_type = "latent",
+        callback_on_step_end = on_step,
+    )
+    assert shapes == [(1, 128, 2, 3)] * 2
