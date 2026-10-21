@@ -126,9 +126,8 @@ def make_selection(
     if not others:
         return None
     if _rocm_torch():
-        # ROCm reports the gfx target as the capability (gfx942 (9, 4), gfx1100 (11, 0)), so ordering it says nothing
-        # about what a card runs; what the load resolves for the primary is its dtype (diffusion_layer_split_plan
-        # gates the arch-pinned attention kernels per card).
+        # ROCm's capability is the gfx target (gfx942 (9, 4)), which does not order; match the primary's load dtype
+        # instead (arch-pinned attention kernels are gated per card in diffusion_layer_split_plan).
         others = tuple(o for o in others if _rocm_dtype_parity(int(primary), o))
         return (
             MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
