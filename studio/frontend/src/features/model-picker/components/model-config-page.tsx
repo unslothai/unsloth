@@ -2696,8 +2696,7 @@ export function ModelConfigPage({
     locationRepoId != null
       ? `${locationRepoId}\n${locationVariant ?? ""}`
       : null;
-  // Key-matched like the staged dims below: switching targets must not keep showing the previous
-  // model's path while its own lookup is in flight.
+  // Key-matched: a target switch must not show the previous model's path while its lookup runs.
   const [resolvedLocation, setResolvedLocation] = useState<{
     key: string;
     path: string;

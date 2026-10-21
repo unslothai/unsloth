@@ -7,7 +7,6 @@ import { isOllamaModelId } from "./model-identity";
 
 export type ModelDiskLocation =
   | { kind: "path"; path: string }
-  /** The id names a managed-cache repo: the server resolves id (+ quant) to a path. */
   | { kind: "cachedRepo"; repoId: string; variant?: string };
 
 /** On-disk location for a load-settings target; null when nothing on disk backs it. */
@@ -29,8 +28,7 @@ export function resolveModelLocation(
   if (looksLikeLocalPath(id)) {
     return { kind: "path", path: id };
   }
-  // A snapshot pin (a repo outside the active cache) is what the load reads; the cache lookup
-  // would answer for whichever cached copy is largest.
+  // A snapshot pin is what the load reads; the cache lookup answers for the largest copy.
   const loadId = target.meta.loadId?.trim();
   if (loadId && looksLikeLocalPath(loadId)) {
     return { kind: "path", path: loadId };
