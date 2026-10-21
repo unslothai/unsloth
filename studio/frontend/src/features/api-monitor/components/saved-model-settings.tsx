@@ -191,17 +191,15 @@ export function SavedModelSettingsPanel(): ReactElement {
   const entries = Object.entries(overrides ?? {});
 
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-3 pt-2">
       <div className="flex flex-col gap-1">
         <h2 className="text-ui-16 font-semibold tracking-[-0.01em] text-foreground">
-          Settings applied on API load
+          Saved load settings
         </h2>
         <p className="text-sm text-muted-foreground">
-          When a request names one of these models, Unsloth loads it with these
-          settings, the same ones you saved in the model&apos;s settings page.
-          Models without an entry load with app defaults. Edit an entry from
-          that model&apos;s settings, or forget it here, which clears it from
-          the picker too.
+          A request that names one of these models loads it with the settings
+          saved in its Run settings. Other models load with app defaults.
+          Forgetting an entry also clears it from the picker.
         </p>
       </div>
 
@@ -216,19 +214,18 @@ export function SavedModelSettingsPanel(): ReactElement {
           ))}
         </div>
       ) : entries.length === 0 ? (
-        <p className="rounded-xl border border-border/60 bg-card px-4 py-6 text-center text-sm text-muted-foreground">
-          No saved model settings yet. Open a model&apos;s settings, turn on
-          &quot;Remember for this model&quot;, and it will be applied to API
-          loads too.
+        <p className="rounded-xl border border-dashed border-border/80 px-4 py-6 text-center text-sm text-muted-foreground">
+          No saved settings yet. Turn on &quot;Remember for this model&quot; in
+          a model&apos;s Run settings and API loads will use them too.
         </p>
       ) : (
-        <ul className="flex flex-col gap-2">
+        <ul className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-card">
           {entries.map(([modelId, override]) => {
             const summary = describeOverride(override);
             return (
               <li
                 key={modelId}
-                className="flex min-w-0 items-start gap-3 rounded-xl border border-border/60 bg-card px-4 py-3"
+                className="flex min-w-0 items-start gap-3 px-4 py-3"
               >
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="min-w-0 break-all font-mono text-ui-12 font-medium text-foreground">

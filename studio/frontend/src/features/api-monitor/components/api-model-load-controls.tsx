@@ -470,9 +470,7 @@ export function ApiModelLoadControls({
           type="button"
           variant="outline"
           size="sm"
-          aria-label="Model settings"
           aria-haspopup="dialog"
-          aria-expanded={selectorOpen && !unloading}
           onClick={onOpenSettings}
           disabled={busy || reloading || !onOpenSettings}
           className="h-9 gap-1.5 rounded-full"
@@ -482,7 +480,7 @@ export function ApiModelLoadControls({
             strokeWidth={1.75}
             className="size-4"
           />
-          Settings
+          Run settings
         </Button>
       </ToolbarTooltip>
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
@@ -507,8 +505,7 @@ export function ApiModelLoadControls({
       {actionError ? (
         <span
           role="alert"
-          className="max-w-64 truncate text-ui-11 text-red-600 dark:text-red-400"
-          title={actionError}
+          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
         >
           {actionError}
         </span>
