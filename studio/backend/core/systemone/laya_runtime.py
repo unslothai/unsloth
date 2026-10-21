@@ -2487,15 +2487,17 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
 
 
 def shutdown() -> None:
-    """Studio shutdown: end a llama.cpp decision server or Laya worker (in-process models go with the process)."""
+    """Studio shutdown: end a llama.cpp decision server, Laya or Clef worker (in-process models go with the process)."""
     global _agent, _loaded, _device_name, _generation, _unloads
+    from .clef_runtime import ClefAgent
+
     with _state_lock:
         timer = _idle_timer
     if timer is not None:
         timer.cancel()
     with _run_lock:
         _unloads += 1
-        if not _is_native(_loaded) and not isinstance(_agent, LayaWorker):
+        if not _is_native(_loaded) and not isinstance(_agent, (LayaWorker, ClefAgent)):
             return
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1
