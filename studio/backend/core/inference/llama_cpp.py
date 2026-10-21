@@ -5263,7 +5263,15 @@ def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> 
 _FIT_MEASURES_BORROWED_DRAFT_MARKER = (
     b"measuring the extra model next to an allocation-free target context"
 )
-_LLAMA_COMMON_LIB_GLOBS = ("libllama-common*", "llama-common*.dll")
+# The names the server's loader resolves (the soname, not every versioned file left
+# beside it by an older install).
+_LLAMA_COMMON_LIB_NAMES = (
+    "libllama-common.so.0",
+    "libllama-common.so",
+    "libllama-common.0.dylib",
+    "libllama-common.dylib",
+    "llama-common.dll",
+)
 
 
 def _distinct_device_count(devices) -> int:
@@ -5284,8 +5292,11 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
         # A wrapper script execs the real server, which holds fit.cpp in a static build.
         candidates.append(Path(_resolve_llama_binary(bin_path)))
         lib_dir = _llama_lib_dir(bin_path)
-        for pattern in _LLAMA_COMMON_LIB_GLOBS:
-            candidates.extend(sorted(lib_dir.glob(pattern)))
+        linked = next(
+            (lib_dir / n for n in _LLAMA_COMMON_LIB_NAMES if (lib_dir / n).exists()), None
+        )
+        if linked is not None:
+            candidates.append(linked)
     except Exception:  # noqa: BLE001 -- an unreadable lib dir is "not known"
         pass
     seen: set = set()
@@ -30120,10 +30131,11 @@ class LlamaCppBackend:
                             _main_dev = "MTL0"
                         elif (
                             _main_dev is None
-                            and _draft_pin.strip().lower() not in _CPU_DEVICE_VALUES
+                            and re.match(r"(?i)(cuda|rocm|hip)\d+$", _draft_pin.strip())
                             and self._device_ordinal(_draft_pin.strip()) == 0
                         ):
                             # CUDA / ROCm: the child's mask numbers a single target card 0.
+                            # Another backend's device 0 (Vulkan0, RPC0) is a different pool.
                             _main_dev = _draft_pin
                         _draft_on_target_device = bool(_main_dev) and (
                             _draft_pin.strip().lower() == _main_dev.strip().lower()
@@ -30168,9 +30180,28 @@ class LlamaCppBackend:
                             _sidecar_only_bytes -= (
                                 self._rollback_state_bytes(n_parallel) * _mtp_eff_n_max
                             )
+                        # A sidecar that cannot be sized here (a remote --spec-draft-hf, or
+                        # dims unread) is priced by the planner's flat fraction: carry that
+                        # cushion to the child, or its fitter spends it on target layers.
+                        _sidecar_flat_mib = 0
+                        if _flat_mtp_reserve > 0:
+                            _flat_pool_mib = (
+                                _apple_budget_mib
+                                if _apple_budget_mib > 0
+                                else sum(
+                                    free
+                                    for idx, free in gpus
+                                    if gpu_indices is None or idx in gpu_indices
+                                )
+                            )
+                            _sidecar_flat_mib = math.ceil(
+                                _flat_mtp_reserve * max(0, _flat_pool_mib)
+                            )
                         _sidecar_fit_reserve_eligible_mib = (
                             self._sidecar_fit_reserve_mib(
-                                max(0, _sidecar_only_bytes), _sidecar_reserve_path
+                                max(0, _sidecar_only_bytes),
+                                _sidecar_reserve_path,
+                                flat_mib = _sidecar_flat_mib,
                             )
                             + _sidecar_compute_mib
                         )
@@ -30188,6 +30219,7 @@ class LlamaCppBackend:
                             _kv_unified: bool = planned_kv_unified,
                             _ub: Optional[int] = _effective_ubatch,
                             _floor: int = _sidecar_compute_mib,
+                            _flat: int = _sidecar_flat_mib,
                             _auto_ctx: bool = _sidecar_auto_ctx,
                             _native: Optional[int] = self._context_length,
                         ) -> int:
@@ -30221,7 +30253,9 @@ class LlamaCppBackend:
                                     run_args, default = planned_flash_attn, env = child_env
                                 ),
                             )
-                            return self._sidecar_fit_reserve_mib(_v or 0, _dp) + _floor
+                            return (
+                                self._sidecar_fit_reserve_mib(_v or 0, _dp, flat_mib = _flat) + _floor
+                            )
 
                         if use_fit:
                             _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
@@ -39033,12 +39067,19 @@ class LlamaCppBackend:
         base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
         return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib, floor_mib)
 
-    def _sidecar_fit_reserve_mib(self, reserve_bytes: int, sidecar_path: Optional[str]) -> int:
+    def _sidecar_fit_reserve_mib(
+        self,
+        reserve_bytes: int,
+        sidecar_path: Optional[str],
+        *,
+        flat_mib: int = 0,
+    ) -> int:
         """MiB a DSpark/DFlash sidecar needs kept free by the child's ``--fit-target``.
 
         The planner's byte-accurate reserve (draft weights + draft KV + draft compute +
         target verification rows), never less than the sidecar file itself, which is
         all that is known when the reserve fell back to the flat fraction (0 bytes).
+        ``flat_mib``: that fraction of the target's pool, the floor when neither is known.
         Rounded up: a short MiB is a short allocation.
         """
         try:
@@ -39046,7 +39087,9 @@ class LlamaCppBackend:
         except Exception:
             file_bytes = 0
         need = max(int(reserve_bytes or 0), file_bytes)
-        return math.ceil(need / (1024 * 1024)) if need > 0 else 0
+        if need <= 0:
+            return max(0, int(flat_mib or 0))
+        return math.ceil(need / (1024 * 1024))
 
     @staticmethod
     def _ctx_integrity_flags(

@@ -553,7 +553,9 @@ def test_a_repeated_device_is_one_card_for_the_reserve(tmp_path, devices):
     assert _r4._margin(cmd) >= _FLOOR
 
 
-@pytest.mark.parametrize("pin, reserved", [("CUDA0", True), ("CUDA1", False)])
+@pytest.mark.parametrize(
+    "pin, reserved", [("CUDA0", True), ("CUDA1", False), ("Vulkan0", False), ("RPC0", False)]
+)
 def test_a_cuda_draft_pin_on_the_only_target_card_keeps_the_reserve(tmp_path, pin, reserved):
     """The child's mask numbers the single target card 0, so CUDA0 is the target."""
     backend, gguf = _r2._cuda_backend(tmp_path)
@@ -623,3 +625,21 @@ def test_a_dspark_prompt_graph_is_priced_with_the_micro_batch(ub, measured_mib):
         + LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
     ) / 2**20
     assert measured_mib <= got <= measured_mib * 1.25
+
+
+def test_only_the_linked_common_library_speaks_for_the_build(tmp_path):
+    """A stale versioned file beside the soname proves nothing about the running server."""
+    binary = _write(tmp_path / "llama-server")
+    _write(tmp_path / "libllama-common.so.0")
+    _write(tmp_path / "libllama-common.so.0.9.9", _MARKER)
+    assert not _lc._fit_measures_borrowed_drafts(str(binary))
+    _write(tmp_path / "libllama-common.so.0", _MARKER)
+    assert _lc._fit_measures_borrowed_drafts(str(binary))
+
+
+def test_an_unsized_sidecar_carries_the_flat_reserve():
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._get_gguf_size_bytes = lambda path: None
+    assert b._sidecar_fit_reserve_mib(0, "o/remote-dspark", flat_mib = 1200) == 1200
+    # A sized one keeps its own bytes.
+    assert b._sidecar_fit_reserve_mib(2 * 1024**3, "o/remote-dspark", flat_mib = 1200) == 2048
