@@ -488,6 +488,18 @@ def test_an_attachment_is_marked_so_the_panel_saves_it(monkeypatch, disposition,
     assert browser_mod.ATTACHMENT_HEADER in browser_mod.EXPOSED_HEADERS
 
 
+def test_an_html_attachment_is_saved_not_shown(monkeypatch):
+    page = b"<!doctype html><html><head><base href=/x/></head><body>report</body></html>"
+    headers = [("Content-Disposition", 'attachment; filename="report.html"')]
+    meta = {"url": "https://example.com/export", "headers": headers, "filename": "report.html"}
+    _fetch(monkeypatch, (None, page, "text/html"), meta)
+    response = _call()
+    assert response.headers["x-unsloth-browser-kind"] == "raw"
+    assert response.headers["x-unsloth-browser-attachment"] == "1"
+    assert response.headers["x-unsloth-browser-filename"] == "report.html"
+    assert response.body == page
+
+
 def test_fetch_arguments(monkeypatch):
     calls = _fetch(monkeypatch, (None, b"<html></html>", "text/html"))
     _call(method = "POST", body = "q=a+b", max_bytes = 4096)
