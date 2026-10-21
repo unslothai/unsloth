@@ -53,7 +53,7 @@ def _run(backend, gguf, *, stdout, healthy, **intent):
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "returncode": rc,
                 "poll": lambda self: rc,
@@ -535,3 +535,57 @@ def test_a_metal_draft_pin_is_reserved_only_on_the_metal_device(
     assert "--model-draft" in cmd
     # The harness reads every GGUF as 4 GiB, the sidecar too.
     assert (_r4._margin(cmd) >= 1024 + 4 * 1024) is reserved
+
+
+# Review round 8.
+
+
+@pytest.mark.parametrize("devices", ["CUDA0,CUDA0", "CUDA0, cuda0"])
+def test_a_repeated_device_is_one_card_for_the_reserve(tmp_path, devices):
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = ["--device", devices],
+    )["cmd"]
+    assert _r4._margin(cmd) >= _FLOOR
+
+
+@pytest.mark.parametrize("pin, reserved", [("CUDA0", True), ("CUDA1", False)])
+def test_a_cuda_draft_pin_on_the_only_target_card_keeps_the_reserve(tmp_path, pin, reserved):
+    """The child's mask numbers the single target card 0, so CUDA0 is the target."""
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = ["--device-draft", pin],
+    )["cmd"]
+    assert "--model-draft" in cmd
+    assert (_r4._margin(cmd) >= _FLOOR) is reserved
+
+
+def test_a_cached_probe_rereads_the_shared_library(tmp_path, monkeypatch):
+    """The capability cache is keyed on the server alone; a swapped libllama-common
+    must not keep an older answer."""
+    binary = _write(tmp_path / "llama-server")
+    st = binary.stat()
+    key = (str(binary), st.st_mtime_ns, st.st_size)
+    monkeypatch.setattr(LlamaCppBackend, "_exec_path_for_launch", staticmethod(lambda b: b))
+    monkeypatch.setitem(
+        LlamaCppBackend._capability_cache,
+        key,
+        {"found": True, "supports_fit_target": True, "fit_measures_borrowed_drafts": True},
+    )
+    assert (
+        LlamaCppBackend.probe_server_capabilities(str(binary))["fit_measures_borrowed_drafts"]
+        is False
+    )
+    _write(tmp_path / "libllama-common.so", _MARKER)
+    assert (
+        LlamaCppBackend.probe_server_capabilities(str(binary))["fit_measures_borrowed_drafts"]
+        is True
+    )

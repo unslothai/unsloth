@@ -152,7 +152,7 @@ def test_the_drafter_free_startup_retry_drops_the_reserve(tmp_path):
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,

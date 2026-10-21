@@ -169,7 +169,7 @@ def test_the_drafter_free_fallback_keeps_the_reserve_for_a_user_drafter(tmp_path
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,

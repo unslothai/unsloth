@@ -5266,6 +5266,11 @@ _FIT_MEASURES_BORROWED_DRAFT_MARKER = (
 _LLAMA_COMMON_LIB_GLOBS = ("libllama-common*", "llama-common*.dll")
 
 
+def _distinct_device_count(devices) -> int:
+    """Distinct names in a ``--device`` list: a repeated card is one memory pool."""
+    return len({d.strip().lower() for d in str(devices).split(",") if d.strip()})
+
+
 def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     """Whether ``bin_path``'s fitter sizes a borrowed-tensor draft itself.
 
@@ -6502,7 +6507,7 @@ def _sidecar_reserve_margin_flags(
     devices = _extra_args_main_device(args) or (os.environ if env is None else env).get(
         "LLAMA_ARG_DEVICE"
     )
-    if devices and len([d for d in str(devices).split(",") if d.strip()]) > 1:
+    if devices and _distinct_device_count(devices) > 1:
         return []
     want = math.ceil(
         max(base_margin_mib, _single_device_fit_margin(user_args or (), env) or 0.0) + reserve_mib
@@ -10824,16 +10829,23 @@ class LlamaCppBackend:
             mtime_ns = 0
             size = 0
         cache_key = (bin_path, mtime_ns, size)
+        hit = None
         with cls._capability_cache_lock:
             cached = cls._capability_cache.get(cache_key)
             if cached is not None:
-                if not cached.get("mtp_probe_inconclusive"):
-                    return cached
                 retry_after = cls._capability_retry_after.get(cache_key)
-                if retry_after is not None and time.monotonic() < retry_after:
-                    return cached
-                cls._capability_cache.pop(cache_key, None)
-                cls._capability_retry_after.pop(cache_key, None)
+                if not cached.get("mtp_probe_inconclusive") or (
+                    retry_after is not None and time.monotonic() < retry_after
+                ):
+                    hit = cached
+                else:
+                    cls._capability_cache.pop(cache_key, None)
+                    cls._capability_retry_after.pop(cache_key, None)
+        if hit is not None:
+            # Read off libllama-common in a shared build, which the key above does not cover.
+            if hit.get("supports_fit_target"):
+                hit["fit_measures_borrowed_drafts"] = _fit_measures_borrowed_drafts(bin_path)
+            return hit
 
         mtp_token: Optional[str] = None
         supports_dspark = False
@@ -30066,9 +30078,7 @@ class LlamaCppBackend:
                             "LLAMA_ARG_DEVICE"
                         )
                         if _reserve_devices:
-                            _fit_device_count = len(
-                                [d for d in str(_reserve_devices).split(",") if d.strip()]
-                            )
+                            _fit_device_count = _distinct_device_count(_reserve_devices)
                     # A draft pinned to another device allocates there; keep the reserve
                     # only for a pin naming the target's device (MTL0, or Vulkan0 under
                     # MoltenVK, on Apple Silicon).
@@ -30094,6 +30104,13 @@ class LlamaCppBackend:
                             )
                         elif _main_dev is None and _apple_budget_mib > 0:
                             _main_dev = "MTL0"
+                        elif (
+                            _main_dev is None
+                            and _draft_pin.strip().lower() not in _CPU_DEVICE_VALUES
+                            and self._device_ordinal(_draft_pin.strip()) == 0
+                        ):
+                            # CUDA / ROCm: the child's mask numbers a single target card 0.
+                            _main_dev = _draft_pin
                         _draft_on_target_device = bool(_main_dev) and (
                             _draft_pin.strip().lower() == _main_dev.strip().lower()
                         )
@@ -33517,7 +33534,7 @@ class LlamaCppBackend:
                             "LLAMA_ARG_DEVICE"
                         )
                         _spawn_device_count = (
-                            len([d for d in str(_spawn_devices).split(",") if d.strip()])
+                            _distinct_device_count(_spawn_devices)
                             if _spawn_devices
                             else len(_child_gpu_physical_ids or ())
                         )
