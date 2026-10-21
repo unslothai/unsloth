@@ -571,6 +571,35 @@ def test_a_load_turned_off_while_it_downloads_never_builds(client, monkeypatch, 
     assert laya_runtime.status()["loaded_model"] is None
 
 
+def test_a_load_waiting_behind_a_decision_sees_the_unload_that_ran_first(
+    client, monkeypatch, tmp_path
+):
+    downloaded, built = threading.Event(), []
+
+    def download(checkpoint, **kwargs):
+        downloaded.set()
+        return tmp_path
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", download)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cpu")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    with laya_runtime._run_lock:
+        assert _post(client).status_code == 503
+        assert downloaded.wait(5)
+        time.sleep(0.5)
+        laya_runtime._unloads += 1
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
+
+
 def test_a_load_turned_off_while_it_builds_stops_its_worker(client, monkeypatch, tmp_path):
     building, stopped = threading.Event(), []
 

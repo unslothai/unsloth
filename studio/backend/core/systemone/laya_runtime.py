@@ -920,10 +920,10 @@ def _unloaded() -> bool:
 
 def _evict(external: bool = False) -> None:
     global _agent, _loaded, _device_name, _generation, _unloads
-    # Every load evicts once its files are on disk: one unloaded meanwhile stops here.
-    if _unloaded():
-        raise RuntimeError("It was unloaded while it downloaded.")
     with _run_lock:
+        # Every load evicts once its files are on disk: one unloaded meanwhile stops here.
+        if _unloaded():
+            raise RuntimeError("It was unloaded while it downloaded.")
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1
         _unloads += external
