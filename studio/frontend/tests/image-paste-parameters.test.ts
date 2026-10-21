@@ -388,3 +388,14 @@ test("a DyLoRA dimension is named as not applied rather than dropped", () => {
   assert.deepEqual(m.loras, ["dy:0.8"]);
   assert.deepEqual(m.notes, ["LoRA dy dynamic dim 16"]);
 });
+
+test("a non-default A1111 Emphasis mode is named as not applied; Original stays silent", () => {
+  const parse = (emphasis: string) =>
+    importNotApplied(
+      parseA1111Parameters(`a cat\nSteps: 20, Seed: 1, Emphasis: ${emphasis}`) ?? { prompt: "" },
+      "sdxl",
+    );
+  assert.deepEqual(parse("No norm"), ["Emphasis: No norm"]);
+  assert.deepEqual(parse("Ignore"), ["Emphasis: Ignore"]);
+  assert.deepEqual(parse("Original"), []);
+});

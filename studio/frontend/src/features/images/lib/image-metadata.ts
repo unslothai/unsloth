@@ -563,7 +563,6 @@ const A1111_INFO_KEYS = new Set([
   "civitai metadata",
   "created date",
   "init image hash",
-  "emphasis",
 ]);
 // The names CFG rescale (Lin et al. 2023, diffusers guidance_rescale) is written under: the
 // sd-webui-cfg-rescale extension, ComfyUI's RescaleCFG node, Forge's latent modifier field.
@@ -754,7 +753,11 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       n !== undefined
     )
       out.inpaint_padding = n;
-    else if (key.startsWith("hires")) hires[label] = value;
+    // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
+    else if (key === "emphasis") {
+      if (value && value.toLowerCase() !== "original")
+        notApplied.push(`${label}: ${value}`);
+    } else if (key.startsWith("hires")) hires[label] = value;
     else if (key === "sampler") {
       out.sampler = labelId(SAMPLER_LABELS, value);
       // Before AUTOMATIC1111 1.9 the schedule rode on the sampler name: `DPM++ 2M Karras`.
