@@ -1782,7 +1782,11 @@ class CfgParallelRouter:
             "predicted_misses": 0,
             "opaque_primary_calls": 0,
             "pairs_parallel": 0,
+            "exclusion_skips": 0,
         }
+        # Set when replica work was refused by a long recording: until that capture ends, later replica attempts go
+        # straight to the source instead of each waiting OUTSIDE_WAIT_S again.
+        self.exclusion_refused = False
         self.template: Optional[tuple[Any, Any, dict]] = None
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
@@ -1834,6 +1838,23 @@ class CfgParallelRouter:
         self.cfg_seen = False
         self.singles = 0
 
+    def _note_refusal(self, exc: BaseException) -> None:
+        from .diffusion_cuda_graph import OutsideWorkRefused
+        if isinstance(exc, OutsideWorkRefused):
+            self.exclusion_refused = True
+
+    def _refused_this_capture(self) -> bool:
+        """Whether replica work was refused and the capture that refused it is still recording."""
+        if not self.exclusion_refused:
+            return False
+        from .diffusion_cuda_graph import capture_in_progress
+
+        if capture_in_progress():
+            self.stats["exclusion_skips"] += 1
+            return True
+        self.exclusion_refused = False
+        return False
+
     def _primary(self, *args: Any, **kwargs: Any) -> Any:
         inner = self.inner
         return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
@@ -1884,6 +1905,9 @@ class CfgParallelRouter:
                 self._build_replica()
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
+            elif self.cfg_seen and self._refused_this_capture():
+                # this step's prefetch or prediction was refused: the branch runs on the source, no further wait
+                self._drop_pending()
             elif self.cfg_seen:
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
@@ -1896,6 +1920,7 @@ class CfgParallelRouter:
                         self.stats["steps_parallel"] += 1
                     return out
                 except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
+                    self._note_refusal(exc)
                     self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             self.cfg_seen = True
         self.stats["primary_calls"] += 1
@@ -1923,6 +1948,8 @@ class CfgParallelRouter:
         if self.replica is None and self.disabled_reason is None:
             self._build_replica()
         if self.replica is None or self.worker is None or self.disabled_reason is not None:
+            return None
+        if self._refused_this_capture():
             return None
         self.prefetched.clear()
         hook_state = _mirror_hook_state(self.pairs)
@@ -2002,6 +2029,8 @@ class CfgParallelRouter:
             return None
 
     def _launch_prediction(self, latent: Any) -> None:
+        if self._refused_this_capture():
+            return
         predicted = self._predict(latent)
         if predicted is None or self.worker is None:
             return
@@ -2009,7 +2038,8 @@ class CfgParallelRouter:
         try:
             r_args = self._to_replica(p_args)
             r_kwargs = self._to_replica(p_kwargs)
-        except Exception:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
+        except Exception as exc:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
+            self._note_refusal(exc)
             return
         torch = _torch()
         # What the replica consumes, kept per tensor: at the real call the sources are compared bitwise against it, so
@@ -2141,6 +2171,8 @@ class CfgParallelRouter:
 
     def _prefetch(self, args: tuple, kwargs: dict) -> None:
         from .diffusion_cuda_graph import outside_capture
+        if self._refused_this_capture():
+            return
         try:
             # Speculative cross-device copies are CUDA calls another pipeline's capture prohibits.
             with outside_capture():
@@ -2148,8 +2180,9 @@ class CfgParallelRouter:
                     if tensor.device == self.secondary or id(tensor) in self.prefetched:
                         continue
                     self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
-        except Exception:  # noqa: BLE001 - only an optimisation: no prefetch, the call copies its inputs itself
+        except Exception as exc:  # noqa: BLE001 - only an optimisation: no prefetch, the call copies its inputs itself
             self.prefetched.clear()
+            self._note_refusal(exc)
 
     def _to_replica(self, obj: Any) -> Any:
         torch = _torch()

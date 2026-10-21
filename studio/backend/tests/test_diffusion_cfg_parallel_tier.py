@@ -677,3 +677,54 @@ def test_a_failed_replica_build_flushes_with_captures_held_off(monkeypatch):
     router._build_replica()
     assert "replica unavailable" in router.disabled_reason
     assert flushes == [1] and cg._OUTSIDE_JOBS == 0
+
+
+def _step(dit, latents, t, cond, uncond):
+    a = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond)[0]
+    b = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond)[0]
+    return latents - 0.1 * (b + 4.0 * (a - b))
+
+
+def test_a_refused_prefetch_sends_the_rest_of_the_step_to_the_source_without_waiting_again(
+    monkeypatch,
+):
+    torch.manual_seed(0)
+    dit = _Dit()
+    cond = torch.randn(3, 4, generator = torch.Generator().manual_seed(1))
+    uncond = torch.randn(3, 4, generator = torch.Generator().manual_seed(2))
+    ts = [torch.tensor(1.0 - i / 5) for i in range(5)]
+    with torch.no_grad():
+        ref = torch.randn(2, 4, generator = torch.Generator().manual_seed(3))
+        latents = ref.clone()
+        refs = []
+        for t in ts:
+            ref = _step(dit, ref, t, cond, uncond)
+            refs.append(ref)
+        router, _replicas = _router(dit)
+        for t in ts[:2]:
+            latents = _step(dit, latents, t, cond, uncond)
+        assert router.stats["steps_parallel"] == 1 and router.replica is not None
+        waits = []
+        real = cg.held_work
+
+        def counted():
+            waits.append(cg.capture_in_progress())
+            return real()
+
+        monkeypatch.setattr(cg, "held_work", counted)
+        monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.3)
+        end = _long_capture()
+        try:
+            for t in ts[2:4]:
+                latents = _step(dit, latents, t, cond, uncond)
+        finally:
+            end()
+        # one wait on the recording (the first prefetch); every later replica attempt went to the source at once
+        assert waits == [True]
+        assert router.disabled_reason is None
+        assert router.stats["steps_parallel"] == 1 and router.stats["exclusion_skips"] >= 2
+        # the capture ended: the next step runs parallel again
+        latents = _step(dit, latents, ts[4], cond, uncond)
+    assert router.stats["steps_parallel"] == 2 and not router.exclusion_refused
+    assert torch.allclose(latents, refs[-1], atol = 1e-6)
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0
