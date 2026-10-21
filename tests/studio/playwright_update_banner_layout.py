@@ -181,7 +181,6 @@ LLAMA_CHANGELOG = {
     "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
     "error": None,
 }
-# whisper.cpp renames the shared runtime card instead of adding a banner.
 WHISPER_STATUS = dict(
     LLAMA_STATUS,
     llama_update_available = False,
@@ -192,6 +191,19 @@ WHISPER_STATUS = dict(
         "installed_tag": "v1.9.1",
         "latest_tag": "v1.9.2",
         "update_size_bytes": 11 * 1024 * 1024,
+        "skip_reason": None,
+    },
+)
+AUDIO_STATUS = dict(
+    LLAMA_STATUS,
+    llama_update_available = False,
+    update_component = "audio",
+    component = "audio.cpp",
+    audio = {
+        "update_available": True,
+        "installed_tag": "v0.9.0-unsloth.1",
+        "latest_tag": "v0.9.1-unsloth.1",
+        "update_size_bytes": None,
         "skip_reason": None,
     },
 )
@@ -957,7 +969,7 @@ def exercise_skip_undo(page, label: str) -> None:
     toggle.click()
     skip.click()
     notice.wait_for(state = "visible", timeout = 5_000)
-    # whisper.cpp defaults to biweekly, so the card was recorded as shown and is no longer due.
+    # audio.cpp defaults to biweekly, so the card was recorded as shown and is no longer due.
     undo.click()
     try:
         card.wait_for(state = "visible", timeout = 5_000)
@@ -1238,19 +1250,20 @@ def main() -> int:
                 if path == "/":
                     exercise_llama_changelog(page, f"{size} {name}")
 
-            # whisper.cpp must reuse the shared runtime card.
+            # whisper.cpp rides along with llama.cpp and audio.cpp: alone it never opens the runtime card.
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
-            facts = measure(page, f"{width}x{height} new chat whisper")
+            cards = page.locator('[data-testid="llama-update-banner"]').count()
             check(
-                f"{width}x{height}: whisper.cpp reuses the one runtime card",
-                page.locator('[data-testid="llama-update-banner"]').count() <= 1
-                and "whisper.cpp" in facts["llamaText"],
-                f"text={facts['llamaText']!r}",
+                f"{width}x{height}: a whisper.cpp-only release opens no runtime card",
+                cards == 0,
+                f"cards={cards}",
             )
             if (width, height) == (VIEWPORTS[2:5] if SPOT else VIEWPORTS)[0]:
-                exercise_skip_undo(page, f"{width}x{height} whisper")
-                exercise_skip_on_auth_route(page, f"{width}x{height} whisper")
+                llama_payload[0] = AUDIO_STATUS
+                boot(page, "/")
+                exercise_skip_undo(page, f"{width}x{height} audio")
+                exercise_skip_on_auth_route(page, f"{width}x{height} audio")
 
             llama_payload[0] = BUNDLE_STATUS
             boot(page, "/")

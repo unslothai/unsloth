@@ -191,16 +191,10 @@ export function LlamaUpdateBanner({
   const [shownChannels, setShownChannels] = useState<
     readonly NotificationChannel[]
   >([]);
-  const due: UpdateComponentFlags = {
-    llama: useNotificationDue("llama"),
-    whisper: useNotificationDue("whisper"),
-    audio: useNotificationDue("audio"),
-  };
-  const muted: UpdateComponentFlags = {
-    llama: useNotificationFrequency("llama") === "off",
-    whisper: useNotificationFrequency("whisper") === "off",
-    audio: useNotificationFrequency("audio") === "off",
-  };
+  const llamaDue = useNotificationDue("llama");
+  const audioDue = useNotificationDue("audio");
+  const llamaMuted = useNotificationFrequency("llama") === "off";
+  const audioMuted = useNotificationFrequency("audio") === "off";
   const [detailsVersion, setDetailsVersion] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<{
     key: string;
@@ -214,6 +208,19 @@ export function LlamaUpdateBanner({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
+  // whisper.cpp rides along with llama.cpp and audio.cpp; it opens the card only to retry its own failed phase.
+  const whisperRetry =
+    status?.job.state === "error" && status.job.whisperFailed;
+  const due: UpdateComponentFlags = {
+    llama: llamaDue,
+    whisper: whisperRetry,
+    audio: audioDue,
+  };
+  const muted: UpdateComponentFlags = {
+    llama: llamaMuted,
+    whisper: !whisperRetry,
+    audio: audioMuted,
+  };
 
   const migrationPending = Boolean(status?.backend_migration_available);
   const listed = updateBannerComponents({

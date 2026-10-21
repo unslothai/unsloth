@@ -6,6 +6,7 @@ import functools
 import inspect
 import logging
 import os
+import threading
 import warnings
 from typing import Optional
 from dataclasses import asdict
@@ -59,18 +60,62 @@ def _check_tma_support():
 _SUPPORTS_TMA = _check_tma_support()
 
 _DEVICE_AUTOTUNERS = {}
+_MODEL_AUTOTUNE_CACHES = {}
+_MODEL_AUTOTUNE_LOCKS = {}
+_DEVICE_MODELS = {}
+
+
+def _device_index(device):
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
+def _device_model(device):
+    index = _device_index(device)
+    model = _DEVICE_MODELS.get(index)
+    if model is None:
+        try:
+            p = torch.cuda.get_device_properties(index)
+            model = (
+                getattr(p, "name", None),
+                getattr(p, "major", None),
+                getattr(p, "minor", None),
+                getattr(p, "multi_processor_count", None),
+            )
+        except Exception:
+            model = index
+        _DEVICE_MODELS[index] = model
+    return model
 
 
 def _autotuner_for(kernel, device):
-    """Triton's autotune key omits the device, so on several GPUs each card tunes its own copy."""
+    """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
+    the same GPU model share one results cache, so identical cards tune once; a run's scratch state
+    (nargs) stays per card, since backward runs one autograd thread per device."""
     if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
         return kernel
-    key = (id(kernel), device.index)
-    if key not in _DEVICE_AUTOTUNERS:
+    key = (id(kernel), _device_index(device))
+    tuner = _DEVICE_AUTOTUNERS.get(key)
+    if tuner is None:
         tuner = copy.copy(kernel)
-        tuner.cache = {}
+        model_key = (id(kernel), _device_model(device))
+        tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault(model_key, {})
+        # One tuning per shape per model: a second card waits, then reads the first card's result
+        # (concurrent benchmarking would also skew both timings). A cached launch holds it briefly.
+        lock = _MODEL_AUTOTUNE_LOCKS.setdefault(model_key, threading.Lock())
+        run = getattr(tuner, "run", None)
+        if run is not None:
+
+            def _run_single_flight(*args, _run = run, _lock = lock, **kwargs):
+                with _lock:
+                    return _run(*args, **kwargs)
+
+            tuner.run = _run_single_flight
         _DEVICE_AUTOTUNERS[key] = tuner
-    return _DEVICE_AUTOTUNERS[key]
+    # Callers reassign kernel.configs (benchmarks, tests): follow it like the shared tuner would.
+    configs = getattr(kernel, "configs", None)
+    if configs is not None and getattr(tuner, "configs", None) is not configs:
+        tuner.configs = configs
+    return tuner
 
 
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")

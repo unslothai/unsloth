@@ -34,6 +34,7 @@ export interface LlamaUpdateJob {
   finished_at: string | null;
   // The chained phase installing right now, when the backend reports phases.
   runningPhase: "llama" | "whisper" | "audio" | null;
+  whisperFailed: boolean;
 }
 
 export interface ComponentOffer {
@@ -94,6 +95,9 @@ function parseJob(value: unknown): LlamaUpdateJob {
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
     runningPhase: parseRunningPhase(job.phases),
+    whisperFailed:
+      (job.phases as Record<string, { state?: unknown } | null> | null)?.whisper
+        ?.state === "error",
   };
 }
 
@@ -207,9 +211,8 @@ export function offerKey(status: LlamaUpdateStatus): string {
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
       : null,
-    whisper: status.whisper?.update_available
-      ? [status.whisper.installed_tag, status.whisper.latest_tag]
-      : null,
+    // whisper.cpp rides along; null matches keys stored before it joined.
+    whisper: null,
     migration: status.backend_migration_available
       ? [
           status.llama.installed_tag,
@@ -223,6 +226,24 @@ export function offerKey(status: LlamaUpdateStatus): string {
       ? { audio: [status.audio.installed_tag, status.audio.latest_tag] }
       : {}),
   });
+}
+
+/** The previous format recorded the whisper.cpp release in the key; ignore it so a new whisper.cpp release keeps the suppression. */
+export function offerKeyMatches(
+  key: string,
+  status: LlamaUpdateStatus,
+): boolean {
+  const current = offerKey(status);
+  if (key === current) return true;
+  try {
+    const stored: unknown = JSON.parse(key);
+    if (!stored || typeof stored !== "object" || !("whisper" in stored)) {
+      return false;
+    }
+    return JSON.stringify({ ...stored, whisper: null }) === current;
+  } catch {
+    return false;
+  }
 }
 
 function parseOfferSuppression(raw: string | null): OfferSuppression | null {
@@ -398,7 +419,8 @@ export function useLlamaUpdateCheck({
       );
       const suppression = suppressionRef.current;
       const suppressed =
-        suppression?.offerKey === offerKey(next) &&
+        suppression != null &&
+        offerKeyMatches(suppression.offerKey, next) &&
         (suppression.kind === "dismissed" || suppression.until > Date.now());
       setApplying(presentation.applying);
       setVisible(presentation.visible && (presentation.running || !suppressed));
