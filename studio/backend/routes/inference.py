@@ -5280,6 +5280,7 @@ def _admit_tool_access(payload) -> None:
         getattr(payload, "permission_mode", None),
         bypass_permissions = bool(getattr(payload, "bypass_permissions", False)),
         disable_sandbox = bool(getattr(payload, "disable_sandbox", False)),
+        sandbox_level = getattr(payload, "sandbox_level", None),
     )
 
 
