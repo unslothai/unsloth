@@ -1165,7 +1165,8 @@ def test_rocm_second_expert_moves_only_to_a_card_that_runs_the_attention_backend
     _cards(monkeypatch, sizes = _TWO_EXPERTS, sec_limit = 16000)
     plan = _plan()
     cuda, _ = _refine(plan)
-    assert "transformer_2" in (cuda.secondary_components or ())  # the component split moves the expert
+    # the component split moves the expert
+    assert "transformer_2" in (cuda.secondary_components or ())
     _rocm_host(monkeypatch, {0: _RX7900, 1: _MI300})
     pipe = _Pipe()
     pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)

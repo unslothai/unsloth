@@ -472,7 +472,9 @@ def _secondary_runs_denoiser(
         return True
     try:
         from .diffusion_layer_split_plan import _rocm_backend_cards
-        kept, _backend = _rocm_backend_cards(pipe, int(selection.primary), (int(secondary),), logger)
+        kept, _backend = _rocm_backend_cards(
+            pipe, int(selection.primary), (int(secondary),), logger
+        )
     except Exception:  # noqa: BLE001 - unverifiable: keep the denoisers on the primary
         return False
     if int(secondary) in kept:
