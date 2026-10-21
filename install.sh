@@ -6671,6 +6671,14 @@ _radeon_torch_compiles_for_pytag() {
 
 # ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
 # Idempotent, no-op without librocdxg, best-effort; sudo-tee when not root.
+_rocm_wsl_dropin_stale() {
+    grep -qF 'lib:${LD_LIBRARY_PATH:-}' /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null
+}
+# The helper pinned by _ROCM_WSL_HELPER_REF can predate the fix and leave the old line in ~/.bashrc.
+_repair_rocm_wsl_bashrc() {
+    [ -n "${HOME:-}" ] && grep -qF 'lib:${LD_LIBRARY_PATH:-}' "${HOME}/.bashrc" 2>/dev/null || return 0
+    sed --follow-symlinks -i '/^# >>> Unsloth ROCm-on-WSL/,/^# <<< Unsloth ROCm-on-WSL/ s#lib:\${LD_LIBRARY_PATH:-}#lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}#' "${HOME}/.bashrc" 2>/dev/null || true
+}
 _persist_rocm_wsl_dropin() {
     [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
     _rw_rocm=/opt/rocm
@@ -6679,13 +6687,23 @@ _persist_rocm_wsl_dropin() {
         *":${_rw_rocm}/bin:"*) ;;
         *) export PATH="${_rw_rocm}/bin:${PATH}" ;;
     esac
-    export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
-    [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && return 0
+    export LD_LIBRARY_PATH="${_rw_rocm}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+        _rocm_wsl_dropin_stale || return 0
+        # An older drop-in left a trailing ':' (the cwd) on an empty LD_LIBRARY_PATH: fix that line, keep the rest.
+        _rw_fix='s#lib:\${LD_LIBRARY_PATH:-}#lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}#'
+        if [ "$(id -u)" = "0" ]; then
+            sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+        fi
+        return 0
+    fi
     _rw_dropin="$(
         printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
         printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
         printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
-        printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
+        printf 'export LD_LIBRARY_PATH="%s/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"\n' "${_rw_rocm}"
         printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
     )"
     if [ "$(id -u)" = "0" ]; then
@@ -6705,6 +6723,7 @@ _maybe_bootstrap_rocm_wsl() {
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/ && !/generic/{found=1} END{exit !found}'; then
         _persist_rocm_wsl_dropin
+        _repair_rocm_wsl_bashrc
         return 0
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
@@ -6717,13 +6736,14 @@ _maybe_bootstrap_rocm_wsl() {
     command -v bash >/dev/null 2>&1 || return 0
 
     if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
-        if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+        if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && ! _rocm_wsl_dropin_stale; then
             # shellcheck disable=SC1091
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
-            # librocdxg present but the env drop-in is gone (uninstall dropped it).
+            # librocdxg present but the env drop-in is gone (uninstall dropped it) or stale.
             _persist_rocm_wsl_dropin
         fi
+        _repair_rocm_wsl_bashrc
         return 0
     fi
 
@@ -6784,10 +6804,14 @@ _maybe_bootstrap_rocm_wsl() {
            UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha" \
            bash "$_rw_helper"; then
             # Pull the helper's persisted env into THIS shell so detection (rocminfo) now enumerates the GPU and routes to gfx1151.
-            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && ! _rocm_wsl_dropin_stale; then
                 # shellcheck disable=SC1091
                 . /etc/profile.d/unsloth-rocm-wsl.sh || true
+            else
+                # The pinned helper may write the old drop-in: rewrite it (and export) here.
+                _persist_rocm_wsl_dropin
             fi
+            _repair_rocm_wsl_bashrc
             substep "ROCm-on-WSL ready; continuing with GPU install." "$C_OK"
         else
             substep "ROCm-on-WSL setup did not complete; falling back to CPU-only." "$C_WARN"
