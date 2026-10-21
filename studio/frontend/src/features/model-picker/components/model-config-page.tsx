@@ -162,7 +162,7 @@ import {
 } from "../model-config/model-config-draft";
 import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
-import { resolveModelLocation } from "../model-config/model-location";
+import { resolveModelLocation, shortModelLocation } from "../model-config/model-location";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
   CACHE_RAM_MAX,
@@ -2357,62 +2357,72 @@ function ExtraArgsRow({
   );
 }
 
-/** The model's on-disk location: load settings offer no other way to tell which copy of a model a
- *  run will use. Read-only; copying the path is the whole affordance. */
+/** Read-only on-disk location: short name by default, click for the full selectable path. */
 function ModelLocationRow({ path }: { path: string }) {
+  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Clear any pending reset on unmount to avoid a setState on an unmounted component.
   useEffect(
     () => () => {
       if (resetTimer.current) clearTimeout(resetTimer.current);
     },
     [],
   );
-
   const handleCopy = () => {
     void copyToClipboard(path).then((ok) => {
-      if (!ok) {
-        return;
-      }
+      if (!ok) return;
       setCopied(true);
       if (resetTimer.current) clearTimeout(resetTimer.current);
-      resetTimer.current = setTimeout(() => {
-        setCopied(false);
-        resetTimer.current = null;
-      }, 1800);
+      resetTimer.current = setTimeout(() => setCopied(false), 1800);
     });
   };
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       <div className={ROW_CLASS}>
         <span className={LABEL_CLASS}>Location</span>
-        <Tooltip delayDuration={0}>
-          <TooltipTrigger asChild={true}>
-            <button
-              type="button"
-              onClick={handleCopy}
-              aria-label="Copy model location"
-              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-            >
-              <HugeiconsIcon
-                icon={copied ? Tick02Icon : Copy01Icon}
-                strokeWidth={1.75}
-                className="size-3.5"
-              />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="top" className="tooltip-compact">
-            {copied ? "Copied" : "Copy path"}
-          </TooltipContent>
-        </Tooltip>
+        <div className="flex min-w-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setExpanded((open) => !open)}
+            aria-expanded={expanded}
+            aria-label={expanded ? "Hide full model location" : "Show full model location"}
+            title={path}
+            className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-ui-11 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <span className="min-w-0 truncate">{shortModelLocation(path)}</span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.75}
+              className={`size-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+            />
+          </button>
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                onClick={handleCopy}
+                aria-label="Copy model location"
+                className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+              >
+                <HugeiconsIcon
+                  icon={copied ? Tick02Icon : Copy01Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="tooltip-compact">
+              {copied ? "Copied" : "Copy path"}
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
-      {/* Wraps instead of truncating: seeing the whole path is the point. */}
-      <p className="break-all font-mono text-ui-11 leading-snug text-muted-foreground">
-        {path}
-      </p>
+      {expanded && (
+        <p className="select-all break-all rounded-md bg-[var(--panel-input-surface)] px-2 py-1.5 font-mono text-ui-11 leading-snug text-muted-foreground">
+          {path}
+        </p>
+      )}
     </div>
   );
 }
@@ -2674,10 +2684,6 @@ export function ModelConfigPage({
   const nativePathToken =
     target.meta.nativePathToken ??
     (isActiveModel ? activeNativePathToken : null);
-  // The on-disk location shown in the load settings: a picked local row carries its path, a
-  // path-shaped id (standalone GGUF, snapshot load) is the path itself, and a repo-keyed model
-  // (a cached Hub download) is resolved through the cache. Undownloaded repos and external
-  // providers never reach the request.
   const modelLocation = useMemo(() => resolveModelLocation(target), [target]);
   const locationRepoId =
     modelLocation?.kind === "cachedRepo" ? modelLocation.repoId : null;
@@ -2694,7 +2700,8 @@ export function ModelConfigPage({
     path: string;
   } | null>(null);
   useEffect(() => {
-    if (locationRepoId == null) {
+    // The row lives under Advanced settings: no lookup until it can show.
+    if (locationRepoId == null || !showAdvanced) {
       return;
     }
     let cancelled = false;
@@ -2712,7 +2719,7 @@ export function ModelConfigPage({
     return () => {
       cancelled = true;
     };
-  }, [locationRepoId, locationVariant]);
+  }, [locationRepoId, locationVariant, showAdvanced]);
   const cachedLocationPath =
     resolvedLocation?.key === locationKey ? resolvedLocation.path : null;
   const modelLocationPath =
@@ -3837,9 +3844,6 @@ export function ModelConfigPage({
         hasSavedSettings={savedRemember}
       />
       <div className="space-y-5">
-        {modelLocationPath ? (
-          <ModelLocationRow path={modelLocationPath} />
-        ) : null}
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
@@ -3938,6 +3942,9 @@ export function ModelConfigPage({
               onCheckedChange={toggleAdvanced}
             />
 
+            {showAdvanced && modelLocationPath && (
+              <ModelLocationRow path={modelLocationPath} />
+            )}
             {showAdvanced && (
               <GgufAdvancedSettings
                 config={config}
@@ -3991,6 +3998,9 @@ export function ModelConfigPage({
                   checked={showAdvanced}
                   onCheckedChange={toggleAdvanced}
                 />
+                {showAdvanced && modelLocationPath && (
+                  <ModelLocationRow path={modelLocationPath} />
+                )}
                 {showAdvanced && (
                   <MlxAdvancedSettings
                     config={config}

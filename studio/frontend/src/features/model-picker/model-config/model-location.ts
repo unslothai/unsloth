@@ -52,3 +52,19 @@ export function resolveModelLocation(
   const variant = target.isGguf ? target.ggufVariant?.trim() : undefined;
   return { kind: "cachedRepo", repoId, ...(variant ? { variant } : {}) };
 }
+
+const SNAPSHOT_HASH_RE = /^[0-9a-f]{40}$/i;
+
+/** Collapsed label: the last path segment; an HF snapshot dir reads `repo@hash8`. */
+export function shortModelLocation(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  const last = parts.at(-1);
+  if (!last) return path;
+  let name = last;
+  if (SNAPSHOT_HASH_RE.test(last)) {
+    const repoDir = parts.at(-2) === "snapshots" ? parts.at(-3) : undefined;
+    const repo = repoDir?.startsWith("models--") ? repoDir.split("--").slice(2).join("--") : "";
+    name = repo ? `${repo}@${last.slice(0, 8)}` : last.slice(0, 8);
+  }
+  return parts.length > 1 ? `…/${name}` : name;
+}

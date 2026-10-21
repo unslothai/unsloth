@@ -10,9 +10,10 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { resolveModelLocation } = await import(
+const locationModule = await import(
   "../src/features/model-picker/model-config/model-location.ts"
 );
+const { resolveModelLocation } = locationModule;
 
 function target(overrides: Partial<ModelPickTarget> = {}): ModelPickTarget {
   return {
@@ -153,4 +154,22 @@ test("a blank id with no picked path resolves to nothing", () => {
     meta: { source: "local", isLora: false, isDownloaded: true },
   });
   assert.equal(resolveModelLocation(blank), null);
+});
+
+test("the collapsed location keeps the last segment and cuts a snapshot hash", () => {
+  const { shortModelLocation } = locationModule;
+  assert.equal(
+    shortModelLocation(
+      "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/c90975dbd40c0c7b275fefaae758c3415c906238/Repo-UD-Q4_K_XL.gguf",
+    ),
+    "…/Repo-UD-Q4_K_XL.gguf",
+  );
+  assert.equal(
+    shortModelLocation(
+      "/home/u/.cache/huggingface/hub/models--unsloth--Repo/snapshots/c90975dbd40c0c7b275fefaae758c3415c906238",
+    ),
+    "…/Repo@c90975db",
+  );
+  assert.equal(shortModelLocation(String.raw`C:\models\gemma-3-12b\\`), "…/gemma-3-12b");
+  assert.equal(shortModelLocation("model.gguf"), "model.gguf");
 });
