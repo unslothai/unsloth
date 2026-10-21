@@ -2578,6 +2578,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     extra_args = ""
     if "args" in call_args and "model" in call_args:
         mixed_precision = (
+            "_unsloth_precision_requested = tuple(getattr(args, k, False) for k in ('fp16', 'bf16', 'fp16_full_eval', 'bf16_full_eval'))\n"
             "use_bf16 = getattr(args, 'bf16', False)\n"
             "if type(use_bf16) is not bool: use_bf16 = False\n"
             "use_fp16 = getattr(args, 'fp16', False)\n"
@@ -2695,6 +2696,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    args.fp16_full_eval = args.fp16\n"
         )
         extra_args += eval_changes
+        if "args" in call_args and "model" in call_args:
+            # The switches above can contradict a DeepSpeed config already filled from the caller's flags.
+            extra_args += (
+                "if tuple(getattr(args, k, False) for k in ('fp16', 'bf16', 'fp16_full_eval', 'bf16_full_eval')) != _unsloth_precision_requested:\n"
+                "    from unsloth.models.loader_utils import sync_deepspeed_mixed_precision\n"
+                "    sync_deepspeed_mixed_precision(args)\n"
+                "if model is not None:\n"
+                "    from unsloth.models.loader_utils import apply_deepspeed_zero3_model_setup\n"
+                "    apply_deepspeed_zero3_model_setup(model)\n"
+            )
 
     if "model" in call_args:
         # No UNSLOTH_RETURN_LOGITS=1 for compute_metrics here: prediction_step forces it per eval call; here it leaked into training (#3071).

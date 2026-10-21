@@ -196,11 +196,13 @@ class StreamEncode:
 
     def _encode(self) -> None:
         container = None
+        stopped = False
         try:
             import av
             while True:
                 item = self._queue.get()
                 if item is _STOP:
+                    stopped = True
                     break
                 if self._failed or not self.valid:
                     continue
@@ -223,7 +225,8 @@ class StreamEncode:
                     container.mux(packet)
         except Exception:  # noqa: BLE001 - drain so the render thread never blocks on a full queue
             self._failed = True
-            while self._queue.get() is not _STOP:
+            # A failure in the final flush comes after _STOP was taken; waiting for another would hang _join.
+            while not stopped and self._queue.get() is not _STOP:
                 pass
         finally:
             if container is not None:

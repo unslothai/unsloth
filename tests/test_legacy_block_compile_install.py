@@ -12,7 +12,7 @@ _LLAMA = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "l
 
 
 def test_patch_peft_model_installs_block_compile():
-    tree = ast.parse(_LLAMA.read_text())
+    tree = ast.parse(_LLAMA.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
     fn = next(
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "patch_peft_model"
@@ -78,6 +78,10 @@ def test_packed_calls_keep_the_unsloth_layer_forward(monkeypatch):
         return compiled
 
     monkeypatch.setattr(torch, "compile", fake_compile)
+    # Other test modules set UNSLOTH_COMPILE_DISABLE=1 at import, which xdist workers collect
+    # before this runs; any of these keeps every call on the stock forward.
+    for name in ("UNSLOTH_COMPILE_DISABLE", "UNSLOTH_BLOCK_COMPILE", "UNSLOTH_FORCE_FLOAT32"):
+        monkeypatch.delenv(name, raising = False)
 
     def forward(
         self,
