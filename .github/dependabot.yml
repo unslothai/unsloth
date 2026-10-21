@@ -19,6 +19,9 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        # One PR per action across both directories; tests/studio/
+        # test_actions_are_pinned_to_commits.py wants one SHA per action.
+        group-by: dependency-name
       actions-security:
         applies-to: security-updates
         patterns: ["*"]
