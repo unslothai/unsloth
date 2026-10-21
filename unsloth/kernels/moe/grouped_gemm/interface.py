@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+import copy
 import functools
 import inspect
 import logging
+import os
 import warnings
 from typing import Optional
 from dataclasses import asdict
 from unsloth import DEVICE_TYPE
+from unsloth.device_type import cuda_visible_capabilities
+from unsloth.kernels.utils import torch_gpu_device
 
 import torch
 import triton
@@ -36,13 +40,16 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
-# Precompute TMA support (NVIDIA capability >= 9 plus a triton carrying make_tensor_descriptor) to avoid graph breaks.
+# Process-wide, so every visible card must be sm90+ (experts may sit on any); an unreadable card means False.
 def _check_tma_support():
     if DEVICE_TYPE in ("xpu", "hip"):
         return False
     import triton.language as tl
 
-    gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
+    caps = cuda_visible_capabilities()
+    gpu_supports_tma = (
+        bool(caps) and len(caps) == torch.cuda.device_count() and min(c[0] for c in caps) >= 9
+    )
     triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -51,7 +58,21 @@ def _check_tma_support():
 
 _SUPPORTS_TMA = _check_tma_support()
 
-# triton.set_allocator is Triton 3.0+.
+_DEVICE_AUTOTUNERS = {}
+
+
+def _autotuner_for(kernel, device):
+    """Triton's autotune key omits the device, so on several GPUs each card tunes its own copy."""
+    if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
+        return kernel
+    key = (id(kernel), device.index)
+    if key not in _DEVICE_AUTOTUNERS:
+        tuner = copy.copy(kernel)
+        tuner.cache = {}
+        _DEVICE_AUTOTUNERS[key] = tuner
+    return _DEVICE_AUTOTUNERS[key]
+
+
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
 
 
@@ -110,7 +131,6 @@ def _grouped_gemm_forward_impl(
     permute_y: bool = False,
     fuse_mul_post: bool = False,
     autotune: bool = False,
-    # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -119,7 +139,6 @@ def _grouped_gemm_forward_impl(
     use_tma_load_w: bool = False,
     use_tma_load_x: bool = False,
     use_tma_store: bool = False,
-    # Software pipelining; no effect until the loop is re-written.
     flatten: bool = True,
     debug: bool = False,
 ) -> torch.Tensor:
@@ -145,7 +164,6 @@ def _grouped_gemm_forward_impl(
     assert not (permute_y and use_tma_store), "Cannot use both TMA store and permute_y"
 
     if use_tma_load_x:
-        # TMA load for activations; TMA gather is Blackwell+ only.
         assert not permute_x, "Cannot use both use_tma_load_x and permute_x"
 
     use_tma = use_tma_load_w or use_tma_load_x or use_tma_store
@@ -213,7 +231,7 @@ def _grouped_gemm_forward_impl(
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count
 
     def grid(META):
         return (NUM_SMS,)
@@ -259,13 +277,18 @@ def _grouped_gemm_forward_impl(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_forward_kernel if autotune else _grouped_gemm_forward_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_forward_kernel, X.device)
+        if autotune
+        else _grouped_gemm_forward_kernel
+    )
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
-            **kernel_args, enable_fp_fusion = True
-        )
+        with torch_gpu_device(X.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
         else:
@@ -310,7 +333,6 @@ def _grouped_gemm_dX_impl(
     assert m_sizes.ndim == 1
 
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
-    # Flipped from the forward pass: a y permuted in the forward must be permuted on load in the backward.
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_store), "Cannot use both TMA store and permute_x"
 
@@ -346,7 +368,6 @@ def _grouped_gemm_dX_impl(
     assert M_total % topk == 0, f"M_total ({M_total}) must be divisible by topk ({topk})"
     num_tokens = M_total // topk
 
-    # The kernel only reads gather_indices under permute_x / permute_y, so it stays optional otherwise.
     if permute_x or permute_y:
         assert (
             gather_indices is not None
@@ -354,11 +375,10 @@ def _grouped_gemm_dX_impl(
     total_tokens = gather_indices.shape[0] if gather_indices is not None else M_total
     assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
-    # The output stays [NUM_TOKENS * TOPK, K] even under permute_x: gradients accumulate across every expert a token chose, reduced in a post-processing step.
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = torch.cuda.get_device_properties(dY.device).multi_processor_count
 
     def grid(META):
         return (NUM_SMS,)
@@ -401,13 +421,18 @@ def _grouped_gemm_dX_impl(
                 "USE_TMA_STORE": use_tma_store,
             }
         )
-    kernel = _autotuned_grouped_gemm_dX_kernel if autotune else _grouped_gemm_dX_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_dX_kernel, dY.device)
+        if autotune
+        else _grouped_gemm_dX_kernel
+    )
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
-            **kernel_args, enable_fp_fusion = True
-        )
+        with torch_gpu_device(dY.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -416,12 +441,15 @@ def _grouped_gemm_dX_impl(
     return dX
 
 
-def _grouped_gemm_dW_impl(
+def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
     m_sizes: torch.Tensor,
     gather_indices: torch.Tensor,
     topk: int,
+    dW_out: Optional[torch.Tensor] = None,
+    accumulate: bool = False,
+    dW_dtype: Optional[torch.dtype] = None,
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -445,7 +473,7 @@ def _grouped_gemm_dW_impl(
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count if not debug else 1
+    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count if not debug else 1
     X = X.view(-1, X.shape[-1]).contiguous()
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
@@ -490,7 +518,21 @@ def _grouped_gemm_dW_impl(
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
 
-    dW = torch.zeros((num_experts, N, K), device = X.device, dtype = X.dtype)
+    if accumulate:
+        # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
+        assert not autotune, "autotune benchmarks re-run the kernel and would add dW several times"
+        assert dW_out is not None
+        assert dW_out.numel() == num_experts * N * K, f"{dW_out.shape} != {(num_experts, N, K)}"
+        assert dW_out.is_contiguous() and dW_out.device == X.device
+        dW = dW_out
+    else:
+        dW = torch.zeros(
+            (num_experts, N, K), device = X.device, dtype = X.dtype if dW_dtype is None else dW_dtype
+        )
+    if use_tma_store and (dW.element_size() > X.element_size() or dW.data_ptr() % 16 != 0):
+        # TMA needs a 16 byte aligned base (a DDP bucket view may not be), and the tuned tile
+        # sizes assume an output no wider than X.
+        use_tma_store = False
 
     if not autotune:
         pass
@@ -533,6 +575,8 @@ def _grouped_gemm_dW_impl(
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
     }
+    if accumulate:
+        kernel_args["ACCUMULATE"] = True
 
     if not autotune:
         kernel_args.update(
@@ -548,13 +592,18 @@ def _grouped_gemm_dW_impl(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_dW_kernel if autotune else _grouped_gemm_dW_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
+        if autotune
+        else _grouped_gemm_dW_kernel
+    )
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
-            **kernel_args, enable_fp_fusion = True
-        )
+        with torch_gpu_device(X.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -562,6 +611,58 @@ def _grouped_gemm_dW_impl(
             log_kernel_info(compiled_kernel)
 
     return dW
+
+
+def _grouped_gemm_dW_impl(
+    X: torch.Tensor,
+    dY: torch.Tensor,
+    m_sizes: torch.Tensor,
+    gather_indices: torch.Tensor,
+    topk: int,
+    BLOCK_SIZE_M: int = 32,
+    BLOCK_SIZE_N: int = 32,
+    BLOCK_SIZE_K: int = 32,
+    permute_x: bool = False,
+    permute_y: bool = False,
+    use_tma_load_dy: bool = False,
+    use_tma_load_x: bool = False,
+    use_tma_store: bool = False,
+    fuse_mul_pre: bool = False,
+    fuse_mul_post: bool = False,
+    num_warps: int = 4,
+    num_stages: int = 2,
+    flatten: bool = True,
+    autotune: bool = False,
+    debug: bool = False,
+    dW_dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    """dW into a fresh zeroed (E, N, K) buffer of dW_dtype (default X.dtype)."""
+    kwargs = dict(locals())
+    return _launch_grouped_gemm_dW(dW_out = None, accumulate = False, **kwargs)
+
+
+def _grouped_gemm_dW_accumulate_impl(
+    X: torch.Tensor,
+    dY: torch.Tensor,
+    m_sizes: torch.Tensor,
+    gather_indices: torch.Tensor,
+    dW: torch.Tensor,
+    topk: int,
+    BLOCK_SIZE_M: int = 32,
+    BLOCK_SIZE_N: int = 32,
+    BLOCK_SIZE_K: int = 32,
+    permute_x: bool = False,
+    permute_y: bool = False,
+    use_tma_load_dy: bool = False,
+    use_tma_load_x: bool = False,
+    use_tma_store: bool = False,
+    num_warps: int = 4,
+    num_stages: int = 2,
+) -> None:
+    """dW += X^T dY per expert, in place, added in fp32 and rounded once to dW.dtype."""
+    kwargs = dict(locals())
+    dW_out = kwargs.pop("dW")
+    _launch_grouped_gemm_dW(dW_out = dW_out, accumulate = True, **kwargs)
 
 
 # Opaque ops: allow_in_graph let AOT trace the body on fake tensors, keeping torch.empty and dropping the launch.
@@ -580,20 +681,34 @@ def _dX_fake(dY, W, gather_indices, m_sizes, topk, *args):
 
 
 def _dW_fake(X, dY, m_sizes, *args):
-    return X.new_empty((m_sizes.shape[0], dY.shape[-1], X.shape[-1]))
+    dW_dtype = dict(zip(_DW_PARAM_NAMES[3:], args)).get("dW_dtype")
+    return X.new_empty(
+        (m_sizes.shape[0], dY.shape[-1], X.shape[-1]),
+        dtype = X.dtype if dW_dtype is None else dW_dtype,
+    )
 
 
+def _dW_accumulate_fake(X, dY, m_sizes, gather_indices, dW, *args):
+    return None
+
+
+_DW_PARAM_NAMES = tuple(inspect.signature(_grouped_gemm_dW_impl).parameters)
 _OPTIONAL_TENSORS = ("gather_indices", "topk_weights")
 
 
-def _make_op(name, impl, fake):
+def _make_op(
+    name,
+    impl,
+    fake,
+    mutates_args = (),
+    returns = torch.Tensor,
+):
     """torch.library.custom_op (torch >= 2.4) over impl; torch.compiler.disable where it is missing."""
     custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
     if custom_op is None:
         return torch._dynamo.disable(impl)
     existing = getattr(getattr(torch.ops, "unsloth", None), name, None)
     if existing is not None:
-        # grouped_gemm is also importable as a top-level package (glm4_moe, tests): reuse the registration.
         return existing
     params = [
         p.replace(
@@ -607,9 +722,9 @@ def _make_op(name, impl, fake):
     def op(*args):
         return impl(**dict(zip(names, args)))
 
-    op.__signature__ = inspect.Signature(params, return_annotation = torch.Tensor)
+    op.__signature__ = inspect.Signature(params, return_annotation = returns)
     op.__name__ = name
-    op = custom_op(f"unsloth::{name}", op, mutates_args = ())
+    op = custom_op(f"unsloth::{name}", op, mutates_args = tuple(mutates_args))
     op.register_fake(fake)
     return op
 
@@ -617,6 +732,13 @@ def _make_op(name, impl, fake):
 _grouped_gemm_forward_op = _make_op("grouped_gemm_forward", _grouped_gemm_forward_impl, _fwd_fake)
 _grouped_gemm_dX_op = _make_op("grouped_gemm_dX", _grouped_gemm_dX_impl, _dX_fake)
 _grouped_gemm_dW_op = _make_op("grouped_gemm_dW", _grouped_gemm_dW_impl, _dW_fake)
+_grouped_gemm_dW_accumulate_op = _make_op(
+    "grouped_gemm_dW_accumulate",
+    _grouped_gemm_dW_accumulate_impl,
+    _dW_accumulate_fake,
+    mutates_args = ("dW",),
+    returns = None,
+)
 
 
 def _signature(impl):
@@ -628,7 +750,12 @@ def _signature(impl):
 
 _SIGNATURES = {
     impl: _signature(impl)
-    for impl in (_grouped_gemm_forward_impl, _grouped_gemm_dX_impl, _grouped_gemm_dW_impl)
+    for impl in (
+        _grouped_gemm_forward_impl,
+        _grouped_gemm_dX_impl,
+        _grouped_gemm_dW_impl,
+        _grouped_gemm_dW_accumulate_impl,
+    )
 }
 
 
@@ -637,7 +764,6 @@ def _dispatch(impl, op, args, kwargs):
     bound = dict(defaults)
     bound.update(zip(names, args))
     bound.update(kwargs)
-    # Eager calls skip the custom-op dispatcher; traced calls (dynamo, or fake tensors under make_fx) need the op.
     if torch.compiler.is_compiling() or _is_tracing(bound[names[0]], bound[names[1]]):
         return op(*[bound[n] for n in names])
     return impl(**bound)
@@ -656,6 +782,71 @@ def grouped_gemm_dX(*args, **kwargs) -> torch.Tensor:
 @functools.wraps(_grouped_gemm_dW_impl)
 def grouped_gemm_dW(*args, **kwargs) -> torch.Tensor:
     return _dispatch(_grouped_gemm_dW_impl, _grouped_gemm_dW_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dW_accumulate_impl)
+def grouped_gemm_dW_accumulate(*args, **kwargs) -> None:
+    return _dispatch(_grouped_gemm_dW_accumulate_impl, _grouped_gemm_dW_accumulate_op, args, kwargs)
+
+
+DW_ACCUMULATE_STATS = {"inplace": 0, "fallback": 0}
+
+
+_DW_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _dW_accumulate_enabled():
+    return os.environ.get("UNSLOTH_MOE_DW_ACCUMULATE", "1") != "0"
+
+
+def _dW_accumulate_target(ctx, X, autotune):
+    """The leaf parameter whose existing .grad the dW kernel may add into, else None.
+
+    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW.
+    Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook) cannot be
+    enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores the
+    returned-gradient path."""
+    if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
+        return None
+    # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
+    if torch.is_anomaly_enabled():
+        return None
+    if autotune or not _dW_accumulate_enabled():
+        return None
+    try:
+        acc = ctx.next_functions[1][0]
+    except (AttributeError, IndexError, TypeError):
+        return None
+    if acc is None or type(acc).__name__ != "AccumulateGrad":
+        return None
+    param = acc.variable
+    if type(param) not in (torch.Tensor, torch.nn.Parameter):
+        return None  # tensor subclasses (DTensor, quantized) own their gradient layout
+    grad = param.grad
+    if grad is None or grad.layout != torch.strided or type(grad) is not torch.Tensor:
+        return None
+    if (
+        grad.dtype not in _DW_DTYPES
+        or grad.dtype != param.dtype
+        or grad.device != X.device
+        or grad.shape != param.shape
+        or not grad.is_contiguous()
+    ):
+        return None
+    if getattr(param, "_backward_hooks", None) or getattr(
+        param, "_post_accumulate_grad_hooks", None
+    ):
+        return None
+    if getattr(param, "_unsloth_dw_side_stream", False):
+        return None
+    if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
+        return None
+    try:
+        if not torch._C._will_engine_execute_node(acc):
+            return None
+    except RuntimeError:
+        return None  # autograd.grad(): W's gradient is captured, never accumulated
+    return param
 
 
 class GroupedGemm(torch.autograd.Function):
@@ -689,8 +880,12 @@ class GroupedGemm(torch.autograd.Function):
         ctx.dX_only = dX_only
         ctx.dW_only = dW_only
 
-        # topk_weights is not saved for backward: training with fused_mul is unsupported.
         ctx.save_for_backward(X, W, m_sizes, gather_indices)
+        if W.requires_grad and X.is_cuda and not torch.compiler.is_compiling():
+            if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
+                # A use on a side stream may run its backward concurrently with another use of W:
+                # in-place accumulation would race, so this weight keeps the returned-gradient path.
+                W._unsloth_dw_side_stream = True
 
         fwd_config = {}
         if kernel_config_fwd is not None:
@@ -730,7 +925,6 @@ class GroupedGemm(torch.autograd.Function):
         assert (
             not ctx.fuse_mul_post
         ), "fused_mul should only be used for inference, not for training"
-        # Frozen W (LoRA, dequantized experts) or X: skip its kernel and buffer, as autograd does for _grouped_mm.
         dX_only = ctx.dX_only or not ctx.needs_input_grad[1]
         dW_only = ctx.dW_only or not ctx.needs_input_grad[0]
         if dX_only and dW_only:
@@ -759,17 +953,38 @@ class GroupedGemm(torch.autograd.Function):
                 bwd_dW_config["num_warps"] = kernel_config_bwd_dW.num_warps
                 bwd_dW_config["num_stages"] = kernel_config_bwd_dW.num_stages
 
-            dW = grouped_gemm_dW(
-                X = X,
-                dY = dY,
-                m_sizes = m_sizes,
-                gather_indices = gather_indices,
-                topk = topk,
-                permute_x = permute_x,
-                permute_y = permute_y,
-                autotune = autotune,
-                **bwd_dW_config,
-            )
+            target = _dW_accumulate_target(ctx, X, autotune)
+            if target is not None:
+                grouped_gemm_dW_accumulate(
+                    X = X,
+                    dY = dY,
+                    m_sizes = m_sizes,
+                    gather_indices = gather_indices,
+                    dW = target.grad,
+                    topk = topk,
+                    permute_x = permute_x,
+                    permute_y = permute_y,
+                    **bwd_dW_config,
+                )
+                # Already in param.grad: returning it as well would add it twice.
+                dW = None
+                DW_ACCUMULATE_STATS["inplace"] += 1
+            else:
+                if W.dtype != X.dtype and W.dtype in _DW_DTYPES and _dW_accumulate_enabled():
+                    bwd_dW_config["dW_dtype"] = W.dtype
+                dW = grouped_gemm_dW(
+                    X = X,
+                    dY = dY,
+                    m_sizes = m_sizes,
+                    gather_indices = gather_indices,
+                    topk = topk,
+                    permute_x = permute_x,
+                    permute_y = permute_y,
+                    autotune = autotune,
+                    **bwd_dW_config,
+                )
+                if not torch.compiler.is_compiling():
+                    DW_ACCUMULATE_STATS["fallback"] += 1
         else:
             dW = None
 

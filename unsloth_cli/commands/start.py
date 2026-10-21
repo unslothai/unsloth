@@ -82,6 +82,8 @@ _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"
+# dsh's pi-ai provider sends max_tokens = contextWindow - its prompt estimate - 4,096 (pi-ai CONTEXT_SAFETY_TOKENS), floored at 1, and dsh's own instructions and tools are about 6,500 tokens: at 8,192 every reply is cut after one token (#14315).
+_DSH_MIN_CONTEXT = 16384
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -4730,7 +4732,7 @@ def _connect(
                 key = _agent_api_key(base, None, minted_only = True)
             if key not in _cached_keys(_key_cache_path(), base, "minted"):
                 typer.echo(
-                    "Warning: Studio only sends a Connection's saved API key for the key "
+                    "Warning: Unsloth Studio only sends a Connection's saved API key for the key "
                     "`unsloth start` issues, so drop --api-key / UNSLOTH_API_KEY unless this "
                     "Connection needs no key.",
                     err = True,
@@ -5222,7 +5224,7 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
         return {}
     if not window:
         typer.echo(
-            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            "Warning: Unsloth Studio did not report the model's context length, so --max-tokens is ignored.",
             err = True,
         )
         return {}
@@ -6557,11 +6559,33 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     )
 
 
-def _vscode_over_ssh(path: Path) -> bool:
-    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+def _container_engine() -> Optional[str]:
+    # `docker run unsloth/unsloth` sets none of the env vars below, only these markers.
+    if os.path.exists("/.dockerenv"):
+        return "docker"
+    if os.path.exists("/run/.containerenv"):
+        return "podman"
+    return None
+
+
+_VSCODE_REMOTE_ENV = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+
+
+def _vscode_over_ssh(path: Path, unconfirmed: bool = False) -> bool:
+    if sys.platform in ("win32", "darwin"):
         return False
-    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
-    return any(os.environ.get(name) for name in remote)
+    if path.parent.is_dir():
+        # In a container, a dir holding only what an earlier release of this command wrote there
+        # (state without "written") is not VS Code's.
+        return (
+            unconfirmed
+            and _container_engine() is not None
+            and path.is_file()
+            and all(p.name.lstrip(".").startswith(path.name) for p in path.parent.iterdir())
+        )
+    return (
+        any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV) or _container_engine() is not None
+    )
 
 
 def _add_vscode_provider(
@@ -6579,7 +6603,7 @@ def _add_vscode_provider(
         state_path, state, text, key, key_id = _open_app_config(
             target, base, explicit_key, _vscode_groups
         )
-        remote = _vscode_over_ssh(target.path)
+        remote = _vscode_over_ssh(target.path, bool(state) and not state.get("written"))
         new_text = _vscode_models_text(
             None if remote else text,
             target.path,
@@ -6598,6 +6622,7 @@ def _add_vscode_provider(
             "key": key,
             "key_id": key_id,
             "models": [entry["id"]],
+            "written": not remote,
         }
         if remote:
             # Keep the key in state so a re-run reuses it; a file here would never be read.
@@ -6611,12 +6636,20 @@ def _add_vscode_provider(
     if remote:
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
-        reach = (
-            f"forward port {port} to the same port on your machine (for example: "
-            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
-            if is_loopback_url(base)
-            else f"make sure your machine can reach {base}"
-        )
+        managed = any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV)
+        engine = _container_engine()
+        if not is_loopback_url(base):
+            reach = f"make sure your machine can reach {base}"
+        elif engine and not managed:
+            reach = (
+                f"publish port {port} to the same port on your machine (for example: "
+                f"{engine} run -p {port}:{port} ...)"
+            )
+        else:
+            reach = (
+                f"forward port {port} to the same port on your machine (for example: "
+                f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            )
         typer.echo(
             "This is a remote session (SSH or a container) with no VS Code user dir here, so "
             "nothing was written. VS Code does not list these models in remote windows yet "
@@ -7545,6 +7578,16 @@ def dsh(
         launch = launch,
         server_options = server_options,
     )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window and int(window) < _DSH_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for DeepSeek Harness: its instructions and tools take about 6,500 and it keeps "
+            "4,096 in reserve, so replies are cut short (at 8,192, after a single token). "
+            f"Load it with --max-seq-length {_DSH_MIN_CONTEXT} or more (a smaller quant if "
+            "that does not fit in memory) and re-run unsloth start dsh.",
+            err = True,
+        )
     with _session_config("dsh", launch, persist = persist) as home:
         patch = home / _DSH_PATCH_FILE
         write_dsh_patch(base, entry, patch, server_options.request_body())

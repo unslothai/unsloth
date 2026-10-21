@@ -1334,7 +1334,10 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     ok = ok and hidden_states.dtype == torch.bfloat16
     if ok:
         fused_in, parts, down_name, n, gate_col, value_col, in_group, down_group = rec
-        ok = all(_get(self, nm) is mod for nm, mod in parts)
+        ok = (
+            all(_get(self, nm) is mod for nm, mod in parts)
+            and fused_in.weight.device == hidden_states.device
+        )
     if not ok:
         return type(self).forward(self, hidden_states, *args, **kwargs)
     down = _get(self, down_name)
@@ -1500,6 +1503,18 @@ def resident_cuda_device(module: Any) -> Any:
     return dev if dev.type == "cuda" else None
 
 
+def resident_cuda_cards(module: Any) -> tuple:
+    """The CUDA ordinals ``module``'s weights sit on: its one resident card, or every card of a layer split (each
+    block on one card). Empty when any weight is off the GPU, or on ROCm."""
+    dev = resident_cuda_device(module)
+    if dev is not None:
+        import torch
+        return (dev.index if dev.index is not None else torch.cuda.current_device(),)
+    from .diffusion_int8_gemm import _split_cards
+
+    return _split_cards(module)
+
+
 def run_on_first_call(module: Any, key: str, fn: Any) -> None:
     """Run ``fn(module)`` once, eagerly, right before ``module``'s first forward (after load-time placement moved
     the weights, before the regional compile traces the blocks and before any CUDA-graph capture). Idempotent per key."""
@@ -1599,8 +1614,12 @@ def _has_eligible(transformer: Any) -> bool:
 def _finalize(transformer: Any, logger: Any = None) -> int:
     global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE
     dev = resident_cuda_device(transformer)
+    cards: tuple = ()
     if dev is None:
-        return 0
+        from .diffusion_int8_gemm import _split_cards
+        cards = _split_cards(transformer)
+        if not cards:
+            return 0
     # Before the probe: it compiles and launches both Triton kernels, pure latency for a bf16 / fp16 model.
     if not _has_eligible(transformer):
         return 0
@@ -1612,23 +1631,33 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     _INTMM_MODULE = intmm
     import torch
 
-    if not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):
-        return 0
+    if cards:
+        usable = {index for index in cards if _device_ok(index)}
+        if not usable:
+            return 0
+        indices = sorted(usable)
+    else:
+        if not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):
+            return 0
+        indices = [dev.index if dev.index is not None else torch.cuda.current_device()]
     count = 0
     rearm = False
-    index = dev.index if dev.index is not None else torch.cuda.current_device()
-    actq = _act_quant_op() if _act_quant_device_ok(index) else None
+    actq_ok = {index: _act_quant_device_ok(index) for index in indices}
+    actq = _act_quant_op() if any(actq_ok.values()) else None
     with _LOCK:
         _OP_HANDLE = _op()
-        if actq is not None:
-            _ACTQ_HANDLE = actq
-            _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
-        else:
-            _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
+        for index, ok in actq_ok.items():
+            if ok and actq is not None:
+                _ACTQ_HANDLE = actq
+                _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+            else:
+                _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
         for _name, module in transformer.named_modules():
             if _MARK in module.__dict__:
                 count += 1
                 continue
+            if cards and _module_card(module) not in usable:
+                continue  # its card failed the kernel probe (or holds no weights of it): stock path
             if _ff_eligible(module):
                 fn = _ff_forward
             elif _prepare_swiglu(module):
@@ -1666,6 +1695,102 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             count,
         )
     return count
+
+
+def _module_card(module: Any) -> Optional[int]:
+    for t in module.parameters():
+        dev = t.device
+        return dev.index if dev.type == "cuda" else None
+    return None
+
+
+_OFF_TREE_RECORDS = (
+    (_SWIGLU_ATTR, "swiglu"),
+    ("_unsloth_fused_qkv", "qkv"),
+    ("_unsloth_q21_fused_qkv", "qkv"),
+)
+
+
+def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
+    """A layer split moved blocks to other cards after their fused records were built on one card. Each off-tree
+    fused Linear (which shared its parts' storage there) is rebuilt on its parts' new card, freeing the stale copy, or
+    its record is dropped (the module then runs its stock path). Regions on a card whose fused kernels fail the probe
+    get their stock forward back. Returns counts; idempotent. Must run before the first forward (the regional compile
+    traces what it finds)."""
+    from .diffusion_zimage_fused import _fuse_linears, _share_storage
+
+    out = {"rebuilt": 0, "dropped": 0, "restored": 0}
+    global _ACTQ_DEVICES
+    cards = {}
+    with _LOCK:
+        for module in transformer.modules():
+            for attr, kind in _OFF_TREE_RECORDS:
+                rec = module.__dict__.get(attr)
+                if rec is None:
+                    continue
+                if kind == "swiglu":
+                    parts = [m for _n, m in rec[1][:2]] if len(rec[1]) == 3 else None
+                else:
+                    parts = list(rec[1:4])
+                if parts is None:
+                    continue  # the in-projection is the module's own Linear: it moved with the block
+                fused = rec[0]
+                here = parts[0].weight.device
+                if fused.weight.device == here:
+                    continue
+                rebuilt = _fuse_linears(parts)
+                if rebuilt is not None and _share_storage(rebuilt, parts):
+                    module.__dict__[attr] = (rebuilt, *rec[1:])
+                    out["rebuilt"] += 1
+                else:
+                    module.__dict__.pop(attr, None)
+                    out["dropped"] += 1
+            if _MARK in module.__dict__:
+                index = _module_card(module)
+                if index is not None:
+                    cards.setdefault(index, []).append(module)
+    for index, modules in cards.items():
+        if _device_ok(index):
+            if _act_quant_device_ok(index) and _ACTQ_HANDLE is not None:
+                _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+            continue
+        for module in modules:
+            _restore_module(module)
+            out["restored"] += 1
+    if logger is not None and any(out.values()):
+        logger.info(
+            "diffusion.int8_fused: layer split re-homed fused records (%d rebuilt, %d dropped, %d regions stock)",
+            out["rebuilt"],
+            out["dropped"],
+            out["restored"],
+        )
+    return out
+
+
+def drop_stranded_fused_records(transformer: Any) -> int:
+    """Drop fused records whose parts left their card after a failed split (``pipe.to("cpu")`` cannot free them).
+    Returns how many were dropped."""
+    dropped = 0
+    with _LOCK:
+        for module in transformer.modules():
+            for attr, kind in _OFF_TREE_RECORDS:
+                rec = module.__dict__.get(attr)
+                if rec is None:
+                    continue
+                if kind == "swiglu":
+                    parts = [m for _n, m in rec[1][:2]] if len(rec[1]) == 3 else None
+                else:
+                    parts = list(rec[1:4])
+                if parts is None:
+                    continue  # the in-projection is the module's own Linear: it moved with the block
+                try:
+                    stranded = any(p.weight.device != rec[0].weight.device for p in parts)
+                except Exception:  # noqa: BLE001 - an unreadable record cannot be trusted either
+                    stranded = True
+                if stranded:
+                    module.__dict__.pop(attr, None)
+                    dropped += 1
+    return dropped
 
 
 def _hooked_forward_slot(module: Any) -> Optional[tuple]:
@@ -1735,21 +1860,25 @@ def uninstall(transformer: Any = None) -> None:
     cancel_first_call(transformer, "int8_fused")
     with _LOCK:
         for module in transformer.modules():
-            prev = module.__dict__.pop(_MARK, None)
-            if prev is None:
-                continue
-            slot = _hooked_forward_slot(module)
-            if slot is not None and _is_fused_forward(getattr(*slot), module):
-                # Swapped under a hook, or a cache engaged after the swap: restore the hook's inner, keep its wrapper.
-                setattr(*slot, prev if prev is not _NO_PREV else _class_forward(module))
-            elif _is_fused_forward(module.__dict__.get("forward"), module):
-                if prev is _NO_PREV:
-                    module.__dict__.pop("forward", None)
-                else:
-                    module.forward = prev
-            _disarm_fused_inner(module, prev)
-            module.__dict__.pop("_unsloth_i8_addcmul", None)
-            module.__dict__.pop(_SWIGLU_ATTR, None)
+            _restore_module(module)
+
+
+def _restore_module(module: Any) -> None:
+    """One region's stock forward back (caller holds ``_LOCK`` or owns the module)."""
+    prev = module.__dict__.pop(_MARK, None)
+    if prev is None:
+        return
+    slot = _hooked_forward_slot(module)
+    if slot is not None and _is_fused_forward(getattr(*slot), module):
+        setattr(*slot, prev if prev is not _NO_PREV else _class_forward(module))
+    elif _is_fused_forward(module.__dict__.get("forward"), module):
+        if prev is _NO_PREV:
+            module.__dict__.pop("forward", None)
+        else:
+            module.forward = prev
+    _disarm_fused_inner(module, prev)
+    module.__dict__.pop("_unsloth_i8_addcmul", None)
+    module.__dict__.pop(_SWIGLU_ATTR, None)
 
 
 def is_installed(module: Any) -> bool:

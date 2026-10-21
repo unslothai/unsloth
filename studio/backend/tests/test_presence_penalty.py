@@ -495,10 +495,14 @@ def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serve
         _ for _ in ()
     ).throw(_Built())
     with pytest.raises(_Built):
-        list(o.generate_completion([5, 6], max_new_tokens = 3, penalty_window = 0, grammar = "G"))
+        list(
+            o.generate_completion(
+                [5, 6], max_new_tokens = 3, penalty_window = 0, grammar = "G", n_probs = 2
+            )
+        )
     cmd = built[0]
     assert (cmd["messages"], cmd["prompt_ids"], cmd["penalty_window"]) == ([], [5, 6], 0)
-    assert cmd["grammar"] == "G"
+    assert cmd["grammar"] == "G" and cmd["n_probs"] == 2
     with pytest.raises(_Built):
         list(o.generate_completion_batch([{"prompt_ids": [5]}], penalty_window = 1))
     assert (built[1]["messages"], built[1]["rows"], built[1]["penalty_window"]) == (
@@ -506,6 +510,7 @@ def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serve
         [{"prompt_ids": [5]}],
         1,
     )
+    assert "n_probs" not in built[1]
 
     class _MLX:
         last_generation_stats = None
@@ -521,7 +526,7 @@ def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serve
     mlx, queue = _MLX(), _Queue()
     _handle_generate(mlx, cmd, queue, threading.Event())
     assert mlx.received[0] == [5, 6] and mlx.received[1]["penalty_window"] == 0
-    assert mlx.received[1]["grammar"] == "G"
+    assert mlx.received[1]["grammar"] == "G" and mlx.received[1]["n_probs"] == 2
     assert [item["type"] for item in queue] == ["token", "gen_done"]
     queue.clear()
     _handle_generate(chat, cmd, queue, threading.Event())

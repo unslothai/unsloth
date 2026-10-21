@@ -210,6 +210,30 @@ def _llama_cpp_scripts_pin():
         os.environ.pop("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", None)
 
 
+@contextlib.contextmanager
+def _converter_remote_code(approved: bool):
+    """Keep convert_hf_to_gguf.py to the load's consent-gated trust decision for one conversion.
+
+    The converter loads several architectures' tokenizers with trust_remote_code=True, so a
+    checkpoint loaded with built-in classes (never seen by the consent gate) could run its
+    auto_map code there. Transformers imports that code only from its HF_MODULES_CACHE copy,
+    which the converter child inherits: a path no directory can be created at refuses it.
+    Covers the MLX save path too, which has no guard of its own.
+    """
+    if approved:
+        yield
+        return
+    existing = os.environ.get("HF_MODULES_CACHE")
+    os.environ["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
+    try:
+        yield
+    finally:
+        if existing is None:
+            os.environ.pop("HF_MODULES_CACHE", None)
+        else:
+            os.environ["HF_MODULES_CACHE"] = existing
+
+
 def _multi_gpu_device_map_kwargs() -> dict:
     """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
 
@@ -667,6 +691,13 @@ def _open_hub_repo(hf_api, repo_id, private):
     return repo_id
 
 
+def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
+    if hf_token is None:
+        from huggingface_hub import get_token
+        return get_token()
+    return hf_token
+
+
 def _push_mlx_merged(
     model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
 ):
@@ -720,6 +751,22 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         ModelCard(content).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
     except Exception as exception:
         logger.warning(f"Could not publish the model card: {exception}")
+
+
+def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
+    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
+    weight entries that point outside the folder."""
+    from core.export.decision import adapter_base_changed
+    from utils.security.file_security import escaping_weight_references
+
+    if pinned_base and adapter_base_changed(checkpoint_path, pinned_base):
+        return "The adapter's base model changed after it was checked. Load it again."
+    if escaping_weight_references(checkpoint_path):
+        return "This checkpoint's weight index names files outside its folder."
+    # A local base loads too: its own index must stay inside its folder as well.
+    if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
+        return "The base model's weight index names files outside its folder."
+    return None
 
 
 class ExportBackend:
@@ -815,6 +862,7 @@ class ExportBackend:
         # Loaders only: the probes' cache guards refuse an anonymous read, which offline
         # misreads a cached VLM as a text model.
         probe_token = token or None
+        pinned_base = base_model
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -832,6 +880,11 @@ class ExportBackend:
                     token = token,
                     base_model = base_model,
                 )
+
+            # The decision loader above checks its own base against the pin.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             checkpoint_path_obj = Path(checkpoint_path)
 
@@ -882,6 +935,11 @@ class ExportBackend:
                 if self.diffusion_lm_profile:
                     # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
                     self.is_vision = False
+
+            # Again right before the load: the folder may have been edited during the probes.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -1152,6 +1210,8 @@ class ExportBackend:
         except DecisionExportError as exc:
             return False, str(exc)
         self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # The base is loaded only at export: kept here and rechecked right before that load.
+        self._decision_base_pin = resolved if adapter_only else None
         # An adapter folder loads its base at export time, under the credential of this load.
         self._decision_token = token
         self.is_vision = False
@@ -1177,8 +1237,23 @@ class ExportBackend:
                 "Decision model GGUF export does not support imatrix or Q4NX conversion.",
                 None,
             )
-        from core.export.decision import DecisionExportError, run_decision_gguf_export
+        from core.export.decision import DecisionExportError, adapter_base, run_decision_gguf_export
 
+        pinned = getattr(self, "_decision_base_pin", None)
+        if pinned:
+            try:
+                current = adapter_base(self.current_checkpoint)
+            except DecisionExportError as exc:
+                return False, str(exc), None
+            if current != pinned:
+                return (
+                    False,
+                    "The adapter's base model changed after it was loaded. Load it again.",
+                    None,
+                )
+        refusal = _checkpoint_load_refusal(self.current_checkpoint, pinned)
+        if refusal:
+            return False, refusal, None
         try:
             data = run_decision_gguf_export(
                 self.current_checkpoint,
@@ -1441,6 +1516,7 @@ class ExportBackend:
                 output_path = str(Path(final_dir).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1597,6 +1673,7 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1716,6 +1793,8 @@ class ExportBackend:
             )
         # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        # True only after the load's consent gate passed; only then may the converter run auto_map code.
+        remote_code_approved = bool(getattr(self, "trust_remote_code", False))
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
         # push shares and names token= itself.
         local_token_kw = (
@@ -1771,7 +1850,7 @@ class ExportBackend:
                 try:
                     # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
                     # llama-quantize gguf API; scoped to the conversion.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
                             self.current_tokenizer,
@@ -1919,6 +1998,7 @@ class ExportBackend:
                         )
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1978,7 +2058,7 @@ class ExportBackend:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
                     # Converts as well as pushes, so it needs the same scoped pin.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         self.current_model.push_to_hub_gguf(
                             repo_id,
                             self.current_tokenizer,
@@ -2477,6 +2557,7 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,

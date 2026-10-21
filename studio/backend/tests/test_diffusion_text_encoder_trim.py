@@ -107,7 +107,7 @@ def test_trim_keeps_every_hidden_state_bit_identical_and_drops_the_head():
 
 def test_trim_is_idempotent_and_gated():
     encoder = _encoder()
-    assert trim_text_encoder(encoder, family = "qwen-image")["lm_head"] == "kept"
+    assert trim_text_encoder(encoder, family = "sdxl")["lm_head"] == "kept"
     assert not is_trimmed(encoder)
     assert trim_text_encoder(encoder, family = "qwen-image-2.1")["lm_head"] == "dropped"
     assert trim_text_encoder(encoder, family = "qwen-image-2.1") == {
@@ -236,7 +236,7 @@ def test_pipe_kwargs_asks_the_loader_to_trim_only_for_hidden_state_families(monk
         "load_prequant_text_encoder",
         lambda *a, **k: seen.append(k.get("trim_lm_head")) or object(),
     )
-    for name in ("qwen-image-2.1", "qwen-image"):
+    for name in ("qwen-image-2.1", "sdxl"):
         tpq.te_prequant_pipe_kwargs(
             types.SimpleNamespace(name = name),
             "base",
