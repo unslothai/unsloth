@@ -323,7 +323,9 @@ def _wired_backend(
     real_probe = LlamaCppBackend.probe_server_capabilities
 
     def probe(binary = None):
-        caps = dict(real_probe(binary))
+        # Always the fake binary: a no-argument probe (the duplicate-load matcher) must
+        # not read whatever llama-server this host has installed.
+        caps = dict(real_probe(binary or "/fake/llama-server"))
         caps["flags"] = dict(caps.get("flags") or {}, **(_TP_HELP if tensor_help else {}))
         return caps
 
@@ -950,7 +952,9 @@ def test_wired_identical_repeat_request_reuses_an_auto_tensor_server(tmp_path, m
 
 
 def test_status_and_load_report_an_auto_tensor_split_as_toggle_off(tmp_path, monkeypatch):
-    from routes.inference import _llama_runtime_fields
+    from test_tp_vision_regression import _load_inference_routes_module
+
+    _llama_runtime_fields = _load_inference_routes_module()._llama_runtime_fields
 
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
@@ -1011,8 +1015,9 @@ def test_wired_auto_tensor_start_failure_retries_with_layer(tmp_path, monkeypatc
     assert [_split_flag(c["cmd"]) for c in cmds][0] == "tensor"
     assert _split_flag(cmds[-1]["cmd"]) != "tensor"
     assert not backend.tensor_parallel
-    # The retry is the load without the policy: same as the kill switch would launch.
-    assert not backend._auto_tensor_suppressed
+    # The retry is the load without the policy, and no attempt state outlives the call.
+    assert backend._auto_split_attempt is None
+    assert not backend._auto_tensor_live
 
 
 def test_wired_unload_clears_the_auto_decision(tmp_path, monkeypatch):
@@ -1020,10 +1025,10 @@ def test_wired_unload_clears_the_auto_decision(tmp_path, monkeypatch):
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
     _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
-    assert backend._auto_split_decision is not None and backend._auto_tensor_engaged
+    assert backend._auto_split_decision is not None and backend._auto_tensor_live
     backend.unload_model()
-    assert backend._auto_split_decision is None
-    assert backend._auto_tensor_engaged is False
+    # Nothing to reset: the live view is gated on the tensor state every reset clears.
+    assert backend._auto_tensor_live is False
 
 
 def test_gpu_names_use_nvidia_smi_indices_when_the_planner_does(monkeypatch):
@@ -1050,3 +1055,300 @@ def test_gpu_names_use_nvidia_smi_indices_when_the_planner_does(monkeypatch):
         1: "Tesla T4",
         2: "Tesla T4",
     }
+
+
+# --------------------------------------------------------------------------
+# 6. Every fallback / retry / recovery runs with the policy off (round 2)
+# --------------------------------------------------------------------------
+
+
+def _launch_scripted(backend, gguf, behave, **load_kwargs):
+    """load_model with a fake child per spawn. ``behave(cmd)`` -> (healthy, stdout lines, rc).
+    Returns (result or the exception, [cmd, ...])."""
+    import time as _time
+
+    spawns = []
+
+    class _Proc:
+        def __init__(self, cmd):
+            self.healthy, lines, self.rc = behave(cmd)
+            self.stdout = list(lines)
+            self.pid = 123
+            self.returncode = None if self.healthy else self.rc
+
+        def poll(self):
+            return None if self.healthy else self.rc
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout = None):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        spawns.append(list(cmd))
+        return _Proc(cmd)
+
+    def wait(timeout, **_kw):
+        proc = backend._process
+        if proc is not None and not proc.healthy:
+            deadline = _time.monotonic() + 2.0
+            while len(backend._stdout_lines) < len(proc.stdout) and _time.monotonic() < deadline:
+                _time.sleep(0.01)
+            return False
+        return True
+
+    backend._wait_for_health = wait
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        try:
+            result = backend.load_model(
+                GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", **load_kwargs)
+            )
+        except Exception as exc:  # noqa: BLE001 - the cell asserts on it
+            result = exc
+    return result, spawns
+
+
+def _tensor_crashes(lines, rc = 134):
+    return lambda cmd: (False, lines, rc) if _split_flag(cmd) == "tensor" else (True, [], 0)
+
+
+def test_wired_scheduler_abort_on_auto_tensor_does_not_block_the_layer_load(tmp_path, monkeypatch):
+    # The reviewers' reproduction: the graph-scheduler abort memo keyed the unchanged
+    # request, so the layer reload was refused before it spawned.
+    monkeypatch.setattr(LlamaCppBackend, "_sched_reserve_abort_keys", set())
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    result, spawns = _launch_scripted(
+        backend,
+        gguf,
+        _tensor_crashes(
+            ["GGML_ASSERT(*cur_backend_id != -1) failed", "ggml_backend_sched_split_graph"]
+        ),
+        gpu_memory_mode = "auto",
+        n_ctx = 4096,
+    )
+    assert result is True, result
+    assert _split_flag(spawns[0]) == "tensor"
+    assert [s for s in spawns[1:] if _split_flag(s) == "tensor"] == []
+    assert len(spawns) == 2
+    assert not LlamaCppBackend._sched_reserve_abort_keys
+
+
+def test_wired_auto_tensor_kernel_crash_reloads_without_the_policy(tmp_path, monkeypatch):
+    # The arch-crash rung would narrow the auto pair to one GPU and keep stale auto state.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    (tmp_path / "off").mkdir()
+    off_backend, off_gguf = _wired_backend(
+        tmp_path / "off", monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    monkeypatch.setenv(sp.AUTO_TENSOR_SPLIT_ENV, "0")
+    off = _launch(off_backend, off_gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    monkeypatch.delenv(sp.AUTO_TENSOR_SPLIT_ENV)
+    result, spawns = _launch_scripted(
+        backend,
+        gguf,
+        _tensor_crashes(["CUDA error: device kernel image is invalid"], rc = 1),
+        gpu_memory_mode = "auto",
+        n_ctx = 4096,
+    )
+    assert result is True, result
+    assert _split_flag(spawns[0]) == "tensor" and len(spawns) == 2
+    assert _norm_cmd({"cmd": spawns[-1]}) == _norm_cmd(off)
+    assert backend._arch_gate_dropped_tensor_parallel is False
+    assert not backend._auto_tensor_live
+    assert not backend._auto_split_decision.auto
+
+
+def test_wired_auto_tensor_mtp_decode_failure_keeps_mtp_on_layer(tmp_path, monkeypatch):
+    # The tensor-only first-decode probe fails: main's recovery would drop MTP and keep a MoE
+    # model on tensor without it, which the policy itself never chooses.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    _with_mtp_caps(backend)
+    backend._probe_mtp_decode = lambda *a, **k: False
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    spawns = []
+    real_popen = subprocess.Popen
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return real_popen(cmd, **kwargs)
+        spawns.append(list(cmd))
+        return type(
+            "P",
+            (),
+            {
+                "pid": 1,
+                "stdout": (),
+                "returncode": None,
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf), model_identifier = _MTP_MODEL, gpu_memory_mode = "auto", n_ctx = 4096
+            )
+        )
+    final = spawns[-1]
+    assert _split_flag(spawns[0]) == "tensor"
+    assert _split_flag(final) != "tensor"
+    assert final[final.index("--spec-type") + 1] == "draft-mtp"
+    assert not backend._auto_tensor_live
+
+
+def test_wired_concurrent_load_cannot_clear_the_running_attempt(tmp_path, monkeypatch):
+    import threading
+    import time as _time
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    in_tensor = threading.Event()
+    last = {}
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        last["cmd"] = list(cmd)
+        return type(
+            "P",
+            (),
+            {
+                "pid": 1,
+                "stdout": (),
+                "returncode": None,
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def wait(timeout, **_kw):
+        if _split_flag(last["cmd"]) == "tensor" and not in_tensor.is_set():
+            in_tensor.set()
+            _time.sleep(0.5)  # the queued load reaches load_model meanwhile
+            raise RuntimeError("tensor start failed")
+        return True
+
+    backend._wait_for_health = wait
+    results = {}
+
+    def run(name, **kw):
+        try:
+            results[name] = backend.load_model(
+                GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 4096, **kw)
+            )
+        except Exception as exc:  # noqa: BLE001
+            results[name] = exc
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        a = threading.Thread(target = run, args = ("A",), kwargs = {"gpu_memory_mode": "auto"})
+        a.start()
+        assert in_tensor.wait(10)
+        b = threading.Thread(
+            target = run, args = ("B",), kwargs = {"gpu_memory_mode": "auto", "n_parallel": 2}
+        )
+        b.start()
+        a.join(30)
+        b.join(30)
+    assert results.get("A") is True, results
+    assert results.get("B") is True, results
+
+
+def _kv_per_token(backend, kib):
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * kib * 1024
+
+
+@pytest.mark.parametrize(
+    "load_kwargs",
+    [{"n_ctx": 65536}, {"n_ctx": 0, "extra_args": ["--ctx-size", "65536"]}],
+)
+def test_wired_pair_must_hold_the_requested_context(tmp_path, monkeypatch, load_kwargs):
+    # The reviewers' reproduction: 4x 15 GiB, 20 GiB weights, 256 KiB/token KV. The weights fit
+    # a pair, the requested 65536 context needs a third card, which main's layer split adds.
+    mem = [(i, 15_360, 15_360) for i in range(4)]
+    off, on, backend = _launch_off_vs_on(
+        tmp_path,
+        monkeypatch,
+        memory = mem,
+        model_gib = 20,
+        names = {i: T4 for i in range(4)},
+        setup = lambda b: _kv_per_token(b, 256),
+        gpu_memory_mode = "auto",
+        **load_kwargs,
+    )
+    assert _split_flag(on["cmd"]) != "tensor"
+    assert _norm_cmd(on) == _norm_cmd(off)
+    assert on["env"].get("CUDA_VISIBLE_DEVICES") == off["env"].get("CUDA_VISIBLE_DEVICES")
+
+
+def test_wired_pair_holding_the_requested_context_still_goes_tensor(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    _kv_per_token(backend, 64)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 32768)["cmd"]
+    assert _split_flag(cmd) == "tensor"
+
+
+def test_wired_explicit_tensor_toggle_after_an_auto_load_reloads(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    assert backend._auto_tensor_live
+    intent = backend._last_load_intent
+    toggled = dataclasses.replace(intent, tensor_parallel = True)
+    assert not backend._runtime_matches_intent(toggled, toggled.extra_args)
+    tensor_extras = ["--split-mode", "tensor"]
+    assert not backend._runtime_matches_intent(
+        dataclasses.replace(intent, extra_args = tensor_extras), tensor_extras
+    )
+
+
+def test_live_auto_state_follows_the_tensor_state_every_reset_clears(tmp_path, monkeypatch):
+    # CPU fallback, the arch gates, Phase 3 and unload all clear _tensor_parallel; none needs
+    # to know about the auto policy.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    assert backend._auto_tensor_live
+    backend._tensor_parallel = False
+    assert not backend._auto_tensor_live
+    assert backend._auto_split_attempt is None
+
+
+def test_gpu_names_fall_back_to_the_nvml_inventory(monkeypatch):
+    from utils.hardware import gpu_query
+
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(
+        gpu_query, "run_nvidia_smi", lambda *a, **k: types.SimpleNamespace(returncode = 9, stdout = "")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_NVML_ROWS",
+        [
+            {"index": "0", "name": "Tesla T4"},
+            {"index": "1", "name": "Tesla T4"},
+            {"index": "1", "name": "Tesla T4 MIG", "mig": "1"},
+        ],
+    )
+    assert LlamaCppBackend._gpu_names_by_physical_id() == {0: "Tesla T4", 1: "Tesla T4"}

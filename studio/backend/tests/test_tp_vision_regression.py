@@ -156,9 +156,6 @@ _ALLOWED_TP_DROP_GUARDS = {
     # to every request here, including one already asking for manual/0 (whose extras can
     # still carry an --override-tensor the route does not strip).
     "_paravirtual_cpu_forced",
-    # The auto split policy's own tensor (no user asked for it) when the placement try
-    # fails into --fit on, which aborts under a tensor split: the load runs as without it.
-    "_auto_tensor_selected",
 }
 
 
