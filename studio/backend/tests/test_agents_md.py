@@ -244,7 +244,10 @@ def test_memory_route_reads_writes_and_needs_a_ui_session(home):
 
 def test_memory_editor_loads_a_hand_edited_file_whole_and_fails_closed(home, monkeypatch):
     big = "note\n" * (agents_md.MAX_AGENTS_MD_BYTES // 5 + 100)
-    _write(home / "home/.unsloth/studio/AGENTS.md", big)
+    target = home / "home/.unsloth/studio/AGENTS.md"
+    target.parent.mkdir(parents = True, exist_ok = True)
+    # Bytes, not write_text: Windows text mode writes CRLF, and read_memory returns the file as it is.
+    target.write_bytes(big.encode("utf-8"))
     # Chats still get the 32 KiB cut; the editor gets everything, so a save cannot drop the tail unseen.
     assert agents_md.agents_md_text(None).endswith(agents_md.TRUNCATED_NOTE)
     assert agents_md.read_memory() == big
