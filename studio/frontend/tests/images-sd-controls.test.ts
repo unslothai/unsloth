@@ -87,6 +87,19 @@ test("non-default values map to request fields", () => {
   );
 });
 
+test("image-conditioned workflows never send the variation fields", () => {
+  const choice = { ...DEFAULT_SD_CONTROLS, cfgRescale: 0.5, variationSeed: "7", variationStrength: 0.3 };
+  assert.deepEqual(sdControlsRequestFields(SDXL, choice, 7, false), { cfg_rescale: 0.5 });
+  assert.equal(sdControlsRequestFields(SDXL, choice, 7).variation_strength, 0.3);
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(
+    src,
+    /const varying = Boolean\(sdCaps\?\.variation_seed\) && workflow === "create" && runChoice\.variationStrength > 0;/,
+  );
+  assert.match(src, /% 2 \*\* 32 : null,\n\s+varying,\n\s+\),/);
+  assert.match(src, /\{sdCaps\.variation_seed && workflow === "create" && \(/);
+});
+
 test("variation seeds parse as 32-bit integers", () => {
   assert.equal(parseVariationSeed(""), null);
   assert.equal(parseVariationSeed(" 12 "), 12);

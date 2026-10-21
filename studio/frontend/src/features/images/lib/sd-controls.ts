@@ -60,11 +60,13 @@ export function parseVariationSeed(text: string): number | null {
   return Number.isInteger(n) && n >= 0 && n < 2 ** 32 ? n : null;
 }
 
-/** Request fields for the choice, only those off their default; nothing when the model lacks them. */
+/** Request fields for the choice, only those off their default; nothing when the model lacks them.
+ *  `variation`: false on image-conditioned workflows, whose noise comes from the source (the backend 400s). */
 export function sdControlsRequestFields(
   capability: SdControlsCapability | null | undefined,
   choice: SdControlsChoice,
   variationSeed?: number | null,
+  variation = true,
 ): SdControlsRequest {
   if (!capability) return {};
   const out: SdControlsRequest = {};
@@ -77,7 +79,7 @@ export function sdControlsRequestFields(
   if (rescale && choice.cfgRescale > 0) {
     out.cfg_rescale = Math.min(choice.cfgRescale, rescale.max);
   }
-  if (capability.variation_seed && choice.variationStrength > 0) {
+  if (variation && capability.variation_seed && choice.variationStrength > 0) {
     out.variation_strength = Math.min(choice.variationStrength, 1);
     const seed = variationSeed ?? parseVariationSeed(choice.variationSeed);
     if (seed !== null && seed !== undefined) out.variation_seed = seed;

@@ -5168,7 +5168,7 @@ export function ImagesPage({
     const runChoice: SdControlsChoice = vary
       ? { ...sdChoice, variationSeed: String(vary.variationSeed), variationStrength: vary.strength }
       : sdChoice;
-    const varying = Boolean(sdCaps?.variation_seed) && runChoice.variationStrength > 0;
+    const varying = Boolean(sdCaps?.variation_seed) && workflow === "create" && runChoice.variationStrength > 0;
     if (varying && runChoice.variationSeed.trim() && parseVariationSeed(runChoice.variationSeed) === null) {
       toast.error("Variation seed must be an integer from 0 to 4294967295");
       return;
@@ -5292,6 +5292,7 @@ export function ImagesPage({
               sdCaps,
               runChoice,
               baseVariationSeed !== null ? (baseVariationSeed + i * batchSize) % 2 ** 32 : null,
+              varying,
             ),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
@@ -5831,7 +5832,7 @@ export function ImagesPage({
               onChange={(v) => setSdChoice((c) => ({ ...c, cfgRescale: v }))}
             />
           )}
-          {sdCaps.variation_seed && (
+          {sdCaps.variation_seed && workflow === "create" && (
             <>
               <SliderField
                 label="Variation strength"
