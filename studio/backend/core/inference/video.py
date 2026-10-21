@@ -1001,16 +1001,19 @@ def _scheduler_step_progress(
         scheduler.step = original
 
 
-def _record_cuda_event() -> Any:
-    """Returns a CUDA event or None; never synchronises, and never records inside a graph capture."""
+def _record_device_event() -> Any:
+    """Returns a CUDA or MPS event or None; never synchronises, and never records inside a graph capture."""
     try:
         import torch
 
-        if not torch.cuda.is_available():
+        if torch.cuda.is_available():
+            if torch.cuda.is_current_stream_capturing():
+                return None
+            event = torch.cuda.Event()
+        elif torch.backends.mps.is_available():
+            event = torch.mps.Event()
+        else:
             return None
-        if torch.cuda.is_current_stream_capturing():
-            return None
-        event = torch.cuda.Event()
         event.record()
         return event
     except Exception:  # noqa: BLE001 -- progress reporting must never fail a render
@@ -1032,9 +1035,11 @@ class _CompletedStepTicker:
     point: a ``synchronize()`` per step would give the same honest number and hand back the
     CUDA-graph win that the video speed path exists for.
 
-    Falls back to the enqueued count on any host without usable CUDA events (CPU, MPS), which is
-    exactly today's behaviour and is correct there -- without a graph to run ahead of, the host
-    count IS the progress.
+    MPS runs ahead without any graph: with torch >= 2.13 a Z-Image-Turbo 1024^2 render enqueues all
+    8 steps in 0.12 s and the GPU needs another 48 s, so it gets ``torch.mps.Event`` markers too.
+
+    Falls back to the enqueued count when no event can be recorded: exact on a CPU host, where the
+    work is synchronous, and the best answer left anywhere else.
     """
 
     def __init__(self, total: int) -> None:
@@ -1057,7 +1062,7 @@ class _CompletedStepTicker:
     def mark_boundary(self) -> bool:
         """Records the denoise end in the stream; True means wait on boundary_reached(), else it is
         reached."""
-        event = _record_cuda_event()
+        event = _record_device_event()
         with self._lock:
             self._boundary = event
             self._boundary_marked = True
@@ -1091,7 +1096,7 @@ class _CompletedStepTicker:
             self._enqueued = enqueued
             if len(self._events) >= self.total:
                 return
-        event = _record_cuda_event()
+        event = _record_device_event()
         if event is None:
             return
         with self._lock:
@@ -12187,7 +12192,7 @@ class VideoBackend:
                     )
 
                 def _tick(enqueued: int) -> None:
-                    """Mark submitted steps with a CUDA event; skip while another thread captures (events unsafe then)."""
+                    """Mark submitted steps with a CUDA/MPS event; skip while another thread captures (events unsafe then)."""
                     _enter_denoise()
                     with _hold_off_cuda_graph_capture() as clear:
                         if not clear:

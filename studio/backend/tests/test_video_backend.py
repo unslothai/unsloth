@@ -11007,7 +11007,7 @@ def _ticker(monkeypatch, total):
         events.append(event)
         return event
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    monkeypatch.setattr(video_mod, "_record_device_event", _fake_event)
     return video_mod._CompletedStepTicker(total), events
 
 
@@ -11046,16 +11046,62 @@ def test_ticker_never_walks_backwards_or_past_the_total(monkeypatch):
     assert ticker.completed() == 4
 
 
-def test_ticker_falls_back_to_the_host_count_without_cuda_events(monkeypatch):
-    # CPU/MPS have no events and no run-ahead, so the host count IS the progress.
+def test_ticker_falls_back_to_the_host_count_without_device_events(monkeypatch):
+    # A CPU host has no events and no run-ahead, so the host count IS the progress.
     import core.inference.video as video_mod
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", lambda: None)
+    monkeypatch.setattr(video_mod, "_record_device_event", lambda: None)
     ticker = video_mod._CompletedStepTicker(5)
     for step in range(1, 6):
         ticker.record(step)
         assert ticker.completed() == step
     assert ticker.event_backed is False
+
+
+@pytest.mark.parametrize("has_event, mps_available", [(True, True), (False, True), (True, False)])
+def test_ticker_follows_mps_events(monkeypatch, has_event, mps_available):
+    # MPS runs ahead of the host with no graph (torch >= 2.13 enqueues a whole Z-Image denoise in
+    # 0.1 s), so its events back the ticker and the boundary. A torch without torch.mps.Event, or a
+    # host without MPS, keeps the host count and flips at once.
+    import core.inference.video as video_mod
+
+    events: list = []
+
+    class _MpsEvent(_FakeCudaEvent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.recorded = False
+            events.append(self)
+
+        def record(self) -> None:
+            self.recorded = True
+
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(is_available = lambda: False)
+    torch.backends = types.SimpleNamespace(
+        mps = types.SimpleNamespace(is_available = lambda: mps_available)
+    )
+    torch.mps = types.SimpleNamespace(**({"Event": _MpsEvent} if has_event else {}))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    ticker = video_mod._CompletedStepTicker(3)
+    for step in range(1, 4):
+        ticker.record(step)
+    if not (has_event and mps_available):
+        assert ticker.completed() == 3
+        assert ticker.event_backed is False
+        assert ticker.mark_boundary() is False
+        return
+    assert [event.recorded for event in events] == [True] * 3
+    assert ticker.completed() == 0
+    events[0].done = True
+    assert ticker.completed() == 1
+    assert ticker.mark_boundary() is True
+    assert ticker.boundary_reached() is False
+    for event in events:
+        event.done = True
+    assert ticker.completed() == 3
+    assert ticker.boundary_reached() is True
 
 
 def test_ticker_unmarkable_step_does_not_shift_the_ones_after_it(monkeypatch):
@@ -11074,7 +11120,7 @@ def test_ticker_unmarkable_step_does_not_shift_the_ones_after_it(monkeypatch):
         events.append(event)
         return event
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    monkeypatch.setattr(video_mod, "_record_device_event", _fake_event)
     ticker = video_mod._CompletedStepTicker(4)
     for step in range(1, 5):
         ticker.record(step)
@@ -11211,7 +11257,7 @@ def _patch_events(monkeypatch, *, done: bool = False):
         events.append(event)
         return event
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    monkeypatch.setattr(video_mod, "_record_device_event", _fake_event)
     return events
 
 
@@ -11349,7 +11395,7 @@ def test_a_capture_cannot_start_while_an_event_query_is_in_flight(monkeypatch):
             finish_query.wait(5.0)
             return True
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", lambda: _BlockingEvent())
+    monkeypatch.setattr(video_mod, "_record_device_event", lambda: _BlockingEvent())
     ticker = video_mod._CompletedStepTicker(1)
     ticker.record(1)
 
