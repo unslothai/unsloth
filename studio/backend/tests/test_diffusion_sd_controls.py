@@ -651,6 +651,24 @@ def test_infotext_names_follow_webui():
         }
     )
     assert "Variation" not in plain and "Clip skip" not in plain and "CFG rescale" not in plain
+    assert "Emphasis" not in text and "Emphasis" not in plain
+
+
+def test_infotext_marks_literal_prompt_with_emphasis_none():
+    # webui reads "Emphasis: None" (opts.emphasis) to parse (fox:1.5) literally on replay.
+    from core.inference.image_gallery import _params_text
+
+    meta = {
+        "prompt": "a (fox:1.5)",
+        "steps": 20,
+        "guidance": 7.0,
+        "seed": 1,
+        "width": 64,
+        "height": 64,
+    }
+    assert ", Emphasis: None" in _params_text({**meta, "prompt_weighting": False})
+    assert "Emphasis" not in _params_text({**meta, "prompt_weighting": True})
+    assert "Emphasis" not in _params_text({**meta, "prompt_weighting": None})
 
 
 def test_long_plain_prompt_is_chunked_not_truncated(tiny_sdxl):

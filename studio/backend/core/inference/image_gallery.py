@@ -83,6 +83,9 @@ def _params_text(meta: dict[str, Any]) -> str:
         fields += f", Clip skip: {meta['clip_skip']}"
     if meta.get("cfg_rescale"):
         fields += f", CFG rescale: {meta['cfg_rescale']}"
+    # webui opts.emphasis infotext: a prompt run with weighting off replays literally there too.
+    if meta.get("prompt_weighting") is False:
+        fields += ", Emphasis: None"
     if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
         fields += f", Denoising strength: {meta['strength']}"
     # A1111 inpaint keys (modules/processing.py), only when this inpaint applied them.
