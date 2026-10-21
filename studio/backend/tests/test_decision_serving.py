@@ -659,7 +659,9 @@ def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, mo
 def test_an_image_load_ends_an_idle_clef_worker(home, client, clef):
     from core.inference import gpu_arbiter
 
-    assert _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
     assert _post(client).status_code == 200
     gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
     assert clef.agents[0].closed
