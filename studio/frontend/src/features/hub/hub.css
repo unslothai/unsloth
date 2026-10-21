@@ -1667,8 +1667,7 @@ body[data-scroll-locked] .hub-modal-pe-guard {
   pointer-events: none !important;
 }
 
-/* Model filter ranges: two thumbs share one track, so they stay smaller than a
-   single slider's. Whole screen pixels, like the shared slider tokens. */
+/* Model filter ranges: two thumbs share a track, so smaller than a single slider. */
 .hub-range {
   --hub-range-thumb: calc(1rem * var(--ui-space-scale, 1));
   --hub-range-track: calc(0.1875rem * var(--ui-space-scale, 1));

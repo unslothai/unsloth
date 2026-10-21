@@ -356,8 +356,7 @@
 	   a softer feel. Dark mode (further down) keeps parity with the
 	   muted-text token. */
 	--panel-slider-fg-base: #9a9a9c;
-	/* Every slider except the Hub range filter (hub.css). The translucent track
-	   sits the same step off any surface. */
+	/* Every slider except the Hub range filter (hub.css). */
 	--slider-fill: var(--control-accent);
 	--slider-track: rgb(0 0 0 / calc(0.065 * var(--contrast-wash-gain, 1)));
 	--slider-thumb: #ffffff;
@@ -566,7 +565,6 @@
 	--panel-surface-fg-muted: #b0b0b0;
 	/* Dark-mode slider tone matches muted text. */
 	--panel-slider-fg-base: #b0b0b0;
-	/* Accent softened toward grey; borderless white thumb. */
 	--slider-fill: color-mix(in oklab, var(--control-accent) 75%, #a0a0a0);
 	--slider-track: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
 	--slider-thumb-shadow: 0 1px 2px -0.5px rgb(0 0 0 / 0.12);
@@ -5244,8 +5242,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
-/* Settings > Appearance contrast: one ramp along the whole track instead of a
-   fill, since the value is a strength rather than an amount used. */
+/* Settings > Appearance contrast: one ramp along the track instead of a fill. */
 .contrast-slider [data-slot="slider-track"] {
 	background: linear-gradient(
 		to right,
