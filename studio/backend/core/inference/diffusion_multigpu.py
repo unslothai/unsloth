@@ -1923,6 +1923,9 @@ class CfgParallelRouter:
         try:
             r_args = self._to_replica(args)
             r_kwargs = self._to_replica(kwargs)
+        except Exception as exc:  # noqa: BLE001 - e.g. no room left on the replica card: both halves run on the source
+            self.disable(f"replica input copy failed: {type(exc).__name__}: {exc}")
+            return None
         finally:
             self.next_carry = []
             self.prefetched.clear()
@@ -2154,7 +2157,11 @@ class CfgParallelRouter:
                 return type(value)((k, walk(v, depth + 1)) for k, v in value.items())
             return value
 
-        return walk(obj)
+        from .diffusion_cuda_graph import outside_capture
+
+        # Cross-device copies are CUDA calls another pipeline's capture prohibits.
+        with outside_capture():
+            return walk(obj)
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
         # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place

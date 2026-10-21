@@ -404,3 +404,48 @@ def test_captures_stay_held_off_while_a_replica_result_is_copied_home(_zs, monke
     assert router.stats["pairs_parallel"] == 3
     assert held and all(n >= 1 for n in held)
     assert cg._OUTSIDE_JOBS == 0
+
+
+def test_captures_stay_held_off_while_replica_inputs_are_copied(_zs, monkeypatch):
+    model = _zimage()
+    pipe = types.SimpleNamespace(transformer = model)
+    _zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+    router, _replicas = _router(model)
+    to_replica = mg.CfgParallelRouter._to_replica
+    held = []
+
+    def recording(self, obj):
+        real = cg.capture_hold
+
+        def hold():
+            real()
+            held.append(cg._OUTSIDE_JOBS)
+
+        monkeypatch.setattr(cg, "capture_hold", hold)
+        try:
+            return to_replica(self, obj)
+        finally:
+            monkeypatch.setattr(cg, "capture_hold", real)
+
+    monkeypatch.setattr(mg.CfgParallelRouter, "_to_replica", recording)
+    _zimage_steps(model, pipe, 2)
+    assert router.stats["pairs_parallel"] == 2
+    # args and kwargs per pair, each copied under its own hold
+    assert len(held) == 4 and all(n >= 1 for n in held)
+    assert cg._OUTSIDE_JOBS == 0
+
+
+def test_a_failed_replica_input_copy_falls_back_to_the_source(_zs, monkeypatch):
+    model = _zimage()
+    pipe = types.SimpleNamespace(transformer = model)
+    _zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+    router, _replicas = _router(model)
+
+    def boom(self, obj):
+        raise RuntimeError("CUDA out of memory on the replica card")
+
+    monkeypatch.setattr(mg.CfgParallelRouter, "_to_replica", boom)
+    _zimage_steps(model, pipe, 1)
+    assert router.disabled_reason and "replica input copy failed" in router.disabled_reason
+    assert router.stats["pairs_parallel"] == 0
+    assert cg._OUTSIDE_JOBS == 0
