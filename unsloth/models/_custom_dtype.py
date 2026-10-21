@@ -132,7 +132,6 @@ def _autocast_enabled(device_type):
 
 
 def _cast_input_to_weight_dtype(module, args):
-    # Only a dtype pair F.linear would reject: every forward that runs today is untouched.
     if not args:
         return None
     x = args[0]
@@ -148,13 +147,7 @@ def _cast_input_to_weight_dtype(module, args):
 
 
 def cast_mixed_linear_inputs(model, load_dtype):
-    """Hooks each `nn.Linear` the custom dtype code moved off the load dtype.
-
-    Falcon-H1 and Nemotron-H load float32 for the Mamba kernels and cast only the
-    projections to float16, so outside autocast (a plain `model(...)`, the eval logits
-    before `get_peft_model`) a float32 norm output reaches a float16 projection and
-    F.linear raises. The hook casts that input, as autocast would. Returns the count.
-    """
+    """Outside autocast, cast inputs of Linears moved off load_dtype (Falcon-H1 / Nemotron-H fp16) to the weight dtype."""
     hooked = 0
     for module in model.modules():
         if not isinstance(module, torch.nn.Linear) or getattr(

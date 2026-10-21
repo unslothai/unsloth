@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Falcon-H1 / Nemotron-H float16 loads keep float32 norms and Mamba weights and cast
-only the projections to float16, so a plain forward (no autocast) handed a float32
-activation to a float16 nn.Linear and F.linear raised a dtype mismatch."""
+"""Falcon-H1 / Nemotron-H fp16: float32 norm output into a float16 nn.Linear outside autocast."""
 import ast
 from pathlib import Path
 
@@ -29,7 +27,7 @@ class _Block(torch.nn.Module):
 def _falcon_like():
     torch.manual_seed(0)
     model = _Block().float()
-    model.q_proj.to(torch.float16)  # what the falcon_h1 custom dtype code does
+    model.q_proj.to(torch.float16)
     return model
 
 
