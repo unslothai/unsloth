@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""fp16 LoRA on a block-FP8 weight: the backward dequant must follow the activation dtype.
-
-fast_dequantize used to dequantize FP8 to weight_dequant's bf16 default, so every fp16 backward
-(LoRA_MLP / LoRA_QKV / LoRA_W) died on `Half != BFloat16`. bf16 must stay bit-identical.
-"""
+"""fp16 LoRA on block-FP8: dequant follows the activation dtype (was bf16 -> `Half != BFloat16`)."""
 
 import pytest
 import torch
@@ -25,7 +21,6 @@ def _fp8_weight(out_f, in_f, seed):
 
 
 def _exact(W, s):
-    # fp32 reference dequant of the stored (out, in) layout.
     return (W.float().view(W.shape[0] // BLOCK, BLOCK, -1, BLOCK) * s[:, None, :, None]).view(
         W.shape
     )
@@ -45,9 +40,7 @@ def test_fast_dequantize_fp8_follows_dtype(dtype):
     W, s = _fp8_weight(INTER, HIDDEN, 0)
     out = fast_dequantize(W, s, dtype = dtype)
     assert out.dtype == dtype
-    # One rounding from the exact value, no bf16 round trip.
     assert torch.equal(out, _exact(W, s).to(dtype))
-    # Transposed view, as the LoRA backward passes it.
     out_t = fast_dequantize(W.t(), s, dtype = dtype)
     assert out_t.dtype == dtype and torch.equal(out_t, out.t())
 
@@ -117,9 +110,8 @@ def _run_qkv(dtype):
 def test_lora_w_fp16_fp8_backward():
     Y, dX, dA, dB, W, s, A, B, _ = _run_lora_w(torch.float16)
     assert Y.dtype == dX.dtype == torch.float16
-    # fp32 reference: dX = dY @ (W + S * B @ A).
     Weff = _exact(W, s) + 2.0 * B.detach().float() @ A.detach().float()
-    # The forward quantizes X to FP8, so take dY = 2 * Y from the real output.
+    # Forward quantizes X to FP8, so dY = 2 * Y from the real output.
     torch.testing.assert_close(dX.float(), (2 * Y.detach().float()) @ Weff, rtol = 2e-2, atol = 2e-2)
     assert torch.isfinite(dA).all() and torch.isfinite(dB).all()
 
@@ -138,7 +130,7 @@ def test_lora_qkv_fp16_fp8_backward():
 
 @pytest.mark.parametrize("runner", [_run_lora_w, _run_mlp, _run_qkv])
 def test_bf16_fp8_backward_matches_bf16_dequant(runner, monkeypatch):
-    # bf16 must be bit-identical to the old path, which dequantized FP8 with no dtype (bf16 default).
+    # bf16 must stay bit-identical to the old no-dtype (bf16 default) path.
     from unsloth.kernels import fast_lora, fp8
 
     new = [

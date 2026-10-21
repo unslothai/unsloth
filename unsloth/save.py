@@ -683,8 +683,7 @@ def _merge_lora(
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
         if quant_state is not None and W.dtype == torch.float8_e4m3fn:
-            # An FP8 quant_state is the fp32 scale, not the model dtype: dequantize exactly in fp32
-            # (the merge runs in fp32 anyway) and save in the model dtype.
+            # FP8 quant_state is the fp32 scale, not the model dtype: dequant in fp32, save in model dtype.
             W = fast_dequantize(W, quant_state, dtype = torch.float32)
             dtype = dtype if isinstance(dtype, torch.dtype) else torch.bfloat16
         elif quant_state is not None:

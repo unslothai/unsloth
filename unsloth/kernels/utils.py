@@ -703,7 +703,6 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            # dtype = the activation dtype, so fp16 never round-trips through the bf16 default.
             return weight_dequant(W, quant_state, dtype or torch.bfloat16)
         if type(quant_state) is NVFP4QuantState:
             return nvfp4_dequantize(
@@ -881,7 +880,6 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            # dtype = the activation dtype, so fp16 never round-trips through the bf16 default.
             return weight_dequant(W, quant_state, dtype or torch.bfloat16)
         if type(quant_state) is NVFP4QuantState:
             return nvfp4_dequantize(
@@ -990,7 +988,6 @@ else:
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            # dtype = the activation dtype, so fp16 never round-trips through the bf16 default.
             return weight_dequant(W, quant_state, dtype or torch.bfloat16)
         if type(quant_state) is NVFP4QuantState:
             return nvfp4_dequantize(
