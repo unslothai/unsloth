@@ -536,7 +536,7 @@ def mupdf_document_text(path: str) -> str:
     import pymupdf
 
     with pymupdf.open(path) as doc:
-        # One tall page per chapter-ish span keeps paragraphs from splitting at page breaks.
+        # A tall page keeps paragraphs from splitting at page breaks.
         doc.layout(width = 1000, height = 100000, fontsize = 11)
         paragraphs = [
             " ".join(block[4].split())

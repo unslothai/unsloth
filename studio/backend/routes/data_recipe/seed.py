@@ -78,8 +78,7 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 DEFAULT_CONFIG = "default"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
-# Every type here must be readable by core.rag parsers (or MuPDF for _MUPDF_EBOOK_EXTS): a frontend parity
-# test reads this literal.
+# Each type needs a core.rag parser or MuPDF; a frontend parity test reads this literal.
 UNSTRUCTURED_ALLOWED_EXTS = {
     ".pdf", ".docx", ".txt", ".md", ".markdown", ".html", ".htm", ".xhtml", ".xht",
     ".doc", ".docm", ".dotx", ".dotm", ".odt", ".ott", ".rtf",
@@ -88,7 +87,7 @@ UNSTRUCTURED_ALLOWED_EXTS = {
     ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppt", ".pps", ".odp", ".otp",
     ".eml", ".msg", ".mht", ".mhtml",
 }  # fmt: skip
-# Read by MuPDF (already installed for PDFs), which is not thread-safe, so they go through the PDF worker pool.
+# MuPDF is not thread-safe, so these run in the PDF worker pool.
 _MUPDF_EBOOK_EXTS = {".mobi", ".fb2"}
 SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
 UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
@@ -1296,7 +1295,7 @@ async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
         chunking = _chunking()
         return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
     if ext != ".pdf":
-        # Office and e-book parsers are pure Python; a large spreadsheet must not stall the event loop.
+        # A large spreadsheet must not stall the event loop.
         return await to_thread.run_sync(_extract_text_from_file, file_path, ext)
     from core.rag import config, pdf_ocr
 
