@@ -8,7 +8,11 @@ data, runs a short all_reduce across every visible GPU, and ends with a verdict
 and the settings to try. torch is imported lazily so `unsloth --help` stays fast.
 """
 
+import importlib
+import importlib.metadata
+import importlib.util
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -526,9 +530,134 @@ def doctor(
     if mcp:
         typer.echo("")
     try:
-        _gpu_checks(timeout)
+        if mlx_backend_active():
+            _mlx_checks()
+        else:
+            _gpu_checks(timeout)
     except typer.Exit as e:
         raise typer.Exit(max(e.exit_code, code))
+
+
+def mlx_backend_active() -> bool:
+    """True when this machine trains through the MLX backend instead of CUDA / ROCm.
+
+    Apple Silicon runs Unsloth through `unsloth_zoo.mlx`, so the CUDA checks in
+    `_gpu_checks` cannot see anything and would report a false failure.
+    """
+    if os.environ.get("UNSLOTH_FORCE_GPU_PATH") == "1":
+        return False
+    try:
+        if importlib.util.find_spec("mlx") is None:
+            return False
+        from studio.backend.core.training.training import should_use_mlx_training_backend
+        return bool(should_use_mlx_training_backend())
+    except Exception:
+        return False
+
+
+def collect_mlx_info() -> dict:
+    """Everything the MLX preflight needs. Never imports torch, never raises."""
+    info = {
+        "platform" : f"{platform.system()} {platform.machine()}",
+        "mlx" : None,
+        "metal" : False,
+        "device" : None,
+        "architecture" : None,
+        "memory_gib" : None,
+        "working_set_gib" : None,
+        "zoo" : None,
+        "zoo_mlx" : False,
+        "errors" : [],
+    }
+    try:
+        info["mlx"] = importlib.metadata.version("mlx")
+    except Exception as e:
+        info["errors"].append(f"mlx version: {type(e).__name__}: {e}")
+    try:
+        import mlx.core as mx
+        info["metal"] = bool(mx.metal.is_available())
+        details = None
+        get_info = getattr(mx, "device_info", None)
+        if callable(get_info):
+            try:
+                details = get_info()
+            except Exception:
+                details = None
+        if details is None:
+            # mx.metal.device_info() is deprecated; keep it only as a fallback.
+            details = mx.metal.device_info()
+        details = dict(details or {})
+        info["device"] = details.get("device_name")
+        info["architecture"] = details.get("architecture")
+        memory = details.get("memory_size")
+        if isinstance(memory, (int, float)):
+            info["memory_gib"] = round(memory / (1024 ** 3), 2)
+        working_set = details.get("max_recommended_working_set_size")
+        if isinstance(working_set, (int, float)):
+            info["working_set_gib"] = round(working_set / (1024 ** 3), 2)
+    except Exception as e:
+        info["errors"].append(f"mlx: {type(e).__name__}: {e}")
+    try:
+        info["zoo"] = importlib.metadata.version("unsloth_zoo")
+    except Exception as e:
+        info["errors"].append(f"unsloth_zoo version: {type(e).__name__}: {e}")
+    for module in ("unsloth_zoo.mlx.trainer", "unsloth_zoo.mlx.loader"):
+        try:
+            importlib.import_module(module)
+        except Exception as e:
+            info["errors"].append(f"{module}: {type(e).__name__}: {e}")
+        else:
+            info["zoo_mlx"] = True
+    return info
+
+
+def verdict_mlx(info: dict) -> Tuple[bool, List[str]]:
+    """(healthy, hints). Pure, so every branch is testable without an Apple Silicon GPU."""
+    if not info.get("mlx"):
+        return False, [
+            "mlx is not installed. On Apple Silicon install it with `pip install mlx mlx-lm`."
+        ]
+    if not info.get("zoo_mlx"):
+        return False, [
+            "The installed unsloth_zoo has no `unsloth_zoo.mlx` backend. Upgrade with "
+            "`pip install -U unsloth_zoo` to train on Apple Silicon."
+        ]
+    if not info.get("metal"):
+        return False, [
+            "Metal is not available, so MLX cannot use the GPU. Check that this is a "
+            "supported Apple Silicon machine and that macOS is up to date."
+        ]
+    if not info.get("device"):
+        return False, [
+            "MLX did not report a device. The GPU may be unavailable to this process."
+        ]
+    return True, [
+        "Apple Silicon GPU through the MLX backend. Multi-GPU, NCCL and peer-copy "
+        "checks do not apply to this backend, so they were skipped."
+    ]
+
+
+def _mlx_checks():
+    info = collect_mlx_info()
+    typer.echo("=== Versions ===")
+    typer.echo(f"platform {info['platform']}")
+    typer.echo("backend mlx")
+    typer.echo(f"mlx {info['mlx']}")
+    typer.echo(f"unsloth_zoo {info['zoo']}")
+    typer.echo(f"Metal {'available' if info['metal'] else 'unavailable'}")
+    typer.echo("")
+    typer.echo("=== Device ===")
+    typer.echo(f"  {info['device']}  {info['architecture']}")
+    typer.echo(f"  memory {info['memory_gib']} GiB")
+    typer.echo(f"  recommended working set {info['working_set_gib']} GiB")
+    for error in info["errors"]:
+        typer.echo(f"note: {error}")
+    healthy, hints = verdict_mlx(info)
+    typer.echo("")
+    typer.echo(f"=== Verdict: {'OK' if healthy else 'PROBLEMS FOUND'} ===")
+    for hint in hints:
+        typer.echo(f"- {hint}")
+    raise typer.Exit(code = 0 if healthy else 1)
 
 
 def _gpu_checks(timeout: float):
