@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""unsloth_zoo calls get_or_autotune_moe_kernels from the MoE forward, which runs inside
-compiled decoder blocks. Dynamo traced the tuning itself: the kernel launches were only
-recorded, so reading the autotuner's `.best_config` raised
-"'Autotuner' object has no attribute 'best_config'" and every run silently fell back to the
-untuned default configs. The tuning must run eagerly, outside the trace."""
+"""MoE kernel tuning called from a compiled block must run eagerly, not fall back to defaults."""
 
 import importlib
 import sys
@@ -70,8 +66,7 @@ def test_tuning_runs_eagerly_inside_a_compiled_caller(ac, monkeypatch):
     seen = []
 
     def fake_tuning(*args, **kwargs):
-        # A traced tuning never launches a kernel, so the real one cannot read the result and
-        # falls back to the defaults.
+        # A traced tuning never launches a kernel, so the real one falls back to the defaults.
         seen.append(torch.compiler.is_compiling())
         if torch.compiler.is_compiling():
             return ac._get_default_configs(n_dim = 128, k_dim = 128)
