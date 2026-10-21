@@ -1109,6 +1109,9 @@ export function variationApplies(
 ): boolean {
   const strength = num(r.variation_strength);
   if (!sdControls?.variation_seed || strength === undefined || strength <= 0) return false;
+  // Out of the request's bounds (32-bit seed, strength up to 1) it would restore changed: a random seed, a clamped strength.
+  const seed = num(r.variation_seed);
+  if (strength > 1 || (seed !== undefined && !(Number.isInteger(seed) && seed >= 0 && seed < 2 ** 32))) return false;
   const workflow = typeof r.workflow === "string" ? r.workflow : undefined;
   return workflow === undefined || workflow === "txt2img" || workflow === "create" || workflow === "controlnet";
 }

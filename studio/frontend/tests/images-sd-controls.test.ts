@@ -245,3 +245,26 @@ test("pasted A1111 Clip skip, CFG Rescale and Variation seed restore into the SD
   // importNotApplied already names the controls a model lacks; the page must not add them again.
   assert.doesNotMatch(src, /notApplied\.unshift\(`CLIP skip|notApplied\.unshift\(`CFG rescale|notApplied\.unshift\("variation seed"\)/);
 });
+
+test("imported variation values out of the request bounds are named, not randomised or clamped", async () => {
+  const { importNotApplied, variationApplies } = await import(
+    "../src/features/images/lib/image-metadata.ts"
+  );
+  const ok = { prompt: "x", variation_seed: 99, variation_strength: 0.2 };
+  assert.equal(variationApplies(ok, SDXL), true);
+  assert.equal(variationApplies({ prompt: "x", variation_strength: 0.2 }, SDXL), true);
+  assert.equal(variationApplies({ prompt: "x", variation_seed: 2 ** 32 - 1, variation_strength: 1 }, SDXL), true);
+  for (const bad of [
+    { prompt: "x", variation_seed: 2 ** 40, variation_strength: 0.2 },
+    { prompt: "x", variation_seed: 2 ** 32, variation_strength: 0.2 },
+    { prompt: "x", variation_seed: -1, variation_strength: 0.2 },
+    { prompt: "x", variation_seed: 1.5, variation_strength: 0.2 },
+    { prompt: "x", variation_seed: 99, variation_strength: 1.5 },
+  ]) {
+    assert.equal(variationApplies(bad, SDXL), false, JSON.stringify(bad));
+    assert.deepEqual(importNotApplied(bad, "sdxl", false, SDXL), [
+      `variation seed ${bad.variation_seed} (strength ${bad.variation_strength})`,
+    ]);
+  }
+  assert.deepEqual(importNotApplied({ prompt: "x", variation_strength: 3 }, "sdxl", false, SDXL), ["variation strength 3"]);
+});
