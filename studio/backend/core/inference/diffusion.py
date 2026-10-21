@@ -109,6 +109,12 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinals,
 )
 from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
+from .diffusion_zimage_cfg_split import (
+    install_zimage_cfg_split,
+    uninstall_zimage_cfg_split,
+    zimage_cfg_split_status,
+)
+from .diffusion_zimage_cfg_split import render as zimage_cfg_split_render
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
@@ -9896,6 +9902,8 @@ class DiffusionBackend:
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
                     # both branches through one offloaded forward; declines when CFG-parallel took the slot
                     install_cfg_batch(pipe, offload_policy = effective_policy, logger = logger)
+                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new
+                    install_zimage_cfg_split(pipe, offload_policy = effective_policy, logger = logger)
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -12874,6 +12882,7 @@ class DiffusionBackend:
                                 ),
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
+                                zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
                             ):
@@ -13245,6 +13254,7 @@ class DiffusionBackend:
             prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         uninstall_cfg_parallel(state.pipe)
+        uninstall_zimage_cfg_split(state.pipe)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
@@ -13366,6 +13376,7 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "cfg_batch": cfg_batch_status(state.pipe),
+            "zimage_cfg_split": zimage_cfg_split_status(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
                 state.repo_id,

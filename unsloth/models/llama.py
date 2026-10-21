@@ -117,6 +117,7 @@ try:
 except ImportError:
     detect_logit_transforms = None
 from ..device_type import (
+    xpu_keeps_explicit_bf16,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -3272,7 +3273,8 @@ class FastLlamaModel:
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
 
