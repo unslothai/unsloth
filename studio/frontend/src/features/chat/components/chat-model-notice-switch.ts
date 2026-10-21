@@ -68,6 +68,42 @@ export function chatModelIsResident(
   );
 }
 
+/** A model kept loaded alongside the selected one, as the chat store lists it. */
+export type LoadedChatModelSlot = {
+  id: string;
+  quant?: string | null;
+  checkpoint?: string;
+};
+
+/** The loaded slot a chat's model already sits in, or null when putting the chat back on it would
+ *  need a load. Switching to a loaded slot is the same pick as its row in the picker's Loaded
+ *  section, so it costs no load and can happen without asking. A saved GGUF variant has to match the
+ *  slot's quant: another quant of the same repo is a different load. */
+export function chatModelLoadedTarget(
+  createdModel: ChatModelSwitchTarget,
+  loadedModels: readonly LoadedChatModelSlot[],
+): ChatModelSwitchTarget | null {
+  for (const slot of loadedModels) {
+    const checkpoint = slot.checkpoint ?? slot.id;
+    if (!sameHfCacheIdentity(checkpoint, createdModel.modelId)) {
+      continue;
+    }
+    if (createdModel.ggufVariant != null) {
+      if (
+        !slot.quant ||
+        !ggufVariantsMatch(createdModel.ggufVariant, slot.quant)
+      ) {
+        continue;
+      }
+    }
+    return {
+      modelId: checkpoint,
+      ggufVariant: slot.quant ?? createdModel.ggufVariant ?? null,
+    };
+  }
+  return null;
+}
+
 /** The live picker id Switch Back loads: the exact id, else a row of the same HF cache repo. */
 export function chatModelSelectableId(
   modelId: string,

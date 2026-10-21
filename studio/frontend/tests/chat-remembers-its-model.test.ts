@@ -4,8 +4,8 @@
 // Every thread row has carried modelId since long before this notice, and each send now
 // moves it to the model that send ran on, so a chat knows the model it last used. What was
 // missing was offering it back. The rules below are the ones that keep the offer from becoming a
-// nuisance: it never loads anything on its own, and it stays quiet whenever it could not
-// be honoured.
+// nuisance: it never loads anything on its own, it stays quiet whenever it could not be
+// honoured, and a model still loaded alongside is switched to without asking.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,6 +21,7 @@ registerBundlerResolver();
 const { store } = installLocalStorageFake();
 const {
   chatModelIsResident,
+  chatModelLoadedTarget,
   chatModelSelectableId,
   chatModelSwitchMeta,
   createChatModelHistoryReader,
@@ -86,11 +87,86 @@ function slice(source: string, from: string, to: string): string {
 // Source assertions: the notice reaches external-providers, which does not resolve in a
 // bare node test. The sibling thread-scoped suites do the same for the same reason.
 
-test("the notice never switches a model on its own", () => {
+test("the notice never loads a model on its own", () => {
   // Opening a chat must not evict what is resident: a local load is multi-gigabyte.
   assert.doesNotMatch(notice, /loadModel|setCheckpoint/);
-  // The only way out of it is the button.
+  // A model that is not loaded is only ever switched to from the button.
   assert.match(notice, /onClick=\{\(\) => onSwitch\(switchTarget\)\}/);
+  // The one automatic switch is to a slot that is already loaded.
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  assert.match(body, /chatModelLoadedTarget\(createdModel, loadedModels\)/);
+  assert.match(body, /onSwitch\(loadedTarget\)/);
+});
+
+test("a chat goes back to its model when that model is still loaded", () => {
+  const slots = [
+    { id: "unsloth/Model-A-GGUF", quant: "Q4_K_M", checkpoint: "unsloth/Model-A-GGUF" },
+    { id: "Model-B", quant: null, checkpoint: "/models/Model-B" },
+  ];
+  assert.deepEqual(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+      slots,
+    ),
+    { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+  );
+  // A local model is loaded by its path, so the slot's checkpoint is what gets selected.
+  assert.deepEqual(
+    chatModelLoadedTarget({ modelId: "/models/Model-B", ggufVariant: null }, slots),
+    { modelId: "/models/Model-B", ggufVariant: null },
+  );
+  // A chat saved without a variant takes the quant the slot is serving.
+  assert.deepEqual(
+    chatModelLoadedTarget({ modelId: "unsloth/Model-A-GGUF" }, slots),
+    { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+  );
+});
+
+test("a chat is not switched to a loaded slot that would need another load", () => {
+  const slots = [
+    { id: "unsloth/Model-A-GGUF", quant: "Q4_K_M", checkpoint: "unsloth/Model-A-GGUF" },
+  ];
+  // Another quant of the same repo is a different load.
+  assert.equal(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q8_0" },
+      slots,
+    ),
+    null,
+  );
+  // A slot whose quant is not known yet cannot vouch for the saved variant.
+  assert.equal(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+      [{ id: "unsloth/Model-A-GGUF", checkpoint: "unsloth/Model-A-GGUF" }],
+    ),
+    null,
+  );
+  assert.equal(
+    chatModelLoadedTarget({ modelId: "unsloth/Model-C" }, slots),
+    null,
+  );
+  assert.equal(chatModelLoadedTarget({ modelId: "unsloth/Model-A-GGUF" }, []), null);
+});
+
+test("the automatic switch runs once per chat open", () => {
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  // Started over on every chat change, so going back to a chat switches again...
+  assert.match(
+    body,
+    /if \(autoSwitchRef\.current\.threadId !== threadId\) \{\s*autoSwitchRef\.current = \{ threadId, switched: false \};/,
+  );
+  // ...but a model the user picks inside the open chat is not undone.
+  assert.match(
+    body,
+    /if \(autoSwitchRef\.current\.switched\) \{\s*return;\s*\}\s*autoSwitchRef\.current\.switched = true;\s*onSwitch\(loadedTarget\);/,
+  );
+  // Only while the chat route is on screen.
+  assert.match(body, /if \(!\(active && threadId && loadedTarget\)\) \{/);
+  assert.match(
+    page,
+    /loadedModels=\{loadedModels\}\s*onSwitch=\{handleSwitchBackToChatModel\}/,
+  );
 });
 
 test("the notice stays quiet when it has nothing to offer", () => {

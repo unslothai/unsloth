@@ -4,7 +4,7 @@
 import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Popover as PopoverPrimitive } from "radix-ui";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -26,7 +26,9 @@ import { externalModelLabel } from "../lib/external-model-label";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   type ChatModelSwitchTarget,
+  type LoadedChatModelSlot,
   chatModelIsResident,
+  chatModelLoadedTarget,
   chatModelSelectableId,
   createChatModelHistoryReader,
 } from "./chat-model-notice-switch";
@@ -75,21 +77,52 @@ type ChatModelNoticeProps = {
   activeGgufVariant: string | null;
   /** Every model that can be selected right now, by id. */
   selectableModelIds: ReadonlySet<string>;
+  /** The models kept loaded side by side, the selected one included. */
+  loadedModels: readonly LoadedChatModelSlot[];
   onSwitch: (target: ChatModelSwitchTarget) => void;
 };
 
-/** Offers to put a chat back on the model it last used. Deliberately an offer and not an
- *  automatic switch: for a local model that would evict whatever is resident and spend a
- *  multi-gigabyte load on opening a chat. */
+/** Puts a chat back on the model it last used. When that model is still loaded alongside the
+ *  selected one, the switch costs no load, so it happens on opening the chat, once per open, and a
+ *  later pick in the same chat is left alone. Otherwise it stays an offer: for a local model that
+ *  is not loaded, switching would evict whatever is resident and spend a multi-gigabyte load on
+ *  opening a chat. */
 export function ChatModelNotice({
   active,
   threadId,
   checkpoint,
   activeGgufVariant,
   selectableModelIds,
+  loadedModels,
   onSwitch,
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
+  const loadedTarget = useMemo(
+    () =>
+      createdModel &&
+      !chatModelIsResident(createdModel, checkpoint, activeGgufVariant)
+        ? chatModelLoadedTarget(createdModel, loadedModels)
+        : null,
+    [createdModel, checkpoint, activeGgufVariant, loadedModels],
+  );
+  // Whether this open of the chat already switched. Started over on every chat change, so coming
+  // back to a chat switches again, but a pick made inside the open chat is never undone.
+  const autoSwitchRef = useRef<{ threadId?: string; switched: boolean }>({
+    switched: false,
+  });
+  useEffect(() => {
+    if (autoSwitchRef.current.threadId !== threadId) {
+      autoSwitchRef.current = { threadId, switched: false };
+    }
+    if (!(active && threadId && loadedTarget)) {
+      return;
+    }
+    if (autoSwitchRef.current.switched) {
+      return;
+    }
+    autoSwitchRef.current.switched = true;
+    onSwitch(loadedTarget);
+  }, [active, threadId, loadedTarget, onSwitch]);
   // Drop the portaled UI off-route, retaining the successful read and history subscription.
   if (!active) return null;
   if (!createdModel) return null;

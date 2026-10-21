@@ -4825,6 +4825,7 @@ export function ChatPage({
                 checkpoint={inferenceCheckpoint}
                 activeGgufVariant={activeGgufVariant}
                 selectableModelIds={selectableModelIds}
+                loadedModels={loadedModels}
                 onSwitch={handleSwitchBackToChatModel}
               />
             )}
