@@ -185,7 +185,7 @@ def test_ranks_agree_on_the_fallback(monkeypatch):
     assert trainer._unsloth_rollout_logps_as_old_batches == 1
 
 
-_FAKE_TRL = '''
+_FAKE_TRL = """
     def _generate_and_score_completions(self, inputs):
         sampling_per_token_logps = inputs["sampling"]
         completion_mask = inputs["mask"]
@@ -202,7 +202,7 @@ _FAKE_TRL = '''
         if old_per_token_logps is not None:
             output["old_per_token_logps"] = old_per_token_logps
         return output
-'''
+"""
 
 
 def test_marked_batch_keeps_its_rollout_logprobs_on_older_trl():
@@ -210,7 +210,9 @@ def test_marked_batch_keeps_its_rollout_logprobs_on_older_trl():
     # a marked batch must carry them anyway, or the loss gets the marker without the tensor.
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
 
-    patched = grpo_trainer__generate_and_score_completions("_generate_and_score_completions", _FAKE_TRL)
+    patched = grpo_trainer__generate_and_score_completions(
+        "_generate_and_score_completions", _FAKE_TRL
+    )
     ns = {
         "torch": torch,
         "_unsloth_grpo_rollout_logps_as_old": lambda *args: True,
@@ -221,10 +223,14 @@ def test_marked_batch_keeps_its_rollout_logprobs_on_older_trl():
     calls = []
     trainer = SimpleNamespace(
         args = SimpleNamespace(steps_per_generation = 1, gradient_accumulation_steps = 1),
-        num_iterations = 2, use_vllm = False, vllm_importance_sampling_correction = False,
+        num_iterations = 2,
+        use_vllm = False,
+        vllm_importance_sampling_correction = False,
         score = lambda: calls.append(1),
     )
-    out = ns["_generate_and_score_completions"](trainer, {"sampling": sampling, "mask": mask, "ids": torch.zeros(3, 5)})
+    out = ns["_generate_and_score_completions"](
+        trainer, {"sampling": sampling, "mask": mask, "ids": torch.zeros(3, 5)}
+    )
     assert not calls and "old_per_token_logps" not in out
     assert out["unsloth_rollout_logps_as_old"].all()
     assert out["sampling_per_token_logps"] is sampling

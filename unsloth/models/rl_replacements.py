@@ -3679,7 +3679,9 @@ def _unsloth_grpo_rollout_logps_as_old(
     if getattr(accelerator, "num_processes", 1) > 1:
         # One reduction on every rank, before any of them returns: under FSDP / ZeRO-3 the
         # old-policy forward a fallback runs is collective, so all ranks take the same branch.
-        eligible = torch.tensor([int(reason is None)], dtype = torch.int32, device = completion_mask.device)
+        eligible = torch.tensor(
+            [int(reason is None)], dtype = torch.int32, device = completion_mask.device
+        )
         if not bool(accelerator.gather(eligible).min()) and reason is None:
             reason = "another process cannot use its rollout logprobs for this batch"
     if reason is not None:
