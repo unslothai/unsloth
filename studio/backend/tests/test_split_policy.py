@@ -1509,7 +1509,7 @@ def test_wired_requested_context_past_native_is_not_shortened(tmp_path, monkeypa
         _kv_per_token(b, 16)
         _native_ctx(b, 8192)
 
-    off, on, _ = _launch_off_vs_on(
+    off, on, backend = _launch_off_vs_on(
         tmp_path,
         monkeypatch,
         memory = TWO_T4_MEM,
@@ -1520,6 +1520,8 @@ def test_wired_requested_context_past_native_is_not_shortened(tmp_path, monkeypa
         **load_kwargs,
     )
     _assert_same_load(off, on)
+    # Refused up front: the planner caps an explicit context at native.
+    assert "abandoned" not in backend._auto_split_decision.reason
 
 
 def test_wired_unpriceable_kv_with_auto_context_keeps_todays_load(tmp_path, monkeypatch):
@@ -1628,3 +1630,56 @@ def test_wired_auto_context_keeps_the_auto_drafter_drop(tmp_path, monkeypatch):
     )
     _assert_same_load(off, on)
     assert "--spec-type" not in on["cmd"]
+
+
+def test_wired_auto_context_mtp_short_of_native_runs_mains_load(tmp_path, monkeypatch):
+    # The round-4 case: the pair fits 5123 with the drafter, 5267 without it, while main's
+    # layer load keeps the drafter at 8192. Falling back is main's load, not a loss.
+    def setup(b):
+        _kv_per_token(b, 2048)
+        _mtp_reserve(b, flat = 64 * 1024**2)
+        _native_ctx(b, 131072)
+
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    off, on, _ = _launch_off_vs_on(
+        tmp_path,
+        monkeypatch,
+        memory = TWO_T4_MEM,
+        model_gib = 18,
+        names = TWO_T4_NAMES,
+        setup = setup,
+        model_identifier = _MTP_MODEL,
+        gpu_memory_mode = "auto",
+        n_ctx = 0,
+        speculative_type = "auto",
+    )
+    _assert_same_load(off, on)
+    assert on["cmd"][on["cmd"].index("--spec-type") + 1] == "draft-mtp"
+
+
+def test_wired_advisor_load_avoids_a_serving_models_gpu(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    # An unregistered helper backend: the serving model on GPU 1 is not netted from its
+    # placement, but the pair must still avoid that card.
+    serving = types.SimpleNamespace(is_active = True, _planned_vram_mib = {1: 1024})
+    monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [serving])
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+
+
+def test_wired_moe_without_draft_runs_no_gpu_probe(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    probed = []
+    backend._gpu_utilization_by_physical_id = lambda: probed.append("util") or {}
+    backend._gpu_names_by_physical_id = lambda: probed.append("names") or dict(TWO_T4_NAMES)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+    assert probed == []
+    assert "MoE" in backend._auto_split_decision.reason

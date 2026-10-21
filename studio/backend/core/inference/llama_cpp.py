@@ -27990,6 +27990,8 @@ class LlamaCppBackend:
                                     and _auto_tensor_split_enabled()
                                     and not _split_platform
                                     and _binary_supports_tensor_split(server_caps)
+                                    # A MoE model without a running head stays layer anyway.
+                                    and (self.n_moe_layers == 0 or _engaged_is_mtp)
                                 )
                                 _split_names = (
                                     self._gpu_names_by_physical_id() if _split_probe else {}
@@ -28043,7 +28045,12 @@ class LlamaCppBackend:
                                     if (explicit_ctx and effective_ctx > 0)
                                     else (min(2048, effective_ctx) if effective_ctx > 0 else 2048)
                                 )
-                                _auto_ctx_priced = self._can_estimate_kv()
+                                # The planner caps a requested context at native, so a longer one cannot fit.
+                                _auto_ctx_priced = self._can_estimate_kv() and not (
+                                    explicit_ctx
+                                    and self._context_length
+                                    and effective_ctx > self._context_length
+                                )
                                 # The planner's _mtp_reserves_gpu (the CPU drafter is normalized above).
                                 _auto_mtp_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
                                 _auto_kv_bytes = 0
@@ -28113,7 +28120,14 @@ class LlamaCppBackend:
                                     # spec mode, extras, binary support and the drafter).
                                     draft_active = _engaged_is_mtp,
                                     split_mode_override = split_mode_override,
-                                    shared_gpus = _shared_gpus,
+                                    # Unregistered helper loads net no reservations; the
+                                    # pair still avoids every serving model's cards.
+                                    shared_gpus = _shared_gpus.union(
+                                        idx
+                                        for _b in _serving_backends_snapshot()
+                                        if _b is not self and getattr(_b, "is_active", False)
+                                        for idx in getattr(_b, "_planned_vram_mib", {})
+                                    ),
                                     platform_reason = _split_platform,
                                 )
                                 if (
