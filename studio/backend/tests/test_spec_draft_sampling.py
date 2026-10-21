@@ -76,6 +76,9 @@ def _backend(monkeypatch, *, sampling = True):
     )
     backend = LlamaCppBackend()
     backend._nextn_predict_layers = None
+    # A complete header read of a model with no general.sampling.* defaults.
+    backend._gguf_header_parsed = True
+    backend._gguf_sampling = {}
     return backend
 
 
@@ -205,10 +208,12 @@ def test_operator_opt_out(monkeypatch):
 
 def test_helper_contract():
     caps = {"supports_spec_draft_sampling": True}
-    assert _spec_draft_sampling_flags(caps, None) == _PROB
-    assert _spec_draft_sampling_flags(None, None) == []
-    assert _spec_draft_sampling_flags({}, None) == []
-    assert _spec_draft_sampling_flags(caps, ["--spec-draft-sampling", "probabilistic"]) == []
+    assert _spec_draft_sampling_flags(caps, None, {}) == _PROB
+    assert _spec_draft_sampling_flags(None, None, {}) == []
+    assert _spec_draft_sampling_flags({}, None, {}) == []
+    assert _spec_draft_sampling_flags(caps, ["--spec-draft-sampling", "probabilistic"], {}) == []
+    # GGUF header not read: its sampler defaults are unknown, so nothing is emitted.
+    assert _spec_draft_sampling_flags(caps, None) == []
 
 
 def test_renamed_gemma_target_keeps_greedy(monkeypatch, tmp_path):
@@ -455,7 +460,7 @@ def test_unreadable_config_never_breaks_the_load(monkeypatch, tmp_path):
         raise PermissionError("denied")
 
     monkeypatch.setattr("builtins.open", _boom)
-    assert _spec_draft_sampling_flags({"supports_spec_draft_sampling": True}, None) == _PROB
+    assert _spec_draft_sampling_flags({"supports_spec_draft_sampling": True}, None, {}) == _PROB
 
 
 def test_config_paths_per_platform(tmp_path):
@@ -474,3 +479,161 @@ def test_config_paths_per_platform(tmp_path):
             etc,
             "/h/.config/llama.cpp/config.ini",
         ]
+
+
+def test_config_over_size_cap_counts_as_unknown(monkeypatch, tmp_path):
+    # llama.cpp reads the whole file, so a setting past any prefix still applies.
+    _write_config(tmp_path, "#" + "x" * (1 << 20) + "\n[*]\nspec-draft-sampling = greedy\n")
+    assert not _emits(monkeypatch)
+    _write_config(tmp_path, "#" + "x" * (1 << 20) + "\n[*]\nmirostat = 2\n")
+    assert not _emits(monkeypatch)
+    _write_config(tmp_path, "#" + "x" * (1 << 20) + "\n[*]\nmirostat = 0\n")
+    assert _emits(monkeypatch)
+    monkeypatch.setattr(_llama_cpp_mod, "_LLAMA_CONFIG_MAX_BYTES", 64)
+    assert not _emits(monkeypatch)
+
+
+# llama.cpp common_init_sampler_from_model (common/common.cpp) applies general.sampling.mirostat
+# and general.sampling.sequence after the CLI and config.ini, each only when --mirostat /
+# --samplers (or their config keys) did not set the field; --sampler-seq does not count.
+def _emits_with_gguf(
+    monkeypatch,
+    gguf,
+    extra_args = None,
+):
+    backend = _backend(monkeypatch)
+    backend._gguf_sampling = dict(gguf)
+    flags = _flags(backend, "mtp", extra_args = extra_args)
+    assert "--spec-type" in flags
+    return _flags_dict(flags).get("--spec-draft-sampling") == "probabilistic"
+
+
+@pytest.mark.parametrize(
+    "gguf",
+    [
+        {"general.sampling.mirostat": "2"},
+        {"general.sampling.mirostat": "1"},
+        {"general.sampling.mirostat": "2.000000"},
+        {"general.sampling.mirostat": " -1x"},
+        {"general.sampling.sequence": "top_k;adaptive_p"},
+        {"general.sampling.sequence": "penalties;Adaptive-P;temperature"},
+        {"general.sampling.mirostat": None},
+        {"general.sampling.sequence": None},
+    ],
+)
+def test_gguf_stateful_sampler_defaults_keep_greedy(monkeypatch, gguf):
+    assert not _emits_with_gguf(monkeypatch, gguf)
+
+
+@pytest.mark.parametrize(
+    "gguf",
+    [
+        {"general.sampling.mirostat": "0"},
+        {"general.sampling.mirostat": "true"},
+        {"general.sampling.mirostat": "0.900000"},
+        {"general.sampling.mirostat": "4294967296"},
+        {"general.sampling.sequence": "top_k;top_p;temperature"},
+        {"general.sampling.sequence": ""},
+        {"general.sampling.sequence": "top_k;" + "x" * 600 + ";adaptive_p"},
+        {"general.sampling.top_k": "20"},
+    ],
+)
+def test_gguf_stateless_sampler_defaults_keep_probabilistic(monkeypatch, gguf):
+    assert _emits_with_gguf(monkeypatch, gguf)
+
+
+def test_gguf_defaults_yield_to_user_set_fields(monkeypatch, tmp_path):
+    mirostat = {"general.sampling.mirostat": "2"}
+    adaptive = {"general.sampling.sequence": "top_k;adaptive_p"}
+    assert _emits_with_gguf(monkeypatch, mirostat, ["--mirostat", "0"])
+    assert _emits_with_gguf(monkeypatch, adaptive, ["--samplers", "top_k;top_p"])
+    # --sampler-seq leaves the field unset, so the GGUF sequence still replaces it.
+    assert not _emits_with_gguf(monkeypatch, adaptive, ["--sampler-seq", "kpt"])
+    assert _emits_with_gguf(
+        monkeypatch, {"general.sampling.sequence": "top_k;temperature"}, ["--sampler-seq", "ka"]
+    )
+    _write_config(tmp_path, "[*]\nmirostat = 0\nsamplers = top_k\n")
+    assert _emits_with_gguf(monkeypatch, {**mirostat, **adaptive})
+    _write_config(tmp_path, "[*]\nsampler-seq = kpt\n")
+    assert not _emits_with_gguf(monkeypatch, adaptive)
+
+
+def test_unread_gguf_header_emits_nothing(monkeypatch):
+    backend = _backend(monkeypatch)
+    backend._gguf_header_parsed = False
+    assert "--spec-draft-sampling" not in _flags(backend, "mtp")
+    backend = _backend(monkeypatch)
+    backend._gguf_path = "/models/a.gguf"
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = "/models/b.gguf",
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" in flags
+    assert "--spec-draft-sampling" not in flags
+
+
+def _gguf_bytes(kvs):
+    import struct
+
+    def _s(text):
+        raw = text.encode()
+        return struct.pack("<Q", len(raw)) + raw
+
+    body = b""
+    for key, vtype, payload in kvs:
+        body += _s(key) + struct.pack("<I", vtype) + payload
+    return b"GGUF" + struct.pack("<IQQ", 3, 0, len(kvs)) + body
+
+
+def test_header_reader_keeps_llama_cpp_text(tmp_path):
+    import struct
+
+    path = tmp_path / "m.gguf"
+    path.write_bytes(
+        _gguf_bytes(
+            [
+                ("general.architecture", 8, struct.pack("<Q", 5) + b"qwen3"),
+                ("general.sampling.mirostat", 5, struct.pack("<i", 2)),
+                ("general.sampling.sequence", 8, struct.pack("<Q", 15) + b"top_k;adaptive_p"[:15]),
+                ("general.sampling.top_k", 4, struct.pack("<I", 20)),
+            ]
+        )
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(path))
+    assert backend._gguf_header_parsed is True
+    assert backend._gguf_sampling == {
+        "general.sampling.mirostat": "2",
+        "general.sampling.sequence": "top_k;adaptive_",
+    }
+    path.write_bytes(
+        _gguf_bytes(
+            [
+                ("general.sampling.mirostat", 6, struct.pack("<f", 2.0)),
+                ("general.sampling.sequence", 9, struct.pack("<IQ", 4, 1) + struct.pack("<I", 1)),
+                ("general.architecture", 8, struct.pack("<Q", 5) + b"qwen3"),
+            ]
+        )
+    )
+    backend._read_gguf_metadata(str(path))
+    assert backend._gguf_header_parsed is True
+    assert backend._gguf_sampling == {
+        "general.sampling.mirostat": "2.000000",
+        "general.sampling.sequence": None,
+    }
+    # Truncated inside the sampler value: the walk is incomplete, so the defaults are unknown.
+    path.write_bytes(
+        _gguf_bytes(
+            [
+                ("general.architecture", 8, struct.pack("<Q", 5) + b"qwen3"),
+                ("general.sampling.sequence", 8, struct.pack("<Q", 16) + b"top_k;adaptive_p"),
+            ]
+        )[:-3]
+    )
+    backend._read_gguf_metadata(str(path))
+    assert backend._gguf_header_parsed is False
