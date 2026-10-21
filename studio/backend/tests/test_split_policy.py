@@ -23,6 +23,9 @@ if _TESTS_DIR not in sys.path:
 
 import pytest  # noqa: E402
 
+# First: without structlog it stubs structlog and keeps the real loggers package, which the
+# bare loggers stub the MTP helpers install would shadow (routes/inference.py needs the package).
+from test_tp_vision_regression import _load_inference_routes_module  # noqa: E402
 from test_llama_cpp_mtp_detection import _MTP_MODEL, _flags_dict, _resolver_backend  # noqa: E402
 
 # A fake llama-server pid above the kernel's pid_max (4194304 by default, 2**22 at most on 64-bit),
@@ -985,8 +988,6 @@ def test_wired_identical_repeat_request_reuses_an_auto_tensor_server(tmp_path, m
 
 
 def test_status_and_load_report_an_auto_tensor_split_as_toggle_off(tmp_path, monkeypatch):
-    from test_tp_vision_regression import _load_inference_routes_module
-
     _llama_runtime_fields = _load_inference_routes_module()._llama_runtime_fields
 
     backend, gguf = _wired_backend(
@@ -1984,3 +1985,89 @@ def test_wired_resident_dictation_gpu_keeps_layer(tmp_path, monkeypatch, sidecar
     assert (_split_flag(cmd) == "tensor") is tensor
     if not tensor:
         assert "unknown" in backend._auto_split_decision.reason
+
+
+def test_wired_fits_one_probe_prefers_discrete_gpus_like_the_placement(tmp_path, monkeypatch):
+    # A unified-memory GPU 0 holds the MoE alone, but the placement runs it on the discrete pair
+    # (discrete first), so the single-card probe must not report it fits one card.
+    backend, gguf = _wired_backend(
+        tmp_path,
+        monkeypatch,
+        memory = [(0, 65_536, 65_536), (1, 15_360, 15_360), (2, 15_360, 15_360)],
+        model_gib = 20,
+        names = {0: "NVIDIA GB10", 1: T4, 2: T4},
+    )
+    backend._rocm_unified_memory_gpu_ids = lambda: {0}
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", False)
+    _with_mtp_caps(backend)
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    cmd = _launch(backend, gguf, model_identifier = _MTP_MODEL, gpu_memory_mode = "auto", n_ctx = 4096)[
+        "cmd"
+    ]
+    assert _split_flag(cmd) == "tensor"
+    assert tuple(backend._auto_split_decision.gpu_indices) == (1, 2)
+
+
+def _orchestrator(
+    active = None,
+    loading = (),
+    alive = False,
+):
+    return types.SimpleNamespace(
+        active_model_name = active, loading_models = set(loading), is_worker_alive = lambda: alive
+    )
+
+
+@pytest.mark.parametrize(
+    "where, orchestrator, tensor",
+    [
+        # A transformers model publishes no GPU ids, so loaded or loading it may hold either card.
+        ("primary", _orchestrator(active = "org/small"), False),
+        ("primary", _orchestrator(loading = ["org/small"]), False),
+        ("slot", _orchestrator(active = "org/small"), False),
+        ("slot", _orchestrator(loading = ["org/small"]), False),
+        ("filling", _orchestrator(loading = ["org/small"]), False),
+        ("stuck", _orchestrator(alive = True), False),
+        # An idle orchestrator holds no card.
+        ("primary", _orchestrator(), True),
+        ("slot", _orchestrator(), True),
+    ],
+)
+def test_wired_transformers_model_keeps_layer(tmp_path, monkeypatch, where, orchestrator, tensor):
+    from core.inference import model_slots
+    import core.inference.orchestrator as orchestrator_module
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    slot = types.SimpleNamespace(orchestrator = orchestrator)
+    monkeypatch.setattr(
+        orchestrator_module, "_inference_backend", orchestrator if where == "primary" else None
+    )
+    monkeypatch.setattr(model_slots, "slots", [slot] if where == "slot" else [])
+    monkeypatch.setattr(model_slots, "loading", (slot, "model") if where == "filling" else None)
+    monkeypatch.setattr(model_slots, "stuck", [slot] if where == "stuck" else [])
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert (_split_flag(cmd) == "tensor") is tensor
+    if not tensor:
+        assert "unknown" in backend._auto_split_decision.reason
+
+
+def test_module_keeps_the_real_loggers_package_without_structlog():
+    # conftest cannot settle loggers when structlog is missing; this module's own imports must
+    # then leave a package there, or routes/inference.py dies on loggers.media_progress.
+    code = (
+        "import importlib.abc, sys\n"
+        "class Block(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, name, path = None, target = None):\n"
+        "        if name.split('.')[0] == 'structlog':\n"
+        "            raise ModuleNotFoundError(name)\n"
+        "sys.meta_path.insert(0, Block())\n"
+        f"sys.path.insert(0, {_TESTS_DIR!r})\n"
+        "import test_split_policy\n"
+        "import loggers.media_progress\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 300
+    )
+    assert result.returncode == 0, result.stderr[-2000:]

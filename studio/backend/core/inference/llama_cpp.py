@@ -794,6 +794,30 @@ def _stt_may_hold_a_gpu() -> bool:
     return False
 
 
+def _orchestrator_may_hold_a_gpu() -> bool:
+    """Whether a transformers model is loaded or loading in the primary or a kept slot's
+    orchestrator, or a stuck slot's worker still runs. Unknown counts as held."""
+    try:
+        from core.inference import model_slots
+        from core.inference.orchestrator import peek_inference_backend
+
+        filling = model_slots.loading
+        orchestrators = [
+            model_slots.in_slot(None, peek_inference_backend),
+            *(slot.orchestrator for slot in model_slots.resident()),
+            *((filling[0].orchestrator,) if filling else ()),
+        ]
+        if any(
+            orchestrator is not None
+            and (orchestrator.active_model_name or orchestrator.loading_models)
+            for orchestrator in orchestrators
+        ):
+            return True
+        return any(model_slots._worker_alive(slot.orchestrator) for slot in model_slots.stuck)
+    except Exception:  # noqa: BLE001 - an unreadable orchestrator may hold any card
+        return True
+
+
 class _UnloadedSince:
     """A load cancel event that is set once ``backend`` was unloaded after ``epoch`` was read.
     load_model clears the backend's own cancel event on entry, which would forget that."""
@@ -28069,12 +28093,15 @@ class LlamaCppBackend:
                                 _split_util = (
                                     self._gpu_utilization_by_physical_id() if _split_probe else {}
                                 )
+                                # Discrete first, as the placement ranks: a unified-memory GPU
+                                # that holds the model alone is not where it runs.
                                 _single_pick, _single_fit = self._select_gpus(
                                     model_size,
                                     gpus,
                                     usable_fraction = _vram_frac,
                                     total_by_idx = total_by_idx,
                                     shared = _shared_gpus,
+                                    integrated = _integrated_gpus,
                                 )
                                 _fits_one = (
                                     not _single_fit
@@ -37224,9 +37251,9 @@ class LlamaCppBackend:
     def _gpus_held_by_others(self) -> Optional[frozenset]:
         """GPUs another server or resident media model holds: reservations plus each live
         child's devices (companions included). None when a child's devices are unknown
-        (unpinned, Vulkan): it may hold any card, as may a GPU dictation sidecar
-        (STT publishes no GPU ids)."""
-        if _stt_may_hold_a_gpu():
+        (unpinned, Vulkan): it may hold any card, as may a GPU dictation sidecar or a
+        transformers model (neither publishes GPU ids)."""
+        if _stt_may_hold_a_gpu() or _orchestrator_may_hold_a_gpu():
             return None
         held = set(self._vram_reserved_by_others_mib())
         for backend in _serving_backends_snapshot():
