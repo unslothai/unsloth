@@ -36,6 +36,26 @@ export function subscribeGalleryChanged(kind: GalleryKind, onChanged: () => void
   return () => window.removeEventListener(GALLERY_CHANGED_EVENT, handler);
 }
 
+export const ARCHIVE_CHANGED_EVENT = "unsloth:archive-changed";
+
+/** Announce that the archived shelf of `kind` changed from Settings (a restore or a delete). Kept apart
+ * from the gallery event so a delete, which leaves the active strip as it was, does not refetch it. */
+export function notifyArchiveChanged(kind: GalleryKind): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(ARCHIVE_CHANGED_EVENT, { detail: { kind } }));
+}
+
+/** Calls back when the archive of `kind` changed elsewhere. Returns an unsubscriber. */
+export function subscribeArchiveChanged(kind: GalleryKind, onChanged: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ kind?: string }>).detail;
+    if (detail?.kind === kind) onChanged();
+  };
+  window.addEventListener(ARCHIVE_CHANGED_EVENT, handler);
+  return () => window.removeEventListener(ARCHIVE_CHANGED_EVENT, handler);
+}
+
 /** The two fields these helpers care about; both gallery record types structurally satisfy it. */
 export interface FlaggableItem {
   id: string;
