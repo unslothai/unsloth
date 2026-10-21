@@ -3891,7 +3891,9 @@ class FastBaseModel:
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
 
-        verify_fp8_support_if_applicable(model_config)
+        verify_fp8_support_if_applicable(
+            model_config, fast_inference = bool(fast_inference and is_vLLM_available())
+        )
 
         raise_handler = RaiseUninitialized()
         try:
