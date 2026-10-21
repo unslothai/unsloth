@@ -1291,6 +1291,8 @@ def test_an_uncompilable_family_loads_an_operators_checkpoint_under_auto(
 def test_a_compilable_family_loads_without_the_bf16_replan(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch)
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    # A family with no bf16-while-resident rule (the fixture family is a small DiT, which now has one).
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: None)
     replans = []
     monkeypatch.setattr(
         DiffusionBackend,
@@ -1405,7 +1407,13 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("Alpha-VLLM/Lumina-Image-2.0", True),
         ("HiDream-ai/HiDream-I1-Full", True),
         ("black-forest-labs/FLUX.1-dev", False),
-        ("Tongyi-MAI/Z-Image-Turbo", False),
+        # Small DiTs stay bf16 while it fits (INT8 / FP8 move image detail at these sizes).
+        ("Tongyi-MAI/Z-Image-Turbo", True),
+        ("black-forest-labs/FLUX.2-klein-4B", True),
+        ("black-forest-labs/FLUX.2-klein-base-4B", True),
+        ("black-forest-labs/flux-3-image-klein", True),
+        ("black-forest-labs/flux-3-image-klein-base", True),
+        ("black-forest-labs/FLUX.2-dev", False),
         ("Qwen/Qwen-Image", False),
     ],
 )
