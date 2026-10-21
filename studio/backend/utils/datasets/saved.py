@@ -37,8 +37,7 @@ def _is_saved_dataset_dict(path: Path) -> bool:
 
 
 def _require_manifest_inside(path: Path) -> None:
-    # load_from_disk joins manifest split names and data file names onto the folder unchecked, so a crafted manifest
-    # could read another account's files.
+    # load_from_disk joins manifest paths onto the folder unchecked: a crafted manifest could read another account's files.
     root = path.resolve()
 
     def check(entry: Path) -> Path:
