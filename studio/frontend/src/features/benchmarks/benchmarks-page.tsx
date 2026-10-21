@@ -197,10 +197,10 @@ function ShownRunNote({
         {latest ? "Your last run" : "A saved run"},{" "}
         <span title={new Date(run.createdAt).toLocaleString()}>
           {ago(run.createdAt, locale)}
-        </span>
+        </span>{" "}
+        ·
       </span>
       <span className="min-w-0 truncate text-foreground/80" title={run.model}>
-        ·{" "}
         {[
           `${modelShort(run.model)}${run.ggufVariant ? ` ${run.ggufVariant}` : ""}`,
           run.meta.gpu,
