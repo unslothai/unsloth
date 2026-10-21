@@ -51905,6 +51905,21 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
     return {}
 
 
+def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
+    """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        return {}
+    out = {}
+    for name in ("mask_blur", "inpaint_only_masked", "inpaint_padding"):
+        value = getattr(request, name, None)
+        if value is not None and name in params:
+            out[name] = value
+    return out
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -52008,6 +52023,9 @@ async def _external_image_generation(
         or body.localized_edit
         or body.sampler
         or body.schedule_type
+        or body.mask_blur is not None
+        or body.inpaint_only_masked is not None
+        or body.inpaint_padding is not None
     ):
         raise HTTPException(
             status_code = 400,
@@ -52347,6 +52365,7 @@ async def _generate_diffusion_image_run(
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+                    **_inpaint_mask_kwargs(backend.generate, request),
                 )
             break
         except ImageActivationShortfallError as exc:
@@ -52464,6 +52483,11 @@ async def _generate_diffusion_image_run(
                         "localized_edit": result.get("localized_edit"),
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
+                        **{
+                            k: result[k]
+                            for k in ("mask_blur", "inpaint_only_masked", "inpaint_padding")
+                            if result.get(k) is not None
+                        },
                         "created_at": created_at,
                     },
                 )
