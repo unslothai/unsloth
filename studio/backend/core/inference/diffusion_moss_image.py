@@ -54,6 +54,10 @@ MOSS_IMAGE_SCHEDULER_CLASS = "MOSSImageScheduler"
 MIN_TRANSFORMERS = "5.3.0"
 SIGMAS_ENV = "UNSLOTH_MOSS_SIGMAS"
 SIGMA_SCHEDULES = ("sgm_uniform", "training_grid")
+# Set on a ``_Block`` by Studio's speed layer (diffusion_moss_fused) and read only inside a compiled block:
+# ``(fused Linear, q, k, v, runner)`` for the one-GEMM q/k/v projection, and the runner for every block Linear.
+FUSED_QKV_ATTR = "_unsloth_moss_fused_qkv"
+LINEAR_RUNNER_ATTR = "_unsloth_moss_linear"
 # Kill switch for the per-render text-refiner cache (``refine_text``): 0 refines on every step like the reference.
 TEXT_CACHE_ENV = "UNSLOTH_MOSS_TEXT_CACHE"
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)
@@ -231,20 +235,33 @@ class _Block(nn.Module, _AttentionMixin):
         self.proj["ffn_up_gate"] = nn.Linear(dim, 2 * ffn_dim, bias = False)
         self.proj["ffn_down"] = nn.Linear(ffn_dim, dim, bias = False)
 
+    def _linear(self, name, x):
+        # Studio's speed layer may hand the compiled block a linear runner (int8: one probed act-quant kernel)
+        run = self.__dict__.get(LINEAR_RUNNER_ATTR) if torch.compiler.is_compiling() else None
+        return self.proj[name](x) if run is None else run(self.proj[name], x)
+
+    def _qkv(self, y):
+        fused = self.__dict__.get(FUSED_QKV_ATTR) if torch.compiler.is_compiling() else None
+        if fused is not None:
+            linear, q, k, v, run = fused
+            # only while q / k / v are still the modules it was built from (a LoRA wrapper replaces them)
+            if self.proj["q"] is q and self.proj["k"] is k and self.proj["v"] is v:
+                return (linear(y) if run is None else run(linear, y)).chunk(3, -1)
+        return self._linear("q", y), self._linear("k", y), self._linear("v", y)
+
     def forward(self, x, rope, modulation):
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
         dtype = _compute_dtype(self.proj["q"])
         y = y.to(dtype)
-        q = self.q_norm(self.proj["q"](y).unflatten(-1, (self.heads, -1))).flatten(2)
-        k = self.k_norm(self.proj["k"](y).unflatten(-1, (self.heads, -1))).flatten(2)
-        attn = _attention(
-            q, k, self.proj["v"](y), rope, self.heads, self.processor._attention_backend
-        )
-        x = x + self.proj["o"](attn) * gate_a[:, None]
+        q, k, v = self._qkv(y)
+        q = self.q_norm(q.unflatten(-1, (self.heads, -1))).flatten(2)
+        k = self.k_norm(k.unflatten(-1, (self.heads, -1))).flatten(2)
+        attn = _attention(q, k, v, rope, self.heads, self.processor._attention_backend)
+        x = x + self._linear("o", attn) * gate_a[:, None]
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
-        hidden, gate = self.proj["ffn_up_gate"](y.to(dtype)).chunk(2, -1)
-        return x + self.proj["ffn_down"](_situ(hidden, gate)) * gate_f[:, None]
+        hidden, gate = self._linear("ffn_up_gate", y.to(dtype)).chunk(2, -1)
+        return x + self._linear("ffn_down", _situ(hidden, gate)) * gate_f[:, None]
 
 
 class _RoPE(nn.Module):
