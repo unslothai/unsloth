@@ -1282,6 +1282,38 @@ def test_peak_model_identity_keys_on_the_repo_the_load_fetched(monkeypatch):
     assert diffusion._peak_model_identity(up, None, "pipeline", up, mirror) == f"{mirror}@m1"
 
 
+def test_video_peak_key_names_the_repo_the_load_fetched(monkeypatch):
+    """An upstream video cache holding only model_index.json while the load staged the complete mirror: the video
+    calibration key names the mirror the weights came from, not the partial upstream snapshot."""
+    import core.inference.diffusion_component_sizes as sizes
+    import core.inference.video as video
+
+    up, mirror = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-Diffusers"
+    revisions = {(up, None): "u1", (mirror, None): "m1"}
+    monkeypatch.setattr(
+        sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename))
+    )
+
+    def state(fetch_base):
+        return types.SimpleNamespace(
+            pipe = types.SimpleNamespace(),
+            repo_id = up,
+            base_repo = up,
+            kind = "pipeline",
+            gguf_filename = None,
+            fetch_base = fetch_base,
+        )
+
+    assert video._calibration_revision(state(mirror)) == f"{mirror}@m1"
+    assert video._calibration_revision(state(up)) == f"{up}@u1"
+    # no load decision: the upstream's own revision, as before
+    assert video._calibration_revision(state(None)) == f"{up}@u1"
+    src = "".join((__import__("pathlib").Path(video.__file__)).read_text(encoding = "utf-8").split())
+    assert "fetch_base" in video._VideoLoadState.__dataclass_fields__
+    # both torch loaders (load_pipeline, the H3 modular pipeline) hand their fetch repo to the state
+    assert src.count("base_repo=base,fetch_base=fetch_base,") == 2
+
+
 def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
     assert dm.measured_image_runtime_mib("flux.2-klein", "default") is None
     plan = _klein_flat_plan()
