@@ -1536,7 +1536,9 @@ async def _with_lookup_tables(
             path = await listing_thread(True, _local_variant_gguf, answer, repo_id, v)
             if path:
                 local_arch, table = await listing_thread(True, local_lookup_info, path)
-                arch = arch or local_arch
+                # Only a lazy one speaks for the repo: a repo can hold several families.
+                if lazy_architecture(local_arch):
+                    arch = arch or local_arch
                 found[index] = table
             else:
                 unresolved.append((index, v))
@@ -1581,6 +1583,11 @@ async def _with_lookup_tables(
                             if not busy:
                                 _lookup_inflight.add(key)
                         if busy:
+                            continue
+                        if len(tasks) >= _LOOKUP_CONCURRENCY:
+                            # One pool's worth per listing; the rest are read by later ones.
+                            with _lookup_arch_lock:
+                                _lookup_inflight.discard(key)
                             continue
 
                         def _read(

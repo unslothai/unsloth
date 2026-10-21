@@ -452,6 +452,73 @@ class TestListing:
             time.sleep(0.05)
         assert fetched == ["o/slow"]
 
+    def test_a_cached_non_lazy_variant_does_not_veto_the_rest_of_the_repo(
+        self, tmp_path, monkeypatch
+    ):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        local = _write(
+            tmp_path / "llama.gguf",
+            _header("llama", [("token_embd.weight", [256, 1000], F16)], _ATTN),
+        )
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(
+            glt,
+            "remote_lookup_info",
+            lambda repo, name, token, identity = None, **k: ("qwen4exp", FLASH_NEXT_TABLE),
+        )
+        rows = [
+            GgufVariantDetail(filename = "llama.gguf", quant = "Q8_0", size_bytes = 1, downloaded = True),
+            GgufVariantDetail(filename = "flash/f.gguf", quant = "Q2", size_bytes = 40 * GIB),
+        ]
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows, {"q8_0": local}),
+                "o/mixed",
+                hf_token = None,
+                offline = False,
+                prefer_local_cache = False,
+            )
+        )
+        assert [v.lookup_table_bytes for v in out.response.variants] == [0, FLASH_NEXT_TABLE]
+
+    def test_one_listing_reads_at_most_a_pool_of_headers(self, monkeypatch):
+        import threading
+
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        calls = []
+        lock = threading.Lock()
+
+        def read(
+            repo,
+            name,
+            token,
+            identity = None,
+            **k,
+        ):
+            with lock:
+                calls.append(name)
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(glt, "remote_lookup_info", read)
+        rows = [
+            GgufVariantDetail(filename = f"q{i}/m.gguf", quant = f"Q{i}", size_bytes = 40 * GIB + i)
+            for i in range(10)
+        ]
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows), "o/many", hf_token = None, offline = False, prefer_local_cache = False
+            )
+        )
+        assert len(calls) == gv._LOOKUP_CONCURRENCY
+        assert sum(1 for v in out.response.variants if v.lookup_table_bytes) == len(calls)
+
     def test_offline_or_a_non_lazy_arch_never_reads_the_hub(self, monkeypatch):
         from hub.schemas.inventory import GgufVariantDetail
         from hub.services.models import gguf_variants as gv
@@ -529,8 +596,11 @@ class TestEstimate:
             gguf_mmproj_file = None,
         )
 
-        def run(**kw):
-            return ri._gguf_memory_breakdown(config, path, n_ctx = 4096, gpu_memory_mode = "auto", **kw)
+        def run(gguf = None, **kw):
+            cfg = config if gguf is None else SimpleNamespace(**{**vars(config), "gguf_file": gguf})
+            return ri._gguf_memory_breakdown(
+                cfg, gguf or path, n_ctx = 4096, gpu_memory_mode = "auto", **kw
+            )
 
         yield run
         ri._estimate_files_cache.clear()
@@ -615,6 +685,18 @@ class TestEstimate:
         breakdown(llama_extra_args = ["-lzm", "on"])
         breakdown()
         assert modes == ["on", "auto"]
+
+    def test_a_resident_gemma3n_table_leaves_the_gpu_share_not_the_total(
+        self, breakdown, tmp_path, monkeypatch
+    ):
+        """Not lazily read, but still a host-pinned input like the launcher prices it."""
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_OVERRIDE_TENSOR", raising = False)
+        b = breakdown(gguf = _gemma3n(tmp_path))
+        assert b.lookup_table_on_disk is False
+        assert b.lookup_table_bytes == 8960 * 262144 // 32 * 24
+        assert b.weights_bytes == int(round(self.WEIGHTS))
+        assert b.gpu_bytes == b.total_bytes - b.lookup_table_bytes
 
     def test_a_resident_table_moved_to_the_gpu_stays_in_the_gpu_share(self, breakdown, monkeypatch):
         monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)

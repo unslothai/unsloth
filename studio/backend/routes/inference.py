@@ -15769,6 +15769,7 @@ def _gguf_memory_breakdown(
     # llama.cpp resolves auto to off).
     from core.inference.llama_cpp import (
         _effective_lazy_mode,
+        _is_per_layer_embedding,
         _override_places_tensor_on_device,
     )
     from hub.utils.gguf_lookup_tables import local_lookup_info
@@ -15795,6 +15796,20 @@ def _gguf_memory_breakdown(
             gpu_ids = selected_gpu_ids,
             tensor_parallel = tensor_parallel,
         )
+    if not lookup_table_on_disk:
+        # A resident per-layer table (gemma3n's, or one under the lazy threshold) is still
+        # a host-pinned input: it leaves the GPU share, not the total.
+        try:
+            _lt_scan = _lt_backend._gguf_tensor_scan(gguf_path)
+        except Exception:  # noqa: BLE001 -- unread header: keep the lazy answer
+            _lt_scan = None
+        if _lt_scan:
+            _lt_arch = _lt_arch or _lt_scan[0]
+            _resident = sum(
+                int(v) for k, v in (_lt_scan[1] or {}).items() if _is_per_layer_embedding(k)
+            )
+            lookup_table_bytes = min(main_bytes, max(lookup_table_bytes, _resident))
+    if lookup_table_bytes:
         # Read resident, a device override applies to the table (deepseek41's loader
         # still forces it to the host), so it stays in the GPU share.
         if (
