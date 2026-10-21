@@ -26,6 +26,8 @@ def ebooks():
 
 @pytest.fixture
 def tokenizer():
+    pytest.importorskip("tokenizers")
+    pytest.importorskip("transformers")
     from tokenizers import Tokenizer, models, pre_tokenizers
     from transformers import PreTrainedTokenizerFast
 
@@ -40,6 +42,8 @@ def tokenizer():
 
 @pytest.fixture
 def byte_tokenizer():
+    pytest.importorskip("tokenizers")
+    pytest.importorskip("transformers")
     from tokenizers import Tokenizer, decoders, models, pre_tokenizers
     from transformers import PreTrainedTokenizerFast
 
