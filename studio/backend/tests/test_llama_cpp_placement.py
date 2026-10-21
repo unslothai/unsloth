@@ -111,6 +111,10 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._apply_detected_audio = lambda _detected: True
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
+    # Stand-in servers are no process of ours: stopping one must never reach a real tree.
+    backend._collect_descendants = lambda _pid: ([], True)
+    backend._leading_process_group = lambda _pid: None
+    backend._tree_kill_surviving_process = lambda _pid: True
     return backend, gguf
 
 
@@ -223,6 +227,18 @@ def _launch_warns(backend, gguf, **load_kwargs):
     captured = _launch(backend, gguf, **load_kwargs)
     assert "does not fit in GPU memory" in (backend.last_load_warning or "")
     return captured
+
+
+def test_stopping_a_stand_in_server_signals_nothing(tmp_path, monkeypatch):
+    import utils.process_lifetime as lifetime
+
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+    sent = []
+    monkeypatch.setattr(lifetime, "terminate_pid", lambda pid, **_k: sent.append(("pid", pid)))
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(("pg", pgid)))
+    _launch(backend, gguf)
+    backend.unload_model()
+    assert sent == []
 
 
 def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
@@ -5380,7 +5396,7 @@ def test_a_cache_crash_retries_once_without_the_cache(
             "Process",
             (),
             {
-                "pid": 100 + len(spawned),
+                "pid": _FAKE_SERVER_PID - len(spawned),
                 "stdout": iter([crash_line + "\n"]) if crashed else iter(()),
                 "returncode": 1 if crashed else None,
                 "poll": lambda self: 1 if crashed else None,
