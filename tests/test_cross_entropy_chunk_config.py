@@ -16,7 +16,11 @@ from unsloth.kernels import cross_entropy_loss as ce_mod
 from unsloth.kernels.utils import MAX_FUSED_SIZE
 
 
-def _route(capability, monkeypatch, vocab = 128256):
+def _route(
+    capability,
+    monkeypatch,
+    vocab = 128256,
+):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: capability)
     ce_mod._chunked_forward_config_at.cache_clear()
     try:
@@ -41,7 +45,8 @@ def test_a100_keeps_the_previous_config_for_larger_vocabs(vocab, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "capability", [(6, 1), (7, 0), (7, 2), (8, 6), (8, 7), (8, 9), (9, 0), (10, 0), (10, 3), (12, 0)]
+    "capability",
+    [(6, 1), (7, 0), (7, 2), (8, 6), (8, 7), (8, 9), (9, 0), (10, 0), (10, 3), (12, 0)],
 )
 @pytest.mark.parametrize("vocab", [128256, 262144])
 def test_other_archs_keep_the_previous_config(capability, vocab, monkeypatch):
@@ -68,7 +73,14 @@ def test_non_cuda_devices_keep_the_previous_config():
     assert ce_mod._chunked_forward_config_at("xpu", 0, 128256) == (MAX_FUSED_SIZE, 32)
 
 
-def _launch(vocab, config, monkeypatch, rows = 64, softcap = 0.0, scale = 0.0):
+def _launch(
+    vocab,
+    config,
+    monkeypatch,
+    rows = 64,
+    softcap = 0.0,
+    scale = 0.0,
+):
     launches = []
     kernel = ce_mod._chunked_cross_entropy_forward
 
@@ -91,7 +103,10 @@ def _launch(vocab, config, monkeypatch, rows = 64, softcap = 0.0, scale = 0.0):
     labels[1:4] = torch.tensor([0, vocab - 1, 16383], device = "cuda")
     logits.requires_grad_(True)
     loss = ce_mod.fast_cross_entropy_loss(
-        logits.view(1, rows, vocab), labels.view(1, rows), logit_softcapping = softcap, logit_scaling = scale
+        logits.view(1, rows, vocab),
+        labels.view(1, rows),
+        logit_softcapping = softcap,
+        logit_scaling = scale,
     )
     loss.backward()
     return launches, loss.detach(), logits.grad.detach()
@@ -115,7 +130,9 @@ def test_launch_uses_the_routed_config(vocab, monkeypatch):
     ],
 )
 def test_loss_and_grads_match_across_chunk_widths(vocab, softcap, scale, monkeypatch):
-    _, loss_old, grad_old = _launch(vocab, (MAX_FUSED_SIZE, 32), monkeypatch, softcap = softcap, scale = scale)
+    _, loss_old, grad_old = _launch(
+        vocab, (MAX_FUSED_SIZE, 32), monkeypatch, softcap = softcap, scale = scale
+    )
     _, loss_new, grad_new = _launch(vocab, (16384, 8), monkeypatch, softcap = softcap, scale = scale)
     torch.testing.assert_close(loss_new, loss_old, rtol = 1e-5, atol = 1e-5)
     torch.testing.assert_close(grad_new, grad_old, rtol = 2e-2, atol = 2e-3)
