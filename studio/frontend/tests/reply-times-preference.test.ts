@@ -33,7 +33,13 @@ test("the time leads the reply footer, outside the autohiding action bar", () =>
   const time = THREAD.indexOf("<AssistantMessageTime />", footer);
   const bar = THREAD.indexOf("<AssistantActionBar />", footer);
   assert.ok(time !== -1 && time < bar);
-  assert.match(TIME, /if \(!showReplyTimes \|\| finishedAt === undefined\)/);
+  // Off, a reply must mount no assistant-ui selector: each runs on every composer keystroke.
+  const gate = TIME.slice(
+    TIME.indexOf("export const AssistantMessageTime"),
+    TIME.indexOf("const ReplyTime"),
+  );
+  assert.match(gate, /return showReplyTimes \? <ReplyTime \/> : null;/);
+  assert.doesNotMatch(gate, /useAuiState/);
   assert.doesNotMatch(TIME, /setInterval|setTimeout|useEffect|components\/ui\/tooltip/);
   // Relative labels would go stale on a thread left open past midnight.
   assert.doesNotMatch(TIME, /formatMessageDate|todayAt|yesterdayAt/);

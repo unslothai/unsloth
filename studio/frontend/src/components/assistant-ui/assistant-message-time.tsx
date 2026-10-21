@@ -7,15 +7,21 @@ import { replyFinishedTimestamp } from "@/lib/message-timestamp";
 import { useAuiState } from "@assistant-ui/react";
 import { type FC, useState } from "react";
 
-/** Opt-in reply time, always shown. Absolute, not "Today": a thread left open overnight would
- *  keep calling yesterday's replies today, as nothing re-renders them. A native title, not a
- *  Tooltip: one per reply on a long thread would each subscribe to the modal-layer store. */
+/** Opt-in reply time. Gated here so that, while off, a reply mounts no assistant-ui selector:
+ *  every mounted one runs on each composer keystroke (composer-keystroke-subscription-budget). */
 export const AssistantMessageTime: FC = () => {
-  const locale = useLocale();
   const showReplyTimes = useChatPreferencesStore((state) => state.showReplyTimes);
+  return showReplyTimes ? <ReplyTime /> : null;
+};
+
+/** Absolute, not "Today": a thread left open overnight would keep calling yesterday's replies
+ *  today, as nothing re-renders them. A native title, not a Tooltip: one per reply on a long
+ *  thread would each subscribe to the modal-layer store. */
+const ReplyTime: FC = () => {
+  const locale = useLocale();
   const finishedAt = useAuiState(({ message }) => replyFinishedTimestamp(message));
   const [currentYear] = useState(() => new Date().getFullYear());
-  if (!showReplyTimes || finishedAt === undefined) {
+  if (finishedAt === undefined) {
     return null;
   }
   const date = new Date(finishedAt);
