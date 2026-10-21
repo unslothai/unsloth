@@ -1642,6 +1642,10 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
         if diffusion_block_restride.is_wrapped(compiled):
             # FLUX.1's block 0 keeps the slice layout of the others, so all of them share one compiled graph.
             fn = diffusion_block_restride.wrap(fn)
+        rewrap = getattr(compiled, "_unsloth_rewrap", None)
+        if callable(rewrap):
+            # A family adapter around the compiled call (LTX-2's STG flag) must wrap the moved compile too.
+            fn = rewrap(fn)
         target.forward = fn
         block._compiled_call_impl = None
         block._unsloth_below_hook_ref = target

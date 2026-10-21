@@ -376,6 +376,30 @@ def test_a_compile_failure_below_the_hook_keeps_the_class_patch(monkeypatch):
         assert getattr(b._unsloth_below_hook_ref.forward, "__func__", None) is _shifted_forward
 
 
+def test_compile_below_the_hook_reapplies_a_family_adapter():
+    # LTX-2's STG adapter sits on _compiled_call_impl; moving the compile below the hook must keep it around the move.
+    import torch as _t
+
+    from core.inference import video_ltx2
+
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    seen = []
+
+    def marker(*a, **k):
+        return None
+
+    for b in net.blocks:
+        b._compiled_call_impl = video_ltx2._stg_adapted(marker, None, net, _t)
+    assert bg.compile_below_offload_hooks(net) == 2
+    for b in net.blocks:
+        moved = b._unsloth_below_hook_ref.forward
+        assert getattr(moved, "_unsloth_stg_adapter", False)
+        inner = lambda *a, **k: seen.append(k.get("all_perturbed"))  # noqa: E731
+        moved._unsloth_rewrap(inner)(all_perturbed = _t.tensor(True))
+    assert seen == [True, True] and all(type(v) is bool for v in seen)
+
+
 def test_block_graphs_find_the_compute_below_a_hook_that_predates_a_class_patch(monkeypatch):
     net = _hooked_net(blocks = 2)
     monkeypatch.setattr(Block, "forward", _shifted_forward)
