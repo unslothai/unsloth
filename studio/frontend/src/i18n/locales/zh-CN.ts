@@ -1795,9 +1795,6 @@ export const zhCN = {
         showLoadedModels: "已加载模型指示器",
         showLoadedModelsDescription:
           "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
-        showWhisperUpdates: "whisper.cpp 更新通知",
-        showWhisperUpdatesDescription:
-          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
         showAudioCppUpdates: "audio.cpp 更新通知",
         showAudioCppUpdatesDescription:
           "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
@@ -2719,6 +2716,22 @@ export const zhCN = {
         visibility: "思考过程",
         visibilityDescription:
           "思考过程如何展开。你仍可自行展开或折叠任意区块。",
+      },
+      memory: {
+        title: "记忆",
+        description: "每个对话都会读取的笔记，适用于所有本地或云端模型。项目中的对话还会读取该项目的 AGENTS.md。",
+        enable: "在对话中使用记忆",
+        enableDescription: "在每个对话中发送这些笔记。",
+        locked: "已被 UNSLOTH_STUDIO_AGENTS_MD 在此安装中关闭。",
+        editor: "记忆笔记",
+        placeholder: "例如：\n- 我用 Python 编程，使用 uv。\n- 回答尽量简短。",
+        hint: "保存在 {path}。你也可以用任意文本编辑器编辑该文件。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "记忆已保存",
+        loadError: "无法加载记忆。",
+        saveError: "无法保存记忆。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md 记忆 记住 个性化 个人资料 笔记",
       },
       currentDate: {
         label: "告诉模型今天的日期",

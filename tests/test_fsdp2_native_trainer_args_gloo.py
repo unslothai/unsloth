@@ -19,6 +19,7 @@ if multiprocessing.parent_process() is not None or getattr(
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import ast  # noqa: E402
+import builtins  # noqa: E402
 import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import types  # noqa: E402
@@ -64,6 +65,23 @@ def _install_wrapped_trainer_init():
         "_block_swap_for_trainer_backend": noop,
         "_enable_ddp_batched_grad_copy": noop,
     }
+    # Any other module-level helper the wrapper calls is stubbed too, so a new one (#14404 added
+    # _size_auto_checkpoint_skip_for_trainer) cannot fail every rank with a NameError here.
+    bound = {
+        name.id
+        for name in ast.walk(fn)
+        if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
+    } | {
+        (alias.asname or alias.name).split(".")[0]
+        for node in ast.walk(fn)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            name = node.func.id
+            if name not in ns and name not in bound and not hasattr(builtins, name):
+                ns[name] = noop
     exec(compile(ast.Module(body = [fn], type_ignores = []), path, "exec"), ns)
     Trainer.__init__ = ns["_unsloth_trainer_init"]
     Trainer._test_wrapped = True

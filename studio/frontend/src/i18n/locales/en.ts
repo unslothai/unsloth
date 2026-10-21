@@ -1894,9 +1894,6 @@ export const en = {
         showLoadedModels: "Loaded models indicator",
         showLoadedModelsDescription:
           "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
-        showWhisperUpdates: "whisper.cpp update notifications",
-        showWhisperUpdatesDescription:
-          "Notify when a newer whisper.cpp build is available for speech-to-text models. Turn off if you never transcribe audio.",
         showAudioCppUpdates: "audio.cpp update notifications",
         showAudioCppUpdatesDescription:
           "Notify when the audio.cpp runtime needs an update to run the Audio pages. Turn off if you never use Audio.",
@@ -2821,6 +2818,22 @@ export const en = {
         visibility: "Thinking",
         visibilityDescription:
           "How reasoning opens. You can still expand or collapse any block yourself.",
+      },
+      memory: {
+        title: "Memory",
+        description: "Notes every chat reads, for every model, local or cloud. Chats in a project also read that project's AGENTS.md.",
+        enable: "Use memory in chats",
+        enableDescription: "Send these notes with every chat.",
+        locked: "Turned off for this install by UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Memory notes",
+        placeholder: "For example:\n- I write Python and use uv.\n- Keep answers short.",
+        hint: "Saved to {path}. You can also edit that file in any text editor.",
+        size: "{used} / {max} KB",
+        save: "Save",
+        saved: "Memory saved",
+        loadError: "Failed to load memory.",
+        saveError: "Failed to save memory.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md",
       },
       currentDate: {
         label: "Tell the model today's date",

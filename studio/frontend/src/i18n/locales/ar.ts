@@ -1814,9 +1814,6 @@ export const ar = {
         showLoadedModels: "مؤشر النماذج المحمّلة",
         showLoadedModelsDescription:
           "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
-        showWhisperUpdates: "إشعارات تحديث whisper.cpp",
-        showWhisperUpdatesDescription:
-          "التنبيه عند توفر إصدار أحدث من whisper.cpp لنماذج تحويل الكلام إلى نص. أوقف التشغيل إذا كنت لا تفرّغ الصوت.",
         showAudioCppUpdates: "إشعارات تحديث audio.cpp",
         showAudioCppUpdatesDescription:
           "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
@@ -2762,6 +2759,22 @@ export const ar = {
         visibility: "التفكير",
         visibilityDescription:
           "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
+      },
+      memory: {
+        title: "الذاكرة",
+        description: "ملاحظات تقرؤها كل محادثة، مع أي نموذج، محليًا أو سحابيًا. تقرأ محادثات المشروع أيضًا ملف AGENTS.md الخاص به.",
+        enable: "استخدام الذاكرة في المحادثات",
+        enableDescription: "إرسال هذه الملاحظات مع كل محادثة.",
+        locked: "معطّلة في هذا التثبيت بواسطة UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "ملاحظات الذاكرة",
+        placeholder: "مثال:\n- أكتب بلغة Python وأستخدم uv.\n- اجعل الإجابات قصيرة.",
+        hint: "تُحفظ في {path}. يمكنك أيضًا تعديل هذا الملف في أي محرر نصوص.",
+        size: "{used} / {max} كيلوبايت",
+        save: "حفظ",
+        saved: "تم حفظ الذاكرة",
+        loadError: "تعذّر تحميل الذاكرة.",
+        saveError: "تعذّر حفظ الذاكرة.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md الذاكرة تذكر تخصيص ملف شخصي ملاحظات",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",
