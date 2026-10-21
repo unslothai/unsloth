@@ -20,6 +20,10 @@ export const UNSEEN_KEY_PREFIX = "unsloth_scheduled_tasks_unseen:";
 
 export const ACTIVE_POLL_MS = 2_000;
 export const IDLE_POLL_MS = 5 * 60_000;
+// Every hidden tab polling every 2 s through a long CPU run adds up; their notifications can wait.
+export const HIDDEN_POLL_MS = 30_000;
+// Each write of the shared record fires a storage event in every other tab.
+const SEEN_SAVE_STEP_MS = 60_000;
 // Past the due time, so the run has been claimed by the time the poll asks.
 const DUE_SLACK_MS = 3_000;
 /** How far behind the server's present announcing resumes at most: runs that finished longer ago,
@@ -47,6 +51,20 @@ export function nextPollDelay(activity: {
   if (activity.nextRunAt === null) return IDLE_POLL_MS;
   const untilDue = activity.nextRunAt - activity.now + DUE_SLACK_MS;
   return Math.min(IDLE_POLL_MS, Math.max(ACTIVE_POLL_MS, untilDue));
+}
+
+/** `nextPollDelay` for a tab that may be hidden: showing it again polls at once anyway. */
+export function pollDelayFor(delay: number, hidden: boolean): number {
+  return hidden ? Math.max(delay, HIDDEN_POLL_MS) : delay;
+}
+
+/** A cursor left a little behind only makes the next poll re-read runs it skips by id. */
+export function shouldSaveSeen(
+  stored: SeenRuns | null,
+  record: SeenRuns,
+  claimed: number,
+): boolean {
+  return claimed > 0 || stored === null || record.since - stored.since >= SEEN_SAVE_STEP_MS;
 }
 
 /** What the results poll has announced, kept across launches so a reopened Studio reports the

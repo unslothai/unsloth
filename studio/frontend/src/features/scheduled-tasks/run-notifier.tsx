@@ -21,11 +21,13 @@ import {
   claimAnnouncements,
   collectFinishedRuns,
   nextPollDelay,
+  pollDelayFor,
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
   runsAskingToLoad,
   runsToNotify,
+  shouldSaveSeen,
 } from "./results";
 import { useUnseenScheduledRuns } from "./unseen";
 
@@ -241,8 +243,9 @@ export function ScheduledTaskRunNotifier() {
         const mine = await exclusively(ANNOUNCE_LOCK_PREFIX + owner, () => {
           // Signed out or into another account meanwhile: the answer was the previous account's.
           if (disposed || getAuthSessionEpoch() !== epoch || currentAccount() !== owner) return null;
-          const claim = claimAnnouncements(loadSeen(owner), result.seen, result.fresh);
-          saveSeen(owner, claim.record);
+          const stored = loadSeen(owner);
+          const claim = claimAnnouncements(stored, result.seen, result.fresh);
+          if (shouldSaveSeen(stored, claim.record, claim.mine.length)) saveSeen(owner, claim.record);
           return claim.mine;
         });
         if (disposed) return;
@@ -253,7 +256,7 @@ export function ScheduledTaskRunNotifier() {
         seen = result.seen;
         if (result.fresh.length > 0) refreshFor(result.fresh);
         if (mine.length > 0) announce(mine);
-        schedule(nextPollDelay(result.last));
+        schedule(pollDelayFor(nextPollDelay(result.last), document.visibilityState === "hidden"));
       } catch {
         schedule(IDLE_POLL_MS);
       } finally {

@@ -63,6 +63,9 @@ import { useUnseenScheduledRuns } from "./unseen";
 
 // How often the page looks again at a task that is due but not yet running.
 const OVERDUE_REFRESH_MS = 5_000;
+const OVERDUE_REFRESH_MAX_MS = 60_000;
+// Focus and visibilitychange both fire on returning to the tab: one read answers both.
+const REFOCUS_DEDUPE_MS = 1_000;
 
 const ROW_BUTTON =
   "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
@@ -397,10 +400,17 @@ export function TasksPage() {
     const onStorage = (event: StorageEvent) => {
       if (event.key === SCHEDULED_TASKS_WRITTEN_KEY) void refresh();
     };
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
+    let lookedAt = 0;
+    const lookAgain = () => {
+      const now = Date.now();
+      if (now - lookedAt < REFOCUS_DEDUPE_MS) return;
+      lookedAt = now;
+      void refresh();
     };
-    const onFocus = () => void refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") lookAgain();
+    };
+    const onFocus = lookAgain;
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
@@ -426,11 +436,13 @@ export function TasksPage() {
   useEffect(() => {
     if (soonest === null) return;
     let timer: number | undefined;
+    let again = OVERDUE_REFRESH_MS;
     const look = () => {
-      void refresh();
-      // Then again every few seconds while the task is still due: the scheduler may be busy with
-      // another run, and only a claim moves its next run on, which ends this.
-      timer = window.setTimeout(look, OVERDUE_REFRESH_MS);
+      // A hidden tab reads again when it is shown.
+      if (document.visibilityState !== "hidden") void refresh();
+      // Backing off while it stays due: only a claim moves its next run on, and a long run delays that.
+      timer = window.setTimeout(look, again);
+      again = Math.min(again * 2, OVERDUE_REFRESH_MAX_MS);
     };
     const wait = () => {
       // Read, not subscribed to: the offset moves a little with every refresh.

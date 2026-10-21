@@ -9145,6 +9145,8 @@ const UserMessageAudio: FC = () => {
   );
 };
 
+const SCHEDULED_REPLY_KEY = "scheduled-task-replies";
+
 function scheduledTaskIdOf(custom: unknown): string | null {
   const source = (custom as { scheduledTask?: { taskId?: unknown } } | undefined)?.scheduledTask;
   return typeof source?.taskId === "string" ? source.taskId : null;
@@ -9158,9 +9160,18 @@ const ScheduledTaskSource: FC = () => {
   const taskId = useAuiState(({ thread, message }) => {
     const own = scheduledTaskIdOf(message.metadata?.custom);
     if (own) return own;
-    const index = thread.messages.findIndex((entry) => entry.id === message.id);
-    const reply = index >= 0 ? thread.messages[index + 1] : undefined;
-    return reply?.role === "assistant" ? scheduledTaskIdOf(reply.metadata?.custom) : null;
+    // One pass per messages snapshot, not a search per prompt per streamed token.
+    const byPrompt = memoOnArrayByKey(thread.messages, SCHEDULED_REPLY_KEY, () => {
+      const map = new Map<string, string>();
+      thread.messages.forEach((entry, index) => {
+        const reply = thread.messages[index + 1];
+        const replyTask =
+          reply?.role === "assistant" ? scheduledTaskIdOf(reply.metadata?.custom) : null;
+        if (replyTask) map.set(entry.id, replyTask);
+      });
+      return map;
+    });
+    return byPrompt.get(message.id) ?? null;
   });
   if (!taskId) return null;
   return (

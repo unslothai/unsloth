@@ -10252,6 +10252,16 @@ def _model_switch_allowed_for_request(fastapi_request) -> bool:
     return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
 
 
+_NO_AUTO_DOWNLOAD_SCOPE_KEY = "unsloth.no_auto_download"
+
+
+def disable_auto_download_for_request(scope) -> None:
+    """Keep an unattended in-process request (a scheduled task's run) from starting a download
+    when auto-download is on: a model gone from disk fails the run instead."""
+    if isinstance(scope, dict):
+        scope[_NO_AUTO_DOWNLOAD_SCOPE_KEY] = True
+
+
 async def _keyless_caller_held_back(fastapi_request) -> bool:
     """Keyless caller that may not POST /api/inference/load itself, so it may not switch models."""
     from auth.authentication import request_admitted_without_credential
@@ -10515,6 +10525,9 @@ async def _maybe_auto_download_model(
     from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
 
     if not requested_model or not get_openai_auto_download_enabled():
+        return
+    scope = getattr(fastapi_request, "scope", None)
+    if isinstance(scope, dict) and scope.get(_NO_AUTO_DOWNLOAD_SCOPE_KEY):
         return
     if not is_downloadable_ref(requested_model):
         return

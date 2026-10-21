@@ -11,16 +11,19 @@ import type * as ScheduledTasksStore from "../src/features/scheduled-tasks/store
 import {
   ACTIVE_POLL_MS,
   CATCH_UP_MS,
+  HIDDEN_POLL_MS,
   IDLE_POLL_MS,
   advanceSeenRuns,
   claimAnnouncements,
   collectFinishedRuns,
   nextPollDelay,
+  pollDelayFor,
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
   runsAskingToLoad,
   runsToNotify,
+  shouldSaveSeen,
 } from "../src/features/scheduled-tasks/results.ts";
 import {
   type ScheduleSummary,
@@ -200,6 +203,28 @@ test("the results poll looks quickly while a run is going and again just after o
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 3_600_000 }), IDLE_POLL_MS);
   // Results still to be read: the next page comes soon.
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: null, more: true }), ACTIVE_POLL_MS);
+});
+
+test("a hidden tab polls no faster than every 30 seconds, a shown one as paced", () => {
+  assert.equal(pollDelayFor(ACTIVE_POLL_MS, true), HIDDEN_POLL_MS);
+  assert.equal(pollDelayFor(ACTIVE_POLL_MS, false), ACTIVE_POLL_MS);
+  assert.equal(pollDelayFor(IDLE_POLL_MS, true), IDLE_POLL_MS);
+});
+
+test("a poll that announced nothing writes the shared record only once its cursor moved a minute", () => {
+  const stored = { since: 100_000, ids: ["a"] };
+  assert.equal(shouldSaveSeen(stored, { since: 130_000, ids: ["a"] }, 0), false);
+  assert.equal(shouldSaveSeen(stored, { since: 160_000, ids: ["a"] }, 0), true);
+  assert.equal(shouldSaveSeen(stored, { since: 100_000, ids: ["a", "b"] }, 1), true);
+  assert.equal(shouldSaveSeen(null, { since: 100_000, ids: [] }, 0), true);
+});
+
+test("formatters are kept per locale", () => {
+  const at = new Date(2026, 9, 29, 9, 0).getTime();
+  const now = new Date(2026, 9, 20, 9, 0).getTime();
+  assert.equal(formatRunDay(at, now, "en-US"), "Thu, Oct 29");
+  assert.notEqual(formatRunDay(at, now, "de-DE"), "Thu, Oct 29");
+  assert.equal(formatRunDay(at, now, "en-US"), "Thu, Oct 29");
 });
 
 test("a saved record reads back as it was saved, with no clock of this browser's involved", () => {

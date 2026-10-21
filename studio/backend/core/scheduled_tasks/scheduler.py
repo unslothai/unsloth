@@ -55,6 +55,9 @@ _ERROR_TEXT_LIMIT = 500
 _AWAY_SECONDS = 5 * 60
 # How much of an ongoing chat a run sees: enough to carry it on, small enough for a short context.
 _HISTORY_MESSAGES = 20
+# A scheduled run waits up to this long for replies already generating, so it never slows one down.
+_YIELD_SECONDS = 5 * 60
+_YIELD_POLL_SECONDS = 2.0
 
 _schedulers: "weakref.WeakSet[ScheduledTaskScheduler]" = weakref.WeakSet()
 
@@ -87,6 +90,20 @@ class _Swap:
 
     # The GGUF loaded before, as a reload brings it back; None when nothing was.
     previous: Optional[tuple]
+    model: Optional[str] = None
+    subject: Optional[str] = None
+    timezone: str = "UTC"
+    task_id: Optional[str] = None
+    # llama_keepwarm.attended_stamp() at the swap: a different one later means someone came back.
+    attended: Optional[float] = None
+
+
+@dataclass
+class SwapHolder:
+    """A swap left in place for the scheduler's next run, which may want the same model: back to
+    back runs on one model then load it once, not once per run."""
+
+    pending: Optional[_Swap] = None
 
 
 @dataclass
@@ -131,7 +148,7 @@ def _producer_request(app: Any, run_id: str, cancel_event: threading.Event, tz: 
     """The in-process request a run is produced under, shaped like a durable chat run's."""
     from utils.current_date_prompt_settings import CURRENT_DATE_TIMEZONE_HEADER
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
-    from routes.inference import REQUIRE_TEXT_HEADER
+    from routes.inference import REQUIRE_TEXT_HEADER, disable_auto_download_for_request
 
     path = f"/api/scheduled-tasks/runs/{run_id}"
     scope = {
@@ -160,6 +177,8 @@ def _producer_request(app: Any, run_id: str, cancel_event: threading.Event, tz: 
             KEYLESS_ADMISSION_STATE_KEY: False,
         },
     }
+
+    disable_auto_download_for_request(scope)
 
     async def receive():
         return {"type": "http.request", "body": b"", "more_body": False}
@@ -283,26 +302,53 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
     raise RunFailed("model_not_loaded")
 
 
-async def _plan_swap(unattended: bool) -> _Swap:
+async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional[_Swap]) -> _Swap:
     """What a load must put back. An unattended run swaps only a GGUF it can restore, and only
-    while nobody is using Studio; otherwise it asks, and the user, there now, decides."""
-    from core.inference.llama_keepwarm import idle_for, loaded_identity
-    from routes.inference import _resident_npu_model, get_inference_backend
+    while nobody is using Studio or training; otherwise it asks, and the user, there now, decides.
+    A swap carried over from the run before keeps that run's earlier model as the one to restore."""
+    from core.inference.llama_keepwarm import attended_stamp, idle_for, loaded_identity
+    from routes.inference import (
+        _loaded_slot_ident,
+        _resident_npu_model,
+        _training_is_active,
+        get_inference_backend,
+    )
+    from hub.services.models import account_access
 
-    previous = loaded_identity()
     if unattended:
         unrestorable = _resident_npu_model() is not None or getattr(
             await asyncio.to_thread(get_inference_backend), "active_model_name", None
         )
-        if unrestorable or not idle_for(_AWAY_SECONDS):
+        # Another account's model, which this account could not load back afterwards.
+        resident = _loaded_slot_ident()
+        foreign = resident is not None and account_access.resident_hidden("chat", resident)
+        if (
+            unrestorable
+            or foreign
+            or not idle_for(_AWAY_SECONDS)
+            or await asyncio.to_thread(_training_is_active)
+        ):
             raise RunFailed("model_busy")
-    return _Swap(previous)
+    return _Swap(
+        carried.previous if carried is not None else loaded_identity(),
+        model = model,
+        subject = task["ownerSubject"],
+        timezone = task["timezone"],
+        task_id = task["id"],
+        attended = attended_stamp(),
+    )
 
 
-async def _restore_after_swap(swap: _Swap, model: str, app: Any, run_id: str, task: dict) -> None:
+async def _restore_after_swap(swap: _Swap, app: Any) -> None:
     """Put back what the run's load replaced: the earlier model, or nothing. Leaves alone a model
-    someone started using or loaded meanwhile. Best effort: a failure keeps the task's model."""
-    from core.inference.llama_keepwarm import idle_for, loaded_identity, stash_for_reload
+    someone used or loaded since the swap. Best effort: a failure keeps the task's model."""
+    from core.inference.llama_keepwarm import (
+        attended_stamp,
+        idle_for,
+        loaded_identity,
+        stash_for_reload,
+        unattended_activity,
+    )
     from models.inference import UnloadRequest
     from routes.inference import (
         _RELOAD_ONLY_MODEL,
@@ -311,32 +357,54 @@ async def _restore_after_swap(swap: _Swap, model: str, app: Any, run_id: str, ta
         allow_model_switch_for_request,
     )
 
-    subject = task["ownerSubject"]
     try:
-        if not idle_for(0):
+        if not idle_for(0) or attended_stamp() != swap.attended:
             return
-        current = loaded_identity()
-        if _model_is_loaded(model):
-            if current is not None:
-                await _unload_model_impl(UnloadRequest(model_path = current[0]), subject)
-        elif current is not None:
-            return
-        if swap.previous is None:
-            return
-        stash_for_reload(swap.previous)
-        request = _producer_request(app, f"{run_id}:restore", threading.Event(), task["timezone"])
-        allow_model_switch_for_request(request.scope)
-        await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, subject)
+        with unattended_activity():
+            current = loaded_identity()
+            if _model_is_loaded(swap.model):
+                if current is not None:
+                    await _unload_model_impl(UnloadRequest(model_path = current[0]), swap.subject)
+            elif current is not None:
+                return
+            if swap.previous is None:
+                return
+            stash_for_reload(swap.previous)
+            request = _producer_request(
+                app, f"{swap.task_id}:restore", threading.Event(), swap.timezone
+            )
+            allow_model_switch_for_request(request.scope)
+            await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, swap.subject)
     except Exception as exc:  # noqa: BLE001 - the run's own outcome stands
-        logger.warning("Scheduled task %s could not restore the earlier model: %s", task["id"], exc)
+        logger.warning(
+            "Scheduled task %s could not restore the earlier model: %s", swap.task_id, exc
+        )
 
 
-async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threading.Event) -> Answer:
-    """Ask the loaded chat model to do the task. Text only: tools never run unattended."""
+def _pins_local_model(model: Optional[str]) -> bool:
+    from routes.inference import _connection_model_ref
+    return bool(model) and _connection_model_ref(model) is None
+
+
+async def generate_answer(
+    app: Any,
+    task: dict,
+    run: dict,
+    cancel_event: threading.Event,
+    holder: Optional[SwapHolder] = None,
+) -> Answer:
+    """Ask the loaded chat model to do the task. Text only: tools never run unattended.
+
+    With a ``holder``, a model the run loads stays loaded and the swap is left in it for the
+    scheduler to undo; without one, the run switches back itself."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
-    from core.inference.llama_keepwarm import InferenceActivityReservation, end_in_process_request
+    from core.inference.llama_keepwarm import (
+        InferenceActivityReservation,
+        end_in_process_request,
+        unattended_activity,
+    )
     from fastapi.responses import StreamingResponse
 
     from models.inference import ChatCompletionRequest
@@ -347,6 +415,12 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
         produce_openai_chat_completions,
     )
 
+    carried = holder.pending if holder is not None else None
+    if carried is not None and not _pins_local_model(task.get("model")):
+        # This run answers on whatever is loaded, or on a connection: the user's model first.
+        holder.pending = None
+        await _restore_after_swap(carried, app)
+        carried = None
     ongoing = await asyncio.to_thread(ongoing_chat, task)
     history = await asyncio.to_thread(chat_history, ongoing["id"]) if ongoing else []
     model_fields, provider, allow_switch = _model_fields(
@@ -354,10 +428,17 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
     )
     # A yes given for this run, or a Run now, has the user right there; a schedule does not.
     swap = (
-        await _plan_swap(run.get("source") == "schedule" and not run.get("allowModelLoad"))
+        await _plan_swap(
+            task,
+            task["model"],
+            run.get("source") == "schedule" and not run.get("allowModelLoad"),
+            carried,
+        )
         if allow_switch
         else None
     )
+    if holder is not None:
+        holder.pending = swap or carried
     payload = ChatCompletionRequest.model_validate(
         {
             "messages": [
@@ -383,69 +464,76 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
     request = _producer_request(app, run["id"], cancel_event, task["timezone"])
     if allow_switch:
         allow_model_switch_for_request(request.scope)
-    activity = InferenceActivityReservation()
-    activity.reserve()
-    producer: Optional[asyncio.Future] = None
-    response = None
-    try:
-        # The deadline covers the wait for a model load or unload to let go too: one that never
-        # does must not keep the scheduler from every other task.
+    # Studio's own work: it does not count as someone using Studio (see _plan_swap).
+    with unattended_activity():
+        activity = InferenceActivityReservation()
+        activity.reserve()
+        producer: Optional[asyncio.Future] = None
+        response = None
         try:
-            await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
-        except TimeoutError:
-            raise RunFailed("timeout") from None
-        if cancel_event.is_set():
-            raise RunFailed("cancelled")
-        producer = asyncio.ensure_future(
-            produce_openai_chat_completions(
-                payload,
-                request,
-                task["ownerSubject"],
-                cancel_on_disconnect = False,
-            )
-        )
-        done, _ = await asyncio.wait({producer}, timeout = max(0.0, deadline - loop.time()))
-        if not done:
-            raise RunFailed("timeout")
-        try:
-            response = producer.result()
-            if provider is not None and isinstance(response, StreamingResponse):
-                response.body_iterator = _relay_split_thinking(
-                    response.body_iterator,
-                    payload.stop,
-                    parse_thinking = payload.enable_thinking is not False,
+            # The deadline covers the wait for a model load or unload to let go too: one that never
+            # does must not keep the scheduler from every other task.
+            try:
+                await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
+            except TimeoutError:
+                raise RunFailed("timeout") from None
+            if cancel_event.is_set():
+                raise RunFailed("cancelled")
+            producer = asyncio.ensure_future(
+                produce_openai_chat_completions(
+                    payload,
+                    request,
+                    task["ownerSubject"],
+                    cancel_on_disconnect = False,
                 )
-                remaining = max(0.0, deadline - loop.time())
-                try:
-                    response = await asyncio.wait_for(
-                        _chat_completion_from_connection_stream(response, payload.model),
-                        timeout = remaining,
+            )
+            done, _ = await asyncio.wait({producer}, timeout = max(0.0, deadline - loop.time()))
+            if not done:
+                raise RunFailed("timeout")
+            try:
+                response = producer.result()
+                if provider is not None and isinstance(response, StreamingResponse):
+                    response.body_iterator = _relay_split_thinking(
+                        response.body_iterator,
+                        payload.stop,
+                        parse_thinking = payload.enable_thinking is not False,
                     )
-                except TimeoutError:
-                    raise RunFailed("timeout") from None
-        except HTTPException as exc:
-            if allow_switch and not _model_is_loaded(payload.model):
-                # Let load its model and still without it: gone from disk, or the load failed.
-                raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
-            if provider is None and not _chat_model_loaded():
-                raise RunFailed("no_model") from None
-            raise RunFailed(None, _error_text(exc.detail)) from None
-        except GpuBusyForAnotherAccountError as exc:
-            raise RunFailed(None, _error_text(exc.as_http_exception().detail)) from None
-    finally:
-        if producer is not None and not producer.done():
-            # A timeout or shutdown: stop the generation itself, not just this wait.
-            cancel_event.set()
-            producer.cancel()
-            await asyncio.wait({producer}, timeout = _CANCEL_GRACE_SECONDS)
-        activity.finish()
-        end_in_process_request(
-            request.scope,
-            answered = response is not None and int(getattr(response, "status_code", 200)) < 400,
-        )
-        # Not while Studio shuts down or the run is stopped: a reload then would only be torn down.
-        if swap is not None and not cancel_event.is_set():
-            await _restore_after_swap(swap, payload.model, app, run["id"], task)
+                    remaining = max(0.0, deadline - loop.time())
+                    try:
+                        response = await asyncio.wait_for(
+                            _chat_completion_from_connection_stream(response, payload.model),
+                            timeout = remaining,
+                        )
+                    except TimeoutError:
+                        raise RunFailed("timeout") from None
+            except HTTPException as exc:
+                if allow_switch and not _model_is_loaded(payload.model):
+                    # Let load its model and still without it: gone from disk, or the load failed.
+                    raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
+                if provider is None and not _chat_model_loaded():
+                    raise RunFailed("no_model") from None
+                raise RunFailed(None, _error_text(exc.detail)) from None
+            except GpuBusyForAnotherAccountError as exc:
+                raise RunFailed(None, _error_text(exc.as_http_exception().detail)) from None
+            if (
+                allow_switch
+                and int(getattr(response, "status_code", 200)) < 400
+                and not _model_is_loaded(payload.model)
+            ):
+                # Gone from disk: an unresolved name falls through to whatever is loaded.
+                raise RunFailed("model_load_failed")
+        finally:
+            if producer is not None and not producer.done():
+                # A timeout or shutdown: stop the generation itself, not just this wait.
+                cancel_event.set()
+                producer.cancel()
+                await asyncio.wait({producer}, timeout = _CANCEL_GRACE_SECONDS)
+            activity.finish()
+            answered = response is not None and int(getattr(response, "status_code", 200)) < 400
+            end_in_process_request(request.scope, answered = answered)
+            # Not while Studio shuts down or the run is stopped: a reload would only be torn down.
+            if holder is None and swap is not None and not cancel_event.is_set():
+                await _restore_after_swap(swap, app)
     if cancel_event.is_set():
         raise RunFailed("cancelled")
     body = getattr(response, "body", None)
@@ -633,6 +721,8 @@ class ScheduledTaskScheduler:
         self._stopping = False
         self._active: Optional[_ActiveRun] = None
         self._last_account: Optional[str] = None
+        self._swap = SwapHolder()
+        self._swap_account: Optional[AccountContext] = None
 
     def start(self) -> None:
         if self._task is not None:
@@ -693,8 +783,15 @@ class ScheduledTaskScheduler:
                     if self._stopping:
                         await asyncio.to_thread(self._release, account, task, run)
                         return
+                    swapped_by = self._swap_account
+                    if swapped_by is not None and swapped_by.account_id != account.account_id:
+                        await self._restore_swap()
                     await arun_as(account, self._execute(account, task, run))
+                    if self._swap.pending is not None:
+                        self._swap_account = account
                     continue
+                # Nothing else due: the model a run swapped in goes back now, not after each run.
+                await self._restore_swap()
                 delay = await asyncio.to_thread(self._seconds_until_due)
             except asyncio.CancelledError:
                 raise
@@ -706,6 +803,32 @@ class ScheduledTaskScheduler:
                 return
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout = delay)
+
+    async def _restore_swap(self) -> None:
+        swap, account = self._swap.pending, self._swap_account
+        self._swap.pending = self._swap_account = None
+        if swap is None or self._stopping:
+            return
+        from core.inference.llama_keepwarm import unattended_activity
+
+        with unattended_activity():
+            if account is None:
+                await _restore_after_swap(swap, self.app)
+            else:
+                await arun_as(account, _restore_after_swap(swap, self.app))
+
+    async def _yield_to_inference(self, cancel_event: threading.Event) -> None:
+        """Wait, up to _YIELD_SECONDS, for requests already generating to finish."""
+        from core.inference.llama_keepwarm import inference_in_flight
+
+        deadline = asyncio.get_running_loop().time() + _YIELD_SECONDS
+        while (
+            inference_in_flight()
+            and not cancel_event.is_set()
+            and not self._stopping
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(_YIELD_POLL_SECONDS)
 
     def _accounts(self) -> list[AccountContext]:
         accounts = job_accounts()
@@ -780,7 +903,11 @@ class ScheduledTaskScheduler:
             if not await asyncio.to_thread(self._still_wanted, account, task["id"]):
                 outcome = {"status": "failed", "error_code": "cancelled"}
                 return
-            answer = await generate_answer(self.app, task, run, cancel_event)
+            if run.get("source") == "schedule":
+                await self._yield_to_inference(cancel_event)
+                if cancel_event.is_set():
+                    raise RunFailed("cancelled")
+            answer = await generate_answer(self.app, task, run, cancel_event, self._swap)
             # Deleted while it ran: the answer has nowhere to belong.
             if not await asyncio.to_thread(db.task_exists, task["id"]):
                 return

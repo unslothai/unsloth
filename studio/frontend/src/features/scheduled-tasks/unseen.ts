@@ -67,9 +67,11 @@ export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
   // cleared, or drop ones it added. Without storage the copy is all there is.
   const change = (apply: (current: Stored) => Stored | null) => {
     const current = stored() ?? { tasks: get().tasks, page: get().page };
-    const next = apply(current) ?? current;
+    // Nothing to change (every thread switch asks): no new state, so no re-render.
+    const next = apply(current);
+    if (next === null) return;
     set(next);
-    if (next !== current) save(next);
+    save(next);
   };
   const withoutTask = (current: Stored, taskId: string | undefined): Stored | null => {
     if (taskId === undefined || !(taskId in current.tasks)) return null;
@@ -108,7 +110,7 @@ if (typeof window !== "undefined") {
   });
   // Another tab of the account marked or cleared something: show it here too.
   window.addEventListener("storage", (event) => {
-    if (event.key !== null && event.key === storageKey()) {
+    if (event.key?.startsWith(UNSEEN_KEY_PREFIX) && event.key === storageKey()) {
       useUnseenScheduledRuns.setState(load());
     }
   });

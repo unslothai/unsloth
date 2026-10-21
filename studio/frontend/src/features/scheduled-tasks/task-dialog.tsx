@@ -25,16 +25,17 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { buildExternalModelId, type ExternalProviderConfig } from "@/features/chat/external-providers";
-import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
-import { chatLocalModelOptions } from "@/features/chat/local-model-options";
 import {
+  buildExternalModelId,
+  chatLocalModelOptions,
+  type ExternalProviderConfig,
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
-} from "@/features/chat/provider-capabilities";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
-import { useDeviceInventorySources } from "@/features/hub/inventory";
+  useChatProjects,
+  useChatRuntimeStore,
+  useExternalProvidersStore,
+} from "@/features/chat";
+import { useDeviceInventorySources } from "@/features/hub";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -147,11 +148,17 @@ type ConnectionChoice = { id: string; modelId: string; provider: ExternalProvide
 /** What a task can run on: models on this device and models of connected providers, never one
  *  that would have to be downloaded first. */
 function useModelChoices(current: string | null) {
-  const inventory = useDeviceInventorySources(["localModels"]);
+  const inventory = useDeviceInventorySources(["localModels", "cachedGguf"]);
   const providers = useExternalProvidersStore((state) => state.providers);
   const connectionsEnabled = useExternalProvidersStore((state) => state.connectionsEnabled);
   return useMemo(() => {
     const local = chatLocalModelOptions(inventory.localModels.rows).map(({ id, name }) => ({ id, name }));
+    // Model hub downloads. GGUF only: a run switches back afterwards only to a GGUF.
+    for (const repo of inventory.cachedGguf.rows) {
+      if (!local.some((option) => option.id === repo.repo_id)) {
+        local.push({ id: repo.repo_id, name: repo.repo_id });
+      }
+    }
     const connections = (connectionsEnabled ? providers : []).map((provider) => ({
       provider,
       models: provider.models.map(
@@ -166,7 +173,7 @@ function useModelChoices(current: string | null) {
     const missing = known ? null : current;
     const connection = connections.flatMap((group) => group.models).find((option) => option.id === current);
     return { local, connections, missing, connection };
-  }, [inventory.localModels.rows, providers, connectionsEnabled, current]);
+  }, [inventory.localModels.rows, inventory.cachedGguf.rows, providers, connectionsEnabled, current]);
 }
 
 /** The efforts the task's model takes: a connection's from its capabilities, the loaded model's

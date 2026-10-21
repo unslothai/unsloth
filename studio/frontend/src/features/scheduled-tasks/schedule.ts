@@ -121,14 +121,45 @@ export function scheduleFormComplete(form: ScheduleForm): boolean {
   }
 }
 
+// Every list row formats several values per render; building a formatter is the costly part.
+const formatters = new Map<string, Intl.DateTimeFormat | Intl.ListFormat | Intl.RelativeTimeFormat>();
+
+function dateFormat(locale: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `date|${locale}|${JSON.stringify(options)}`;
+  let format = formatters.get(key) as Intl.DateTimeFormat | undefined;
+  if (!format) {
+    format = new Intl.DateTimeFormat(locale, options);
+    formatters.set(key, format);
+  }
+  return format;
+}
+
+function listFormat(locale: string, options: Intl.ListFormatOptions): Intl.ListFormat {
+  const key = `list|${locale}|${JSON.stringify(options)}`;
+  let format = formatters.get(key) as Intl.ListFormat | undefined;
+  if (!format) {
+    format = new Intl.ListFormat(locale, options);
+    formatters.set(key, format);
+  }
+  return format;
+}
+
+function relativeFormat(locale: string): Intl.RelativeTimeFormat {
+  const key = `relative|${locale}`;
+  let format = formatters.get(key) as Intl.RelativeTimeFormat | undefined;
+  if (!format) {
+    format = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+    formatters.set(key, format);
+  }
+  return format;
+}
+
 /** "9:00 AM" or "09:00", as the locale writes the time of day. */
 export function formatClock(time: string, locale: string): string {
   const [hour, minute] = time.split(":").map(Number);
-  return new Intl.DateTimeFormat(locale, {
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "UTC",
-  }).format(Date.UTC(2000, 0, 1, hour, minute));
+  return dateFormat(locale, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(
+    Date.UTC(2000, 0, 1, hour, minute),
+  );
 }
 
 /** The times the form offers, every quarter hour, plus `current` when it falls between them (a
@@ -147,7 +178,7 @@ export function zoneLabel(timeZone: string, locale: string, at: number): string 
   const name = (style: "short" | "shortGeneric") => {
     try {
       return (
-        new Intl.DateTimeFormat(locale, { timeZone, timeZoneName: style })
+        dateFormat(locale, { timeZone, timeZoneName: style })
           .formatToParts(at)
           .find((part) => part.type === "timeZoneName")?.value ?? ""
       );
@@ -167,15 +198,13 @@ export function zoneLabel(timeZone: string, locale: string, at: number): string 
 /** An ISO weekday's name as the locale writes it. */
 export function weekdayName(day: number, locale: string, width: "short" | "long"): string {
   // 2024-01-01 was a Monday, so day d of that week is ISO weekday d.
-  return new Intl.DateTimeFormat(locale, { weekday: width, timeZone: "UTC" }).format(
-    Date.UTC(2024, 0, day),
-  );
+  return dateFormat(locale, { weekday: width, timeZone: "UTC" }).format(Date.UTC(2024, 0, day));
 }
 
 /** Short weekday names joined as the locale lists things: "Mon, Wed, and Fri". The long list
  *  style, since the short one writes English as "Mon, Wed, & Fri". */
 export function formatWeekdays(days: readonly number[], locale: string): string {
-  return new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(
+  return listFormat(locale, { style: "long", type: "conjunction" }).format(
     days.map((day) => weekdayName(day, locale, "short")),
   );
 }
@@ -211,8 +240,10 @@ export function summarizeSchedule(schedule: TaskSchedule, locale: string): Sched
   switch (schedule.kind) {
     case "once": {
       const [year, month, day] = schedule.at.split("T")[0].split("-").map(Number);
-      const dateFormat = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: "UTC" });
-      return { key: "once", values: { date: dateFormat.format(Date.UTC(year, month - 1, day)), time } };
+      const date = dateFormat(locale, { dateStyle: "medium", timeZone: "UTC" }).format(
+        Date.UTC(year, month - 1, day),
+      );
+      return { key: "once", values: { date, time } };
     }
     case "daily":
       return { key: "daily", values: { time } };
@@ -242,7 +273,7 @@ export function summarizeRepeats(schedule: TaskSchedule, locale: string): Repeat
       if (isWorkdays(schedule.days)) return { key: "weekdays" };
       return {
         key: "weekly",
-        days: new Intl.ListFormat(locale, { style: "short", type: "unit" }).format(
+        days: listFormat(locale, { style: "short", type: "unit" }).format(
           schedule.days.map((day) => weekdayName(day, locale, "short")),
         ),
       };
@@ -260,12 +291,10 @@ export function formatRunDay(epochMs: number, now: number, locale: string): stri
   // Rounded: a DST change makes one day 23 or 25 hours long.
   const days = Math.round((dayStart(epochMs) - dayStart(now)) / 86_400_000);
   if (days === 0 || days === 1) {
-    const word = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(days, "day");
+    const word = relativeFormat(locale).format(days, "day");
     return word.charAt(0).toLocaleUpperCase(locale) + word.slice(1);
   }
-  return new Intl.DateTimeFormat(locale, { weekday: "short", month: "short", day: "numeric" }).format(
-    epochMs,
-  );
+  return dateFormat(locale, { weekday: "short", month: "short", day: "numeric" }).format(epochMs);
 }
 
 /** The largest whole unit for a distance in time, for Intl.RelativeTimeFormat. */

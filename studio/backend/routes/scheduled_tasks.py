@@ -11,7 +11,7 @@ from typing import Annotated, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.scheduled_tasks.schedule import InvalidSchedule, Schedule
 from core.scheduled_tasks.scheduler import next_run_for
 from storage import scheduled_tasks_db as db
@@ -187,6 +187,16 @@ def _next_run(task: dict, now: int) -> Optional[int]:
     return following if task["enabled"] else None
 
 
+def _require_ui_session(via_api_key: bool) -> None:
+    """Tasks run later as the account, may load models and spend a connection's saved key: only a
+    signed-in user sets them up, never an API key or a keyless caller."""
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Scheduled tasks can only be changed from the Unsloth app, not with an API key.",
+        )
+
+
 def _wake_scheduler(request: Request) -> None:
     scheduler = getattr(request.app.state, "scheduled_task_scheduler", None)
     if scheduler is not None:
@@ -203,7 +213,9 @@ def create_scheduled_task(
     payload: ScheduledTaskCreate,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
+    _require_ui_session(via_api_key)
     now = db.now_ms()
     task = {
         "id": str(uuid.uuid4()),
@@ -260,7 +272,9 @@ def update_scheduled_task(
     payload: ScheduledTaskUpdate,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
+    _require_ui_session(via_api_key)
     changes = payload.model_dump(exclude_unset = True, exclude_none = True)
     changes.update(
         {key: getattr(payload, key) for key in _CLEARABLE if key in payload.model_fields_set}
@@ -282,7 +296,9 @@ def delete_scheduled_task(
     task_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
+    _require_ui_session(via_api_key)
     if not db.delete_task(task_id):
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)
     scheduler = getattr(request.app.state, "scheduled_task_scheduler", None)
@@ -297,8 +313,10 @@ def run_scheduled_task_now(
     request: Request,
     payload: Optional[RunNowRequest] = None,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Queue a run outside the schedule; the next scheduled run is unaffected."""
+    _require_ui_session(via_api_key)
     try:
         run = db.request_run(task_id, allow_model_load = payload is not None and payload.loadModel)
     except db.TaskRunActive:
