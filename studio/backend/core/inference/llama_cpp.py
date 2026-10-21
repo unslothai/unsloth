@@ -19872,7 +19872,8 @@ class LlamaCppBackend:
             raw = f.read(slen)
             if len(raw) < slen:
                 raise struct.error("truncated string")
-            return raw.decode("utf-8", errors = "replace")
+            # gguf_kv_to_str hands back gguf_get_val_str as a C string: it ends at the first NUL.
+            return raw.split(b"\0", 1)[0].decode("utf-8", errors = "replace")
         LlamaCppBackend._gguf_skip_value(f, vtype)
         return None
 

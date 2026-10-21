@@ -637,3 +637,23 @@ def test_header_reader_keeps_llama_cpp_text(tmp_path):
     )
     backend._read_gguf_metadata(str(path))
     assert backend._gguf_header_parsed is False
+
+
+def test_header_reader_stops_strings_at_the_first_nul(tmp_path):
+    # gguf_kv_to_str returns gguf_get_val_str as a C string, so llama.cpp stops at the first NUL.
+    import struct
+
+    path = tmp_path / "m.gguf"
+    seq = b"top_k;adaptive_p\0;temperature"
+    path.write_bytes(
+        _gguf_bytes(
+            [
+                ("general.architecture", 8, struct.pack("<Q", 5) + b"qwen3"),
+                ("general.sampling.sequence", 8, struct.pack("<Q", len(seq)) + seq),
+            ]
+        )
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(path))
+    assert backend._gguf_header_parsed is True
+    assert backend._gguf_sampling == {"general.sampling.sequence": "top_k;adaptive_p"}
