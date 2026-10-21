@@ -28732,8 +28732,7 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     if not clip or _is_remote_video(clip):
         return None
     if clip[:5].lower() == "data:":
-        # The data: header must be followed by payload, not by another URL: skip every header
-        # (bounded, a clip is megabytes) and judge what follows like any other clip.
+        # Skip every data: header (bounded) and judge what follows like any other clip.
         pos = 0
         while clip[pos : pos + 5].lower() == "data:":
             comma = clip.find(",", pos, pos + 256)

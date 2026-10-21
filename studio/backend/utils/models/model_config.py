@@ -1102,8 +1102,7 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    # The token travels only in the child env (argv is readable by other local users); the empty slot
-    # keeps the script's argv layout, and the child then reads HF_TOKEN from its env.
+    # Token only via the child env (argv is world-readable); the empty slot keeps the argv layout.
     token_arg = ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.

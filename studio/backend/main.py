@@ -1759,8 +1759,7 @@ from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
 
 app.add_middleware(ModelAliasMiddleware)
 
-# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
-# Added before MaxBodyMiddleware so only requests whose body has fully arrived are counted.
+# Idle auto-unload request tracker; added before MaxBodyMiddleware so only fully received requests count.
 from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
 
 app.add_middleware(LlamaKeepWarmMiddleware)

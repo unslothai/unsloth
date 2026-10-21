@@ -190,9 +190,7 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
     }
 )
 
-# llama-server's built-in presets (--fim-qwen-7b-default, --embd-gemma-default, --gpt-oss-20b-default, older
-# --fim-qwen-7b-spec, ...) each set a Hub repo (with the installation's HF token) and some a port. They take no
-# value, so they are reported with an empty one. --spec-default only tunes speculative decoding and stays open.
+# Built-in presets (--*-default, older --fim-qwen-7b-spec) fetch a Hub repo with the HF token; --spec-default stays open.
 _PRESET_FLAG_RE = re.compile(r"^--[a-z0-9.-]+-default$|^--fim-[a-z0-9.-]+-spec$")
 _NON_PRESET_DEFAULT_FLAGS: frozenset[str] = frozenset({"--spec-default"})
 
