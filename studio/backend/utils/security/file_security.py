@@ -122,6 +122,9 @@ def escaping_weight_references(folder) -> list:
         names.extend(
             posixpath.join(sub.replace("\\", "/"), name) for name in _weight_names(folder / sub)
         )
+    # Spark-TTS / BiCodec load their transformers model from LLM/.
+    if (folder / "LLM").is_dir():
+        names.extend(posixpath.join("LLM", name) for name in _weight_names(folder / "LLM"))
     return [name for name in dict.fromkeys(names) if _escapes_folder(name)]
 
 

@@ -1227,6 +1227,9 @@ class ExportBackend:
                     "The adapter's base model changed after it was loaded. Load it again.",
                     None,
                 )
+        refusal = _checkpoint_load_refusal(self.current_checkpoint, pinned)
+        if refusal:
+            return False, refusal, None
         try:
             data = run_decision_gguf_export(
                 self.current_checkpoint,

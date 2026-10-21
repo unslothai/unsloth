@@ -25,8 +25,9 @@ def _model(tmp_path, modules):
         ("../victim", "sentence_transformers.models.Transformer"),
         ("/abs/victim", "sentence_transformers.models.Router"),
         ("sub/../../victim", "sentence_transformers.models.Pooling"),
+        ("D:victim", "sentence_transformers.models.Pooling"),
     ],
-    ids = ["transformer_dotdot", "router_absolute", "pooling_nested_dotdot"],
+    ids = ["transformer_dotdot", "router_absolute", "pooling_nested_dotdot", "drive_relative"],
 )
 def test_module_folder_outside_the_model_is_refused(tmp_path, path, type_):
     model = _model(tmp_path, [{"idx": 0, "name": "0", "path": path, "type": type_}])

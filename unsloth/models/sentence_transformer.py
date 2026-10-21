@@ -1908,6 +1908,7 @@ class FastSentenceTransformer(FastModel):
             if isinstance(folder, str) and (
                 os.path.isabs(folder)
                 or folder.startswith(("/", "\\"))
+                or folder[1:2] == ":"
                 or normalized == ".."
                 or normalized.startswith("../")
             ):

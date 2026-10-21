@@ -136,6 +136,7 @@ def test_backslash_spelling_of_another_workspace_is_refused():
 def _write(folder, files):
     folder.mkdir(parents = True, exist_ok = True)
     for name, payload in files.items():
+        (folder / name).parent.mkdir(parents = True, exist_ok = True)
         (folder / name).write_text(json.dumps(payload) if not isinstance(payload, str) else payload)
     return folder
 
@@ -146,8 +147,13 @@ def _write(folder, files):
         {"model.safetensors.index.json": {"weight_map": {"w": "../victim/model.safetensors"}}},
         {"pytorch_model.bin.index.json": {"weight_map": {"w": "/abs/pytorch_model.bin"}}},
         {"config.json": {"transformers_weights": "../victim/model.safetensors.index.json"}},
+        {
+            "LLM/model.safetensors.index.json": {
+                "weight_map": {"w": "../../victim/model.safetensors"}
+            }
+        },
     ],
-    ids = ["safetensors_dotdot", "bin_absolute", "transformers_weights"],
+    ids = ["safetensors_dotdot", "bin_absolute", "transformers_weights", "bicodec_llm_subfolder"],
 )
 def test_escaping_weight_references_flagged(tmp_path, files):
     from utils.security.file_security import escaping_weight_references
