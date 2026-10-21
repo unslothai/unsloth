@@ -13,6 +13,7 @@ from typing import Any, Mapping, Optional
 from utils.account_context import OWNER, current_account, is_owner_context
 from utils.openai_auto_switch_settings import (
     _cached_setting,
+    _fold_case_insensitive_path,
     _invalidate,
     _looks_like_filesystem_path,
 )
@@ -52,6 +53,13 @@ _index_lock = threading.Lock()
 _index_cache: dict[str, tuple[Any, dict[str, dict], dict[str, Optional[dict]]]] = {}
 
 
+def _fold(key: str) -> Optional[str]:
+    """The launch overrides' folding rule: repo ids and Windows / UNC / WSL paths fold, a POSIX path does not."""
+    if _looks_like_filesystem_path(key):
+        return _fold_case_insensitive_path(key)
+    return key.casefold()
+
+
 def _index(account) -> tuple[dict[str, dict], dict[str, Optional[dict]]]:
     raw = _stored(account)
     with _index_lock:
@@ -66,12 +74,10 @@ def _index(account) -> tuple[dict[str, dict], dict[str, Optional[dict]]]:
                 continue
             entry = normalize_sampling_defaults(value)
             exact[key] = entry
-            # Repo ids fold, as the browser lowercases some; a path does not (POSIX is case-sensitive),
-            # and an ambiguous fold matches nothing.
-            if _looks_like_filesystem_path(key):
-                continue
-            fold = key.casefold()
-            folded[fold] = None if fold in folded else entry
+            # An ambiguous fold matches nothing.
+            fold = _fold(key)
+            if fold is not None:
+                folded[fold] = None if fold in folded else entry
     with _index_lock:
         _index_cache[account.account_id] = (raw, exact, folded)
     return exact, folded
@@ -84,9 +90,8 @@ def _lookup(
         if candidate in exact:
             return exact[candidate]
     for candidate in candidates:
-        if _looks_like_filesystem_path(candidate):
-            continue
-        found = folded.get(candidate.casefold())
+        fold = _fold(candidate)
+        found = folded.get(fold) if fold is not None else None
         if found is not None:
             return found
     return None

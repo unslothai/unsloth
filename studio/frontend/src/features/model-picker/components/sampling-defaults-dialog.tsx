@@ -219,8 +219,9 @@ function SamplingDefaultsDialog({
           <DialogTitle>{displayName} sampling defaults</DialogTitle>
           <DialogDescription>
             Used when Chat loads this model, and by API requests that leave a
-            value out, including one that switches to this model. Leave a field
-            empty to follow the model&apos;s recommended value.
+            value out, including one that switches to this model. An empty
+            field gives API requests the model&apos;s recommended value, and
+            Chat keeps the value you last used.
           </DialogDescription>
         </DialogHeader>
 

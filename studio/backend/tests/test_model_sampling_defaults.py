@@ -112,6 +112,11 @@ def test_a_posix_path_never_matches_another_casing():
     assert saved_sampling_defaults("/models/foo.gguf") == {}
 
 
+def test_a_windows_path_matches_another_casing_and_slash():
+    _put("C:\\Models\\Foo.gguf", {"top_k": 40})
+    assert saved_sampling_defaults("c:/models/foo.gguf") == {"top_k": 40}
+
+
 def test_out_of_range_and_non_finite_values_are_dropped():
     _put(MODEL, {"temperature": 5.0, "top_p": math.nan, "top_k": 30, "min_p": -1})
     assert get_model_sampling_defaults() == {MODEL: {"top_k": 30}}
