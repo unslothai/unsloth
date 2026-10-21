@@ -2538,3 +2538,14 @@ def test_every_llvm_apu_target_is_positively_unified_without_the_flag(win_rocm, 
     _P.name = name
     assert hw._rocm_props_unified_status(_P()) is True
     assert hw._rocm_props_are_positively_unified(_P()) is True
+
+
+def test_a_krackan_point_2_with_no_arch_attrs_or_flag_is_unified_by_name(win_rocm):
+    """AMD SDK / Radeon wheels may leave every arch attribute and is_integrated unset: the name is all there is."""
+
+    class _P:
+        name = "AMD Radeon(TM) 820M Graphics"
+        total_memory = int(PHOENIX_POOL)
+
+    assert hw._rocm_props_unified_status(_P()) is True
+    assert hw._rocm_props_are_positively_unified(_P()) is True
