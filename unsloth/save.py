@@ -4569,8 +4569,12 @@ def unsloth_save_pretrained_gguf(
             for _template_owner, _old_template in old_chat_templates:
                 _template_owner.chat_template = _old_template
 
-        # The converter may run auto_map code only if the load already did (and so passed consent), as on the torchao and compressed paths. Asked of the whole processor, whose components the walk covers.
-        converter_trust = _loaded_via_remote_code(self) or _loaded_via_remote_code(tokenizer)
+        # The converter may run auto_map code only if the load already did (and so passed consent), as on the torchao and compressed paths, or the model was loaded with trust_remote_code=True. Asked of the whole processor, whose components the walk covers.
+        converter_trust = (
+            _loaded_via_remote_code(self)
+            or _loaded_via_remote_code(tokenizer)
+            or getattr(self, "_unsloth_trust_remote_code", False) is True
+        )
 
         if is_processor:
             tokenizer = tokenizer.tokenizer
