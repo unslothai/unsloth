@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { frameNotice, parseFrameMessage } from "../src/features/browser/frame-message.ts";
+import { type FrameMessage, frameNotice, parseFrameMessage, userActionGate } from "../src/features/browser/frame-message.ts";
 
 const from = (message: Record<string, unknown>) => parseFrameMessage({ source: "unsloth-browser", ...message });
 
@@ -120,4 +120,42 @@ test("a page's request is checked field by field, and one the panel won't make s
   }
   assert.deepEqual(from({ type: "requestAbort", id: "q1" }), { type: "requestAbort", id: "q1" });
   assert.equal(from({ type: "requestAbort", id: 3 }), null);
+});
+
+test("a file a page saves reaches the panel with its bytes and name only", () => {
+  const blob = new Blob(["a,b"], { type: "text/csv" });
+  const message = from({ type: "download", name: "data.csv", blob, url: "https://evil.example/" });
+  assert.deepEqual(message && Object.keys(message), ["type", "name", "blob"]);
+  assert.equal(message && "blob" in message && message.blob, blob);
+  assert.equal(message?.type === "download" && message.name, "data.csv");
+  assert.equal(from({ type: "download", name: "data.csv", blob: "a,b" }), null);
+  assert.equal(from({ type: "download", name: "", blob }), null);
+  const long = from({ type: "download", name: `${"x".repeat(5000)}.csv`, blob });
+  assert.ok(long?.type === "download" && long.name.length <= 1024 && /^x+\.csv$/.test(long.name));
+  const unnamed = from({ type: "download", name: "\u{1F600}".repeat(3000), blob });
+  assert.ok(unnamed?.type === "download" && unnamed.name.length <= 1024 && !/[\uD800-\uDBFF]$/.test(unnamed.name));
+});
+
+test("a file sent without a fresh click, or within a second of the last action, waits for Save instead of being dropped", () => {
+  const gate = userActionGate();
+  const file: FrameMessage = { type: "download", name: "data.csv", blob: new Blob(["a,b"]) };
+  const asks = (message: FrameMessage | null) => (message?.type === "download" ? message.askFirst === true : message);
+  assert.equal(asks(gate(file, false, 0)), true);
+  assert.equal(asks(gate(file, true, 10)), false);
+  assert.equal(asks(gate(file, true, 500)), true);
+  assert.equal(gate({ type: "shortcut", key: "t", shift: false }, true, 600), null);
+  assert.equal(asks(gate(file, true, 1200)), false);
+  assert.equal(gate({ type: "external", url: "https://a.example/" }, false, 5000), null);
+  assert.deepEqual(gate({ type: "title", title: "x" }, false, 5000), { type: "title", title: "x" });
+});
+
+test("a download link reaches the panel as its address and the link's name, which may be empty", () => {
+  const url = "https://a.example/data.txt";
+  assert.deepEqual(from({ type: "download", url, name: "" }), { type: "download", name: "", url });
+  assert.deepEqual(from({ type: "download", url, name: "data.txt", extra: 1 }), { type: "download", name: "data.txt", url });
+  assert.equal(from({ type: "download", name: "data.txt" }), null);
+  assert.equal(from({ type: "download", url, name: 3 }), null);
+  const gate = userActionGate();
+  const link: FrameMessage = { type: "download", name: "", url };
+  assert.deepEqual(gate(link, false, 0), { ...link, askFirst: true });
 });

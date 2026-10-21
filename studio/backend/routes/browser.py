@@ -51,7 +51,8 @@ BROWSER_PRINT_PATH = "/api/browser/print"
 KIND_HEADER = "X-Unsloth-Browser-Kind"
 URL_HEADER = "X-Unsloth-Browser-Url"
 NAME_HEADER = "X-Unsloth-Browser-Filename"
-EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER)
+ATTACHMENT_HEADER = "X-Unsloth-Browser-Attachment"
+EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER, ATTACHMENT_HEADER)
 
 _MAX_BROWSER_FETCH_BYTES = 50 * 1024 * 1024
 # HTML goes into srcdoc and the page cache; more would stall the renderer.
@@ -457,6 +458,7 @@ _FRAME_HTML = r"""<!doctype html>
         const navigate = (raw, newTab, background) => {
           const url = resolve(raw);
           if (!url) return;
+          if (/^(?:blob|data):/i.test(url)) { fileAt(url, "").then((file) => file && post({ type: "download", ...file })); return; }
           if (!/^https?:/i.test(url)) { post({ type: "external", url }); return; }
           if (!newTab && samePage(url) && new URL(url).hash) { followHash(new URL(url).hash); return; }
           // Relative links in a local file can't be reached.
@@ -545,9 +547,18 @@ _FRAME_HTML = r"""<!doctype html>
             else navigate(event.destination.url, false);
           });
         }
+        // A blank popup the page then points somewhere (FileSaver.js sends it the file): open or save that.
+        const blankPopup = () => {
+          // Pointed there after the click's activation ran out, a new tab would be refused: open it here instead.
+          const go = (url) => navigate(String(url), navigator.userActivation?.isActive !== false);
+          const location = { set href(url) { go(url); }, assign: go, replace: go };
+          return { closed: false, document: { title: "", body: {} }, get location() { return location; }, set location(url) { go(url); }, close() {}, focus() {} };
+        };
         // Popup blocker: only open tabs on user activation.
         window.open = (url) => {
-          if (url && navigator.userActivation?.isActive !== false) navigate(String(url), true);
+          const target = url == null ? "" : String(url).trim();
+          if (!target || /^about:blank$/i.test(target)) return blankPopup();
+          if (/^(?:blob|data):/i.test(target) || navigator.userActivation?.isActive !== false) navigate(target, true);
           return null;
         };
 
@@ -585,6 +596,16 @@ _FRAME_HTML = r"""<!doctype html>
             if (!cancelled) action();
           });
         };
+        const fileAt = (raw, name) =>
+          nativeFetch(raw).then((response) => response.blob()).then((blob) => ({ name: name || "download", blob }), () => null);
+        // Read at the click: a page may revoke a blob: URL as soon as its click returns.
+        const fileFrom = (link, raw) =>
+          link.hasAttribute("download") && /^(?:blob|data):/i.test(raw) ? fileAt(raw, link.getAttribute("download")) : null;
+        const siteFile = (link, raw) => {
+          if (!link.hasAttribute("download") || raw.startsWith("#")) return null;
+          const url = resolve(raw);
+          try { return url && /^https?:/i.test(url) && new URL(url).origin === new URL(pageUrl).origin ? url : null; } catch { return null; }
+        };
         const onLinkClick = (event) => {
           const link = linkFrom(event);
           if (!link) return;
@@ -592,7 +613,24 @@ _FRAME_HTML = r"""<!doctype html>
           if (/^javascript:/i.test(raw)) return;
           const modified = event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey;
           if (!raw.startsWith("#")) post({ type: "linkClick", url: resolve(raw) });
+          const name = link.getAttribute("download");
+          let file = fileFrom(link, raw);
           unlessCancelled(event, () => {
+            // The page's own click handler may have set the file; a rename keeps the bytes already read.
+            const now = (link.getAttribute("href") || "").trim();
+            const final = link.getAttribute("download");
+            if (now !== raw || !file) {
+              if (now !== raw || final !== name) file = fileFrom(link, now);
+            } else if (final !== name) file = final === null ? null : file.then((got) => got && { ...got, name: final || "download" });
+            if (file) {
+              file.then((download) => download && post({ type: "download", ...download }));
+              return;
+            }
+            const url = siteFile(link, now);
+            if (url) {
+              post({ type: "download", url, name: final || "" });
+              return;
+            }
             // Keep "#" links on the page; against <base> they would navigate.
             if (raw.startsWith("#")) {
               if (raw.length > 1) followHash(raw);
@@ -603,6 +641,18 @@ _FRAME_HTML = r"""<!doctype html>
         };
         document.addEventListener("click", onLinkClick, true);
         document.addEventListener("auxclick", (event) => { if (event.button === 1) onLinkClick(event); }, true);
+        // A script's click on a download link outside the document (FileSaver.js) never reaches the listener above.
+        const clickDetached = (anchor, click) => {
+          if (!(anchor instanceof HTMLAnchorElement) || anchor.isConnected || !anchor.hasAttribute("download")) return click();
+          anchor.addEventListener("click", onLinkClick);
+          try { return click(); } finally { anchor.removeEventListener("click", onLinkClick); }
+        };
+        const anchorClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () { clickDetached(this, () => anchorClick.call(this)); };
+        const dispatch = EventTarget.prototype.dispatchEvent;
+        EventTarget.prototype.dispatchEvent = function (event) {
+          return event?.type === "click" ? clickDetached(this, () => dispatch.call(this, event)) : dispatch.call(this, event);
+        };
 
         const submitForm = (form, submitter) => {
           const method = ((submitter && submitter.getAttribute("formmethod")) || form.getAttribute("method") || "get").toLowerCase();
@@ -1806,6 +1856,14 @@ def _attachment_name(meta: dict) -> Optional[str]:
     return name if name.strip(".") else None
 
 
+def _is_attachment(meta: dict) -> bool:
+    disposition = next(
+        (value for key, value in meta.get("headers") or () if key.lower() == "content-disposition"),
+        "",
+    )
+    return disposition.split(";", 1)[0].strip().lower() == "attachment"
+
+
 def _build_response(
     url: str,
     error: Optional[str],
@@ -1831,7 +1889,7 @@ def _build_response(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
-    if is_html:
+    if is_html and (error is not None or not _is_attachment(meta)):
         if len(body) > _MAX_BROWSER_HTML_BYTES:
             raise HTTPException(
                 status_code = 502,
@@ -1873,6 +1931,7 @@ def _build_response(
             # never rendered on Studio's origin
             "Content-Security-Policy": "sandbox",
             **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
+            **({ATTACHMENT_HEADER: "1"} if _is_attachment(meta) else {}),
         },
     )
 
