@@ -72,6 +72,9 @@ def _approx(parsed):
         ("back\\\\slash", [["back\\slash", 1.0]]),
         ("a BREAK b", [["a", 1.0], ["BREAK", -1.0], ["b", 1.0]]),
         ("", [["", 1.0]]),
+        ("(cat:1.2.3)", [["(cat:1.2.3)", 1.0]]),
+        ("a ((cat:1.2.3) dog)", [["a ", 1.0], ["(cat:1.2.3) dog", 1.1]]),
+        ("([cat:1.2.3)]", [["(", 1.0], ["cat:1.2.3)", round(1 / 1.1, 6)]]),
     ],
 )
 def test_parse_matches_webui(text, expected):

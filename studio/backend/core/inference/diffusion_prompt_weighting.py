@@ -60,10 +60,16 @@ def parse_prompt_attention(text: str) -> list[list[Any]]:
             square_open.append(len(res))
         elif weight is not None and round_open:
             try:
-                multiply(round_open.pop(), float(weight))
+                value = float(weight)
             except ValueError:
-                # A1111 raises on a malformed number such as "(a:1.2.3)"; keep the text as typed instead.
+                # A1111 raises on a malformed number such as "(a:1.2.3)"; keep the text as typed instead,
+                # opening parenthesis included.
+                start = round_open.pop()
+                res.insert(start, ["(", 1.0])
+                square_open[:] = [pos + 1 if pos >= start else pos for pos in square_open]
                 res.append([token, 1.0])
+            else:
+                multiply(round_open.pop(), value)
         elif token == ")" and round_open:
             multiply(round_open.pop(), ROUND_MULTIPLIER)
         elif token == "]" and square_open:
