@@ -452,6 +452,13 @@ def _hardcoded_model_types() -> frozenset[str]:
 _TIER_ROUTED_WITHOUT_MODEL = frozenset({"diffusion_gemma"})
 
 
+# Nested model_types no transformers release registers because the wrapper never builds them: the dict stays a plain
+# attribute nothing reads, so it cannot fail a load on the newest release and must not veto its offer. Cosmos3-Edge's
+# projector_config (Cosmos3EdgeConfig builds only its text and vision sub-configs and reads the top-level
+# projector_hidden_size).
+_INERT_NESTED_MODEL_TYPES = frozenset({"cosmos3_edge_projector"})
+
+
 def _hardcoded_tier_ships(model_type: str) -> bool:
     """A hardcoded tier counts as handling *model_type* unless that sidecar is installed and its
     CONFIG_MAPPING lacks it: DiffusionGemma is routed to 5.5 for the mlx-vlm processor, but 5.5 has
@@ -503,6 +510,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             for candidate in candidates
             if not _hardcoded_tier_ships(candidate)
             and not any(candidate in _config_model_types(tier) for tier in _TIER_RANK)
+            and candidate not in _INERT_NESTED_MODEL_TYPES
         ]
         if not missing:
             return None

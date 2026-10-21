@@ -1712,9 +1712,7 @@ def _parse_gpu_ids(value: Optional[str]) -> Optional[List[int]]:
     return ids or None
 
 
-def _load_model_via_http(
-    port: int,
-    api_key: str,
+def _load_payload(
     model: str,
     gguf_variant: Optional[str],
     max_seq_length: int,
@@ -1724,19 +1722,12 @@ def _load_model_via_http(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
-    timeout: int = 600,
-    request_host: str = "127.0.0.1",
     engine: str = "auto",
     engine_precision: str = "auto",
     engine_parallelism: str = "tensor",
     gpu_ids: Optional[List[int]] = None,
 ) -> dict:
-    import json
-    import urllib.request
-    import urllib.error
-
-    from unsloth_cli._inference import raise_for_deferred_error, require_completed_padded_body
-
+    """The /api/inference/load body; /validate takes the same one, so the preflight judges the load that follows."""
     payload: dict = {
         "model_path": model,
         "max_seq_length": max_seq_length,
@@ -1762,6 +1753,49 @@ def _load_model_via_http(
             payload["engine_parallelism"] = engine_parallelism
     if gpu_ids:
         payload["gpu_ids"] = list(gpu_ids)
+    return payload
+
+
+def _load_model_via_http(
+    port: int,
+    api_key: str,
+    model: str,
+    gguf_variant: Optional[str],
+    max_seq_length: int,
+    load_in_4bit: bool,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
+    llama_extra_args: Optional[List[str]] = None,
+    timeout: int = 600,
+    request_host: str = "127.0.0.1",
+    engine: str = "auto",
+    engine_precision: str = "auto",
+    engine_parallelism: str = "tensor",
+    gpu_ids: Optional[List[int]] = None,
+) -> dict:
+    import json
+    import urllib.request
+    import urllib.error
+
+    from unsloth_cli._inference import raise_for_deferred_error, require_completed_padded_body
+
+    payload = _load_payload(
+        model,
+        gguf_variant,
+        max_seq_length,
+        load_in_4bit,
+        gpu_memory_mode,
+        tensor_parallel,
+        speculative_type,
+        spec_draft_n_max,
+        llama_extra_args,
+        engine,
+        engine_precision,
+        engine_parallelism,
+        gpu_ids,
+    )
 
     data = json.dumps(payload).encode()
     url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
@@ -1834,6 +1868,152 @@ def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
         time.sleep(2)
     if job.get("state") != "success":
         raise RuntimeError(f"{engine} installation did not finish: {job.get('message')}")
+
+
+def _studio_post_json(
+    port: int,
+    api_key: str,
+    path: str,
+    payload: dict,
+    request_host: str,
+    timeout: int,
+    raise_on_error: bool = False,
+) -> Optional[dict]:
+    """POST to the in-process Studio server. The JSON answer; on an HTTP or transport error None, or
+    a RuntimeError carrying the server's detail when ``raise_on_error``."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"http://{_url_host(request_host)}:{port}{path}",
+        data = json.dumps(payload).encode(),
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method = "POST",
+    )
+    try:
+        with _direct_urlopen(request, timeout = timeout) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if not raise_on_error:
+            return None
+        raise RuntimeError(f"HTTP {exc.code}: {exc.read().decode(errors = 'replace')}") from exc
+    except Exception as exc:  # noqa: BLE001 - the caller decides what a missing answer means
+        if not raise_on_error:
+            return None
+        raise RuntimeError(str(exc)) from exc
+    return body if isinstance(body, dict) else None
+
+
+def _confirm_while_attended(question: str) -> Optional[bool]:
+    """A y/N answer from a person at the terminal, or None when nobody can answer (no terminal, a background job)
+    or nobody does within _UNATTENDED_PROMPT_SECONDS (a detached pty), so an unattended launch fails fast instead
+    of blocking with the server up and no model loaded."""
+    if not (_prompt_streams_interactive() and _prompt_owns_the_terminal()):
+        return None
+    typer.echo(f"{question} [y/N]: ", nl = False, err = True)
+    try:
+        import select
+        ready, _, _ = select.select([sys.stdin], [], [], _UNATTENDED_PROMPT_SECONDS)
+    except (OSError, ValueError, TypeError):
+        # No select on this stdin (Windows): the plain blocking prompt, as the engine consent uses.
+        return typer.confirm("", default = False)
+    if not ready:
+        typer.echo("", err = True)
+        return None
+    return sys.stdin.readline().strip().lower() in ("y", "yes")
+
+
+def _ensure_transformers_for_model(
+    port: int, api_key: str, load_payload: dict, request_host: str, yes: bool, silent: bool
+) -> None:
+    """The CLI half of the consent the UI raises from /validate. Asks /validate with the body /load will get (so a
+    GGUF, which llama.cpp serves without transformers, never asks); when no installed transformers ships the
+    model's architecture but a release does, installs that release into the latest-transformers sidecar after
+    --yes or an answer at the terminal. A build of transformers main is offered only at the terminal."""
+    model = load_payload.get("model_path")
+    answer = _studio_post_json(
+        port, api_key, "/api/inference/validate", load_payload, request_host, timeout = 300
+    )
+    if answer is None:
+        if not silent:
+            typer.echo(
+                f"Note: could not check whether {model} needs a newer transformers; loading it as is.",
+                err = True,
+            )
+        return
+    upgrade = answer.get("transformers_upgrade") or {}
+    if not answer.get("requires_transformers_upgrade") or not upgrade:
+        return
+    model_type = upgrade.get("model_type")
+    release = upgrade.get("pypi_version") if upgrade.get("supported_in_pypi") else None
+    main = upgrade.get("main_version") if upgrade.get("supported_in_main") else None
+    if not release and not main:
+        if not silent:
+            typer.echo(
+                f"Note: {model} uses the {model_type} architecture, which no installable transformers "
+                "ships yet.",
+                err = True,
+            )
+        return
+    version = release or main
+    what = (
+        f"transformers {version}"
+        if release
+        else f"transformers {version}, an unreleased development build from GitHub main"
+    )
+    reason = f"{model} uses the {model_type} architecture, which no installed transformers supports"
+    question = f"{reason}. Install {what} into Unsloth's latest-transformers sidecar (one time, about a minute)?"
+    if yes and release:
+        if not silent:
+            typer.echo(f"{reason}: --yes given, installing {what}.")
+    else:
+        agreed = _confirm_while_attended(question)
+        if agreed is None:
+            raise RuntimeError(
+                f"{reason}. Re-run with --yes to install {what}, or accept the install in the Unsloth UI."
+                if release
+                else f"{reason}. Only {what} ships it, and --yes does not cover development builds: "
+                "run this command at a terminal to confirm, or accept the install in the Unsloth UI."
+            )
+        if not agreed:
+            raise RuntimeError("transformers was not upgraded, so the model was not loaded.")
+
+    def _install(v: str) -> dict:
+        try:
+            return (
+                _studio_post_json(
+                    port,
+                    api_key,
+                    "/api/inference/install-latest-transformers",
+                    {"version": v},
+                    request_host,
+                    timeout = 1800,
+                    raise_on_error = True,
+                )
+                or {}
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(f"Installing transformers {v} failed: {exc}") from exc
+
+    result = _install(version)
+    # A release published since the cached check: the server names it, and the UI retries with it once.
+    newer = result.get("latest_version") if release else result.get("latest_main_version")
+    if not result.get("success") and newer and newer != version:
+        if not (yes and release) and not _confirm_while_attended(
+            f"transformers {newer} has replaced {version}. Install {newer} instead?"
+        ):
+            raise RuntimeError(
+                f"transformers {newer} has replaced {version}; re-run to install it. The model was not loaded."
+            )
+        version = newer
+        result = _install(version)
+    if not result.get("success"):
+        raise RuntimeError(
+            f"Installing transformers {version} failed: {result.get('message') or 'no answer from the server'}"
+        )
+    if not silent:
+        typer.echo(f"Installed transformers {version}; {model} loads with it in 16-bit.")
 
 
 def _engine_install_notice(engine: str, row: dict) -> Optional[str]:
@@ -2573,7 +2753,8 @@ def run(
         "--yes",
         "-y",
         rich_help_panel = _RUN_PANEL_ADVANCED,
-        help = "Accepted for backward compatibility; the tool policy no longer prompts.",
+        help = "Agree to a one-time install the load needs: a serving engine, or a transformers release "
+        "for a new architecture. The tool policy no longer prompts.",
     ),
     parallel: int = typer.Option(
         _PARALLEL_DEFAULT_RUN,
@@ -3068,6 +3249,34 @@ def run(
                     _npu_request,
                     model,
                     (lambda _line: None) if silent else typer.echo,
+                )
+            except RuntimeError as exc:
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(1)
+        if engine == "auto" and not npu_path:
+            # A serving engine brings its own transformers; /validate answers no upgrade for a GGUF.
+            try:
+                _ensure_transformers_for_model(
+                    actual_port,
+                    api_key,
+                    _load_payload(
+                        model,
+                        gguf_variant,
+                        max_seq_length,
+                        load_in_4bit,
+                        gpu_memory_mode,
+                        tensor_parallel,
+                        speculative_type,
+                        spec_draft_n_max,
+                        extra_llama_args,
+                        engine,
+                        engine_precision,
+                        engine_parallelism,
+                        gpu_ids,
+                    ),
+                    request_host,
+                    yes,
+                    silent,
                 )
             except RuntimeError as exc:
                 typer.echo(f"Error: {exc}", err = True)
