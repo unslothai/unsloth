@@ -240,6 +240,10 @@ def _trained_tokens(run_id: str) -> Optional[int]:
 
 def _job_from_run(run: dict[str, Any]) -> dict[str, Any]:
     status = _RUN_STATUS.get(run.get("status"), "running")
+    if status != "running":
+        _CANCELLING.discard(run["id"])
+    elif run["id"] in _CANCELLING:
+        status = "cancelled"
     output_dir = run.get("output_dir")
     return _job_object(
         run["id"],
@@ -257,6 +261,8 @@ def _job_from_run(run: dict[str, Any]) -> dict[str, Any]:
 # Jobs started here, until their history row exists: a retrieve right after create keeps the job's fields.
 _STARTED: dict[str, tuple[dict[str, Any], int]] = {}
 _STARTED_LIMIT = 16
+# Cancelled here while the worker finishes its step: the run row reads "running" until it stops.
+_CANCELLING: set[str] = set()
 
 
 def _remember_start(run_id: str, config: dict[str, Any], created_at: int) -> None:
@@ -442,7 +448,13 @@ async def list_fine_tuning_jobs(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    runs = await asyncio.to_thread(_runs_after, _run_id(after) if after else None, limit + 1)
+    after_run = _run_id(after) if after else None
+    runs = await asyncio.to_thread(_runs_after, after_run, limit + 1)
+    if after_run and not runs:
+        # The live job has no history row yet and is listed first, so the history follows it.
+        status = await _current_status(current_subject, via_api_key)
+        if status is not None and _status_field(status, "job_id") == after_run:
+            runs = await asyncio.to_thread(_runs_after, None, limit + 1)
     jobs = [_for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key) for run in runs]
     if after is None:
         status = await _current_status(current_subject, via_api_key)
@@ -620,4 +632,5 @@ async def cancel_fine_tuning_job(
     if stopped.status == "idle":
         raise _bad_request(f"Job {job['id']} is not running.", 409)
     # The worker stops at its next safe step; the job reads "cancelled" from then on.
+    _CANCELLING.add(run_id)
     return {**job, "status": "cancelled"}

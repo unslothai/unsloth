@@ -236,9 +236,22 @@ def test_failed_run_keeps_host_paths_from_an_api_key(studio, tmp_path):
 def test_cancel_stops_the_running_job(studio):
     client, calls, live = studio
     live["status"] = _Status("job_20261021_101500_ab12cd34", "training")
+    studio_db.create_run(
+        id = "job_20261021_101500_ab12cd34",
+        model_name = "unsloth/Qwen3-0.6B",
+        dataset_name = "chats.jsonl",
+        config_json = "{}",
+        started_at = "2026-10-21T10:15:00+00:00",
+        total_steps = 4,
+    )
 
-    job = _run(client.fine_tuning.jobs.cancel("ftjob_20261021_101500_ab12cd34"))
-    assert job.status == "cancelled"
+    async def flow():
+        cancelled = await client.fine_tuning.jobs.cancel("ftjob_20261021_101500_ab12cd34")
+        # The worker is still finishing its step, so the row still reads running.
+        return cancelled, await client.fine_tuning.jobs.retrieve(cancelled.id)
+
+    job, retrieved = _run(flow())
+    assert job.status == "cancelled" and retrieved.status == "cancelled"
     [stop] = calls["stop"]
     assert stop.expected_job_id == "job_20261021_101500_ab12cd34" and stop.save is True
 
@@ -287,3 +300,14 @@ def test_list_pages_through_the_whole_history(studio, monkeypatch):
         return [job.id async for job in client.fine_tuning.jobs.list(limit = 100)]
 
     assert _run(every_id()) == [f"ftjob_{i:03d}" for i in range(450)]
+
+
+def test_a_live_job_cursor_still_reaches_the_history(studio, tmp_path):
+    client, _calls, live = studio
+    _finished_run(tmp_path, tmp_path / ("0123456789abcdef0123456789abcdef" + "_chats.jsonl"))
+    live["status"] = _Status("job_20261021_111500_cd34ef56", "loading_model")
+
+    async def every_id():
+        return [job.id async for job in client.fine_tuning.jobs.list(limit = 1)]
+
+    assert _run(every_id()) == ["ftjob_20261021_111500_cd34ef56", "ftjob_20261021_101500_ab12cd34"]
