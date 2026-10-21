@@ -116,6 +116,12 @@ def _check_hardware(device, recipe):
             "Unsloth: float8_training needs compute capability 8.9+ (L4, Ada, H100, B200, RTX 40 / 50 "
             f"series); {torch.cuda.get_device_name(device)} is {major}.{minor}. Train in bfloat16 / float16 instead."
         )
+    if recipe == "tensorwise" and torch.version.hip is None and (major, minor) < (9, 0):
+        # Measured on an L4: every gradient is NaN from the first step once gradient checkpointing runs.
+        raise RuntimeError(
+            "Unsloth: float8_training = 'tensorwise' gives NaN gradients on compute capability 8.9 "
+            f"({torch.cuda.get_device_name(device)}); use float8_training = 'rowwise' there."
+        )
     probe_recipe = recipe if isinstance(recipe, str) else "rowwise"
     try:
         _probe_float8_gemm(device, probe_recipe)

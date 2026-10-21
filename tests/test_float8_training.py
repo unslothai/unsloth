@@ -167,6 +167,19 @@ def test_refuses_pre_sm89(monkeypatch):
         f8t._check_hardware(torch.device("cuda", 0), "rowwise")
 
 
+def test_refuses_tensorwise_on_sm89(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(f8t, "_probe_float8_gemm", lambda *a: None)
+    with pytest.raises(RuntimeError, match = "NaN gradients"):
+        f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+    f8t._check_hardware(torch.device("cuda", 0), "rowwise")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+
+
 def test_refuses_when_scaled_mm_probe_fails(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
