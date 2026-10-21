@@ -305,3 +305,9 @@ try:
     _install()
 except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
+
+# Approved host calls keep chat-installed packages importable, including Python started by Terminal.
+# Append only after the normal site setup; no .pth execution or stdlib/installed-package shadowing.
+_host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
+if _host_packages and _host_packages not in sys.path:
+    sys.path.append(_host_packages)

@@ -10192,25 +10192,17 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         if sys.platform == "win32":
             env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(private)
         argv = tuple(plan.argv)
+        packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+        if os.path.isdir(packages):
+            # The trusted sitecustomize appends these after installed packages for Python and Terminal alike.
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            env["PYTHONNOUSERSITE"] = "1"
         if script is not None and argv:
             # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
             path = os.path.join(private, os.path.basename(argv[-1]))
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding = "utf-8") as f:
                 f.write(script)
-            packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
-            if os.path.isdir(packages):
-                # Chat-installed packages go last on sys.path, so the sandbox-writable folder cannot shadow anything.
-                launcher = os.path.join(private, "unsloth_host_launch.py")
-                fd = os.open(launcher, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding = "utf-8") as f:
-                    f.write(
-                        "import runpy, sys\n"
-                        f"sys.path.append({packages!r})\n"
-                        f"sys.argv[0] = {path!r}\n"
-                        f"runpy.run_path({path!r}, run_name = '__main__')\n"
-                    )
-                path = launcher
             argv = (*argv[:-1], path)
             # The script's own folder stays off sys.path too (CPython >= 3.11).
             env["PYTHONSAFEPATH"] = "1"

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -59,6 +60,30 @@ def test_an_approved_host_call_loads_nothing_from_the_workdir(tmp_path, monkeypa
     assert os.path.realpath(lines["CWD"]) == os.path.realpath(workdir)
     # The private per-call directory is gone afterwards.
     assert not os.path.exists(os.path.dirname(lines["FILE"]))
+
+
+@_POSIX
+def test_an_approved_terminal_call_reuses_chat_packages_without_shadowing(tmp_path, monkeypatch):
+    workdir = _planted_workdir(tmp_path)
+    # Terminal deliberately retains cwd imports; exercise only the session-package precedence here.
+    (workdir / "csv.py").unlink()
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    (packages / "usercustomize.py").write_text("print('PLANTED usercustomize')\n", encoding = "utf-8")
+    host_file = tmp_path / "notes.csv"
+    host_file.write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        "import chatpkg, csv, sys; "
+        "print('PKG', chatpkg.VALUE); "
+        "print('ROWS', list(csv.reader(open(sys.argv[1]))))"
+    )
+    command = "python -c " + shlex.quote(code) + " " + shlex.quote(str(host_file))
+    assert tools._reaches_host_paths("terminal", command)
+    for _ in range(2):
+        out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+        assert "PKG from-session-packages" in out, out
+        assert "ROWS [['a', 'b']]" in out, out
+        assert "PLANTED" not in out, out
 
 
 @_POSIX
