@@ -1715,6 +1715,8 @@ export function ImagesPage({
   // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
+  // The family availableLoras was fetched for; undefined while none is current (loading, failed, no model).
+  const [loraCatalogFamily, setLoraCatalogFamily] = useState<string | null | undefined>(undefined);
   // Fine-tuned (trained in Unsloth) first, for both the suggestions and the Add LoRA prefill.
   const sortedLoras = useMemo(
     () => [...availableLoras].sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned))),
@@ -2070,6 +2072,7 @@ export function ImagesPage({
   // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
+    setLoraCatalogFamily(undefined);
     if (!loraCapable) {
       // Options are gone with the model, but keep the selection: it may have just been restored.
       setAvailableLoras([]);
@@ -2097,7 +2100,9 @@ export function ImagesPage({
     let cancelled = false;
     listDiffusionLoras(status?.family ?? undefined)
       .then((list) => {
-        if (!cancelled) setAvailableLoras(list);
+        if (cancelled) return;
+        setAvailableLoras(list);
+        setLoraCatalogFamily(fam);
       })
       .catch(() => {
         // Clear only the OPTIONS on a failed catalog refresh: this free-text picker holds selections
@@ -2813,7 +2818,8 @@ export function ImagesPage({
     async (recipe: ImportedRecipe) => {
       const tagged = await matchLoraTagsForImport(
         recipe.lora_tags,
-        loraCapable,
+        // Only a finished fetch for the loaded family: right after a load or family switch it is empty or stale.
+        loraCapable && loraCatalogFamily === (status?.family ?? null),
         availableLoras,
         () => listDiffusionLoras(),
       );
@@ -2911,7 +2917,7 @@ export function ImagesPage({
         });
       }
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
