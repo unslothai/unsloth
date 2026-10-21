@@ -252,7 +252,15 @@ test("the gallery seed fallback waits until the archive is known to be empty", (
     /if \(sessionSeed !== null \|\| hasMore\) return;\n\s+let cancelled = false;\n\s+getGallery\(0, 1, true\)\n\s+\.then\(\(page\) => \{\n\s+if \(!cancelled\) setArchivedEmpty\(page\.images\.length === 0\);/,
   );
   assert.match(page, /if \(!cancelled\) setArchivedEmpty\(false\);/);
-  assert.match(page, /\}, \[sessionSeed, hasMore, images\.length\]\);/);
+  assert.match(page, /\}, \[sessionSeed, hasMore, images\.length, archiveChangeKey\]\);/);
+  // An archive change made elsewhere (Settings) re-runs the check even when the strip is unchanged.
+  assert.match(
+    page,
+    /subscribeGalleryChanged\("images", \(\) => setArchiveChangeKey\(\(k\) => k \+ 1\)\)/,
+  );
+  const dialog = readSrc("features/settings/components/archived-media-dialog.tsx");
+  assert.match(dialog, /if \(!succeeded\) break;\n\s+changed = true;/);
+  assert.match(dialog, /if \(changed\) notifyGalleryChanged\(kind\);/);
   // Unknown or non-empty archive: no gallery seed, so an archived newest image is never skipped.
   assert.equal(reusableSeed(null, [{ seed: 7, created_at: 1 }], true), null);
 });

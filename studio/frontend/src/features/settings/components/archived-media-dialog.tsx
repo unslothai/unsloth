@@ -521,7 +521,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     if (running.current) return;
     running.current = true;
     setBusy(true);
-    let restored = false;
+    let changed = false;
     try {
       for (const row of targets) {
         const succeeded =
@@ -529,11 +529,12 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             ? await handleDelete(row)
             : await handleRestore(row);
         if (!succeeded) break;
-        if (action === "restore") restored = true;
+        changed = true;
       }
     } finally {
-      // refresh the persistent gallery once, including after a partially successful batch.
-      if (restored) notifyGalleryChanged(kind);
+      // Refresh the persistent gallery once, including after a partially successful batch. A delete
+      // counts too: the page also tracks whether the archive is empty.
+      if (changed) notifyGalleryChanged(kind);
       running.current = false;
       setBusy(false);
       setConfirming(null);

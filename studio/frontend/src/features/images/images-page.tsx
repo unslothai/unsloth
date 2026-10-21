@@ -1856,6 +1856,12 @@ export function ImagesPage({
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
   // archived image may be the newest. Checked again whenever the strip changes (an archive drops a row).
   const [archivedEmpty, setArchivedEmpty] = useState<boolean | null>(null);
+  // Bumped when the archive changes elsewhere (Settings restore or delete), which the strip may not show.
+  const [archiveChangeKey, setArchiveChangeKey] = useState(0);
+  useEffect(
+    () => subscribeGalleryChanged("images", () => setArchiveChangeKey((k) => k + 1)),
+    [],
+  );
   useEffect(() => {
     if (sessionSeed !== null || hasMore) return;
     let cancelled = false;
@@ -1869,7 +1875,7 @@ export function ImagesPage({
     return () => {
       cancelled = true;
     };
-  }, [sessionSeed, hasMore, images.length]);
+  }, [sessionSeed, hasMore, images.length, archiveChangeKey]);
   const lastSeed = useMemo(
     () => reusableSeed(sessionSeed, images, hasMore || archivedEmpty !== true),
     [sessionSeed, images, hasMore, archivedEmpty],
