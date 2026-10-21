@@ -10211,11 +10211,13 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
-_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "qwencloud", "zai"})
+_MIXED_CATALOG_PROVIDER_TYPES = frozenset(
+    {"huggingface", "openrouter", "qwen", "qwencloud", "zai", "deepinfra"}
+)
 
 # Mixed catalogs whose models.dev namespace answers vision per model.
 # Mirrors CATALOG_VISION_PROVIDER_TYPES in external-providers.ts.
-_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen", "zai": "zai"}
+_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen", "zai": "zai", "deepinfra": "deepinfra"}
 
 
 def _external_takes_mcp_images(
@@ -30953,6 +30955,7 @@ async def _proxy_to_external_provider(
             compaction_threshold = payload.compaction_threshold,
             compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
+            service_tier = payload.service_tier,
             response_format = _extract_response_format(payload),
             thread_id = payload.thread_id,
         )

@@ -87,6 +87,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
+        service_tier = row.get("service_tier"),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = credential_secrets.has_secret(
             credential_secrets.PROVIDER_API_KEY_KIND,
@@ -282,6 +283,7 @@ async def create_provider_config(
             models = payload.models,
             available_models = payload.available_models,
             max_output_tokens = payload.max_output_tokens,
+            service_tier = payload.service_tier,
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
         )
@@ -331,6 +333,7 @@ async def update_provider_config(
         max_output_tokens_requested,
         payload.max_output_tokens,
     )
+    service_tier_requested = "service_tier" in payload.model_fields_set
     persisted_models = list(existing.get("models") or [])
     # One reading of who owns this connection, used for every decision in this request: a second lookup later could
     # name a different account than the one the selection was actually judged against.
@@ -387,6 +390,7 @@ async def update_provider_config(
         "models",
         "available_models",
         "max_output_tokens",
+        "service_tier",
         "api_type",
         "reasoning_config",
     }
@@ -423,6 +427,8 @@ async def update_provider_config(
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
+        if service_tier_requested:
+            metadata_updates["service_tier"] = payload.service_tier
         if reasoning_config_requested:
             metadata_updates["reasoning_config"] = (
                 payload.reasoning_config.model_dump()
@@ -438,6 +444,7 @@ async def update_provider_config(
         models = existing.get("models") or [],
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
+        service_tier = existing.get("service_tier"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
     )
@@ -467,7 +474,11 @@ async def update_provider_config(
             if field == "id":
                 continue
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
-            if written is None and field not in {"max_output_tokens", "reasoning_config"}:
+            if written is None and field not in {
+                "max_output_tokens",
+                "reasoning_config",
+                "service_tier",
+            }:
                 continue
             if not _current_matches(current, field, written):
                 continue

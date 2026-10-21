@@ -14,6 +14,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["qwen", "qwen"],
   ["qwencloud", "qwen"],
   ["zai", "zai-org"],
+  ["deepinfra", "deepinfra"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(

@@ -34,6 +34,9 @@ export interface ExternalProviderConfig {
   backendProviderType?: string;
   /** Optional Max Tokens cap for this connection, replacing the undocumented-model fallback. */
   maxOutputTokens?: number;
+  /** DeepInfra only: the connection's service tier. "default" omits the wire
+   *  field; "flex" = 20% discount; "priority" = 50% premium. */
+  serviceTier?: "default" | "priority" | "flex";
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
@@ -282,9 +285,9 @@ export function providerModelSupportsVision(
 // Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
 // the family, unknown for a given model, so an MCP picture is not sent to one the
 // registry says nothing about.
-const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud", "zai"]);
+const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud", "zai", "deepinfra"]);
 // Mirrors _CATALOG_VISION_NAMESPACES: mixed catalogs whose model catalog answers vision per model.
-const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai"]);
+const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai", "deepinfra"]);
 
 /** Whether the backend's external tool loop will hand this model an MCP picture -- the
  *  same rule as its _external_takes_mcp_images, so envelopes the backend would strip
@@ -398,6 +401,19 @@ export function normalizeProviderMaxOutputTokens(
   return value;
 }
 
+const DEEPINFRA_SERVICE_TIERS = new Set(["default", "priority", "flex"]);
+
+/** Normalize a stored/typed service tier; junk becomes undefined (unknown). */
+export function normalizeServiceTier(
+  value: unknown,
+): "default" | "priority" | "flex" | undefined {
+  if (typeof value !== "string") return undefined;
+  const tier = value.trim().toLowerCase();
+  return DEEPINFRA_SERVICE_TIERS.has(tier as "default" | "priority" | "flex")
+    ? (tier as "default" | "priority" | "flex")
+    : undefined;
+}
+
 /** Whether a connection may carry a per-connection Max Tokens limit. Every type may, except
  *  ChatGPT subscriptions, whose routing, model list and output cap are fixed. Both types are
  *  checked: the stored one is what the server validates against, the UI one is all the dialog
@@ -433,6 +449,15 @@ export const CUSTOM_PROVIDER_PRESETS = [
     modelIdsPlaceholder: "gpt-oss:20b\nqwen3:14b",
   },
 ] as const;
+
+// No vendor with a fixed endpoint belongs in this list. A preset here is a SECOND row for a
+// provider the registry already offers, and a worse one: isCustomProviderType() is true for a
+// preset, so toExternalBackendProviderType() maps it to CUSTOM_BACKEND_PROVIDER_TYPE ("openai")
+// and the saved row stops carrying its own type. Every backend gate keyed on provider_type then
+// misses it -- a DeepInfra preset lost service_tier, its reasoning table and its vision gate --
+// and the form grows a Base URL field for an endpoint that is already known. Presets are for
+// endpoints the USER supplies (llama.cpp, vLLM, Ollama); cloud vendors belong in
+// PROVIDER_REGISTRY alone. See list_available_providers() in providers.py.
 
 const CUSTOM_PROVIDER_LABELS: Record<string, string> = {
   [LEGACY_CUSTOM_PROVIDER_TYPE]: CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -471,7 +496,10 @@ export function isCustomProviderType(
   return providerType in CUSTOM_PROVIDER_LABELS;
 }
 
-/** OpenAI-compat custom types that may expose GET /v1/models. */
+// Types whose /v1/models lives at a base URL the USER supplies. Membership is what makes the form
+// demand a Base URL, so a registry provider with a fixed endpoint must stay out: it would ask for
+// a URL it already knows, and Load Models would answer "Base URL is required" on a connection the
+// user never saw a URL field for. Kept in step with CUSTOM_PROVIDER_PRESETS above.
 const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   LEGACY_CUSTOM_PROVIDER_TYPE,
   "ollama",
@@ -496,13 +524,25 @@ export function customPresetSkipsApiKeyField(
   return providerType === "llama_cpp";
 }
 
+// REGISTRY connections that read a remote catalogue but still accept typed-in ids beside it.
+// Their /v1/models omits models the account can reach -- OpenRouter's newest slugs, DeepInfra's
+// private `deploy_id:` deployments -- so the catalogue not listing an id is not evidence against
+// it, and the dialog must keep its "Additional model IDs" box for them. Membership here also
+// stops the picker reporting such a model as "dropped" once its catalogue moves on.
+const MANUAL_MODEL_IDS_WITH_CATALOG_PROVIDER_TYPES = new Set([
+  "openrouter",
+  "deepinfra",
+]);
+
 /** Catalog load plus optional manual model IDs. */
 export function allowsManualModelIdsWithCatalog(
   providerType: string | null | undefined,
 ): boolean {
   if (!providerType) return false;
-  if (providerType === "openrouter") return true;
-  return supportsRemoteModelCatalog(providerType);
+  return (
+    MANUAL_MODEL_IDS_WITH_CATALOG_PROVIDER_TYPES.has(providerType) ||
+    supportsRemoteModelCatalog(providerType)
+  );
 }
 
 export function customProviderDisplayName(
@@ -642,6 +682,10 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    serviceTier:
+      providerType === "deepinfra"
+        ? normalizeServiceTier(raw.serviceTier)
+        : undefined,
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

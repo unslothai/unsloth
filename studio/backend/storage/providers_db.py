@@ -153,6 +153,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
     if "reasoning_config_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
+    if "service_tier" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN service_tier TEXT")
     # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
     conn.commit()
 
@@ -213,6 +215,7 @@ def create_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: Optional[int] = None,
+    service_tier: Optional[str] = None,
     api_type: str = "chat_completions",
     reasoning_config: Optional[dict] = None,
 ) -> None:
@@ -226,9 +229,9 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, created_at, updated_at
+                reasoning_config_json, service_tier, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -240,6 +243,7 @@ def create_provider(
                 max_output_tokens,
                 api_type,
                 reasoning_json,
+                service_tier,
                 now,
                 now,
             ),
@@ -257,6 +261,7 @@ def update_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: int | None | object = _UNSET,
+    service_tier: str | None | object = _UNSET,
     *,
     connection: sqlite3.Connection | None = None,
     api_type: str | None = None,
@@ -286,6 +291,9 @@ def update_provider(
     if max_output_tokens is not _UNSET:
         updates.append("max_output_tokens = ?")
         params.append(max_output_tokens)
+    if service_tier is not _UNSET:
+        updates.append("service_tier = ?")
+        params.append(service_tier)
     if reasoning_config is not _UNSET:
         updates.append("reasoning_config_json = ?")
         params.append(_encode_reasoning_config(reasoning_config))
@@ -330,6 +338,7 @@ def get_provider(id: str) -> Optional[dict]:
             return None
         data = dict(row)
         data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
+        data["service_tier"] = data.pop("service_tier", None) or None
         models, available_models = _row_models(row)
         data["models"] = models
         data["available_models"] = available_models
@@ -349,6 +358,7 @@ def list_providers() -> list[dict]:
             data["reasoning_config"] = _decode_reasoning_config(
                 data.pop("reasoning_config_json", None)
             )
+            data["service_tier"] = data.pop("service_tier", None) or None
             models, available_models = _row_models(row)
             data["models"] = models
             data["available_models"] = available_models

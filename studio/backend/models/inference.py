@@ -3188,6 +3188,33 @@ class ChatCompletionRequest(BaseModel):
             "https://platform.claude.com/docs/en/build-with-claude/fast-mode"
         ),
     )
+    service_tier: Optional[Literal["default", "priority", "flex"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Provider service tier. DeepInfra only: 'flex' runs at "
+            "a 20% discount for best-effort scheduling (may wait or 429 under "
+            "load); 'priority' runs at a 50% premium for faster admission. "
+            "Omitted/'default' uses standard scheduling and pricing. Not all "
+            "models support these tiers; unsupported models fall back to the "
+            "standard tier. See "
+            "https://docs.deepinfra.com/chat/overview#service-tier"
+        ),
+    )
+
+    @field_validator("service_tier", mode = "before")
+    @classmethod
+    def _normalize_service_tier(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("service_tier must be a string")
+        tier = value.strip().lower()
+        # DeepInfra compatibility aliases: 'auto'→priority, 'standard_only'→default.
+        if tier in ("default", "standard", "standard_only", "standard_tier"):
+            return "default"
+        if tier in ("flex", "priority"):
+            return tier
+        raise ValueError("service_tier must be one of: default, priority, flex")
 
     @model_validator(mode = "after")
     def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":

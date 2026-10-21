@@ -1683,6 +1683,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
+        service_tier: Optional[str] = None,
         continue_final_message: Optional[bool] = None,
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
@@ -1864,6 +1865,17 @@ class ExternalProviderClient:
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
+        # DeepInfra service tier: forwarded only for the provider that documents
+        # it, and only for the real tiers. "default" is the absence of the
+        # field (DeepInfra treats it identically), so omit it to keep other
+        # OpenAI-compatible gateways byte-identical.
+        if (
+            service_tier
+            and provider_info.get("supports_service_tier")
+            and service_tier in ("priority", "flex")
+        ):
+            body["service_tier"] = service_tier
+
         if self.provider_type in ("llama_cpp", "vllm") and preserve_thinking is not None:
             body["chat_template_kwargs"] = {"preserve_thinking": preserve_thinking}
 
@@ -1885,7 +1897,7 @@ class ExternalProviderClient:
             _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
         elif self.provider_type in ("qwen", "qwencloud"):
             _apply_qwen_reasoning_controls(body, enable_thinking)
-        elif self.provider_type == "huggingface":
+        elif self.provider_type in ("huggingface", "deepinfra"):
             _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
         elif provider_info.get("supports_chat_template_kwargs"):
             # chat_template_kwargs is the only route to a template's enable_thinking variable, and a strict gateway

@@ -150,6 +150,17 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["GLM-", "glm-", "chatglm", "codegeex"],
 	},
 
+	// DeepInfra.
+	{
+		id: "deepinfra",
+		name: "DeepInfra",
+		logoPath: "/hub/profile/logo/deepinfra.svg",
+		treatment: "original",
+		background: "transparent",
+		fit: "cover",
+		prefixes: ["deepinfra"],
+	},
+
 	{
 		id: "xai-org",
 		name: "xAI",

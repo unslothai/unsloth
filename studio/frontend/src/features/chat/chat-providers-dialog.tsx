@@ -64,7 +64,10 @@ import {
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
-import { getExternalMinOutputTokens } from "./provider-capabilities";
+import {
+  getExternalMinOutputTokens,
+  providerSupportsServiceTier,
+} from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -296,6 +299,9 @@ export function ChatProvidersSettings({
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [serviceTierDraft, setServiceTierDraft] = useState<
+    "default" | "priority" | "flex"
+  >("default");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
   >(null);
@@ -483,6 +489,7 @@ export function ChatProvidersSettings({
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setServiceTierDraft("default");
     setApiType("chat_completions");
     setReasoningConfig(null);
     setEditingBackendProviderType(null);
@@ -609,6 +616,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setServiceTierDraft("default");
     setApiType("chat_completions");
     setReasoningConfig(null);
     setEditingBackendProviderType(null);
@@ -963,6 +971,9 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const serviceTier = providerSupportsServiceTier(providerType)
+        ? serviceTierDraft
+        : undefined;
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -973,6 +984,7 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
+        serviceTier,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1001,6 +1013,9 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        serviceTier: providerSupportsServiceTier(uiProviderType)
+          ? (created.service_tier ?? "default")
+          : undefined,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
           : undefined,
@@ -1141,6 +1156,11 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const serviceTier = providerSupportsServiceTier(
+        existing.providerType,
+      )
+        ? serviceTierDraft
+        : undefined;
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
           ? customProviderName.trim() ||
@@ -1151,6 +1171,7 @@ export function ChatProvidersSettings({
         models: keepSavedModels ? undefined : modelsToSave,
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
+        serviceTier,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1183,6 +1204,9 @@ export function ChatProvidersSettings({
           ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        serviceTier: providerSupportsServiceTier(existing.providerType)
+          ? (updated.service_tier ?? "default")
+          : undefined,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
           : undefined,
@@ -1317,6 +1341,7 @@ export function ChatProvidersSettings({
             getExternalMinOutputTokens(provider.providerType),
           ).toString(),
     );
+    setServiceTierDraft(provider.serviceTier ?? "default");
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(
@@ -1817,6 +1842,48 @@ export function ChatProvidersSettings({
                       requests may fail.
                     </p>
                   </div>
+                </div>
+              ) : null}
+
+              {providerSupportsServiceTier(providerType) ? (
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-service-tier"
+                      className="text-sm font-medium"
+                    >
+                      Service tier
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Flex trades speed for a 20% discount (best-effort
+                      scheduling); priority runs at a 50% premium. DeepInfra
+                      only. Unsupported models fall back to standard.
+                    </p>
+                  </div>
+                  <Select
+                    value={serviceTierDraft}
+                    onValueChange={(value) =>
+                      setServiceTierDraft(
+                        value as "default" | "priority" | "flex",
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      id="provider-service-tier"
+                      className="h-9 w-44 text-sm"
+                    >
+                      <SelectValue placeholder="Standard (default)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">
+                        Standard (default)
+                      </SelectItem>
+                      <SelectItem value="flex">Flex (20% discount)</SelectItem>
+                      <SelectItem value="priority">
+                        Priority (premium)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               ) : null}
 

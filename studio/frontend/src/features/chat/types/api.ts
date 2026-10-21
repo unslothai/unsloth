@@ -789,6 +789,9 @@ export interface OpenAIChatCompletionsRequest {
   anthropic_code_exec_container_id?: string | null;
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;
+  /** DeepInfra service tier: "flex" = 20% discount (best-effort scheduling),
+   *  "priority" = 50% premium. Omitted = standard. */
+  service_tier?: "default" | "priority" | "flex";
   /** Opt into the OpenAI-standard trailing usage chunk on streams. The backend only emits it when
    *  `include_usage` is set; the chat UI sends it for local and connected-provider models so the
    *  context-usage bar and tok/s readout populate. */

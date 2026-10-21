@@ -55,6 +55,7 @@ export interface ProviderConfig {
   available_models?: string[];
   max_output_tokens?: number | null;
   reasoning_config?: CustomReasoningConfig | null;
+  service_tier?: "default" | "priority" | "flex" | null;
   created_at: string;
   updated_at: string;
 }
@@ -217,6 +218,7 @@ export async function createProviderConfig(payload: {
   availableModels?: string[];
   maxOutputTokens?: number | null;
   reasoningConfig?: CustomReasoningConfig | null;
+  serviceTier?: "default" | "priority" | "flex" | null;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -236,6 +238,9 @@ export async function createProviderConfig(payload: {
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.serviceTier === undefined
+          ? {}
+          : { service_tier: payload.serviceTier }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -269,6 +274,7 @@ export async function updateProviderConfig(
     availableModels?: string[];
     maxOutputTokens?: number | null;
     reasoningConfig?: CustomReasoningConfig | null;
+    serviceTier?: "default" | "priority" | "flex" | null;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -292,6 +298,9 @@ export async function updateProviderConfig(
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.serviceTier === undefined
+          ? {}
+          : { service_tier: payload.serviceTier }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),
