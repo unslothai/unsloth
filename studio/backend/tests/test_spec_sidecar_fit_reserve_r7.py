@@ -39,8 +39,12 @@ def _studio_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def _discrete(monkeypatch):
-    # A discrete CUDA host on every runner: macOS would otherwise take the Metal path.
+    # A discrete CUDA host on every runner: macOS would otherwise take the Metal path
+    # (class-level budget reads too, such as the pass-through zero-context drop).
     monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(
+        _lc.LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
 
 
 def _dspark(backend, gguf, tmp_path, **kw):
