@@ -1675,7 +1675,9 @@ def test_wired_advisor_load_avoids_a_serving_models_gpu(tmp_path, monkeypatch):
     )
     # An unregistered helper backend: the serving model on GPU 1 is not netted from its
     # placement, but the pair must still avoid that card.
-    serving = types.SimpleNamespace(is_active = True, _planned_vram_mib = {1: 1024})
+    serving = types.SimpleNamespace(
+        is_active = True, _planned_vram_mib = {1: 1024}, _child_gpu_physical_ids = (1,)
+    )
     monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [serving])
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     assert _split_flag(cmd) != "tensor"
@@ -1883,6 +1885,8 @@ def test_unload_before_the_layer_retry_cancels_it(tmp_path, monkeypatch):
     assert result is False
     assert [_split_flag(c) for c in spawns] == ["tensor"]
     assert not backend.is_loaded
+    # Seen as a cancelled load by the route, not a failure.
+    assert backend._cancel_event.is_set()
 
 
 def test_wired_auto_pair_avoids_a_manual_residents_gpu(tmp_path, monkeypatch):
@@ -1911,3 +1915,39 @@ def test_wired_flash_attention_off_keeps_layer_up_front(tmp_path, monkeypatch, f
     assert _split_flag(cmd) != "tensor"
     reason = backend._auto_split_decision.reason
     assert "flash attention" in reason and "abandoned" not in reason
+
+
+def test_wired_auto_pair_avoids_a_residents_companion_gpu(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    backend, gguf = _wired_backend(
+        tmp_path,
+        monkeypatch,
+        memory = [(i, 15_360, 15_360) for i in range(4)],
+        model_gib = 6,
+        names = {i: T4 for i in range(4)},
+    )
+    # Planned on GPU 2, with its drafter widened onto GPU 0.
+    resident = types.SimpleNamespace(
+        is_active = True, _planned_vram_mib = {2: 1024}, _child_gpu_physical_ids = (2, 0)
+    )
+    monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [resident])
+    _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    picked = set(backend._auto_split_decision.gpu_indices or ())
+    assert not picked & {0, 2}
+
+
+def test_wired_resident_with_unknown_gpus_keeps_layer(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    # An unpinned Manual (or Vulkan) resident: it may hold any card.
+    resident = types.SimpleNamespace(
+        is_active = True, _planned_vram_mib = {}, _child_gpu_physical_ids = None
+    )
+    monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [resident])
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+    assert "unknown" in backend._auto_split_decision.reason

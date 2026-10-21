@@ -781,9 +781,11 @@ class _UnloadedSince:
         self._backend, self._epoch, self._event = backend, epoch, event
 
     def is_set(self) -> bool:
-        return getattr(self._backend, "_unload_epoch", 0) != self._epoch or bool(
-            self._event is not None and self._event.is_set()
-        )
+        if getattr(self._backend, "_unload_epoch", 0) != self._epoch:
+            # Restored for every later reader (the route maps it to a cancelled load).
+            self._backend._cancel_event.set()
+            return True
+        return bool(self._event is not None and self._event.is_set())
 
 
 class _CombinedCancelEvent:
@@ -28009,6 +28011,15 @@ class LlamaCppBackend:
                         elif not _replanned_flash_attn(True):
                             # llama.cpp refuses SPLIT_MODE_TENSOR without flash attention.
                             _split_excluded = "flash attention is off, which tensor split needs"
+                        _split_held = frozenset()
+                        if (
+                            _split_excluded is None
+                            and split_mode_override is None
+                            and _auto_tensor_split_enabled()
+                        ):
+                            _split_held = self._gpus_held_by_others()
+                            if _split_held is None:
+                                _split_excluded = "another loaded model's GPUs are unknown"
                         try:
                             if _split_excluded is not None:
                                 _split_decision = _SplitDecision(
@@ -28158,7 +28169,7 @@ class LlamaCppBackend:
                                     split_mode_override = split_mode_override,
                                     # Unregistered helper loads net no reservations; the
                                     # pair still avoids every card a served model holds.
-                                    shared_gpus = _shared_gpus.union(self._gpus_held_by_others()),
+                                    shared_gpus = _shared_gpus.union(_split_held),
                                     platform_reason = _split_platform,
                                 )
                                 if (
@@ -37187,13 +37198,17 @@ class LlamaCppBackend:
             return {}
         return self._vram_reserved_by_others_mib()
 
-    def _gpus_held_by_others(self) -> frozenset:
-        """GPUs a reservation names, or a live child's devices when it published no plan (Manual)."""
+    def _gpus_held_by_others(self) -> Optional[frozenset]:
+        """GPUs another server or resident media model holds: reservations plus each live
+        child's devices (companions included). None when a child's devices are unknown
+        (unpinned, Vulkan): it may hold any card."""
         held = set(self._vram_reserved_by_others_mib())
         for backend in _serving_backends_snapshot():
             if backend is not self and getattr(backend, "is_active", False):
-                if not getattr(backend, "_planned_vram_mib", None):
-                    held.update(getattr(backend, "_child_gpu_physical_ids", None) or ())
+                child = getattr(backend, "_child_gpu_physical_ids", None)
+                if child is None:
+                    return None
+                held.update(child)
         return frozenset(held)
 
     def _vram_reserved_by_others_mib(self) -> dict[int, int]:
