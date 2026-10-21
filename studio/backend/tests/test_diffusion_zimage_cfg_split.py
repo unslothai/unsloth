@@ -287,6 +287,17 @@ def test_static_step_skip_without_a_step_signal_keeps_the_batched_call():
     with zs.render(pipe, 1):
         _run(model, *_guided_args(_latent(3), torch.tensor([0.4]), 45, 9, 3))
     assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 0, "batched": 1}
+    # A CFG-parallel router installed after the skip takes the forward slot; the skip is still found.
+    from core.inference.diffusion_multigpu import CfgParallelRouter
+
+    model.__dict__["forward"] = CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    with zs.render(pipe, 1):
+        _run(model, *_guided_args(_latent(3), torch.tensor([0.4]), 45, 9, 3))
+    assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 0, "batched": 2}
+    ss.reset_static_step_skip(pipe, 12, step_signal = True)
+    with zs.render(pipe, 1):
+        _run(model, *_guided_args(_latent(3), torch.tensor([0.4]), 45, 9, 3))
+    assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 1, "batched": 2}
 
 
 def test_cfg_parallel_router_splits_and_keeps_both_branches_on_the_primary():

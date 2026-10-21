@@ -80,9 +80,10 @@ def _declined_now(module: Any) -> Optional[str]:
     # Unreachable today: no Z-Image pipeline opens a cache_context, so apply_step_cache refuses them.
     if getattr(module, "_unsloth_step_cache", None):
         return "step cache"
-    outer = slots.get("forward")
-    if getattr(outer, "_unsloth_outer_forward", False) and not _skip_keys_calls_apart(outer):
-        return "static step skip without a per-step call order"
+    # The skip's own slot: a CFG-parallel router installed after it takes the forward slot and wraps it.
+    for skip in (slots.get("_unsloth_static_skip"), slots.get("forward")):
+        if getattr(skip, "_unsloth_outer_forward", False) and not _skip_keys_calls_apart(skip):
+            return "static step skip without a per-step call order"
     # A CFG-parallel router needs no decline: it pairs branches by the identity of the first tensor argument, which
     # for Z-Image is the timestep, a fresh tensor per call (the batched call too), so it runs every call on the
     # primary card either way.
