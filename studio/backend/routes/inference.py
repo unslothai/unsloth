@@ -25852,6 +25852,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -25865,7 +25866,9 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         base_url = validate_provider_base_url(base_url)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -25875,6 +25878,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         if body.encrypted_api_key and body.provider_base_url != current.get("base_url"):
             # The browser encrypted a legacy key for the connection it rendered. A
             # same-id edit may have replaced both its destination and saved key while
@@ -26102,6 +26106,7 @@ async def _external_stt_transcription(
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -26116,7 +26121,9 @@ async def _external_stt_transcription(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -26126,6 +26133,7 @@ async def _external_stt_transcription(
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         api_key = await asyncio.to_thread(
             resolve_provider_api_key_or_400,
             provider_id,
@@ -30267,6 +30275,9 @@ async def _proxy_to_external_provider(
         # A saved credential is scoped to this saved provider. Never pair it with
         # request-controlled routing metadata.
         saved_provider_snapshot = config
+        account_access.require_connection_model_allowed(
+            config, payload.external_model or payload.model
+        )
         provider_type = config["provider_type"]
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
@@ -30832,7 +30843,10 @@ async def _proxy_to_external_provider(
     if managed is not None:
         api_key = managed.api_key
     elif saved_provider_snapshot is not None:
-        async with provider_config_guard(payload.provider_id):
+        async with provider_config_guard(
+            payload.provider_id,
+            shared_by_owner = bool(saved_provider_snapshot.get("shared_by_owner")),
+        ):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
             routing_fields = (
                 "provider_type",
@@ -30848,6 +30862,9 @@ async def _proxy_to_external_provider(
                     status_code = 409,
                     detail = "Provider changed while the request was starting; retry.",
                 )
+            account_access.require_connection_model_allowed(
+                current, payload.external_model or payload.model
+            )
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
@@ -31806,6 +31823,11 @@ def _resolve_openai_cloud_client(
             raise HTTPException(
                 status_code = 400,
                 detail = "OpenAI container management requires a saved OpenAI provider.",
+            )
+        if config.get("shared_by_owner"):
+            raise HTTPException(
+                status_code = 403,
+                detail = "OpenAI containers are not available on a connection shared by the owner.",
             )
 
         if not config["is_enabled"]:
@@ -51991,6 +52013,7 @@ async def _external_image_generation(
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -52005,7 +52028,9 @@ async def _external_image_generation(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -52015,6 +52040,7 @@ async def _external_image_generation(
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         api_key = await asyncio.to_thread(
             resolve_provider_api_key_or_400,
             provider_id,

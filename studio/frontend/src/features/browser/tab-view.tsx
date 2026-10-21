@@ -36,6 +36,8 @@ import {
   cachedPage,
   currentEntry,
   entryKey,
+  saveScroll,
+  savedScroll,
   sentPosts,
   setPageDownload,
   useBrowserStore,
@@ -80,7 +82,7 @@ function loadTemporary(tabId: string, entry: BrowserEntry): boolean {
   return (entry.kind === "web" && entry.temporary === true) || temporaryLoads.get(tabId) === true;
 }
 
-function useFrameMessages(tabId: string, origin: string | null) {
+function useFrameMessages(tabId: string, origin: string | null, entry: BrowserEntry) {
   const t = useT();
   return useCallback(
     (message: FrameMessage) => {
@@ -166,6 +168,20 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "reload":
           store.reload(tabId);
           break;
+        case "back":
+          store.goBack(tabId);
+          break;
+        case "forward":
+          store.goForward(tabId);
+          break;
+        case "scroll": {
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          saveScroll(entry, { x: message.x, y: message.y }, pageAddress(tab) ?? (entry.kind === "web" ? entry.url : ""));
+          break;
+        }
+        case "history":
+          store.updateTab(tabId, { pageHistory: { back: message.back, forward: message.forward } });
+          break;
         case "typed":
           store.updateTab(tabId, { typedAt: message.reset ? undefined : Date.now() });
           break;
@@ -209,7 +225,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
       }
     },
-    [tabId, origin, t],
+    [tabId, origin, entry, t],
   );
 }
 
@@ -297,7 +313,7 @@ function WebPage({
   });
   const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
-  const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
+  const onFrameMessage = useFrameMessages(tab.id, pageOrigin, entry);
   // A notice's action opens the tab's current address, so it goes with the page it is about.
   useEffect(
     () => () => {
@@ -420,6 +436,7 @@ function WebPage({
       tabId={tab.id}
       zoom={tab.zoom}
       muted={tab.muted}
+      scroll={savedScroll(entry, page.url)}
       onMessage={onFrameMessage}
     />
   );

@@ -334,6 +334,14 @@ def is_path_within(
     return common == base and (allow_root or candidate != base)
 
 
+def is_network_or_device_path(value) -> bool:
+    """A UNC share (``\\\\host\\share``, ``//host/share``) or a ``\\\\?\\`` / ``\\\\.\\`` / ``\\??\\`` device path.
+    Any filesystem call on one makes Windows reach out over SMB with the service account's
+    credentials, so managed-account checks refuse it before touching the disk."""
+    text = str(value).strip()
+    return text.startswith(("\\\\", "//", "\\/", "/\\", "\\??\\"))
+
+
 def same_path(
     left,
     right,

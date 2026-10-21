@@ -146,7 +146,7 @@ def test_real_shapes_and_peak_memory(pre_sm89, shape):
 
 
 @needs_cuda
-def test_routes_to_bytes_kernel_only_on_nvidia_pre_sm89(monkeypatch):
+def test_routes_to_bytes_kernel_on_nvidia(monkeypatch):
     calls = []
     orig = fp8._e4m3fn_bytes_dequant
     monkeypatch.setattr(
@@ -182,10 +182,13 @@ def test_routes_to_bytes_kernel_only_on_nvidia_pre_sm89(monkeypatch):
     assert route((7, 5)) == "bytes"
     assert route((8, 0)) == "bytes"
     assert route((8, 6)) == "bytes"
-    # sm89+ keeps the native fp8 kernel; ragged shapes there keep the torch loop as before.
+    # sm89+ keeps the native fp8 kernel for even tiles; ragged e4m3fn weights take the byte decoder
+    # there too (bit-identical to the torch loop), ragged e5m2 keeps the torch loop.
     assert route((8, 9)) == "triton_fp8"
     assert route((9, 0)) == "triton_fp8"
-    assert route((9, 0), weight = _weight(130, 256, "cuda")) == "torch"
+    assert route((9, 0), weight = _weight(130, 256, "cuda")) == "bytes"
+    assert route((10, 0), weight = _weight(256, 200, "cuda")) == "bytes"
+    assert route((9, 0), weight = _weight(130, 256, "cuda").float().to(torch.float8_e5m2)) == "torch"
     # ROCm without fp8e4nv keeps the torch loop (unverified on AMD hardware).
     assert route((9, 4), hip = "6.4.0") == "torch"
     # e5m2 weights are compiled natively before sm89 and never reach the byte decoder.
@@ -246,3 +249,22 @@ def test_past_int32_offsets(pre_sm89):
     out = fp8._blockwise_weight_dequant_any_shape(w, s, [128, 128], torch.float16)
     tail = slice(m - 256, m)
     _same_bits(out[tail], fp8._torch_blockwise_dequant(w[tail], s[-2:], [128, 128], torch.float16))
+
+
+@needs_cuda
+@pytest.mark.skipif(not CUDA or torch.version.hip is not None, reason = "NVIDIA routing")
+@pytest.mark.parametrize(
+    "shape, block", [((130, 256), [128, 128]), ((300, 520), [128, 128]), ((256, 384), [128, 64])]
+)
+def test_real_device_ragged_or_rectangular_takes_bytes_bit_exact(monkeypatch, shape, block):
+    # Unmocked: every NVIDIA arch sends ragged / rectangular e4m3fn blocks to the byte decoder.
+    calls = []
+    orig = fp8._e4m3fn_bytes_dequant
+    monkeypatch.setattr(
+        fp8, "_e4m3fn_bytes_dequant", lambda *a, **k: calls.append(1) or orig(*a, **k)
+    )
+    w = _weight(*shape, "cuda")
+    s = _scale(*shape, block, torch.float32, "cuda")
+    out = fp8._blockwise_weight_dequant_any_shape(w, s, block, torch.bfloat16)
+    assert calls == [1]
+    _same_bits(out, fp8._torch_blockwise_dequant(w, s, block, torch.bfloat16))

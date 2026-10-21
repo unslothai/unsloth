@@ -327,11 +327,26 @@ export const BUDGET = {
   // build, Node 24, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Browser store sync across windows (#14277) adds 545 B raw / 288 B transfer on top (6,872,325 B raw, 2,069,596 B
   // transfer merged with main at 4962983b0, Node 24, 97 chunks). Raised to that plus the same margin.
+  // The runtime update card's skip and Undo (#14436) add 1,706 B raw / 424 B transfer against 444f63275c.
+  // Finished chat replies render lone markdown markers as written, cut ones keep the repair (#14391): +179 B raw /
+  // +52 B transfer measured against main (6,870,298 -> 6,870,477 B raw, one machine and build). Raised by that.
+  // Picking a preset forgetting a model's remembered sampling (#14128) keeps its preset marks in the eager chat
+  // runtime store, about 1,860 B raw / 440 B transfer: merged with main at acb31d909b the build measures
+  // 6,876,062 B raw / 2,070,545 B transfer (Node 24, 97 chunks). Raised to that plus the same margin.
+  // Sharing a connection with every account adds the shared flags to the eager provider mapping: 180 B raw /
+  // 20 B transfer (6,862,624 -> 6,862,804 B raw, 2,066,394 -> 2,066,414 B transfer against 723a43b02, one
+  // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
+  // The browser panel's page history (#14283) on top measures 6,876,588 B raw / 2,070,700 B transfer (merged with
+  // main at 04d2beec9, Node 24, 97 chunks). Raised to that plus the same margin.
+  // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
+  // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
+  // 96 chunks). Raised by that.
+  // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  transferBytes: 2_070_149,
-  rawBytes: 6_873_474,
+  transferBytes: 2_071_574,
+  rawBytes: 6_878_779,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
