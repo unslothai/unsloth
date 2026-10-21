@@ -27,7 +27,6 @@ import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
-  ApiExampleContext,
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
@@ -44,6 +43,7 @@ import { cn } from "@/lib/utils";
 import {
   ApiIcon,
   Cancel01Icon,
+  CodeIcon,
   ComputerTerminal01Icon,
   Copy01Icon,
   CursorPointer02Icon,
@@ -69,6 +69,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ApiExampleDialog } from "./components/api-example-dialog";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
@@ -893,6 +894,7 @@ export function ApiMonitorPage(): ReactElement {
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
   const [unloading, setUnloading] = useState(false);
   const [ejectingKept, setEjectingKept] = useState(false);
+  const [exampleModel, setExampleModel] = useState<ServedModel | null>(null);
   // block raw unloads while a picker load could finish afterward without a lifecycle guard.
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const residencyKey = useMemo(
@@ -1106,7 +1108,6 @@ export function ApiMonitorPage(): ReactElement {
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const activeModel = data?.active_model ?? null;
-  const apiExample = useMemo(() => ({ baseUrl }), [baseUrl]);
   const now = useServerNow(data?.server_time);
   const served = useMemo(
     () => servedModels(loadedModels, activeModel),
@@ -1180,6 +1181,25 @@ export function ApiMonitorPage(): ReactElement {
       >
         <HugeiconsIcon
           icon={Settings02Icon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+      </Button>
+    </ToolbarTooltip>
+  );
+  const exampleButton = (model: ServedModel): ReactElement => (
+    <ToolbarTooltip label={`API example for ${model.name}`}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`API example for ${model.name}`}
+        aria-haspopup="dialog"
+        onClick={() => setExampleModel(model)}
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+      >
+        <HugeiconsIcon
+          icon={CodeIcon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -1325,45 +1345,43 @@ export function ApiMonitorPage(): ReactElement {
             </div>
           </div>
           <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
-            <ApiExampleContext.Provider value={apiExample}>
-              <ApiModelLoadControls
-                runtime={runtime}
-                activeModel={data?.active_model}
-                residencyKey={residencyKey}
-                onSettled={refresh}
-                onUnloadActive={unloadActiveModel}
-                unloading={ejecting}
-                configRequest={configRequest}
-                onConfigRequestAdopted={() => setConfigRequest(null)}
-                onEjectAll={() => void ejectAll()}
-              >
-                <ToolbarTooltip label={ejectLabel}>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      void (served.length > 1
-                        ? ejectAll()
-                        : ejectServed(served[0]))
-                    }
-                    disabled={ejecting || modelLoading || served.length === 0}
-                    className="h-9 gap-1.5 rounded-full px-3.5"
-                  >
-                    <HugeiconsIcon
-                      icon={RemoveCircleIcon}
-                      strokeWidth={1.75}
-                      className={cn("size-4", ejecting && "animate-pulse")}
-                    />
-                    {ejecting
-                      ? "Ejecting"
-                      : served.length > 1
-                        ? "Eject all"
-                        : "Eject"}
-                  </Button>
-                </ToolbarTooltip>
-              </ApiModelLoadControls>
-            </ApiExampleContext.Provider>
+            <ApiModelLoadControls
+              runtime={runtime}
+              activeModel={data?.active_model}
+              residencyKey={residencyKey}
+              onSettled={refresh}
+              onUnloadActive={unloadActiveModel}
+              unloading={ejecting}
+              configRequest={configRequest}
+              onConfigRequestAdopted={() => setConfigRequest(null)}
+              onEjectAll={() => void ejectAll()}
+            >
+              <ToolbarTooltip label={ejectLabel}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    void (served.length > 1
+                      ? ejectAll()
+                      : ejectServed(served[0]))
+                  }
+                  disabled={ejecting || modelLoading || served.length === 0}
+                  className="h-9 gap-1.5 rounded-full px-3.5"
+                >
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className={cn("size-4", ejecting && "animate-pulse")}
+                  />
+                  {ejecting
+                    ? "Ejecting"
+                    : served.length > 1
+                      ? "Eject all"
+                      : "Eject"}
+                </Button>
+              </ToolbarTooltip>
+            </ApiModelLoadControls>
           </div>
         </div>
         <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
@@ -1390,7 +1408,10 @@ export function ApiMonitorPage(): ReactElement {
                         revealOnHover={true}
                       />
                     </span>
-                    {settingsButton(model)}
+                    <span className="flex items-center gap-0.5">
+                      {settingsButton(model)}
+                      {exampleButton(model)}
+                    </span>
                     <dl className="min-w-0">
                       {model.active ? contextFact : null}
                     </dl>
@@ -1432,6 +1453,7 @@ export function ApiMonitorPage(): ReactElement {
                       revealOnHover={true}
                     />
                     {settingsButton(served[0])}
+                    {exampleButton(served[0])}
                   </>
                 ) : (
                   <span className="text-muted-foreground">None loaded</span>
@@ -1748,6 +1770,15 @@ export function ApiMonitorPage(): ReactElement {
       </section>
 
       <SavedModelSettingsPanel />
+      <ApiExampleDialog
+        open={exampleModel != null}
+        onOpenChange={(open) => {
+          if (!open) setExampleModel(null);
+        }}
+        baseUrl={baseUrl}
+        model={exampleModel?.name ?? ""}
+        samplingModelId={exampleModel?.checkpoint ?? ""}
+      />
     </main>
   );
 }

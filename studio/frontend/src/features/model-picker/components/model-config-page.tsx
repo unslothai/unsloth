@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { InferenceEnginePicker } from "./inference-engines";
-import { ApiExampleContext, ApiSamplingExample } from "./api-sampling-example";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -83,7 +82,6 @@ import {
   type Ref,
   type SetStateAction,
   useCallback,
-  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -2383,7 +2381,6 @@ export function ModelConfigPage({
   focusField,
 }: ModelConfigPageProps) {
   const rememberId = useId();
-  const apiExample = useContext(ApiExampleContext);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Apple Silicon specifically, and used ONLY for wording: "Unified" is what Apple calls its
   // pool, where an AMD APU's is "Shared". NOT the signal for capacity - see hasUnifiedMemory.
@@ -3907,14 +3904,6 @@ export function ModelConfigPage({
           </>
         )}
       </div>
-
-      {apiExample ? (
-        <ApiSamplingExample
-          baseUrl={apiExample.baseUrl}
-          modelId={target.id}
-          ggufVariant={target.ggufVariant ?? null}
-        />
-      ) : null}
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
