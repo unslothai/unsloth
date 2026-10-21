@@ -125,3 +125,14 @@ def test_the_allowlist_fallback_does_not_touch_a_unc_path(studio_home, unc_calls
     finally:
         reset_account(token)
     assert unc_calls == []
+
+
+def test_a_folder_scan_refuses_a_unc_path_before_resolving_it(studio_home, unc_calls):
+    token = bind_account(ALICE)
+    try:
+        with pytest.raises(HTTPException) as info:
+            account_access.private_directory(UNC, "models")
+        assert info.value.status_code == 404
+    finally:
+        reset_account(token)
+    assert unc_calls == []

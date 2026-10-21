@@ -964,8 +964,12 @@ def private_directory(path: str, folder: str) -> str:
     """Rebase import-time owner defaults; refuse account-external scans."""
     if not managed_account():
         return path
+    from utils.paths.path_utils import is_network_or_device_path
     from utils.paths.storage_roots import studio_root
 
+    # Before resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(path):
+        raise HTTPException(status_code = 404, detail = "Directory not found")
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
     # The project workspace counts as the account's own, matching within_account().
