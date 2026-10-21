@@ -426,3 +426,14 @@ def test_regex_rules_keep_and_apply_their_extraction():
         {"type": "regex", "pattern": "[0-9]+", "score": {"match": 1.0, "miss": 0.0}}
     )
     assert "extract" not in plain and score_rule(plain, "4") == 1.0
+
+
+def test_rules_that_score_the_whole_reply_refuse_an_extraction_step():
+    rule = {
+        "type": "length",
+        "max_chars": 10,
+        "score": {"over": -1, "under": 1},
+        "extract": {"between": ["<answer>", "</answer>"]},
+    }
+    with pytest.raises(rewards.RewardError, match = "length rules take no extract"):
+        rewards.validate_rule(rule)
