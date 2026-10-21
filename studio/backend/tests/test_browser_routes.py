@@ -477,7 +477,9 @@ def test_a_download_keeps_the_servers_file_name(monkeypatch):
     ],
 )
 def test_an_attachment_is_marked_so_the_panel_saves_it(monkeypatch, disposition, attachment):
-    headers = [("Content-Type", "text/csv")] + ([("Content-Disposition", disposition)] if disposition else [])
+    headers = [("Content-Type", "text/csv")] + (
+        [("Content-Disposition", disposition)] if disposition else []
+    )
     meta = {"url": "https://example.com/export", "headers": headers}
     _fetch(monkeypatch, (None, b"a,b\n1,2\n", "text/csv"), meta)
     response = _call()
