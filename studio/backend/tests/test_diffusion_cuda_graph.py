@@ -1472,9 +1472,7 @@ def test_the_every_length_switch_keeps_block_graphs(stub_torch, monkeypatch):
 
 
 def test_real_cuda_new_length_eager_step_hands_blocks_the_recorded_tensor_kind():
-    """FLUX.3 base with a reference image recompiled a single-stream block on the first prompt length seen after the
-    first render: the ungraphed step passed the cached conditioning states (inference tensors) straight to the
-    compiled block, which the capture had compiled for its normal-tensor statics (dispatch-key guard mismatch)."""
+    """A new-length eager step must not recompile compiled blocks by passing them inference tensors."""
     torch = pytest.importorskip("torch")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         pytest.skip("needs CUDA")
@@ -1502,7 +1500,6 @@ def test_real_cuda_new_length_eager_step_hands_blocks_the_recorded_tensor_kind()
             return_dict = True,
         ):
             x = self.proj(hidden_states) + encoder_hidden_states.mean()
-            # ``mod`` reaches the compiled block without an op, as FLUX.3's cached states do.
             out = self.block(x, mod)
             return types.SimpleNamespace(sample = out) if return_dict else (out,)
 
@@ -1518,7 +1515,6 @@ def test_real_cuda_new_length_eager_step_hands_blocks_the_recorded_tensor_kind()
         with torch.inference_mode():
             txt = torch.randn(1, text_len, dim, device = "cuda")
             mod = torch.randn(1, 16, dim, device = "cuda")
-            # The reference skips the compiled block: compiling it here would warm the very variant under test.
             x = module.proj(hidden) + txt.mean()
             want = x * (1 + mod) + mod
             for _ in range(3):
@@ -1533,15 +1529,14 @@ def test_real_cuda_new_length_eager_step_hands_blocks_the_recorded_tensor_kind()
         for got, want in render(9):
             assert torch.allclose(got, want)
         assert handle.stats["length_eager"] == 3 and handle.stats["captures"] == 1
-        # Before: 1 more frame (the block recompiled for an inference ``mod``).
+        # Before: the block recompiled for an inference ``mod``.
         assert counter.frame_count == frames
     finally:
         cg.uninstall_all([handle])
 
 
 def test_new_length_eager_step_hands_blocks_normal_tensors_on_cpu(monkeypatch):
-    """CPU twin of the CUDA test above, through the real ``__call__``: a sealed image scope at a new prompt length
-    runs the step ungraphed, and the compiled block must see the normal-tensor kind the capture's statics gave it."""
+    """CPU twin of the CUDA test above, through the real ``__call__``."""
     torch = pytest.importorskip("torch")
     if not hasattr(torch, "_dynamo"):
         pytest.skip("needs torch._dynamo")
@@ -1577,14 +1572,13 @@ def test_new_length_eager_step_hands_blocks_normal_tensors_on_cpu(monkeypatch):
     try:
         with torch.inference_mode():
             txt, mod = torch.randn(1, 9, 8), torch.randn(1, 16, 8)
-            # What a capture records from: normal-tensor statics (``_statics``), here compiling the block once.
             statics = handle._statics([hidden, txt, mod])
             handle.orig(*statics, return_dict = False)
             frames = counter.frame_count
             handle._sealed_scopes.add(cg._image_scope((hidden,), {}))
             got = module(hidden, txt, mod, return_dict = False)[0]
         assert handle.stats["length_eager"] == 1 and handle.stats["captures"] == 0
-        # Before: the inference ``mod`` failed the dispatch-key guard and the block compiled a second time.
+        # Before: the block recompiled for an inference ``mod``.
         assert counter.frame_count == frames
         assert seen == [False, False]
         assert torch.equal(got, (hidden + txt.mean()) * (1 + mod) + mod)

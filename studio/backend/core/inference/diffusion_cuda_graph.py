@@ -1027,12 +1027,9 @@ class GraphedForward:
         return self.orig(*args, **kwargs)
 
     def _eager_as_recorded(self, args: tuple, kwargs: dict) -> Any:
-        """An eager step of a module that also replays graphs, on inputs of the kind its captures recorded from. An
-        unplanned capture records from normal-tensor statics (``_statics``), so a forward that hands an input straight
-        to a compiled block (FLUX.3's cached conditioning states) compiled that block for normal tensors; an inference
-        tensor fails its dispatch-key guard and recompiles it. Only inference leaves are copied, as the replay does."""
+        """Eager step with inference leaves copied to normal tensors, matching what unplanned captures compiled
+        blocks for (else dispatch-key guards recompile them, e.g. FLUX.3 cached conditioning states)."""
         if self.plan is not None:
-            # A planned capture's statics keep the live tensors' kind already.
             return self._eager(args, kwargs)
         live: list = []
         try:
