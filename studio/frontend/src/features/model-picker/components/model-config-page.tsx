@@ -545,7 +545,6 @@ function MaxSeqLengthSetting({
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
         {...sliderProps}
-        className="panel-slider"
         aria-label={label}
       />
     </div>
@@ -616,7 +615,6 @@ function GgufContextLengthSetting({
               max={max}
               step={128}
               {...sliderProps}
-              className="panel-slider"
               aria-label="Context Length"
               thumbValueText={(v) =>
                 v !== 0
@@ -697,7 +695,6 @@ function AdvancedGpuSlider({
         max={max}
         step={step}
         {...sliderProps}
-        className="panel-slider"
         aria-label={label}
         disabled={disabled}
       />
