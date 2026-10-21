@@ -483,20 +483,36 @@ def _video_comfy_backends(
     bf16_plan: Any = None,
     *,
     keep: bool = True,
+    priced_offload: bool = False,
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
-    resident only; else fp8 storage under offload).
+    resident only; else fp8 storage under offload). ``priced_offload``: the plan was sized with the offloaded
+    backends (``_video_offload_reprice``), so a load that now fits resident keeps them.
     ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
         return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
-    offload = not _video_comfy_resident(plan, bf16_plan)
+    offload = priced_offload or not _video_comfy_resident(plan, bf16_plan)
     name = getattr(fam, "name", None)
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
         "fp8_storage": _video_fp8_storage(fam, target, offload),
     }
+
+
+def _video_offload_reprice(
+    fam: Any, transformer_mib: Optional[int], offload_mib: Optional[int]
+) -> tuple[Optional[int], bool]:
+    """``(transformer_mib, priced_offload)`` once an offloaded plan re-prices the DiT with the offloaded backends.
+    Larger: re-plan at it. Smaller (fp8 stored, the int8 twin where only it runs): re-plan at it too, and the load must
+    then keep those backends even if the new plan fits resident, else it widens past the size it was planned at.
+    H3 keeps its resident torchao path, so only a larger price moves it."""
+    if offload_mib is None or transformer_mib is None or offload_mib == transformer_mib:
+        return transformer_mib, False
+    if offload_mib < transformer_mib and getattr(fam, "name", None) == "minimax-h3":
+        return transformer_mib, False
+    return offload_mib, offload_mib < transformer_mib
 
 
 def _video_fp8_storage(fam: Any, target: Any, offload: bool) -> bool:
@@ -8408,6 +8424,7 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        comfy_priced_offload = False
         if comfy_scan is not None and not _video_comfy_resident(plan, bf16_plan):
             # Offloaded, fp8 layers dequantize on NVIDIA: price the DiT the load will actually build.
             offload_mib = _video_comfy_resident_mib(
@@ -8437,8 +8454,11 @@ class VideoBackend:
                 )
             if offload_mib is not None and transformer_mib is not None:
                 offload_mib = int(offload_mib * dtype_scale)
-                if offload_mib > transformer_mib:
-                    transformer_mib = offload_mib
+                repriced, comfy_priced_offload = _video_offload_reprice(
+                    fam, transformer_mib, offload_mib
+                )
+                if repriced != transformer_mib:
+                    transformer_mib = repriced
                     plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         settled_te_scale = te_scale
 
@@ -8673,7 +8693,13 @@ class VideoBackend:
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
                         **_video_comfy_backends(
-                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                            fam,
+                            base,
+                            target,
+                            plan,
+                            bf16_plan,
+                            keep = comfy_keep,
+                            priced_offload = comfy_priced_offload,
                         ),
                         family = fam.name,
                         target = target,
@@ -8789,7 +8815,13 @@ class VideoBackend:
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
                         **_video_comfy_backends(
-                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                            fam,
+                            base,
+                            target,
+                            plan,
+                            bf16_plan,
+                            keep = comfy_keep,
+                            priced_offload = comfy_priced_offload,
                         ),
                         family = fam.name,
                         target = target,
@@ -8839,7 +8871,13 @@ class VideoBackend:
                             scan,
                             kwargs,
                             **_video_comfy_backends(
-                                fam, base, target, plan, bf16_plan, keep = comfy_keep
+                                fam,
+                                base,
+                                target,
+                                plan,
+                                bf16_plan,
+                                keep = comfy_keep,
+                                priced_offload = comfy_priced_offload,
                             ),
                             family = fam.name,
                             target = target,

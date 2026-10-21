@@ -438,6 +438,28 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     )
 
 
+def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monkeypatch):
+    """fp8 stored under offload prices below the widened resident estimate: re-plan at it, and a plan that now fits
+    resident keeps fp8 storage (else the load widens past the size it was planned at)."""
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    assert vid._video_offload_reprice(fam, 2000, 1000) == (1000, True)
+    assert vid._video_offload_reprice(fam, 1000, 2000) == (2000, False)
+    assert vid._video_offload_reprice(fam, 1000, 1000) == (1000, False)
+    assert vid._video_offload_reprice(fam, None, 1000) == (None, False)
+    h3 = types.SimpleNamespace(name = "minimax-h3")
+    assert vid._video_offload_reprice(h3, 2000, 1000) == (2000, False)
+    assert vid._video_offload_reprice(h3, 1000, 2000) == (2000, False)
+    monkeypatch.setattr(vid, "plan_keeps_transformer_resident", lambda p: p.resident)
+    monkeypatch.setattr(
+        vid, "comfy_int8_backend", lambda t, f, b, *, offload = False: "native" if offload else None
+    )
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda t, f, b, *, offload = False: None)
+    resident = vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True))
+    assert resident["fp8_storage"] is False and resident["int8_backend"] is None
+    kept = vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True), priced_offload = True)
+    assert kept == {"int8_backend": "native", "fp8_backend": None, "fp8_storage": True}
+
+
 def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
     rows, cols = 1024, 1024
     tensors = {
