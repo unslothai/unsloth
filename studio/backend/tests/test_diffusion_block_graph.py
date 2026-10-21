@@ -316,6 +316,112 @@ def test_compile_moves_below_the_offload_hook_and_the_kill_switch_keeps_it_trace
     assert not any(isinstance(b._unsloth_below_hook_ref.forward, bg.BlockGraph) for b in net.blocks)
 
 
+def _shifted_forward(
+    self,
+    x,
+    temb = None,
+    layer_cache = None,
+    kv_cache_mode = None,
+):
+    return _ORIGINAL_BLOCK_FORWARD(self, x, temb = temb) + 1.0
+
+
+_ORIGINAL_BLOCK_FORWARD = Block.forward
+
+
+def test_compile_below_the_hook_engages_after_a_class_patch_lands_on_the_hooked_forward(
+    monkeypatch,
+):
+    # The deferred profile installs its per-arch block fusions on render 3, after group offload hooked every block at
+    # load: each hook still holds the definition-time forward. The compile must still go below the hook, and run the
+    # patched forward exactly as when the patch came first.
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    marker = lambda *a, **k: None  # noqa: E731
+    for b in net.blocks:
+        b._compiled_call_impl = marker
+    monkeypatch.setattr(Block, "forward", _shifted_forward)
+    x = torch.randn(3, 16)
+    with torch.no_grad():
+        want = net.proj_in(x)
+        for b in net.blocks:
+            want = _shifted_forward(b, want)
+        want = net.proj_out(want)
+    assert bg.compile_below_offload_hooks(net) == 2
+    for b in net.blocks:
+        assert b._compiled_call_impl is None
+        assert b._unsloth_below_hook_ref is not None
+    torch._dynamo.reset()
+    with torch.no_grad():
+        got = net(x)
+    torch._dynamo.reset()
+    assert torch.allclose(got, want, atol = 1e-6)
+
+
+def test_a_compile_failure_below_the_hook_keeps_the_class_patch(monkeypatch):
+    # A handled compile failure restores each hook's forward: it must be the patched live forward, not the
+    # definition-time one the hook captured, or later blocks silently drop the per-arch fusion.
+    from core.inference.diffusion_speed import _CompileGuard
+
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    net._unsloth_compile_guard = _CompileGuard(None)
+    marker = lambda *a, **k: None  # noqa: E731
+    for b in net.blocks:
+        b._compiled_call_impl = marker
+    monkeypatch.setattr(Block, "forward", _shifted_forward)
+    assert bg.compile_below_offload_hooks(net) == 2
+    net._unsloth_compile_guard.fail(RuntimeError("compile failed"), net)
+    for b in net.blocks:
+        assert getattr(b._unsloth_below_hook_ref.forward, "__func__", None) is _shifted_forward
+
+
+def test_compile_below_the_hook_reapplies_a_family_adapter():
+    # LTX-2's STG adapter sits on _compiled_call_impl; moving the compile below the hook must keep it around the move.
+    import torch as _t
+
+    from core.inference import video_ltx2
+
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    seen = []
+
+    def marker(*a, **k):
+        return None
+
+    for b in net.blocks:
+        b._compiled_call_impl = video_ltx2._stg_adapted(marker, None, net, _t)
+    assert bg.compile_below_offload_hooks(net) == 2
+    for b in net.blocks:
+        moved = b._unsloth_below_hook_ref.forward
+        assert getattr(moved, "_unsloth_stg_adapter", False)
+        inner = lambda *a, **k: seen.append(k.get("all_perturbed"))  # noqa: E731
+        moved._unsloth_rewrap(inner)(all_perturbed = _t.tensor(True))
+    assert seen == [True, True] and all(type(v) is bool for v in seen)
+
+
+def test_block_graphs_find_the_compute_below_a_hook_that_predates_a_class_patch(monkeypatch):
+    net = _hooked_net(blocks = 2)
+    monkeypatch.setattr(Block, "forward", _shifted_forward)
+    refs = [r for b in net.blocks for r in b._diffusers_hook._fn_refs]
+    before = [r.forward for r in refs]
+    handle, reason = bg.install_block_graphs(net, slots = False)
+    assert reason == "armed" and handle is not None and len(handle.graphs) == 2
+    for g in handle.graphs:
+        assert getattr(g.compute, "__func__", None) is _shifted_forward
+    handle.free()
+    assert [r.forward for r in refs] == before
+
+
+def test_own_forward_refuses_a_foreign_bound_method():
+    block = Block()
+    other = Block()
+    assert bg._own_forward(block.forward, block) is not None
+    assert bg._own_forward(other.forward, block) is None
+    assert bg._own_forward(types.MethodType(lambda self, x: x, block), block) is None
+    assert bg._own_forward(None, block) is None
+
+
 def test_compile_below_the_hook_keeps_the_block_restride():
     from core.inference import diffusion_block_restride as restride
 

@@ -72,6 +72,7 @@ from .diffusion_families import (
     canonical_base,
     cache_holds_files,
     comfy_flow_shift_for,
+    comfy_shift_node_for,
     default_generation_params,
     generation_params_with_grid,
     detect_family_for_pick,
@@ -109,6 +110,12 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinals,
 )
 from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
+from .diffusion_zimage_cfg_split import (
+    install_zimage_cfg_split,
+    uninstall_zimage_cfg_split,
+    zimage_cfg_split_status,
+)
+from .diffusion_zimage_cfg_split import render as zimage_cfg_split_render
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
@@ -269,6 +276,7 @@ from . import diffusion_compile_cache as compile_cache
 from .diffusion_compile_config import family_filters_reductions
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
+from . import diffusion_embeddings
 from . import diffusion_te_release as te_release
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
@@ -327,9 +335,20 @@ from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_
 from .diffusion_flow_shift import (
     SAMPLE_SIGMAS_KEY,
     apply_comfy_flow_shift,
+    requested_flow_shift,
+    scheduler_with_flow_shift,
+    shift_control,
     install_sample_sigmas,
     pipe_sample_sigmas,
     sample_sigmas_for_steps,
+)
+from .diffusion_mask import (
+    ONLY_MASKED_UNSUPPORTED_MSG,
+    blur_mask,
+    inpaint_class_accepts_padding_mask_crop,
+    mask_is_empty,
+    overlay_with_mask,
+    resolve_padding,
 )
 from .diffusion_sampler import (
     DEFAULT_SAMPLER,
@@ -457,6 +476,17 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
+
+
+def _state_shift_node(state: Any) -> Optional[str]:
+    """The ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*) of the loaded checkpoint, or None."""
+    return comfy_shift_node_for(
+        state.family,
+        getattr(state, "gguf_filename", None),
+        getattr(state, "repo_id", None),
+        getattr(state, "display_repo_id", None),
+        getattr(state, "base_repo", None),
+    )
 
 
 def _guidance_supported(state: Any) -> bool:
@@ -9896,6 +9926,8 @@ class DiffusionBackend:
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
                     # both branches through one offloaded forward; declines when CFG-parallel took the slot
                     install_cfg_batch(pipe, offload_policy = effective_policy, logger = logger)
+                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new
+                    install_zimage_cfg_split(pipe, offload_policy = effective_policy, logger = logger)
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -12114,6 +12146,13 @@ class DiffusionBackend:
         live_preview: Optional[bool] = None,
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
+        shift: Optional[float] = None,
+        base_shift: Optional[float] = None,
+        max_shift: Optional[float] = None,
+        # Inpaint only: None / 0 / False keep the plain inpaint call.
+        mask_blur: Optional[int] = None,
+        inpaint_only_masked: Optional[bool] = None,
+        inpaint_padding: Optional[int] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -12151,6 +12190,8 @@ class DiffusionBackend:
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
+            applied_embeddings: Optional[diffusion_embeddings.AppliedEmbeddings] = None
+            applied_shift: Optional[float] = None
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
             bg = None
@@ -12429,6 +12470,26 @@ class DiffusionBackend:
                     pipe.scheduler = swapped
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
+                mask_blur_applied = inpaint_padding_applied = None
+                soft_overlay = None
+                if workflow == "inpaint" and mask_pil is not None:
+                    inpaint_padding_applied = resolve_padding(inpaint_only_masked, inpaint_padding)
+                    if (
+                        inpaint_padding_applied is not None
+                        and "padding_mask_crop" not in call_params
+                    ):
+                        raise ValueError(ONLY_MASKED_UNSUPPORTED_MSG)
+                    if inpaint_padding_applied is not None and mask_is_empty(mask_pil):
+                        # diffusers' crop box needs a nonzero pixel; with none this is a plain inpaint.
+                        inpaint_padding_applied = None
+                    if mask_blur:
+                        # After the snap/resize above, so the radius is in source-image pixels.
+                        mask_pil = blur_mask(mask_pil, mask_blur)
+                        mask_blur_applied = int(mask_blur)
+                        # The pipeline binarizes the mask, so the blur only reaches the picture through this
+                        # overlay. padding_mask_crop already overlays with the blurred mask.
+                        if inpaint_padding_applied is None and init_pil is not None:
+                            soft_overlay = (init_pil, mask_pil)
 
                 kwargs: dict[str, Any] = {
                     # prompt / generator / num_images_per_prompt are set per chunk below, one torch.Generator PER
@@ -12482,6 +12543,8 @@ class DiffusionBackend:
                         kwargs["output_resolution"] = ref_resolution
                     if mask_pil is not None and "mask_image" in call_params:
                         kwargs["mask_image"] = mask_pil
+                    if inpaint_padding_applied is not None:
+                        kwargs["padding_mask_crop"] = inpaint_padding_applied
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
@@ -12496,6 +12559,30 @@ class DiffusionBackend:
                         kwargs["width"] = iw
                     if "height" in call_params:
                         kwargs["height"] = ih
+                if shift is not None or base_shift is not None or max_shift is not None:
+                    shift_w, shift_h = kwargs.get("width"), kwargs.get("height")
+                    if (not shift_w or not shift_h) and init_pil is not None:
+                        shift_w, shift_h = init_pil.size
+                    if pipe_sample_sigmas(state.pipe) is not None:
+                        # Tuned on the shipped scheduler, like the load-time ComfyUI shift (which skips it too).
+                        raise ValueError(
+                            "This checkpoint ships its own sampling schedule, so Shift is not available."
+                        )
+                    shift_node = _state_shift_node(state)
+                    applied_shift = requested_flow_shift(
+                        shift_node,
+                        shift = shift,
+                        base_shift = base_shift,
+                        max_shift = max_shift,
+                        width = shift_w or width,
+                        height = shift_h or height,
+                        defaults = shift_control(shift_node, pipe.scheduler),
+                    )
+                    shifted = scheduler_with_flow_shift(pipe.scheduler, applied_shift)
+                    if shifted is not pipe.scheduler:
+                        if restore_scheduler is None:
+                            restore_scheduler = (pipe, pipe.scheduler)
+                        pipe.scheduler = shifted
                 if (
                     negative_prompt
                     and _negative_prompt_engaged(state.family, guidance)
@@ -12507,6 +12594,16 @@ class DiffusionBackend:
                 ):
                     # Qwen-Image true CFG needs a negative present; ComfyUI encodes an empty one.
                     kwargs["negative_prompt"] = ""
+                applied_embeddings = diffusion_embeddings.apply(
+                    pipe,
+                    getattr(state.family, "textual_inversion", None),
+                    {
+                        "prompt": [p for p, _ in jobs],
+                        "negative_prompt": kwargs.get("negative_prompt"),
+                    },
+                    marker_owners = (state.pipe,),
+                    logger = logger,
+                )
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
                     # is signature-gated.
@@ -12835,6 +12932,8 @@ class DiffusionBackend:
                         elif state.transformer_cache:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
+                        if applied_embeddings is not None:
+                            chunk_kwargs = applied_embeddings.rewrite(chunk_kwargs)
                         # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
                         install_device_postprocess(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
@@ -12874,6 +12973,7 @@ class DiffusionBackend:
                                 ),
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
+                                zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
                             ):
@@ -12922,6 +13022,8 @@ class DiffusionBackend:
                                 images.extend(layers_out)
                                 per_image_seeds.extend(s for _ in layers_out)
                         else:
+                            if soft_overlay is not None:
+                                out = [overlay_with_mask(o, *soft_overlay) for o in out]
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
@@ -13043,7 +13145,19 @@ class DiffusionBackend:
                     if swapped is not None and sampler != DEFAULT_SAMPLER
                     else None,
                     "schedule_type": resolved_schedule,
+                    # Recorded only when applied, so a plain inpaint recipe stays unchanged.
+                    "mask_blur": mask_blur_applied,
+                    "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
+                    "inpaint_padding": inpaint_padding_applied,
                 }
+                if applied_shift is not None:
+                    result["shift"] = shift
+                    result["base_shift"] = base_shift
+                    result["max_shift"] = max_shift
+                    result["applied_flow_shift"] = applied_shift
+                if applied_embeddings is not None:
+                    result["embeddings"] = list(applied_embeddings.used)
+                    result["embeddings_skipped"] = list(applied_embeddings.skipped)
                 logger.info(
                     "diffusion.generated: %s",
                     format_generation_for_log(
@@ -13058,6 +13172,8 @@ class DiffusionBackend:
             finally:
                 if restore_scheduler is not None:
                     restore_scheduler[0].scheduler = restore_scheduler[1]
+                if applied_embeddings is not None:
+                    applied_embeddings.restore()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 if static_skip_pipe is not None:
@@ -13245,6 +13361,7 @@ class DiffusionBackend:
             prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         uninstall_cfg_parallel(state.pipe)
+        uninstall_zimage_cfg_split(state.pipe)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
@@ -13366,6 +13483,7 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "cfg_batch": cfg_batch_status(state.pipe),
+            "zimage_cfg_split": zimage_cfg_split_status(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
                 state.repo_id,
@@ -13377,11 +13495,19 @@ class DiffusionBackend:
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
+            "supports_inpaint_only_masked": inpaint_class_accepts_padding_mask_crop(
+                getattr(state.family, "inpaint_pipeline_class", None)
+            ),
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
             "supports_guidance": _guidance_supported(state),
             "supports_live_preview": _live_preview_available(state),
             "prompt_hint": state.family.prompt_hint,
             "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
+            # Hidden for a checkpoint that ships its own sampling grid (the load-time ComfyUI shift skips it too).
+            "shift_control": None
+            if pipe_sample_sigmas(state.pipe) is not None
+            else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
+            "textual_inversion": getattr(state.family, "textual_inversion", None),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
