@@ -484,22 +484,226 @@ export interface ImportedRecipe {
   [key: string]: unknown;
 }
 
-const A1111_FIELD =
-  /\s*([A-Za-z][A-Za-z0-9 _-]*):\s*("(?:\\.|[^"\\])*"|[^,]*)(?:,|$)/g;
 const SIZE = /^(\d+)\s*x\s*(\d+)$/i;
+const A1111_KEY = /^([A-Za-z][\w \-/]*):\s*/;
 // An unknown label stays as written, so the import can name what it could not apply.
 const labelId = (labels: Record<string, string>, label: string) =>
   Object.keys(labels).find((id) => labels[id] === label) ?? label;
 
-/** AUTOMATIC1111 `parameters` text: prompt, optional `Negative prompt:` line, then `Key: value, ...`. */
+/** End of a JSON object / list starting at `at` (Civitai writes `Hashes: {...}` and
+ *  `Civitai resources: [...]` unquoted, commas inside), or -1 when it never closes. */
+function jsonEnd(line: string, at: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = at; i < line.length; i++) {
+    const c = line[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** `Key: value, ...` pairs of AUTOMATIC1111's settings line (`re_param`, modules/infotext_utils.py:16):
+ *  a quoted value is unquoted and may hold commas (`Lora hashes: "a: 1, b: 2"`); so may a JSON value. */
+export function a1111Fields(line: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  let i = 0;
+  while (i < line.length) {
+    while (i < line.length && (line[i] === "," || /\s/.test(line[i]))) i++;
+    if (i >= line.length) break;
+    const key = A1111_KEY.exec(line.slice(i));
+    if (!key) {
+      // Not a field (A1111's findall skips it too): resume after the next comma.
+      const comma = line.indexOf(",", i);
+      if (comma < 0) break;
+      i = comma + 1;
+      continue;
+    }
+    i += key[0].length;
+    let value: string;
+    if (line[i] === '"') {
+      let j = i + 1;
+      while (j < line.length && line[j] !== '"') j += line[j] === "\\" ? 2 : 1;
+      const raw = line.slice(i, Math.min(j + 1, line.length));
+      try {
+        value = JSON.parse(raw) as string;
+      } catch {
+        value = raw.replace(/^"|"$/g, "");
+      }
+      i = j + 1;
+    } else {
+      const close = line[i] === "{" || line[i] === "[" ? jsonEnd(line, i) : -1;
+      const comma = line.indexOf(",", i);
+      const stop = close > 0 ? close : comma < 0 ? line.length : comma;
+      value = line.slice(i, stop);
+      i = stop;
+    }
+    out.push([key[1].trim(), value.trim()]);
+  }
+  return out;
+}
+
+// Keys that identify a file or the writer and set nothing: read, never reported as not applied.
+const A1111_INFO_KEYS = new Set([
+  "model hash",
+  "vae hash",
+  "lora hashes",
+  "ti hashes",
+  "hashes",
+  "version",
+  "user",
+  "civitai resources",
+  "civitai metadata",
+  "created date",
+  "init image hash",
+  "emphasis",
+]);
+// The names CFG rescale (Lin et al. 2023, diffusers guidance_rescale) is written under: the
+// sd-webui-cfg-rescale extension, ComfyUI's RescaleCFG node, Forge's latent modifier field.
+const CFG_RESCALE_KEYS = new Set([
+  "cfg rescale",
+  "cfg rescale phi",
+  "rescalecfg",
+  "rescale cfg",
+  "cfg rescale multiplier",
+  "cfgrescale",
+  "latent_modifier_rescale_cfg_phi",
+]);
+// Extra-network tags AUTOMATIC1111 strips from the prompt before encoding (`re_extra_net`,
+// modules/extra_networks.py:175); lora / lyco carry a LoRA, the rest Studio cannot load.
+const EXTRA_NETWORK = /<(lora|lyco|locon|loha|lokr|hypernet):([^>]+)>/gi;
+
+/** A `<lora:name:weight>` tag: positional `name[:te[:unet]]` or named `te=` / `unet=`
+ *  (extensions-builtin/Lora/extra_networks_lora.py:30-36, default weight 1). */
+export interface LoraTag {
+  name: string;
+  weight: number;
+  // Set when the U-Net multiplier differs from the text-encoder one: Studio has one weight.
+  unet_weight?: number;
+}
+
+function loraTag(body: string): LoraTag | null {
+  const positional: string[] = [];
+  const named: Record<string, string> = {};
+  for (const item of body.split(":")) {
+    const eq = item.indexOf("=");
+    if (eq > 0) named[item.slice(0, eq).trim()] = item.slice(eq + 1).trim();
+    else positional.push(item.trim());
+  }
+  const name = positional[0];
+  if (!name) return null;
+  const te = Number(named.te ?? positional[1] ?? 1);
+  const weight = Number.isFinite(te) ? te : 1;
+  const unet = Number(named.unet ?? positional[2] ?? weight);
+  return Number.isFinite(unet) && unet !== weight
+    ? { name, weight, unet_weight: unet }
+    : { name, weight };
+}
+
+/** The prompt without its extra-network tags, plus the LoRA tags and any other network named. */
+export function extractExtraNetworks(prompt: string): {
+  prompt: string;
+  loras: LoraTag[];
+  other: string[];
+} {
+  const loras: LoraTag[] = [];
+  const other: string[] = [];
+  let found = false;
+  const stripped = prompt.replace(
+    EXTRA_NETWORK,
+    (tag, kind: string, body: string) => {
+      found = true;
+      const lower = kind.toLowerCase();
+      const parsed = lower === "hypernet" ? null : loraTag(body);
+      if (parsed) loras.push(parsed);
+      else other.push(tag);
+      return "";
+    },
+  );
+  if (!found) return { prompt, loras, other };
+  // Tidy what the tags leave behind: doubled separators and spaces, a dangling comma.
+  const tidy = stripped
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\s*,(\s*,)+/g, ",")
+        .replace(/^[\s,]+|[\s,]+$/g, ""),
+    )
+    .join("\n")
+    .trim();
+  return { prompt: tidy, loras, other };
+}
+
+const numberOf = (value: string): number | undefined => {
+  const n = Number(value);
+  return value !== "" && Number.isFinite(n) ? n : undefined;
+};
+
+const SETTINGS_KEYS = new Set([
+  "steps",
+  "sampler",
+  "cfg scale",
+  "seed",
+  "size",
+  "schedule type",
+]);
+
+// AUTOMATIC1111 takes the last line as settings when it has 3+ fields (infotext_utils.py:254-257);
+// a known key is also required here, so a prompt line like "style: a, mood: b, light: c" stays a prompt.
+function isSettingsLine(
+  line: string,
+  fields: Array<[string, string]>,
+): boolean {
+  return (
+    /(^|,\s*)Steps:\s*\d+/.test(line) ||
+    (fields.length >= 3 &&
+      fields.some(([k]) => SETTINGS_KEYS.has(k.toLowerCase())))
+  );
+}
+
+/** Pasted text: an Unsloth recipe (JSON) or AUTOMATIC1111 text WITH its settings line, since any
+ *  other text would parse as a bare prompt. */
+export function pastedParameters(text: string): ImportedRecipe | null {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) return recipeJson(trimmed);
+  const last = trimmed.replace(/\r\n?/g, "\n").split("\n").pop() ?? "";
+  return isSettingsLine(last, a1111Fields(last))
+    ? parseA1111Parameters(trimmed)
+    : null;
+}
+
+/** Paste into the prompt box that is a whole parameters block (a prompt plus a Steps line with a
+ *  seed, sampler or CFG), so it fills the form rather than landing as prompt text. */
+export function isGenerationParametersPaste(text: string): boolean {
+  const last = text.trim().replace(/\r\n?/g, "\n").split("\n").pop() ?? "";
+  const keys = new Set(a1111Fields(last).map(([k]) => k.toLowerCase()));
+  return (
+    /(^|,\s*)Steps:\s*\d+/.test(last) &&
+    (keys.has("seed") || keys.has("sampler") || keys.has("cfg scale")) &&
+    pastedParameters(text) !== null
+  );
+}
+
+/** AUTOMATIC1111 / Forge / Civitai `parameters` text (modules/infotext_utils.py:234
+ *  parse_generation_parameters): prompt, optional `Negative prompt:` lines, then a `Key: value, ...`
+ *  line. Shared by image drop and Paste generation parameters. */
 export function parseA1111Parameters(text: string): ImportedRecipe | null {
-  const lines = text.replace(/\r\n/g, "\n").trim().split("\n");
+  const lines = text.replace(/\r\n?/g, "\n").trim().split("\n");
   if (lines.length === 0) {
     return null;
   }
   const last = lines[lines.length - 1];
-  const hasSettings = /(^|,\s*)Steps:\s*\d+/.test(last);
-  const settingsLine = hasSettings ? (lines.pop() ?? "") : "";
+  const fields = a1111Fields(last);
+  const hasSettings = isSettingsLine(last, fields);
+  if (hasSettings) lines.pop();
   const negativeAt = lines.findIndex((l) => l.startsWith("Negative prompt:"));
   const promptLines = negativeAt >= 0 ? lines.slice(0, negativeAt) : lines;
   const negative =
@@ -509,23 +713,47 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
           .join("\n")
           .replace(/^Negative prompt:\s*/, "")
       : null;
+  const networks = extractExtraNetworks(promptLines.join("\n").trim());
   const out: ImportedRecipe = {
-    prompt: promptLines.join("\n").trim(),
+    prompt: networks.prompt,
     negative_prompt: negative,
   };
+  if (networks.loras.length > 0) out.lora_tags = networks.loras;
+  const notApplied: string[] = networks.other.slice();
+  const hires: Record<string, string> = {};
   let legacySchedule: string | undefined;
-  let hires = false;
-  for (const m of settingsLine.matchAll(A1111_FIELD)) {
-    const key = m[1].trim().toLowerCase();
-    const value = m[2].trim();
-    const num = Number(value);
-    if (key === "steps" && Number.isInteger(num)) out.steps = num;
-    else if (key === "cfg scale" && Number.isFinite(num)) out.guidance = num;
-    else if (key === "seed" && Number.isSafeInteger(num)) out.seed = num;
+  for (const [label, value] of hasSettings ? fields : []) {
+    const key = label.toLowerCase();
+    const n = numberOf(value);
+    if (key === "steps" && n !== undefined && Number.isInteger(n))
+      out.steps = n;
+    else if (key === "cfg scale" && n !== undefined) out.guidance = n;
+    else if (key === "seed" && n !== undefined && Number.isSafeInteger(n))
+      out.seed = n;
     else if (key === "model" && value) out.model = value;
-    else if (key === "denoising strength" && Number.isFinite(num))
-      out.strength = num;
-    else if (key.startsWith("hires")) hires = true;
+    else if (key === "denoising strength" && n !== undefined) out.strength = n;
+    // A1111 numbering (1 = last layer); infotext omits it at 1 (modules/processing.py:790).
+    else if (key === "clip skip" && n !== undefined && Number.isInteger(n))
+      out.clip_skip = n;
+    else if (CFG_RESCALE_KEYS.has(key) && n !== undefined) out.cfg_rescale = n;
+    else if (
+      key === "variation seed" &&
+      n !== undefined &&
+      Number.isSafeInteger(n)
+    )
+      out.variation_seed = n;
+    else if (key === "variation seed strength" && n !== undefined)
+      out.variation_strength = n;
+    // Inpaint settings (modules/processing.py:1563-1569 writes them for img2img inpaint).
+    else if (key === "mask blur" && n !== undefined) out.mask_blur = n;
+    else if (key === "inpaint area")
+      out.inpaint_only_masked = /only masked/i.test(value);
+    else if (
+      (key === "masked area padding" || key === "only masked padding") &&
+      n !== undefined
+    )
+      out.inpaint_padding = n;
+    else if (key.startsWith("hires")) hires[label] = value;
     else if (key === "sampler") {
       out.sampler = labelId(SAMPLER_LABELS, value);
       // Before AUTOMATIC1111 1.9 the schedule rode on the sampler name: `DPM++ 2M Karras`.
@@ -547,14 +775,18 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
         out.width = Number(size[1]);
         out.height = Number(size[2]);
       }
-    }
+    } else if (!A1111_INFO_KEYS.has(key) && value)
+      notApplied.push(`${label}: ${value}`);
   }
   out.schedule_type ??= legacySchedule;
+  const hiresKeys = Object.keys(hires);
+  if (hiresKeys.length > 0) out.hires = hires;
   // txt2img hires fix also writes a denoising strength; without it the strength means img2img.
   if (out.strength !== undefined) {
-    if (hires) delete out.strength;
+    if (hiresKeys.length > 0) delete out.strength;
     else out.workflow ??= "img2img";
   }
+  if (notApplied.length > 0) out.parameters_not_applied = notApplied;
   return out.prompt || hasSettings ? out : null;
 }
 
@@ -622,6 +854,10 @@ export interface RestorableRecipe {
   // The prompt upsampler's caption and outcome; restore decides the Enhance prompt toggle from them.
   enhanced_prompt?: string | null;
   prompt_enhancement?: "applied" | "off" | "unavailable" | "failed" | null;
+  // Inpaint: mask blur px, "Only masked" area and its padding px (A1111's Inpaint area).
+  mask_blur?: number;
+  inpaint_only_masked?: boolean;
+  inpaint_padding?: number;
 }
 
 export const APPLIED_RECIPE_KEYS = [
@@ -645,6 +881,9 @@ export const APPLIED_RECIPE_KEYS = [
   "schedule_type",
   "enhanced_prompt",
   "prompt_enhancement",
+  "mask_blur",
+  "inpaint_only_masked",
+  "inpaint_padding",
 ] as const;
 
 /** Known but not applied: loading a model or a ControlNet image stays the user's call. */
@@ -673,9 +912,22 @@ export const INFO_RECIPE_KEYS = [
 /** Matches RECIPE_SCHEMA_VERSION in core/inference/image_gallery.py. */
 export const RECIPE_SCHEMA_VERSION = 1;
 
+/** Read from AUTOMATIC1111 text but not sent by this build: `importNotApplied` names them, and
+ *  `lora_tags` is resolved against the installed LoRAs by the page. */
+export const PENDING_RECIPE_KEYS = [
+  "clip_skip",
+  "cfg_rescale",
+  "variation_seed",
+  "variation_strength",
+  "hires",
+  "lora_tags",
+  "parameters_not_applied",
+] as const;
+
 const KNOWN_RECIPE_KEYS = new Set<string>([
   ...APPLIED_RECIPE_KEYS,
   ...INFO_RECIPE_KEYS,
+  ...PENDING_RECIPE_KEYS,
 ]);
 
 /** Non-empty keys this build does not know (newer Unsloth, other tools), named instead of dropped. */
@@ -692,6 +944,36 @@ export function unknownRecipeKeys(r: ImportedRecipe): string[] {
       (Array.isArray(v) && v.length === 0)
     );
   });
+}
+
+/** Settings an AUTOMATIC1111 / Forge / Civitai text carried that this build cannot apply, by name. */
+export function importNotApplied(r: ImportedRecipe): string[] {
+  const out: string[] = [];
+  const clipSkip = num(r.clip_skip);
+  // SDXL already encodes from the penultimate layer, which is what A1111 / Forge render for Clip skip
+  // 1 and 2 (Forge minimal_clip_skip=2; A1111 skips CLIP-G never, CLIP-L only with sdxl_clip_l_skip).
+  if (clipSkip !== undefined && clipSkip > 2) out.push(`Clip skip ${clipSkip}`);
+  const rescale = num(r.cfg_rescale);
+  if (rescale !== undefined && rescale !== 0)
+    out.push(`CFG rescale ${rescale}`);
+  const variation = num(r.variation_seed);
+  const variationStrength = num(r.variation_strength);
+  if (variation !== undefined && variationStrength !== 0) {
+    out.push(
+      `variation seed ${variation}${variationStrength !== undefined ? ` (strength ${variationStrength})` : ""}`,
+    );
+  }
+  if (r.hires && typeof r.hires === "object" && !Array.isArray(r.hires)) {
+    const parts = Object.entries(r.hires as Record<string, unknown>)
+      .filter(([, v]) => typeof v === "string" && v !== "")
+      .map(([k, v]) => `${k}: ${String(v)}`);
+    if (parts.length > 0) out.push(`hires fix (${parts.join(", ")})`);
+  }
+  if (Array.isArray(r.parameters_not_applied)) {
+    for (const item of r.parameters_not_applied)
+      if (typeof item === "string") out.push(item);
+  }
+  return out;
 }
 
 export function newerRecipeSchema(r: ImportedRecipe): boolean {
@@ -780,7 +1062,58 @@ export function recipeSettings(
       r.prompt_enhancement === "failed"
         ? r.prompt_enhancement
         : null,
+    // Within the request's bounds (mask_blur 0-64, inpaint_padding 0-256).
+    mask_blur: clamp(int(r.mask_blur), 0, 64),
+    inpaint_only_masked:
+      typeof r.inpaint_only_masked === "boolean"
+        ? r.inpaint_only_masked
+        : undefined,
+    inpaint_padding: clamp(int(r.inpaint_padding), 0, 256),
   };
+}
+
+const LORA_EXTENSIONS = /\.(safetensors|gguf|ckpt|pt|bin)$/i;
+const loraKey = (name: string) =>
+  name
+    .trim()
+    .replace(LORA_EXTENSIONS, "")
+    .split(/[\\/:]/)
+    .pop()
+    ?.toLowerCase() ?? "";
+
+/** Resolve `<lora:name:weight>` tags against the installed LoRAs by file name (the tag carries
+ *  A1111's file stem), weights clamped to the request's 0-2. Unmatched names are returned. */
+export function matchLoraTags(
+  tags: unknown,
+  available: readonly { id: string; display_name: string; source?: string }[],
+): { loras: string[]; unmatched: string[]; notes: string[] } {
+  const loras: string[] = [];
+  const unmatched: string[] = [];
+  const notes: string[] = [];
+  if (!Array.isArray(tags)) return { loras, unmatched, notes };
+  const local = available.filter(
+    (a) => a.source === undefined || a.source === "local",
+  );
+  for (const tag of tags as unknown[]) {
+    if (!tag || typeof tag !== "object") continue;
+    const { name, weight, unet_weight } = tag as Partial<LoraTag>;
+    if (typeof name !== "string" || typeof weight !== "number") continue;
+    const key = loraKey(name);
+    const hit = local.find(
+      (a) => loraKey(a.id) === key || loraKey(a.display_name) === key,
+    );
+    if (!hit) {
+      unmatched.push(name);
+      continue;
+    }
+    const w = Math.min(2, Math.max(0, weight));
+    loras.push(`${hit.id}:${w}`);
+    if (w !== weight)
+      notes.push(`LoRA ${name} weight ${weight} (clamped to ${w})`);
+    if (typeof unet_weight === "number")
+      notes.push(`LoRA ${name} U-Net weight ${unet_weight}`);
+  }
+  return { loras, unmatched, notes };
 }
 
 type ComfyGraph = Record<

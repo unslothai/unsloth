@@ -20,6 +20,7 @@ import {
   ArrowUpDownIcon,
   Refresh01Icon,
   Delete02Icon,
+  DiceFaces03Icon,
   Download01Icon,
   Edit03Icon,
   FolderAddIcon,
@@ -27,6 +28,7 @@ import {
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
+  Recycle01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -229,6 +231,7 @@ import {
   residentDefaultsKey,
   residentRecipeFor,
   resolutionFor,
+  stepsSliderMax,
 } from "./image-generation-defaults";
 import {
   MIN_DIM,
@@ -299,10 +302,25 @@ import {
   stopButtonLabel,
 } from "./lib/generation-stop";
 import { drawInfoStamp, infoStampText } from "./lib/info-stamp";
+import { lastSeedOf, reusableSeed } from "./lib/seed-controls";
+import { PasteParametersDialog } from "./paste-parameters-dialog";
+import {
+  INPAINT_PADDING_DEFAULT,
+  INPAINT_PADDING_MAX,
+  type InpaintMaskRequestFields,
+  inpaintMaskRequestFields,
+  MASK_BLUR_DEFAULT,
+  MASK_BLUR_MAX,
+} from "./lib/inpaint-options";
 import {
   copyPngTextChunks,
+  type ImportedRecipe,
   importedRecipe,
+  importNotApplied,
+  isGenerationParametersPaste,
+  matchLoraTags,
   newerRecipeSchema,
+  pastedParameters,
   pngRecipe,
   readEmbeddedRecipe,
   recipeSettings,
@@ -1642,6 +1660,12 @@ export function ImagesPage({
     guidance: number;
   } | null>(null);
   const [seed, setSeed] = useState("");
+  // Inpaint mask options; the defaults send nothing (lib/inpaint-options.ts).
+  const [maskBlur, setMaskBlur] = useState(MASK_BLUR_DEFAULT);
+  const [inpaintOnlyMasked, setInpaintOnlyMasked] = useState(false);
+  const [inpaintPadding, setInpaintPadding] = useState(INPAINT_PADDING_DEFAULT);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
   const [count, setCount] = useState(1);
@@ -1817,6 +1841,9 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
+  const [sessionSeed, setSessionSeed] = useState<number | null>(null);
+  const lastSeed = useMemo(() => reusableSeed(sessionSeed, images), [sessionSeed, images]);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),
   );
@@ -2717,6 +2744,9 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
+    if (typeof image.mask_blur === "number") setMaskBlur(image.mask_blur);
+    if (typeof image.inpaint_only_masked === "boolean") setInpaintOnlyMasked(image.inpaint_only_masked);
+    if (typeof image.inpaint_padding === "number") setInpaintPadding(image.inpaint_padding);
     // Conditioning images are not persisted, so every upload is cleared. Edit and Reference reopen
     // their own workflow, so Generate stays blocked until the inputs are supplied again instead of
     // replaying as text-to-image; the others return to Create.
@@ -2761,22 +2791,17 @@ export function ImagesPage({
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
-  const importSettingsFromFile = useCallback(
-    async (file: File | Uint8Array) => {
-      let recipe = null;
-      try {
-        const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
-        recipe = importedRecipe(readEmbeddedRecipe(bytes));
-      } catch {
-        recipe = null;
-      }
-      if (!recipe) {
-        toast.error("No generation settings found in this image", {
-          description: "Images saved by Unsloth, ComfyUI, or tools that write a parameters block can be loaded.",
-        });
-        return;
-      }
-      const settings = recipeSettings(recipe, { width, height, steps, guidance });
+  // One restore path for a dropped image and pasted AUTOMATIC1111 / Forge / Civitai text.
+  const applyImportedRecipe = useCallback(
+    (recipe: ImportedRecipe) => {
+      // `<lora:name:weight>` tags select the installed LoRA of that file name.
+      const tagged = matchLoraTags(recipe.lora_tags, availableLoras);
+      const settings = recipeSettings(
+        tagged.loras.length > 0
+          ? { ...recipe, loras: [...(Array.isArray(recipe.loras) ? recipe.loras : []), ...tagged.loras] }
+          : recipe,
+        { width, height, steps, guidance },
+      );
       const localized = settings.localized_edit;
       restoreSettings({
         ...settings,
@@ -2811,7 +2836,12 @@ export function ImagesPage({
           );
         }
       }
-      const notApplied = unknownRecipeKeys(recipe);
+      const notApplied = [
+        ...importNotApplied(recipe),
+        ...tagged.unmatched.map((name) => `LoRA ${name} (not installed)`),
+        ...tagged.notes,
+        ...unknownRecipeKeys(recipe),
+      ];
       const baked = Array.isArray(recipe.baked_loras)
         ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
         : [];
@@ -2853,7 +2883,41 @@ export function ImagesPage({
         });
       }
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras],
+  );
+  const importSettingsFromFile = useCallback(
+    async (file: File | Uint8Array) => {
+      let recipe = null;
+      try {
+        const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
+        recipe = importedRecipe(readEmbeddedRecipe(bytes));
+      } catch {
+        recipe = null;
+      }
+      if (!recipe) {
+        toast.error("No generation settings found in this image", {
+          description: "Images saved by Unsloth, ComfyUI, or tools that write a parameters block can be loaded.",
+        });
+        return;
+      }
+      applyImportedRecipe(recipe);
+    },
+    [applyImportedRecipe],
+  );
+  // Paste generation parameters: the text AUTOMATIC1111, Forge and Civitai copy, same parser as a drop.
+  const importSettingsFromText = useCallback(
+    (text: string): boolean => {
+      const recipe = pastedParameters(text);
+      if (!recipe) {
+        toast.error("No generation parameters found in that text", {
+          description: "Paste the prompt, the Negative prompt: line and the Steps: ... line as AUTOMATIC1111, Forge or Civitai copy them.",
+        });
+        return false;
+      }
+      applyImportedRecipe(recipe);
+      return true;
+    },
+    [applyImportedRecipe],
   );
   // Desktop: Tauri delivers OS drops as paths and suppresses the DOM drop event.
   const importNativePath = useCallback(
@@ -4908,6 +4972,7 @@ export function ImagesPage({
     let condStrength: number | undefined;
     let condUpscale: number | undefined;
     let condFields: ReturnType<typeof conditionedRequestFields> | undefined;
+    let condInpaint: InpaintMaskRequestFields = {};
     try {
       if (isTransform) {
         condInit = initImage ?? undefined;
@@ -4916,6 +4981,10 @@ export function ImagesPage({
         condInit = initImage ?? undefined;
         condMask = maskImage ?? undefined;
         condStrength = strength;
+        condInpaint = inpaintMaskRequestFields(
+          { maskBlur, onlyMasked: inpaintOnlyMasked, padding: inpaintPadding },
+          status?.supports_inpaint_only_masked === true,
+        );
       } else if (isExtend) {
         const built = await buildOutpaint(initImage!, extendSides, extendPct);
         condInit = built.image;
@@ -5067,6 +5136,7 @@ export function ImagesPage({
             init_image: condInit,
             mask_image: condMask,
             strength: condStrength,
+            ...condInpaint,
             upscale: condUpscale,
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
@@ -5118,6 +5188,8 @@ export function ImagesPage({
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
+        const runSeed = lastSeedOf(res.images);
+        if (runSeed !== null) setSessionSeed(runSeed);
         // Asked for enhancement and did not get it: say so once, without blocking the result.
         if (enhanceOn && upsamplerCapability.supported) {
           const notice = enhancementNotice(res.images[0]?.prompt_enhancement);
@@ -5164,7 +5236,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5717,8 +5789,16 @@ export function ImagesPage({
                   onSave={imagePresets.savePreset}
                   onDelete={imagePresets.deletePreset}
                   onImportFromImage={() => importFileRef.current?.click()}
+                  onPasteParameters={() => setPasteOpen(true)}
                 />
               )}
+              <PasteParametersDialog
+                open={pasteOpen}
+                onOpenChange={setPasteOpen}
+                text={pasteText}
+                onTextChange={setPasteText}
+                onApply={importSettingsFromText}
+              />
             </div>
 
             {workflow === "transform" && (
@@ -5819,6 +5899,43 @@ export function ImagesPage({
                       step={0.05}
                       onChange={setStrength}
                     />
+                    <SliderField
+                      label="Mask blur"
+                      hint="Softens the mask edge by this many pixels so the repainted region blends into the source. 0 keeps the hard edge."
+                      value={maskBlur}
+                      min={0}
+                      max={MASK_BLUR_MAX}
+                      step={1}
+                      onChange={setMaskBlur}
+                    />
+                    {status?.supports_inpaint_only_masked && (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                            Only masked
+                            <InfoHint>
+                              Repaint just the masked area plus padding at full resolution, then paste it back. Sharper small edits on big images; the model sees less of the surroundings.
+                            </InfoHint>
+                          </span>
+                          <Switch
+                            checked={inpaintOnlyMasked}
+                            onCheckedChange={setInpaintOnlyMasked}
+                            aria-label="Only masked"
+                          />
+                        </div>
+                        {inpaintOnlyMasked && (
+                          <SliderField
+                            label="Padding"
+                            hint="Pixels of context kept around the mask when repainting only the masked area."
+                            value={inpaintPadding}
+                            min={0}
+                            max={INPAINT_PADDING_MAX}
+                            step={4}
+                            onChange={setInpaintPadding}
+                          />
+                        )}
+                      </>
+                    )}
                   </>
                 )}
               </>
@@ -6157,6 +6274,14 @@ export function ImagesPage({
                   setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
                 }}
                 onChange={(e) => setPrompt(e.target.value)}
+                onPaste={(e) => {
+                  // A whole AUTOMATIC1111 / Forge / Civitai block fills the form instead of the prompt.
+                  const text = e.clipboardData.getData("text/plain");
+                  if (isGenerationParametersPaste(text)) {
+                    e.preventDefault();
+                    importSettingsFromText(text);
+                  }
+                }}
               />
             </Field>
             {upsamplerCapability.supported && (
@@ -6379,7 +6504,7 @@ export function ImagesPage({
                     hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                     value={steps}
                     min={1}
-                    max={50}
+                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
                   />
@@ -6469,11 +6594,40 @@ export function ImagesPage({
                   hint="Leave empty for a fresh random seed each run."
                   className="pt-2"
                 >
-                  <Input
-                    placeholder="Random if empty"
-                    value={seed}
-                    onChange={(e) => setSeed(e.target.value)}
-                  />
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      placeholder="Random if empty"
+                      value={seed}
+                      onChange={(e) => setSeed(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0"
+                      aria-label="Random seed"
+                      title="Random seed each run"
+                      disabled={seed === ""}
+                      onClick={() => setSeed("")}
+                    >
+                      <HugeiconsIcon icon={DiceFaces03Icon} className="size-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0"
+                      aria-label="Reuse last seed"
+                      title={lastSeed === null ? "No image generated yet" : `Reuse last seed (${lastSeed})`}
+                      disabled={lastSeed === null}
+                      onClick={() => {
+                        if (lastSeed !== null) setSeed(String(lastSeed));
+                      }}
+                    >
+                      <HugeiconsIcon icon={Recycle01Icon} className="size-4" />
+                    </Button>
+                  </div>
                 </Field>
 
                 <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
