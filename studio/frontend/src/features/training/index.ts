@@ -98,6 +98,7 @@ export {
   groupRewardPreviews,
   rewardDraftMarkdown,
   rewardReference,
+  rewardExtractsResponse,
   rewardReferenceColumn,
 } from "./lib/reward-editor";
 export { useRewardPreview } from "./hooks/use-reward-preview";

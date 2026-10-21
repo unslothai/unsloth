@@ -15,6 +15,7 @@ const {
   defaultRewardRule,
   groupRewardPreviews,
   rewardDraftMarkdown,
+  rewardExtractsResponse,
   rewardReference,
   RewardDraftError,
 } = await import("../src/features/training/lib/reward-editor.ts");
@@ -291,5 +292,21 @@ test("mixed-column preview groups preserve distinct references, weights and miss
     groupRewardPreviews([selections[1]], library, { alternate_answer: "" })[0]
       .reference,
     "",
+  );
+});
+
+test("regex rules expose response extraction, as the backend applies it", () => {
+  assert.equal(
+    rewardExtractsResponse({ type: "regex", pattern: "[0-9]+" }),
+    true,
+  );
+  assert.equal(rewardExtractsResponse({ type: "json_schema" }), true);
+  assert.equal(
+    rewardExtractsResponse({ type: "exact_match", compare_to: "answer" }),
+    true,
+  );
+  assert.equal(
+    rewardExtractsResponse({ type: "length", max_chars: 10 }),
+    false,
   );
 });

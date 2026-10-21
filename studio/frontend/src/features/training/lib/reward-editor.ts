@@ -202,6 +202,17 @@ export function rewardReferenceColumn(
     : null;
 }
 
+/** Rule types whose response part can be extracted before scoring; the backend applies it to each. */
+export function rewardExtractsResponse(
+  rule: Record<string, unknown> | null | undefined,
+): boolean {
+  return (
+    rewardReferenceColumn(rule) !== null ||
+    rule?.type === "json_schema" ||
+    rule?.type === "regex"
+  );
+}
+
 /** Auto-fill text references using the training role mapping. Non-text cells need a manual reference. */
 export function rewardReference(
   column: string,

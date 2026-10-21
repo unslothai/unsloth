@@ -62,6 +62,7 @@ import {
   defaultRewardRule,
   rewardDraftMarkdown,
   rewardReference,
+  rewardExtractsResponse,
   rewardReferenceColumn,
 } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
@@ -461,7 +462,7 @@ function ExtractionTab({
 }) {
   const t = useT();
   const compareTo = rewardReferenceColumn(rule);
-  const extractable = compareTo !== null || rule.type === "json_schema";
+  const extractable = rewardExtractsResponse(rule);
   const normalize = rule.normalize ?? [];
   return (
     <>
