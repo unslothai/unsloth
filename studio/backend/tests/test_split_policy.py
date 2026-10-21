@@ -24,6 +24,10 @@ if _TESTS_DIR not in sys.path:
 import pytest  # noqa: E402
 
 from test_llama_cpp_mtp_detection import _MTP_MODEL, _flags_dict, _resolver_backend  # noqa: E402
+
+# A fake llama-server pid above the kernel's pid_max (4194304 by default, 2**22 at most on 64-bit),
+# so any real os.kill / killpg a code path sends to it fails with ESRCH instead of reaching a live process.
+_FAKE_SERVER_PID = 2**31 - 1
 from test_llama_cpp_placement import _REAL_POPEN, _backend, _launch  # noqa: E402
 
 from core.inference import split_policy as sp  # noqa: E402
@@ -999,7 +1003,7 @@ def test_wired_auto_tensor_start_failure_retries_with_layer(tmp_path, monkeypatc
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "returncode": None,
                 "poll": lambda self: None,
@@ -1077,7 +1081,7 @@ def _launch_scripted(backend, gguf, behave, **load_kwargs):
         def __init__(self, cmd):
             self.healthy, lines, self.rc = behave(cmd)
             self.stdout = list(lines)
-            self.pid = 123
+            self.pid = _FAKE_SERVER_PID
             self.returncode = None if self.healthy else self.rc
 
         def poll(self):
@@ -1192,7 +1196,7 @@ def test_wired_auto_tensor_mtp_decode_failure_keeps_mtp_on_layer(tmp_path, monke
             "P",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "returncode": None,
                 "poll": lambda self: None,
@@ -1233,7 +1237,7 @@ def test_wired_concurrent_load_cannot_clear_the_running_attempt(tmp_path, monkey
             "P",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "returncode": None,
                 "poll": lambda self: None,
