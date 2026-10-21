@@ -11642,7 +11642,15 @@ async def _maybe_auto_switch_model(
             return
         if await asyncio.to_thread(_loaded_identity_satisfies, named_model):
             # The name was authorized, not the resident: a caller's own file can carry any id.
-            await asyncio.to_thread(account_access.require_model_access, _loaded_slot_ident())
+            resident = _loaded_slot_ident()
+            try:
+                await asyncio.to_thread(account_access.require_model_access, resident)
+            except HTTPException as refusal:
+                # A Hub resident the caller's own token can fetch is theirs to use as well.
+                if refusal.status_code != 404 or not await _caller_token_authorizes_download(
+                    str(resident or ""), fastapi_request
+                ):
+                    raise
             return
         raise HTTPException(status_code = 404, detail = "Model not found")
 
