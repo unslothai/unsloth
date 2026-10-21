@@ -1584,3 +1584,36 @@ def test_new_length_eager_step_hands_blocks_normal_tensors_on_cpu(monkeypatch):
         assert torch.equal(got, (hidden + txt.mean()) * (1 + mod) + mod)
     finally:
         cg.uninstall_all([handle])
+
+
+def test_eager_as_recorded_runs_the_original_call_when_the_copies_do_not_fit(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    seen: list = []
+
+    class LenDiT(nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            return_dict = True,
+        ):
+            seen.append(encoder_hidden_states.is_inference())
+            return (hidden_states + encoder_hidden_states.mean(),)
+
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
+    handle = _armed(module)
+
+    def no_room(tensors):
+        raise torch.cuda.OutOfMemoryError("no room")
+
+    monkeypatch.setattr(handle, "_statics", no_room)
+    try:
+        with torch.inference_mode():
+            hidden, txt = torch.randn(1, 4, 8), torch.randn(1, 3, 8)
+            got = handle._eager_as_recorded((hidden, txt), {"return_dict": False})[0]
+        assert seen == [True]
+        assert torch.equal(got, hidden + txt.mean())
+    finally:
+        cg.uninstall_all([handle])

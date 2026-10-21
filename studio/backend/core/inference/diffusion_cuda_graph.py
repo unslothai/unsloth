@@ -1043,7 +1043,13 @@ class GraphedForward:
         ]
         if not picks:
             return self._eager(args, kwargs)
-        for i, fresh in zip(picks, self._statics([live[i] for i in picks])):
+        try:
+            copies = self._statics([live[i] for i in picks])
+        except (
+            _torch().cuda.OutOfMemoryError
+        ):  # no room for the copies: run as before, at the cost of a recompile
+            return self._eager(args, kwargs)
+        for i, fresh in zip(picks, copies):
             live[i] = fresh
         args, kwargs = _rebuild(spec, live)
         return self._eager(args, kwargs)
