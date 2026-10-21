@@ -180,8 +180,6 @@ def test_emphasis_restores_the_mean():
     assert torch.equal(ones, z)
 
 
-
-
 @pytest.mark.parametrize(
     "family, a1111, expected",
     [
@@ -200,8 +198,6 @@ def test_emphasis_restores_the_mean():
 )
 def test_clip_skip_mapping(family, a1111, expected):
     assert diffusers_clip_skip(family, a1111) == expected
-
-
 
 
 def _fake_pipe(layers = 12):
@@ -482,8 +478,6 @@ def test_weights_and_long_prompts_change_the_embeddings(tiny_sdxl):
     assert long["negative_prompt_embeds"].shape == long["prompt_embeds"].shape
     # Zero negatives for an empty negative prompt (force_zeros_for_empty_prompt), as the pipeline.
     assert not one["negative_prompt_embeds"].any()
-
-
 
 
 def test_request_model_ranges():
