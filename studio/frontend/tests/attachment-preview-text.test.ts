@@ -40,7 +40,7 @@ const {
   writeDocxListNumbers,
   writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
-const { docxSymbolText } = await import("../src/features/chat/docx-reader.ts");
+const { writeDocxSymbols } = await import("../src/features/chat/docx-reader.ts");
 const { definePDFJSModule } = await import("unpdf");
 const { readRtfAttachmentContent } =
   await import("../src/features/chat/rtf.ts");
@@ -1220,7 +1220,7 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
   const original = (globalThis as { DOMParser?: unknown }).DOMParser;
   (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
   try {
-    const marked = markDocxNotes(archive, docxSymbolText);
+    const marked = markDocxNotes(archive);
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({
       buffer: Buffer.from(marked.archive),
@@ -1273,7 +1273,7 @@ test("linearizeDocxMath keeps equations in the body, tables and notes", async ()
   globals.DOMParser = XmlDomParser;
   globals.XMLSerializer = XmlSerializer;
   try {
-    const marked = markDocxNotes(linearizeDocxMath(archive, docxSymbolText), docxSymbolText);
+    const marked = markDocxNotes(linearizeDocxMath(archive));
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
     assert.equal(
@@ -1286,7 +1286,7 @@ test("linearizeDocxMath keeps equations in the body, tables and notes", async ()
   }
 });
 
-test("linearizeDocxMath and markDocxNotes keep Insert > Symbol characters as the backend does", async () => {
+test("writeDocxSymbols keeps Insert > Symbol characters in the body, equations and notes as the backend does", async () => {
   const ns =
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
     'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
@@ -1300,6 +1300,7 @@ test("linearizeDocxMath and markDocxNotes keep Insert > Symbol characters as the
       "word/document.xml": strToU8(
         `<w:document ${ns}><w:body>` +
           `<w:p>${run("Smoker: ")}<w:r>${sym("Wingdings", "F0FE")}</w:r>${run(" Yes")}<w:r><w:footnoteReference w:id="1"/></w:r></w:p>` +
+          `<w:p>${run("Limit ")}<w:r>${sym("Symbol", "221E")}${sym("Arial", "2713")}${sym("Symbol", "F0B1")}</w:r></w:p>` +
           `<w:p><m:oMath><m:r><m:t>x</m:t></m:r><m:r>${sym("Symbol", "F0B3")}</m:r><m:r><m:t>1</m:t></m:r>` +
           `<w:r>${sym("Symbol", "F0B1")}</w:r><m:r><m:t>e</m:t></m:r></m:oMath></w:p>` +
           `</w:body></w:document>`,
@@ -1318,10 +1319,10 @@ test("linearizeDocxMath and markDocxNotes keep Insert > Symbol characters as the
   globals.DOMParser = XmlDomParser;
   globals.XMLSerializer = XmlSerializer;
   try {
-    const marked = markDocxNotes(linearizeDocxMath(archive, docxSymbolText), docxSymbolText);
+    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(archive)));
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
-    assert.equal(marked.label(value), "Smoker: 🗹 Yes[1]\n\nx≥1±e\n\nFootnotes\n[1] Above ≥°∞☒✓ C");
+    assert.equal(marked.label(value), "Smoker: 🗹 Yes[1]\n\nLimit ∞✓±\n\nx≥1±e\n\nFootnotes\n[1] Above ≥°∞☒✓ C");
   } finally {
     Object.assign(globals, original);
   }
@@ -1386,22 +1387,22 @@ test("linearizeDocxMath writes equations as the backend does and leaves other pa
   globals.XMLSerializer = XmlSerializer;
   try {
     const plain = archive('<w:p><w:r><w:t>oMath is only a word here</w:t></w:r></w:p>');
-    assert.equal(linearizeDocxMath(plain, docxSymbolText), plain);
+    assert.equal(linearizeDocxMath(plain), plain);
     // How Chromium's DOMParser returns a part cut short at an XML error.
     const truncated = archive(
       '<parsererror xmlns="http://www.w3.org/1999/xhtml"/><w:p><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p>',
     );
-    assert.equal(linearizeDocxMath(truncated, docxSymbolText), truncated);
+    assert.equal(linearizeDocxMath(truncated), truncated);
     const strict = zipSync({
       "word/document.xml": strToU8(
         '<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main" xmlns:m="http://purl.oclc.org/ooxml/officeDocument/math">' +
           "<w:body><w:p><m:oMath><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></w:p></w:body></w:document>",
       ),
     });
-    assert.ok(strFromU8(unzipSync(linearizeDocxMath(strict, docxSymbolText))["word/document.xml"]).includes(">x^{2}<"));
+    assert.ok(strFromU8(unzipSync(linearizeDocxMath(strict))["word/document.xml"]).includes(">x^{2}<"));
     for (const [omml, expected] of OMML_CASES) {
       const filled = omml.replace(/\{([^{}]*)\}/g, (_, text: string) => `<m:r><m:t>${text}</m:t></m:r>`);
-      const xml = strFromU8(unzipSync(linearizeDocxMath(archive(`<w:p><m:oMath>${filled}</m:oMath></w:p>`), docxSymbolText))["word/document.xml"]);
+      const xml = strFromU8(unzipSync(linearizeDocxMath(archive(`<w:p><m:oMath>${filled}</m:oMath></w:p>`)))["word/document.xml"]);
       const doc = new XmlDomParser().parseFromString(xml, "application/xml");
       assert.equal(doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")[0]?.textContent, expected);
     }
@@ -1431,7 +1432,7 @@ test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls
   const original = (globalThis as { DOMParser?: unknown }).DOMParser;
   (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
   try {
-    assert.equal(markDocxNotes(archive, docxSymbolText).label(""), "Footnotes\n[1] Keep FILLED");
+    assert.equal(markDocxNotes(archive).label(""), "Footnotes\n[1] Keep FILLED");
   } finally {
     (globalThis as { DOMParser?: unknown }).DOMParser = original;
   }
@@ -1466,7 +1467,7 @@ test("markDocxNotes skips move sources, deletions and text box fallbacks", () =>
   (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
   try {
     assert.equal(
-      markDocxNotes(archive, docxSymbolText).label(""),
+      markDocxNotes(archive).label(""),
       "Footnotes\n[1] Keep COVID-19 MOVED BOX",
     );
   } finally {
