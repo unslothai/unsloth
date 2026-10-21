@@ -27,6 +27,14 @@
       "reason": "Loads the installed torchao package file it is stubbing around, located via find_spec."
     },
     {
+      "file": "studio/backend/core/export/reap.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "9f96fe82c04e1bd3",
+      "count": 1,
+      "reason": "Loads Unsloth's own installed models/mapper.py (plain data), located via find_spec, to read its 16-bit Hub id table without importing unsloth."
+    },
+    {
       "file": "studio/backend/core/export/worker.py",
       "rule": "trust-remote-code",
       "sink": "assignment",
