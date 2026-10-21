@@ -248,6 +248,9 @@ def test_one_row_into_a_taller_out_writes_only_that_row():
 def test_planned_rows_are_reused_without_an_out(monkeypatch):
     # fast_geglu_inference calls the gate and up projections with out = None.
     utils = _utils_with_kernels()
+    from unsloth.kernels import triton_launch
+    if not triton_launch._ENABLED:
+        pytest.skip("plans are kept only with the direct launcher (off on HIP)")
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
     proj = _linear4bit(1024, 4096)
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
