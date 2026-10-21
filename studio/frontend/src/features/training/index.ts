@@ -79,6 +79,7 @@ export {
   previewRewards,
 } from "./api/rewards-api";
 export type { RewardRecord } from "./api/rewards-api";
+export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export { rlChartKeys } from "./lib/rl-chart-keys";
 export {

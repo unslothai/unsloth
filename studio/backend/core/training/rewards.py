@@ -568,6 +568,10 @@ def score_rule(
     return rule["else"]
 
 
+# A rendered prompt's assistant prefill, under a name no dataset column (reward reference) takes.
+PREFILL_COLUMN = "_studio_prefill"
+
+
 def make_reward_func(spec: dict) -> Callable[..., list[float]]:
     """A TRL reward function; its __name__ becomes the rewards/<name>/mean log key."""
     rule = spec["rule"]
@@ -580,7 +584,7 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
     ) -> list[float]:
         references = kwargs.get(column) if column else None
         # A pre-rendered prompt's assistant prefill, which TRL would have restored itself.
-        prefills = kwargs.get("prefill")
+        prefills = kwargs.get(PREFILL_COLUMN)
         out = []
         for i, completion in enumerate(completions or []):
             ref = (

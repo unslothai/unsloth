@@ -283,7 +283,9 @@ def format_rl_dataset(
                 shared -= 1
             # Branches repeating the mapped prompt are full conversations, even when it opens on an
             # assistant greeting; only other assistant-first lists are completion-only.
-            repeats_prompt = 0 < len(mapped) <= shared and chosen[: len(mapped)] == mapped
+            repeats_prompt = 0 < len(mapped) <= shared and _strip_nulls(
+                chosen[: len(mapped)]
+            ) == _strip_nulls(mapped)
             if (
                 not repeats_prompt
                 and chosen[0]["role"] == "assistant"
@@ -365,6 +367,8 @@ def render_grpo_prompts(
     drop = ["tools"] if "tools" in columns else []
     if not (thinking or nulls or tools or _has_tool_ended_prompts(dataset)):
         return (dataset.remove_columns(drop) if drop else dataset), False
+    from core.training.rewards import PREFILL_COLUMN
+
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
     # TRL continues an assistant-ended prompt and puts it back in front of the completion before
     # scoring; a text prompt loses both, so the prefill is kept for the rewards (make_reward_func).
@@ -390,7 +394,8 @@ def render_grpo_prompts(
             )
         }
         if prefills:
-            out["prefill"] = (prompt[-1].get("content") or "") if prefill else ""
+            from core.training.rewards import PREFILL_COLUMN
+            out[PREFILL_COLUMN] = (prompt[-1].get("content") or "") if prefill else ""
         return out
 
     map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
