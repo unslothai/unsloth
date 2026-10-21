@@ -404,3 +404,25 @@ def test_json_schema_refuses_keywords_it_does_not_enforce():
                 "schema": {"type": "object", "properties": {"answer": {"type": "number"}}},
             }
         )
+
+
+def test_regex_rules_keep_and_apply_their_extraction():
+    from core.training.rewards import score_rule, validate_rule
+
+    rule = validate_rule(
+        {
+            "type": "regex",
+            "pattern": "[0-9]+",
+            "mode": "fullmatch",
+            "extract": {"between": ["<answer>", "</answer>"]},
+            "score": {"match": 1.0, "miss": 0.0},
+        }
+    )
+    assert rule["extract"] == {"between": ["<answer>", "</answer>"]}
+    assert score_rule(rule, "<reasoning>2+2=4</reasoning><answer>4</answer>") == 1.0
+    assert score_rule(rule, "<answer>four</answer>") == 0.0
+    assert score_rule(rule, "4") == 0.0  # no answer tags: nothing to match
+    plain = validate_rule(
+        {"type": "regex", "pattern": "[0-9]+", "score": {"match": 1.0, "miss": 0.0}}
+    )
+    assert "extract" not in plain and score_rule(plain, "4") == 1.0

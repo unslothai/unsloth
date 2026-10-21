@@ -226,6 +226,9 @@ def validate_rule(rule: dict) -> dict:
         if mode not in ("fullmatch", "search"):
             raise RewardError("regex mode must be 'fullmatch' or 'search'.")
         out["mode"] = mode
+        if rule.get("extract") is not None:
+            # Kept only when given, so rules saved without one keep their shape.
+            out["extract"] = _validate_extract(rule["extract"])
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
     elif kind in ("exact_match", "numeric"):
         out["extract"] = _validate_extract(rule.get("extract"))
@@ -524,6 +527,10 @@ def score_rule(
 ) -> float:
     kind = rule["type"]
     if kind == "regex":
+        if rule.get("extract"):
+            text = _extract(text, rule["extract"])
+            if text is None:
+                return rule["score"]["miss"]
         if rule["mode"] == "fullmatch":
             hit = _match(rule["pattern"], text.strip(), fullmatch = True)
         else:
