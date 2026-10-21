@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { codePoint as dingbatCodePoint } from "dingbat-to-unicode";
 import { type Unzipped, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import {
   MAX_TEXT_ATTACHMENT_BYTES,
@@ -24,6 +23,7 @@ import {
   isServerDocumentAttachmentName,
   isToolOnlyAttachmentName,
 } from "./open-document-accept";
+import type { docxSymbolText } from "./docx-reader";
 import { readRtfAttachmentContent } from "./rtf";
 
 export type AttachmentTextLabel =
@@ -792,26 +792,9 @@ function isDocxPlaceholder(element: Element, ns: string): boolean {
   );
 }
 
-const DOCX_SYMBOL_FONTS = new Set(["symbol", "wingdings", "wingdings 2", "wingdings 3", "webdings"]);
-const DOCX_SYMBOL_HEX_RE = /^[0-9a-f]+$/i;
-const UNPRINTABLE_RE = /[\p{C}\p{Z}]/u;
+type DocxSymbol = typeof docxSymbolText;
 
-/** Insert > Symbol character; mirrors the backend's _docx_symbol. */
-function docxSymbolText(element: Element, w: string): string {
-  const raw = element.getAttributeNS(w, "char") ?? "";
-  if (!DOCX_SYMBOL_HEX_RE.test(raw)) return "";
-  let code = Number.parseInt(raw, 16);
-  const font = element.getAttributeNS(w, "font") ?? "";
-  const page = Math.floor(code / 0x100);
-  if (DOCX_SYMBOL_FONTS.has(font.toLowerCase()) && (page === 0 || page === 0xf0)) {
-    code = dingbatCodePoint(font, code % 0x100)?.codePoint ?? 0;
-  }
-  if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return "";
-  const char = String.fromCodePoint(code);
-  return char === " " || !UNPRINTABLE_RE.test(char) ? char : "";
-}
-
-function docxNoteText(node: Node, ns: string): string {
+function docxNoteText(node: Node, ns: string, symbol: DocxSymbol): string {
   let text = "";
   for (const child of Array.from(node.childNodes)) {
     if (child.nodeType !== 1) continue;
@@ -824,10 +807,10 @@ function docxNoteText(node: Node, ns: string): string {
     } else if (name === "noBreakHyphen") {
       text += "-";
     } else if (name === "sym" && element.namespaceURI === ns) {
-      text += docxSymbolText(element, ns);
+      text += symbol(element, ns);
     } else {
       text +=
-        (DOCX_NOTE_BREAKS.has(name) ? " " : "") + docxNoteText(element, ns);
+        (DOCX_NOTE_BREAKS.has(name) ? " " : "") + docxNoteText(element, ns, symbol);
     }
   }
   return text;
@@ -845,15 +828,15 @@ const OMML_ROWS: Record<string, [string, string]> = {
 };
 
 /** Linear LaTeX-style text for an equation; mirrors the backend's _docx_math_text. */
-function docxMathText(element: Element, w: string): string {
+function docxMathText(element: Element, w: string, symbol: DocxSymbol): string {
   const name = element.localName;
   const ns = element.namespaceURI ?? "";
   if (DOCX_NOTE_SKIP.has(name) || (name === "sdt" && isDocxPlaceholder(element, w))) return "";
-  if (ns === w && name === "r") return docxNoteText(element, w);
-  if (ns === w && name === "sym") return docxSymbolText(element, w);
+  if (ns === w && name === "r") return docxNoteText(element, w, symbol);
+  if (ns === w && name === "sym") return symbol(element, w);
   if (OMML_NAMESPACES.has(ns) && name === "t") return element.textContent ?? "";
   const children = (key: string) => childElements(element, ns, key);
-  const join = (nodes: Element[], sep = "") => nodes.map((node) => docxMathText(node, w)).join(sep);
+  const join = (nodes: Element[], sep = "") => nodes.map((node) => docxMathText(node, w, symbol)).join(sep);
   const arg = (key: string) =>
     ["0", "false", "off"].includes(prop(`${key}Hide`, "off")) ? join(children(key).slice(0, 1)) : "";
   const prop = (key: string, fallback: string) => {
@@ -906,7 +889,7 @@ function docxMathText(element: Element, w: string): string {
 }
 
 /** Each equation becomes a plain run where it sits; extractRawText drops OMML. */
-export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
+export function linearizeDocxMath(archive: Uint8Array, symbol: DocxSymbol): Uint8Array {
   const rewritten: Record<string, Uint8Array> = {};
   const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
   for (const [name, bytes] of Object.entries(parts)) {
@@ -933,7 +916,7 @@ export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
         const run = doc.createElementNS(w, tag("r"));
         const text = doc.createElementNS(w, tag("t"));
         text.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
-        text.appendChild(doc.createTextNode(docxMathText(element, w)));
+        text.appendChild(doc.createTextNode(docxMathText(element, w, symbol)));
         run.appendChild(text);
         node.replaceChild(run, element);
         found = true;
@@ -1341,7 +1324,7 @@ function romanNumeral(n: number): string {
 
 
 /** Sentinels after note references; `label` numbers those extractRawText kept (1, 2 / i, ii) and appends the notes. */
-export function markDocxNotes(archive: Uint8Array): {
+export function markDocxNotes(archive: Uint8Array, symbol: DocxSymbol): {
   archive: Uint8Array;
   label: (text: string) => string;
 } {
@@ -1396,7 +1379,7 @@ export function markDocxNotes(archive: Uint8Array): {
       if (type && type !== "normal") continue;
       notes.bodies.set(
         note.getAttributeNS(ns, "id") ?? "",
-        docxNoteText(note, ns).replace(/\s+/g, " ").trim(),
+        docxNoteText(note, ns, symbol).replace(/\s+/g, " ").trim(),
       );
     }
   }
@@ -1830,15 +1813,15 @@ export async function extractOfficeAttachmentText(
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "DOCX");
-  const [{ default: mammoth }, buffer] = await Promise.all([
-    import("mammoth"),
+  const [{ mammoth, docxSymbolText }, buffer] = await Promise.all([
+    import("./docx-reader"),
     file.arrayBuffer(),
   ]);
   const repacked = repackDocxAttachmentArchive(
     file.name,
     new Uint8Array(buffer),
   );
-  const marked = markDocxNotes(linearizeDocxMath(repacked));
+  const marked = markDocxNotes(linearizeDocxMath(repacked, docxSymbolText), docxSymbolText);
   const { value } = await mammoth.extractRawText({
     arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
   });
