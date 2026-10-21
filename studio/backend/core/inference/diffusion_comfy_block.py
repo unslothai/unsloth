@@ -358,7 +358,7 @@ def comfy_block_backend(
             from .diffusion_nvfp4_flag import NVFP4_DIFFUSION_ENV, nvfp4_diffusion_enabled
 
             if not nvfp4_diffusion_enabled():
-                return None, f"Studio's NVFP4 runtime is off ({NVFP4_DIFFUSION_ENV}=1 enables it)"
+                return None, f"Unsloth's NVFP4 runtime is off ({NVFP4_DIFFUSION_ENV}=1 enables it)"
             if _family_denied(family, TQ_NVFP4):
                 return None, f"nvfp4 is denied for {family}"
             device = _device_of(target)

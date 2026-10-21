@@ -191,11 +191,10 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
-                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-ui-11 text-white/70"
+                    className="text-ui-11 text-(--tooltip-muted)"
                   />
                 </span>
               </li>
@@ -430,11 +429,11 @@ export function buildRowStatusTooltip({
           This {resourceLabel} may not be supported yet.
         </span>
         {unsupportedReason && (
-          <span className="mt-0.5 block text-white/75">
+          <span className="mt-0.5 block text-(--tooltip-muted)">
             {unsupportedReason}
           </span>
         )}
-        <span className="mt-0.5 block text-white/75">
+        <span className="mt-0.5 block text-(--tooltip-muted)">
           Still downloadable to your Hugging Face cache.
         </span>
       </TooltipLegendRow>,
@@ -751,8 +750,7 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        iconClassName="size-4"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         pin={
           isDataset || !deletableRepoId
             ? undefined
@@ -816,8 +814,7 @@ export const InventoryRow = memo(function InventoryRow({
     ) : localActionPath && row.kind === "local" ? (
       <ModelRowMenu
         ariaLabel={`More options for ${rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        iconClassName="size-4"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         onReveal={() => revealLocalModel(localActionPath, row.loadId)}
         del={
           DELETABLE_LOCAL_SOURCES.has(row.source)

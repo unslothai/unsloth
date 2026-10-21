@@ -1209,7 +1209,9 @@ def test_peak_model_identity_names_the_whole_build(monkeypatch):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base, fetch_base)" in src
+    assert (
+        "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base, fetch_base)" in src
+    )
 
 
 def test_peak_model_identity_reads_the_unsloth_mirror_on_a_fresh_install(monkeypatch):
@@ -1269,9 +1271,10 @@ def test_peak_model_identity_keys_on_the_repo_the_load_fetched(monkeypatch):
     up, mirror = "black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"
     assert diffusion._peak_model_identity(up, None, "pipeline", up, mirror) == f"{mirror}@m1"
     assert diffusion._peak_model_identity(up, None, "pipeline", up, up) == f"{up}@u1"
-    assert diffusion._peak_model_identity(
-        "unsloth/dit-GGUF", "dit-Q4.gguf", "gguf", up, mirror
-    ) == f"unsloth/dit-GGUF/dit-Q4.gguf@g1+{mirror}@m1"
+    assert (
+        diffusion._peak_model_identity("unsloth/dit-GGUF", "dit-Q4.gguf", "gguf", up, mirror)
+        == f"unsloth/dit-GGUF/dit-Q4.gguf@g1+{mirror}@m1"
+    )
     # The load read the upstream bytes but only the mirror's revision is cached: no key, never the mirror's.
     del revisions[(up, None)]
     assert diffusion._peak_model_identity(up, None, "pipeline", up, up) == "unknown"
@@ -1291,7 +1294,7 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
 
 def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
     torch = pytest.importorskip("torch")
-    import diffusers.hooks as hooks
+    hooks = pytest.importorskip("diffusers.hooks")
 
     def fake_apply(module, **kwargs):
         module._fake_hooked = True  # hooked part of the module, then ran out of memory

@@ -77,14 +77,15 @@ from utils.kernel_install import (
     uninstall_command,
 )
 from utils.ssm_runtime import (
-    CAUSAL_CONV1D_MODEL_SUBSTRINGS as _CAUSAL_CONV1D_MODEL_SUBSTRINGS,
-    SSM_MODEL_SUBSTRINGS as _SSM_MODEL_SUBSTRINGS,
+    model_is_ssm as _model_is_ssm,
+    model_wants_causal_conv1d as _model_wants_causal_conv1d,
 )
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
     install_wheel,
     is_windows_wheel_env,
+    pinned_source_build_supported,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -169,8 +170,19 @@ def _adapter_base_changed_error(config: dict) -> str | None:
         return None
     from utils.models.model_config import get_base_model_from_lora
 
-    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+    # The folder the loader reads: a cached Hub snapshot, not the repo id it came from.
+    if (
+        get_base_model_from_lora(str(_resolve_cached_model_load_name(config) or "")) or ""
+    ) != pinned:
         return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
+def _escaping_weights_error(config: dict) -> str | None:
+    from utils.security.file_security import escaping_weight_references
+    for key in ("model_name", "model_local_path", "model_snapshot_path", "adapter_base_pin"):
+        if config.get(key) and escaping_weight_references(config[key]):
+            return "This model's weight index names files outside its folder."
     return None
 
 
@@ -304,6 +316,22 @@ def _is_model_cache_artifact_error(error: BaseException | None) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _package_installs_offline() -> bool:
+    # UV_OFFLINE too: uv would refuse the index and install_wheel's pip fallback would not.
+    try:
+        from utils.utils import package_installs_offline
+        return package_installs_offline()
+    except Exception:
+        return os.environ.get("UV_OFFLINE", "").strip().lower() in {
+            "1",
+            "true",
+            "t",
+            "yes",
+            "y",
+            "on",
+        }
 
 
 def _model_offline_mode_enabled() -> bool:
@@ -1326,11 +1354,6 @@ def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> 
         return False
 
 
-def _model_wants_causal_conv1d(model_name: str) -> bool:
-    name = model_name.lower()
-    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
-
-
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
@@ -1355,14 +1378,23 @@ def _is_importable_isolated(import_name: str) -> bool:
     """Probe the import in a child process. A wrong-arch wheel can abort or segfault in its
     initialiser instead of raising, which would kill this worker rather than fall back. A child
     turns that into a return code (negative = fatal signal)."""
+    return _import_probe_isolated(
+        import_name, "import importlib, sys; importlib.import_module(sys.argv[1])"
+    )
+
+
+def _extension_importable_isolated(extension: str) -> bool:
+    """_is_importable_isolated for a bare torch extension (selective_scan_cuda), which needs
+    torch's libraries loaded first."""
+    return _import_probe_isolated(
+        extension, "import torch, importlib, sys; importlib.import_module(sys.argv[1])"
+    )
+
+
+def _import_probe_isolated(import_name: str, code: str) -> bool:
     try:
         result = _sp.run(
-            [
-                sys.executable,
-                "-c",
-                "import importlib, sys; importlib.import_module(sys.argv[1])",
-                import_name,
-            ],
+            [sys.executable, "-c", code, import_name],
             stdout = _sp.DEVNULL,
             stderr = _sp.DEVNULL,
             timeout = _IMPORT_PROBE_TIMEOUT,
@@ -1426,35 +1458,150 @@ def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason:
 
 
 def _install_package_wheel_first(
-    *, event_queue: Any, import_name: str, display_name: str, pypi_name: str, **kwargs: Any
+    *,
+    event_queue: Any,
+    import_name: str,
+    display_name: str,
+    pypi_name: str,
+    required: bool = False,
+    extension: str | None = None,
+    **kwargs: Any,
 ) -> bool:
     """Install a fast-path package, wheel first, and never leave an unusable one behind. The two
     "touch nothing" guards run here, outside the cleanup: an already-working package returns
     before any subprocess, and offline changes nothing. Everything after them is an install
     attempt, so ANY unsuccessful exit -- timeout, failed install, bad import -- discards what is
     left rather than leaving metadata the in-process import would pick up. Enforced here rather
-    than at each return because four separate exits have now been found that forgot to clean up."""
-    if _is_importable(import_name):
+    than at each return because four separate exits have now been found that forgot to clean up.
+    With *extension*, a copy without that compiled module (the extension-free mamba_ssm wheel) is
+    replaced rather than accepted."""
+    from utils.ssm_runtime import _unblock_import, forget_imported_modules
+
+    _unblock_import(import_name)  # an earlier in-process block; this call probes afresh
+
+    def kernel_usable() -> bool:
+        return _is_importable(import_name) and (extension is None or _is_importable(extension))
+
+    if kernel_usable():
         logger.info("%s already installed", display_name)
         return True
 
-    if _model_offline_mode_enabled():
+    def drop_extension_free_copy() -> None:
+        # The CUDA route cannot use an extension-free copy: left in place, transformers takes
+        # mamba_ssm's fast path and fails in selective_scan_fn. Removing it is local (allowed
+        # offline) and runs under the same per-env lock as an install.
+        if extension is None or not _is_importable(import_name):
+            return
+        from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
+        with kernel_install_lock(import_name, wait_seconds = OPTIONAL_KERNEL_LOCK_WAIT) as held:
+            if not _is_importable(import_name) or _is_importable(extension):
+                return
+            if not held:
+                # Cannot uninstall without the lock: hide it from this process instead.
+                from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+
+                logger.info(
+                    "Hiding the extension-free %s from this run: its install lock is busy",
+                    display_name,
+                )
+                block_import(import_name, extension)
+                refresh_transformers_kernel_gates(removed = True)
+                return
+            logger.info(
+                "Removing the extension-free %s: this run needs its CUDA kernels", display_name
+            )
+            _uninstall_package(pypi_name, display_name)
+            forget_imported_modules(import_name, extension)
+            if _is_importable(import_name) and not _is_importable(extension):
+                # Uninstall failed (read-only env, locked files): hide it from this process.
+                from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+                block_import(import_name, extension)
+                refresh_transformers_kernel_gates(removed = True)
+
+    if _model_offline_mode_enabled() or _package_installs_offline():
         logger.info("Skipping %s installation while offline", display_name)
+        drop_extension_free_copy()
         return False
 
-    installed = False
-    try:
-        installed = _attempt_package_install(
-            event_queue = event_queue,
-            import_name = import_name,
-            display_name = display_name,
-            pypi_name = pypi_name,
-            **kwargs,
-        )
-        return installed
-    finally:
-        if not installed:
-            _reject_install(event_queue, pypi_name, display_name, "will not import")
+    # The runtime's failed-attempt memo (same key): the eager install and the fast-path hook, or a
+    # chat load in the same process, never repeat a failed (possibly half-hour) build.
+    from utils.ssm_runtime import _FAILED_INSTALLS, _failure_key
+
+    failure_key = _failure_key(import_name, kwargs.get("wheel_url_builder"))
+    if failure_key in _FAILED_INSTALLS:
+        logger.info("%s already failed to install in this process; not retrying", display_name)
+        drop_extension_free_copy()
+        return False
+
+    from utils.kernel_install import (
+        KERNEL_LOCK_WAIT,
+        OPTIONAL_KERNEL_LOCK_WAIT,
+        kernel_install_lock,
+    )
+
+    # One install per package and environment at a time, across Studio workers: precheck, install,
+    # verify and cleanup are one transaction, or a failed peer could remove what another verified.
+    # An optional acceleration does not hold a run for a peer's half-hour build.
+    with kernel_install_lock(
+        import_name,
+        on_wait = lambda: _send_status(
+            event_queue, f"Waiting for another process installing {display_name}..."
+        ),
+        wait_seconds = KERNEL_LOCK_WAIT if required else OPTIONAL_KERNEL_LOCK_WAIT,
+    ) as held:
+        if not held:
+            _send_status(
+                event_queue,
+                f"Could not take the {display_name} install lock (another process is installing "
+                "it, or the lock is unavailable); continuing without it",
+            )
+            if (
+                extension is not None
+                and _is_importable(import_name)
+                and not _is_importable(extension)
+            ):
+                # Not ours to uninstall without the lock, but this run must not use it: hidden from
+                # this process, transformers takes its torch path instead of selective_scan_fn.
+                from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+                block_import(import_name, extension)
+                refresh_transformers_kernel_gates(removed = True)
+            return False
+        if kernel_usable():
+            logger.info("%s installed by another process", display_name)
+            if extension is not None:
+                forget_imported_modules(import_name, extension)
+            return True
+        # Importable but without the compiled module: the extension-free wheel, replaced here.
+        replacing = extension is not None and _is_importable(import_name)
+        if replacing:
+            _send_status(
+                event_queue, f"Replacing the extension-free {display_name} with its CUDA kernels..."
+            )
+        installed = False
+        try:
+            installed = _attempt_package_install(
+                event_queue = event_queue,
+                import_name = import_name,
+                display_name = display_name,
+                pypi_name = pypi_name,
+                extension = extension,
+                replacing = replacing,
+                **kwargs,
+            )
+            return installed
+        finally:
+            if replacing:
+                # The process imported the extension-free copy: the next import must load what is
+                # installed now (or nothing, after a failed replacement removes it).
+                forget_imported_modules(import_name, extension)
+            if not installed:
+                _FAILED_INSTALLS.add(failure_key)
+                _reject_install(event_queue, pypi_name, display_name, "will not import")
+                if extension is not None and _is_importable(import_name):
+                    # The extension-free copy could not be removed: hide it from this process.
+                    from utils.ssm_runtime import block_import, refresh_transformers_kernel_gates
+                    block_import(import_name, extension)
+                    refresh_transformers_kernel_gates(removed = True)
 
 
 def _attempt_package_install(
@@ -1470,12 +1617,28 @@ def _attempt_package_install(
     wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
     pypi_spec: str | None = None,
     pypi_status_message: str | None = None,
+    allow_source_build: bool = True,
+    extension: str | None = None,
+    replacing: bool = False,
 ) -> bool:
     """The install itself. Call it through _install_package_wheel_first, never directly."""
+
+    def _verify() -> bool:
+        # Out of process: a bad wheel can take the worker down with it.
+        if not _is_importable_isolated(import_name):
+            return False
+        return extension is None or _extension_importable_isolated(extension)
+
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    if not env or not (env.get("cuda_version") or env.get("cuda_major") or env.get("hip_version")):
+        # These are CUDA / ROCm extensions: CPU-only, XPU, MPS or an unreadable torch builds none.
+        _send_status(
+            event_queue, f"{display_name} needs a CUDA or ROCm build of torch; skipping it"
+        )
+        return False
     # Windows is wheel-only: a PyPI fallback there is a source build needing MSVC + the CUDA toolkit.
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     if wheel_url_builder is not None:
@@ -1492,13 +1655,19 @@ def _attempt_package_install(
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_url is None:
         logger.info("No compatible %s wheel candidate", display_name)
-    elif wheel_available:
+    elif wheel_available is not False:
+        # Only a 404 proves nothing is published: an unanswered HEAD (a proxy refusing HEAD but
+        # serving the download) still tries the wheel, and falls back only if that fails.
+        if wheel_available is None:
+            _send_status(
+                event_queue,
+                f"Could not check the {display_name} prebuilt wheel; trying to download it.",
+            )
         _send_status(event_queue, f"Installing {display_name} for faster training...")
         outcome = install_prebuilt(
             wheel_url,
             install = install_wheel,
-            # Out of process: a bad wheel can take the worker down with it.
-            verify = lambda: _is_importable_isolated(import_name),
+            verify = _verify,
             on_failed = lambda installer, result: logger.warning(
                 "%s failed to install %s wheel:\n%s",
                 installer,
@@ -1507,6 +1676,8 @@ def _attempt_package_install(
             ),
             use_uv = bool(shutil.which("uv")),
             run = _sp.run,
+            # Over the extension-free copy of the same version, which uv / pip would keep.
+            **({"reinstall": True} if replacing else {}),
         )
         if outcome == "installed":
             logger.info("Installed prebuilt %s wheel successfully", display_name)
@@ -1515,20 +1686,26 @@ def _attempt_package_install(
             logger.warning(
                 "%s wheel installed but is not importable; %s",
                 display_name,
-                "removing it" if wheel_only else "falling back to PyPI",
+                "removing it" if wheel_only or not allow_source_build else "falling back to PyPI",
             )
             wheel_rejected = True
-    elif wheel_available is None:
-        _send_status(
-            event_queue,
-            f"Could not check the {display_name} prebuilt wheel; "
-            + ("skipping it." if wheel_only else "installing from PyPI."),
-        )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
 
     if wheel_only:
         logger.info("%s: no usable prebuilt wheel for Windows; skipping", display_name)
+        return False
+    if not allow_source_build:
+        _send_status(event_queue, f"No usable prebuilt {display_name} for this torch; skipping it")
+        return False
+    if pypi_version is not None and not pinned_source_build_supported(env):
+        # The pinned causal-conv1d / mamba-ssm sources build at C++17 and torch 2.13+ needs
+        # C++20: a certain failure after minutes of compiling.
+        _send_status(
+            event_queue,
+            f"No prebuilt {display_name} for torch {env.get('torch_mm')}, and it cannot be built "
+            "from source for it; skipping it",
+        )
         return False
 
     is_hip = env and env.get("hip_version")
@@ -1555,8 +1732,9 @@ def _attempt_package_install(
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
-    if wheel_rejected:
-        # Remove it rather than install over it: pip/uv would report the broken distribution as already satisfying the
+    if wheel_rejected or replacing:
+        # Remove it rather than install over it (a broken wheel, or the extension-free copy being
+        # replaced): pip/uv would report the broken distribution as already satisfying the
         # spec and do nothing. --force-reinstall is not the answer either, since both scope it to the whole resolved
         # transaction, which for flash-attn means torch and the running CUDA stack. A failure here is caught by the
         # _reject_install in the finally below, which is reached from every exit.
@@ -1592,8 +1770,11 @@ def _attempt_package_install(
             _gcc_dir,
         )
 
+    from utils.kernel_install import run_process_tree
+
     try:
-        result = _sp.run(pypi_cmd, **_run_kwargs)
+        # Bounded, and a timeout stops the compilers pip / uv started too.
+        result = run_process_tree(pypi_cmd, run = _sp.run, **_run_kwargs)
     except _sp.TimeoutExpired:
         logger.error(
             "%s installation timed out after %ds",
@@ -1631,7 +1812,7 @@ def _attempt_package_install(
 
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without installing anything.
     # Returning False is enough; the caller's finally discards it.
-    if not _is_importable_isolated(import_name):
+    if not _verify():
         logger.warning("%s installed from PyPI but will not import", display_name)
         return False
 
@@ -1683,17 +1864,71 @@ def _flash_linear_attention_importable() -> bool:
         return False
 
 
-def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
-    if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+def _ensure_mamba_ssm(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+    essential: bool | None = None,
+    triton_only: bool = False,
+) -> bool | None:
+    # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
+    # `essential`: Nemotron-H, Falcon-H1, Granite-4.0-H, which may build it from source. Training
+    # stays best effort as at 9f5b13325: their native transformers path can run without it, so a
+    # missing mamba-ssm is left to the model load. The others have a torch path and get mamba-ssm
+    # only as a prebuilt wheel where unsloth_zoo keeps its fast path on, never as a source build.
+    if required is None:
+        required = _model_is_ssm(model_name)
+    if not required:
         return
+    if essential is None:
+        # Unspecified (the worker passes the config's answer): only the families named for it
+        # (Nemotron-H, Falcon-H1, Granite-4.0-H) may build from source, never Mamba / Mamba2 /
+        # Jamba / Zamba / Bamba, which a caller leaving it out must not turn into a source build.
+        from utils.ssm_runtime import model_requires_mamba_ssm
+        essential = model_requires_mamba_ssm(model_name)
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
         # mamba_ssm imports triton at load and the wheel goes in --no-deps.
         _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
+    if triton_only:
+        from utils.wheel_utils import mamba_ssm_pure_wheel_url
+        logger.info("Mamba-2 model on Triton kernels; setting up the extension-free mamba-ssm")
+        # True when it imports; the caller then skips causal-conv1d and the CUDA mamba-ssm.
+        return _install_package_wheel_first(
+            event_queue = event_queue,
+            **_pinned_kernel_kwargs(MAMBA_SSM),
+            wheel_url_builder = mamba_ssm_pure_wheel_url,
+            allow_source_build = False,
+            required = essential,
+        )
+
+    if not essential and not _is_importable(MAMBA_SSM.import_name):
+        from utils.ssm_runtime import _mamba_ssm_floor_reason
+        reason = _mamba_ssm_floor_reason()
+        if reason is not None:
+            _send_status(event_queue, f"Skipping mamba-ssm, which {reason}")
+            return
+
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-    _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(MAMBA_SSM))
+    from utils.ssm_runtime import MAMBA_SSM_EXTENSION
+
+    _install_package_wheel_first(
+        event_queue = event_queue,
+        **_pinned_kernel_kwargs(MAMBA_SSM),
+        allow_source_build = essential,
+        required = essential,
+        # Never settle for the extension-free wheel a Mamba-2 load may have left here.
+        extension = MAMBA_SSM_EXTENSION,
+    )
+
+
+# Integrated-only Radeon names for the other APU targets, as whole tokens (a substring would read "RX 7600M" as "600M"):
+# 820M Krackan Point 2 (gfx1153), 8040S Strix Halo (gfx1151), 780M / 760M / 740M Phoenix / Hawk Point (gfx1103),
+# 680M / 660M Rembrandt (gfx1035), 610M Raphael / Dragon Range / Mendocino (gfx1036 / gfx1037).
+_ROCM_APU_NAME_RE = re.compile(r"(?<![\w-])(?:820m|8040s|780m|760m|740m|680m|660m|610m)(?!\w)")
 
 
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
@@ -1741,6 +1976,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "8050s" in dev_lower
         or "860m" in dev_lower
         or "840m" in dev_lower
+        or _ROCM_APU_NAME_RE.search(dev_lower) is not None
     )
     return gcn_arch, is_unified
 
@@ -2141,8 +2377,39 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
     return sys.platform.startswith("linux") or sys.platform == "win32"
 
 
+def _flash_attn_gpu_below_floor() -> bool:
+    """Whether the best visible GPU is below sm80, where Unsloth leaves FlashAttention 2 off. Asks
+    the torch this worker already imported when there is one (no child process); ROCm never takes
+    the NVIDIA floor; no visible GPU is not below it."""
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if getattr(torch.version, "hip", None):
+                return False
+            if not torch.cuda.is_available():
+                return False
+            count = torch.cuda.device_count()
+            return count > 0 and max(
+                tuple(torch.cuda.get_device_capability(i)) for i in range(count)
+            ) < (8, 0)
+        except Exception as exc:
+            logger.debug("In-process GPU capability check failed (%s); probing a child", exc)
+    from utils.kernel_install import gpu_below_flash_attn_floor
+
+    return gpu_below_flash_attn_floor()
+
+
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
+        return
+    if _is_importable("flash_attn"):
+        # Already usable: nothing to download, so no capability probe either.
+        logger.info("flash-attn already installed")
+        return
+
+    if _flash_attn_gpu_below_floor():
+        # Unsloth only turns FlashAttention 2 on from sm80 (a T4 is sm75): nothing to download.
+        _send_status(event_queue, "flash-attn needs an sm80 or newer GPU; continuing without it")
         return
 
     installed = _install_package_wheel_first(
@@ -2151,8 +2418,8 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
         display_name = "flash-attn",
         pypi_name = "flash-attn",
         wheel_url_builder = flash_attn_wheel_url,
-        pypi_spec = "flash-attn",
-        pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+        # Optional acceleration: skip an unavailable wheel instead of building during training.
+        allow_source_build = False,
     )
     if not installed:
         _send_status(event_queue, "Continuing without flash-attn")
@@ -2184,6 +2451,28 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
             model_name,
             exc,
         )
+
+
+def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
+    """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
+    Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
+    processor = getattr(model, "_processor", None)
+    if processor is None or processor is tokenizer:
+        return False
+    trained = tokenizer
+    if type(tokenizer).__name__ == "TokenizerWrapper":
+        trained = getattr(tokenizer, "_tokenizer", tokenizer)
+    template = getattr(trained, "chat_template", None)
+    if not template or getattr(processor, "chat_template", None):
+        return False
+    own = getattr(processor, "tokenizer", None)
+    if own is not None and own is not trained and getattr(own, "chat_template", None):
+        return False
+    processor.chat_template = template
+    if own is not None and own is not trained:
+        # Also carries get_chat_template's end-token remap.
+        processor.tokenizer = trained
+    return True
 
 
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
@@ -2431,20 +2720,24 @@ def _normalize_mlx_studio_scheduler(value):
     return raw
 
 
+def _resolve_mlx_local_dataset_path(dataset_file) -> Path:
+    from utils.paths import resolve_dataset_path
+
+    dataset_path = Path(os.path.expanduser(str(dataset_file)))
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.exists():
+        return dataset_path.resolve()
+    return Path(str(resolve_dataset_path(str(dataset_file))))
+
+
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import dataset_files_in_dir, resolve_dataset_path
+    from utils.paths import dataset_files_in_dir
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
-        dataset_path = Path(os.path.expanduser(str(dataset_file)))
-        if dataset_path.is_absolute():
-            file_path = str(dataset_path)
-        elif dataset_path.exists():
-            file_path = str(dataset_path.resolve())
-        else:
-            file_path = str(resolve_dataset_path(str(dataset_file)))
-        file_path_obj = Path(file_path)
+        file_path_obj = _resolve_mlx_local_dataset_path(dataset_file)
 
         if file_path_obj.is_dir():
             all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
@@ -3098,12 +3391,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     def _load_local(file_paths):
-        from datasets import load_from_disk
+        from utils.datasets.saved import load_saved_dataset
 
         if len(file_paths) == 1:
-            p = Path(file_paths[0])
-            if p.is_dir() and ((p / "dataset_info.json").exists() or (p / "state.json").exists()):
-                return load_from_disk(str(p))
+            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
+            if saved is not None:
+                return saved
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
@@ -3279,6 +3572,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if not is_vlm and dataset_final_format:
+        # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in
+        # the formatter; mirror the CUDA trainer and re-apply it here (no-op for models with a template).
+        from utils.datasets.chat_templates import get_training_chat_template
+        tokenizer = get_training_chat_template(tokenizer, model_name, dataset_final_format)
+        if _carry_mlx_chat_template_to_processor(model, tokenizer):
+            logger.info("Saving the training chat template with the processor")
+
     if eval_enabled and eval_dataset is None:
         from core.training.eval_dataset import (
             MIN_TOTAL_ROWS_FOR_EVAL,
@@ -3452,10 +3753,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the CUDA skips: raw/CPT text
     # has no chat turns. Check the resolved format too, since format_type="auto" can land on alpaca or raw.
+    from utils.datasets.pretokenized import has_custom_labels
+
+    if (
+        config.get("train_on_completions", False)
+        and dataset_final_format == "pretokenized"
+        and not has_custom_labels(dataset)
+    ):
+        # zoo's MLX masker re-tokenizes text, so token-id rows have nothing it can mask (CUDA masks input_ids).
+        _send(
+            "warning",
+            message = (
+                "'Train on completions' is not available for pre-tokenized datasets on Mac: "
+                "training will run on full sequences. Add a labels column to choose the trained tokens."
+            ),
+        )
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and dataset_final_format != "raw_text"
+        and dataset_final_format not in ("raw_text", "pretokenized")
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here is a real masking
@@ -3792,8 +4108,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     from utils.security.hub_data_files import install as guard_hub_data_files
+    from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
 
     guard_hub_data_files()
+    guard_dataset_media()
+    allow_dataset_repos(config.get("hf_dataset"))
 
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
@@ -3887,6 +4206,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     apply_gpu_ids(gpu_ids, backend = config.get("device_backend"))
 
     if not _validate_training_worker_config(config, event_queue):
+        return
+    # Before any backend dispatch: the MLX, decision and embedding runners load these weights too.
+    weights_error = _escaping_weights_error(config)
+    if weights_error:
+        event_queue.put({"type": "error", "error": weights_error, "stack": "", "ts": time.time()})
         return
 
     model_name = config["model_name"]
@@ -3987,13 +4311,45 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:
-            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+            from utils.ssm_runtime import resolve_ssm_kernels
 
-            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            # A continued local adapter loads from its folder, but its base decides the kernels:
+            # the authorized pin when the run was checked, else the adapter's recorded base.
+            kernels = resolve_ssm_kernels(
                 model_name,
                 model_load_target,
                 _worker_hf_token(config),
+                adapter_base = config.get("adapter_base_pin") or None,
+                # Whether the load runs a checkpoint's remote code, not just whether it has some.
+                trust_remote_code = bool(config.get("trust_remote_code", False)),
             )
+            is_ssm = kernels.mamba_ssm
+            wants_causal_conv1d = kernels.causal_conv1d
+            from utils.ssm_runtime import mamba2_runs_on_triton
+
+            # Mamba-2 families on a zoo with the Triton conv drop-ins: no causal-conv1d, and the
+            # extension-free mamba_ssm wheel.
+            triton_only = mamba2_runs_on_triton(kernels)
+            if triton_only:
+                # The extension-free wheel first. Not published, refused or not importable: this
+                # run takes the CUDA-wheel route (causal-conv1d, then mamba-ssm) instead.
+                triton_only = bool(
+                    _ensure_mamba_ssm(
+                        event_queue,
+                        model_name,
+                        required = is_ssm,
+                        essential = kernels.mamba_ssm_required,
+                        triton_only = True,
+                    )
+                )
+                if triton_only:
+                    wants_causal_conv1d = False
+                else:
+                    _send_status(
+                        event_queue,
+                        "The extension-free mamba-ssm wheel is not available; using the CUDA "
+                        "kernels instead",
+                    )
             _ensure_causal_conv1d_fast_path(
                 event_queue,
                 model_name,
@@ -4004,7 +4360,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(event_queue, model_name)
+            if not triton_only:
+                _ensure_mamba_ssm(
+                    event_queue,
+                    model_name,
+                    required = is_ssm,
+                    essential = kernels.mamba_ssm_required,
+                )
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),
@@ -4747,7 +5109,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from utils.hf_xet_fallback import start_watchdog
 
         # Recheck right before the load: the adapter folder may have been edited since start (#13140).
-        base_error = _adapter_base_changed_error(config)
+        base_error = _adapter_base_changed_error(config) or _escaping_weights_error(config)
         if base_error:
             event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
             return
@@ -5091,6 +5453,20 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _tqdm_stop.set()
 
         progress = trainer.get_training_progress()
+        drafter_note = ""
+        # A Stop during the drafter phase drops only the drafter; the fine-tune is already saved.
+        stopped_in_training = trainer.should_stop
+        if config.get("drafter") and not progress.error and not trainer.should_stop:
+            from core.training.drafter import run_drafter_phase
+
+            manifest = run_drafter_phase(trainer, config, output_dir, event_queue, _send_status)
+            if manifest is not None:
+                label = "MTP head" if manifest["strategy"] == "mtp" else "EAGLE-3 drafter"
+                drafter_note = f"\nTrained {label} saved with the model."
+            progress = trainer.get_training_progress()
+        elif output_dir:
+            from core.training.drafter import discard_drafter_artifacts
+            discard_drafter_artifacts(output_dir)
         if progress.error:
             event_queue.put(
                 {
@@ -5102,13 +5478,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         else:
             saved_output_dir = (
-                None if trainer.should_stop and not trainer.save_on_stop else output_dir
+                None if stopped_in_training and not trainer.save_on_stop else output_dir
             )
             event_queue.put(
                 {
                     "type": "complete",
                     "output_dir": saved_output_dir,
-                    "status_message": progress.status_message or "Training completed",
+                    "status_message": (progress.status_message or "Training completed")
+                    + drafter_note,
                     "ts": time.time(),
                 }
             )
@@ -5404,6 +5781,15 @@ def _create_embedding_progress_callback(
     return _EmbeddingProgressCallback()
 
 
+def _csv_number(cell):
+    from utils.datasets.cells import _NA_CELLS
+
+    text = (cell or "").strip()
+    if text.lower() in ("true", "false"):
+        return float(text.lower() == "true")
+    return None if text in _NA_CELLS else float(text)
+
+
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Self-contained embedding model training pipeline. Uses FastSentenceTransformer +
     SentenceTransformerTrainer + MultipleNegativesRankingLoss, separate from UnslothTrainer's
@@ -5594,6 +5980,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         config["_dataset_loaded_from_exact_snapshot"] = False
         hf_dataset = str(config.get("hf_dataset") or "").strip()
         local_datasets = config.get("local_datasets") or []
+        csv_text_columns: list[str] = []
 
         def _load_local_embedding_dataset(dataset_paths: list[str]):
             from utils.paths import dataset_files_in_dir
@@ -5626,7 +6013,29 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 loader = "parquet"
             else:
                 raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
-            return load_dataset(loader, data_files = all_files, split = "train")
+            from datasets import Features, Value
+            from utils.datasets.cells import csv_as_text_kwargs, typed_csv_columns
+
+            dataset = load_dataset(
+                loader,
+                data_files = all_files,
+                split = "train",
+                **csv_as_text_kwargs(all_files),
+            )
+            if loader != "csv":
+                return dataset
+            labels = typed_csv_columns(dataset) & {"label", "labels", "score", "scores"}
+            for column in labels:
+                dataset = dataset.map(
+                    lambda cells: {column: [_csv_number(cell) for cell in cells]},
+                    input_columns = column,
+                    batched = True,
+                    features = Features({**dataset.features, column: Value("float64")}),
+                )
+            csv_text_columns[:] = [
+                column for column in dataset.column_names if column not in labels
+            ]
+            return dataset
 
         if hf_dataset:
             dataset = _load_embedding_hf_dataset(
@@ -5680,6 +6089,25 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             start = slice_start if slice_start is not None else 0
             end = slice_end if slice_end is not None else len(dataset)
             dataset = dataset.select(range(start, min(end + 1, len(dataset))))
+
+        if csv_text_columns:
+            kept = dataset.filter(
+                lambda *columns: [None not in cells for cells in zip(*columns)],
+                input_columns = csv_text_columns,
+                batched = True,
+            )
+            if len(dataset) and not len(kept):
+                raise ValueError(f"All {len(dataset):,} rows have an empty text cell.")
+            if len(kept) < len(dataset):
+                event_queue.put(
+                    {
+                        "type": "warning",
+                        "message": f"Dropped {len(dataset) - len(kept):,} of {len(dataset):,} "
+                        "rows because a text cell was empty.",
+                        "ts": time.time(),
+                    }
+                )
+            dataset = kept
 
         logger.info(f"Embedding dataset loaded: {len(dataset)} samples")
     except Exception as e:

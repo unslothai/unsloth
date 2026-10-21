@@ -66,6 +66,19 @@ export function normalizePlusMenuOrder(saved: unknown): PlusMenuItemId[] {
   return order;
 }
 
+/** `ids` with `fixed` put back at its index in `saved`: an item the list doesn't move (Deep research)
+ *  still orders the More submenu when switched off, so a move of another item must not shift it. */
+export function keepSavedSlot(
+  ids: readonly PlusMenuItemId[],
+  saved: readonly PlusMenuItemId[],
+  fixed: PlusMenuItemId,
+): PlusMenuItemId[] {
+  const rest = ids.filter((id) => id !== fixed);
+  const at = saved.indexOf(fixed);
+  const index = at < 0 ? 0 : Math.min(at, rest.length);
+  return [...rest.slice(0, index), fixed, ...rest.slice(index)];
+}
+
 export function splitPlusMenuItems(
   order: readonly PlusMenuItemId[],
   pins: Record<PlusMenuItemId, boolean>,

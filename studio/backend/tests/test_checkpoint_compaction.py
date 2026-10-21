@@ -60,6 +60,57 @@ def _fit(messages, **kwargs):
     return fit_checkpoint_context(messages, **kwargs)
 
 
+@pytest.mark.parametrize("checkpoint_boundary", [True, False])
+def test_recount_cannot_deepen_an_existing_compaction_boundary(monkeypatch, checkpoint_boundary):
+    from core.inference import llama_cpp
+
+    def unexpected():
+        pytest.fail("Recounting must not probe or modify the archive")
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", unexpected)
+    messages = _thread(pad = 12)
+    fitted, truncation = llama_cpp._fit_context(
+        messages,
+        context_length = 1200,
+        max_tokens = 200,
+        count_tokens = count,
+        sticky_dropped = 2,
+        sticky_is_checkpoint = checkpoint_boundary,
+        replay_only = True,
+    )
+
+    assert truncation["fits"] is False
+    assert truncation["dropped_messages"] == 2
+    assert truncation["prompt_tokens_after"] == count(fitted)
+    assert ("<carried_forward>" in str(fitted)) is checkpoint_boundary
+
+
+@pytest.mark.parametrize(
+    ("can_reset", "write_failed", "searchable"),
+    [(False, False, False), (True, False, True), (True, True, False)],
+)
+def test_recount_replays_the_block_wording_generation_renders(
+    monkeypatch, can_reset, write_failed, searchable
+):
+    from core.inference import checkpoint, llama_cpp
+    from core.rag import conversation_archive
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: pytest.fail("no live probe"))
+    monkeypatch.setattr(conversation_archive, "degraded", lambda: write_failed)
+    fitted, _ = llama_cpp._fit_context(
+        _thread(pad = 12),
+        context_length = 1200,
+        max_tokens = 200,
+        count_tokens = count,
+        sticky_dropped = 2,
+        can_reset = can_reset,
+        recall_offered = True,
+        replay_only = True,
+    )
+    tail = checkpoint._SEARCHABLE if searchable else checkpoint._NOT_SEARCHABLE
+    assert tail in str(fitted)
+
+
 def _turn(**overrides):
     """One stored conversation turn, with per-test overrides."""
     return {
@@ -194,6 +245,81 @@ def test_an_irreducible_request_returns_the_original_messages():
     assert fitted is messages
     assert truncation["latest_turn_role"] == "user"
     assert truncation["irreducible_tokens"] > truncation["prompt_target"]
+
+
+def _exchange(index, result):
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call-{index}",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": f"call-{index}", "content": result},
+    ]
+
+
+def _mid_turn(*results):
+    """A thread that overflows inside a tool loop: older history, the newest user message,
+    then one terminal exchange per result."""
+    messages = _thread() + [{"role": "user", "content": "Read main.py and apply your changes."}]
+    for index, result in enumerate(results):
+        messages += _exchange(index, result)
+    return messages
+
+
+@pytest.mark.parametrize(
+    ("results", "kept"),
+    [
+        # Everything the turn has done fits beside the reset, so all of it stays.
+        (["MAIN-PY " * 100, "ls output"], [0, 1]),
+        # Every exchange before the newest is held, not just the one before it.
+        (["MAIN-PY " * 50, "ls output", "git status"], [0, 1, 2]),
+        # Only the oldest exchange has to go for the rest to fit.
+        (["A" * 2400, "B" * 1600, "ls output"], [1, 2]),
+        # Nothing fits but the newest, as on main.
+        (["A" * 2400, "B" * 2400, "C" * 1600], [2]),
+    ],
+)
+def test_a_reset_inside_a_tool_loop_keeps_the_turn_in_progress(results, kept):
+    """A reset mid-turn evicted every tool exchange of the turn in progress except the last,
+    so the file the model had just read with `cat` was gone and it read it again."""
+    messages = _mid_turn(*results)
+
+    fitted, truncation = _fit(messages)
+
+    assert truncation["fits"] is True
+    assert truncation["checkpoint_started"] is True
+    assert count(fitted) <= 1000
+    # Still a reset, not a rolling trim.
+    assert [m["content"] for m in fitted if m["role"] == "user"] == [
+        "Read main.py and apply your changes."
+    ]
+    assert [m["content"] for m in fitted if m["role"] == "tool"] == [results[i] for i in kept]
+    # Each kept result still follows its own call, which strict templates require.
+    calls = [m["tool_calls"][0]["id"] for m in fitted if m.get("tool_calls")]
+    assert calls == [f"call-{i}" for i in kept]
+
+
+def test_a_reset_inside_a_tool_loop_leaves_room_for_the_next_tool_call():
+    """Held to the brim, the turn in progress reset again on every later tool call and was
+    prefilled again each time."""
+    messages = _mid_turn("A" * 1200, "B" * 1200, "C" * 400)
+
+    brim, _ = _fit(messages, headroom_ratio = 0.0)
+    half, _ = _fit(messages, headroom_ratio = 0.5)
+    fitted, truncation = _fit(messages)
+
+    assert [m["content"][0] for m in brim if m["role"] == "tool"] == ["A", "B", "C"]
+    assert [m["content"][0] for m in half if m["role"] == "tool"] == ["C"]
+    assert truncation["checkpoint_started"] is True
+    assert [m["content"][0] for m in fitted if m["role"] == "tool"] == ["B", "C"]
+    assert _fit(fitted + _exchange(3, "D" * 400))[1] is None
 
 
 def test_the_carried_forward_block_is_capped_and_excludes_the_giant_instruction():
@@ -2272,7 +2398,8 @@ def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
     del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
     assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
 
-    # A checkpoint reset ignores headroom, so its depth is never refused over the ratio.
+    # A checkpoint reset spends headroom only on the turn in progress, which its depth never
+    # counts, so that depth is never refused over the ratio.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 12,

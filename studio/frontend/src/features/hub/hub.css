@@ -754,6 +754,12 @@
      segmented toggle in the app (Hub Discover/On Device, Models/Datasets,
      Unsloth/All, Recent/Name/Size, plus Settings + Train tabs) shares one
      design: a soft track with a white, softly-shadowed sliding pill. */
+  /* The selected pill sits at -z-10 under every segment's label (see
+     SegmentedPill), so the track keeps it from sinking below the page. */
+  .hub-tab-toggle {
+    isolation: isolate;
+  }
+
   html:not(.dark) .hub-tab-toggle {
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     border: 0;
@@ -804,13 +810,6 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
-  /* A tab is a real button, so unlike the sliding indicator it can hover. In
-     light the pill is already the lightest thing on the panel, so it stays
-     put rather than moving the only direction left, which is down. */
-  html:not(.dark) .hub-tab-toggle-pill[role="tab"]:hover {
-    background-color: var(--background);
-  }
-
   /* The selected segment takes --accent, the app's one selection colour, so it
      reads like every other lit row. As its own wash it was scaled by the wash
      gain, which falls much further than the token does: at the bottom of the
@@ -835,9 +834,22 @@
     background-color: var(--accent);
   }
 
+  /* The Train page's cards sit a step from --accent, so its tabs and toggles take the picker's
+     treatment below: the pill lifts toward white and the track sinks below the card. */
+  html.dark .elevated-card {
+    --hub-tab-track: color-mix(in srgb, var(--background) 55%, transparent);
+  }
+  html.dark .elevated-card .hub-tab-toggle-pill,
+  html.dark .elevated-card .hub-tab-toggle-pill:hover {
+    background-color: color-mix(in srgb, var(--accent), white 7.5%);
+  }
+
   /* The picker's panel is --sidebar, a step from --accent: its controls lift toward white to stand off it. */
   html.dark .unsloth-model-selector-menu {
     --picker-control-lit: color-mix(in srgb, var(--accent), white 7.5%);
+    /* Sunk further than the panel default's 27%: with the selected pill lifted, the unselected
+       half needs to sit below the panel to read as off. */
+    --hub-tab-track: color-mix(in srgb, var(--background) 55%, transparent);
   }
   html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill,
   html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill:hover,
@@ -1653,4 +1665,16 @@ html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
    this class. */
 body[data-scroll-locked] .hub-modal-pe-guard {
   pointer-events: none !important;
+}
+
+/* Model filter ranges: two thumbs share a track, so smaller than a single slider. */
+.hub-range {
+  --hub-range-thumb: calc(1rem * var(--ui-space-scale, 1));
+  --hub-range-track: calc(0.1875rem * var(--ui-space-scale, 1));
+}
+@supports (width: round(1.5px, 1px)) {
+  .hub-range {
+    --hub-range-thumb: round(calc(1rem * var(--ui-space-scale, 1)), 1px);
+    --hub-range-track: round(calc(0.1875rem * var(--ui-space-scale, 1)), var(--device-px, 1px));
+  }
 }

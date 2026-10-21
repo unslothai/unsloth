@@ -46,8 +46,31 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
 # custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
-    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen"}
+    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
 )
+
+
+# LM Studio 400s on {"type": "json_object"} ("must be 'json_schema' or 'text'"); a json_schema of the same object is the
+# same constraint. A retry, not the default: some OpenAI-compatible APIs accept json_object but not json_schema.
+def _json_object_as_schema(response_format: dict[str, Any]) -> dict[str, Any]:
+    """Keep the llama.cpp-style `schema` member; absent or empty means any object, as in grammar_constraint."""
+    schema = response_format.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        schema = {"type": "object"}
+    return {"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}
+
+
+def _json_object_refused_for_schema(
+    status_code: int, error_text: str, response_format: Optional[dict[str, Any]]
+) -> bool:
+    """True when the server refused JSON mode but names json_schema as the accepted spelling."""
+    if status_code != 400 or not isinstance(response_format, dict):
+        return False
+    if response_format.get("type") != "json_object":
+        return False
+    text = error_text.lower()
+    return "response_format" in text and "json_schema" in text
+
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
 _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
@@ -55,6 +78,7 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 
 
@@ -852,6 +876,25 @@ _LOCAL_SERVER_EFFORT_ALIASES = {"minimal": "low", "xhigh": "high", "max": "high"
 _VLLM_FULL_EFFORT_RELEASE = "0.21.0"
 
 
+def llama_cpp_template_controls(
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+    preserve_thinking: Optional[bool],
+) -> tuple:
+    """The template variables stream_chat_completion sends llama-server for these controls."""
+    controls: dict[str, Any] = {}
+    if preserve_thinking is not None:
+        controls["preserve_thinking"] = preserve_thinking
+    effort = (reasoning_effort or "").strip().lower()
+    effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+    thinking = False if effort == "none" else enable_thinking
+    if thinking is not None:
+        controls["enable_thinking"] = bool(thinking)
+    if effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
+        controls["reasoning_effort"] = effort
+    return tuple(sorted(controls.items()))
+
+
 def _vllm_takes_full_effort(version: Any) -> bool:
     """A pre-release or unparsable version keeps the low | medium | high subset."""
     from packaging.version import InvalidVersion, Version
@@ -1121,25 +1164,26 @@ def _with_max_completion_tokens(body: dict[str, Any]) -> dict[str, Any]:
 
 
 @contextlib.asynccontextmanager
-async def _stream_post_retrying_max_tokens(
+async def _stream_post_with_compat_fallbacks(
     http: httpx.AsyncClient, url: str, body: dict[str, Any], **kwargs
 ):
-    """`http.stream("POST", ...)` that resends once with `max_completion_tokens` if the upstream rejects `max_tokens`.
-    Nothing has been yielded to the caller at the status check, so the retry is invisible."""
-    async with http.stream("POST", url, json = body, **kwargs) as response:
-        retry = (
-            response.status_code == 400
-            and "max_tokens" in body
-            and _rejects_max_tokens(400, (await response.aread()).decode("utf-8", errors = "replace"))
-        )
-        if not retry:
-            yield response
-            return
-    logger.info("Upstream rejected max_tokens; retrying with max_completion_tokens")
-    async with http.stream(
-        "POST", url, json = _with_max_completion_tokens(body), **kwargs
-    ) as response:
-        yield response
+    """Resend on a refused `max_tokens` or `json_object` before yielding; each rewrite removes its own trigger,
+    so each field changes at most once."""
+    while True:
+        async with http.stream("POST", url, json = body, **kwargs) as response:
+            if response.status_code != 400:
+                yield response
+                return
+            error_text = (await response.aread()).decode("utf-8", errors = "replace")
+            if "max_tokens" in body and _rejects_max_tokens(400, error_text):
+                body = _with_max_completion_tokens(body)
+                logger.info("Upstream rejected max_tokens; retrying with max_completion_tokens")
+            elif _json_object_refused_for_schema(400, error_text, body.get("response_format")):
+                body = {**body, "response_format": _json_object_as_schema(body["response_format"])}
+                logger.info("Upstream refused json_object; retrying as json_schema")
+            else:
+                yield response
+                return
 
 
 def _client() -> httpx.AsyncClient:
@@ -1719,6 +1763,7 @@ class ExternalProviderClient:
                 tool_choice,
                 fast_mode = fast_mode,
                 tools = tools,
+                response_format = response_format,
             ):
                 yield line
             return
@@ -1838,7 +1883,7 @@ class ExternalProviderClient:
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif self.provider_type == "deepseek":
             _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
-        elif self.provider_type == "qwen":
+        elif self.provider_type in ("qwen", "qwencloud"):
             _apply_qwen_reasoning_controls(body, enable_thinking)
         elif self.provider_type == "huggingface":
             _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
@@ -1942,7 +1987,7 @@ class ExternalProviderClient:
         )
 
         try:
-            async with _stream_post_retrying_max_tokens(
+            async with _stream_post_with_compat_fallbacks(
                 _loopback_http_client if getattr(self, "_managed_loopback", False) else _client(),
                 url,
                 body,
@@ -2562,6 +2607,7 @@ class ExternalProviderClient:
         *,
         fast_mode: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
@@ -2984,6 +3030,19 @@ class ExternalProviderClient:
                 # manual-thinking path.
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
+
+        # Structured output lives beside effort under output_config (GA, no beta header):
+        # platform.claude.com/docs/en/build-with-claude/structured-outputs.
+        _rf_schema = (
+            (response_format.get("json_schema") or {}).get("schema")
+            if isinstance(response_format, dict) and response_format.get("type") == "json_schema"
+            else None
+        )
+        if isinstance(_rf_schema, dict):
+            body.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": _rf_schema,
+            }
 
         # tool_choice="none" or pinned-function suppresses hosted tools so a stale UI toggle cannot fire server-side
         # search/code-exec.
@@ -3844,7 +3903,9 @@ class ExternalProviderClient:
                                 )
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
-                                last_usage.update(delta_usage)
+                                last_usage.update(
+                                    {k: v for k, v in delta_usage.items() if v is not None}
+                                )
                                 # Compaction iterations are not in top-level input/output_tokens; fold them into
                                 # compaction_{input,output}_tokens for billing.
                                 iterations = delta_usage.get("iterations")
@@ -7704,6 +7765,41 @@ class ExternalProviderClient:
         _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
         return window
 
+    async def served_chat_template(self, model: str) -> Optional[str]:
+        """llama-server's chat template from /props, cached for a minute like the served window."""
+        if self.provider_type != "llama_cpp":
+            return None
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        cached = _served_templates.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        template = None
+        try:
+            response = await _client().get(
+                f"{self.base_url.removesuffix('/v1')}/props",
+                params = {"model": model},
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            value = body.get("chat_template") if isinstance(body, dict) else None
+            template = value if isinstance(value, str) and value.strip() else None
+        except httpx.ConnectError as exc:
+            logger.info(
+                "No served chat template from %s: %s", self.provider_type, type(exc).__name__
+            )
+            return None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info(
+                "No served chat template from %s: %s", self.provider_type, type(exc).__name__
+            )
+        for stale in [k for k, (expiry, _) in _served_templates.items() if expiry <= now]:
+            del _served_templates[stale]
+        _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
+        return template
+
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
         """map Gemini models to OpenAI entries and exclude advertised embedding-only models."""
@@ -8155,6 +8251,27 @@ def _build_usage_chunk(
         # OpenAI-shaped totals so monitors and cost consumers do not undercount the turn.
         compaction_input = last_usage.get("compaction_input_tokens") or 0
         compaction_output = last_usage.get("compaction_output_tokens") or 0
+        context_tokens = uncached_input + cache_creation + cache_read + completion_tokens
+        # Top-level counts sum every sampling iteration (server tools add some); the last one is the context.
+        iterations = last_usage.get("iterations")
+        final = next(
+            (
+                it
+                for it in reversed(iterations if isinstance(iterations, list) else [])
+                if isinstance(it, dict) and it.get("type") in ("message", "fallback_message")
+            ),
+            None,
+        )
+        if final is not None:
+            context_tokens = sum(
+                int(final.get(field) or 0)
+                for field in (
+                    "input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "output_tokens",
+                )
+            )
         prompt_tokens = uncached_input + cache_creation + cache_read + compaction_input
         completion_tokens += compaction_output
         if not (prompt_tokens or completion_tokens):
@@ -8163,6 +8280,7 @@ def _build_usage_chunk(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            "context_tokens": context_tokens,
             "prompt_tokens_details": {"cached_tokens": cache_read},
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,

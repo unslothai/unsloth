@@ -9,7 +9,7 @@ import {
   chatLocalModelOptions,
   isExternalModelId,
   readLastLocalModelLoad,
-  useChatModelRuntime,
+  type useChatModelRuntime,
   useChatRuntimeStore,
   wantsDownloadManagerStaging,
 } from "@/features/chat";
@@ -22,21 +22,22 @@ import {
 } from "@/features/hub";
 import {
   type LoraModelOption,
+  type ModelConfigHandoffRequest,
   type ModelOption,
   ModelSelector,
   type ModelSelectorChangeMeta,
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
-  splitQuantSuffix,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
-import { Download01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
   type ReactElement,
+  type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -47,6 +48,8 @@ import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
 } from "../reload-last-model";
+import { monitorSelection } from "../use-resident-run-target";
+import { ToolbarTooltip } from "./toolbar-tooltip";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
 function loadErrorMessage(err: unknown, fallback: string): string | null {
@@ -121,22 +124,6 @@ function localSelection(
     previousConfig: currentRuntimePerModelConfig({ includeMaxSeqLength: true }),
     throwOnError: true,
   };
-}
-
-// The monitor reports a llama.cpp model as "<id>:<quant>"; Ollama ids carry their own ":<tag>".
-function monitorSelection(activeModel: string | null | undefined): {
-  id: string;
-  ggufVariant: string | null;
-} {
-  if (!activeModel) {
-    return { id: "", ggufVariant: null };
-  }
-  const split = activeModel.startsWith("ollama/")
-    ? null
-    : splitQuantSuffix(activeModel);
-  return split
-    ? { id: split[0], ggufVariant: split[1] }
-    : { id: activeModel, ggufVariant: null };
 }
 
 type PendingDownload = {
@@ -221,19 +208,37 @@ function toModelOptions(
 }
 
 export function ApiModelLoadControls({
+  runtime,
   activeModel,
+  residencyKey,
   onSettled,
   onUnloadActive,
   unloading,
+  configRequest = null,
+  onConfigRequestAdopted,
+  onEjectAll,
+  children,
 }: {
+  runtime: ReturnType<typeof useChatModelRuntime>;
   activeModel: string | null | undefined;
+  // Not active_model: a kept-model unload or a side load leaves that unchanged.
+  residencyKey: string;
   onSettled: () => void;
   onUnloadActive: () => void;
   // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
   unloading: boolean;
+  configRequest?: ModelConfigHandoffRequest | null;
+  onConfigRequestAdopted?: (requestId: string) => void;
+  onEjectAll?: () => void;
+  children?: ReactNode;
 }): ReactElement {
-  const { selectModel, loadNpuModel, refresh, ejectModel } =
-    useChatModelRuntime();
+  const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const loadedNames = useMemo(
+    () =>
+      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
+    [loadedModels],
+  );
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -272,8 +277,16 @@ export function ApiModelLoadControls({
     refreshLastLoadLabel();
   }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
 
+  // Opened during render, as the picker adopts the request, so the same pass mounts its page.
+  const [openedRequestId, setOpenedRequestId] = useState<string | null>(null);
+  if (configRequest && configRequest.requestId !== openedRequestId) {
+    setOpenedRequestId(configRequest.requestId);
+    setSelectorOpen(true);
+  }
+
   // An API auto-switch changes the resident model behind Chat's store; this page's own loads
   // reconcile themselves.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: residencyKey is the trigger, not an input
   useEffect(() => {
     if (activeModel === undefined) {
       return;
@@ -282,7 +295,7 @@ export function ApiModelLoadControls({
     if (!useChatRuntimeStore.getState().modelLoading) {
       refresh({ includeLoras: false });
     }
-  }, [activeModel, refresh, refreshLastLoadLabel]);
+  }, [activeModel, residencyKey, refresh, refreshLastLoadLabel]);
 
   const models = useMemo(
     () => toModelOptions(modelsFromStore),
@@ -426,7 +439,7 @@ export function ApiModelLoadControls({
     publicModelId(runtimeCheckpoint) === effectiveModel;
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
       <ModelSelector
         models={models}
         loraModels={loraModels}
@@ -437,11 +450,16 @@ export function ApiModelLoadControls({
         activeLoadedContextLength={
           runtimeIsResident ? loadedContextLength : null
         }
+        configRequest={configRequest}
+        onConfigRequestAdopted={onConfigRequestAdopted}
         onValueChange={(value, meta) => {
           handlePick(value, meta);
         }}
         // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
         onEject={busy ? undefined : handleEject}
+        onEjectAll={busy || !onEjectAll ? undefined : onEjectAll}
+        loadedCount={loadedModels.length}
+        loadedNames={loadedNames}
         onFoldersChange={() => {
           refreshLocalModels();
         }}
@@ -455,31 +473,33 @@ export function ApiModelLoadControls({
         placeholder="Load model"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className={cn("h-9 rounded-full")}
+        className="h-9 max-w-full rounded-full sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
+        contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          handleReload();
-        }}
-        disabled={reloadDisabled}
-        title={reloadTitle(lastLoadLabel, Boolean(activeModel))}
-        className="h-9 gap-1.5 rounded-full"
-      >
-        <HugeiconsIcon
-          icon={reloading ? RefreshIcon : Download01Icon}
-          strokeWidth={1.75}
-          className={cn("size-4", reloading && "animate-spin")}
-        />
-        {reloading ? "Reloading" : "Reload"}
-      </Button>
+      <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          aria-label={reloading ? "Reloading" : "Reload"}
+          onClick={() => {
+            handleReload();
+          }}
+          disabled={reloadDisabled}
+          className="rounded-full"
+        >
+          <HugeiconsIcon
+            icon={ReloadIcon}
+            strokeWidth={1.75}
+            className={cn("size-4", reloading && "animate-spin")}
+          />
+        </Button>
+      </ToolbarTooltip>
+      {children}
       {actionError ? (
         <span
           role="alert"
-          className="max-w-64 truncate text-ui-11 text-red-600 dark:text-red-400"
-          title={actionError}
+          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
         >
           {actionError}
         </span>

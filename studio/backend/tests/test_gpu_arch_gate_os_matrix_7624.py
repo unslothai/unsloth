@@ -375,7 +375,7 @@ class TestOsVendorMatrix:
             (0, 22000, 24564),
             (1, 18000, 24564),
         ]
-        assert marker_spy == []
+        # The CUDA SM filter reads the marker too; the ROCm gate's own input stays unread.
         assert arch_map_spy == []
 
     @pytest.mark.parametrize("os_key", OS_KEYS)
@@ -2559,6 +2559,14 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
     ):
         # 30000MiB free holds the 20GB model outright, so the respawn spills nothing.
         torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 30000)
+        # Auto now pins a dGPU that holds the model before the APU; drop that tier so
+        # the crashed-APU-first selection whose verdict is under test still happens.
+        _select = LlamaCppBackend._select_gpus
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_select_gpus",
+            staticmethod(lambda *a, integrated = frozenset(), **k: _select(*a, **k)),
+        )
         calls: list = []
         capture: dict = {}
         launches = _run_auto_load(
@@ -2704,10 +2712,10 @@ class TestAnInstallFromBeforeThisPr:
         assert len(launches) == 1
         _cmd, env = launches[0]
         assert env.get("HIP_VISIBLE_DEVICES") != "-1", "an old install was gated onto the CPU"
-        # Pre-PR placement, reproduced: the shared-pool iGPU still outranks the dGPU
-        # (#7669) until the install is refreshed. CUDA_VISIBLE_DEVICES is 0 because
-        # ROCr re-indexes the visible agents from zero; the physical pick is ROCR's.
-        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "1", "CUDA_VISIBLE_DEVICES": "0"}
+        # Not gated, and auto now prefers the dGPU that holds the model over the
+        # shared-pool iGPU (#7624). CUDA_VISIBLE_DEVICES is 0 because ROCr re-indexes
+        # the visible agents from zero; the physical pick is ROCR's.
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
 
 
 class TestArchForcedCpuFlagLifecycle:

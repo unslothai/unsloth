@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Remote modeling code written for transformers 4.x reads ``config.rope_scaling is None`` as plain RoPE.
-
-transformers 5 made ``rope_scaling`` an alias of ``rope_parameters``, which is a dict even for plain
-RoPE, so inclusionAI/Ling-2.6-flash's attention read scaling keys it never has. Remote configs with
-plain RoPE read ``None`` again; native configs and real scaling dicts are unchanged.
-"""
+"""Plain-RoPE remote configs must read `rope_scaling` as None, not the dict transformers 5 aliases."""
 
 import pytest
 import torch
@@ -72,7 +67,7 @@ def test_remote_config_with_plain_rope_reads_rope_scaling_none():
         "transformers_modules.inclusionAI.Ling.configuration_bailing", dict(plain)
     )
     assert remote.rope_scaling is None
-    assert remote.rope_parameters == plain  # the real dict is still there
+    assert remote.rope_parameters == plain
 
     yarn = {"rope_type": "yarn", "factor": 4.0, "rope_theta": 1e6}
     remote_yarn = _config_class("transformers_modules.x.configuration_x", dict(yarn))
@@ -81,7 +76,6 @@ def test_remote_config_with_plain_rope_reads_rope_scaling_none():
     native = _config_class("transformers.models.llama.configuration_llama", dict(plain))
     assert native.rope_scaling == plain
 
-    # A remote config written for 5.x keeps the alias.
     v5 = _config_class("transformers_modules.x.configuration_x", dict(plain), legacy = False)
     assert v5.rope_scaling == plain
 
@@ -127,8 +121,7 @@ def test_a_native_default_rope_is_not_replaced_on_load(tmp_path):
 
 @only_v5
 def test_remote_scaling_dict_does_not_repeat_the_base_its_config_keeps():
-    # InternLM2's 4.x config keeps rope_theta as an attribute and rejects any rope_scaling that is
-    # not exactly {type, factor}; transformers 5 and the theta carry put the base in the dict too.
+    # InternLM2's 4.x config rejects any rope_scaling that is not exactly {type, factor}.
     from transformers import PretrainedConfig
 
     class InternLM2LikeConfig(PretrainedConfig):
@@ -150,7 +143,7 @@ def test_remote_scaling_dict_does_not_repeat_the_base_its_config_keeps():
     config = InternLM2LikeConfig(rope_scaling = {"type": "dynamic", "factor": 2.0})
     assert config.rope_scaling["type"] == "dynamic" and config.rope_scaling["factor"] == 2.0
     assert "rope_theta" not in config.rope_scaling
-    assert config.rope_parameters["rope_theta"] == 1_000_000  # still where transformers 5 reads it
+    assert config.rope_parameters["rope_theta"] == 1_000_000
 
 
 @pytest.mark.skipif(

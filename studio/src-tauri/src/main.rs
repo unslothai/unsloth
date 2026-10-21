@@ -25,6 +25,7 @@ mod install;
 mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
+mod long_paths;
 mod loopback_http;
 #[cfg(target_os = "macos")]
 mod macos_event_guard;
@@ -71,6 +72,11 @@ static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
+
+/// Absent or unreadable = shown, so a hidden start never loses its only way back (see `.setup`).
+const TRAY_ICON_VISIBLE_PREFERENCE_FILE: &str = "tray-icon-visible-v1";
+
+const TRAY_ID: &str = "main";
 
 /// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
 /// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
@@ -219,6 +225,60 @@ fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<()
     })
 }
 
+fn tray_icon_visible_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(TRAY_ICON_VISIBLE_PREFERENCE_FILE)
+}
+
+fn read_tray_icon_visible_preference(config_dir: &Path) -> bool {
+    let path = tray_icon_visible_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(visible) => visible,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid tray icon visibility preference {}: {error}",
+                    path.display()
+                );
+                true
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                "Could not read tray icon visibility preference {}: {error}",
+                path.display()
+            );
+            true
+        }
+    }
+}
+
+fn write_tray_icon_visible_preference(config_dir: &Path, visible: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = tray_icon_visible_preference_path(config_dir);
+    fs::write(&path, format!("{visible}\n")).map_err(|error| {
+        format!(
+            "Failed to save tray icon visibility preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn stored_tray_icon_visible_preference(app: &tauri::AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .map(|dir| read_tray_icon_visible_preference(&dir))
+        .unwrap_or_else(|error| {
+            warn!("Could not determine app configuration directory: {error}");
+            true
+        })
+}
+
 fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
     config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
 }
@@ -322,6 +382,52 @@ fn set_close_to_tray(
         .map_err(|error| format!("Could not determine app configuration directory: {error}"))?;
     write_close_to_tray_preference(&config_dir, enabled)?;
     state.0.store(enabled, Ordering::SeqCst);
+    Ok(enabled)
+}
+
+#[tauri::command]
+fn get_tray_icon_visible(app: tauri::AppHandle) -> Option<bool> {
+    cfg!(target_os = "macos").then(|| stored_tray_icon_visible_preference(&app))
+}
+
+/// tray-icon rebuilds the status item on show, so the appearance observer must follow it.
+fn apply_tray_icon_visible(tray: &tauri::tray::TrayIcon, visible: bool) -> tauri::Result<()> {
+    tray.set_visible(visible)?;
+    #[cfg(target_os = "macos")]
+    if visible {
+        if let Err(error) = macos_tray::install_appearance_observer(tray) {
+            // The template icon remains visible and adaptive if native observation is unavailable.
+            warn!("Could not install the macOS tray appearance observer: {error}");
+        }
+    } else {
+        macos_tray::remove_appearance_observer();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("The menu bar icon is only configurable on macOS".to_string());
+    }
+    let tray = app
+        .tray_by_id(TRAY_ID)
+        .ok_or_else(|| "Menu bar icon is not available".to_string())?;
+    let previous = stored_tray_icon_visible_preference(&app);
+    apply_tray_icon_visible(&tray, enabled)
+        .map_err(|error| format!("Could not update the menu bar icon: {error}"))?;
+    let persisted = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))
+        .and_then(|config_dir| write_tray_icon_visible_preference(&config_dir, enabled));
+    if let Err(error) = persisted {
+        // Keep the icon matching the preference the next launch will read.
+        if let Err(restore_error) = apply_tray_icon_visible(&tray, previous) {
+            warn!("Could not restore the previous menu bar icon visibility: {restore_error}");
+        }
+        return Err(error);
+    }
     Ok(enabled)
 }
 
@@ -1869,7 +1975,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     let tray_icon = tauri::include_image!("./icons/tray-icon-color.png");
 
-    let tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Unsloth")
         .icon(tray_icon)
@@ -1895,9 +2001,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build(app)?;
 
     #[cfg(target_os = "macos")]
-    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
-        // The template icon remains visible and adaptive if native observation is unavailable.
-        warn!("Could not install the macOS tray appearance observer: {error}");
+    {
+        let visible = stored_tray_icon_visible_preference(app.handle());
+        if let Err(error) = apply_tray_icon_visible(&tray, visible) {
+            warn!("Could not apply the stored tray icon visibility: {error}");
+        }
     }
     #[cfg(not(target_os = "macos"))]
     drop(tray);
@@ -2241,6 +2349,7 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(webview_cache_plugin())
+        .plugin(browser_webview::page_guard_plugin())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -2272,7 +2381,7 @@ fn main() {
         .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(|invoke| {
             if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
-                invoke.resolver.reject("Studio commands are only available to the main webview");
+                invoke.resolver.reject("Unsloth Studio commands are only available to the main webview");
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
@@ -2335,6 +2444,8 @@ fn main() {
             commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
+            long_paths::windows_long_paths_status,
+            long_paths::enable_windows_long_paths,
             desktop_auth::desktop_auth,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
@@ -2364,6 +2475,7 @@ fn main() {
             native_intents::read_native_attachment_file,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
+            native_intents::pick_native_model_folder,
             native_intents::pick_native_document_folder,
             native_intents::consume_native_path_token,
             native_intents::register_artifact_path,
@@ -2379,6 +2491,8 @@ fn main() {
             set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            get_tray_icon_visible,
+            set_tray_icon_visible,
             set_tray_server_status,
             ];
             handler(invoke)
@@ -2389,7 +2503,8 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             let _ = launched_hidden;
             #[cfg(target_os = "macos")]
-            if launched_hidden {
+            // Without a menu bar icon the Dock icon is the only way back to a hidden start.
+            if launched_hidden && stored_tray_icon_visible_preference(app.handle()) {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
@@ -2748,6 +2863,25 @@ media-src 'self' https:"
         fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
 
         assert!(!read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn tray_icon_visible_preference_defaults_on_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), false).unwrap();
+        assert!(!read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), true).unwrap();
+        assert!(read_tray_icon_visible_preference(dir.path()));
+    }
+
+    #[test]
+    fn invalid_tray_icon_visible_preference_falls_back_to_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(tray_icon_visible_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert!(read_tray_icon_visible_preference(dir.path()));
     }
 
     #[test]

@@ -344,9 +344,30 @@ def _render_conversation(tokenizer, conversation, tools = None, fallback_without
     return _render_messages(tokenizer, conversation, tools, fallback_without_tools)
 
 
+def _thinking_as_reasoning_content(tokenizer, conversation):
+    def wants_alias(message):
+        return (
+            isinstance(message, dict)
+            and message.get("thinking")
+            and message.get("reasoning_content") is None
+            and "</think>" not in str(message.get("content") or "")
+        )
+
+    # Rows are checked first: stringifying a named-template catalog per row is costly.
+    if not any(wants_alias(message) for message in conversation):
+        return conversation
+    if "reasoning_content" not in str(getattr(tokenizer, "chat_template", None) or ""):
+        return conversation
+    return [
+        {**message, "reasoning_content": message["thinking"]} if wants_alias(message) else message
+        for message in conversation
+    ]
+
+
 def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
+    conversation = _thinking_as_reasoning_content(tokenizer, conversation)
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
@@ -488,6 +509,7 @@ def get_dataset_info_summary(dataset_info):
         "sharegpt": "ShareGPT format (needs standardization)",
         "chatml_messages": "ChatML format (messages column) - OpenAI compatible",
         "chatml_conversations": "ChatML format (conversations column) - HuggingFace standard",
+        "pretokenized": "Pre-tokenized (input_ids / labels)",
         "unknown": "Unknown format"
     }
 
@@ -653,8 +675,13 @@ def apply_chat_template_to_dataset(
 
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
+        preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
+
         def _format_alpaca(examples):
             texts = []
+            systems = examples.get("system")
+            if systems is None:
+                systems = [None] * len(examples["instruction"])
             for i in range(len(examples["instruction"])):
                 fields = {
                     "instruction": examples["instruction"][i],
@@ -662,8 +689,11 @@ def apply_chat_template_to_dataset(
                     "output": examples["output"][i]
                 }
                 fields = {key: cell_text(value) for key, value in fields.items()}
+                system = systems[i]
+                if not (isinstance(system, str) and system.strip()):
+                    system = preamble
 
-                text = DEFAULT_ALPACA_TEMPLATE.format(
+                text = system + "\n\n" + alpaca_body.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
                 if not text.endswith(eos_token):
