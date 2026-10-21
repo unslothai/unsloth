@@ -135,6 +135,38 @@ def test_terminate_descendants_skips_init(recorded_signals, monkeypatch):
     assert recorded_signals == []
 
 
+# Every process on the host descends from init. A walk rooted at pid 1 is the whole
+# machine, and the llama-server unload SIGTERMs whatever the walk returns: a stand-in
+# process with pid 1 in a test took down every process the user owned that way.
+_INIT_OWNS_EVERYTHING = {1: [4242], 4242: [4243]}
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process table")
+@pytest.mark.parametrize("pid", [1, True])
+def test_collect_descendants_never_walks_init(monkeypatch, pid):
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: _INIT_OWNS_EVERYTHING)
+    monkeypatch.setattr(pl, "_pid_identity", lambda p: "start")
+    assert pl.collect_descendants_known(pid) == ([], True)
+    assert pl.collect_descendants(pid) == []
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process table")
+def test_collect_descendants_still_walks_a_real_pid(monkeypatch):
+    """The floor must not disarm the walk it guards."""
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: _INIT_OWNS_EVERYTHING)
+    monkeypatch.setattr(pl, "_pid_identity", lambda p: "start")
+    assert pl.collect_descendants_known(4242) == ([(4243, "start")], True)
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process table")
+def test_llama_unload_walk_never_names_inits_children(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: _INIT_OWNS_EVERYTHING)
+    monkeypatch.setattr(pl, "_pid_identity", lambda p: "start")
+    assert LlamaCppBackend._collect_descendants(1) == ([], True)
+
+
 # --- the end to end case that actually happened ----------------------------
 
 
