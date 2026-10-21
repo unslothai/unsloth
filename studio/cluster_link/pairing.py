@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -152,6 +153,7 @@ class PairingWindow:
         self.expires_at = 0.0
         self._lock = asyncio.Lock()
         self._used = False
+        self._claimed = False
         self._attempts = 0
         self._server: Optional[asyncio.AbstractServer] = None
         self._done: Optional[asyncio.Future] = None
@@ -197,6 +199,8 @@ class PairingWindow:
         self._done.exception()  # wait() still raises it; nobody waiting is not an error
 
     def _expire(self) -> None:
+        if self._claimed:
+            return  # a worker proved the token in time: its handler settles the window
         if self._done is not None and not self._done.done():
             self._fail(PairingError("the pairing window expired"))
         self.close()
@@ -282,7 +286,11 @@ class PairingWindow:
         async with self._lock:
             if self._used:
                 raise PairingError("invitation already used")
-            self._used = True
+            self._used = self._claimed = True
+        # Claimed: this handler now settles the window, so expiry must not report it failed while
+        # the worker is acknowledging (every read below is bounded by FRAME_TIMEOUT_S).
+        if self._expiry is not None:
+            self._expiry.cancel()
         try:
             node_id = secrets.token_hex(8)
             cert_pem = identity.issue_worker_cert(csr_pem, node_id)
@@ -323,7 +331,7 @@ class PairingWindow:
                 await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ack", node_id = str
             )
             reg = self.registry or identity.Registry()
-            with identity.identity_lock():
+            async with _identity_lock():
                 now_master = identity.master_identity(create = False)
                 if now_master is None or now_master.fingerprint != self.master.fingerprint:
                     raise PairingError("this master was reset while pairing; pair again")
@@ -346,8 +354,29 @@ class PairingWindow:
             raise
 
 
+@contextlib.asynccontextmanager
+async def _identity_lock():
+    """``identity.identity_lock()`` taken off the event loop: a blocking acquire would stall every
+    other coroutine, including the one holding the lock across network I/O."""
+    cm = identity.identity_lock()
+    entered = asyncio.ensure_future(asyncio.to_thread(cm.__enter__))
+    try:
+        await asyncio.shield(entered)
+    except asyncio.CancelledError:
+        # The thread still takes the lock: hand it back as soon as it does.
+        entered.add_done_callback(
+            lambda f: f.cancelled() or f.exception() is not None or cm.__exit__(None, None, None)
+        )
+        raise
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
+
+
 async def _connect(addrs: Sequence[str], port: int, master_fp: str):
     last: Optional[BaseException] = None
+    mismatched: List[str] = []
     for addr in addrs:
         try:
             reader, writer = await asyncio.wait_for(
@@ -359,11 +388,15 @@ async def _connect(addrs: Sequence[str], port: int, master_fp: str):
             continue
         seen = tls.peer_fingerprint(writer.get_extra_info("ssl_object"))
         if seen is None or not hmac.compare_digest(seen, master_fp):
+            # Nothing was sent, so a stale or reassigned address is just a failed candidate.
             writer.close()
-            raise PairingError(
-                f"{addr}:{port} is not the master this token was made for (certificate mismatch)"
-            )
+            mismatched.append(f"{addr}:{port}")
+            continue
         return addr, reader, writer
+    if mismatched:
+        raise PairingError(
+            f"{', '.join(mismatched)} is not the master this token was made for (certificate mismatch)"
+        )
     raise PairingError(f"could not reach the master at {', '.join(addrs)} port {port}: {last}")
 
 
@@ -382,7 +415,7 @@ async def join(
     # No check of invite.exp here: a worker's clock may be off (a new or offline machine), and the
     # master, which this connection pins, enforces the window itself.
     # One join at a time on this machine: two concurrent ones would interleave key, cert and root.
-    with identity.identity_lock():
+    async with _identity_lock():
         return await _join_locked(invite, name, devices, timeout, now, replace, agent_port)
 
 

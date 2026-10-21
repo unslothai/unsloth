@@ -218,6 +218,7 @@ class Listener:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._sock: Optional[socket.socket] = None
+        self._ifaces: List[str] = []
         self._joined: List[str] = []
         self._joined_at = 0.0
         self.error: str = ""
@@ -243,7 +244,7 @@ class Listener:
             if not joined:
                 # Nothing listed (or every join refused): the default interface, as before.
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq("0.0.0.0"))
-            self._joined, self._joined_at = ifaces, time.monotonic()
+            self._ifaces, self._joined, self._joined_at = ifaces, joined, time.monotonic()
             sock.settimeout(0.5)
             return sock
         except OSError as exc:
@@ -257,11 +258,23 @@ class Listener:
     def _mreq(iface: str) -> bytes:
         return struct.pack("4s4s", socket.inet_aton(DISCOVERY_GROUP_V4), socket.inet_aton(iface))
 
-    def _interfaces_changed(self) -> bool:
+    def _interfaces_changed(self, sock: Optional[socket.socket] = None) -> bool:
         if time.monotonic() - self._joined_at < REJOIN_S:
             return False
         self._joined_at = time.monotonic()
-        return lan_ipv4_addresses() != self._joined
+        if lan_ipv4_addresses() != self._ifaces:
+            return True
+        # Same interfaces: retry the memberships that failed, on the open socket, so a transient
+        # refusal does not leave one network deaf until the address list changes.
+        for iface in self._ifaces:
+            if iface in self._joined or sock is None:
+                continue
+            try:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq(iface))
+                self._joined.append(iface)
+            except OSError:
+                pass
+        return False
 
     def observe(
         self,
@@ -328,7 +341,7 @@ class Listener:
                     self._stop.wait(REOPEN_S)
                     continue
                 self.error = ""
-            if self._interfaces_changed():
+            if self._interfaces_changed(sock):
                 self._sock = None
                 sock.close()
                 continue

@@ -301,3 +301,31 @@ def test_lan_addresses_skip_loopback_public_and_down_interfaces(monkeypatch):
     assert d.lan_ipv4_addresses() == ["192.168.1.5", "172.17.0.1"]
     monkeypatch.setitem(sys.modules, "psutil", None)
     assert d.lan_ipv4_addresses() == []
+
+
+def test_the_listener_retries_a_membership_that_failed(monkeypatch):
+    # One interface refuses the join (Wi-Fi still coming up) while another takes it. The list does not
+    # change, so only a retry on the open socket brings that network back.
+    import socket as real
+
+    _fake_socket_module(monkeypatch)
+    monkeypatch.setattr(d, "lan_ipv4_addresses", lambda: ["192.168.1.5", "10.8.0.2"])
+    monkeypatch.setattr(d, "REJOIN_S", 0.0)
+    refuse = {"10.8.0.2"}
+    plain = _FakeSock.setsockopt
+
+    def setsockopt(self, level, name, value):
+        if name == real.IP_ADD_MEMBERSHIP and real.inet_ntoa(value[4:8]) in refuse:
+            raise OSError("No such device")
+        plain(self, level, name, value)
+
+    monkeypatch.setattr(_FakeSock, "setsockopt", setsockopt)
+    listener = d.Listener(port = 1)
+    sock = listener._open()
+    assert _joins(sock) == ["192.168.1.5"]
+    assert not listener._interfaces_changed(sock)  # still refused: kept for the next pass
+    refuse.clear()
+    assert not listener._interfaces_changed(sock)
+    assert sorted(_joins(sock)) == ["10.8.0.2", "192.168.1.5"]
+    assert not listener._interfaces_changed(sock)
+    assert sorted(_joins(sock)) == ["10.8.0.2", "192.168.1.5"]  # joined once, not again

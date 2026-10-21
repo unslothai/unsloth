@@ -794,3 +794,171 @@ def test_the_join_deadline_does_not_cut_the_final_confirmation(master_dir, tmp_p
         assert result == {"ok": True}, result
 
     asyncio.run(main())
+
+
+WORKER_JOIN_SLOW_ACK = textwrap.dedent(
+    """
+    import asyncio, json, os, sys
+    sys.path.insert(0, {repo!r})
+    from studio.cluster_link import framing, pairing
+    plain = framing.write_frame
+    async def write_frame(writer, obj):
+        if obj.get("type") == "pair_ack":
+            for _ in range(600):  # hold the ack until the test has expired the window
+                if os.path.exists(sys.argv[2]):
+                    break
+                await asyncio.sleep(0.05)
+        await plain(writer, obj)
+    framing.write_frame = write_frame
+    try:
+        ident = asyncio.run(pairing.join(sys.argv[1], name = "w-slow-ack"))
+        print(json.dumps({{"ok": True, "node_id": ident.node_id}}))
+    except Exception as exc:
+        print(json.dumps({{"ok": False, "error": type(exc).__name__ + ": " + str(exc)}}))
+    """
+).format(repo = str(REPO))
+
+
+def test_expiry_after_the_proof_does_not_fail_a_pairing_that_completes(master_dir, tmp_path):
+    # A worker proves the token just before the TTL and acknowledges just after it: both sides end up
+    # paired, so `cluster pair` must report the worker, not "the pairing window expired".
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        release = tmp_path / "release_ack"
+        worker = asyncio.ensure_future(
+            _worker(WORKER_JOIN_SLOW_ACK, tmp_path / "w", token, str(release))
+        )
+        deadline = time.monotonic() + 60
+        while not window._used and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert window._used, "the worker never proved the token"
+        window._expire()  # the TTL timer firing while the worker holds its ack
+        release.write_text("go")
+        result = await worker
+        assert result["ok"], result
+        peer = await window.wait(5)
+        assert peer.node_id == result["node_id"]
+        assert [w.node_id for w in identity.Registry().load().workers()] == [peer.node_id]
+
+    asyncio.run(main())
+
+
+def _self_signed(directory: Path):
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "somebody else")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes = 5))
+        .not_valid_after(now + datetime.timedelta(days = 1))
+        .sign(key, hashes.SHA256())
+    )
+    directory.mkdir(parents = True, exist_ok = True)
+    certfile, keyfile = directory / "cert.pem", directory / "key.pem"
+    certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    keyfile.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return str(certfile), str(keyfile)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "needs 127.0.0.2 on loopback")
+def test_a_mismatched_first_address_falls_through_to_the_master(master_dir, tmp_path):
+    # A multihomed master's token: the first address now belongs to another machine with its own
+    # certificate. Nothing is sent to it, so the worker tries the next address instead of failing.
+    async def main():
+        master, window = _window(addrs = ["127.0.0.2", "127.0.0.1"])
+        token = await window.start()
+        port = window.bound_port
+        certfile, keyfile = _self_signed(tmp_path / "decoy")
+
+        async def decoy(reader, writer):
+            writer.close()
+
+        decoy_server = await asyncio.start_server(
+            decoy,
+            "127.0.0.2",
+            port,
+            ssl = tls.bootstrap_server_context(certfile = certfile, keyfile = keyfile),
+        )
+        try:
+            addr, _, writer = await pairing._connect(
+                ["127.0.0.2", "127.0.0.1"], port, master.fingerprint
+            )
+            writer.close()
+            assert addr == "127.0.0.1"
+            result = await _worker(WORKER_JOIN, tmp_path / "w", token, "1")
+            assert result["ok"], result
+            assert (await window.wait(5)).node_id == result["node_id"]
+            with pytest.raises(pairing.PairingError, match = "certificate mismatch"):
+                await pairing._connect(["127.0.0.2"], port, master.fingerprint)
+        finally:
+            decoy_server.close()
+            window.close()
+
+    asyncio.run(main())
+
+
+def test_waiting_for_the_identity_lock_does_not_block_the_event_loop(master_dir):
+    # Two joins in one process: the second must wait for the lock without freezing the loop, or the
+    # first can never finish its network I/O and release it.
+    async def main():
+        holding, release = asyncio.Event(), asyncio.Event()
+        order = []
+
+        async def first():
+            async with pairing._identity_lock():
+                holding.set()
+                await release.wait()
+                order.append("first")
+
+        async def second():
+            await holding.wait()
+            async with pairing._identity_lock():
+                order.append("second")
+
+        async def ticker():
+            await holding.wait()
+            await asyncio.sleep(0.2)  # runs only if the loop is free while `second` waits
+            order.append("tick")
+            release.set()
+
+        await asyncio.wait_for(asyncio.gather(first(), second(), ticker()), 20)
+        assert order == ["tick", "first", "second"]
+
+        # Cancelled while waiting: the lock is still handed back once the thread gets it.
+        holding.clear()
+        release.clear()
+        holder = asyncio.ensure_future(first())
+        await holding.wait()
+        waiter = asyncio.ensure_future(second())
+        await asyncio.sleep(0.2)
+        waiter.cancel()
+        release.set()
+        await holder
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        async def third():
+            async with pairing._identity_lock():
+                return True
+
+        assert await asyncio.wait_for(third(), 20)
+
+    asyncio.run(main())
