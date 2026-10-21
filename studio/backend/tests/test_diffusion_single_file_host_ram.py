@@ -196,3 +196,25 @@ def test_fnuz_float8_weights_are_priced_as_widened(tmp_path):
     safetensors_torch.save_file(tensors, str(path))
     widened = sum(v.numel() * 2 for v in tensors.values() if v.dtype == torch.float8_e4m3fnuz)
     assert conv.converted_host_bytes(str(path), torch.bfloat16) == widened
+
+
+@pytest.mark.parametrize("kind", ["fp8", "fp8_scaled"])
+def test_kill_switch_charges_nothing(tmp_path, monkeypatch, krea2, kind):
+    """``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` installs no budget, so no helper charges one."""
+    path, _ = _write(tmp_path, kind)
+    charged = []
+    monkeypatch.setattr(conv.HostRamBudget, "charge", lambda self, n: charged.append(n))
+    monkeypatch.setenv(small_host.HOST_RAM_CHECK_ENV, "0")
+    _host(monkeypatch, available_mib = 1)
+    if kind == "fp8":
+        conv.load_original_layout_transformer(krea2, str(path), dict(_KWARGS))
+    else:
+        cq.load_comfy_quant_transformer(
+            krea2,
+            str(path),
+            cq.refuse_comfy_quant(str(path)),
+            dict(_KWARGS),
+            int8_backend = None,
+            fp8_backend = None,
+        )
+    assert charged == []

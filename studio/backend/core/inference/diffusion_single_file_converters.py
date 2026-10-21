@@ -487,11 +487,12 @@ class HostRamBudget:
     def activate(self) -> "HostRamBudget":
         """Make this the budget the allocating helpers charge, until the enclosing
         ``host_ram_budget_scope`` returns."""
-        _ACTIVE_BUDGET.set(self)
+        if self.available_mib is not None:  # check disabled / RAM unreadable: nothing is charged
+            _ACTIVE_BUDGET.set(self)
         return self
 
     def __enter__(self) -> "HostRamBudget":
-        self._token = _ACTIVE_BUDGET.set(self)
+        self._token = _ACTIVE_BUDGET.set(self if self.available_mib is not None else None)
         return self
 
     def __exit__(self, *exc: Any) -> None:
