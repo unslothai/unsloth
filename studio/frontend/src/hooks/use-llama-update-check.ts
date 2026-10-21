@@ -653,7 +653,6 @@ export function useLlamaUpdateCheck({
     });
   }, [enabled, readStatus, surfaceIfAvailable]);
 
-  // returns the skipped offer's key so the caller can undo exactly this skip.
   const dismiss = useCallback((): string | null => {
     const current = statusRef.current;
     if (!current) return null;

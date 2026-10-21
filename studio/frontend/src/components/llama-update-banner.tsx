@@ -203,7 +203,6 @@ export function LlamaUpdateBanner({
     audio: useNotificationFrequency("audio") === "off",
   };
   const [detailsVersion, setDetailsVersion] = useState<string | null>(null);
-  // the skipped offer, shown in the card's place with an undo for a few seconds.
   const [skipped, setSkipped] = useState<{
     key: string;
     fromKeyboard: boolean;
@@ -380,7 +379,6 @@ export function LlamaUpdateBanner({
   const changelogPanelOpen = Boolean(
     detailsOpen && changelogAvailable && changelogTags,
   );
-  // a bundle total is shown only when every component reports its size.
   const sizeLabel = sizeLabelOf(
     rows.every((row) => row.sizeBytes && row.sizeBytes > 0)
       ? rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0)
@@ -431,7 +429,7 @@ export function LlamaUpdateBanner({
     updateProgress,
     jobSucceeded,
   );
-  // a card that comes back (undo, or a newer offer) retires the notice, and so does a route that hides the banner.
+  // a returning card or a hidden banner retires the notice.
   useEffect(() => {
     if (show || !enabled) {
       setSkipped(null);
@@ -550,7 +548,6 @@ export function LlamaUpdateBanner({
         ) : (
           <div className="mt-4 flex shrink-0 flex-wrap items-center justify-end gap-x-1 gap-y-2">
             {detailsOpen ? (
-              // the rare dismissive action sits left, behind the details toggle.
               <Button
                 size="sm"
                 variant="ghost"

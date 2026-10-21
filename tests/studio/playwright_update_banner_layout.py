@@ -998,7 +998,6 @@ def exercise_skip_undo(page, label: str) -> None:
         card.count() == 1,
         f"cards={card.count()}",
     )
-    # collapse again so later measurements see the default card.
     if toggle.count() == 1 and toggle.get_attribute("aria-expanded") == "true":
         toggle.click()
 
@@ -1023,7 +1022,6 @@ def exercise_skip_on_auth_route(page, label: str) -> None:
     if card.count() != 1:
         return
     page.locator('[data-testid="llama-update-changelog-toggle"]').click()
-    # a keyboard skip focuses Undo, and focus holds the notice open.
     page.locator('[data-testid="llama-update-skip-button"]').focus()
     page.keyboard.press("Enter")
     notice.wait_for(state = "visible", timeout = 5_000)
@@ -1035,7 +1033,6 @@ def exercise_skip_on_auth_route(page, label: str) -> None:
         notice.count() == 0,
         f"notices={notice.count()}",
     )
-    # later boots must see the offer again.
     page.evaluate("localStorage.removeItem('unsloth_llama_update_offer_suppression')")
 
 
@@ -1255,7 +1252,6 @@ def main() -> int:
                 exercise_skip_undo(page, f"{width}x{height} whisper")
                 exercise_skip_on_auth_route(page, f"{width}x{height} whisper")
 
-            # pending runtimes share one card and one summary line.
             llama_payload[0] = BUNDLE_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat bundle")

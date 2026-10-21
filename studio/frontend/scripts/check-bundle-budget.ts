@@ -320,9 +320,7 @@ export const BUDGET = {
   // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
   // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  // The runtime update card's details toggle, skip action and Undo notice (#14436) in the eager update banner add
-  // 1,706 B raw / 424 B transfer (6,862,706 -> 6,864,412 B raw, 2,066,394 -> 2,066,818 B transfer against
-  // 444f63275c, one machine and build, Node 22, 96 chunks). Raised by that growth on top of main.
+  // The runtime update card's skip and Undo (#14436) add 1,706 B raw / 424 B transfer against 444f63275c.
   transferBytes: 2_067_305,
   rawBytes: 6_865_398,
 };
