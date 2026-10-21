@@ -12975,7 +12975,6 @@ def test_a_chat_switch_keeps_a_loaded_speech_model(monkeypatch):
 def test_a_chat_request_naming_a_speech_model_is_classified_by_its_target(
     monkeypatch, primary_speaks
 ):
-    # Chat serves a TTS model too: beside a text model, in place of another speech model.
     _backend, recorder, _slot, gated = _beside_case(monkeypatch, "fit", primary_speaks)
     asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "tester"))
     if primary_speaks:
