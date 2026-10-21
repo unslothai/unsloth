@@ -938,13 +938,68 @@ def _user_device_pick(binary: Optional[str] = None) -> bool:
         return True
 
 
-def _prefetch_vulkan_rows(binary: str) -> None:
+def _vulkan_pin_possible(binary: str, torch) -> bool:
+    """Whether a Vulkan pin is worth the probe: several torch cards, a Vulkan build, nothing the user picked."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    return (
+        torch.cuda.device_count() > 1
+        and not _user_device_pick()
+        and not str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
+        and bool(LlamaCppBackend._is_vulkan_backend(binary))
+        and not (
+            (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip()
+            and not LlamaCppBackend._torch_is_rocm(torch)
+        )
+    )
+
+
+def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None) -> None:
+    """Probe (and read the card lookup's inventory) before the render slot, waited for cancellably: the probe can take
+    its 15 s timeout, which a blocking unload behind this warm start must not sit out."""
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
-        if not _user_device_pick() and LlamaCppBackend._is_vulkan_backend(binary):
-            _vulkan_rows(binary)
+        import torch
+
+        if not _vulkan_pin_possible(binary, torch):
+            return
     except Exception:  # noqa: BLE001
-        pass
+        return
+
+    def _work() -> None:
+        try:
+            if _vulkan_rows(binary):
+                ordinal = _resident_cuda_ordinal()
+                if ordinal is not None and ordinal >= 0:
+                    _vulkan_card_name(ordinal, torch)
+        except Exception:  # noqa: BLE001
+            pass
+
+    worker = threading.Thread(target = _work, name = "flux3-pup-vulkan-probe", daemon = True)
+    worker.start()
+    while worker.is_alive():
+        worker.join(0.1)
+        if cancel is not None and cancel.is_set():
+            raise UpsamplerCancelledError("Cancelled.")
+
+
+def _vulkan_card_name(ordinal: int, torch) -> tuple:
+    """``physical_card_name`` on ROCm. A CUDA torch reads no HIP/ROCR mask and its cards are not amd-smi's, so that
+    lookup would place it by an AMD card's position: name it in torch order, unplaced under a CUDA mask (Vulkan still
+    lists the cards it hides)."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.sd_cpp_backend import physical_card_name
+
+    if LlamaCppBackend._torch_is_rocm(torch):
+        return physical_card_name(ordinal)
+    if not torch.cuda.is_available() or not 0 <= ordinal < torch.cuda.device_count():
+        return None, None
+    names = [(torch.cuda.get_device_name(i) or "").strip() for i in range(torch.cuda.device_count())]
+    name = names[ordinal]
+    if not name:
+        return None, None
+    if (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
+        return name, None
+    return name, names[:ordinal].count(name)
 
 
 def _vulkan_device_args(
@@ -952,55 +1007,47 @@ def _vulkan_device_args(
     ordinal: Optional[int],
     retry_empty: bool = False,
 ) -> Optional[list]:
-    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown."""
+    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown.
+    One torch card launches as before Vulkan pinning: no probe, no ``--device``."""
     if ordinal is None or ordinal < 0:
         return []
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
-
         import torch
 
-        # The user's own device pick wins (a Vulkan mask renumbers what the probe lists).
-        if _user_device_pick():
+        if torch.cuda.device_count() <= 1 or _user_device_pick():
             return []
-        # Backends loaded from GGML_BACKEND_PATH are not the ones beside the binary the probe would list.
-        if str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
-            return None if torch.cuda.device_count() > 1 else []
-        if not LlamaCppBackend._is_vulkan_backend(binary):
-            return []
-        # The card lookup reads HIP masks, which only a ROCm torch applies: elsewhere one could name the wrong card.
-        if (
-            os.environ.get("HIP_VISIBLE_DEVICES") or ""
-        ).strip() and not LlamaCppBackend._torch_is_rocm(torch):
-            return None if torch.cuda.device_count() > 1 else []
+        if not _vulkan_pin_possible(binary, torch):
+            # Backends from GGML_BACKEND_PATH are not the ones the probe lists; a HIP mask on a CUDA torch steers nothing.
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            if str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
+                return None
+            return [] if not LlamaCppBackend._is_vulkan_backend(binary) else None
         # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
         rows = _vulkan_rows(binary, retry_empty = retry_empty)
         if not rows:
-            return None if torch.cuda.device_count() > 1 else []
+            return None
     except Exception:  # noqa: BLE001
         return []
     try:
         from core.inference.sd_cpp_backend import (
             _normalized_card_name,
             _without_driver_tag,
-            physical_card_name,
             sd_cpp_device_named,
         )
 
         # By name, as the image engine pins its Vulkan build: no torch ordinal maps onto Vulkan's index.
         listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
-        name, position = physical_card_name(ordinal)
+        name, position = _vulkan_card_name(ordinal, torch)
         device = sd_cpp_device_named(binary, name, position = position, listing = listing)
         if not device:
             return None
         # Exact model match: containment takes an `RX 7600 XT` for an `RX 7600`.
-        import torch
-
         matched = next((row["name"] for row in rows if f"Vulkan{row['index']}" == device), "")
         exact = bool(name) and _normalized_card_name(
             _without_driver_tag(matched)
         ) == _normalized_card_name(name)
-        if not exact and (len(rows) > 1 or torch.cuda.device_count() > 1):
+        if not exact:
             return None
         return [] if len(rows) == 1 else ["--device", device]
     except Exception:  # noqa: BLE001
@@ -1504,7 +1551,7 @@ class PromptUpsamplerSidecar:
             if _user_device_pick(binary) and _cuda_device_count() > 1:
                 return "placement"
             # The Vulkan probe can take its full timeout, so it runs before the slot that renders queue behind.
-            _prefetch_vulkan_rows(binary)
+            _prefetch_vulkan_rows(binary, self._load_cancel)
             # The engine's generation slot, held until the server is up: a render or model transition that arrives
             # meanwhile queues behind the start instead of overlapping it (a load cancels it first through
             # stop_for_handover). Not taken while one runs or a load is in flight.

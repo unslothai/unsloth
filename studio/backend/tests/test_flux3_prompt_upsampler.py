@@ -1089,8 +1089,7 @@ def test_vulkan_sole_device_must_be_the_image_models_card(spawn_argv, warmable, 
     state, run = spawn_argv
     sidecar, launched, _memory, model, _mmproj = warmable
     # torch holds the image model on the 7900 XTX, but the only Vulkan device is the iGPU.
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    state["names"] = ["AMD Radeon RX 7900 XTX"]
+    state["names"] = ["AMD Radeon RX 7900 XTX", "AMD Radeon RX 7600"]
     state["ordinal"] = 0
     state["rows"] = [_VULKAN_ROWS[0]]
     assert "--device" not in run()[0]
@@ -1125,16 +1124,16 @@ def test_users_vulkan_mask_wins(spawn_argv, monkeypatch):
     assert "--device" not in run()[0]
 
 
-def test_vulkan_pins_one_torch_card_beside_an_igpu(spawn_argv, monkeypatch):
+def test_one_torch_card_beside_an_igpu_launches_as_before(spawn_argv, monkeypatch):
     import torch
 
     state, run = spawn_argv
-    # torch sees only the 7900 XTX, but Vulkan also lists the iGPU and a masked-off RX 7600.
+    # torch sees only the 7900 XTX: a single-GPU host keeps its pre-pinning launch (no probe, no --device).
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     state["names"] = ["AMD Radeon RX 7900 XTX"]
     state["ordinal"] = 0
     argv, env = run()
-    assert argv[-2:] == ["--device", "Vulkan2"] and env == {}
+    assert "--device" not in argv and env == {}
 
 
 def test_empty_hip_mask_falls_back_to_the_cuda_mask(monkeypatch):
@@ -2124,7 +2123,10 @@ def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
     # A slow probe under the slot would hold renders and handovers until its timeout.
     from core.inference import llama_cpp
 
+    import torch
+
     sidecar, _launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     order = []
     take = pup._take_render_slot
     monkeypatch.setattr(pup, "_take_render_slot", lambda: order.append("slot") or take())
@@ -2208,8 +2210,7 @@ def test_a_loose_name_match_beside_other_vulkan_devices_is_unknown(
     import torch
 
     state, _run = spawn_argv
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    state["names"] = ["AMD Radeon RX 7600"]
+    state["names"] = ["AMD Radeon RX 7600", "AMD Radeon RX 7900 XTX"]
     state["ordinal"] = 0
     state["rows"] = [_VULKAN_ROWS[0], {"index": 1, "name": row}]
     assert pup._vulkan_device_args("b", 0) == (["--device", "Vulkan1"] if pinned else None)
@@ -2240,3 +2241,156 @@ def test_a_user_main_gpu_is_a_device_pick(monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "1")
     assert pup._user_device_pick() is True
     assert pup._vulkan_device_args("b", 0) == []
+
+
+from core.inference import sd_cpp_backend as _sd_cpp_backend  # noqa: E402
+
+_REAL_PHYSICAL_POSITION_OF = _sd_cpp_backend._physical_position_of
+
+
+def _real_card_lookup(monkeypatch, amd_rows, hip_by_row):
+    """Undo the fixture's position stub: the real lookup over a mocked amd-smi inventory and HIP id map."""
+    from core.inference import sd_cpp_backend
+    from utils.hardware import amd
+
+    monkeypatch.setattr(sd_cpp_backend, "_physical_position_of", _REAL_PHYSICAL_POSITION_OF)
+    inventory = {
+        "devices": [{"index": i, "vendor": "amd", "name": name} for i, name in enumerate(amd_rows)]
+    }
+    monkeypatch.setattr(sd_cpp_backend, "_card_lookup_inventory", lambda: inventory)
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: dict(hip_by_row))
+
+
+_MIXED_ROWS = [
+    {"index": 0, "name": "AMD Radeon Graphics (RADV RAPHAEL)"},
+    {"index": 1, "name": "AMD Radeon RX 7600 (RADV NAVI33)"},
+    {"index": 2, "name": "NVIDIA GeForce RTX 4090"},
+    {"index": 3, "name": "NVIDIA GeForce RTX 4090"},
+]
+
+
+@pytest.mark.parametrize("ordinal, device", [(0, "Vulkan2"), (1, "Vulkan3")])
+def test_a_cuda_torch_never_takes_an_amd_cards_position(spawn_argv, monkeypatch, ordinal, device):
+    # Two RTX 4090s on a CUDA torch beside AMD cards amd-smi reads: HIP device 1 (the RX 7600) is no torch cuda:1.
+    import torch
+
+    state, run = spawn_argv
+    _real_card_lookup(monkeypatch, ["AMD Radeon Graphics", "AMD Radeon RX 7600"], {0: 0, 1: 1})
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    state["names"] = ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090"]
+    state["rows"] = _MIXED_ROWS
+    state["ordinal"] = ordinal
+    argv, env = run()
+    assert argv[-2:] == ["--device", device] and env == {"CUDA_VISIBLE_DEVICES": str(ordinal)}
+
+
+@pytest.mark.parametrize(
+    "var, value", [("CUDA_VISIBLE_DEVICES", "1,0"), ("ROCR_VISIBLE_DEVICES", "1,0")]
+)
+def test_a_cuda_torch_mask_never_steers_the_vulkan_pin_onto_a_guess(
+    spawn_argv, warmable, monkeypatch, var, value
+):
+    # CVD reorders the identical pair (the order Vulkan cannot see); ROCR is not read by a CUDA torch at all.
+    import torch
+
+    state, run = spawn_argv
+    sidecar, launched, _memory, model, _mmproj = warmable
+    _real_card_lookup(monkeypatch, ["AMD Radeon Graphics", "AMD Radeon RX 7600"], {0: 0, 1: 1})
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
+    state["names"] = ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090"]
+    state["rows"] = _MIXED_ROWS
+    state["ordinal"] = 1
+    monkeypatch.setenv(var, value)
+    expected = None if var == "CUDA_VISIBLE_DEVICES" else ["--device", "Vulkan3"]
+    assert pup._vulkan_device_args("b", 1) == expected
+    if expected is None:
+        assert "--device" not in run()[0]
+        assert sidecar.warm(binary = "b", model = model, mmproj = None) == "placement"
+
+
+def test_a_single_torch_card_runs_no_vulkan_probe(spawn_argv, warmable, monkeypatch):
+    # Single-GPU hosts launch exactly as before Vulkan pinning: no discovery subprocess, no --device, same env.
+    import torch
+
+    from core.inference import llama_cpp
+
+    state, run = spawn_argv
+    sidecar, launched, _memory, model, _mmproj = warmable
+    calls = []
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend,
+        "_run_vulkan_probe",
+        staticmethod(lambda b = None: calls.append(b) or list(_VULKAN_ROWS)),
+    )
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    state["names"] = ["AMD Radeon RX 7900 XTX"]
+    state["ordinal"] = 0
+    monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    sidecar._cancel_idle_locked()
+    argv, env = run()
+    assert "--device" not in argv and env == {} and calls == []
+
+
+@pytest.mark.parametrize(
+    "name, row",
+    [
+        ("AMD Radeon(TM) Graphics", "AMD Radeon Graphics (RADV RAPHAEL)"),
+        ("AMD Radeon(TM) 8060S Graphics", "AMD Radeon 8060S Graphics (RADV GFX1151)"),
+    ],
+)
+def test_trademark_marks_do_not_hide_the_card(spawn_argv, warmable, monkeypatch, name, row):
+    import torch
+
+    state, run = spawn_argv
+    sidecar, launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
+    state["names"] = [name, "AMD Radeon RX 7900 XTX"]
+    state["rows"] = [{"index": 0, "name": row}, _VULKAN_ROWS[2]]
+    state["ordinal"] = 0
+    monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
+    assert run()[0][-2:] == ["--device", "Vulkan0"]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    sidecar._cancel_idle_locked()
+
+
+def test_a_cancelled_warm_start_does_not_wait_out_the_vulkan_probe(warmable, monkeypatch):
+    # A blocking unload (handover, training start) must not sit behind a probe that can take its 15 s timeout.
+    from core.inference import llama_cpp
+
+    sidecar, launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
+    )
+    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+        monkeypatch.delenv(var, raising = False)
+    entered, release = threading.Event(), threading.Event()
+
+    def _probe(b = None):
+        entered.set()
+        release.wait(10)
+        return list(_VULKAN_ROWS)
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(_probe))
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    out = []
+    warm = threading.Thread(target = lambda: out.append(sidecar.warm(binary = "b", model = model, mmproj = None)))
+    warm.start()
+    try:
+        assert entered.wait(5)
+        assert sidecar.cancel_warm_start()
+        unload = threading.Thread(target = sidecar.unload)
+        unload.start()
+        unload.join(3)
+        assert not unload.is_alive()
+        warm.join(3)
+        assert out == ["cancelled"] and launched == []
+    finally:
+        release.set()
+        warm.join(5)
