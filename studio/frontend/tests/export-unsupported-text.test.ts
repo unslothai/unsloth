@@ -8,7 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { exportUnsupportedText } = await import("../src/config/hardware-verdict.ts");
+const { exportUnsupportedText } = await import("../src/features/export/lib/unsupported-text.ts");
 
 const NO_TORCH_MESSAGE =
   "This install was set up without the training stack (--no-torch), so export is disabled. Reinstall Unsloth Studio without --no-torch to enable export.";

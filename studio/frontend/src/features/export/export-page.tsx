@@ -43,7 +43,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { exportUnsupportedText } from "@/config/hardware-verdict";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { hfApiToken, useHfTokenStore, useHubModelSearch } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
@@ -99,6 +98,7 @@ import {
 import { confirmLlmCompressorInstallIfNeeded } from "./hooks/use-llm-compressor-consent";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import { saveDirectoryField } from "./lib/save-directory";
+import { exportUnsupportedText } from "./lib/unsupported-text";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
