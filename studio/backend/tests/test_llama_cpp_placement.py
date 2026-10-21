@@ -6415,7 +6415,13 @@ def test_projector_preflight_skips_a_shared_dgpu_like_placement(
     assert ("--no-mmproj-offload" in out["cmd"]) is pinned
 
 
-def _mixed_auto_backend(tmp_path, monkeypatch, memory, gguf_gb, rocm = (0,)):
+def _mixed_auto_backend(
+    tmp_path,
+    monkeypatch,
+    memory,
+    gguf_gb,
+    rocm = (0,),
+):
     """Auto context at a 32K native context; checkpoints cost 512 MiB each on unified memory."""
     monkeypatch.setattr(
         LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set(rocm))
