@@ -691,18 +691,24 @@ class Node:
     ssh_user: Optional[str] = None
     managed: bool = False
     # A paired worker ("link"): host and rpc_port are its agent, llama.cpp dials the loopback relay.
+    # "native_tls": the same agent address, but llama.cpp dials the worker's rpc-server itself over its
+    # own mutual TLS at native_port, pinned to the worker's paired fingerprint (tls_fp).
     node_id: Optional[str] = None
     transport: str = "direct"
     relay: Optional[str] = None
     name: Optional[str] = None
+    native_port: int = 0
+    tls_fp: Optional[str] = None
 
     @property
     def endpoint(self) -> str:
+        if self.transport == "native_tls" and self.tls_fp:
+            return f"tls://{self.tls_fp}@{self.host}:{self.native_port}"
         return self.relay if self.relay else f"{self.host}:{self.rpc_port}"
 
     @property
     def link(self) -> bool:
-        return self.transport == "link"
+        return self.transport in ("link", "native_tls")
 
     @property
     def ssh_target(self) -> str:
@@ -902,7 +908,9 @@ def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
 # mutually authenticated TLS. Process-wide, like _STATE.
 _RELAYS: Any = None
 _LISTENER: Any = None
-_LINK_ENDPOINTS: Dict[str, str] = {}  # relay endpoint -> node_id
+_LINK_ENDPOINTS: Dict[str, str] = {}  # relay or tls:// endpoint -> node_id
+# node_id -> the native port its agent granted on the last planning pass (status reads reuse it).
+_NATIVE: Dict[str, int] = {}
 LINK_DROPPED: Dict[str, str] = {}  # worker name -> why it is not in the split
 
 
@@ -1035,8 +1043,8 @@ def _sighting_candidates(node_id: str) -> List[Any]:
 
 def _first_verified(
     relays: Any, node_id: str, candidates: List[Tuple[str, int]]
-) -> Optional[Tuple[str, int]]:
-    """The first candidate address where the paired worker itself answers over mutual TLS."""
+) -> Optional[Tuple[str, int, Dict[str, Any]]]:
+    """The first candidate address where the paired worker itself answers over mutual TLS, with its status."""
     for host, port in candidates:
         try:
             relays.ensure(node_id, host, port)
@@ -1044,8 +1052,47 @@ def _first_verified(
         except Exception:
             continue
         if isinstance(answer, dict) and answer.get("reachable", True) and not answer.get("error"):
-            return host, port
+            return host, port, answer
     return None
+
+
+def _local_tls_client() -> bool:
+    """llama-server's RPC client speaks llama.cpp's TLS when the ggml-rpc-server shipped beside it does:
+    both are one build of one ggml-rpc (the flag only exists in GGML_RPC_TLS builds)."""
+    try:
+        from studio.cluster_link import native
+
+        if native.disabled():
+            return False
+        from core.inference import spark_serving as ss
+
+        return native.binary_supports_tls(ss.rpc_server_binary())
+    except Exception:
+        return False
+
+
+def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
+    """The worker's native TLS port once its agent switched to serving this master directly, or None
+    to stay on the relay. Never a plaintext fallback: a refusal here only means the relay."""
+    offer = status.get("native") if isinstance(status, dict) else None
+    if not isinstance(offer, dict) or not offer.get("available") or not _local_tls_client():
+        return None
+    reply = relays.native(peer.node_id)
+    if not isinstance(reply, dict) or reply.get("type") != "native_ok":
+        logger.info("cluster link: %s stays on the relay (%s)", peer.node_id, reply)
+        return None
+    # The rpc-server presents the worker's own certificate; anything else is not the paired worker.
+    if str(reply.get("fingerprint", "")).lower() != str(peer.fingerprint).lower():
+        logger.warning(
+            "cluster link: %s offered another certificate for TLS; using the relay", peer.node_id
+        )
+        relays.native_close(peer.node_id)
+        return None
+    try:
+        port = int(reply.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    return port if 0 < port < 65536 else None
 
 
 def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
@@ -1072,6 +1119,12 @@ def _drop_stale_relays(current: set) -> None:
         return
     for endpoint, node_id in stale:
         _LINK_ENDPOINTS.pop(endpoint, None)
+        if _NATIVE.pop(node_id, None) is not None:
+            # llama-server holds this session directly: only the worker can cut it.
+            try:
+                relays.native_close(node_id)
+            except Exception:
+                pass
         try:
             relays.remove(node_id)
         except Exception:
@@ -1116,15 +1169,34 @@ def _link_nodes(verify: bool = True) -> List[Node]:
                 _UNVERIFIED.add(peer.node_id)
             else:
                 _UNVERIFIED.discard(peer.node_id)
-        host, port = verified or candidates[0]
+        host, port = (verified[0], verified[1]) if verified else candidates[0]
         try:
             endpoint = relays.ensure(peer.node_id, host, port)
         except Exception as exc:
             LINK_DROPPED[label] = f"relay did not start: {exc}"
             continue
-        _LINK_ENDPOINTS[endpoint] = peer.node_id
-        nodes.append(
-            Node(
+        native_port = None
+        if verified is not None:
+            native_port = _go_native(relays, peer, verified[2])
+            if native_port is None:
+                _NATIVE.pop(peer.node_id, None)
+            else:
+                _NATIVE[peer.node_id] = native_port
+        elif not verify:
+            native_port = _NATIVE.get(peer.node_id)
+        if native_port:
+            node = Node(
+                host = host,
+                rpc_port = port,
+                node_id = peer.node_id,
+                transport = "native_tls",
+                relay = endpoint,
+                name = getattr(peer, "name", None),
+                native_port = native_port,
+                tls_fp = str(peer.fingerprint).lower(),
+            )
+        else:
+            node = Node(
                 host = host,
                 rpc_port = port,
                 node_id = peer.node_id,
@@ -1132,7 +1204,11 @@ def _link_nodes(verify: bool = True) -> List[Node]:
                 relay = endpoint,
                 name = getattr(peer, "name", None),
             )
-        )
+        # One endpoint per worker: the relay one and the tls:// one replace each other.
+        for old in [e for e, n in _LINK_ENDPOINTS.items() if n == peer.node_id]:
+            _LINK_ENDPOINTS.pop(old, None)
+        _LINK_ENDPOINTS[node.endpoint] = peer.node_id
+        nodes.append(node)
     if not nodes:
         raise ClusterConfigError(
             "no paired worker can be reached: "
@@ -1155,12 +1231,29 @@ def _rpc_endpoints(argv: Sequence[str]) -> List[str]:
 
 def secure_rpc_env(argv: Sequence[str]) -> Dict[str, str]:
     """GGML_RPC_NO_RDMA for a llama-server that dials a link relay: GGML_RDMA_GID would otherwise let
-    RDMA be negotiated through the loopback relay and move tensors outside TLS."""
-    if not _LINK_ENDPOINTS or not any(e in _LINK_ENDPOINTS for e in _rpc_endpoints(argv)):
+    RDMA be negotiated through the loopback relay and move tensors outside TLS. For a tls:// endpoint,
+    also the master's cluster certificate, key and root, in the environment and never on argv."""
+    used = [e for e in _rpc_endpoints(argv) if e in _LINK_ENDPOINTS]
+    if not used:
         return {}
     from studio.cluster_link import SECURE_RPC_ENV
 
-    return dict(SECURE_RPC_ENV)
+    env = dict(SECURE_RPC_ENV)
+    if any(e.startswith("tls://") for e in used):
+        identity = _link_identity()
+        master = identity.master_identity(create = False) if identity is not None else None
+        if master is None:
+            raise ClusterConfigError(
+                "a native TLS worker is planned but this machine is not its master"
+            )
+        env.update(
+            {
+                "GGML_RPC_TLS_CERT": master.certfile,
+                "GGML_RPC_TLS_KEY": master.keyfile,
+                "GGML_RPC_TLS_CA": master.rootfile,
+            }
+        )
+    return env
 
 
 def link_status(node_id: str, timeout: float) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -1190,6 +1283,7 @@ def _stop_links() -> None:
     _RELAYS = _LISTENER = None
     _UNVERIFIED.clear()
     _LINK_ENDPOINTS.clear()
+    _NATIVE.clear()
     LINK_DROPPED.clear()
 
 

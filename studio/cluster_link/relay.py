@@ -146,6 +146,36 @@ class RelayManager:
             }
         return reply
 
+    def native(
+        self,
+        node_id: str,
+        timeout: float = 70.0,
+    ) -> Dict[str, Any]:
+        """Ask the worker to serve llama.cpp's own TLS to this master; {"type": "native_ok", "port",
+        "fingerprint"} when it does. The worker restarts its rpc-server, so this waits for it."""
+        try:
+            return self._call(
+                self._control(node_id, {"type": "native_rpc"}, timeout), timeout + 1.0
+            )
+        except Exception as exc:
+            return {"type": "error", "error": str(exc) or type(exc).__name__}
+
+    def native_close(
+        self,
+        node_id: str,
+        timeout: float = 15.0,
+    ) -> bool:
+        """Tell a worker to stop serving this master natively, which cuts a live session. Also for a
+        worker removed a moment ago: it is no longer authorized here, but it is still the same node."""
+        try:
+            reply = self._call(
+                self._control(node_id, {"type": "native_close"}, timeout, paired = False),
+                timeout + 1.0,
+            )
+        except Exception:
+            return False
+        return isinstance(reply, dict) and reply.get("type") == "ok"
+
     def busy(self, node_id: str) -> bool:
         relay = self._relays.get(node_id)
         if relay is not None and relay.active:
@@ -244,6 +274,7 @@ class RelayManager:
         self,
         relay_or_id: Any,
         timeout: float = CONNECT_TIMEOUT_S,
+        paired: bool = True,
     ) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         relay = relay_or_id if isinstance(relay_or_id, _Relay) else self._relays.get(relay_or_id)
         if relay is None:
@@ -266,7 +297,7 @@ class RelayManager:
             ) from None
         pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
         ok = pid is not None and pid.role == "worker" and pid.node_id == relay.node_id
-        if ok:
+        if ok and paired:
             try:
                 ok = bool(self._authorize(pid))
             except Exception:
@@ -311,9 +342,13 @@ class RelayManager:
         return not relay.active
 
     async def _control(
-        self, node_id: str, request: Dict[str, Any], timeout: float
+        self,
+        node_id: str,
+        request: Dict[str, Any],
+        timeout: float,
+        paired: bool = True,
     ) -> Dict[str, Any]:
-        reader, writer = await self._connect(node_id, timeout)
+        reader, writer = await self._connect(node_id, timeout, paired = paired)
         try:
             await framing.write_frame(writer, request)
             return await framing.read_frame(reader, timeout = timeout)

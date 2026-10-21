@@ -108,6 +108,16 @@ def _find_worker(registry: Any, target: str) -> Any:
 def worker(
     port: int = typer.Option(None, "--port", help = "Port the agent listens on (all interfaces)."),
     rpc_port: int = typer.Option(None, "--rpc-port", help = "Loopback port for ggml-rpc-server."),
+    native_port: int = typer.Option(
+        None,
+        "--native-port",
+        help = "LAN port for llama.cpp's own TLS transport, used when both ends' llama.cpp has it.",
+    ),
+    no_native_tls: bool = typer.Option(
+        False,
+        "--no-native-tls",
+        help = "Always serve through this agent's relay, even when llama.cpp could speak TLS itself.",
+    ),
     device: List[str] = typer.Option(
         [],
         "--device",
@@ -127,7 +137,7 @@ def worker(
 ):
     """Serve this machine's GPUs to the master it was paired with."""
     identity = _link(crypto = True)
-    from studio.cluster_link import AGENT_PORT_DEFAULT, RPC_PORT_DEFAULT
+    from studio.cluster_link import AGENT_PORT_DEFAULT, NATIVE_RPC_PORT_DEFAULT, RPC_PORT_DEFAULT
 
     me = identity.worker_identity()
     if me is None:
@@ -172,6 +182,8 @@ def worker(
         cache_dir = cache_dir,
         allow_any_network = allow_any_network,
         rpc_env = _rpc_server_env(binary),
+        native_port = native_port or NATIVE_RPC_PORT_DEFAULT,
+        native_tls = False if no_native_tls else None,
     )
     announcer = None
     if not no_discovery:
@@ -196,6 +208,10 @@ def worker(
                     f"Worker {me.node_id[:12]} serving on port {port}; ggml-rpc-server stays on "
                     f"127.0.0.1:{rpc_port}. Ctrl-C to stop."
                 )
+                if getattr(agent, "native_available", False):
+                    _say(
+                        f"  llama.cpp TLS: a master with it is served directly on port {agent.native_port}."
+                    )
             else:
                 _say(
                     "ggml-rpc-server has not come up yet; the master will see this worker as rpc down:"

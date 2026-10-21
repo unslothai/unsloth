@@ -463,3 +463,126 @@ def test_after_the_master_is_reset_a_load_falls_back_instead_of_crashing(monkeyp
     with pytest.raises(cs.ClusterConfigError):
         cs.load_nodes()
     assert stopped and cs._RELAYS is None and not cs._LINK_ENDPOINTS
+
+
+# Native TLS: llama.cpp's own transport when both ends have it --------------------------------
+
+NATIVE_STATUS = {
+    "busy": False,
+    "rpc_up": True,
+    "devices": [],
+    "native": {"available": True, "active": False, "port": 50053},
+}
+
+
+def _offer_native(
+    monkeypatch,
+    relays,
+    reply = None,
+    local = True,
+):
+    calls = {"native": [], "close": []}
+    relays.statuses["node-a"] = dict(NATIVE_STATUS)
+
+    def native(node_id, timeout = 70.0):
+        calls["native"].append(node_id)
+        return reply or {"type": "native_ok", "port": 50053, "fingerprint": FP_A}
+
+    def native_close(node_id, timeout = 15.0):
+        calls["close"].append(node_id)
+        return True
+
+    relays.native = native
+    relays.native_close = native_close
+    monkeypatch.setattr(cs, "_local_tls_client", lambda: local)
+    return calls
+
+
+def test_a_worker_offering_native_tls_is_planned_on_a_pinned_tls_endpoint(monkeypatch, relays):
+    calls = _offer_native(monkeypatch, relays)
+    nodes = {n.node_id: n for n in cs.load_nodes()}
+    a, b = nodes["node-a"], nodes["node-b"]
+    assert a.transport == "native_tls" and a.link
+    assert a.endpoint == f"tls://{FP_A}@192.168.1.20:50053"
+    # host / rpc_port stay the agent's address: they are what gets recorded and re-verified.
+    assert (a.host, a.rpc_port) == ("192.168.1.20", 50070)
+    assert b.transport == "link" and b.endpoint.startswith("127.0.0.1:")
+    assert calls["native"] == ["node-a"]
+
+
+def test_native_tls_needs_the_local_bundle_too(monkeypatch, relays):
+    calls = _offer_native(monkeypatch, relays, local = False)
+    nodes = {n.node_id: n for n in cs.load_nodes()}
+    assert nodes["node-a"].transport == "link"
+    assert calls["native"] == []
+
+
+def test_a_native_offer_under_another_certificate_stays_on_the_relay(monkeypatch, relays):
+    calls = _offer_native(
+        monkeypatch, relays, reply = {"type": "native_ok", "port": 50053, "fingerprint": FP_B}
+    )
+    nodes = {n.node_id: n for n in cs.load_nodes()}
+    assert nodes["node-a"].transport == "link"
+    assert calls["close"] == ["node-a"]
+
+
+def test_a_refused_native_request_falls_back_to_the_relay_never_plaintext(monkeypatch, relays):
+    _offer_native(monkeypatch, relays, reply = {"type": "busy"})
+    node = {n.node_id: n for n in cs.load_nodes()}["node-a"]
+    assert node.transport == "link" and node.endpoint.startswith("127.0.0.1:")
+
+
+def test_the_tls_launch_env_carries_the_master_certificate_not_argv(monkeypatch, relays):
+    _offer_native(monkeypatch, relays)
+    master = SimpleNamespace(certfile = "/m/cert.pem", keyfile = "/m/key.pem", rootfile = "/m/root.pem")
+    fake_identity = SimpleNamespace(
+        master_identity = lambda create = False: master, Registry = FakeRegistry
+    )
+    monkeypatch.setattr(cs, "_link_identity", lambda: fake_identity)
+    nodes = {n.node_id: n for n in cs.load_nodes()}
+    argv = ["llama-server", "--rpc", f"{nodes['node-a'].endpoint},{nodes['node-b'].endpoint}"]
+    assert cs.secure_rpc_env(argv) == {
+        "GGML_RPC_NO_RDMA": "1",
+        "GGML_RPC_TLS_CERT": "/m/cert.pem",
+        "GGML_RPC_TLS_KEY": "/m/key.pem",
+        "GGML_RPC_TLS_CA": "/m/root.pem",
+    }
+    assert not any("/m/" in a for a in argv)
+    # A relay-only launch gets no certificate at all.
+    assert cs.secure_rpc_env(["llama-server", "--rpc", nodes["node-b"].endpoint]) == {
+        "GGML_RPC_NO_RDMA": "1"
+    }
+
+
+def test_removing_a_native_worker_asks_it_to_cut_the_session(monkeypatch, relays):
+    calls = _offer_native(monkeypatch, relays)
+    assert {n.node_id: n for n in cs.load_nodes()}["node-a"].transport == "native_tls"
+    FakeRegistry.peers[0].removed = True
+    cs.load_nodes()
+    assert calls["close"] == ["node-a"] and "node-a" in relays.removed
+
+
+def test_a_status_read_reuses_the_native_grant_without_asking_again(monkeypatch, relays):
+    calls = _offer_native(monkeypatch, relays)
+    cs.load_nodes()
+    nodes = {n.node_id: n for n in cs._link_nodes(verify = False)}
+    assert nodes["node-a"].transport == "native_tls" and calls["native"] == ["node-a"]
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason = "the fake rpc-server is a shell script")
+def test_the_local_tls_probe_reads_the_bundled_rpc_server(monkeypatch, tmp_path):
+    from studio.cluster_link import native
+    monkeypatch.undo()  # the real _local_tls_client, not a fixture stand-in
+    for tls_build in (True, False):
+        fake = tmp_path / f"rpc-{tls_build}"
+        fake.write_text(
+            "#!/bin/sh\necho 'usage: ggml-rpc-server"
+            + (" --tls-cert F" if tls_build else "")
+            + "'\n"
+        )
+        fake.chmod(0o755)
+        monkeypatch.setattr(ss, "rpc_server_binary", lambda f = fake: str(f))
+        monkeypatch.delenv(native.DISABLE_ENV, raising = False)
+        assert cs._local_tls_client() is tls_build
+        monkeypatch.setenv(native.DISABLE_ENV, "0")
+        assert cs._local_tls_client() is False

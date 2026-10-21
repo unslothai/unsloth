@@ -2,13 +2,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Home-only cluster networking: pair machines once, then carry llama.cpp RPC between them over
-mutually authenticated TLS. ``ggml-rpc-server`` stays bound to loopback on every worker and llama.cpp
-itself is unchanged: the master's ``llama-server`` talks to a local relay per worker.
+mutually authenticated TLS. When both bundles carry llama.cpp's own TLS transport, the master's
+``llama-server`` speaks it straight to the worker's ``ggml-rpc-server`` (native.py); otherwise rpc-server
+stays bound to loopback and ``llama-server`` talks to a local relay per worker.
 """
 
 AGENT_PORT_DEFAULT = 50070
 PAIR_PORT_DEFAULT = 50071
 RPC_PORT_DEFAULT = 50052
+# A worker whose bundle has llama.cpp's TLS transport serves it here, on the LAN, when its master asks.
+NATIVE_RPC_PORT_DEFAULT = 50053
 DISCOVERY_GROUP_V4 = "239.255.77.77"
 DISCOVERY_GROUP_V6 = "ff02::1"
 DISCOVERY_PORT = 50079

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The worker agent: the only network-facing piece of a worker. It supervises a ``ggml-rpc-server``
-bound to loopback and, for an authenticated master, splices one TLS connection to it at a time."""
+"""The worker agent: a worker's control plane. It supervises one ``ggml-rpc-server``: bound to loopback,
+with one authenticated master's TLS connection spliced to it at a time, or (native mode, on that master's
+request) serving llama.cpp's own mutual TLS on the LAN to that master alone."""
 
 from __future__ import annotations
 
@@ -21,7 +22,16 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from . import AGENT_PORT_DEFAULT, PROTOCOL_VERSION, RPC_PORT_DEFAULT, SECURE_RPC_ENV, framing, tls
+from . import (
+    AGENT_PORT_DEFAULT,
+    NATIVE_RPC_PORT_DEFAULT,
+    PROTOCOL_VERSION,
+    RPC_PORT_DEFAULT,
+    SECURE_RPC_ENV,
+    framing,
+    native,
+    tls,
+)
 from .model import LocalIdentity
 from .paths import run_dir, state_dir
 import socket
@@ -187,6 +197,8 @@ class Agent:
         rpc_target: Optional[Tuple[str, int]] = None,
         source_filter: Optional[Callable[[str], bool]] = None,
         rpc_env: Optional[Mapping[str, str]] = None,
+        native_port: int = NATIVE_RPC_PORT_DEFAULT,
+        native_tls: Optional[bool] = None,
     ) -> None:
         self.identity = identity
         self._authorize = authorize
@@ -194,6 +206,18 @@ class Agent:
         self.port = port
         self.rpc_binary = rpc_binary
         self.rpc_port = rpc_port
+        # Native mode: rpc-server serves llama.cpp's own mutual TLS on the LAN for the one master that
+        # asked, instead of plain TCP on loopback behind this agent. One rpc-server either way: two
+        # would each hold an accelerator context. None = use it when the bundle has it.
+        self.native_port = native_port
+        self._native_tls = native_tls
+        self.native_available = False
+        self.mode = "loopback"
+        self._native_master: Optional[tls.PeerIdentity] = None
+        self._native_watch: Optional[asyncio.Task] = None
+        self._native_lock: Optional[asyncio.Lock] = None
+        self._native_port_lock: Optional[int] = None
+        self._planned_restart = False
         self.rpc_args = [str(a) for a in rpc_args]
         self.cache_dir = cache_dir
         self._base_env = dict(rpc_env) if rpc_env is not None else None
@@ -299,20 +323,35 @@ class Agent:
             sockets = self._server.sockets or []
             if sockets:
                 self.port = sockets[0].getsockname()[1]
+        self._native_lock = asyncio.Lock()
+        self.mode = "loopback"
+        self.native_available = False
+        if self._native_tls is None:
+            wanted = not native.disabled()
+        else:
+            wanted = bool(self._native_tls)
         # Only once the port is ours: a failed bind must not leave an rpc-server running.
         if self.rpc_binary is not None:
             try:
                 # Held for the agent's whole life, released by the kernel however it ends: two
                 # workers starting at once on one rpc port cannot both pass the check below.
                 self._port_lock = _lock_rpc_port(self.rpc_port)
+                # After the lock: a slow `--help` must not let a second worker pass it meanwhile.
+                self.native_available = bool(
+                    wanted and await asyncio.to_thread(native.binary_supports_tls, self.rpc_binary)
+                )
+                if self.native_available:
+                    self._native_port_lock = _lock_rpc_port(self.native_port)
+                    native.write_allowlist(native.allowlist_path(self.native_port), [])
                 self._reap_stale_rpc()
-            except RuntimeError:
+            except (RuntimeError, OSError):
                 if self._server is not None:
                     self._server.close()
                     self._server = None
                 self._close_listener()
                 _unlock(self._port_lock)
-                self._port_lock = None
+                _unlock(self._native_port_lock)
+                self._port_lock = self._native_port_lock = None
                 raise
             self._supervisor = asyncio.ensure_future(self._supervise())
 
@@ -333,7 +372,8 @@ class Agent:
             await self._stop()
         finally:
             _unlock(self._port_lock)
-            self._port_lock = None
+            _unlock(self._native_port_lock)
+            self._port_lock = self._native_port_lock = None
 
     async def _stop(self) -> None:
         self._stopping = True
@@ -357,6 +397,15 @@ class Agent:
                 self._accept_thread = None
         if self._closed is not None:
             self._closed.set()
+        if self._native_watch is not None:
+            self._native_watch.cancel()
+            self._native_watch = None
+        if self.native_available:
+            # Nobody may connect to a later rpc-server on this port with a stale grant.
+            try:
+                native.write_allowlist(native.allowlist_path(self.native_port), [])
+            except OSError:
+                pass
         if self._supervisor is not None:
             self._supervisor.cancel()
             await asyncio.gather(self._supervisor, return_exceptions = True)
@@ -427,6 +476,26 @@ class Agent:
             self._forget_rpc()
 
     def _rpc_argv(self) -> list:
+        if self.mode == "native":
+            # TLS 1.3 on the LAN: only a client whose certificate chains to the cluster root AND whose
+            # fingerprint is in the allowlist (the one master that asked) gets a byte through.
+            return [
+                str(self.rpc_binary),
+                "-H",
+                self.host or "0.0.0.0",
+                "-p",
+                str(self.native_port),
+                "-c",
+                "--tls-cert",
+                self.identity.certfile,
+                "--tls-key",
+                self.identity.keyfile,
+                "--tls-ca",
+                self.identity.rootfile,
+                "--tls-allow",
+                str(native.allowlist_path(self.native_port)),
+                *self.rpc_args,
+            ]
         return [
             str(self.rpc_binary),
             "-H",
@@ -436,6 +505,13 @@ class Agent:
             "-c",
             *self.rpc_args,
         ]
+
+    @property
+    def _probe_target(self) -> Tuple[str, int]:
+        if self.mode == "native":
+            host = self.host if self.host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+            return host, self.native_port
+        return self._rpc_target
 
     async def _drain_output(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stdout is not None
@@ -475,6 +551,11 @@ class Agent:
             await asyncio.gather(drain, probe, return_exceptions = True)
             if self._stopping:
                 return
+            if self._planned_restart:
+                # A mode switch or a revocation stopped it on purpose: back at once, not counted.
+                self._planned_restart = False
+                backoff = 0.5
+                continue
             self.stats["rpc_restarts"] += 1
             logger.warning("ggml-rpc-server exited with %s; restarting", rc)
             if time.monotonic() - started > STABLE_RUN_S:
@@ -486,7 +567,11 @@ class Agent:
         deadline = time.monotonic() + RPC_READY_TIMEOUT_S
         while proc.returncode is None and time.monotonic() < deadline:
             try:
-                _, writer = await asyncio.wait_for(asyncio.open_connection(*self._rpc_target), 1.0)
+                # A bare connect and close: a TLS rpc-server refuses the missing handshake and goes
+                # back to accept, so this only proves the port is bound.
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(*self._probe_target), 1.0
+                )
             except (OSError, asyncio.TimeoutError):
                 await asyncio.sleep(0.1)
                 continue
@@ -508,16 +593,154 @@ class Agent:
             await proc.wait()
         self._forget_rpc()
 
+    def _native_client(self) -> bool:
+        """In native mode the session bypasses this agent: whether its rpc-server holds a connection on
+        the TLS port is the only sign of one (Studio's busy check reads it)."""
+        pid = self.rpc_pid
+        if self.mode != "native" or pid is None:
+            return False
+        try:
+            import psutil
+
+            proc = psutil.Process(pid)
+            lister = getattr(proc, "net_connections", None) or proc.connections  # psutil < 6
+            conns = lister(kind = "tcp")
+        except Exception:
+            return False
+        return any(
+            c.laddr and c.laddr.port == self.native_port and c.status == "ESTABLISHED"
+            for c in conns
+        )
+
     def status(self) -> Dict[str, Any]:
         return {
             "type": "status",
             "version": PROTOCOL_VERSION,
             "node_id": self.identity.node_id,
-            "busy": self.busy,
+            "busy": self.busy or self._native_client(),
             "rpc_up": self.rpc_up,
             "devices": [],
             "counters": dict(self.counters),
+            "native": {
+                "available": self.native_available,
+                "active": self.mode == "native",
+                "port": self.native_port if self.native_available else 0,
+            },
         }
+
+    # Native mode -------------------------------------------------------------------------------
+
+    async def _restart_rpc(self) -> bool:
+        """Stop rpc-server so the supervisor starts it again with the current mode's argv; a live
+        session through it ends here. True once the new one accepts."""
+        if self.rpc_binary is None:
+            return True
+        if self._rpc_ready is not None:
+            self._rpc_ready.clear()
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            self._planned_restart = True
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), 5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        return await self.wait_rpc_ready(RPC_READY_TIMEOUT_S)
+
+    async def _enter_native(self, pid: tls.PeerIdentity) -> Dict[str, Any]:
+        if not self.native_available:
+            return {"type": "error", "error": "this worker's llama.cpp has no TLS transport"}
+        assert self._native_lock is not None
+        async with self._native_lock:
+            if self.busy:
+                return {"type": "busy"}
+            path = native.allowlist_path(self.native_port)
+            switch = self.mode != "native"
+            same_master = (
+                self._native_master is not None
+                and self._native_master.fingerprint == pid.fingerprint
+            )
+            await asyncio.to_thread(native.write_allowlist, path, [pid.fingerprint])
+            self._native_master = pid
+            self.mode = "native"
+            if switch or not same_master:
+                # A different master's live session must not survive the hand-over.
+                ok = await self._restart_rpc()
+            else:
+                ok = await self.wait_rpc_ready(RPC_READY_TIMEOUT_S)
+            if not ok:
+                return {"type": "error", "error": "ggml-rpc-server did not start with TLS"}
+            if self._native_watch is None or self._native_watch.done():
+                self._native_watch = asyncio.ensure_future(self._watch_native())
+            return {
+                "type": "native_ok",
+                "port": self.native_port,
+                "fingerprint": self.identity.fingerprint,
+            }
+
+    async def _leave_native(self) -> bool:
+        """Back to loopback rpc-server behind this agent: empties the allowlist and restarts, which
+        cuts a live native session."""
+        assert self._native_lock is not None
+        async with self._native_lock:
+            if self.mode != "native":
+                return True
+            await asyncio.to_thread(
+                native.write_allowlist, native.allowlist_path(self.native_port), []
+            )
+            self.mode = "loopback"
+            self._native_master = None
+            watch, self._native_watch = self._native_watch, None
+            if watch is not None and watch is not asyncio.current_task():
+                watch.cancel()
+            return await self._restart_rpc()
+
+    async def _watch_native(self) -> None:
+        """The relay's 2 s revalidation, for a session the agent does not carry: `unsloth cluster leave`
+        or a re-pair edits the registry, and the next check revokes the master by restarting rpc-server."""
+        while self.mode == "native" and not self._stopping:
+            await asyncio.sleep(REVALIDATE_S)
+            pid = self._native_master
+            if pid is None or self.mode != "native":
+                return
+            try:
+                ok = bool(await asyncio.to_thread(self._authorize, pid))
+            except Exception:
+                ok = False
+            if not ok:
+                logger.warning(
+                    "cluster agent: the master is no longer paired; closing its TLS session"
+                )
+                await self._leave_native()
+                return
+
+    async def _control_native(self, kind: str, pid: Optional[tls.PeerIdentity]) -> Dict[str, Any]:
+        if kind == "native_rpc":
+            if pid is None:
+                return {"type": "error", "error": "no master identity"}
+            return await self._enter_native(pid)
+        await self._leave_native()
+        return {"type": "ok"}
+
+    def _control_native_threaded(
+        self, kind: str, pid: Optional[tls.PeerIdentity]
+    ) -> Dict[str, Any]:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return {"type": "error", "error": "agent is stopping"}
+        return asyncio.run_coroutine_threadsafe(self._control_native(kind, pid), loop).result(
+            RPC_READY_TIMEOUT_S + 15
+        )
+
+    def _leave_native_threaded(self) -> None:
+        if self.mode != "native":
+            return
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self._leave_native(), loop).result(
+                RPC_READY_TIMEOUT_S + 15
+            )
 
     async def _revoke_when_unauthorized(
         self, pid: Any, master: asyncio.StreamWriter, rpc: asyncio.StreamWriter
@@ -602,7 +825,13 @@ class Agent:
                 framing.send_frame(sock, {"type": "pong", "version": PROTOCOL_VERSION})
             elif kind == "status":
                 framing.send_frame(sock, self.status())
+            elif kind in ("native_rpc", "native_close"):
+                framing.send_frame(
+                    sock, self._control_native_threaded(kind, tls.peer_identity(sock))
+                )
             elif kind == "open_rpc":
+                # The relay needs the loopback rpc-server back (an older master, or native turned off).
+                self._leave_native_threaded()
                 self._open_rpc_threaded(sock)
             else:
                 framing.send_frame(sock, {"type": "error", "error": "unknown request"})
@@ -712,7 +941,11 @@ class Agent:
                 await framing.write_frame(writer, {"type": "pong", "version": PROTOCOL_VERSION})
             elif kind == "status":
                 await framing.write_frame(writer, self.status())
+            elif kind in ("native_rpc", "native_close"):
+                pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
+                await framing.write_frame(writer, await self._control_native(kind, pid))
             elif kind == "open_rpc":
+                await self._leave_native()
                 await self._open_rpc(reader, writer)
             else:
                 await framing.write_frame(writer, {"type": "error", "error": "unknown request"})

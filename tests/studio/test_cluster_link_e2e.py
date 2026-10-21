@@ -87,7 +87,8 @@ me = identity.worker_identity()
 def authorize(peer):
     return registry().authorize(peer, "master") is not None
 agent = Agent(me, authorize, host = sys.argv[1], port = int(sys.argv[2]), rpc_binary = sys.argv[3],
-              rpc_port = int(sys.argv[4]), cache_dir = sys.argv[5], rpc_args = ("-t", "4"))
+              rpc_port = int(sys.argv[4]), cache_dir = sys.argv[5], rpc_args = ("-t", "4"),
+              native_port = int(sys.argv[6]) if len(sys.argv) > 6 else 50053)
 async def main():
     await agent.start()
     print("READY", flush = True)
@@ -361,3 +362,100 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
         answer = b""
     assert answer == b""
     assert agents[0].poll() is None, "the agent died instead of refusing the unpaired client"
+
+
+def _tls_build() -> bool:
+    try:
+        out = subprocess.run(
+            [str(RPC_SERVER), "--help"], capture_output = True, text = True, timeout = 15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "--tls-cert" in out.stdout + out.stderr
+
+
+def _start_workers(
+    procs,
+    tmp_path,
+    master_state,
+    native_ports = None,
+):
+    states = [tmp_path / "w1", tmp_path / "w2"]
+    ids = [pair(procs, master_state, s, f"w{i + 1}") for i, s in enumerate(states)]
+    hosts = ["127.0.0.2", "127.0.0.3"]
+    agent_ports = []
+    for i, (state, host) in enumerate(zip(states, hosts)):
+        ap, rp = free_port(host), free_port()
+        argv = [sys.executable, "-c", WORKER_AGENT, host, str(ap), str(RPC_SERVER), str(rp)]
+        argv += [str(state / "cache")] + ([str(native_ports[i])] if native_ports else [])
+        agent = spawn(procs, argv, node_env(state))
+        wait_line(agent, "READY")
+        agent_ports.append(ap)
+    return ids, hosts, agent_ports
+
+
+def test_a_split_over_native_tls_matches_the_relays(tmp_path, procs, monkeypatch):
+    # Both bundles carry llama.cpp's TLS transport: the master asks each agent to serve it natively,
+    # llama-server dials tls://<worker fingerprint>@host:port with the master's certificate from the
+    # environment, and greedy output equals the same split through the relays.
+    if not _tls_build():
+        pytest.skip("this llama.cpp build has no TLS transport (GGML_RPC_TLS)")
+    master_state = tmp_path / "master"
+    hosts = ["127.0.0.2", "127.0.0.3"]
+    native_ports = [free_port(h) for h in hosts]
+    ids, hosts, agent_ports = _start_workers(procs, tmp_path, master_state, native_ports)
+
+    monkeypatch.setenv("UNSLOTH_CLUSTER_STATE_DIR", str(master_state))
+    sys.path.insert(0, str(REPO))
+    import studio
+
+    if str(REPO / "studio") not in list(studio.__path__):
+        studio.__path__.append(str(REPO / "studio"))
+    from studio.cluster_link import identity
+    from studio.cluster_link.relay import RelayManager
+
+    def registry():
+        try:
+            return identity.Registry.load()
+        except TypeError:
+            r = identity.Registry()
+            r.load()
+            return r
+
+    master = identity.master_identity(create = False)
+    peers = {p.node_id: p for p in registry().workers()}
+    relays = RelayManager(master, lambda peer: registry().authorize(peer, "worker") is not None)
+    try:
+        relay_endpoints = [relays.ensure(i, h, p) for i, h, p in zip(ids, hosts, agent_ports)]
+        tls_endpoints = []
+        for node_id, host, port in zip(ids, hosts, native_ports):
+            assert relays.status(node_id, timeout = 10.0)["native"]["available"] is True
+            reply = relays.native(node_id)
+            assert reply["type"] == "native_ok", reply
+            assert reply["fingerprint"] == peers[node_id].fingerprint and reply["port"] == port
+            tls_endpoints.append(f"tls://{reply['fingerprint']}@{host}:{port}")
+        env = node_env(master_state)
+        env.update(
+            GGML_RPC_TLS_CERT = master.certfile,
+            GGML_RPC_TLS_KEY = master.keyfile,
+            GGML_RPC_TLS_CA = master.rootfile,
+        )
+        native_text = complete(procs, ",".join(tls_endpoints), env)
+        for node_id in ids:
+            assert relays.status(node_id, timeout = 10.0)["native"]["active"] is True
+        # The relay path takes each worker back to its loopback rpc-server.
+        relayed_text = complete(procs, ",".join(relay_endpoints), node_env(master_state))
+        for node_id in ids:
+            assert relays.status(node_id, timeout = 10.0)["native"]["active"] is False
+    finally:
+        relays.stop()
+    assert native_text and native_text == relayed_text
+    # Without the master certificate llama.cpp cannot reach a native rpc-server at all.
+    stranger = subprocess.run(
+        [str(LLAMA_SERVER), "--rpc", tls_endpoints[0], "--list-devices"],
+        env = node_env(tmp_path / "stranger"),
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert tls_endpoints[0] not in stranger.stdout

@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import pytest
 
@@ -243,6 +243,7 @@ class Link:
         relay_node_id: str = "w1",
         rpc_binary: Optional[str] = None,
         rpc_port: int = 0,
+        **agent_kwargs: Any,
     ):
         self.pki = Pki(tmp / "pki")
         self.worker = self.pki.leaf("w1", worker_role)
@@ -268,6 +269,7 @@ class Link:
             cache_dir = str(tmp / "cache"),
             rpc_target = None if rpc_binary else ("127.0.0.1", self.target.port),
             source_filter = source_filter,
+            **agent_kwargs,
         )
         self.loop.run(self.agent.start())
         self.relay = RelayManager(
@@ -1333,3 +1335,158 @@ def test_concurrent_ensure_makes_one_threaded_listener(tmp_path, monkeypatch):
     assert _wait(
         lambda: not [t for t in threading.enumerate() if t.name == "unsloth-cluster-relay-accept"]
     )
+
+
+# Native mode: llama.cpp's own TLS rpc-server on request ---------------------------------------
+
+
+def _fake_rpc_binary(tmp: Path, tls_build: bool) -> Path:
+    """A ggml-rpc-server stand-in: `--help` lists the TLS flags only for a TLS build; otherwise it logs
+    its argv (one JSON line per start), binds -H/-p and accepts forever."""
+    import textwrap
+
+    tmp.mkdir(parents = True, exist_ok = True)
+    log = tmp / "argv.jsonl"
+    fake = tmp / "fake-rpc-server"
+    usage = "  --tls-cert F  --tls-key F  --tls-ca F  --tls-allow F" if tls_build else ""
+    fake.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import json, socket, sys
+        if "--help" in sys.argv:
+            print("usage: ggml-rpc-server -H host -p port{usage}")
+            sys.exit(0)
+        with open({str(log)!r}, "a") as f:
+            f.write(json.dumps(sys.argv[1:]) + "\\n")
+        a = sys.argv
+        host, port = a[a.index("-H") + 1], int(a[a.index("-p") + 1])
+        s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, port)); s.listen(8)
+        while True:
+            c, _ = s.accept(); c.close()
+        """)
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def _argv_log(fake: Path) -> list:
+    import json
+
+    path = fake.parent / "argv.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _native_link(
+    make_link,
+    tmp_path,
+    tls_build = True,
+    **kw,
+) -> Any:
+    fake = _fake_rpc_binary(tmp_path / f"bin{len(list(tmp_path.glob('bin*')))}", tls_build)
+    link = make_link(rpc_binary = str(fake), rpc_port = _free_port(), native_port = _free_port(), **kw)
+    assert link.loop.run(link.agent.wait_rpc_ready(10.0))
+    link.fake = fake
+    return link
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_native_tls_is_offered_only_by_a_tls_build(make_link, tmp_path):
+    plain = _native_link(make_link, tmp_path, tls_build = False)
+    assert plain.relay.status("w1")["native"]["available"] is False
+    assert plain.relay.native("w1")["type"] == "error"
+    tls_link = _native_link(make_link, tmp_path)
+    assert tls_link.relay.status("w1")["native"] == {
+        "available": True,
+        "active": False,
+        "port": tls_link.agent.native_port,
+    }
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_the_kill_switch_keeps_a_tls_build_on_the_relay(make_link, tmp_path, monkeypatch):
+    from studio.cluster_link import native
+
+    monkeypatch.setenv(native.DISABLE_ENV, "0")
+    link = _native_link(make_link, tmp_path)
+    assert link.agent.native_available is False
+    assert link.relay.native("w1")["type"] == "error"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_a_native_request_restarts_rpc_server_with_tls_for_that_master_only(make_link, tmp_path):
+    link = _native_link(make_link, tmp_path)
+    reply = link.relay.native("w1")
+    assert reply == {
+        "type": "native_ok",
+        "port": link.agent.native_port,
+        "fingerprint": link.worker.fingerprint,
+    }
+    argv = _argv_log(link.fake)[-1]
+    assert argv[argv.index("-p") + 1] == str(link.agent.native_port)
+    assert argv[argv.index("--tls-cert") + 1] == link.worker.certfile
+    assert argv[argv.index("--tls-key") + 1] == link.worker.keyfile
+    assert argv[argv.index("--tls-ca") + 1] == link.worker.rootfile
+    allow = Path(argv[argv.index("--tls-allow") + 1])
+    assert allow.read_text().split() == [link.master.fingerprint]
+    assert link.relay.status("w1")["native"]["active"] is True
+    assert link.agent.stats["rpc_restarts"] == 0  # a planned switch, not a crash
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_revoking_the_master_cuts_native_mode(make_link, tmp_path, monkeypatch):
+    from studio.cluster_link import native
+
+    import studio.cluster_link.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "REVALIDATE_S", 0.2)
+    trusted = {"ok": True}
+    link = _native_link(
+        make_link, tmp_path, agent_authorize = lambda pid: trusted["ok"] and pid.node_id == "m1"
+    )
+    assert link.relay.native("w1")["type"] == "native_ok"
+    pid_native = link.agent.rpc_pid
+    allow = native.allowlist_path(link.agent.native_port)
+    trusted["ok"] = False
+    assert _wait(lambda: link.agent.mode == "loopback", 10.0)
+    assert allow.read_text().split() == []
+    assert _wait(lambda: link.agent.rpc_pid not in (None, pid_native), 10.0)
+    assert _wait(lambda: "--tls-cert" not in _argv_log(link.fake)[-1], 10.0)
+    argv = _argv_log(link.fake)[-1]
+    assert argv[argv.index("-H") + 1] == "127.0.0.1" and argv[argv.index("-p") + 1] == str(
+        link.agent.rpc_port
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_native_close_and_a_relay_session_both_return_to_loopback(make_link, tmp_path):
+    from studio.cluster_link import native
+
+    link = _native_link(make_link, tmp_path)
+    assert link.relay.native("w1")["type"] == "native_ok"
+    assert link.relay.native_close("w1") is True
+    assert link.agent.mode == "loopback"
+    assert native.allowlist_path(link.agent.native_port).read_text().split() == []
+    # Back to native, then a relay session (an older master, or native turned off) takes it back.
+    assert link.relay.native("w1")["type"] == "native_ok"
+    sock = link.connect()
+    sock.sendall(b"x")
+    assert _wait(lambda: link.agent.mode == "loopback", 10.0)
+    sock.close()
+    assert _wait(lambda: "--tls-cert" not in _argv_log(link.fake)[-1], 10.0)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_a_removed_worker_still_takes_a_native_close(make_link, tmp_path):
+    # The master cuts a native session of a worker it just removed: no longer authorized there, but
+    # the certificate still names that node, and closing is all it is asked.
+    link = _native_link(make_link, tmp_path, relay_authorize = lambda pid: False)
+    assert link.relay.status("w1")["reachable"] is False  # status needs the worker still paired
+    link.loop.run(
+        link.agent._enter_native(tls.PeerIdentity(link.master.fingerprint, "m1", "master"))
+    )
+    assert link.agent.mode == "native"
+    assert link.relay.native_close("w1") is True
+    assert link.agent.mode == "loopback"
