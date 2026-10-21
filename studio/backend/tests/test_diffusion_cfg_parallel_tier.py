@@ -181,7 +181,6 @@ def test_a_replica_thread_that_records_does_not_wait_on_itself():
     t.join(5)
 
 
-
 zmod = None
 
 
