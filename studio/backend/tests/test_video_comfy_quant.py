@@ -742,3 +742,26 @@ def test_offload_only_int8_is_priced_dense_for_a_resident_plan(monkeypatch, tmp_
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
+
+
+def _record_host_ram_checks(monkeypatch):
+    """Every pre-allocation host RAM check a load makes, by size, on a host with room for all of them."""
+    import core.inference.diffusion_single_file_converters as conv
+    import core.inference.diffusion_small_host as small_host
+
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 20, 1 << 20))
+    seen = []
+    monkeypatch.setattr(conv.HostRamBudget, "charge", lambda self, n: seen.append(int(n)))
+    return seen
+
+
+def test_a_key_map_row_reorder_is_checked_before_it_is_copied(h3like_file, monkeypatch):
+    """MiniMax-H3's fc1 swaps its [gate; value] halves, so the kept int8 codes are rebuilt with
+    torch.cat: a full copy of the layer that must be checked against free host RAM first."""
+    seen = _record_host_ram_checks(monkeypatch)
+    path, _dense, tensors = h3like_file
+    _load_h3like(path, int8_backend = "native")
+    fc1 = tensors["fc1.weight"]
+    assert fc1.numel() * fc1.element_size() in seen

@@ -12,6 +12,7 @@ No module-level torch import: ``diffusion.py`` imports this on every load.
 from __future__ import annotations
 
 import contextvars
+import os
 import re
 from typing import Any, Optional
 
@@ -416,13 +417,16 @@ def converted_host_bytes(
 
 
 class HostRamBudget:
-    """Free host RAM a single-file load may still write, charged where each new tensor is allocated.
+    """The host RAM check of one single-file load: an up-front header estimate, then a check before each
+    large allocation against what is free right now.
 
     ``converted_host_bytes`` prices a load from the header before any read, but cannot see the per-layer
-    choices made later (runtime filters, nibble swaps, row splits). Every allocating helper therefore
-    charges this budget too (``charge_host_ram``, a no-op outside ``with budget:``), and the load is
-    refused before the allocation that would cross free RAM minus the small-host reserve, instead of
-    the OOM that ends the whole server. ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` disables both."""
+    choices made later (runtime filters, nibble swaps, row reorders). Every allocating helper therefore
+    calls ``charge_host_ram(nbytes)`` (a no-op outside an active budget) before it allocates, and the load
+    is refused when that allocation plus the small-host reserve exceeds the host's LIVE available memory,
+    instead of the OOM that ends the whole server. Live, not a running total: buffers the load has
+    already freed are back in the next reading, and copies made where nothing checks still show up in
+    it. ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` disables both checks."""
 
     def __init__(
         self,
@@ -438,7 +442,6 @@ class HostRamBudget:
 
         self.path, self.why, self.logger = path, why, logger
         self._token = None
-        self.used = 0
         self.available_mib: Optional[int] = None
         self.reserve_mib = 0
         if host_ram_check_disabled():
@@ -449,18 +452,20 @@ class HostRamBudget:
             return
         if available is None:
             return
+        try:
+            size_mib = os.path.getsize(str(path)) // _MIB
+        except OSError:
+            size_mib = HOST_RAM_CHECK_MIN_MIB
+        if size_mib < HOST_RAM_CHECK_MIN_MIB:
+            return  # a file this small cannot be what takes a host down
         self.available_mib = int(available)
         self.reserve_mib = host_reserve_mib(total)
 
-    def _refuse_if_over(self, need_bytes: int, at_least: bool) -> None:
-        import os
-
+    def _refuse_if_over(self, need_bytes: int, available_mib: int, at_least: bool) -> None:
         from .diffusion_small_host import HOST_RAM_CHECK_ENV
 
         need_mib = -(-int(need_bytes) // _MIB)
-        if self.available_mib is None or need_mib < HOST_RAM_CHECK_MIN_MIB:
-            return
-        if need_mib + self.reserve_mib <= self.available_mib:
+        if need_mib + self.reserve_mib <= available_mib:
             return
         reserve = self.reserve_mib
         name = os.path.basename(str(self.path))
@@ -468,7 +473,7 @@ class HostRamBudget:
             f"Not enough system RAM to load {name}: {self.why} needs "
             f"{'at least' if at_least else 'about'} {(need_mib + reserve) / 1024:.1f} GB of free host "
             f"memory ({need_mib / 1024:.1f} GB of weights + {reserve / 1024:.1f} GB reserve) and "
-            f"{self.available_mib / 1024:.1f} GB is free. Close other applications, use a GGUF or a "
+            f"{available_mib / 1024:.1f} GB is free. Close other applications, use a GGUF or a "
             f"smaller quant of this model, or set {HOST_RAM_CHECK_ENV}=0 to try anyway."
         )
         if self.logger is not None:
@@ -476,13 +481,23 @@ class HostRamBudget:
         raise HostRamShortfallError(message)
 
     def check(self, need_bytes: int) -> None:
-        """Up-front refusal from a header estimate; charges nothing."""
-        self._refuse_if_over(need_bytes, at_least = False)
+        """Up-front refusal from a header estimate, against free memory when the load started."""
+        if self.available_mib is None or -(-int(need_bytes) // _MIB) < HOST_RAM_CHECK_MIN_MIB:
+            return
+        self._refuse_if_over(need_bytes, self.available_mib, at_least = False)
 
     def charge(self, nbytes: int) -> None:
-        """Account ``nbytes`` about to be allocated; raises before the one that would not fit."""
-        self.used += int(nbytes)
-        self._refuse_if_over(self.used, at_least = True)
+        """Refuse before allocating ``nbytes`` when they and the reserve exceed live available memory."""
+        if self.available_mib is None or nbytes <= 0:
+            return
+        from .diffusion_small_host import host_ram_mib
+
+        try:
+            available = host_ram_mib()[1]
+        except Exception:  # noqa: BLE001 -- an unreadable reading makes no claim
+            return
+        if available is not None:
+            self._refuse_if_over(nbytes, int(available), at_least = True)
 
     def activate(self) -> "HostRamBudget":
         """Make this the budget the allocating helpers charge, until the enclosing
@@ -521,9 +536,9 @@ def host_ram_budget_scope(fn: Any) -> Any:
 
 
 def charge_host_ram(nbytes: int) -> None:
-    """Charge the active ``HostRamBudget`` (if any) for a tensor about to be allocated (negative = freed)."""
+    """Check ``nbytes`` about to be allocated against the active ``HostRamBudget``, if any."""
     budget = _ACTIVE_BUDGET.get()
-    if budget is not None and nbytes:
+    if budget is not None and nbytes > 0:
         budget.charge(nbytes)
 
 

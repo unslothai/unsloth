@@ -660,17 +660,144 @@ def _tight_host(monkeypatch, headroom_mib):
 
 def test_layers_the_runtime_filter_rejects_are_charged_as_dequantized(block_file, monkeypatch):
     """A runtime for the format keeps only layers passing its filter (size, name exclusions, ...); the
-    rest are expanded to the compute dtype and must count against host RAM (4 MiB dense here)."""
-    conv = _tight_host(monkeypatch, headroom_mib = 2)
+    rest are expanded to the compute dtype, each checked before its expansion."""
+    conv = _tight_host(monkeypatch, headroom_mib = 1 << 20)
+    seen = []
+    monkeypatch.setattr(conv.HostRamBudget, "charge", lambda self, n: seen.append(int(n)))
     path, _tensors, _expected = block_file("mxfp8")
-    with pytest.raises(conv.HostRamShortfallError, match = "Not enough system RAM"):
-        _load(path, dtype = torch.bfloat16, mxfp8_backend = "kept", min_features = 1 << 20)
+    model = _load(path, dtype = torch.bfloat16, mxfp8_backend = "kept", min_features = 1 << 20)
+    assert model._unsloth_comfy_quant["dequantized"] == 8
+    assert seen.count(DIM * DIM * 2) >= 8  # every bf16 to_q / to_k / to_v / to_out
 
 
 def test_kept_nvfp4_codes_are_charged_for_their_nibble_swapped_copy(block_file, monkeypatch):
     """With an nvfp4 runtime the codes are kept, but decode_layer writes a nibble-swapped uint8 copy of
-    the packed weight (plus untiled scales): new host RAM even though nothing is dequantized."""
-    conv = _tight_host(monkeypatch, headroom_mib = 1)
-    path, _tensors, _expected = block_file("nvfp4")
-    with pytest.raises(conv.HostRamShortfallError, match = "Not enough system RAM"):
+    the packed weight (plus untiled scales): new host RAM, checked even though nothing is dequantized."""
+    conv = _tight_host(monkeypatch, headroom_mib = 1 << 20)
+    seen = []
+    monkeypatch.setattr(conv.HostRamBudget, "charge", lambda self, n: seen.append(int(n)))
+    path, tensors, _expected = block_file("nvfp4")
+    try:
         _load(path, dtype = torch.bfloat16, nvfp4_backend = "kept")
+    except ImportError:
+        pass  # no flashinfer here: the checks ran while decoding, before any runtime Linear is built
+    packed = tensors["blocks.0.out.weight"]
+    assert packed.numel() * packed.element_size() in seen
+
+
+def test_a_runtime_linear_checks_its_tiled_scale_buffer(block_file, monkeypatch):
+    """A kept mxfp8 layer re-tiles its scales for the runtime Linear (a zero-padded buffer and the
+    permuted copy it keeps): both are new host memory, checked before they are allocated."""
+    import core.inference.diffusion_single_file_converters as conv
+    import core.inference.diffusion_small_host as small_host
+
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 20, 1 << 20))
+    seen = []
+    monkeypatch.setattr(conv.HostRamBudget, "charge", lambda self, n: seen.append(int(n)))
+    path, _tensors, _expected = block_file("mxfp8")
+    _load(path, dtype = torch.bfloat16, mxfp8_backend = "kept")
+    assert 2 * _ceil(DIM, 128) * _ceil(DIM // 32, 4) in seen
+
+
+class _Many(nn.Module):
+    """Many bias-free square Linears: enough layers that per-layer transients would add up."""
+
+    _keep_in_fp32_modules = None
+    _keys_to_ignore_on_load_unexpected = None
+    LAYERS, WIDTH = 48, 2048
+
+    def __init__(
+        self,
+        layers: int = LAYERS,
+        width: int = WIDTH,
+    ) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList(nn.Linear(width, width, bias = False) for _ in range(layers))
+
+    @classmethod
+    def load_config(cls, repo, **_kwargs):
+        return {"layers": cls.LAYERS, "width": cls.WIDTH}
+
+    @staticmethod
+    def _get_signature_keys(_cls):
+        return {"layers", "width"}, set()
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
+
+def _rss_anon_bytes():
+    import ctypes
+
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)  # hand freed heap back, so RssAnon is what is live
+    except OSError:
+        pass
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1]) * 1024
+    return None
+
+
+def test_a_many_layer_nvfp4_fallback_load_that_fits_is_not_refused(tmp_path, monkeypatch):
+    """No nvfp4 runtime: every layer is nibble-swapped, its scales untiled, then dequantized, and the
+    swapped codes and plain scales are freed again before the next layer. Free host RAM is modelled
+    from this process's own anonymous RSS, with room for the dense weights plus 10%: the load fits and
+    must not be refused for copies that were already released."""
+    import core.inference.diffusion_single_file_converters as conv
+    import core.inference.diffusion_small_host as small_host
+
+    if not torch.__config__.show() or _rss_anon_bytes() is None:
+        pytest.skip("needs /proc/self/status RssAnon")
+    layers, width = _Many.LAYERS, _Many.WIDTH
+    gen = torch.Generator().manual_seed(0)
+    tensors = {}
+    for i in range(layers):
+        stem = f"layers.{i}"
+        tensors[f"{stem}.weight"] = torch.randint(
+            0, 256, (width, width // 2), dtype = torch.uint8, generator = gen
+        )
+        plain = torch.randint(56, 64, (width, width // 16), dtype = torch.uint8, generator = gen)
+        tensors[f"{stem}.weight_scale"] = _tile(plain).view(torch.float8_e4m3fn)
+        tensors[f"{stem}.weight_scale_2"] = torch.tensor(0.01)
+        tensors[f"{stem}.comfy_quant"] = _conf(format = "nvfp4")
+    path = _save(tmp_path / "many_nvfp4.safetensors", tensors)
+    del tensors
+    monkeypatch.setattr(
+        cq,
+        "_mapping",
+        lambda cls: (
+            lambda checkpoint = None, **_kw: checkpoint,
+            types.SimpleNamespace(
+                _should_convert_state_dict_to_diffusers = lambda a, b: False,
+                _get_mapping_function_kwargs = lambda fn, **kw: {},
+            ),
+        ),
+    )
+    dense = layers * width * width * 2  # bf16
+    total = 1 << 20
+    reserve = small_host.host_reserve_mib(total)
+    start = _rss_anon_bytes()
+    headroom = int(dense * 1.10)
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    monkeypatch.setattr(
+        small_host,
+        "host_ram_mib",
+        lambda: (total, reserve + (headroom - (_rss_anon_bytes() - start)) // (1 << 20)),
+    )
+    model = cq.load_comfy_quant_transformer(
+        _Many,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+        int8_backend = None,
+        nvfp4_backend = None,
+        family = "z-image",
+    )
+    assert model._unsloth_comfy_quant["dequantized"] == layers
+    assert model.layers[0].weight.dtype == torch.bfloat16

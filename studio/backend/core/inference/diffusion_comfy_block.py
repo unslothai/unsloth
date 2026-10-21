@@ -62,6 +62,9 @@ def tile_scales(plain: Any) -> Any:
     rows, blocks = plain.shape
     rp, bp = _roundup(rows, 128), _roundup(blocks, 4)
     raw = plain.view(torch.uint8) if plain.element_size() == 1 else plain
+    from .diffusion_single_file_converters import charge_host_ram
+
+    charge_host_ram(2 * rp * bp * raw.element_size())  # the padded buffer and its permuted copy
     full = torch.zeros(rp, bp, dtype = raw.dtype, device = raw.device)
     full[:rows, :blocks] = raw
     out = full.reshape(rp // 128, 4, 32, bp // 4, 4).permute(0, 3, 2, 1, 4).reshape(-1).contiguous()

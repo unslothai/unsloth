@@ -490,12 +490,8 @@ def _dequant_parts(fmt: str, parts: list, dtype: Any) -> Any:
         return dense[0]
     from .diffusion_single_file_converters import charge_host_ram
 
-    parts_bytes = sum(d.numel() * d.element_size() for d in dense)
-    charge_host_ram(parts_bytes)
-    out = torch.cat(dense)
-    del dense
-    charge_host_ram(-parts_bytes)  # the segments are freed; only the joined weight stays
-    return out
+    charge_host_ram(sum(d.numel() * d.element_size() for d in dense))
+    return torch.cat(dense)
 
 
 def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
@@ -739,7 +735,13 @@ def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
             # float8: concatenation goes through uint8 (not implemented for float8 on every torch)
             return take(value.view(torch.uint8), rows).view(value.dtype)
         parts = [value[int(r) : int(r) + int(n)] for r, n in rows]
-        return parts[0] if len(parts) == 1 else torch.cat(parts)
+        if len(parts) == 1:
+            return parts[0]
+        from .diffusion_single_file_converters import charge_host_ram
+
+        # a reordered selection (H3's [gate; value] fc1) is a full copy of the rows it joins
+        charge_host_ram(sum(part.numel() * part.element_size() for part in parts))
+        return torch.cat(parts)
 
     converted: dict = {}
     for key in list(state):
