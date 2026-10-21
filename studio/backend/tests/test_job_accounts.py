@@ -1062,6 +1062,12 @@ def test_recipe_plain_processor_names_pass():
     for name in ("schema_transform", "schema_transform_2", "chat format v1.2"):
         recipe = {"processors": [{"processor_type": "schema_transform", "name": name}]}
         run_as(ALICE, jobs.validate_recipe_access, recipe)
+    # A schema-transform template may name an output column processor_type.
+    template = {"processor_type": "{{ kind }}", "text": "{{ text }}"}
+    recipe = {
+        "processors": [{"processor_type": "schema_transform", "name": "out", "template": template}]
+    }
+    run_as(ALICE, jobs.validate_recipe_access, recipe)
 
 
 @pytest.mark.parametrize("account", [OWNER, ALICE])

@@ -209,9 +209,9 @@ def test_managed_account_image_context_cell_inside_its_workspace_is_sent(studio_
 def test_managed_account_image_context_url_cell_passes_through(studio_home):
     base = run_as(ALICE, lambda: workspace_root() / "artifacts")
 
-    (context,) = run_as(ALICE, _image_contexts, "https://example.com/cat.png", base)
-
-    assert context["image_url"] == "https://example.com/cat.png"
+    for url in ("https://example.com/cat.png", "https://example.com/../../../../../cat.png"):
+        (context,) = run_as(ALICE, _image_contexts, url, base)
+        assert context["image_url"] == url
 
 
 def test_owner_image_context_cell_loads_any_local_path(studio_home, monkeypatch):

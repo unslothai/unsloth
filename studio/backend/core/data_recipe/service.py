@@ -147,7 +147,11 @@ def _apply_data_designer_image_context_patch() -> None:
             return original_auto_resolve(self, normalized, base_path)
         # Load a managed account's image path under its workspace rule; the engine gets no base_path,
         # so it never opens a file by itself.
-        if isinstance(normalized, str) and is_image_path(normalized):
+        if (
+            isinstance(normalized, str)
+            and not normalized.lower().startswith(("http://", "https://", "data:"))
+            and is_image_path(normalized)
+        ):
             if as_base64 := _load_image_file_to_base64(normalized, base_path = base_path):
                 return self._format_base64_context(as_base64)
         return original_auto_resolve(self, normalized, None)

@@ -519,8 +519,9 @@ def validate_recipe_access(recipe) -> None:
         ):
             raise HTTPException(status_code = 403, detail = "Choose a folder inside your workspace")
         # The engine writes a processor's output under its name, so the name must not be a path.
-        if "processor_type" in recipe:
-            name = recipe.get("name")
+        processors = recipe.get("processors")
+        for processor in processors if isinstance(processors, list) else []:
+            name = processor.get("name") if isinstance(processor, dict) else None
             if (
                 not isinstance(name, str)
                 or not name.strip(" .")
