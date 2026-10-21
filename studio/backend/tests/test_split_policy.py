@@ -333,6 +333,10 @@ def _wired_backend(
     monkeypatch.delenv("LLAMA_ARG_SPLIT_MODE", raising = False)
     monkeypatch.delenv("LLAMA_ARG_TENSOR_SPLIT", raising = False)
     monkeypatch.delenv(sp.AUTO_TENSOR_SPLIT_ENV, raising = False)
+    # The spawned llama-server is a stand-in whose pid names no child of ours. Stopping it must
+    # never walk this host's real process table: with pid 1 that walk was every process the
+    # user owned, and the unload SIGTERMed all of them.
+    backend._collect_descendants = lambda _pid: ([], True)
     return backend, gguf
 
 
@@ -1188,7 +1192,7 @@ def test_wired_auto_tensor_mtp_decode_failure_keeps_mtp_on_layer(tmp_path, monke
             "P",
             (),
             {
-                "pid": 1,
+                "pid": 123,
                 "stdout": (),
                 "returncode": None,
                 "poll": lambda self: None,
@@ -1229,7 +1233,7 @@ def test_wired_concurrent_load_cannot_clear_the_running_attempt(tmp_path, monkey
             "P",
             (),
             {
-                "pid": 1,
+                "pid": 123,
                 "stdout": (),
                 "returncode": None,
                 "poll": lambda self: None,
