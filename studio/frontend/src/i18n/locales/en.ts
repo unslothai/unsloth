@@ -4304,6 +4304,8 @@ export const en = {
       modelEmpty: "Download a model in Model hub or add a connection to choose another.",
       modelMissing: "{model} (not on this device)",
       allowLoad: "Switch automatically when I'm away",
+      allowLoadHint:
+        "When this task is due and you haven't used Studio for 5 minutes, it loads this model without asking, runs the task, then switches back to the model you had. If you're using Studio or training at that time, the run is skipped and your model is left alone. Off, Studio asks before loading.",
       reasoning: "Thinking effort",
       reasoningDefault: "Default",
       reasoningOff: "Off",
@@ -4338,8 +4340,6 @@ export const en = {
       always: "Don't ask again. Switch only while I'm away from Studio.",
       notNow: "Not now",
       load: "Load and run",
-      busyTitle: "Run “{title}” now?",
-      busyDescription: "It was due, but you were using Studio, so it left your model alone. Running it now switches to {model}, then back when it finishes.",
     },
     toast: {
       finished: "“{title}” is ready",

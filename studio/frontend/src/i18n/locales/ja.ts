@@ -4189,6 +4189,8 @@ export const ja = {
       modelEmpty: "別のモデルを選ぶには、Model Hub でダウンロードするか接続を追加してください。",
       modelMissing: "{model}（このデバイスにありません）",
       allowLoad: "離席中は自動で切り替える",
+      allowLoadHint:
+        "このタスクの時刻になり、Studio を 5 分間使っていない場合は、確認せずにこのモデルを読み込んでタスクを実行し、その後元のモデルに戻します。その時点で Studio を使用中か学習中の場合、実行はスキップされ、モデルはそのままです。オフにすると、読み込む前に Studio が確認します。",
       reasoning: "思考の深さ",
       reasoningDefault: "デフォルト",
       reasoningOff: "オフ",
@@ -4222,8 +4224,6 @@ export const ja = {
       always: "今後は確認しない。Unsloth を使っていない間だけ切り替える。",
       notNow: "今はしない",
       load: "読み込んで実行",
-      busyTitle: "「{title}」を今すぐ実行しますか？",
-      busyDescription: "予定の時刻でしたが、Unsloth を使用中だったため、モデルはそのままにしました。今実行すると {model} に切り替え、終わったら元に戻します。",
     },
     toast: {
       finished: "「{title}」が完了しました",

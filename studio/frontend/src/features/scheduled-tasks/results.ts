@@ -187,10 +187,11 @@ export function runsToNotify<T extends { status: string; taskNotify: string }>(
   );
 }
 
-/** A run that stopped only because its task's model was not loaded, and is waiting for a yes:
- *  `model_not_loaded` has none yet, `model_busy` had one but found Studio in use. */
+/** A run that stopped only because its task's model was not loaded, and is waiting for a yes. Not
+ *  `model_busy`: that task already switches by itself and was skipped while Studio was in use, so
+ *  it is reported like any other skipped run instead of asking. */
 export function asksToLoadModel(run: { errorCode: string | null; taskModel?: string | null }): boolean {
-  return (run.errorCode === "model_not_loaded" || run.errorCode === "model_busy") && Boolean(run.taskModel);
+  return run.errorCode === "model_not_loaded" && Boolean(run.taskModel);
 }
 
 /** Of the runs announced, those that ask to load their task's model: one per task, the newest.

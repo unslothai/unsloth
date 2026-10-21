@@ -549,13 +549,13 @@ test("a run whose model was not loaded asks once per task, whatever its notifica
     run("a", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
     run("b", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
     run("c", "task-2", "no_model", null),
-    // Allowed, but Studio was in use: asked about this run.
+    // Set to switch by itself, skipped while Studio was in use: reported, never asked.
     run("e", "task-4", "model_busy", "unsloth/gemma-3-GGUF"),
     // Nothing to load: the model was cleared from the task meanwhile.
     run("d", "task-3", "model_not_loaded", null),
   ]);
   assert.deepEqual(
     asks.map((ask) => ask.id),
-    ["b", "e"],
+    ["b"],
   );
 });

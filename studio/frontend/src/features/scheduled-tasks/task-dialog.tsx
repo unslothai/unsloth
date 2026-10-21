@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { Folder01Icon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   buildExternalModelId,
   chatLocalModelOptions,
@@ -91,12 +92,35 @@ function askToNotify(): void {
 }
 
 // One line of a card: the label on the left, its control on the right.
-function Row({ id, label, children }: { id?: string; label: string; children: ReactNode }) {
+function Row({
+  id,
+  label,
+  hint,
+  children,
+}: { id?: string; label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="flex min-h-14 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-2">
-      <label htmlFor={id} className="text-ui-15 text-foreground">
-        {label}
-      </label>
+      <span className="flex items-center gap-1.5">
+        <label htmlFor={id} className="text-ui-15 text-foreground">
+          {label}
+        </label>
+        {hint && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label={hint}
+                className="inline-flex rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <HugeiconsIcon icon={InformationCircleIcon} className="size-[var(--ui-icon-size-hint)]" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+              {hint}
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </span>
       {children}
     </div>
   );
@@ -432,7 +456,11 @@ export function TaskDialog({
           </Row>
           {/* Loading replaces the model in Chat, so a run asks first unless this is on. */}
           {model !== null && !models.connection && (
-            <Row id={`${ids}-allow-load`} label={t("scheduledTasks.form.allowLoad")}>
+            <Row
+              id={`${ids}-allow-load`}
+              label={t("scheduledTasks.form.allowLoad")}
+              hint={t("scheduledTasks.form.allowLoadHint")}
+            >
               <Switch
                 id={`${ids}-allow-load`}
                 checked={allowLoad}

@@ -4231,6 +4231,8 @@ export const ko = {
       modelEmpty: "다른 모델을 고르려면 Model Hub에서 모델을 다운로드하거나 연결을 추가하세요.",
       modelMissing: "{model} (이 기기에 없음)",
       allowLoad: "자리를 비우면 자동으로 전환",
+      allowLoadHint:
+        "이 작업 시간이 되었고 5분 동안 Studio를 사용하지 않았다면, 묻지 않고 이 모델을 로드해 작업을 실행한 뒤 원래 모델로 되돌립니다. 그때 Studio를 사용 중이거나 학습 중이면 실행을 건너뛰고 모델은 그대로 둡니다. 끄면 로드하기 전에 Studio가 묻습니다.",
       reasoning: "사고 수준",
       reasoningDefault: "기본값",
       reasoningOff: "끄기",
@@ -4264,8 +4266,6 @@ export const ko = {
       always: "다시 묻지 않기. Unsloth를 사용하지 않을 때만 전환합니다.",
       notNow: "나중에",
       load: "로드하고 실행",
-      busyTitle: "“{title}”을(를) 지금 실행할까요?",
-      busyDescription: "실행 시간이었지만 Unsloth를 사용 중이어서 모델을 그대로 두었습니다. 지금 실행하면 {model}로 전환했다가 끝나면 돌아갑니다.",
     },
     toast: {
       finished: "\"{title}\" 완료",

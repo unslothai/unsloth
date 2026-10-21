@@ -4317,6 +4317,8 @@ export const de = {
       modelEmpty: "Laden Sie ein Modell im Model Hub herunter oder fügen Sie eine Verbindung hinzu, um ein anderes zu wählen.",
       modelMissing: "{model} (nicht auf diesem Gerät)",
       allowLoad: "Automatisch wechseln, wenn ich weg bin",
+      allowLoadHint:
+        "Wenn diese Aufgabe fällig ist und du Studio seit 5 Minuten nicht benutzt hast, lädt sie dieses Modell ohne Nachfrage, führt die Aufgabe aus und wechselt dann zurück zu deinem vorherigen Modell. Benutzt du Studio gerade oder läuft ein Training, wird der Lauf übersprungen und dein Modell bleibt unverändert. Ist die Option aus, fragt Studio vor dem Laden.",
       reasoning: "Denkaufwand",
       reasoningDefault: "Standard",
       reasoningOff: "Aus",
@@ -4350,8 +4352,6 @@ export const de = {
       always: "Nicht mehr fragen. Nur wechseln, während ich Unsloth nicht nutze.",
       notNow: "Nicht jetzt",
       load: "Laden und ausführen",
-      busyTitle: "„{title}“ jetzt ausführen?",
-      busyDescription: "Die Aufgabe war fällig, aber Sie haben Unsloth genutzt, daher blieb Ihr Modell unverändert. Jetzt ausführen wechselt zu {model} und danach zurück.",
     },
     toast: {
       finished: "„{title}“ ist fertig",

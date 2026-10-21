@@ -4328,6 +4328,8 @@ export const fr = {
       modelEmpty: "Téléchargez un modèle dans Model Hub ou ajoutez une connexion pour en choisir un autre.",
       modelMissing: "{model} (absent de cet appareil)",
       allowLoad: "Changer automatiquement en mon absence",
+      allowLoadHint:
+        "Quand cette tâche arrive à échéance et que vous n'avez pas utilisé Studio depuis 5 minutes, elle charge ce modèle sans demander, exécute la tâche, puis revient au modèle que vous aviez. Si vous utilisez Studio ou qu'un entraînement est en cours, l'exécution est ignorée et votre modèle n'est pas touché. Désactivé, Studio demande avant de charger.",
       reasoning: "Effort de réflexion",
       reasoningDefault: "Par défaut",
       reasoningOff: "Désactivé",
@@ -4361,8 +4363,6 @@ export const fr = {
       always: "Ne plus demander. Changer uniquement quand je n’utilise pas Unsloth.",
       notNow: "Pas maintenant",
       load: "Charger et exécuter",
-      busyTitle: "Exécuter « {title} » maintenant ?",
-      busyDescription: "Elle était prévue, mais vous utilisiez Unsloth : votre modèle n’a pas été touché. L’exécuter maintenant passe à {model}, puis revient à la fin.",
     },
     toast: {
       finished: "« {title} » est prête",

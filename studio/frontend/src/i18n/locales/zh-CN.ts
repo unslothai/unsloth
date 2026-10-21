@@ -4144,6 +4144,8 @@ export const zhCN = {
       modelEmpty: "在模型中心下载模型或添加连接，即可选择其他模型。",
       modelMissing: "{model}（不在此设备上）",
       allowLoad: "离开时自动切换",
+      allowLoadHint:
+        "到了任务时间且你已 5 分钟未使用 Studio 时，它会直接加载此模型、运行任务，然后切换回你原来的模型。如果当时你正在使用 Studio 或正在训练，本次运行会被跳过，你的模型保持不变。关闭时，Studio 会在加载前询问。",
       reasoning: "思考强度",
       reasoningDefault: "默认",
       reasoningOff: "关闭",
@@ -4177,8 +4179,6 @@ export const zhCN = {
       always: "不再询问。仅在我不使用 Unsloth 时切换。",
       notNow: "暂不",
       load: "加载并运行",
-      busyTitle: "立即运行“{title}”？",
-      busyDescription: "已到运行时间，但你正在使用 Unsloth，所以没有更换你的模型。现在运行会切换到 {model}，完成后切回。",
     },
     toast: {
       finished: "“{title}”已完成",

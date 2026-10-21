@@ -4318,6 +4318,8 @@ export const it = {
       modelEmpty: "Scarica un modello da Model Hub o aggiungi una connessione per sceglierne un altro.",
       modelMissing: "{model} (non su questo dispositivo)",
       allowLoad: "Cambia automaticamente quando non ci sono",
+      allowLoadHint:
+        "Quando questa attività è in scadenza e non usi Studio da 5 minuti, carica questo modello senza chiedere, esegue l'attività e poi torna al modello che avevi. Se in quel momento stai usando Studio o è in corso un addestramento, l'esecuzione viene saltata e il tuo modello resta com'è. Se è disattivato, Studio chiede prima di caricarlo.",
       reasoning: "Sforzo di ragionamento",
       reasoningDefault: "Predefinito",
       reasoningOff: "Disattivato",
@@ -4351,8 +4353,6 @@ export const it = {
       always: "Non chiedere più. Cambia solo mentre non uso Unsloth.",
       notNow: "Non ora",
       load: "Carica ed esegui",
-      busyTitle: "Eseguire «{title}» ora?",
-      busyDescription: "Era in programma, ma stavi usando Unsloth, quindi il tuo modello non è stato toccato. Eseguirla ora passa a {model} e torna indietro alla fine.",
     },
     toast: {
       finished: "«{title}» è pronta",

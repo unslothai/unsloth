@@ -4276,6 +4276,8 @@ export const ptBR = {
       modelEmpty: "Baixe um modelo no Model Hub ou adicione uma conexão para escolher outro.",
       modelMissing: "{model} (não está neste dispositivo)",
       allowLoad: "Trocar automaticamente quando eu estiver fora",
+      allowLoadHint:
+        "Quando esta tarefa vence e você não usa o Studio há 5 minutos, ela carrega este modelo sem perguntar, executa a tarefa e depois volta para o modelo que você tinha. Se você estiver usando o Studio ou treinando nesse momento, a execução é pulada e seu modelo fica como está. Desativado, o Studio pergunta antes de carregar.",
       reasoning: "Esforço de raciocínio",
       reasoningDefault: "Padrão",
       reasoningOff: "Desligado",
@@ -4309,8 +4311,6 @@ export const ptBR = {
       always: "Não perguntar de novo. Trocar só enquanto eu não uso o Unsloth.",
       notNow: "Agora não",
       load: "Carregar e executar",
-      busyTitle: "Executar “{title}” agora?",
-      busyDescription: "Estava na hora, mas você estava usando o Unsloth, então seu modelo não foi alterado. Executar agora troca para {model} e volta ao terminar.",
     },
     toast: {
       finished: "“{title}” está pronta",

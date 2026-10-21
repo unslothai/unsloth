@@ -4496,6 +4496,8 @@ export const sv = {
       modelEmpty: "Ladda ner en modell i Model Hub eller lägg till en anslutning för att välja en annan.",
       modelMissing: "{model} (finns inte på den här enheten)",
       allowLoad: "Byt automatiskt när jag är borta",
+      allowLoadHint:
+        "När uppgiften ska köras och du inte har använt Studio på 5 minuter läser den in den här modellen utan att fråga, kör uppgiften och byter sedan tillbaka till modellen du hade. Om du använder Studio eller tränar just då hoppas körningen över och din modell lämnas orörd. Avstängt frågar Studio innan modellen läses in.",
       reasoning: "Tankeinsats",
       reasoningDefault: "Standard",
       reasoningOff: "Av",
@@ -4529,8 +4531,6 @@ export const sv = {
       always: "Fråga inte igen. Byt bara när jag inte använder Unsloth.",
       notNow: "Inte nu",
       load: "Läs in och kör",
-      busyTitle: "Köra ”{title}” nu?",
-      busyDescription: "Det var dags, men du använde Unsloth, så din modell lämnades ifred. Att köra nu byter till {model} och tillbaka när den är klar.",
     },
     toast: {
       finished: "”{title}” är klar",

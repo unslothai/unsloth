@@ -35,8 +35,6 @@ export default function ModelLoadPrompt({
   const checkboxId = useId();
   const [always, setAlways] = useState(false);
   const model = modelName(run.taskModel ?? "");
-  // Already allowed, but Studio was in use: only this run is asked about.
-  const busy = run.errorCode === "model_busy";
 
   async function load() {
     onDone();
@@ -56,27 +54,21 @@ export default function ModelLoadPrompt({
       <AlertDialogContent onOverlayClick={onDone}>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            {busy
-              ? t("scheduledTasks.loadPrompt.busyTitle", { title: run.taskTitle })
-              : t("scheduledTasks.loadPrompt.title", { model })}
+            {t("scheduledTasks.loadPrompt.title", { model })}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {busy
-              ? t("scheduledTasks.loadPrompt.busyDescription", { model })
-              : t("scheduledTasks.loadPrompt.description", { title: run.taskTitle, model })}
+            {t("scheduledTasks.loadPrompt.description", { title: run.taskTitle, model })}
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {!busy && (
-          <label htmlFor={checkboxId} className="flex cursor-pointer items-start gap-2.5 text-ui-14">
-            <Checkbox
-              id={checkboxId}
-              checked={always}
-              onCheckedChange={(on) => setAlways(on === true)}
-              className="mt-0.5"
-            />
-            {t("scheduledTasks.loadPrompt.always")}
-          </label>
-        )}
+        <label htmlFor={checkboxId} className="flex cursor-pointer items-start gap-2.5 text-ui-14">
+          <Checkbox
+            id={checkboxId}
+            checked={always}
+            onCheckedChange={(on) => setAlways(on === true)}
+            className="mt-0.5"
+          />
+          {t("scheduledTasks.loadPrompt.always")}
+        </label>
         <AlertDialogFooter>
           <AlertDialogCancel>{t("scheduledTasks.loadPrompt.notNow")}</AlertDialogCancel>
           <AlertDialogAction onClick={() => void load()}>

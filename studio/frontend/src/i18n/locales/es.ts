@@ -4316,6 +4316,8 @@ export const es = {
       modelEmpty: "Descarga un modelo en Model Hub o añade una conexión para elegir otro.",
       modelMissing: "{model} (no está en este dispositivo)",
       allowLoad: "Cambiar automáticamente cuando no esté",
+      allowLoadHint:
+        "Cuando toca esta tarea y no has usado Studio en 5 minutos, carga este modelo sin preguntar, ejecuta la tarea y luego vuelve al modelo que tenías. Si estás usando Studio o entrenando en ese momento, la ejecución se omite y tu modelo no se toca. Si está desactivado, Studio pregunta antes de cargarlo.",
       reasoning: "Esfuerzo de pensamiento",
       reasoningDefault: "Predeterminado",
       reasoningOff: "Desactivado",
@@ -4349,8 +4351,6 @@ export const es = {
       always: "No volver a preguntar. Cambiar solo mientras no uso Unsloth.",
       notNow: "Ahora no",
       load: "Cargar y ejecutar",
-      busyTitle: "¿Ejecutar «{title}» ahora?",
-      busyDescription: "Tocaba ejecutarla, pero estabas usando Unsloth, así que no tocó tu modelo. Ejecutarla ahora cambia a {model} y vuelve al terminar.",
     },
     toast: {
       finished: "«{title}» está lista",
