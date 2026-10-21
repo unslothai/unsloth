@@ -285,7 +285,7 @@ def _failing_drafter(monkeypatch):
                 "Process",
                 (),
                 {
-                    "pid": 123,
+                    "pid": 2**31 - 1,  # never a real process
                     "stdout": (),
                     "poll": lambda self: None,
                     "terminate": lambda self: None,
@@ -456,3 +456,140 @@ def test_an_mtp_named_model_with_its_drafter_is_still_cut(tmp_path, _moe_cache_h
 
     assert _flag(cmd, "--spec-type") == "draft-mtp", cmd
     assert _flag(cmd, "--parallel") == "2", cmd
+
+
+@pytest.fixture
+def _plain_head(monkeypatch):
+    """The MoE fixture with an embedded MTP head that is neither hybrid nor MLA."""
+    make = placement._moe_backend
+
+    def plain(*args, **kwargs):
+        backend, gguf = make(*args, **kwargs)
+
+        def read_metadata(_path):
+            backend._nextn_predict_layers = 1
+
+        backend._read_gguf_metadata = read_metadata
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", plain)
+
+
+def test_extras_running_the_embedded_head_under_a_sidecar_mode_are_cut(
+    tmp_path, _moe_cache_host, _plain_head
+):
+    """DSpark picked with no sidecar, but the extras own --spec-type and run the head."""
+    caps = dict(_CAPS, supports_dspark = True)
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        caps = caps,
+        n_parallel = 4,
+        n_parallel_from_default = True,
+        speculative_type = "dspark",
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    assert "draft-mtp" in cmd, cmd
+    assert _flag(cmd, "--parallel") == "2", cmd
+
+
+def test_a_missing_drafter_file_keeps_the_slots(tmp_path, _moe_cache_host):
+    """The launch drops a drafter that is not on disk (_resolve_launch_mtp_path)."""
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        caps = _CAPS,
+        n_parallel = 4,
+        n_parallel_from_default = True,
+        speculative_type = "mtp",
+        mtp_draft_path = str(tmp_path / "missing-mtp-draft.gguf"),
+    )
+
+    assert "--model-draft" not in cmd, cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+def test_a_cache_only_cut_the_ram_check_refuses_keeps_the_slots(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """Cut only because the cache would serve a deep spill; no cache, no cut."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    _backend, cmd = _load(tmp_path, memory = _DEEP_SPILL_CARD, ram_gib = 24)
+
+    assert "--moe-cache-mib" not in cmd, cmd
+    assert _flag(cmd, "--spec-type") == "draft-mtp", cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+def _cache_crash_launch(tmp_path, monkeypatch, *, memory):
+    """First launch dies allocating the MoE cache; the uncached retry comes up."""
+    spawned = []
+    crash_line = "failed to allocate the MoE cache buffers"
+
+    def launch(
+        backend,
+        gguf,
+        model_identifier = "test",
+        **load_kwargs,
+    ):
+        def fake_popen(cmd, **kwargs):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return placement._REAL_POPEN(cmd, **kwargs)
+            spawned.append(list(cmd))
+            crashed = len(spawned) == 1
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 2**31 - 1,  # never a real process
+                    "stdout": iter([crash_line + "\n"]) if crashed else iter(()),
+                    "returncode": 1 if crashed else None,
+                    "poll": lambda self: 1 if crashed else None,
+                    "terminate": lambda self: None,
+                    "wait": lambda self, timeout = None: 1 if crashed else 0,
+                    "kill": lambda self: None,
+                },
+            )()
+
+        def health(timeout = None, **_kw):
+            if len(spawned) == 1:
+                backend._stdout_lines = [crash_line]
+                return False
+            backend._stdout_lines = []
+            return True
+
+        backend._wait_for_health = health
+        with placement.patch.object(placement.subprocess, "Popen", side_effect = fake_popen):
+            assert backend.load_model(
+                placement.GgufLoadIntent(
+                    gguf_path = str(gguf), model_identifier = model_identifier, **load_kwargs
+                )
+            )
+        return {"cmd": spawned[-1]}
+
+    monkeypatch.setattr(placement, "_launch", launch)
+    backend, _cmd = _load(tmp_path, memory = memory)
+    return backend, spawned
+
+
+def test_a_cache_only_cut_gives_the_slots_back_when_the_cache_retry_drops_it(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    backend, spawned = _cache_crash_launch(tmp_path, monkeypatch, memory = _DEEP_SPILL_CARD)
+
+    first, retry = spawned[0], spawned[-1]
+    assert "--moe-cache-mib" in first and _flag(first, "--parallel") == "2", first
+    assert "--moe-cache-mib" not in retry, retry
+    assert _flag(retry, "--parallel") == "4", retry
+    assert backend.effective_parallel_slots == 4
+    assert not backend._slots_cut_for_drafter
+
+
+def test_a_shallow_cut_survives_the_cache_retry(tmp_path, _moe_cache_host, monkeypatch):
+    """Near the fit edge the cut never needed the cache, so dropping it keeps two."""
+    backend, spawned = _cache_crash_launch(tmp_path, monkeypatch, memory = None)
+
+    first, retry = spawned[0], spawned[-1]
+    assert "--moe-cache-mib" in first and _flag(first, "--parallel") == "2", first
+    assert "--moe-cache-mib" not in retry and _flag(retry, "--parallel") == "2", retry
+    assert backend.effective_parallel_slots == 2

@@ -26852,6 +26852,9 @@ class LlamaCppBackend:
                 _mtp_slots_target_ctx: Optional[int] = None
                 # Default slots before the spilled-MoE cut (_MOE_SPILL_DEFAULT_SLOTS), or None.
                 _spill_slots_asked: Optional[int] = None
+                # The cut stood only on the MoE cache serving a deep spill: any launch
+                # without the cache gives the slots back (_undo_cache_only_spill_cut).
+                _spill_cut_needs_cache = False
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -29628,9 +29631,26 @@ class LlamaCppBackend:
                     # (a forced DSpark / DFlash with no sidecar, an -mtp name whose sidecar
                     # was dropped), which launches without one. The cut needs one that
                     # runs: a separate drafter the launch emits, or the embedded head.
+                    # Studio's own drafter that is not on disk is dropped at launch
+                    # (_resolve_launch_mtp_path); the extras' and env's are the user's.
+                    _studio_drafter_missing = bool(
+                        mtp_draft_path
+                        and not _extra_args_mtp_draft_path(extra_args, env = {})
+                        and not _extra_args_set_spec_type(extra_args)
+                        and not Path(mtp_draft_path).is_file()
+                    )
                     _drafter_launches = bool(
-                        _separate_draft_launches
-                        or (self._nextn_predict_layers and _spec_canon not in ("dspark", "dflash"))
+                        (_separate_draft_launches and not _studio_drafter_missing)
+                        or (
+                            self._nextn_predict_layers
+                            and (
+                                _spec_canon not in ("dspark", "dflash")
+                                # Extras that run MTP use the head under any mode.
+                                or _extra_args_requests_mtp(
+                                    extra_args, env = _child_spec_env(extra_args)
+                                )
+                            )
+                        )
                     )
                     _slots_switch = _moe_switch(_MOE_SPILL_SLOTS_ENV)
 
@@ -29653,7 +29673,8 @@ class LlamaCppBackend:
                             _user_pinned = None
                         if _user_pinned is False:
                             return False
-                        return bool(
+                        nonlocal _spill_cut_needs_cache
+                        _spill_cut_needs_cache = bool(
                             self._moe_cache_auto_eligible(
                                 caps = server_caps,
                                 gpu_memory_mode = gpu_memory_mode,
@@ -29671,6 +29692,7 @@ class LlamaCppBackend:
                                 _share, drafter = True, switch = _moe_switch(_MOE_CACHE_ENV)
                             )
                         )
+                        return _spill_cut_needs_cache
 
                     if (
                         use_fit
@@ -30250,6 +30272,7 @@ class LlamaCppBackend:
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
                     # Nor is the spilled-MoE slot cut: it was priced by the arm that threw.
+                    _spill_cut_needs_cache = False
                     if _spill_slots_asked is not None:
                         n_parallel = _spill_slots_asked
                         _spill_slots_asked = None
@@ -32004,6 +32027,70 @@ class LlamaCppBackend:
                     cmd.extend(_pv_split_mode_pin)
                 if _pv_device_pin:
                     cmd.extend(_pv_device_pin)
+
+                def _undo_cache_only_spill_cut(why: str, run_cmd = None):
+                    """Back to the asked slots once a launch drops the MoE cache that alone
+                    justified the spilled-MoE cut (a deep --fit split keeps four, see
+                    _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE). Rewrites ``cmd`` too, since later
+                    rungs rebuild from it; a rung that set its own count is left alone."""
+                    nonlocal cmd, n_parallel, _spill_cut_needs_cache
+                    nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted
+                    if not (
+                        _spill_cut_needs_cache
+                        and _spill_slots_asked is not None
+                        and n_parallel == _MOE_SPILL_DEFAULT_SLOTS
+                    ):
+                        return run_cmd
+                    _spill_cut_needs_cache = False
+                    logger.info(
+                        "MoE cache: not on the %s, so the serving slots go back %d -> %d.",
+                        why,
+                        n_parallel,
+                        _spill_slots_asked,
+                    )
+                    _cut = n_parallel
+                    n_parallel = _spill_slots_asked
+                    _kv_unified_caps = bool(server_caps.get("supports_kv_unified"))
+                    _old_ckpt = _auto_ckpt_emitted
+                    _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+
+                    def _restore(argv):
+                        if _extra_args_n_parallel(argv, env = {}) != _cut:
+                            return argv
+                        argv = _with_parallel_slots(
+                            argv,
+                            n_parallel,
+                            n_batch = n_batch,
+                            supports_kv_unified = _kv_unified_caps,
+                        )
+                        if _old_ckpt:
+                            argv = self._without_flag_pairs(argv, _old_ckpt)
+                        return argv
+
+                    cmd = _restore(cmd)
+                    _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
+                    if run_cmd is not None:
+                        run_cmd = _restore(run_cmd)
+                        if _old_ckpt or _auto_ckpt_emitted:
+                            run_cmd = [*run_cmd, *_auto_ckpt_emitted]
+                    # The plan other loads place against was priced at the cut count.
+                    if self._pending_plan_mib and self._can_estimate_kv():
+                        _restored_kv = self._estimate_kv_cache_bytes(
+                            effective_ctx,
+                            cache_type_kv,
+                            n_parallel = n_parallel,
+                            swa_full = swa_full,
+                            kv_unified = bool(_kv_unified_from_args(cmd)),
+                            n_ubatch = _ubatch_for_slots(n_parallel),
+                            flash_attn = planned_flash_attn,
+                        )
+                        self._pending_plan_mib = _gpu_plan_mib(
+                            gguf_size + mmproj_size + _restored_kv,
+                            list(self._pending_plan_mib),
+                            gpus,
+                        )
+                    return run_cmd
+
                 # Pinned loads only: under mmap the cache measured slower than none.
                 self._moe_cache_flags = []
                 if (
@@ -32018,6 +32105,8 @@ class LlamaCppBackend:
                         "MoE experts spill to pinned system RAM on one GPU; adding "
                         "--moe-cache-mib auto so llama.cpp caches hot experts in VRAM."
                     )
+                else:
+                    _undo_cache_only_spill_cut("launch")
 
                 # A build with no --flash-attn cannot run a quantized V cache
                 # either: llama.cpp aborts init with "V cache quantization
@@ -33036,9 +33125,12 @@ class LlamaCppBackend:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
                     # The cache only rides the first pinned launch: every retry re-places.
                     if label or not _argv_loads_pinned(run_cmd, env):
+                        _cached_cmd = run_cmd
                         run_cmd = self._drop_moe_cache(
                             run_cmd, f"{label.lstrip('-') or 'unpinned'} launch"
                         )
+                        if run_cmd != _cached_cmd:
+                            run_cmd = _undo_cache_only_spill_cut("retry", run_cmd)
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
@@ -33233,7 +33325,7 @@ class LlamaCppBackend:
                                     _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
-                                run_cmd = _uncached
+                                run_cmd = _undo_cache_only_spill_cut("retry", _uncached)
                                 _did_moe_cache_retry = True
                                 continue
                         if (
@@ -34575,6 +34667,7 @@ class LlamaCppBackend:
                     )
                     if _fb_cut is not None:
                         n_parallel = _fb_slots_asked
+                        _spill_cut_needs_cache = False
                         fallback_cmd = _with_parallel_slots(
                             fallback_cmd,
                             n_parallel,
