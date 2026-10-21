@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """llama-fit-params probe: say why a measurement failed, and only cache answers that repeat.
 
 The Metal fit discount needs the probe; when it is unavailable the log named one cause
