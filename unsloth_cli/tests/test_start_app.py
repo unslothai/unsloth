@@ -402,19 +402,25 @@ def test_openclaw_app_keeps_an_empty_allowlist_open(studio, defaults):
     assert json.loads(config.read_text())["agents"]["defaults"] == defaults
 
 
-def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
+def test_opencode_app_keeps_the_comments_in_a_jsonc(studio, monkeypatch):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
     monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
     config = studio["home"] / ".config" / "opencode" / "opencode.jsonc"
     config.parent.mkdir(parents = True)
-    config.write_text('{\n  // mine\n  "model": "openai/gpt-5.5", /* x */\n  "theme": "a//b",\n}\n')
+    config.write_text(
+        '{\n  // mine\n  "model": "openai/gpt-5.5", /* x */\n  "theme": "a//b",\n'
+        '  "provider": {\n    // work proxy\n    "work": {"name": "Work"},\n  },\n}\n'
+    )
 
     result = CliRunner().invoke(start.start_app, ["opencode", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    text = config.read_text()
+    for comment in ("// mine", "/* x */", "// work proxy"):
+        assert comment in text
+    data = start._load_app_config(config, text)
     assert (data["model"], data["theme"]) == ("openai/gpt-5.5", "a//b")
-    assert "unsloth-studio" in data["provider"]
+    assert set(data["provider"]) == {"work", "unsloth-studio"}
 
 
 def test_opencode_app_reenables_a_disabled_unsloth(studio, monkeypatch):
@@ -439,7 +445,8 @@ def test_openclaw_app_reads_a_commented_config(studio):
     result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    assert "// mine" in config.read_text()
+    data = start._load_app_config(config, config.read_text())
     assert data["agents"]["defaults"] == {"model": "openai/gpt-5.5"}
     assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
 

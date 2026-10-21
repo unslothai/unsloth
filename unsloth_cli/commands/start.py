@@ -5937,6 +5937,70 @@ def _parse_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
         _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
 
 
+_JSONC_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/|[{}\[\],:]|[^\s{}\[\],:"/]+', re.S)
+
+
+def _jsonc_members(text: str, start: int) -> tuple:
+    members, depth, key, value, previous = {}, 0, None, None, None
+    for token in _JSONC_TOKEN.finditer(text, start + 1):
+        part = token.group()
+        if part.startswith(("//", "/*")):
+            continue
+        if depth == 0 and part in (",", "}"):
+            if value is not None:
+                members[key] = (value, end)
+            if part == "}":
+                return members, token.start(), previous == ","
+            key = value = None
+        elif depth == 0 and key is None:
+            key = json.loads(part)
+        elif depth or value is not None or part != ":":
+            value = token.start() if value is None else value
+            depth += (part in ("{", "[")) - (part in ("}", "]"))
+            end = token.end()
+        previous = part
+    raise ValueError("unterminated object")
+
+
+def _line_indent(text: str, at: int) -> str:
+    line = text[text.rfind("\n", 0, at) + 1 : at]
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _splice_jsonc(text: str, config: dict, updates: list) -> str:
+    first = next(t for t in _JSONC_TOKEN.finditer(text) if not t.group().startswith(("//", "/*")))
+    for keys, _ in updates:
+        start, value = first.start(), config
+        for depth, key in enumerate(keys):
+            members, close, trailing = _jsonc_members(text, start)
+            value = value[key]
+            if key not in members or depth == len(keys) - 1 or text[members[key][0]] != "{":
+                break
+            start = members[key][0]
+        line = text.rfind("\n", 0, close) + 1
+        compact = bool(text[line:close].strip())
+        last = max(members.values(), key = lambda span: span[1], default = None)
+        if key in members:
+            begin, end = members[key]
+            indent = _line_indent(text, begin)
+        elif last and not compact:
+            indent = _line_indent(text, last[0])
+        else:
+            indent = _line_indent(text, start) + "  "
+        dumped = json.dumps(value, indent = 2, ensure_ascii = False).replace("\n", "\n" + indent)
+        if key in members:
+            text = text[:begin] + dumped + text[end:]
+            continue
+        member = f"{json.dumps(key, ensure_ascii = False)}: {dumped}"
+        if compact:
+            text = f"{text[:close]}\n{indent}{member}\n{_line_indent(text, start)}{text[close:]}"
+        else:
+            text = f"{text[:line]}{indent}{member}\n{text[line:]}"
+        if last and not trailing:
+            text = text[: last[1]] + "," + text[last[1] :]
+    return text
+
+
 def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[str]:
     config = _parse_app_config(path, text)
     before = json.dumps(config, sort_keys = True)
@@ -5954,6 +6018,10 @@ def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[
     if json.dumps(config, sort_keys = True) == before:
         return text
     if path.suffix != ".yaml":
+        with contextlib.suppress(Exception):
+            candidate = _splice_jsonc(text, config, updates)
+            if _load_app_config(path, candidate) == config:
+                return candidate
         return json.dumps(config, indent = 2, ensure_ascii = False) + "\n"
     import yaml
 
