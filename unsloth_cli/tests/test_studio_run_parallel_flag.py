@@ -109,8 +109,7 @@ def test_parallel_range_guards_are_set():
 
 
 def test_parallel_help_describes_the_shared_kv_cache():
-    """A multi-slot launch adds --kv-unified (`_ctx_integrity_flags`), so every slot can reach the
-    full context; the help must not promise each slot only ctx/N."""
+    """Multi-slot launches add --kv-unified; builds lacking it run one slot (load_model), never ctx/N."""
     studio_mod = _load_run_command()
     import inspect
 
@@ -118,7 +117,6 @@ def test_parallel_help_describes_the_shared_kv_cache():
     help_text = " ".join(sig.parameters["parallel"].default.help.split())
     assert "--kv-unified" in help_text
     assert "ctx/N" not in help_text
-    # load_model drops to one slot on a build without --kv-unified rather than splitting ctx.
     assert "fall back to one slot" in help_text
 
 
