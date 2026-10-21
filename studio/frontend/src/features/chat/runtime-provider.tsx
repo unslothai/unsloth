@@ -472,7 +472,9 @@ class VisionImageAdapter implements AttachmentAdapter {
 
     const maxSize = 20 * 1024 * 1024;
     if (picked.size > maxSize) {
-      throw new Error("Image size exceeds 20MB limit");
+      const reason = `${picked.name} is over the 20 MB image limit.`;
+      toast.error(reason);
+      throw new Error(reason);
     }
     const attachment = {
       id: crypto.randomUUID(),

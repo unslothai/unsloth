@@ -1273,6 +1273,7 @@ export function SharedComposer({
       let audioAddError: string | null = null;
       let videoUnsupported = false;
       let conversionError: string | null = null;
+      let oversizedImage: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -1319,7 +1320,10 @@ export function SharedComposer({
           continue;
         }
         if (!isChatImageFile(file)) continue;
-        if (file.size > MAX_IMAGE_SIZE) continue;
+        if (file.size > MAX_IMAGE_SIZE) {
+          oversizedImage ??= file.name;
+          continue;
+        }
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
           continue;
@@ -1345,6 +1349,9 @@ export function SharedComposer({
       }
       if (conversionError) {
         toast.error(conversionError);
+      }
+      if (oversizedImage) {
+        toast.error(`${oversizedImage} is over the 20 MB image limit.`);
       }
       if (videoUnsupported) {
         toast.error("Video can't be attached in compare mode", {
