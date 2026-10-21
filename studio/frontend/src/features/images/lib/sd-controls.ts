@@ -99,6 +99,17 @@ export function varyChoice(
   };
 }
 
+/** Vary restores the selected image's recipe for its run, so it is offered only where that recipe replays on the
+ *  loaded model: a text-to-image run (a conditioned one needs inputs the gallery does not keep) from that model. */
+export function canVaryImage(
+  image: { model?: string | null; workflow?: string | null },
+  loadedModel: string | null,
+): boolean {
+  const workflow = image.workflow ?? "txt2img";
+  if (workflow !== "txt2img" && workflow !== "create") return false;
+  return !image.model || image.model === loadedModel;
+}
+
 /** The choice a gallery recipe restores. Absent fields (older records, other models) read as off. */
 export function sdControlsFromRecipe(image: {
   prompt_weighting?: boolean | null;

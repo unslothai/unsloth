@@ -246,6 +246,25 @@ test("pasted A1111 Clip skip, CFG Rescale and Variation seed restore into the SD
   assert.doesNotMatch(src, /notApplied\.unshift\(`CLIP skip|notApplied\.unshift\(`CFG rescale|notApplied\.unshift\("variation seed"\)/);
 });
 
+test("Vary runs the selected image's recipe, not the current form", async () => {
+  const { canVaryImage } = await import("../src/features/images/lib/sd-controls.ts");
+  assert.equal(canVaryImage({ model: "sdxl", workflow: "txt2img" }, "sdxl"), true);
+  assert.equal(canVaryImage({ model: null, workflow: null }, "sdxl"), true);
+  // Made with another model, or from a source image the gallery does not keep: its recipe cannot replay here.
+  assert.equal(canVaryImage({ model: "other", workflow: "txt2img" }, "sdxl"), false);
+  assert.equal(canVaryImage({ model: "sdxl", workflow: "img2img" }, "sdxl"), false);
+  assert.equal(canVaryImage({ model: "sdxl", workflow: "controlnet" }, "sdxl"), false);
+  const src = readSrc("features/images/images-page.tsx");
+  const vary = src.slice(src.indexOf("const handleVary = useCallback("));
+  assert.match(vary, /^[\s\S]*?restoreSettings\(selected, true, "vary"\);\n\s+setVaryQueued\(true\);/);
+  assert.doesNotMatch(vary.slice(0, vary.indexOf("}, [busy")), /void handleGenerate\(\)/);
+  assert.match(src, /if \(!varyQueued \|\| busy !== null\) return;\n\s+setVaryQueued\(false\);\n\s+void handleGenerate\(\);/);
+  assert.match(src, /canVaryImage\(selected, status\?\.display_repo_id \?\? status\?\.repo_id \?\? null\)/);
+  // The Vary restore is silent, and the import path reports what was not applied itself.
+  assert.match(src, /if \(via === "vary"\) return;/);
+  assert.match(src, /false,\n\s+"import",\n\s+\);/);
+});
+
 test("a literal-prompt recipe restored onto sd.cpp names prompt weighting off as not applied", async () => {
   const { importNotApplied, literalPromptNotApplied } = await import(
     "../src/features/images/lib/image-metadata.ts"

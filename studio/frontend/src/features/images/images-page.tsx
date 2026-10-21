@@ -403,6 +403,7 @@ import {
   withEngineChoice,
 } from "./lib/engine-choice";
 import {
+  canVaryImage,
   DEFAULT_SD_CONTROLS,
   FALLBACK_VARY_STRENGTH,
   parseVariationSeed,
@@ -2799,8 +2800,8 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  // `via`: "import" names what was not applied in its own toast.
-  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" = "restore") => {
+  // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
+  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
@@ -2885,6 +2886,7 @@ export function ImagesPage({
     // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
     const conditioned =
       restoreInputsNote(image) ?? CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
+    if (via === "vary") return;
     if (conditioned) {
       toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`, rescaled);
     } else {
@@ -5582,7 +5584,11 @@ export function ImagesPage({
   }, [oversizedRetryQueued, busy, handleGenerateWithRecall]);
 
   const canVary =
-    !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null;
+    !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null &&
+    canVaryImage(selected, status?.display_repo_id ?? status?.repo_id ?? null);
+  // Vary runs the SELECTED image's recipe (prompt, size, guidance, LoRAs, ...), not whatever the form holds now:
+  // restore it (the exact caption it ran with), then generate once the restored form has rendered.
+  const [varyQueued, setVaryQueued] = useState(false);
   const handleVary = useCallback(() => {
     if (busy !== null || !selected || !sdCaps?.variation_seed) return;
     varyOnce.current = {
@@ -5590,8 +5596,14 @@ export function ImagesPage({
       variationSeed: randomVariationSeed(),
       strength: sdCaps.vary_strength ?? FALLBACK_VARY_STRENGTH,
     };
+    restoreSettings(selected, true, "vary");
+    setVaryQueued(true);
+  }, [busy, restoreSettings, sdCaps, selected]);
+  useEffect(() => {
+    if (!varyQueued || busy !== null) return;
+    setVaryQueued(false);
     void handleGenerate();
-  }, [busy, handleGenerate, sdCaps, selected]);
+  }, [varyQueued, busy, handleGenerate]);
 
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
@@ -6991,7 +7003,7 @@ export function ImagesPage({
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Re-run with the selected image&apos;s seed and a new variation seed at strength{" "}
+                      Restore the selected image&apos;s settings and re-run its seed with a new variation seed at strength{" "}
                       {sdCaps?.vary_strength ?? FALLBACK_VARY_STRENGTH}: same composition, small changes
                     </TooltipContent>
                   </Tooltip>
