@@ -117,7 +117,9 @@ def test_parallel_help_describes_the_shared_kv_cache():
     sig = inspect.signature(studio_mod.run)
     help_text = " ".join(sig.parameters["parallel"].default.help.split())
     assert "--kv-unified" in help_text
-    assert "each slot gets ctx/N KV cache." not in help_text
+    assert "ctx/N" not in help_text
+    # load_model drops to one slot on a build without --kv-unified rather than splitting ctx.
+    assert "fall back to one slot" in help_text
 
 
 def test_typer_parallel_aliases_are_subset_of_backend_denylist():
