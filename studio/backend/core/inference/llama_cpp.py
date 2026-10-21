@@ -8540,11 +8540,13 @@ def _load_with_auto_tensor_layer_retry(
         previous = self._auto_split_attempt
         attempt = _AutoSplitAttempt()
         self._auto_split_attempt = attempt
+        ok = False
         try:
             try:
                 # An engaged attempt that did not start raises; a False is terminal
                 # (cancelled, or failed after a healthy start) and is not retried.
-                return load(self, intent, load_cancel_event = load_cancel_event)
+                ok = load(self, intent, load_cancel_event = load_cancel_event)
+                return ok
             except Exception as exc:
                 if not attempt.engaged:
                     raise
@@ -8555,9 +8557,13 @@ def _load_with_auto_tensor_layer_retry(
                     raise
                 logger.warning(f"Auto tensor split abandoned ({exc}); loading without it")
             self._auto_split_attempt = _AutoSplitAttempt(allowed = False)
-            return load(self, intent, load_cancel_event = load_cancel_event)
+            ok = load(self, intent, load_cancel_event = load_cancel_event)
+            return ok
         finally:
             self._auto_split_attempt = previous
+            # However the load ended, with no healthy server nothing may report its split.
+            if not ok and not self.is_loaded:
+                self._clear_split_state()
 
 
 @functools.lru_cache(maxsize = 1)
@@ -33870,7 +33876,6 @@ class LlamaCppBackend:
                     self._cleanup_failed_cpu_fallback()
                     self._unload_audio_codec()
                     self._healthy = False
-                    self._clear_split_state()
                     self._vram_fraction_pending = None
 
                 def _finish_cancelled_health_wait(message: str) -> bool:

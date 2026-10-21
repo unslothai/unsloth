@@ -1760,3 +1760,84 @@ def test_diffusion_start_drops_the_chat_split_decision(monkeypatch, tmp_path):
     monkeypatch.setattr(diffusion, "_fit_host", host_after_an_auto_tensor_chat)
     _cmd, backend = diffusion._launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)])
     _assert_no_split_state(backend)
+
+
+# --------------------------------------------------------------------------
+# 8. A load that ends with no healthy server leaves no split state (round 6)
+# --------------------------------------------------------------------------
+
+
+def _frames(exc):
+    names, tb = [], getattr(exc, "__traceback__", None)
+    while tb is not None:
+        names.append(tb.tb_frame.f_code.co_name)
+        tb = tb.tb_next
+    return names
+
+
+def _always_crashes(rc = 1):
+    return lambda cmd: (False, ["boom"], rc)
+
+
+def test_failed_explicit_tensor_load_keeps_no_split_state(tmp_path, monkeypatch):
+    # Unengaged first attempt (the user asked for tensor) that raises or returns False.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    result, spawns = _launch_scripted(
+        backend,
+        gguf,
+        _always_crashes(),
+        gpu_memory_mode = "auto",
+        n_ctx = 4096,
+        tensor_parallel = True,
+    )
+    assert result is not True and spawns
+    assert _split_flag(spawns[0]) == "tensor"
+    _assert_no_split_state(backend)
+
+
+def test_failed_layer_retry_after_an_abandoned_auto_tensor_keeps_no_split_state(
+    tmp_path, monkeypatch
+):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    result, spawns = _launch_scripted(
+        backend, gguf, _always_crashes(), gpu_memory_mode = "auto", n_ctx = 4096
+    )
+    assert result is not True
+    assert _split_flag(spawns[0]) == "tensor" and _split_flag(spawns[-1]) != "tensor"
+    _assert_no_split_state(backend)
+
+
+def test_terminal_load_failure_keeps_no_split_state(tmp_path, monkeypatch):
+    # A MoE model without a head: the policy decides layer, and every start crashes.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    result, _spawns = _launch_scripted(
+        backend, gguf, _always_crashes(), gpu_memory_mode = "auto", n_ctx = 4096
+    )
+    assert "_raise_terminal_load_failure" in _frames(result), result
+    _assert_no_split_state(backend)
+
+
+def test_failed_cpu_replay_keeps_no_split_state(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
+    backend._auto_vulkan_cpu_fallback_eligible = lambda *a, **k: True
+    backend._prepare_cpu_fallback_launch = lambda _b, cmd, *a, **k: (
+        list(cmd) + ["--device", "none"],
+        None,
+        None,
+    )
+    result, spawns = _launch_scripted(
+        backend, gguf, _always_crashes(rc = -11), gpu_memory_mode = "auto", n_ctx = 4096
+    )
+    assert "_try_auto_vulkan_cpu_fallback" in _frames(result), result
+    assert any("none" in c for c in spawns)
+    _assert_no_split_state(backend)
