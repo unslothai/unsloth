@@ -7022,6 +7022,7 @@ else
     step "gpu" "none (CPU-only)" "$C_WARN"
 fi
 
+# ── PyTorch wheel index note ──
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then

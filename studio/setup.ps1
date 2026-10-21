@@ -5216,6 +5216,7 @@ if ($PythonOk) {
     Exit-SetupFailure "No supported Python 3.11-3.13 was found"
 }
 
+# Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
 $ScriptsDir = python -c "import os, sysconfig; p = sysconfig.get_path('scripts', 'nt_user'); print(p if os.path.exists(p) else '')"
 if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
     # Append: this dir has other pip scripts; the shim handles unsloth.
