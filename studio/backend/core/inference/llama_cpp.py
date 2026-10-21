@@ -32917,10 +32917,8 @@ class LlamaCppBackend:
                 _sched_abort_seen = False
 
                 def _vulkan_wait_args(label):
-                    """(timeout, extra kwargs) for a health wait. A driver stuck in init or
-                    shader compilation burns CPU and touches fresh pages forever (#142), so
-                    an auto-Vulkan launch gets a ceiling. Extra kwargs only when set, so a
-                    wait double without them still serves every other launch."""
+                    """(timeout, kwargs) for a health wait: a stuck Vulkan driver burns CPU
+                    and touches pages forever (#142), so auto-Vulkan launches get a ceiling."""
                     timeout = self._HEALTH_STALL_TIMEOUT_S
                     if not _cpu_fallback_eligible or intent.cpu_fallback or label == "-cpu":
                         return timeout, {}
@@ -33634,9 +33632,8 @@ class LlamaCppBackend:
                     else:
                         self._record_load_warning(_cuda_ctx_notice)
 
-                # Zero Vulkan devices (or a stall earlier this session): start on the staged
-                # CPU runtime, since the bundle would still initialise a driver that can hang
-                # or crash (#7213, #142). A timed-out or faulted probe stays on Vulkan.
+                # Zero Vulkan devices or an earlier stall: the bundle would still init a driver
+                # that can hang or crash (#7213, #142). A timed-out or faulted probe stays.
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _remembered = LlamaCppBackend._auto_vulkan_cpu_routes.get(
@@ -33724,7 +33721,6 @@ class LlamaCppBackend:
                             vision_disabled_by_user = bool(
                                 is_vision and disable_vision and _dv_dropped_image_projector
                             ),
-                            # A reload replaying an earlier recovery keeps its cause.
                             reason = (
                                 _cpu_route_reason
                                 or self._cpu_fallback_reason
@@ -33769,8 +33765,8 @@ class LlamaCppBackend:
                     "Load cancelled during the llama-server health wait"
                 ):
                     return False
-                # A stalled first launch is a stuck driver: the rungs below would respawn
-                # the same hang (#142), so replay on CPU first.
+                # A stalled launch is a stuck driver (#142): replay once on CPU, terminal like
+                # the crash replay since every rung below relaunches the same driver.
                 if (
                     not healthy
                     and getattr(self, "_health_wait_stalled", False)
@@ -33780,8 +33776,6 @@ class LlamaCppBackend:
                 ):
                     _stalled_cmd = list(_last_spawn_cmd)
                     self._kill_process()
-                    # Terminal like the crash replay: the rungs below would relaunch the
-                    # same driver, and the replay has already rewritten env for CPU.
                     if _try_auto_vulkan_cpu_fallback(_stalled_cmd, None, stalled = True):
                         healthy = True
                         # Keyed by revision, so an update or backend switch starts over.

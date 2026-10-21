@@ -23,9 +23,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadResponse
 
 
-# ── probe outcome classification ──────────────────────────────────────────
-
-
 def _probe_dir(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -91,9 +88,6 @@ def test_outcome_outside_a_load_never_claims_no_device(monkeypatch, tmp_path):
     assert LlamaCppBackend._vulkan_probe_outcome(binary) == "error"
 
 
-# ── pre-launch route ──────────────────────────────────────────────────────
-
-
 def _route_env(monkeypatch, outcome):
     # Class-level session memo: no test may see another's stall.
     monkeypatch.setattr(LlamaCppBackend, "_auto_vulkan_cpu_routes", {})
@@ -115,7 +109,6 @@ def test_no_usable_device_starts_on_the_cpu_runtime(monkeypatch, tmp_path):
         monkeypatch, tmp_path, returncodes = [None], sink = sink
     )
     assert loaded is True
-    # One launch, and it is the staged CPU runtime: the Vulkan child never starts.
     assert len(launches) == 1
     assert launches[0][0][0] == "/staged/llama-server"
     assert len(fallback_sources) == 1
@@ -170,7 +163,6 @@ def test_a_hung_suspect_launch_replays_on_cpu(monkeypatch, tmp_path):
     assert len(launches) == 2
     assert backend._cpu_fallback_reason == "vulkan_startup_stall"
     assert sink["health_timeouts"][0] == LlamaCppBackend._SUSPECT_VULKAN_STALL_TIMEOUT_S
-    # The CPU replay gets the ordinary window.
     assert sink["health_timeouts"][1] == LlamaCppBackend._HEALTH_STALL_TIMEOUT_S
 
 
@@ -230,9 +222,6 @@ def test_a_reload_keeps_the_no_device_reason(monkeypatch, tmp_path):
     assert loaded is True
     assert launches[0][0][0] == "/staged/llama-server"
     assert backend._cpu_fallback_reason == "vulkan_no_device"
-
-
-# ── stalled first launch ──────────────────────────────────────────────────
 
 
 def test_a_stalled_vulkan_child_replays_once_on_cpu(monkeypatch, tmp_path):
@@ -353,9 +342,6 @@ def test_a_cancel_during_the_stall_never_spawns_the_replay(monkeypatch, tmp_path
     assert sink["fallback_sources"] == []
 
 
-# ── health wait: CPU-only activity ────────────────────────────────────────
-
-
 class _Clock:
     def __init__(self):
         self.now = 0.0
@@ -419,7 +405,6 @@ def test_cpu_only_activity_does_not_renew_a_flagged_wait(monkeypatch):
 
 def test_cpu_only_activity_still_renews_the_default_wait(monkeypatch):
     healthy, elapsed, backend = _wait(monkeypatch, cpu_counts = True)
-    # Renewed until the cancel predicate ends it, never a stall.
     assert healthy is False
     assert backend._health_wait_stalled is False
     assert elapsed > 600
