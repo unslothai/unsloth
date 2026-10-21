@@ -813,6 +813,10 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const linkEnd = followsLink ? redirectEnd(info.href) : "";
   const linkGate = followsLink ? gateNavigation(linkEnd, navigationContext(action, context)) : null;
   if (linkGate) gates.push(linkGate);
+  // The page itself still loads the wrapper first, so the wrapper keeps its own checks too.
+  const wrapperGate =
+    followsLink && linkEnd !== info.href ? gateNavigation(info.href, navigationContext(action, context)) : null;
+  if (wrapperGate) gates.push(wrapperGate);
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && info.formAction ? info.formAction : "";
   const formGate =
@@ -837,6 +841,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   }
   if (formGate) admit(formAction, formGate, context);
   if (linkGate) admit(linkEnd, linkGate, context);
+  if (wrapperGate) admit(info.href, wrapperGate, context);
 
   // Before the action goes out, after any question: a request its handler starts at once is the action's too.
   const since = Date.now();

@@ -86,3 +86,20 @@ test("a sequence actor cannot take its properties from an element on the page", 
   const flow = "flowchart LR\n  details[Details: here] --> B";
   assert.equal(stripRemoteDiagramImages(flow), flow);
 });
+
+test("details is dropped only from sequence diagrams", () => {
+  const timeline = "timeline\n  title Plan\n  details : Important milestone";
+  assert.equal(stripRemoteDiagramImages(timeline), timeline);
+});
+
+test("an init directive or front matter that could fetch is dropped, theme colours stay", () => {
+  const hostile = [
+    '%%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "url(https://attacker.example/x)"}}}}%%\nxychart-beta\n  bar [1, 2]',
+    "---\nconfig:\n  themeVariables:\n    xyChart:\n      plotColorPalette: url(https://attacker.example/x)\n---\nxychart-beta\n  bar [1, 2]",
+  ];
+  for (const source of hostile) assert.equal(/attacker\.example/.test(stripRemoteDiagramImages(source)), false);
+  const themed = '%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ff0000"}}}%%\nflowchart LR\n  A --> B';
+  assert.equal(stripRemoteDiagramImages(themed), themed);
+  const titled = "---\ntitle: Pipeline\n---\nflowchart LR\n  A --> B";
+  assert.equal(stripRemoteDiagramImages(titled), titled);
+});

@@ -34,6 +34,12 @@ const COMMENT_LINE = /^[ \t]*%%(?!\{).*$/gm;
 // `details Actor: id` in a sequence diagram merges the page element `id`'s JSON (an `icon` too),
 // which this cannot see; the line is dropped.
 const DETAILS_LINE = /^[ \t]*details\b[^:\n[({]*:.*$/gim;
+const SEQUENCE = /^[ \t]*sequenceDiagram\b/m;
+
+// A `%%{init}%%` directive or front-matter config whose values could fetch (an XY chart copies
+// theme colours into SVG fills, so url() there loads). Ordinary theme colours stay.
+const DIRECTIVE = /%%\{[\s\S]*?\}%%/g;
+const FRONT_MATTER = /^\s*---\r?\n[\s\S]*?\r?\n---[ \t]*(?=\r?\n|$)/;
 
 // `properties Actor: {json}` in a sequence diagram, where `icon` is drawn as an <image>.
 const ACTOR_PROPERTIES = /(^|;)([ \t]*properties\b[^:\n;#]*:)([^#\n;]*)/gim;
@@ -109,9 +115,11 @@ export function stripRemoteDiagramImages(source: string): string {
     at = block.end;
   }
   out += source.slice(at);
+  if (SEQUENCE.test(scanned)) out = out.replace(DETAILS_LINE, "");
   return out
+    .replace(DIRECTIVE, (block) => (STYLE_FETCH.test(block) ? "" : block))
+    .replace(FRONT_MATTER, (block) => (STYLE_FETCH.test(block) ? "" : block))
     .replace(FETCHING_TAG, "#lt;")
-    .replace(DETAILS_LINE, "")
     .replace(STYLED_TAG, (whole, tag: string) => {
       const decoded = tag.replace(CHAR_REF, (_ref, code: string) => {
         const point = code[0].toLowerCase() === "x" ? parseInt(code.slice(1), 16) : Number(code);
