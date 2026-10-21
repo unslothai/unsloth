@@ -260,7 +260,7 @@ test("the Images page wires paste into the same restore path as a drop", () => {
   assert.match(page, /const applyImportedRecipe = useCallback\(/);
   assert.match(
     page,
-    /applyImportedRecipe\(recipe\);\n {4}\},\n {4}\[applyImportedRecipe\],\n {2}\);\n {2}\/\/ Paste generation parameters/,
+    /const importSettingsFromText = useCallback\(\n\s+\(text: string\): boolean => \{\n\s+const recipe = pastedParameters\(text\);[\s\S]*?applyImportedRecipe\(recipe\);\n\s+return true;\n\s+\},\n\s+\[applyImportedRecipe\],/,
   );
   assert.match(page, /const recipe = pastedParameters\(text\);/);
   assert.match(page, /onPasteParameters=\{\(\) => setPasteOpen\(true\)\}/);
