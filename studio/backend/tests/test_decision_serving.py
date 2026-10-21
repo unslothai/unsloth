@@ -897,7 +897,6 @@ def test_unsloth_shutting_down_stops_a_clef_worker_still_loading(monkeypatch):
             calls.append("kill")
 
     held = []
-    # The quit lands after the entry check: the spawn raced the shutdown sweep.
     reads = iter([False])
     monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: next(reads, True))
     monkeypatch.setattr(clef_runtime._CTX, "Process", Process)
