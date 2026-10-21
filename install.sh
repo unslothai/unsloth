@@ -6688,8 +6688,17 @@ _persist_rocm_wsl_dropin() {
         *) export PATH="${_rw_rocm}/bin:${PATH}" ;;
     esac
     export LD_LIBRARY_PATH="${_rw_rocm}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-    # An older drop-in left a trailing ':' (the cwd) on an empty LD_LIBRARY_PATH: rewrite it.
-    [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && ! _rocm_wsl_dropin_stale && return 0
+    if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+        _rocm_wsl_dropin_stale || return 0
+        # An older drop-in left a trailing ':' (the cwd) on an empty LD_LIBRARY_PATH: fix that line, keep the rest.
+        _rw_fix='s#lib:\${LD_LIBRARY_PATH:-}#lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}#'
+        if [ "$(id -u)" = "0" ]; then
+            sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+        fi
+        return 0
+    fi
     _rw_dropin="$(
         printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
         printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
@@ -6714,6 +6723,7 @@ _maybe_bootstrap_rocm_wsl() {
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/ && !/generic/{found=1} END{exit !found}'; then
         _persist_rocm_wsl_dropin
+        _repair_rocm_wsl_bashrc
         return 0
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).

@@ -264,7 +264,8 @@ EOF
 # also drop into ~/.bashrc for interactive shells; an older block left a trailing ':' (the cwd) on an empty LD_LIBRARY_PATH, so replace it
 if [ -n "${HOME:-}" ] && grep -qF 'lib:${LD_LIBRARY_PATH:-}' "${HOME}/.bashrc" 2>/dev/null; then
     # --follow-symlinks: a dotfile-managed ~/.bashrc stays a link and its target gets the edit.
-    sed --follow-symlinks -i '/^# >>> Unsloth ROCm-on-WSL >>>$/,/^# <<< Unsloth ROCm-on-WSL <<<$/d' "${HOME}/.bashrc"
+    sed --follow-symlinks -i '/^# >>> Unsloth ROCm-on-WSL >>>$/,/^# <<< Unsloth ROCm-on-WSL <<<$/d' "${HOME}/.bashrc" \
+        || say "Could not update the ROCm block in ~/.bashrc; /etc/profile.d has the fixed one"
 fi
 if [ -n "${HOME:-}" ] && ! grep -q "Unsloth ROCm-on-WSL" "${HOME}/.bashrc" 2>/dev/null; then
     cat "$_envfile" >> "${HOME}/.bashrc"

@@ -53,10 +53,16 @@ cp "$_dropin" "$_tmp/first"
 _run_writer
 if cmp -s "$_tmp/first" "$_dropin"; then ok "second run is byte-identical"; else bad "second run changed the drop-in"; fi
 
-# An older install left the trailing-colon form: a re-run must rewrite it.
-printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n' "$_tmp/rocm" > "$_dropin"
+# An older install left the trailing-colon form: a re-run must fix that line and keep the rest.
+printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\nexport HSA_CUSTOM=1\n# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n' "$_tmp/rocm" > "$_dropin"
 _run_writer
-if cmp -s "$_tmp/first" "$_dropin"; then ok "stale drop-in rewritten on re-run"; else bad "stale drop-in kept on re-run"; fi
+assert_not_contains "stale drop-in line fixed on re-run" "$(cat "$_dropin")" 'lib:${LD_LIBRARY_PATH:-}'
+assert_contains "other drop-in lines kept" "$(cat "$_dropin")" "export HSA_CUSTOM=1"
+_ld="$(_ld_after_source "$_dropin")"
+assert_eq "fixed drop-in with LD_LIBRARY_PATH unset" "$_tmp/rocm/lib" "$_ld"
+cp "$_dropin" "$_tmp/fixed_first"
+_run_writer
+if cmp -s "$_tmp/fixed_first" "$_dropin"; then ok "fixed drop-in unchanged by another run"; else bad "another run changed the fixed drop-in"; fi
 
 # A drop-in an operator edited (no stale form) is left alone.
 printf 'export LD_LIBRARY_PATH=/custom\n' > "$_dropin"
@@ -104,5 +110,19 @@ assert_not_contains "stale ~/.bashrc block removed" "$(cat "$_tmp/home/.bashrc")
 assert_contains "user lines kept" "$(cat "$_tmp/home/.bashrc")" "# after"
 _ld="$(_ld_after_source "$_tmp/home/.bashrc")"
 assert_eq "repaired ~/.bashrc with LD_LIBRARY_PATH unset" "$_tmp/rocm/lib" "$_ld"
+
+# A ~/.bashrc it cannot edit must not abort the helper after ROCm is installed.
+if [ "$(id -u)" != "0" ]; then
+    mkdir -p "$_tmp/ro"
+    printf '# >>> Unsloth ROCm-on-WSL >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n# <<< Unsloth ROCm-on-WSL <<<\n' "$_tmp/rocm" > "$_tmp/ro/.bashrc"
+    chmod a-w "$_tmp/ro" "$_tmp/ro/.bashrc"
+    if env -i PATH="$PATH" HOME="$_tmp/ro" ROCM_DIR="$_tmp/rocm" SUDO="" \
+        bash -euo pipefail -c 'say() { :; }; eval "$1"' _ "$_step4" >/dev/null 2>&1; then
+        ok "read-only ~/.bashrc does not abort the helper"
+    else
+        bad "read-only ~/.bashrc aborted the helper"
+    fi
+    chmod u+w "$_tmp/ro" "$_tmp/ro/.bashrc"
+fi
 
 summary
