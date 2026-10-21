@@ -915,6 +915,38 @@ def test_a_fused_launch_that_fails_late_is_not_reported_available(monkeypatch):
     assert att._probe_sdpa_kernels("cpu", torch.float32) == ("math",)
 
 
+@pytest.mark.parametrize(
+    "version, env, fused",
+    [
+        ("2.10.0", None, False),
+        ("2.12.1", None, False),
+        ("2.13.0", None, True),
+        ("2.14.1", "0", True),
+        ("2.14.1", "", False),
+        ("2.14.1", "false", False),
+        ("2.14.1", "1", False),
+    ],
+)
+def test_mps_answers_from_the_torch_build_not_an_execution_probe(version, env, fused, monkeypatch):
+    # MPS ignores sdpa_kernel and the torch.backends.cuda toggles, so a FLASH-only call "runs" and still builds
+    # the score matrix (torch 2.10: 15 GiB for one 8192-token call). Only torch 2.13+'s prefill kernel avoids it.
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch, "__version__", version)
+    if env is None:
+        monkeypatch.delenv(att.MPS_PREFILL_ATTENTION_OFF_ENV, raising = False)
+    else:
+        monkeypatch.setenv(att.MPS_PREFILL_ATTENTION_OFF_ENV, env)
+    monkeypatch.setattr(
+        torch.nn.functional,
+        "scaled_dot_product_attention",
+        lambda *a, **k: pytest.fail("MPS must not be execution-probed"),
+    )
+    monkeypatch.setattr(torch.backends.cuda, "flash_sdp_enabled", lambda: False)
+    target = _target("mps")
+    assert att.sdpa_subquadratic_confirmed(target) is fused
+    assert att.sdpa_math_only(target) is not fused
+
+
 def test_an_unanswerable_probe_is_not_a_math_only_verdict(monkeypatch):
     # "Only math" is a claim about the hardware. A probe that could not run (no torch, no device,
     # an allocator failure) has made no such claim, and must not refuse or warn on a guess.

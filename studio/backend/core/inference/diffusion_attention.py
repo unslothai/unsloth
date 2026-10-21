@@ -246,6 +246,20 @@ def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(k for k in kernels if getattr(torch.backends.cuda, flags[k], lambda: True)())
 
 
+MPS_PREFILL_ATTENTION_OFF_ENV = "PYTORCH_MPS_DISABLE_PREFILL_ATTENTION"
+
+
+def _mps_sdpa_kernels(torch: Any) -> tuple[str, ...]:
+    """MPS ignores ``sdpa_kernel``, so every backend "runs" and an execution probe means nothing. Before torch 2.13 MPS
+    SDPA always materialises the score matrix; 2.13 added a flash-style prefill kernel for the head_dims diffusion
+    transformers use (32, 64, 72, 80, 96, 128, 256), which torch turns off when the env var is anything but "0"."""
+    if _version_tuple(torch.__version__)[:2] < (2, 13):
+        return (SDPA_MATH,)
+    if os.environ.get(MPS_PREFILL_ATTENTION_OFF_ENV, "0") != "0":
+        return (SDPA_MATH,)
+    return (SDPA_FLASH, SDPA_MATH)
+
+
 def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     """Probe execution; ROCm runs in fresh children so launch errors stay isolated."""
     import torch
@@ -259,6 +273,8 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     )
     from core._torchao_stub import _module_is_rocm
 
+    if device.split(":")[0] == "mps":
+        return _mps_sdpa_kernels(torch)
     if device.split(":")[0] == "cuda" and _module_is_rocm(torch):
         return _probe_rocm_sdpa_kernels(device, dtype)
     # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim they cannot serve, and
@@ -284,11 +300,19 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
 
     Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
     unanswerable probe must never be read as "only math", which is a claim about the hardware."""
-    return _enabled_sdpa_kernels(_sdpa_capability(target))
+    kernels = _sdpa_capability(target)
+    if _target_device(target).split(":")[0] == "mps":
+        # MPS dispatch ignores the torch.backends.cuda toggles.
+        return kernels
+    return _enabled_sdpa_kernels(kernels)
+
+
+def _target_device(target: Any) -> str:
+    return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
 
 def _sdpa_capability(target: Any) -> tuple[str, ...]:
-    device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
+    device = _target_device(target)
     if device == "cuda":
         ordinal = getattr(target, "ordinal", None)
         device = f"cuda:{ordinal}" if ordinal is not None else _indexed_cuda_device(device)
