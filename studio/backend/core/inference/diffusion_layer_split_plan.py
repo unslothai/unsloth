@@ -611,6 +611,37 @@ def _layout_refusal(pipe: Any) -> str:
     return "no sequential block list the engine can cut"
 
 
+# Attention backends gated by an arch range or a probe run on the primary only (flash3 is Hopper only, flash4 / Sage
+# probe the primary's card, FlashAttention 2 builds per arch). make_selection drops lower-capability cards; a split
+# card of another architecture could still reject the kernel on its first block, so only identical cards take blocks.
+# cuDNN (Ampere and up) and native SDPA run on every card make_selection admits.
+_PRIMARY_ARCH_BACKENDS = frozenset({"_flash_3_hub", "flash_4_hub", "sage", "sage_hub", "flash"})
+
+
+def _backend_cards(
+    pipe: Any, primary: int, secondaries: Sequence[int]
+) -> tuple[tuple[int, ...], Optional[str]]:
+    """``(secondaries the engaged attention backend runs on, that backend)``; a card of unknown capability is kept."""
+    from . import diffusion_multigpu as mg
+
+    backend = None
+    with contextlib.suppress(Exception):
+        from .diffusion_attention import ATTENTION_BACKEND_ATTR
+        for name in mg.DENOISER_ATTRS:
+            module = getattr(pipe, name, None)
+            tag = getattr(module, ATTENTION_BACKEND_ATTR, None) if module is not None else None
+            if tag in _PRIMARY_ARCH_BACKENDS:
+                backend = tag
+                break
+    cards = tuple(int(o) for o in secondaries)
+    if backend is None:
+        return cards, None
+    need = mg._capability(primary)
+    if need is None:
+        return cards, backend
+    return tuple(o for o in cards if (mg._capability(o) or need) == need), backend
+
+
 def refine_plan_for_layer_split(
     pipe: Any,
     plan: Any,
@@ -639,7 +670,15 @@ def refine_plan_for_layer_split(
         _record_decline(pipe, f"denoiser cannot be split ({_layout_refusal(pipe)})", logger)
         return plan
     limits: dict[int, int] = {int(selection.primary): int(primary_limit_mib)}
-    for o in selection.secondaries:
+    secondaries, backend = _backend_cards(pipe, int(selection.primary), selection.secondaries)
+    if not secondaries:
+        _record_decline(
+            pipe,
+            f"attention backend {backend} was verified for cuda:{int(selection.primary)}'s architecture only",
+            logger,
+        )
+        return plan
+    for o in secondaries:
         limit = secondary_limit_mib(int(o))
         if limit is not None:
             limits[int(o)] = int(limit)

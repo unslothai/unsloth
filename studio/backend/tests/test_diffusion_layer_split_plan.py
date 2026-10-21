@@ -927,3 +927,27 @@ def test_failed_placement_drops_fused_records_left_on_another_card(monkeypatch):
     )
     assert "_unsloth_fused_qkv" not in dit.stale.__dict__
     assert "_unsloth_fused_qkv" in dit.intact.__dict__  # still on its parts' device: kept
+
+
+def test_an_arch_pinned_attention_backend_keeps_blocks_off_other_architectures(monkeypatch, engine):
+    # flash3 is Hopper only and was gated on the H100 primary; a B200 secondary passes make_selection (higher
+    # capability) and would reject the kernel on its first block
+    from core.inference.diffusion_attention import ATTENTION_BACKEND_ATTR
+
+    caps = {0: (9, 0), 1: (10, 0), 2: (9, 0)}
+    monkeypatch.setattr(mg, "_capability", lambda o: caps.get(int(o)))
+    _cards(monkeypatch)
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2)
+    setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, "_flash_3_hub")
+    plan = _plan()
+    refined, _ = _refine(plan, pipe = pipe, ordinals = (0, 1))
+    assert refined is plan  # the only secondary is another architecture: no split
+    assert "attention backend _flash_3_hub" in lsp._DECLINES[pipe]
+    refined, _ = _refine(plan, pipe = pipe, ordinals = (0, 1, 2))
+    assert refined.layer_split is not None and 1 not in refined.layer_split.cards
+    setattr(
+        pipe.transformer, ATTENTION_BACKEND_ATTR, "_native_cudnn"
+    )  # runs on every admitted card
+    refined, _ = _refine(plan, pipe = pipe, ordinals = (0, 1))
+    assert refined.layer_split is not None and 1 in refined.layer_split.cards
