@@ -51,6 +51,7 @@ from .loader_utils import (
     _get_fp8_mode_and_check_settings,
     _fp8_load_as_is,
     _fp8_dequantize_quantization_config,
+    _drop_fp8_dequantize_conversions,
     _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
@@ -1795,6 +1796,7 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
         # Mirror FastModel: an explicit 16bit load dequantizes a fine-grained fp8 checkpoint.
+        _fp8_dequantize_config = None
         if (
             load_in_16bit
             and not load_in_4bit
@@ -1846,6 +1848,8 @@ class FastLanguageModel(FastLlamaModel):
             **kwargs,
         )
         _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
+        if _fp8_dequantize_config is not None:
+            _drop_fp8_dequantize_conversions(model)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)

@@ -123,3 +123,72 @@ except Exception:
     else:
         # Without the explicit flag nothing changes: transformers decides, as before.
         assert dequantize == "None", seen[-1]
+
+
+def _write_tiny_block_fp8_qwen3_moe(path):
+    from safetensors.torch import load_file, save_file
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    torch.manual_seed(0)
+    bf16 = os.path.join(path, "bf16")
+    config = Qwen3MoeConfig(
+        hidden_size = 256,
+        intermediate_size = 512,
+        moe_intermediate_size = 128,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 64,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+        vocab_size = 512,
+        tie_word_embeddings = False,
+    )
+    Qwen3MoeForCausalLM(config).to(torch.bfloat16).save_pretrained(bf16)
+    tensors = {}
+    for f in os.listdir(bf16):
+        if f.endswith(".safetensors"):
+            for key, value in load_file(os.path.join(bf16, f)).items():
+                if key.endswith("proj.weight") and value.dim() == 2:
+                    n, k = value.shape
+                    blocks = value.float().view(n // 128, 128, k // 128, 128)
+                    scale = blocks.abs().amax(dim = (1, 3)) / 448.0
+                    tensors[key] = (blocks / scale[:, None, :, None]).view(n, k).to(torch.float8_e4m3fn)
+                    tensors[key.replace(".weight", ".weight_scale_inv")] = scale.float()
+                else:
+                    tensors[key] = value
+    save_file(tensors, os.path.join(path, "model.safetensors"))
+    with open(os.path.join(bf16, "config.json")) as f:
+        raw = json.load(f)
+    raw["quantization_config"] = dict(_BLOCK_FP8)
+    with open(os.path.join(path, "config.json"), "w") as f:
+        json.dump(raw, f)
+
+
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load on CUDA")
+@pytest.mark.parametrize("arch", ["llama", "qwen3_moe"])
+def test_dequantized_load_saves_and_reloads_16bit_weights(tmp_path, arch):
+    from safetensors import safe_open
+    from transformers import AutoModelForCausalLM
+    from unsloth.models.loader_utils import _drop_fp8_dequantize_conversions
+
+    src, dst = tmp_path / "src", tmp_path / "saved"
+    src.mkdir()
+    (_write_tiny_block_fp8_llama if arch == "llama" else _write_tiny_block_fp8_qwen3_moe)(str(src))
+    config = FineGrainedFP8Config.from_dict(dict(_BLOCK_FP8), dequantize = True)
+    model = AutoModelForCausalLM.from_pretrained(
+        str(src), dtype = torch.bfloat16, device_map = "cuda", quantization_config = config
+    )
+    assert _drop_fp8_dequantize_conversions(model) > 0
+    before = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    model.save_pretrained(str(dst))
+    for name in os.listdir(dst):
+        if name.endswith(".safetensors"):
+            with safe_open(str(dst / name), "pt") as f:
+                assert all(f.get_slice(k).get_dtype() == "BF16" for k in f.keys())
+    with open(dst / "config.json") as f:
+        assert "quantization_config" not in json.load(f)
+    after = AutoModelForCausalLM.from_pretrained(str(dst), dtype = torch.bfloat16).state_dict()
+    assert before.keys() == after.keys()
+    assert all(torch.equal(before[k], after[k].cpu()) for k in before)
