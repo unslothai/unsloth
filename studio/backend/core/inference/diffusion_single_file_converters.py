@@ -337,6 +337,7 @@ def _cat_rows(first: Any, second: Any) -> Any:
     """Concatenate two row blocks, keeping a ``GGUFParameter``'s quant type (whole blocks per row)."""
     import torch
 
+    charge_host_ram(first.numel() * first.element_size() + second.numel() * second.element_size())
     out = torch.cat([first, second], dim = 0)
     quant_type = getattr(first, "quant_type", None)
     if quant_type is not None and getattr(out, "quant_type", None) is None:
@@ -444,6 +445,7 @@ class HostRamBudget:
         self._token = None
         self.available_mib: Optional[int] = None
         self.reserve_mib = 0
+        self.armed = False
         if host_ram_check_disabled():
             return
         try:
@@ -452,14 +454,15 @@ class HostRamBudget:
             return
         if available is None:
             return
+        self.available_mib = int(available)
+        self.reserve_mib = host_reserve_mib(total)
+        # Armed by the file size here, and by the widened estimate in ``check``: a 900 MiB nvfp4 file widens
+        # to 3.6 GiB of bf16. Only a load small on disk AND in its estimate is never checked.
         try:
             size_mib = os.path.getsize(str(path)) // _MIB
         except OSError:
             size_mib = HOST_RAM_CHECK_MIN_MIB
-        if size_mib < HOST_RAM_CHECK_MIN_MIB:
-            return  # a file this small cannot be what takes a host down
-        self.available_mib = int(available)
-        self.reserve_mib = host_reserve_mib(total)
+        self.armed = size_mib >= HOST_RAM_CHECK_MIN_MIB
 
     def _refuse_if_over(self, need_bytes: int, available_mib: int, at_least: bool) -> None:
         from .diffusion_small_host import HOST_RAM_CHECK_ENV
@@ -484,11 +487,12 @@ class HostRamBudget:
         """Up-front refusal from a header estimate, against free memory when the load started."""
         if self.available_mib is None or -(-int(need_bytes) // _MIB) < HOST_RAM_CHECK_MIN_MIB:
             return
+        self.armed = True
         self._refuse_if_over(need_bytes, self.available_mib, at_least = False)
 
     def charge(self, nbytes: int) -> None:
         """Refuse before allocating ``nbytes`` when they and the reserve exceed live available memory."""
-        if self.available_mib is None or nbytes <= 0:
+        if self.available_mib is None or not self.armed or nbytes <= 0:
             return
         from .diffusion_small_host import host_ram_mib
 

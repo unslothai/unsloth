@@ -443,6 +443,17 @@ def refuse_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
     return scan
 
 
+def _nbytes(tensors: Any) -> int:
+    return sum(int(t.numel()) * int(t.element_size()) for t in tensors)
+
+
+def _charge_contiguous(tensor: Any) -> None:
+    """Check the copy ``tensor.contiguous()`` makes of a non-contiguous host tensor (a view costs nothing)."""
+    if not tensor.is_contiguous():
+        from .diffusion_single_file_converters import charge_host_ram
+        charge_host_ram(_nbytes([tensor]))
+
+
 def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     """``codes * scale`` in float32, the ConvRot rotation undone, cast to ``dtype``."""
     import torch
@@ -490,7 +501,7 @@ def _dequant_parts(fmt: str, parts: list, dtype: Any) -> Any:
         return dense[0]
     from .diffusion_single_file_converters import charge_host_ram
 
-    charge_host_ram(sum(d.numel() * d.element_size() for d in dense))
+    charge_host_ram(_nbytes(dense))
     return torch.cat(dense)
 
 
@@ -500,6 +511,11 @@ def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
     import torch
 
     extras = [extra for _c, _s, extra in value.parts]
+    if len(value.parts) > 1:
+        from .diffusion_single_file_converters import charge_host_ram
+        charge_host_ram(
+            _nbytes([c for c, _s, _e in value.parts]) + _nbytes([s for _c, s, _e in value.parts])
+        )
     codes = (
         torch.cat([c for c, _s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][0]
     )
@@ -543,6 +559,7 @@ def _int8_tensor(name: str, codes: Any, scale: Any, dtype: Any) -> Optional[Any]
         "_tensor_data_names": ["zero_point", "qdata", "scale"],
     }
     stem = name.rsplit(".", 1)[0]
+    _charge_contiguous(codes)
     tensors = {
         f"{stem}._weight_qdata": codes.contiguous(),
         f"{stem}._weight_scale": scale.to(torch.float32).reshape(rows, 1).contiguous(),
@@ -600,6 +617,7 @@ def _fp8_tensor(
         "_tensor_data_names": ["qdata", "scale"],
     }
     stem = name.rsplit(".", 1)[0]
+    _charge_contiguous(codes)
     tensors = {
         f"{stem}._weight_qdata": codes.contiguous(),
         f"{stem}._weight_scale": scale.to(torch.float32)
@@ -740,7 +758,7 @@ def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
         from .diffusion_single_file_converters import charge_host_ram
 
         # a reordered selection (H3's [gate; value] fc1) is a full copy of the rows it joins
-        charge_host_ram(sum(part.numel() * part.element_size() for part in parts))
+        charge_host_ram(_nbytes(parts))
         return torch.cat(parts)
 
     converted: dict = {}
@@ -1053,7 +1071,12 @@ def load_comfy_quant_transformer(
         MXFP8: mxfp8_backend,
     }
     # Without a runtime (fp8 below sm_89) layers widen to ``dtype`` in host RAM: refuse before an OOM.
-    from .diffusion_single_file_converters import HostRamBudget, charge_cast, converted_host_bytes
+    from .diffusion_single_file_converters import (
+        HostRamBudget,
+        charge_cast,
+        charge_host_ram,
+        converted_host_bytes,
+    )
 
     # Mirrors the source loop below: a layer is kept as codes only with a runtime for its format (fp16_keep
     # merely defers the dtype choice; the layer is still expanded) and, for a block format, no key map.
@@ -1193,14 +1216,15 @@ def load_comfy_quant_transformer(
                 out[name] = _BlockWeight(fmt, blocks)
                 continue
             parts = [sources[i][1][r : r + n] for i, r, n in segments]
-            # one segment (a split or renamed layer) is a row slice of a contiguous tensor: no copy
+            scale_parts = [
+                sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
+                for i, r, n in segments
+            ]
+            # one segment (a split or renamed layer) is a row slice of a contiguous tensor: no copy; a
+            # reorder (a stock converter swapping gate / proj halves) is a full copy of the kept codes
+            charge_host_ram((_nbytes(parts) if len(parts) > 1 else 0) + _nbytes(scale_parts))
             codes = parts[0] if len(parts) == 1 else torch.cat(parts)
-            scale = torch.cat(
-                [
-                    sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
-                    for i, r, n in segments
-                ]
-            )
+            scale = torch.cat(scale_parts)
             if name in wanted and tuple(wanted[name].shape) != tuple(codes.shape):
                 raise ValueError(
                     f"{name}: rebuilt as {tuple(codes.shape)}, the model expects {tuple(wanted[name].shape)}"

@@ -765,3 +765,47 @@ def test_a_key_map_row_reorder_is_checked_before_it_is_copied(h3like_file, monke
     _load_h3like(path, int8_backend = "native")
     fc1 = tensors["fc1.weight"]
     assert fc1.numel() * fc1.element_size() in seen
+
+
+def test_a_stock_converter_row_reorder_of_kept_codes_is_checked(h3like_file, monkeypatch):
+    """No key map: a diffusers-style converter that swaps a gated layer's halves (Mochi's mlp_x.w1) makes
+    the loader rebuild the kept int8 codes with torch.cat, a full copy checked before it is made."""
+
+    def convert(checkpoint = None, **_kwargs):
+        out = {}
+        for key, value in checkpoint.items():
+            if key == "attn.qkv.weight":
+                for part, chunk in zip(("to_q", "to_k", "to_v"), value.chunk(3)):
+                    out[f"attn.{part}.weight"] = chunk
+            elif key == "fc1.weight":
+                gate, val = value.chunk(2)
+                out["ff.proj.weight"] = torch.cat([val, gate])
+            else:
+                out[key] = value
+        return out
+
+    monkeypatch.setattr(
+        cq,
+        "_mapping",
+        lambda cls: (
+            convert,
+            types.SimpleNamespace(
+                _should_convert_state_dict_to_diffusers = lambda a, b: set(a) != set(b),
+                _get_mapping_function_kwargs = lambda fn, **kw: {},
+            ),
+        ),
+    )
+    seen = _record_host_ram_checks(monkeypatch)
+    path, _dense, tensors = h3like_file
+    model = cq.load_comfy_quant_transformer(
+        _H3Like,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+        family = "minimax-h3",
+        int8_backend = "native",
+        keep_dtype = lambda key: torch.float32 if key.startswith("head.") else None,
+    )
+    assert model._unsloth_comfy_quant["int8"] == 4
+    fc1 = tensors["fc1.weight"]
+    assert any(n >= fc1.numel() * fc1.element_size() for n in seen), seen

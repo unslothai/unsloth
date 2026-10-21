@@ -667,7 +667,8 @@ def test_layers_the_runtime_filter_rejects_are_charged_as_dequantized(block_file
     path, _tensors, _expected = block_file("mxfp8")
     model = _load(path, dtype = torch.bfloat16, mxfp8_backend = "kept", min_features = 1 << 20)
     assert model._unsloth_comfy_quant["dequantized"] == 8
-    assert seen.count(DIM * DIM * 2) >= 8  # every bf16 to_q / to_k / to_v / to_out
+    # every bf16 to_q / to_k / to_v / to_out, checked for at least its dense size
+    assert sum(1 for n in seen if n >= DIM * DIM * 2) >= 8
 
 
 def test_kept_nvfp4_codes_are_charged_for_their_nibble_swapped_copy(block_file, monkeypatch):
@@ -746,8 +747,8 @@ def _rss_anon_bytes():
 def test_a_many_layer_nvfp4_fallback_load_that_fits_is_not_refused(tmp_path, monkeypatch):
     """No nvfp4 runtime: every layer is nibble-swapped, its scales untiled, then dequantized, and the
     swapped codes and plain scales are freed again before the next layer. Free host RAM is modelled
-    from this process's own anonymous RSS, with room for the dense weights plus 10%: the load fits and
-    must not be refused for copies that were already released."""
+    from this process's own anonymous RSS, with room for the dense weights plus 10% and one chunk of
+    dequantization intermediates: the load fits and must not be refused for copies already released."""
     import core.inference.diffusion_single_file_converters as conv
     import core.inference.diffusion_small_host as small_host
 
@@ -782,7 +783,7 @@ def test_a_many_layer_nvfp4_fallback_load_that_fits_is_not_refused(tmp_path, mon
     total = 1 << 20
     reserve = small_host.host_reserve_mib(total)
     start = _rss_anon_bytes()
-    headroom = int(dense * 1.10)
+    headroom = int(dense * 1.10) + getattr(cb, "_DEQUANT_CHUNK_BYTES", 16 << 20)
     monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
     monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
     monkeypatch.setattr(
@@ -801,3 +802,101 @@ def test_a_many_layer_nvfp4_fallback_load_that_fits_is_not_refused(tmp_path, mon
     )
     assert model._unsloth_comfy_quant["dequantized"] == layers
     assert model.layers[0].weight.dtype == torch.bfloat16
+
+
+def test_a_small_file_that_widens_past_the_floor_is_still_checked(block_file, monkeypatch):
+    """The check floor applies to what the load writes, not to the file: nvfp4 packs 8 dense float32
+    bytes into half a byte, so a file under the floor can still widen far past it."""
+    import os
+
+    conv = _tight_host(monkeypatch, headroom_mib = 1)
+    path, _tensors, _expected = block_file("nvfp4")
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", os.path.getsize(path) // (1 << 20) + 1)
+    with pytest.raises(conv.HostRamShortfallError, match = "needs about"):
+        _load(path)  # float32: 8 MiB dense from a ~1 MiB file
+
+
+def _rss_anon_now():
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1]) * 1024
+    return None
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
+def test_block_dequant_is_checked_for_its_peak_intermediates(monkeypatch, fmt):
+    """The fallback dequantization builds int32 / float32 intermediates several times the bf16 output; the
+    check before it must cover the measured peak, not only the output."""
+    import threading
+    import time
+
+    import core.inference.diffusion_single_file_converters as conv
+
+    if _rss_anon_bytes() is None:
+        pytest.skip("needs /proc/self/status RssAnon")
+    rows, cols = 4096, 4096
+    gen = torch.Generator().manual_seed(1)
+    if fmt == "nvfp4":
+        codes = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, generator = gen)
+        scale = torch.randint(56, 64, (rows, cols // 16), dtype = torch.uint8, generator = gen)
+        scale = scale.view(torch.float8_e4m3fn)
+    else:
+        codes = torch.randint(0, 120, (rows, cols), dtype = torch.uint8, generator = gen)
+        codes = codes.view(torch.float8_e4m3fn)
+        scale = torch.randint(120, 130, (rows, cols // 32), dtype = torch.uint8, generator = gen)
+    seen = []
+    monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
+    peak, stop = [0], [False]
+
+    def sample():
+        while not stop[0]:
+            peak[0] = max(peak[0], _rss_anon_now())
+            time.sleep(0.0005)
+
+    _rss_anon_bytes()  # trim first, so the baseline is what is live
+    start = _rss_anon_now()
+    thread = threading.Thread(target = sample, daemon = True)
+    thread.start()
+    out = cb.dequant_block(fmt, codes, scale, tensor_scale = 0.01, dtype = torch.bfloat16)
+    stop[0] = True
+    thread.join()
+    growth = peak[0] - start
+    assert out.shape == (rows, cols)
+    assert seen and max(seen) >= 0.9 * growth, (seen, growth)
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
+def test_chunked_block_dequant_is_bit_identical_to_one_pass(monkeypatch, fmt):
+    rows, cols = 300, 256
+    gen = torch.Generator().manual_seed(2)
+    if fmt == "nvfp4":
+        codes = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, generator = gen)
+        scale = torch.randint(40, 70, (rows, cols // 16), dtype = torch.uint8, generator = gen)
+        scale = scale.view(torch.float8_e4m3fn)
+        tensor_scale = torch.rand(rows, generator = gen) + 0.01  # per row, as a joined layer carries
+    else:
+        codes = torch.randint(0, 120, (rows, cols), dtype = torch.uint8, generator = gen)
+        codes = codes.view(torch.float8_e4m3fn)
+        scale = torch.randint(110, 140, (rows, cols // 32), dtype = torch.uint8, generator = gen)
+        tensor_scale = None
+    pqs = torch.rand(cols, generator = gen) + 0.5
+    # the pre-chunking formula, in one pass
+    if fmt == "nvfp4":
+        lut = torch.tensor(cb._E2M1 + tuple(-v for v in cb._E2M1), dtype = torch.float32)
+        c = codes.to(torch.int32)
+        values = torch.stack((lut[c & 0x0F], lut[c >> 4]), dim = -1).reshape(rows, -1, 16)
+        step = scale.to(torch.float32) * tensor_scale.to(torch.float32).reshape(-1, 1)
+        weight = (values * step.unsqueeze(-1)).reshape(rows, -1)
+    else:
+        exp = scale.view(torch.uint8).to(torch.float32) - cb._E8M0_BIAS
+        weight = (
+            codes.to(torch.float32).reshape(rows, -1, 32) * torch.exp2(exp).unsqueeze(-1)
+        ).reshape(rows, -1)
+    want = (weight * pqs.reshape(1, -1)).to(torch.bfloat16)
+    for chunk_bytes in (1, 7 * 4096, 1 << 30):  # one row per chunk, uneven chunks, one pass
+        monkeypatch.setattr(cb, "_DEQUANT_CHUNK_BYTES", chunk_bytes, raising = False)
+        got = cb.dequant_block(
+            fmt, codes, scale, tensor_scale = tensor_scale, pre_quant_scale = pqs, dtype = torch.bfloat16
+        )
+        assert torch.equal(got, want), chunk_bytes
