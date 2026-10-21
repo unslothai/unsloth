@@ -965,13 +965,19 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
 
     def _work() -> None:
         try:
-            if _vulkan_rows(binary):
+            # Each warm start retries a cached empty answer once, as the launch it stands in for did.
+            rows = _vulkan_rows(binary, retry_empty = True)
+            # One row on one torch card launches unpinned, so it needs no card lookup.
+            if rows and (len(rows) > 1 or torch.cuda.device_count() > 1):
                 ordinal = _resident_cuda_ordinal()
                 if ordinal is not None and ordinal >= 0:
                     _vulkan_card_name(ordinal, torch)
         except Exception:  # noqa: BLE001
             pass
 
+    # A maintenance pass that cancelled this start before the probe began must not find one running.
+    if cancel is not None and cancel.is_set():
+        raise UpsamplerCancelledError("Cancelled.")
     worker = threading.Thread(target = _work, name = "flux3-pup-vulkan-probe", daemon = True)
     _vulkan_probe_workers[:] = [w for w in _vulkan_probe_workers if w.is_alive()] + [worker]
     worker.start()
@@ -1276,10 +1282,13 @@ class PromptUpsamplerSidecar:
         try:
             self.cancel_pending_load()
             _wait_for_vulkan_probe()
-            with self._request_lock, self._lock:
-                was_active = self.loaded
-                self._release_locked()
-                yield was_active
+            with self._request_lock:
+                # Again once no warm start can still be about to start one.
+                _wait_for_vulkan_probe()
+                with self._lock:
+                    was_active = self.loaded
+                    self._release_locked()
+                    yield was_active
         finally:
             self._update_in_progress = False
 

@@ -2573,3 +2573,56 @@ def test_maintenance_waits_for_a_probe_a_cancelled_warm_start_left_running(warma
     finally:
         release.set()
         warm.join(5)
+
+
+def _prefetch_host(monkeypatch, cards, rows):
+    import torch
+
+    from core.inference import llama_cpp
+
+    calls, looked_up = [], []
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: cards)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
+    )
+    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend,
+        "_run_vulkan_probe",
+        staticmethod(lambda b = None: calls.append(b) or list(rows)),
+    )
+    monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 120.0)
+    monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
+    monkeypatch.setattr(pup, "_vulkan_card_name", lambda o, t: looked_up.append(o) or ("x", None))
+    monkeypatch.setattr(pup, "_vulkan_probe_workers", [])
+    return calls, looked_up
+
+
+def test_a_warm_start_prefetch_retries_a_cached_empty_probe(monkeypatch):
+    # The launch a warm start stands in for re-probed a (maybe transient) empty answer; the prefetch does too.
+    calls, looked_up = _prefetch_host(monkeypatch, 1, _VULKAN_ROWS)
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {("b", None): ([], time.monotonic())})
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b"] and looked_up == [0]
+    # A cached non-empty answer is reused.
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b"]
+
+
+def test_one_card_and_one_vulkan_row_skips_the_card_lookup(monkeypatch):
+    # That launch stays unpinned, so the prefetch reads no inventory for it.
+    calls, looked_up = _prefetch_host(monkeypatch, 1, _VULKAN_ROWS[:1])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b"] and looked_up == []
+
+
+def test_a_start_cancelled_before_its_probe_never_starts_one(monkeypatch):
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, _VULKAN_ROWS)
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(pup.UpsamplerCancelledError):
+        pup._prefetch_vulkan_rows("b", cancel)
+    assert calls == [] and pup._vulkan_probe_workers == []
