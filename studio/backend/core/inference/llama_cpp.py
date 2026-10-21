@@ -28550,9 +28550,10 @@ class LlamaCppBackend:
                             best_cap = 0
                             _cap_fraction = _vram_frac - _flat_mtp_reserve
                             # Every subset Auto may take, discrete tier included, priced as Auto prices it.
-                            # With a tier, start at Auto's GPU floor: a forced split skips a short tier.
+                            # With an integrated GPU, start at Auto's GPU floor: a forced split never takes
+                            # a checkpoint-free dGPU-only subset, explicit device pick or not.
                             _cap_floor = 1
-                            if _tier_gpus:
+                            if _integrated_gpus:
                                 _cap_floor = max(
                                     1,
                                     min(

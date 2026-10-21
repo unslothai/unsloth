@@ -6524,12 +6524,16 @@ def test_a_user_device_flag_keeps_host_ram_off_the_dgpu_budget(tmp_path, monkeyp
     assert launch(extra_args = flag) == launch() == ("0", 32_768)
 
 
-def test_the_context_ceiling_starts_at_a_forced_gpu_floor(tmp_path, monkeypatch):
-    # A retry that must stay multi-GPU never takes the dGPU-only tier, so its checkpoint-free
-    # context must not set the published ceiling.
+@pytest.mark.parametrize("flag", [None, ["--device", "ROCm0"], ["--main-gpu", "0"]])
+def test_the_context_ceiling_starts_at_a_forced_gpu_floor(tmp_path, monkeypatch, flag):
+    # A retry that must stay multi-GPU never takes a dGPU-only subset, so its checkpoint-free
+    # context must not set the published ceiling, with or without an explicit device pick.
     memory = [(0, 1_500, 0), _DGPU]
     backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, 11)
-    result = _launch(backend, gguf, n_ctx = 0, ctx_checkpoints = 6, preserve_multi_gpu_on_layer = True)
+    kw = {"extra_args": flag} if flag else {}
+    result = _launch(
+        backend, gguf, n_ctx = 0, ctx_checkpoints = 6, preserve_multi_gpu_on_layer = True, **kw
+    )
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
     assert _launched_ctx(result) < 32_768
     assert backend.max_context_length == _launched_ctx(result)
