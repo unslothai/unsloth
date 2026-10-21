@@ -41,7 +41,11 @@ def _decision():
 
 
 def _patched_generate_and_score():
-    spec = importlib.util.find_spec("trl.trainer.grpo_trainer") if importlib.util.find_spec("trl") else None
+    spec = (
+        importlib.util.find_spec("trl.trainer.grpo_trainer")
+        if importlib.util.find_spec("trl")
+        else None
+    )
     if spec is None or spec.origin is None:
         pytest.skip("trl is not installed")
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions

@@ -3619,7 +3619,10 @@ def grpo_update_SamplingParams(
 
 
 def _unsloth_grpo_rollout_logps_as_old(
-    trainer, sampling_per_token_logps, completion_mask, tool_mask = None
+    trainer,
+    sampling_per_token_logps,
+    completion_mask,
+    tool_mask = None,
 ):
     """UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1: use the rollout engine's logprobs (vLLM, or a
     rollout_func) as pi_old and skip the old-policy forward, as verl rollout_correction
@@ -3642,7 +3645,6 @@ def _unsloth_grpo_rollout_logps_as_old(
         if reason not in warned:
             warned.add(reason)
             import warnings
-
             warnings.warn(
                 f"Unsloth: UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1 is not applied to this batch: "
                 f"{reason}. The trainer scores pi_old itself instead.",
