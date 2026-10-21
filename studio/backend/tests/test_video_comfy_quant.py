@@ -413,7 +413,7 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True)) == {
         "int8_backend": "torchao",
         "fp8_backend": "torchao",
-        "fp8_storage": True,
+        "fp8_storage": False,
     }
     # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 has no GEMM
     # and stays stored as fp8, widened per layer
@@ -455,11 +455,14 @@ def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
         vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
     )  # 1 MiB of codes + scale + config
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
-    # no fp8 GEMM: the codes stay stored as fp8 (widened per layer), priced at their stored size
-    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
-    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 3
-    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 3
+    # no fp8 GEMM under offload: the codes stay stored as fp8 (widened per layer), priced at their stored size
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
     assert n == 2**20
 
 

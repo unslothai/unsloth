@@ -446,8 +446,8 @@ def test_fp8_layers_dequantize_with_their_scale(tmp_path, monkeypatch):
     model = _load(path, fp8_storage = False)
     assert torch.equal(model.blocks[0].to_out.weight, codes.float() * scale)
     assert model._unsloth_comfy_quant["dequantized"] == 1
-    # stored as fp8 instead (the default): the same weight, rebuilt per forward from the codes the file holds
-    stored = _load(path)
+    # stored as fp8 instead: the same weight, rebuilt per forward from the codes the file holds
+    stored = _load(path, fp8_storage = True)
     assert stored._unsloth_comfy_quant["dequantized"] == 0
     assert stored._unsloth_comfy_quant["fp8_stored"] == 1
     assert torch.equal(stored.blocks[0].to_out.weight, codes.float() * scale)
@@ -658,7 +658,7 @@ def test_fp8_without_a_runtime_stays_fp8_and_matches_the_dequant_exactly(
         )
 
     widened = load(fp8_storage = False)
-    stored = load()  # the default
+    stored = load(fp8_storage = True)
     assert widened._unsloth_comfy_quant["dequantized"] == 6
     assert stored._unsloth_comfy_quant["dequantized"] == 0
     assert stored._unsloth_comfy_quant["fp8_stored"] == 10
@@ -682,9 +682,13 @@ def test_fp8_without_a_runtime_stays_fp8_and_matches_the_dequant_exactly(
             assert got.dtype is dtype and torch.equal(got, want)
         got = stored.blocks[b].adaLN_modulation(x)
         assert torch.equal(got, widened.blocks[b].adaLN_modulation(x))
-    # the kill switch widens at load, as before
-    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    # no plan to judge by (None): widen, unless the env opts in; the kill switch beats an explicit request
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
     assert load()._unsloth_comfy_quant["dequantized"] == 6
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
+    assert load()._unsloth_comfy_quant["fp8_stored"] == 10
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert cq.fp8_storage_wanted(None, offload = True) is False
 
 
 def test_fp8_storage_follows_the_device_lora_and_kill_switch(monkeypatch):
@@ -718,6 +722,7 @@ def test_fp8_storage_keeps_fp32_modules_and_the_torchao_layers_apart(tmp_path, m
         family = "z-image",
         int8_backend = None,
         fp8_backend = None,
+        fp8_storage = True,
     )
     assert model._unsloth_comfy_quant["fp8_stored"] == 8
     assert model._unsloth_comfy_quant["dequantized"] == 2
@@ -971,7 +976,7 @@ def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monke
 
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, _tensors = _fp8_file(tmp_path)
-    model = _load_bf16(path, fp8_backend = None)
+    model = _load_bf16(path, fp8_backend = None, fp8_storage = True)
     assert cq.fp8_stored_layers(model) == 10
     assert cq.fp8_stored_layers(_load_bf16(path, fp8_backend = None, fp8_storage = False)) == 0
     assert cq.fp8_stored_layers(None) == 0
@@ -982,3 +987,20 @@ def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monke
         DiffusionBackend._apply_loras(backend, state, [("some/lora", 1.0)], threading.Event())
     # no adapter requested: nothing to refuse
     DiffusionBackend._apply_loras(backend, state, [], threading.Event())
+
+
+def test_fp8_storage_default_rule_is_offload_or_host_ram(monkeypatch):
+    """Unset env: store only where widening would offload the denoiser or leave under the host reserve (eager steps
+    pay the per-layer widen); ``1`` stores everywhere it can; MPS and a LoRA never."""
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    cuda = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    want = cq.fp8_storage_wanted
+    assert want(cuda) is False
+    assert want(cuda, offload = True) is True
+    reserve = cq.FP8_STORAGE_HOST_RESERVE_MIB
+    assert want(cuda, widened_mib = 24000, host_available_mib = 24000 + reserve + 1) is False
+    assert want(cuda, widened_mib = 24000, host_available_mib = 24000 + reserve - 1) is True
+    assert want(cuda, offload = True, lora = True) is False
+    assert want(types.SimpleNamespace(device = "mps"), offload = True) is False
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
+    assert want(cuda) is True

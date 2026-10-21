@@ -35,9 +35,12 @@ QUANT_METADATA_KEY = "_quantization_metadata"
 LEGACY_SCALED_FP8_KEY = "scaled_fp8"
 COMFY_INT8_ENV = "UNSLOTH_DIFFUSION_COMFY_INT8"
 COMFY_FP8_ENV = "UNSLOTH_DIFFUSION_COMFY_FP8"
-# fp8 layers no fp8 GEMM takes stay stored as fp8 (+ scale) and widen per layer in the forward, as ComfyUI's
-# manual_cast does; ``0`` widens them to the compute dtype at load instead (twice the host RAM and VRAM).
+# fp8 layers no fp8 GEMM takes can stay stored as fp8 (+ scale) and widen per layer in the forward, as ComfyUI's
+# manual_cast does. Unset: only where the widened load would offload the denoiser or run short of host RAM (the per-layer
+# widen costs eager steps); ``1``: every such load; ``0``: never (widen at load, twice the host RAM and VRAM).
 FP8_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP8_STORAGE"
+# Host RAM left free after a widened single-file load before fp8 storage is preferred.
+FP8_STORAGE_HOST_RESERVE_MIB = 4096
 # Header metadata our own converter writes (base model, scheme); ComfyUI ignores it.
 CONVERSION_RECORD_KEY = "unsloth_comfy_conversion"
 
@@ -845,6 +848,32 @@ def fp8_storage_disabled() -> bool:
     return (os.environ.get(FP8_STORAGE_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
+def fp8_storage_forced() -> bool:
+    return (os.environ.get(FP8_STORAGE_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def fp8_storage_wanted(
+    target: Any = None,
+    *,
+    lora: bool = False,
+    offload: bool = False,
+    widened_mib: Optional[int] = None,
+    host_available_mib: Optional[int] = None,
+) -> bool:
+    """The default rule: store fp8 (``comfy_fp8_storage``) where widening at load would offload the denoiser
+    (``offload``: the plan priced at the widened size does not keep it resident) or leave under
+    ``FP8_STORAGE_HOST_RESERVE_MIB`` of host RAM (``widened_mib`` vs ``host_available_mib``). Elsewhere the widened
+    weight stays the default: same output, and eager steps skip the per-layer widen (measured +45% s/step eager on
+    Krea 2 / B200, parity compiled). ``UNSLOTH_DIFFUSION_FP8_STORAGE=1`` stores on every load that can."""
+    if not comfy_fp8_storage(target, lora = lora):
+        return False
+    if fp8_storage_forced() or offload:
+        return True
+    if widened_mib is None or host_available_mib is None:
+        return False
+    return int(widened_mib) + FP8_STORAGE_HOST_RESERVE_MIB > int(host_available_mib)
+
+
 def comfy_fp8_storage(target: Any = None, *, lora: bool = False) -> bool:
     """Whether fp8 layers no fp8 GEMM runtime takes keep their fp8 codes and scale, widened per layer inside the
     forward (``NativeWeightOnlyLinear``, scheme fp8) instead of dequantized at load. The forward rebuilds exactly the
@@ -998,8 +1027,8 @@ def load_comfy_quant_transformer(
     as per-row ``Float8Tensor`` weights or native fp8 twins; with an ``nvfp4_backend`` / ``mxfp8_backend``
     (``diffusion_comfy_block.comfy_block_backend``) the nvfp4 / mxfp8 layers the matching Studio filter selects
     keep their codes on Studio's FlashInfer NVFP4 Linear / the ``torch._scaled_mm`` MXFP8 Linear. Everything
-    else is dequantized to the compute dtype, except fp8 Linears under ``fp8_storage`` (None:
-    ``comfy_fp8_storage(target)``), which keep their codes and scale and widen per layer in the forward (the same
+    else is dequantized to the compute dtype, except fp8 Linears under ``fp8_storage`` (None: only when
+    ``UNSLOTH_DIFFUSION_FP8_STORAGE=1``; callers with a plan pass ``fp8_storage_wanted``), which keep their codes and scale and widen per layer in the forward (the same
     weight, half the bytes). ``finalize`` applies the small-M padding here (the single-file path); the hosted
     prequant loader passes False and pads after placement, as for its own checkpoints.
 
@@ -1047,7 +1076,8 @@ def load_comfy_quant_transformer(
         fp8_backend = None
         mxfp8_backend = None
     if fp8_storage is None:
-        fp8_storage = comfy_fp8_storage(target)
+        # no plan to judge by: only the explicit opt-in (callers with a plan pass fp8_storage_wanted)
+        fp8_storage = fp8_storage_forced() and comfy_fp8_storage(target)
     if keep_key is None:
         state = load_file(str(path))
     else:

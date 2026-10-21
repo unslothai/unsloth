@@ -62,8 +62,8 @@ from .diffusion_attention import (
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
-    comfy_fp8_storage,
     comfy_int8_backend,
+    fp8_storage_wanted,
     pipe_fp8_stored_layers,
     comfy_resident_mib,
     load_comfy_quant_transformer,
@@ -486,7 +486,8 @@ def _video_comfy_backends(
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
-    resident only); fp8 layers neither runtime takes stay stored as fp8, widened per layer (``comfy_fp8_storage``).
+    resident only); under offload, fp8 layers neither runtime takes stay stored as fp8, widened per layer
+    (``fp8_storage_wanted``).
     ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
         return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
@@ -495,14 +496,16 @@ def _video_comfy_backends(
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
-        "fp8_storage": _video_fp8_storage(fam, target),
+        "fp8_storage": _video_fp8_storage(fam, target, offload),
     }
 
 
-def _video_fp8_storage(fam: Any, target: Any) -> bool:
-    """``comfy_fp8_storage`` for a video DiT; H3's loader keeps its torchao-or-dequantize rule (its pin / stream /
-    residency path is built on torchao weights)."""
-    return getattr(fam, "name", None) != "minimax-h3" and comfy_fp8_storage(target)
+def _video_fp8_storage(fam: Any, target: Any, offload: bool) -> bool:
+    """``fp8_storage_wanted`` for a video DiT: stored as fp8 when the plan offloads it (or the env forces it). H3's
+    loader keeps its torchao-or-dequantize rule (its pin / stream / residency path is built on torchao weights)."""
+    return getattr(fam, "name", None) != "minimax-h3" and fp8_storage_wanted(
+        target, offload = offload
+    )
 
 
 def _video_comfy_resident_mib(
@@ -541,7 +544,7 @@ def _video_comfy_resident_mib(
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(
             target, name, base, offload = offload
-        ) is not None or _video_fp8_storage(fam, target)
+        ) is not None or _video_fp8_storage(fam, target, offload)
     return comfy_resident_mib(
         str(path),
         scan,

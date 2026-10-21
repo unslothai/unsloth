@@ -364,6 +364,7 @@ from .diffusion_comfy_quant import (
     comfy_fp8_storage,
     comfy_int8_backend,
     comfy_torchao_quantized,
+    fp8_storage_wanted,
     fp8_stored_layers,
     pipe_fp8_stored_layers,
     load_comfy_quant_transformer,
@@ -8741,8 +8742,8 @@ class DiffusionBackend:
                                     target = target,
                                     fast_accum = transformer_quant_fast_accum,
                                     logger = logger,
-                                    fp8_storage = comfy_fp8_storage(
-                                        target, lora = _has_active_lora(loras)
+                                    fp8_storage = self._fp8_storage_for(
+                                        single_file_path, target, loras
                                     ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
@@ -8758,8 +8759,8 @@ class DiffusionBackend:
                                         single_file_path,
                                         sf_kwargs,
                                         logger,
-                                        fp8_storage = comfy_fp8_storage(
-                                            target, lora = _has_active_lora(loras)
+                                        fp8_storage = self._fp8_storage_for(
+                                            single_file_path, target, loras
                                         ),
                                     )
                                 else:
@@ -10040,6 +10041,14 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 - an install hint only: the load decides on its own
             return False
 
+    def _fp8_storage_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
+        """Whether this load keeps its fp8 Linears stored as fp8: the planner's ``fp8_storage_wanted`` pick for this
+        file (recorded by ``_plan_memory``), still subject to the device / LoRA / kill-switch check."""
+        picks = getattr(self, "_fp8_storage_picks", None) or {}
+        return bool(picks.get(str(single_file_path))) and comfy_fp8_storage(
+            target, lora = _has_active_lora(loras)
+        )
+
     @staticmethod
     def _comfy_single_file_resident_mib(
         single_file_path: Optional[str],
@@ -10048,6 +10057,7 @@ class DiffusionBackend:
         base: Optional[str],
         *,
         lora: bool = False,
+        fp8_storage: bool = False,
     ) -> Optional[int]:
         """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
         try:
@@ -10068,9 +10078,9 @@ class DiffusionBackend:
                 single_file_path,
                 scan,
                 keep_int8 = comfy_int8_backend(target, name, base) is not None,
-                # an fp8 layer no fp8 GEMM takes stays stored as fp8 (comfy_fp8_storage) unless a LoRA needs it dense
+                # an fp8 layer no fp8 GEMM takes, priced at its stored size when the load stores it (fp8_storage)
                 keep_fp8 = comfy_fp8_backend(target, name, base) is not None
-                or comfy_fp8_storage(target, lora = lora),
+                or (fp8_storage and comfy_fp8_storage(target, lora = lora)),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
                 fp8_divisible = divisible_for_scheme(TQ_FP8),
@@ -11157,6 +11167,8 @@ class DiffusionBackend:
         pre-cast checkpoint's size, which base-repo scans never see.
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
+        # set when fp8 storage would price the single-file denoiser smaller (see the plan below)
+        single_file_fp8_stored_mib: Optional[int] = None
         device_memory = (
             device_memory_override
             if device_memory_override is not None
@@ -11275,28 +11287,42 @@ class DiffusionBackend:
                 # Planning the dense-quant candidate: the auto-policy estimate replaces the file-size derivation.
                 transformer_resident = transformer_resident_override_mib
             elif kind == "single_file":
-                # An fp8 checkpoint upcasts to bf16 on load (~2x resident); detect from the basename. SDXL single-file
-                # is already bf16.
-                fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
-                    "fp8" in Path(single_file_path).name.lower() if single_file_path else False
-                )
-                if (
-                    fp8_upcast
-                    and fam.name == KREA2_FAMILY_NAME
-                    and comfy_fp8_storage(target, lora = lora)
-                ):
-                    # Krea 2's original-layout loader keeps a plain fp8 file's Linears fp8 (fp8_storage)
-                    fp8_upcast = False
-                transformer_resident = estimate_safetensors_dense_mib(
-                    file_size_mib(single_file_path), fp8_upcast = fp8_upcast
-                )
-                if not getattr(fam, "single_file_is_pipeline", False):
-                    # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
-                    _comfy_mib = self._comfy_single_file_resident_mib(
-                        single_file_path, fam, target, base, lora = lora
+
+                def _single_file_resident(fp8_storage: bool) -> Optional[int]:
+                    # An fp8 checkpoint upcasts to bf16 on load (~2x resident); detect from the basename. SDXL
+                    # single-file is already bf16.
+                    fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
+                        "fp8" in Path(single_file_path).name.lower() if single_file_path else False
                     )
-                    if _comfy_mib is not None:
-                        transformer_resident = _comfy_mib
+                    if fp8_upcast and fp8_storage and fam.name == KREA2_FAMILY_NAME:
+                        # Krea 2's original-layout loader keeps a plain fp8 file's Linears fp8 (fp8_storage)
+                        fp8_upcast = False
+                    mib = estimate_safetensors_dense_mib(
+                        file_size_mib(single_file_path), fp8_upcast = fp8_upcast
+                    )
+                    if not getattr(fam, "single_file_is_pipeline", False):
+                        # Priced from the header: layers a runtime keeps at stored size, dequantized ones at 2x.
+                        _comfy_mib = self._comfy_single_file_resident_mib(
+                            single_file_path,
+                            fam,
+                            target,
+                            base,
+                            lora = lora,
+                            fp8_storage = fp8_storage,
+                        )
+                        if _comfy_mib is not None:
+                            mib = _comfy_mib
+                    return mib
+
+                transformer_resident = _single_file_resident(False)
+                if comfy_fp8_storage(target, lora = lora) and single_file_path:
+                    stored_resident = _single_file_resident(True)
+                    if (
+                        stored_resident is not None
+                        and transformer_resident is not None
+                        and stored_resident < transformer_resident
+                    ):
+                        single_file_fp8_stored_mib = stored_resident
             elif getattr(fam, "single_file_is_pipeline", False):
                 # Only the denoiser's linears stay packed; the text encoders, VAE and the rest load dense.
                 transformer_resident = whole_pipeline_gguf_resident_mib(
@@ -11394,17 +11420,42 @@ class DiffusionBackend:
         # the 1024x1024 default for PLACEMENT. generate() re-checks the real resolution against the free budget before
         # it samples (raise_on_image_activation_shortfall).
         runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = variant_hint)
-        return plan_diffusion_memory(
-            target = target,
-            device_memory = device_memory,
-            model_dense_mib = model_dense_mib,
-            companion_dense_mib = companion_mib,
-            text_encoder_dense_mib = text_encoder_mib,
-            runtime_headroom_mib = runtime_headroom,
-            requested_mode = memory_mode,
-            explicit_offload = cpu_offload,
-            calibrated_activation = _calibrated_activation(fam, target),
-        )
+
+        def _plan(model_mib: Optional[int]) -> Any:
+            return plan_diffusion_memory(
+                target = target,
+                device_memory = device_memory,
+                model_dense_mib = model_mib,
+                companion_dense_mib = companion_mib,
+                text_encoder_dense_mib = text_encoder_mib,
+                runtime_headroom_mib = runtime_headroom,
+                requested_mode = memory_mode,
+                explicit_offload = cpu_offload,
+                calibrated_activation = _calibrated_activation(fam, target),
+            )
+
+        plan = _plan(model_dense_mib)
+        if single_file_fp8_stored_mib is not None and model_dense_mib is not None:
+            # fp8 kept as fp8 where widening it would offload the denoiser or crowd host RAM (fp8_storage_wanted),
+            # then the plan priced at the stored size: a widened load that had to offload may now stay resident.
+            from .diffusion_memory import _available_system_memory_mib
+
+            store = fp8_storage_wanted(
+                target,
+                lora = lora,
+                offload = not plan_keeps_transformer_resident(plan),
+                widened_mib = transformer_resident,
+                host_available_mib = _available_system_memory_mib(),
+            )
+            picks = self.__dict__.setdefault("_fp8_storage_picks", {})
+            picks[str(single_file_path)] = store
+            if store:
+                plan = _plan(
+                    model_dense_mib - int(transformer_resident) + single_file_fp8_stored_mib
+                )
+        elif kind == "single_file" and single_file_path:
+            self.__dict__.setdefault("_fp8_storage_picks", {})[str(single_file_path)] = False
+        return plan
 
     @staticmethod
     def _from_pipe_no_recast(pipe: Any, pipe_cls: Any, **extra: Any) -> Any:
