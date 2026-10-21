@@ -320,11 +320,19 @@ class _FailingLauncher:
         (f"bwrap: Creating new namespace failed: {os.strerror(errno.ENOMEM)}", True),
         # The payload itself filling the disk says nothing about the backend.
         (f"OSError: [Errno 28] {os.strerror(errno.ENOSPC)}: 'work/x'", True),
-        # bwrap reports a namespace limit (a host without a sandbox) as ENOSPC.
-        (f"bwrap: Creating new namespace failed: {os.strerror(errno.ENOSPC)}", False),
+        # bwrap reports a user-namespace limit as ENOSPC: no sandbox only when the quota is zero.
+        (f"bwrap: Creating new namespace failed: {os.strerror(errno.ENOSPC)}", "quota"),
     ],
 )
-def test_a_launcher_that_exits_out_of_resources_is_undecided(message, undecided):
+def test_a_launcher_that_exits_out_of_resources_is_undecided(message, undecided, monkeypatch):
+    if undecided == "quota":
+        monkeypatch.setattr(sandbox_probe, "_user_namespaces_disabled", lambda: True)
+        launcher = _FailingLauncher(message)
+        _available, reason = sandbox_probe._run_probe(launcher, "bubblewrap", ToolLaunchPlan)
+        assert not isinstance(reason, sandbox_probe.UndecidedReason), reason
+        # A quota other launches used up is exhaustion, not a host without a sandbox.
+        monkeypatch.setattr(sandbox_probe, "_user_namespaces_disabled", lambda: False)
+        undecided = True
     # bwrap forks inside the namespace it made; running out there is an exit, not an exception.
     launcher = _FailingLauncher(message)
     available, reason = sandbox_probe._run_probe(launcher, "bubblewrap", ToolLaunchPlan)
@@ -423,3 +431,13 @@ def test_a_project_sandbox_that_is_a_windows_junction_is_not_followed(project, m
         lambda path: os.path.basename(path) == "sandbox",
     )
     assert tools._get_project_workdir("project-p1") is None
+
+
+@pytest.mark.skipif(sys.platform not in ("linux", "darwin"), reason = "the probe backends")
+def test_a_probe_out_of_python_memory_is_undecided(tmp_path, monkeypatch, fresh_probe_cache):
+    def exhausted():
+        raise MemoryError()
+
+    monkeypatch.setattr(sandbox_probe, "_probe_base", exhausted)
+    with pytest.raises(os_sandbox.SandboxBuildError, match = "OS_ISOLATION_UNAVAILABLE"):
+        os_sandbox.prepare_tool_launch(_auto_plan(tmp_path))

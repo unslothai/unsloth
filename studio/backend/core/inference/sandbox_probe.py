@@ -56,10 +56,19 @@ _RESOURCE_ERRNOS = frozenset(
     if code is not None
 )
 _RESOURCE_TEXTS = tuple(os.strerror(code) for code in _RESOURCE_ERRNOS)
-# bwrap reports a namespace limit (a host without a sandbox) as ENOSPC; any other ENOSPC is undecided.
+# bwrap reports a user-namespace limit as ENOSPC: a host without a sandbox only when the quota is zero.
 _NAMESPACE_LIMIT = re.compile(
     r"bwrap: .*(?:namespace|unshare).*" + re.escape(os.strerror(errno.ENOSPC)), re.I
 )
+
+
+def _user_namespaces_disabled() -> bool:
+    """A zero quota is a host without a sandbox; a used-up one is exhaustion."""
+    try:
+        with open("/proc/sys/user/max_user_namespaces", encoding = "ascii") as handle:
+            return int(handle.read().strip() or "0") == 0
+    except (OSError, ValueError):
+        return True
 
 
 class UndecidedReason(str):
@@ -69,7 +78,9 @@ class UndecidedReason(str):
 def _exhausted(exc: BaseException | None) -> bool:
     seen = 0
     while exc is not None and seen < 8:
-        if isinstance(exc, OSError) and exc.errno in _RESOURCE_ERRNOS:
+        if isinstance(exc, MemoryError) or (
+            isinstance(exc, OSError) and exc.errno in _RESOURCE_ERRNOS
+        ):
             return True
         exc = exc.__cause__ or exc.__context__
         seen += 1
@@ -486,9 +497,8 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
                 f"the {backend_name} live probe failed "
                 f"(exit {completed.returncode}): {detail or 'no output'}"
             )
-            if any(text in detail for text in _RESOURCE_TEXTS) and not _NAMESPACE_LIMIT.search(
-                detail
-            ):
+            namespaces_off = _NAMESPACE_LIMIT.search(detail) and _user_namespaces_disabled()
+            if any(text in detail for text in _RESOURCE_TEXTS) and not namespaces_off:
                 return False, UndecidedReason(reason)
             return False, reason
         if _host_saw_the_write(outside):
