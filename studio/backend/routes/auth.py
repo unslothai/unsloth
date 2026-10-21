@@ -282,12 +282,14 @@ def _client_ip(request: Request | None) -> str:
     if _trust_forwarded_for():
         # Rightmost entry only: the trusted proxy appends the client it saw, and everything left of
         # it is the caller's own text, so keying on it would let each guess pick a fresh bucket.
-        xff = request.headers.get("x-forwarded-for", "")
+        from utils.client_ip import header_fields
+
+        xff = header_fields(request.headers, "x-forwarded-for")
         if xff:
             normalized = _normalize_forwarded_addr(xff.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
-        fwd = request.headers.get("forwarded", "")
+        fwd = header_fields(request.headers, "forwarded")
         if fwd:
             normalized = _forwarded_for_from_element(fwd.rsplit(",", 1)[-1])
             if normalized:

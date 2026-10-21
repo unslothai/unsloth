@@ -52,6 +52,15 @@ def _normalize_addr(value: str | None) -> str | None:
         return None
 
 
+def header_fields(headers, name: str) -> str:
+    """Every field of a repeated header, comma-joined in order. A proxy may append its own field
+    (HAProxy's forwardfor) instead of extending the caller's, and ``get`` returns only the first."""
+    getlist = getattr(headers, "getlist", None)
+    if getlist is not None:
+        return ",".join(getlist(name))
+    return headers.get(name, "") or ""
+
+
 def client_ip(request) -> str:
     """Best-effort client IP, or ``"_unknown"`` when it can't be determined."""
     if request is None:
@@ -59,7 +68,7 @@ def client_ip(request) -> str:
     peer = request.client.host if request.client else None
     if _trust_forwarded_for():
         # Rightmost hop = what the trusted proxy saw; the leftmost is spoofable.
-        xff = request.headers.get("x-forwarded-for", "")
+        xff = header_fields(request.headers, "x-forwarded-for")
         if xff:
             normalized = _normalize_addr(xff.rsplit(",", 1)[-1])
             if normalized:
