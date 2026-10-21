@@ -99,6 +99,11 @@ def test_a_cached_snapshot_path_finds_the_repo_row():
     assert saved_sampling_defaults(path) == {"min_p": 0.05}
 
 
+def test_a_quant_qualified_id_reads_the_repo_row():
+    _put("unsloth/Foo-GGUF", {"top_k": 40})
+    assert saved_sampling_defaults("unsloth/Foo-GGUF:Q4_K_M") == {"top_k": 40}
+
+
 def test_lookup_folds_case_but_not_ambiguously():
     _put("unsloth/foo-gguf", {"top_k": 40})
     assert saved_sampling_defaults("unsloth/Foo-GGUF") == {"top_k": 40}

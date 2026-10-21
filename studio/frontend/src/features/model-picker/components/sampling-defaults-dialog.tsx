@@ -343,10 +343,11 @@ export function SamplingDefaultsRow({
         cleared.length > 0
           ? await fetchEffectiveSampling(modelId).catch(() => ({}))
           : {};
-      setRememberedParamsForModel(
-        chatModelId,
-        chatPatchFrom(written, cleared, fallback),
-      );
+      // A cached Hub model loads by snapshot path but Chat selects it by repo id, so both.
+      const patch = chatPatchFrom(written, cleared, fallback);
+      for (const id of new Set([modelId, chatModelId])) {
+        setRememberedParamsForModel(id, patch);
+      }
       setStored({ modelId, saved: written });
       toast.success(
         Object.keys(written).length > 0

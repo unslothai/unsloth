@@ -3910,7 +3910,7 @@ export function ModelConfigPage({
             chatModelId={target.id}
             displayName={target.displayName}
             rowClassName={ROW_CLASS}
-            labelClassName={LABEL_CLASS}
+            labelClassName={LABEL_CLASS_WRAP}
           />
         )}
       </div>

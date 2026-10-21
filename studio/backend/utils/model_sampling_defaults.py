@@ -16,6 +16,7 @@ from utils.openai_auto_switch_settings import (
     _fold_case_insensitive_path,
     _invalidate,
     _looks_like_filesystem_path,
+    split_quant_suffix,
 )
 
 MODEL_SAMPLING_DEFAULTS_SETTING_KEY = "model_sampling_defaults"
@@ -108,7 +109,11 @@ def saved_sampling_defaults(model_id: Optional[str]) -> dict[str, Any]:
     from core.inference.model_ids import hf_cache_repo_id
 
     candidates = [model_id]
-    repo_id = hf_cache_repo_id(model_id)
+    # The editor saves per model, so "repo:Q4_K_M" reads the repo's row.
+    split = split_quant_suffix(model_id)
+    if split is not None:
+        candidates.append(split[0])
+    repo_id = hf_cache_repo_id(candidates[-1])
     if repo_id and repo_id not in candidates:
         candidates.append(repo_id)
     found = _lookup(exact, folded, candidates)
