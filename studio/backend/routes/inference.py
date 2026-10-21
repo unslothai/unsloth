@@ -11562,7 +11562,6 @@ async def _auto_switch_npu_model(
 
 
 def _refuse_chat_tools_switch() -> None:
-    """A chat tools call never loads or replaces a model: it would evict the model serving its own chat."""
     from studio_mcp.caller import CHAT_TOOLS_SWITCH_REFUSED, chat_tools_call
     if chat_tools_call():
         raise HTTPException(
