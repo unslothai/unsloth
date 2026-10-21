@@ -899,6 +899,30 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
     return None
 
 
+def cached_model_repo(reference: str) -> str | None:
+    """Recover a resident's Hub identity only from a verified model-cache path."""
+    from utils.hf_cache_settings import known_hf_hub_caches
+    from utils.paths.path_utils import is_network_or_device_path
+
+    if not reference or is_network_or_device_path(reference):
+        return None
+    try:
+        path = Path(reference).expanduser()
+        cached = _cached_repo(path)
+        if cached is None or cached[1] != "model":
+            return None
+        resolved = path.resolve()
+        if _cached_repo(resolved) != cached:
+            return None
+        if Path(normalize_path(reference)).expanduser().resolve() != resolved:
+            return None
+        if any(resolved.is_relative_to(root.resolve()) for root in known_hf_hub_caches()):
+            return cached[0]
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
 def model_visible(
     reference: str,
     *,
