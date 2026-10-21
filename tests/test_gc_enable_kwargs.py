@@ -189,8 +189,8 @@ def test_native_offload_kept_with_stock_checkpoint(patched, monkeypatch):
             pin_memory = False,
             device_type = "cuda",
         ):
-            # transformers always asks for pinned memory, which torch refuses with no accelerator.
-            pin_memory = pin_memory and torch.accelerator.current_accelerator() is not None
+            # transformers always asks for pinned memory, which torch refuses with no usable accelerator.
+            pin_memory = pin_memory and torch.accelerator.is_available()
             super().__init__(pin_memory = pin_memory, device_type = device_type)
 
         def __enter__(self):

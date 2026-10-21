@@ -435,19 +435,22 @@ class TestUvSafePathWindowsNo8dot3:
                     sys.executable,
                     "-c",
                     constraint,
-                    "pip",
+                    "pytest",  # installed wherever this runs, so the offline plan resolves
                 ],
                 capture_output = True,
                 text = True,
             )
 
         safe = uvps.uv_safe_path(str(src))
-        assert " " not in safe and safe != str(src)
+        spaced = dry_run(str(src))
+        if spaced.returncode != 0:
+            assert "File not found" in spaced.stderr, spaced.stderr
+            assert str(src).split(" ")[0] in spaced.stderr, spaced.stderr
+            if " " in uvps.tempfile.gettempdir():
+                pytest.skip("temp dir has a space and no short name: nothing uv < 0.13 can read")
+            assert " " not in safe
         accepted = dry_run(safe)
-        assert "File not found" not in accepted.stderr, accepted.stderr
-        refused = dry_run(str(src))
-        if "File not found" in refused.stderr:
-            assert str(src).split(" ")[0] in refused.stderr, refused.stderr
+        assert accepted.returncode == 0, accepted.stderr
 
     @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
     def test_real_directory_without_a_short_name(self, tmp_path):
