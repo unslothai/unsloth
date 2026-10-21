@@ -4246,7 +4246,7 @@ export const hi = {
       project: "प्रोजेक्ट",
       projectNone: "कोई नहीं",
       model: "मॉडल",
-      modelLoaded: "कार्य के समय लोड किया गया मॉडल",
+      modelLoaded: "जो भी मॉडल लोड हो",
       modelOnDevice: "इस डिवाइस पर",
       modelNote: "टास्क चलने पर यह मॉडल लोड न हो, तो Unsloth पहले पूछता है।",
       modelNoteAllowed: "केवल तब इस मॉडल पर जाता है जब आप Unsloth इस्तेमाल नहीं कर रहे, फिर पहले वाले पर लौट आता है।",

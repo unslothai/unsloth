@@ -4489,7 +4489,7 @@ export const sv = {
       project: "Projekt",
       projectNone: "Inget",
       model: "Modell",
-      modelLoaded: "Modellen som är inläst när uppgiften körs",
+      modelLoaded: "Den modell som är inläst",
       modelOnDevice: "På den här enheten",
       modelNote: "Om modellen inte är inläst när uppgiften körs frågar Unsloth först.",
       modelNoteAllowed: "Byter till den här modellen bara när du inte använder Unsloth och sedan tillbaka.",

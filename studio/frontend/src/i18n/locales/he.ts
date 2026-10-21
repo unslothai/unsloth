@@ -4353,7 +4353,7 @@ export const he = {
       project: "פרויקט",
       projectNone: "ללא",
       model: "מודל",
-      modelLoaded: "המודל הטעון בזמן המשימה",
+      modelLoaded: "המודל שטעון באותו רגע",
       modelOnDevice: "במכשיר הזה",
       modelNote: "אם המודל הזה לא טעון כשהמשימה רצה, Unsloth שואל קודם.",
       modelNoteAllowed: "עובר למודל הזה רק כשאינך משתמש ב-Unsloth, ואז חוזר למה שהיה.",

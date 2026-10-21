@@ -4224,7 +4224,7 @@ export const ko = {
       project: "프로젝트",
       projectNone: "없음",
       model: "모델",
-      modelLoaded: "작업 시점에 로드된 모델",
+      modelLoaded: "로드되어 있는 모델",
       modelOnDevice: "이 기기",
       modelNote: "작업 실행 시 이 모델이 로드되어 있지 않으면 먼저 묻습니다.",
       modelNoteAllowed: "Unsloth를 사용하지 않는 동안에만 이 모델로 전환하고, 끝나면 원래 모델로 돌아갑니다.",

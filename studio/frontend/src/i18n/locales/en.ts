@@ -4297,7 +4297,7 @@ export const en = {
       project: "Project",
       projectNone: "None",
       model: "Model",
-      modelLoaded: "Model loaded at the time of task",
+      modelLoaded: "Whichever model is loaded",
       modelOnDevice: "On this device",
       modelNote: "If this model isn't loaded when the task runs, Unsloth asks first.",
       modelNoteAllowed: "Switches to this model only while you're away from Studio, then back to what you had.",

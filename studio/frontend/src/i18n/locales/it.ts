@@ -4311,7 +4311,7 @@ export const it = {
       project: "Progetto",
       projectNone: "Nessuno",
       model: "Modello",
-      modelLoaded: "Modello caricato al momento dell'attività",
+      modelLoaded: "Il modello caricato in quel momento",
       modelOnDevice: "Su questo dispositivo",
       modelNote: "Se questo modello non è caricato quando l’attività parte, Unsloth chiede prima.",
       modelNoteAllowed: "Passa a questo modello solo mentre non usi Unsloth, poi torna al tuo.",

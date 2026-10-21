@@ -4235,7 +4235,7 @@ export const ar = {
       project: "المشروع",
       projectNone: "بلا",
       model: "النموذج",
-      modelLoaded: "النموذج المحمّل وقت تنفيذ المهمة",
+      modelLoaded: "أي نموذج محمّل",
       modelOnDevice: "على هذا الجهاز",
       modelNote: "إذا لم يكن هذا النموذج محمّلًا عند تشغيل المهمة، يسألك Unsloth أولًا.",
       modelNoteAllowed: "ينتقل إلى هذا النموذج فقط أثناء ابتعادك عن Unsloth، ثم يعود إلى ما كان لديك.",

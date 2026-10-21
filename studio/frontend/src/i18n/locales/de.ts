@@ -4310,7 +4310,7 @@ export const de = {
       project: "Projekt",
       projectNone: "Keins",
       model: "Modell",
-      modelLoaded: "Zum Zeitpunkt der Aufgabe geladenes Modell",
+      modelLoaded: "Das jeweils geladene Modell",
       modelOnDevice: "Auf diesem Gerät",
       modelNote: "Ist dieses Modell beim Ausführen nicht geladen, fragt Unsloth zuerst.",
       modelNoteAllowed: "Wechselt nur zu diesem Modell, während Sie Unsloth nicht nutzen, und danach zurück.",
