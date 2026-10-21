@@ -67,8 +67,6 @@ def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-
-
 def _compute_dtype(linear: nn.Module) -> torch.dtype:
     """The dtype a Linear's input is cast to: the reference casts to ``weight.dtype``, which is the storage dtype under
     diffusers' ``GGUFLinear`` (uint8), so a ``compute_dtype`` the layer declares wins. Same dtype for a plain Linear."""
@@ -505,7 +503,6 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         return Transformer2DModelOutput(sample = sample)
 
 
-
 from diffusers import FlowMatchEulerDiscreteScheduler  # noqa: E402
 
 
@@ -604,7 +601,6 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
         # Already shifted: no second shift.
         self._shift = 1.0
         super().set_timesteps(device = device, sigmas = list(sigmas))
-
 
 
 from diffusers import DiffusionPipeline  # noqa: E402
@@ -909,8 +905,6 @@ class MOSSImagePipeline(DiffusionPipeline):
             .reshape(b, c // 4, 2 * h, 2 * w)
         )
         return self.vae.decode(z, return_dict = False)[0].clamp(-1, 1)
-
-
 
 
 def transformers_version_ok() -> tuple[bool, Optional[str]]:
