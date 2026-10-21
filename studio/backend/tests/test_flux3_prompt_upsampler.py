@@ -931,6 +931,7 @@ def test_the_child_is_pinned_to_the_image_models_card(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+cu130")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,5,GPU-abc")
     assert pup._child_device_mask(2) == {"CUDA_VISIBLE_DEVICES": "GPU-abc"}
     assert pup._child_device_mask(1) == {"CUDA_VISIBLE_DEVICES": "5"}
@@ -1153,6 +1154,8 @@ def test_users_llama_arg_device_keeps_every_card_visible(monkeypatch, hip):
 
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    # ROCm is also read from a "+rocm" __version__: pin it to the build this case names.
+    monkeypatch.setattr(torch, "__version__", "2.11.0+rocm6.2" if hip else "2.11.0+cu130")
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "ROCm1" if hip else "CUDA1")
@@ -1488,6 +1491,8 @@ def warmable(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pup, "_take_render_slot", _take_slot)
     monkeypatch.setattr(pup, "_active_engine_loading", lambda: False)
+    # One card: on a multi-GPU host an unpinned warm declines with "placement" (tests that need several patch it).
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 1)
     memory = {"free": 160 * 1024, "total": 180 * 1024, "device": "cuda"}
     monkeypatch.setattr(
         pup,
@@ -2180,6 +2185,8 @@ def test_a_hip_mask_on_a_cuda_torch_never_steers_the_vulkan_pin(
     monkeypatch.setattr(pup, "_vulkan_rows", lambda b, retry_empty = False: calls.append(b) or [])
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    # ROCm is also read from a "+rocm" __version__: pin it to the build this case names.
+    monkeypatch.setattr(torch, "__version__", "2.11.0+rocm6.2" if hip else "2.11.0+cu130")
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
     assert pup._vulkan_device_args("b", 0) is None
     assert bool(calls) is probed
