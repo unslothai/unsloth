@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Sampling defaults a user saved for one model (temperature, top_p, top_k, min_p,
-repetition_penalty, presence_penalty), keyed by the model id the Chat UI uses. An OpenAI or
-Anthropic request that leaves a field unset gets the saved value instead of the model's
-recommendation, so a model switched in by a request samples the way the user set it up. Separate
-from the launch overrides on purpose: a row there counts as a load override and shadows a broader
-one, and nothing here changes how a model loads. Empty for everyone who never saved one."""
+"""Per-model sampling defaults a user saved; a request that leaves a field unset gets them before the
+model's recommendation. Not stored in the launch overrides: a row there counts as a load override
+and shadows a broader one."""
 
 from __future__ import annotations
 
@@ -46,8 +43,7 @@ def get_model_sampling_defaults(account = None) -> dict[str, dict]:
     }
 
 
-# The cached setting hands back the same object until it is re-read, so the index is rebuilt only
-# then: a request pays two dict lookups, not a scan of every saved model.
+# Rebuilt only when the cached setting is re-read, so a request does dict lookups, not a scan.
 _index_lock = threading.Lock()
 _index_cache: dict[str, tuple[Any, dict[str, dict], dict[str, Optional[dict]]]] = {}
 
@@ -96,7 +92,6 @@ def saved_sampling_defaults(model_id: Optional[str]) -> dict[str, Any]:
     if not is_owner_context():
         accounts.append(OWNER)
     indexes = [_index(account) for account in accounts]
-    # Nothing saved anywhere, the case for everyone who never opened the editor.
     if not any(exact for exact, _folded in indexes):
         return {}
     from core.inference.model_ids import hf_cache_repo_id

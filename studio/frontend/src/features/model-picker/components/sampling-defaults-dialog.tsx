@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One model's saved sampling defaults (#10631). Chat already restores each model's last-used
-// sampling, so a save writes that memory too; the server copy is what an API request that switches
-// to this model and leaves a value unset is filled from.
+// One model's saved sampling defaults: the server copy fills API requests that leave a value
+// out, and Chat's per-model memory gets the same values so a load starts from them.
 
 import { Button } from "@/components/ui/button";
 import {
