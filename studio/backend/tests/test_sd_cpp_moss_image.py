@@ -174,7 +174,8 @@ def test_an_explicit_diffusers_pick_of_a_moss_gguf_is_refused(monkeypatch):
     fam = _moss()
     with pytest.raises(ValueError, match = "Diffusers cannot load a moss-image GGUF"):
         r.refuse_engine_pick(fam, engine = "diffusers", model_kind = "gguf")
-    # The pipeline repo on diffusers is fine.
+    # The pipeline repo on diffusers is fine where diffusers can build it (transformers >= 5.3).
+    monkeypatch.setattr(r, "family_pipeline_available", lambda _fam: True)
     r.refuse_engine_pick(fam, engine = "diffusers", model_kind = "pipeline")
 
 
@@ -210,8 +211,8 @@ def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_pat
     assert not r.family_buildable_here(fam, model_kind = "gguf", gguf_filename = _GGUF)
     with pytest.raises(ValueError, match = "only on the native stable-diffusion.cpp engine"):
         DiffusionBackend().validate_load_request(_REPO, gguf_filename = _GGUF, model_kind = "gguf")
-    # The pipeline repo is untouched by any of this.
-    assert r.family_buildable_here(fam, model_kind = "pipeline")
+    # The pipeline repo is untouched by any of this: buildable exactly where diffusers can build the pipeline.
+    assert r.family_buildable_here(fam, model_kind = "pipeline") == r.family_pipeline_available(fam)
 
 
 def test_diffusers_refuses_a_moss_single_file_transformer(monkeypatch, tmp_path):

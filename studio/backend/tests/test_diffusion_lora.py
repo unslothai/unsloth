@@ -531,6 +531,9 @@ def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
 def test_moss_image_has_no_lora_loader_so_lora_is_gated_off(monkeypatch):
     import threading
 
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_moss_image import MOSSImagePipeline
 

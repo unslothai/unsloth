@@ -4342,6 +4342,21 @@ class DiffusionBackend:
         # same predicate. Imported here, not at module import, because the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
+        # MOSS-Image GGUFs run on sd.cpp only; refuse picks the router cannot send there before eviction,
+        # and before the diffusers class check, whose remedy (newer transformers / diffusers) cannot help them.
+        if getattr(fam, "native_transformer_files_only", False) and (
+            kind == "single_file"
+            or (
+                kind == "gguf"
+                and not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename)
+            )
+        ):
+            raise ValueError(
+                f"'{fam.name}' runs a {'GGUF' if kind == 'gguf' else 'single-file'} transformer only on the native "
+                f"stable-diffusion.cpp engine, from a build that supports it (upstream master-975 or newer); the "
+                f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
+                f"engine available."
+            )
         if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
@@ -4362,20 +4377,6 @@ class DiffusionBackend:
                 f"'{fam.name}' loads only as a full diffusers pipeline (it assembles "
                 f"multiple transformers), not from a single-file or GGUF checkpoint; "
                 f"select the pipeline repo."
-            )
-        # MOSS-Image GGUFs run on sd.cpp only; refuse picks the router cannot send there before eviction.
-        if getattr(fam, "native_transformer_files_only", False) and (
-            kind == "single_file"
-            or (
-                kind == "gguf"
-                and not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename)
-            )
-        ):
-            raise ValueError(
-                f"'{fam.name}' runs a {'GGUF' if kind == 'gguf' else 'single-file'} transformer only on the native "
-                f"stable-diffusion.cpp engine, from a build that supports it (upstream master-975 or newer); the "
-                f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
-                f"engine available."
             )
         # Non-GGUF loads deserialise weights: repo-gated, except a lone .safetensors file (diffusion_single_file_trust).
         if kind != "gguf" and not single_file_load_allowed(

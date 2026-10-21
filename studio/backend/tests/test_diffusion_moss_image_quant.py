@@ -312,6 +312,8 @@ def test_a_handed_in_encoder_gets_the_vision_drop_and_offload_guard(monkeypatch)
 
 
 def test_tokenizer_class_comes_from_its_config(tmp_path, offline_empty):
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
     transformers = pytest.importorskip("transformers")
     from core.inference import diffusion_moss_image as moss
 
