@@ -56,7 +56,6 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
   );
 }
 
-/** The first-run card: what the NPU is for, and the one-time setup it needs. */
 function NpuEnableCard({ catalog }: { catalog: NpuCatalog }) {
   const { status, enabling, enable } = catalog;
   const action =
