@@ -5091,20 +5091,25 @@ class MLXInferenceBackend:
             from hub.utils.mlx_variants import download_precision_folder
             load_source = download_precision_folder(model_name, precision_folder, hf_token)
 
+        knobs = offload
+
         # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.
-        offload = _mlx_offload_request(
-            offload,
-            None
-            if is_distributed or is_lora or dtype is not None
-            else functools.partial(
-                mlx_resolve_offload,
-                pinned = _positive_int(max_seq_length),
-                load_in_4bit = load_in_4bit,
-                retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
-                kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
-                vision = True if speculates and not is_vision else None,
-            ),
-        )
+        def offload_request():
+            return _mlx_offload_request(
+                knobs,
+                None
+                if is_distributed or is_lora or dtype is not None
+                else functools.partial(
+                    mlx_resolve_offload,
+                    pinned = _positive_int(max_seq_length),
+                    load_in_4bit = load_in_4bit,
+                    retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                    kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
+                    vision = True if speculates and not is_vision else None,
+                ),
+            )
+
+        offload = offload_request()
         load_kwargs.update(offload["kwargs"])
 
         # Freed before the replacement weights are allocated, for headroom.
@@ -5154,6 +5159,10 @@ class MLXInferenceBackend:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
             load_kwargs["text_only"] = True
+            # Auto planned on the mlx-vlm route, and decide() consumed its knobs: plan this route afresh.
+            load_kwargs.pop("offload", None)
+            offload = offload_request()
+            load_kwargs.update(offload["kwargs"])
             model, tokenizer_or_processor = _load_offloading(
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )

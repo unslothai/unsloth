@@ -1194,6 +1194,54 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     assert auto("/snap", "auto", 0.5) == (None, 0.5) and len(plans) == 1
 
 
+@pytest.mark.parametrize("decided_on_mlx_vlm", [False, True])
+def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, decided_on_mlx_vlm):
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference as mi
+    from core.inference import mlx_memory as mm
+    from core.inference import mlx_speculative
+
+    plans, applied = [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            offload = kwargs.get("offload")
+            if not kwargs["text_only"]:
+                if decided_on_mlx_vlm and callable(offload):
+                    offload("/snap")
+                raise ValueError("mlx-vlm has no such architecture")
+            applied.append(offload("/snap") if callable(offload) else offload)
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    def resolve(model_dir, knobs, **kw):
+        plans.append((knobs, kw["vision"]))
+        # Pricing the mlx-vlm route fails as its load did; mlx-lm needs every expert on disk.
+        return (None, None) if kw["vision"] else (None, 1.0)
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(mi, "mlx_resolve_offload", resolve)
+    monkeypatch.setattr(mi, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mi.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    source = mlx_speculative.DrafterSource("dflash", "/drafter", False)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+    )
+    config = SimpleNamespace(identifier = "org/moe", is_vision = False, is_lora = False)
+
+    mi.MLXInferenceBackend().load_model(config, speculative_type = "dflash")
+    assert plans[-1] == (("auto", "auto"), None)
+    assert applied == [{"ple": None, "experts": 1.0}]
+
+
 def test_offload_knobs_validate_and_reload_on_change():
     from pydantic import ValidationError
 
