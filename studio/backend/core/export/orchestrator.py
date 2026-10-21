@@ -18,6 +18,7 @@ import atexit
 import os
 import structlog
 from collections import deque
+from fastapi import HTTPException
 from loggers import get_logger
 import multiprocessing as mp
 import queue
@@ -95,6 +96,11 @@ class ExportOrchestrator:
     # ------------------------------------------------------------------
 
     def _clear_account_result(self):
+        # Runs under _account_job_lock before the job changes accounts: the idle worker
+        # holds the previous account's model, so it goes with the hand-over. A survivor
+        # keeps the previous owner and reports busy.
+        if not self._shutdown_subprocess():
+            raise HTTPException(status_code = 409, detail = {"code": "job_busy", "message": "Busy"})
         self.current_checkpoint = None
         self.is_vision = self.is_peft = False
         self.decision = None

@@ -225,6 +225,43 @@ def test_export_finished_checkpoint_and_logs_are_private(export):
     assert proc.is_alive()
 
 
+def test_export_handover_never_leaves_the_previous_accounts_worker(export, monkeypatch):
+    from utils.models import checkpoints
+
+    backend, proc = export
+    assert run_as(ALICE, backend.load_checkpoint, str(run_as(ALICE, outputs_root) / "checkpoint"))[
+        0
+    ]
+
+    def unparsable(*args):
+        raise RecursionError
+
+    # Bob's load fails after he became the owner and before it would have replaced the worker.
+    monkeypatch.setattr(checkpoints, "is_unquantized_full_finetune", unparsable)
+    with pytest.raises(RecursionError):
+        run_as(
+            BOB, backend.load_checkpoint, str(run_as(BOB, outputs_root) / "c"), load_in_4bit = None
+        )
+    assert not proc.is_alive()
+    result = run_as(BOB, backend.export_base_model, str(run_as(BOB, exports_root)))
+    assert result[0] is False and "No export subprocess running" in result[1]
+
+
+def test_export_handover_is_refused_while_the_previous_worker_survives(export, monkeypatch):
+    backend, proc = export
+    assert run_as(ALICE, backend.load_checkpoint, str(run_as(ALICE, outputs_root) / "checkpoint"))[
+        0
+    ]
+    monkeypatch.setattr(backend, "_shutdown_subprocess", lambda **kwargs: False)
+    with pytest.raises(HTTPException) as exc:
+        run_as(BOB, backend.load_checkpoint, str(run_as(BOB, outputs_root) / "checkpoint"))
+    assert exc.value.status_code == 409
+    assert backend._result_account == ALICE and backend.current_checkpoint is not None
+    with pytest.raises(HTTPException) as exc:
+        run_as(BOB, backend.export_base_model, str(run_as(BOB, exports_root)))
+    assert exc.value.status_code == 404
+
+
 def test_export_busy_status_hides_checkpoint(export, monkeypatch):
     from routes import export as route
 
