@@ -256,20 +256,29 @@ def test_model_unload_restores_the_process_global_patches(monkeypatch):
     monkeypatch.setattr(q21, "_addcmul_lowering", lambda: (True, False))
     monkeypatch.setattr(q21, "_FUSION", {})
     monkeypatch.setattr(q21, "probe_fusion", lambda dev: ("x", "x"))
-    rope_stock = qmod.ROPE_PER_DEVICE["cuda"]
-    call_stock = zmod.ZSingleStreamAttnProcessor.__dict__["__call__"]
+    # 0.41.0 patches ROPE_PER_DEVICE["cuda"]; diffusers without the table patches apply_rotary_emb_qwen instead.
+    table = getattr(qmod, "ROPE_PER_DEVICE", None)
+
+    def slots():
+        return {
+            "table": None if table is None else table["cuda"],
+            "global": qmod.apply_rotary_emb_qwen,
+            "zimage": zmod.ZSingleStreamAttnProcessor.__dict__["__call__"],
+        }
+
+    stock = slots()
     try:
         assert qr._patch_table(0) and zf._patch_class()
-        assert qmod.ROPE_PER_DEVICE["cuda"] is not rope_stock
-        assert zmod.ZSingleStreamAttnProcessor.__dict__["__call__"] is not call_stock
+        patched = slots()
+        expect = {"table"} if table is not None else {"global"}
+        assert {k for k in stock if patched[k] is not stock[k]} == expect | {"zimage"}
         for name in ("clear_gpu_cache", "release_pinned_host_memory", "reclaim_host_memory"):
             monkeypatch.setattr(diffusion, name, lambda *a, **k: None)
         backend = diffusion.DiffusionBackend()
         backend._state = diffusion._LoadState(object(), None, "r", "b", "cpu", "float32", False)
         backend._unload_locked()
         assert backend._state is None
-        assert qmod.ROPE_PER_DEVICE["cuda"] is rope_stock
-        assert zmod.ZSingleStreamAttnProcessor.__dict__["__call__"] is call_stock
+        assert all(v is stock[k] for k, v in slots().items())
     finally:
         qr.uninstall()
 
