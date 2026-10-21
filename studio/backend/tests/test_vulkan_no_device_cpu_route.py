@@ -267,9 +267,7 @@ def test_a_stall_sends_later_loads_of_the_same_build_straight_to_cpu(monkeypatch
     assert backend._cpu_fallback_reason == "vulkan_startup_stall"
 
 
-def test_a_failed_stall_replay_leaves_only_bounded_vulkan_rungs(monkeypatch, tmp_path):
-    """The CPU replay is not terminal: a rung below (e.g. the speculative-off retry) may
-    still bring the GPU up, but no Vulkan relaunch may renew its wait on CPU again."""
+def test_a_stalled_cpu_replay_is_terminal(monkeypatch, tmp_path):
     _route_env(monkeypatch, "devices")
     sink = {}
     with pytest.raises(RuntimeError):
@@ -280,11 +278,12 @@ def test_a_failed_stall_replay_leaves_only_bounded_vulkan_rungs(monkeypatch, tmp
             stall_launches = tuple(range(6)),
             sink = sink,
         )
+    # One Vulkan launch, one CPU replay, nothing after.
+    assert [argv[0] for argv, _env in sink["launches"]] == [
+        "/fake/llama-server",
+        "/staged/llama-server",
+    ]
     assert len(sink["fallback_sources"]) == 1
-    for (argv, _env), kwargs in zip(sink["launches"], sink["health_kwargs"]):
-        if argv[0] != "/staged/llama-server":
-            assert kwargs["cpu_counts_as_progress"] is False
-            assert "max_total_s" in kwargs
 
 
 def test_the_text_only_retry_is_bounded_too(monkeypatch, tmp_path):

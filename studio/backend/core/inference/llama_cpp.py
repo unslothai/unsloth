@@ -33779,13 +33779,10 @@ class LlamaCppBackend:
                     and not _load_cancelled()
                 ):
                     _stalled_cmd = list(_last_spawn_cmd)
-                    # The replay rewrites env for the staged CPU runtime; the Vulkan rungs
-                    # below must not inherit it if the replay does not come up.
-                    _env_before_replay, _cwd_before_replay = dict(env), _spawn_cwd
                     self._kill_process()
-                    if _try_auto_vulkan_cpu_fallback(
-                        _stalled_cmd, None, terminal = False, stalled = True
-                    ):
+                    # Terminal like the crash replay: the rungs below would relaunch the
+                    # same driver, and the replay has already rewritten env for CPU.
+                    if _try_auto_vulkan_cpu_fallback(_stalled_cmd, None, stalled = True):
                         healthy = True
                         # Keyed by revision, so an update or backend switch starts over.
                         _stalled_revision = self._binary_revision(binary)
@@ -33797,10 +33794,6 @@ class LlamaCppBackend:
                         "Load cancelled during the CPU replay health wait"
                     ):
                         return False
-                    else:
-                        env.clear()
-                        env.update(_env_before_replay)
-                        _spawn_cwd = _cwd_before_replay
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
