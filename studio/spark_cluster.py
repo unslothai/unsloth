@@ -2577,6 +2577,7 @@ def provision_peer(
                     fast["used"] = True
                 else:
                     fast["errors"].append((label, err))
+            # rsync creates only the last path component: make the parent on a fresh peer first.
             remote = peer_destination(path)
             remote_parent = _peer_path(osp.dirname(remote))
             # `--rsync-path` runs on the PEER even under --dry-run.
