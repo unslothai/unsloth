@@ -644,10 +644,49 @@ def _clef_forced_float32(model) -> bool:
     return bool(getattr(model, "_unsloth_forced_float32", False))
 
 
+def _clef_backbone_type_key(model) -> str:
+    """Normalised backbone ``model_type`` (dashes/underscores stripped) for precision branching."""
+    try:
+        backbone = (
+            model._backbone() if hasattr(model, "_backbone") else getattr(model, "encoder", None)
+        )
+        config = getattr(backbone, "config", None)
+        if config is None:
+            return ""
+        text = getattr(config, "text_config", None)
+        mt = getattr(text, "model_type", None) if text is not None else None
+        if not mt:
+            mt = getattr(config, "model_type", None) or ""
+        return str(mt).lower().replace("-", "").replace("_", "")
+    except Exception:
+        return ""
+
+
+def _clef_forced_float32_wants_fp16_autocast(model) -> bool:
+    """True when FORCE_FLOAT32 still wants fp16 autocast under Clef (same split as GRPO).
+
+    Qwen3.5's gated delta net NaNs under float16 autocast, so that family stays without autocast.
+    Gemma3 / gpt-oss stamp FORCE_FLOAT32 on T4/V100 but still need fp16 autocast for LoRA to
+    learn through Unsloth's fp16-activation patches (#14439). Unknown forced types keep the
+    Qwen-safe default (no autocast).
+    """
+    if not _clef_forced_float32(model):
+        return False
+    key = _clef_backbone_type_key(model)
+    if not key:
+        return False
+    if key.startswith("qwen") or key.startswith("glm"):
+        return False
+    return key.startswith("gemma") or key.startswith("gptoss")
+
+
 def _clef_amp_dtype(model, device):
-    # As _clef_mixed_precision trains (serving uses it too): the float32 path runs as loaded (Qwen3.5's
-    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4.
-    return None if _clef_forced_float32(model) else _amp_dtype(device)
+    # As _clef_mixed_precision trains (serving uses it too): Qwen3.5's float32 path runs as loaded
+    # (GDN overflows in fp16); Gemma3 / gpt-oss forced-float32 still autocast fp16 like GRPO;
+    # anything else autocasts, fp16 on a T4.
+    if _clef_forced_float32(model):
+        return torch.float16 if _clef_forced_float32_wants_fp16_autocast(model) else None
+    return _amp_dtype(device)
 
 
 def _load_clef(
@@ -1070,8 +1109,25 @@ def _attach_gguf_saving(model) -> None:
 
 def _clef_mixed_precision(model, args) -> None:
     # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
-    # float16 NaNs the gated delta net; bfloat16 weights pair with bf16 only; an fp16 load (T4) keeps fp16.
-    if _clef_forced_float32(model):
+    # float16 NaNs the gated delta net. Gemma3 / gpt-oss also stamp FORCE_FLOAT32 on T4/V100, but
+    # GRPO still enables float16 autocast for them; Clef must match or LoRA through Gemma3's
+    # fp16-activation patches stays flat (#14439). A trainer already on bf16 keeps it.
+    if _clef_forced_float32(model) and _clef_forced_float32_wants_fp16_autocast(model):
+        if args.bf16:
+            print(
+                "Unsloth: Clef keeps bfloat16 autocast for this FORCE_FLOAT32 backbone "
+                f"({_clef_backbone_type_key(model) or 'gemma/gpt-oss'})."
+            )
+            args.fp16 = False
+        else:
+            if not args.fp16:
+                print(
+                    "Unsloth: Clef enables float16 autocast for this FORCE_FLOAT32 backbone "
+                    f"({_clef_backbone_type_key(model) or 'gemma/gpt-oss'}); "
+                    "Qwen3.5 stays without autocast because its gated delta net overflows in float16."
+                )
+            args.fp16, args.bf16 = True, False
+    elif _clef_forced_float32(model):
         if args.fp16 or args.bf16:
             print(
                 "Unsloth: Qwen3.5 overflows under float16 autocast, so Clef trains without autocast, keeping float32 activations."

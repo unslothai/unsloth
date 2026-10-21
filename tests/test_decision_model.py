@@ -1516,6 +1516,54 @@ def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeyp
     assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "fp16"
 
 
+def _clef_backbone_stub(model_type: str):
+    """A Clef-shaped stub whose backbone config.model_type drives FORCE_FLOAT32 autocast branching."""
+    backbone = types.SimpleNamespace(config = types.SimpleNamespace(model_type = model_type))
+    return types.SimpleNamespace(
+        encoder = backbone,
+        _backbone = lambda: backbone,
+        _unsloth_forced_float32 = True,
+    )
+
+
+@pytest.mark.parametrize(
+    "model_type, wants_fp16",
+    [
+        ("gemma3_text", True),
+        ("gemma3", True),
+        ("gpt_oss", True),
+        ("qwen3_5", False),
+        ("qwen3_moe", False),
+    ],
+)
+def test_clef_forced_float32_fp16_autocast_split_by_backbone(model_type, wants_fp16):
+    # #14439: Gemma3 under FORCE_FLOAT32 needs fp16 autocast (GRPO already does); Qwen3.5 must not.
+    model = _clef_backbone_stub(model_type)
+    assert decision._clef_forced_float32_wants_fp16_autocast(model) is wants_fp16
+    amp = decision._clef_amp_dtype(model, torch.device("cuda"))
+    assert amp == (torch.float16 if wants_fp16 else None)
+
+
+def test_clef_gemma3_forced_float32_trains_under_fp16_autocast(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
+    model = _clef_backbone_stub("gemma3_text")
+    args = _args(tmp_path)
+    decision._clef_mixed_precision(model, args)
+    assert args.fp16 and not args.bf16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "fp16"
+    assert getattr(args, "mixed_precision", "fp16") == "fp16"
+
+
+def test_clef_qwen35_forced_float32_still_trains_without_autocast(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    model = _clef_backbone_stub("qwen3_5")
+    args = _args(tmp_path)
+    args.fp16 = True
+    decision._clef_mixed_precision(model, args)
+    assert not args.fp16 and not args.bf16
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "no"
+
+
 def test_clef_calibration_with_every_holdout_decision_from_one_row():
     # A holdout row with many questions passes the item minimum with nothing to cross-validate on.
     logits = [torch.tensor([1.0, 0.0, -1.0]) for _ in range(12)]
