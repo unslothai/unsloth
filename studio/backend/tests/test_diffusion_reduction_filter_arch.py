@@ -70,7 +70,8 @@ def test_the_race_families_share_one_arch_list():
     for name in _IMAGE_FAMILIES:
         extra = (_B200,) if name in _ALSO_ON_B200 else ()
         assert (
-            _family(name).filter_reduction_configs_archs == diffusion_families._REDUCTION_RACE_ARCHS + extra
+            _family(name).filter_reduction_configs_archs
+            == diffusion_families._REDUCTION_RACE_ARCHS + extra
         )
     assert set(diffusion_families._REDUCTION_RACE_ARCHS) == set(_MEASURED_ARCHS)
 
