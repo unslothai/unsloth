@@ -838,9 +838,6 @@ class ExportBackend:
         pinned_base = base_model
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
-            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
-            if refusal:
-                return False, refusal
 
             self.cleanup_memory()
             self.diffusion_lm_profile = None
@@ -856,6 +853,11 @@ class ExportBackend:
                     token = token,
                     base_model = base_model,
                 )
+
+            # The decision loader above checks its own base against the pin.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             checkpoint_path_obj = Path(checkpoint_path)
 
