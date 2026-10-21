@@ -1112,7 +1112,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
             )
             return agent, agent.device
         except LayaWorkerError:
-            if not _training_active():
+            if _unloaded() or not _training_active():
                 raise
         device, for_training = "cpu", True
     agent, placed = _build_laya(root, checkpoint, device, for_training)
