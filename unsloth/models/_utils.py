@@ -7920,13 +7920,14 @@ def _qat_forward_runs(
     base_config,
     device,
     dtype = torch.bfloat16,
+    out_features = 128,
 ) -> bool:
     """One tiny QAT forward with this base config, so a GPU / torch without the low precision GEMM is caught at prepare time."""
     from torchao.quantization import quantize_
     from torchao.quantization.qat import QATConfig
 
     try:
-        probe = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(
+        probe = torch.nn.Sequential(torch.nn.Linear(64, out_features, bias = False)).to(
             device = device, dtype = dtype
         )
         quantize_(probe, QATConfig(base_config, step = "prepare"))
@@ -7959,10 +7960,11 @@ def _qat_bias_grad_supported(
 
 
 def _eligible_layer_placements(model, filter_fn):
-    """Distinct (device, dtype) of the layers a QAT filter selects, adapters excluded."""
+    """Distinct (device, dtype) of the layers a QAT filter selects, adapters excluded unless they are fake quantized too."""
+    with_adapters = os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1"
     placements = []
     for name, module in model.named_modules():
-        if _is_lora_adapter_name(name) or not filter_fn(module, name):
+        if (_is_lora_adapter_name(name) and not with_adapters) or not filter_fn(module, name):
             continue
         key = (module.weight.device, module.weight.dtype)
         if key not in placements:
@@ -8088,6 +8090,37 @@ def _prepare_model_for_qat(
                         f"torch / torchao that support it. Layers of this model are on {device}. Use "
                         "qat_scheme='fp8-fp8' instead."
                     )
+            # torchao's own NVFP4 filter skips out_features <= 64 (cuBLAS): probe each such width instead.
+            small_widths = sorted(
+                {
+                    module.out_features
+                    for name, module in model.named_modules()
+                    if candidates(module, name) and module.out_features <= 64
+                }
+            )
+            bad_widths = {
+                n
+                for n in small_widths
+                if not all(_qat_forward_runs(base_config, d, t, n) for d, t in placements)
+            }
+            if bad_widths:
+                narrow = [
+                    name
+                    for name, module in model.named_modules()
+                    if not _is_lora_adapter_name(name)
+                    and candidates(module, name)
+                    and module.out_features in bad_widths
+                ]
+                warnings.warn(
+                    "Unsloth: qat_scheme='nvfp4': the NVFP4 matmul fails for out_features "
+                    f"{sorted(bad_widths)} here, so these Linear layers stay in full precision: "
+                    + ", ".join(narrow[:8])
+                    + (f", ... ({len(narrow) - 8} more)" if len(narrow) > 8 else ""),
+                    stacklevel = 2,
+                )
+                candidates = lambda m, fqn, _c = candidates, _bad = frozenset(bad_widths): (
+                    _c(m, fqn) and m.out_features not in _bad
+                )
             biased = [
                 name
                 for name, module in model.named_modules()

@@ -135,15 +135,17 @@ def _probe_ok(
     monkeypatch,
     bias_grad = True,
     calls = None,
+    bad_widths = (),
 ):
     def forward_runs(
         base_config,
         device,
         dtype = torch.bfloat16,
+        out_features = 128,
     ):
-        if calls is not None:
+        if calls is not None and out_features == 128:
             calls.append((str(device), dtype))
-        return True
+        return out_features not in bad_widths
 
     monkeypatch.setattr(qat_utils, "_qat_forward_runs", forward_runs)
     monkeypatch.setattr(qat_utils, "_qat_bias_grad_supported", lambda *a: bias_grad, raising = False)
@@ -185,6 +187,40 @@ def test_nvfp4_probes_every_layer_placement(monkeypatch):
     assert sorted(calls, key = str) == sorted(
         [("cpu", torch.bfloat16), ("cpu", torch.float32)], key = str
     )
+
+
+def test_nvfp4_keeps_failing_narrow_widths_in_full_precision(monkeypatch):
+    # tiny Qwen3 k_proj / v_proj have out_features 32 (one KV head of 32).
+    _probe_ok(monkeypatch, bad_widths = (32,))
+    model = _tiny_qwen3()
+    attn = model.model.layers[0].self_attn
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    assert not isinstance(attn.k_proj, _nvfp4_linear())
+    assert not isinstance(attn.v_proj, _nvfp4_linear())
+    assert isinstance(attn.q_proj, _nvfp4_linear())
+    assert any("out_features [32]" in str(w.message) for w in caught)
+
+
+def test_nvfp4_converts_narrow_widths_that_run(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = _tiny_qwen3()
+    model = _prepare_model_for_qat(model, "nvfp4")
+    assert isinstance(model.model.layers[0].self_attn.k_proj, _nvfp4_linear())
+
+
+def test_nvfp4_probes_opted_in_adapter_placements(monkeypatch):
+    calls = []
+    _probe_ok(monkeypatch, calls = calls)
+    monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+    model = _tiny_qwen3()
+    layer = model.model.layers[0].mlp
+    layer.lora_A = torch.nn.Linear(256, 16, bias = False).to(torch.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _prepare_model_for_qat(model, "nvfp4")
+    assert ("cpu", torch.float32) in calls
 
 
 @pytest.mark.parametrize("bias_grad", [False, True])
