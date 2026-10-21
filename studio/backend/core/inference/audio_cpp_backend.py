@@ -197,9 +197,37 @@ def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> Aud
     return fresh
 
 
-# Strict specs that list no language option yet read the request's top-level language
-# (audio.cpp extract_request_language: VoxCPM1 keeps Cantonese text Traditional with zh-HK).
-_READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts"})
+# Families that read the request's top-level language, not an option (audio.cpp extract_request_language:
+# VoxCPM1 keeps Cantonese text Traditional with zh-HK; Supertonic generation_options_from_request).
+_READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts", "supertonic"})
+# Supertonic's tokenizer refuses anything but a bare ISO code (src/models/supertonic/tokenizer_text.cpp).
+_LANGUAGE_CODE_FAMILIES = frozenset({"supertonic"})
+# English names of the languages Supertonic reads (model_specs/supertonic.json).
+_CODE_LANGUAGE_NAMES = {
+    **_LANGUAGE_NAMES,
+    "ar": "Arabic",
+    "bg": "Bulgarian",
+    "cs": "Czech",
+    "da": "Danish",
+    "el": "Greek",
+    "et": "Estonian",
+    "fi": "Finnish",
+    "hi": "Hindi",
+    "hr": "Croatian",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "lt": "Lithuanian",
+    "lv": "Latvian",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "ro": "Romanian",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "sv": "Swedish",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "vi": "Vietnamese",
+}
 
 
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
@@ -335,6 +363,17 @@ def language_name(language: Optional[str]) -> Optional[str]:
             return name
     logger.info("audio.cpp: no language name for %r; sending Auto", text)
     return None
+
+
+def language_code(language: Optional[str]) -> Optional[str]:
+    """``de-DE`` or ``German`` -> ``de``; None for Auto."""
+    text = str(language or "").strip()
+    if not text or text.lower() == "auto":
+        return None
+    for code, name in _CODE_LANGUAGE_NAMES.items():
+        if name.lower() == text.lower():
+            return code
+    return text.lower().replace("_", "-").split("-", 1)[0]
 
 
 def speech_input(model: AudioCppModel, text: str) -> str:
@@ -952,11 +991,20 @@ class AudioCppBackend:
                     "audio.cpp: %s declares no instruction option; not sending the description",
                     model.family,
                 )
+        top_language = None
         if language and str(language).strip():
-            if keys is None or "language" in keys:
+            if model.family in _READS_TOP_LEVEL_LANGUAGE:
+                top_language = (
+                    language_code(language)
+                    if model.family in _LANGUAGE_CODE_FAMILIES
+                    else str(language).strip()
+                )
+            elif keys is None or "language" in keys:
                 requested["language"] = str(language).strip()
             else:
                 logger.info("audio.cpp: %s does not declare language; not sending it", model.family)
+        if top_language:
+            body["language"] = top_language
         merged = {**default_options, **requested}
         if merged:
             body["options"] = merged
@@ -970,15 +1018,17 @@ class AudioCppBackend:
                 cancel_event = cancel_event,
             )
         except AudioCppRequestError as exc:
-            # The server answers an unsupported option with 4xx or 500; 503 is just busy.
-            if not requested or exc.status == 503 or not 400 <= exc.status < 600:
+            # 503 is a busy model, not a refused option. The server answers an option a family lacks with a
+            # 4xx or a 500 depending on where the family validates it, so both count as a refusal here.
+            if not (requested or top_language) or exc.status == 503 or not 400 <= exc.status < 600:
                 raise
             logger.info(
                 "audio.cpp: %s rejected %s (%s); retrying without them",
                 model.family,
-                sorted(requested),
+                sorted([*requested, *(["language"] if top_language else [])]),
                 exc.detail,
             )
+            body.pop("language", None)
             if default_options:
                 body["options"] = default_options
             else:

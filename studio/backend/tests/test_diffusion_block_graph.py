@@ -900,3 +900,22 @@ def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
     assert handles == () and not applied["cuda_graph"]
     assert cg.status_reason(pipe, False).startswith(cg.PROMPT_LENGTH_REASON)
     assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
+
+
+def test_a_model_offloaded_denoiser_reason_names_both_opt_ins(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe.transformer._hf_hook = types.SimpleNamespace()
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    reason = pipe._unsloth_cuda_graph_reason
+    assert handles == () and applied["cuda_graph"] is False
+    assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV in reason and bg.BLOCK_GRAPHS_ENV in reason
+
+
+def test_a_model_offloaded_denoiser_keeps_a_specific_whole_step_refusal(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe.transformer._hf_hook = types.SimpleNamespace()
+    pipe._unsloth_cuda_graph_reason = "forward is not capture-safe: its rewrite is disabled"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    reason = pipe._unsloth_cuda_graph_reason
+    assert handles == () and reason.startswith("forward is not capture-safe")
+    assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV not in reason and bg.BLOCK_GRAPHS_ENV in reason

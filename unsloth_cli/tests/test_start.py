@@ -8108,8 +8108,7 @@ def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
     state = tmp_path / "agents" / "openclaw"
     config = json.loads((state / "openclaw.json").read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
-    approvals = json.loads((state / "exec-approvals.json").read_text())
-    assert approvals["defaults"] == {"security": "full", "ask": "off", "askFallback": "full"}
+    assert not (state / "exec-approvals.json").exists()
 
 
 def test_no_yolo_openclaw_leaves_fresh_config_untouched(fake_studio, tmp_path):
@@ -8138,11 +8137,46 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     config = json.loads(path.read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
-    approvals = json.loads((path.parent / "exec-approvals.json").read_text())
-    assert approvals == {
+    assert not (path.parent / "exec-approvals.json").exists()
+
+
+# What older `unsloth start openclaw --yolo` wrote.
+LEGACY_OPENCLAW_YOLO_APPROVALS = {
+    "version": 1,
+    "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
+}
+
+
+@pytest.mark.parametrize("yolo", [True, False])
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"socket": {"path": "/tmp/exec-approvals.sock", "token": "t"}, "agents": {}}],
+)
+def test_write_openclaw_config_retires_legacy_yolo_approvals(tmp_path, capsys, yolo, extra):
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    approvals.write_text(json.dumps({**LEGACY_OPENCLAW_YOLO_APPROVALS, **extra}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = yolo)
+    assert not approvals.exists()
+    assert "legacy exec approvals" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("yolo", [True, False])
+def test_write_openclaw_config_points_user_legacy_approvals_at_openclaw_doctor(
+    tmp_path, capsys, yolo
+):
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    legacy = {**LEGACY_OPENCLAW_YOLO_APPROVALS, "agents": {"main": {"allowlist": ["git status"]}}}
+    approvals.write_text(json.dumps(legacy))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = yolo)
+    assert json.loads(approvals.read_text()) == {
         "version": 1,
-        "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
+        "agents": {"main": {"allowlist": ["git status"]}},
     }
+    err = capsys.readouterr().err
+    assert "legacy exec approvals file" in err
+    assert "openclaw doctor --fix" in err
 
 
 def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp_path):
@@ -8166,7 +8200,7 @@ def test_no_launch_rerun_clears_stale_openclaw_yolo_state(fake_studio, tmp_path)
     yolo = CliRunner().invoke(start.start_app, ["openclaw", "--yolo", "--no-launch"])
     assert yolo.exit_code == 0, yolo.output
     state = tmp_path / "agents" / "openclaw"
-    assert (state / "exec-approvals.json").exists()
+    (state / "exec-approvals.json").write_text(json.dumps(LEGACY_OPENCLAW_YOLO_APPROVALS))
     plain = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert plain.exit_code == 0, plain.output
     config = json.loads((state / "openclaw.json").read_text())
@@ -8201,8 +8235,7 @@ def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
     path = tmp_path / "openclaw.json"
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     approvals = path.parent / "exec-approvals.json"
-    state = json.loads(approvals.read_text())
-    state["agents"] = {"main": {"allowlist": ["git status"]}}
+    state = {**LEGACY_OPENCLAW_YOLO_APPROVALS, "agents": {"main": {"allowlist": ["git status"]}}}
     approvals.write_text(json.dumps(state))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     remaining = json.loads(approvals.read_text())

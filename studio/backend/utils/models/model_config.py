@@ -1176,7 +1176,7 @@ _vision_detection_cache: Dict[_CapabilityCacheKey, bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
-def is_vision_model(
+def _is_vision_model_or_none(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
@@ -1184,9 +1184,18 @@ def is_vision_model(
     gguf_variant: Optional[str] = None,
     require_image: bool = True,
     gguf_companion_roots: Optional[Tuple[str, ...]] = None,
-) -> bool:
-    """Cached per repo, token, revision and local_files_only; offline probes never reuse online entries."""
-    # Local GGUF capability comes from a companion mmproj; not cached since one may be added later.
+) -> Optional[bool]:
+    """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
+    models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
+    local_files_only, revision) minus transient failures; local_files_only is in the
+    key so an offline probe never shares an online entry.
+
+    ``gguf_variant`` picks the quant out of a directory, so the probe reads the weight
+    file the load will open. ``require_image=False`` asks only for a companion projector,
+    which is what an audio request needs: audio input rides the same file."""
+    # Local GGUF models are served by llama-server, so multimodal capability comes from a
+    # companion mmproj, not a Transformers config. Do not cache: a projector may be added
+    # beside an existing weight file after it was first inspected.
     if is_local_path(model_name):
         local_path = normalize_path(model_name)
         # Variant lookup is directory-only; the root may hold no weights in per-quant layouts.
@@ -1262,7 +1271,41 @@ def is_vision_model(
         with _vision_cache_lock:
             _vision_detection_cache[cache_key] = result
         return result
-    return False
+    return None
+
+
+def is_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
+    require_image: bool = True,
+    gguf_companion_roots: Optional[Tuple[str, ...]] = None,
+) -> bool:
+    """Whether model_name takes images; a transient probe failure reads as False (see _is_vision_model_or_none)."""
+    return bool(
+        _is_vision_model_or_none(
+            model_name,
+            hf_token,
+            local_files_only,
+            revision,
+            gguf_variant,
+            require_image,
+            gguf_companion_roots,
+        )
+    )
+
+
+def is_vision_model_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[bool, bool]:
+    """is_vision_model, plus whether the answer is definitive (False after a transient probe failure)."""
+    result = _is_vision_model_or_none(model_name, hf_token, local_files_only, revision)
+    return bool(result), result is not None
 
 
 def _is_vision_model_uncached(
