@@ -12,6 +12,7 @@ import pytest
 from core.inference.diffusion_prompt_weighting import (
     CHUNK_TOKENS,
     MAX_CHUNKS,
+    MAX_PROMPT_CHARS,
     apply_emphasis,
     has_prompt_syntax,
     parse_prompt_attention,
@@ -158,6 +159,35 @@ def test_chunk_count_is_capped():
     assert len(tokenize_chunks(" BREAK ".join(["a"] * (MAX_CHUNKS * 3)), tok)) == MAX_CHUNKS
     at_cap = " ".join(f"w{i}" for i in range(CHUNK_TOKENS * MAX_CHUNKS))
     assert len(tokenize_chunks(at_cap, tok)) == MAX_CHUNKS
+
+
+class _CountingTokenizer(_WordTokenizer):
+    def __init__(self, pad = None):
+        super().__init__(pad)
+        self.calls = 0
+        self.chars = 0
+
+    def __call__(self, text, **kw):
+        self.calls += 1
+        self.chars += len(text)
+        return super().__call__(text, **kw)
+
+
+def test_chunking_stops_reading_at_the_cap():
+    # A huge API prompt is neither tokenized nor chunked past the cap: work stays bounded, not proportional.
+    tok = _CountingTokenizer(pad = 2)
+    chunks = tokenize_chunks("a BREAK " * 200_000, tok)
+    assert len(chunks) == MAX_CHUNKS
+    assert tok.calls <= MAX_CHUNKS + 1
+    literal = _CountingTokenizer(pad = 2)
+    assert len(tokenize_chunks("w " * 5_000_000, literal, weighted = False)) == MAX_CHUNKS
+    assert literal.chars <= MAX_PROMPT_CHARS
+    # Words past the 32nd chunk never reach a chunk; the kept chunks are the same as for the capped text.
+    words = " ".join(f"w{i}" for i in range(CHUNK_TOKENS * (MAX_CHUNKS + 5)))
+    at_cap = " ".join(f"w{i}" for i in range(CHUNK_TOKENS * MAX_CHUNKS))
+    assert tokenize_chunks(words, _WordTokenizer(pad = 2)) == tokenize_chunks(
+        at_cap, _WordTokenizer(pad = 2)
+    )
 
 
 def test_break_starts_a_new_chunk():

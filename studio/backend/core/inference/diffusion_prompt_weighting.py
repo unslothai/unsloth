@@ -43,6 +43,9 @@ CHUNK_TOKENS = 75
 COMMA_BACKTRACK = 20
 # webui and ComfyUI chunk without a limit; 32 chunks (2400 tokens) bounds what one request can encode.
 MAX_CHUNKS = 32
+# Text read per prompt: 32 characters per token over the whole cap, far past any real prompt, so parsing and
+# tokenizing stay bounded however large the request body is.
+MAX_PROMPT_CHARS = MAX_CHUNKS * CHUNK_TOKENS * 32
 
 
 def parse_prompt_attention(text: str) -> list[list[Any]]:
@@ -105,6 +108,7 @@ def has_prompt_syntax(text: Optional[str]) -> bool:
     """True when parsing changes ``text``: any bracket, escape or BREAK. Plain prompts keep the pipeline's own path."""
     if not text:
         return False
+    text = text[:MAX_PROMPT_CHARS]
     parsed = parse_prompt_attention(text)
     return not (len(parsed) == 1 and parsed[0][0] == text and parsed[0][1] == 1.0)
 
@@ -115,6 +119,7 @@ def exceeds_one_chunk(pipe: Any, text: Optional[str]) -> bool:
     ``maybe_convert_prompt``, as ``encode_prompt`` tokenizes."""
     if not text:
         return False
+    text = text[:MAX_PROMPT_CHARS]
     convert = getattr(pipe, "maybe_convert_prompt", None)
     for tokenizer, _ in _encoders(pipe):
         converted = convert(text, tokenizer) if convert is not None else text
@@ -144,7 +149,10 @@ def tokenize_chunks(
     weighted: bool = True,
     convert: Any = None,
 ) -> list[tuple[list[int], list[float]]]:
-    """A1111 ``tokenize_line``: ``[(77 token ids, 77 weights), ...]``; ``weighted=False`` still chunks."""
+    """A1111 ``tokenize_line``: ``[(77 token ids, 77 weights), ...]``; ``weighted=False`` still chunks.
+    Stops at ``MAX_CHUNKS``: nothing past the cap is tokenized or kept."""
+    truncated = len(text) > MAX_PROMPT_CHARS
+    text = text[:MAX_PROMPT_CHARS]
     parsed = parse_prompt_attention(text) if weighted else [[text, 1.0]]
     bos, eos, pad, comma = _special_ids(tokenizer)
     warned = getattr(tokenizer, "deprecation_warnings", None)
@@ -155,8 +163,13 @@ def tokenize_chunks(
     weights: list[float] = []
     last_comma = -1
 
+    class _Full(Exception):
+        pass
+
     def close_chunk() -> None:
         nonlocal tokens, weights, last_comma
+        if len(chunks) >= MAX_CHUNKS:
+            raise _Full
         fill = CHUNK_TOKENS - len(tokens)
         ids = [bos] + tokens + [eos] * fill + [eos]
         mults = [1.0] + weights + [1.0] * fill + [1.0]
@@ -166,43 +179,47 @@ def tokenize_chunks(
         chunks.append((ids, mults))
         tokens, weights, last_comma = [], [], -1
 
-    for fragment, weight in parsed:
-        if fragment == "BREAK" and weight == BREAK_WEIGHT:
+    try:
+        for fragment, weight in parsed:
+            if fragment == "BREAK" and weight == BREAK_WEIGHT:
+                close_chunk()
+                continue
+            if convert is not None and fragment:
+                fragment = convert(fragment, tokenizer)
+            ids = tokenizer(fragment, truncation = False, add_special_tokens = False, verbose = False)[
+                "input_ids"
+            ]
+            for token in ids:
+                if token == comma:
+                    last_comma = len(tokens)
+                elif (
+                    COMMA_BACKTRACK
+                    and len(tokens) == CHUNK_TOKENS
+                    and last_comma != -1
+                    and len(tokens) - last_comma <= COMMA_BACKTRACK
+                ):
+                    cut = last_comma + 1
+                    carry_tokens, carry_weights = tokens[cut:], weights[cut:]
+                    tokens, weights = tokens[:cut], weights[:cut]
+                    close_chunk()
+                    tokens, weights = carry_tokens, carry_weights
+                if len(tokens) == CHUNK_TOKENS:
+                    close_chunk()
+                if len(chunks) >= MAX_CHUNKS:
+                    raise _Full
+                tokens.append(int(token))
+                weights.append(float(weight))
+        if tokens or not chunks:
             close_chunk()
-            continue
-        if convert is not None and fragment:
-            fragment = convert(fragment, tokenizer)
-        ids = tokenizer(fragment, truncation = False, add_special_tokens = False, verbose = False)[
-            "input_ids"
-        ]
-        for token in ids:
-            if token == comma:
-                last_comma = len(tokens)
-            elif (
-                COMMA_BACKTRACK
-                and len(tokens) == CHUNK_TOKENS
-                and last_comma != -1
-                and len(tokens) - last_comma <= COMMA_BACKTRACK
-            ):
-                cut = last_comma + 1
-                carry_tokens, carry_weights = tokens[cut:], weights[cut:]
-                tokens, weights = tokens[:cut], weights[:cut]
-                close_chunk()
-                tokens, weights = carry_tokens, carry_weights
-            if len(tokens) == CHUNK_TOKENS:
-                close_chunk()
-            tokens.append(int(token))
-            weights.append(float(weight))
-    if tokens or not chunks:
-        close_chunk()
-    if len(chunks) > MAX_CHUNKS:
+    except _Full:
+        truncated = True
+    if truncated:
         logger.warning(
-            "Prompt spans %d chunks of %d tokens; encoding the first %d and dropping the rest.",
-            len(chunks),
+            "Prompt spans more than %d chunks of %d tokens; encoding the first %d and dropping the rest.",
+            MAX_CHUNKS,
             CHUNK_TOKENS,
             MAX_CHUNKS,
         )
-        del chunks[MAX_CHUNKS:]
     return chunks
 
 
