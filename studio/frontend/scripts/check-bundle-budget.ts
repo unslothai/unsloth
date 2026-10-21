@@ -341,13 +341,17 @@ export const BUDGET = {
   // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
   // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
   // 96 chunks). Raised by that.
+  // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
+  // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
+  // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
+  // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at dff0fb917).
-  transferBytes: 2_079_584,
-  rawBytes: 6_904_885,
+  // budget, which keeps main's margin (re-added on top of main at 46c3bbbdf).
+  transferBytes: 2_080_159,
+  rawBytes: 6_906_575,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

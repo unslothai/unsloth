@@ -26,6 +26,8 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 import unsloth  # noqa: F401  (patches before transformers)
 from unsloth.models import loader_utils
 
@@ -188,7 +190,7 @@ def _expert_weight(experts, name):
     return w.detach().float().cpu()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU for bitsandbytes")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU for bitsandbytes")
 def test_reload_of_saved_fused_4bit_checkpoints(tmp_path):
     pytest.importorskip("bitsandbytes")
     from safetensors.torch import load_file
@@ -359,7 +361,7 @@ def _hub(
         calls.append(filename)
         if filename in files:
             p = os.path.join(os.environ["TMPDIR"], "w17_hub_" + filename)
-            with open(p, "w") as f:
+            with open(p, "w", encoding = "utf-8") as f:
                 json.dump({"weight_map": files[filename]}, f)
             return p
         if not filename.endswith(".json") and not kwargs.get("local_files_only"):

@@ -2720,20 +2720,24 @@ def _normalize_mlx_studio_scheduler(value):
     return raw
 
 
+def _resolve_mlx_local_dataset_path(dataset_file) -> Path:
+    from utils.paths import resolve_dataset_path
+
+    dataset_path = Path(os.path.expanduser(str(dataset_file)))
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.exists():
+        return dataset_path.resolve()
+    return Path(str(resolve_dataset_path(str(dataset_file))))
+
+
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import dataset_files_in_dir, resolve_dataset_path
+    from utils.paths import dataset_files_in_dir
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
-        dataset_path = Path(os.path.expanduser(str(dataset_file)))
-        if dataset_path.is_absolute():
-            file_path = str(dataset_path)
-        elif dataset_path.exists():
-            file_path = str(dataset_path.resolve())
-        else:
-            file_path = str(resolve_dataset_path(str(dataset_file)))
-        file_path_obj = Path(file_path)
+        file_path_obj = _resolve_mlx_local_dataset_path(dataset_file)
 
         if file_path_obj.is_dir():
             all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
@@ -3387,12 +3391,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     def _load_local(file_paths):
-        from datasets import load_from_disk
+        from utils.datasets.saved import load_saved_dataset
 
         if len(file_paths) == 1:
-            p = Path(file_paths[0])
-            if p.is_dir() and ((p / "dataset_info.json").exists() or (p / "state.json").exists()):
-                return load_from_disk(str(p))
+            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
+            if saved is not None:
+                return saved
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
