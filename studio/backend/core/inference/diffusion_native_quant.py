@@ -36,9 +36,7 @@ NATIVE_FP8_FORMATS = ("float8_e4m3fn", "float8_e5m2")
 
 
 def fp8_bits_to_float32(bits: Any, fmt: str = "float8_e4m3fn") -> Any:
-    """``bits`` (uint8 fp8 codes) widened to float32 by integer ops alone, equal bit for bit to
-    ``bits.view(<fp8 dtype>).to(torch.float32)``. A compiled forward takes this: Triton has no e4m3fn convert below
-    sm_89 (``fp8e4nv not supported in this architecture``), while these integer ops and a bitcast lower everywhere."""
+    """uint8 fp8 codes to float32 by integer ops, bit-exact; Triton has no e4m3fn convert below sm_89."""
     import torch
 
     b = bits.to(torch.int32)
@@ -351,7 +349,6 @@ def native_linear_class():
             if self.scheme != NATIVE_FP8:
                 wide = self.weight_q.to(torch.float32)
             elif torch.compiler.is_compiling():
-                # Integer decode: fuses into the compiled region on every arch (see fp8_bits_to_float32).
                 wide = fp8_bits_to_float32(self.weight_q, self.fp8_format)
             else:
                 wide = self.weight_q.view(getattr(torch, self.fp8_format)).to(torch.float32)

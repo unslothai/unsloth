@@ -584,9 +584,8 @@ def load_original_layout_transformer(
 ) -> Any:
     """Load a plain original-layout safetensors file for a class without ``from_single_file``
     (Krea 2 on diffusers 0.40). ``sf_kwargs`` = the ``from_single_file`` kwargs. Cast like
-    ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes. With
-    ``fp8_storage`` (``diffusion_comfy_quant.comfy_fp8_storage``) an fp8 Linear weight stays fp8 and widens per layer
-    in the forward (``NativeWeightOnlyLinear`` with unit scales: the same weight the cast would hold)."""
+    ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes. ``fp8_storage``
+    keeps fp8 Linears as fp8 with unit scales."""
     import torch
     from diffusers.loaders import single_file_model as sfm
 
@@ -631,10 +630,8 @@ def load_original_layout_transformer(
 
 
 def fp8_stored_estimate(keep: Any = ()) -> Any:
-    """``converted_host_bytes``'s ``dequantized`` for a plain fp8 file under fp8 storage: the 2-D ``.weight`` fp8
-    tensors outside ``keep`` (the loader's stored set: every such tensor of Krea 2 / HunyuanImage is a Linear) stay
-    memory-mapped codes (0), everything else is priced as usual (None). Takes the header entry too
-    (``wants_meta``); a tensor the loader then widens after all is still charged live (``charge_cast``)."""
+    """``dequantized`` for fp8 storage: 2-D fp8 ``.weight`` outside ``keep`` stays mmapped (0); later widens are
+    charged live."""
     keep = tuple(keep or ())
 
     def verdict(key: str, meta: Optional[dict] = None) -> Any:
@@ -653,7 +650,6 @@ def fp8_stored_estimate(keep: Any = ()) -> Any:
 
 
 def _fp8_stored_scale_bytes(path: str, keep: Any = ()) -> int:
-    """The fp32 unit row scales fp8 storage allocates for the tensors ``fp8_stored_estimate`` keeps as codes."""
     from .diffusion_comfy_quant import _read_header
 
     try:

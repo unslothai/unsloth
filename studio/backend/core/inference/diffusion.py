@@ -2865,8 +2865,7 @@ def _denoiser_hooked(pipe: Any) -> bool:
 
 def _torchao_render_needs_no_grad(state: Any) -> bool:
     """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad.
-    Stored fp8 layers too: their codes are plain buffers, and a buffer the offload hook moves under inference_mode
-    is an inference tensor it cannot version, so every offload would copy the codes back to fresh host memory."""
+    Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
     return bool(
@@ -10073,8 +10072,7 @@ class DiffusionBackend:
             return False
 
     def _fp8_storage_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
-        """Whether this load keeps its fp8 Linears stored as fp8: the planner's ``fp8_storage_wanted`` pick for this
-        file (recorded by ``_plan_memory``), still subject to the device / LoRA / kill-switch check."""
+        """The planner's ``fp8_storage_wanted`` pick for this file, re-checked against device / LoRA / env."""
         picks = getattr(self, "_fp8_storage_picks", None) or {}
         return bool(picks.get(str(single_file_path))) and comfy_fp8_storage(
             target, lora = _has_active_lora(loras)
@@ -10109,9 +10107,7 @@ class DiffusionBackend:
                 single_file_path,
                 scan,
                 keep_int8 = comfy_int8_backend(target, name, base) is not None,
-                # an fp8 layer no fp8 GEMM takes, priced at its stored size when the load stores it (fp8_storage)
                 keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
-                # the same header rule the loader's host RAM estimate uses for the layers it stores
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
@@ -11199,7 +11195,6 @@ class DiffusionBackend:
         pre-cast checkpoint's size, which base-repo scans never see.
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
-        # set when fp8 storage would price the single-file denoiser smaller (see the plan below)
         single_file_fp8_stored_mib: Optional[int] = None
         device_memory = (
             device_memory_override
@@ -11327,7 +11322,6 @@ class DiffusionBackend:
                         "fp8" in Path(single_file_path).name.lower() if single_file_path else False
                     )
                     if fp8_upcast and fp8_storage and fam.name == KREA2_FAMILY_NAME:
-                        # Krea 2's original-layout loader keeps a plain fp8 file's Linears fp8 (fp8_storage)
                         fp8_upcast = False
                     mib = estimate_safetensors_dense_mib(
                         file_size_mib(single_file_path), fp8_upcast = fp8_upcast
@@ -11468,8 +11462,7 @@ class DiffusionBackend:
 
         plan = _plan(model_dense_mib)
         if single_file_fp8_stored_mib is not None and model_dense_mib is not None:
-            # fp8 kept as fp8 where widening it would offload the denoiser or crowd host RAM (fp8_storage_wanted),
-            # then the plan priced at the stored size: a widened load that had to offload may now stay resident.
+            # Re-plan at the fp8-stored size: a widened load that had to offload may now stay resident.
             from .diffusion_memory import _available_system_memory_mib
 
             store = fp8_storage_wanted(

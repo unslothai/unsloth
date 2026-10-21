@@ -486,8 +486,7 @@ def _video_comfy_backends(
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
-    resident only); under offload, fp8 layers neither runtime takes stay stored as fp8, widened per layer
-    (``fp8_storage_wanted``).
+    resident only; else fp8 storage under offload).
     ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
         return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
@@ -501,8 +500,7 @@ def _video_comfy_backends(
 
 
 def _video_fp8_storage(fam: Any, target: Any, offload: bool) -> bool:
-    """``fp8_storage_wanted`` for a video DiT: stored as fp8 when the plan offloads it (or the env forces it). H3's
-    loader keeps its torchao-or-dequantize rule (its pin / stream / residency path is built on torchao weights)."""
+    """H3 is excluded: its pin / stream / residency path is built on torchao weights."""
     return getattr(fam, "name", None) != "minimax-h3" and fp8_storage_wanted(
         target, offload = offload
     )
@@ -3037,8 +3035,7 @@ def _video_seed_stays_resident(
 
 def _render_under_no_grad(state: Any) -> bool:
     """Render under no_grad: torchao weight subclasses fail an offload hook's in-place swap under inference_mode.
-    Stored fp8 layers (plain buffers) under offload too: moved under inference_mode they become inference tensors
-    the offload hook cannot version, so every offload would copy them back to fresh host memory."""
+    Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if not getattr(state, "transformer_quant", None):
         return getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and bool(
             pipe_fp8_stored_layers(getattr(state, "pipe", None))
