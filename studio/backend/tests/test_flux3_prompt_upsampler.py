@@ -2585,7 +2585,12 @@ def _prefetch_host(monkeypatch, cards, rows):
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
     )
-    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "GGML_BACKEND_PATH",
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+    ):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend,
