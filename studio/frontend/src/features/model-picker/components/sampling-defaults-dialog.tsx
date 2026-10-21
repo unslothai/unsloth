@@ -90,10 +90,15 @@ function parseDraft(
   }
   const value = Number(raw);
   const { min, max } = FIELDS[field];
-  if (!Number.isFinite(value) || value < min || value > max) {
+  if (
+    !Number.isFinite(value) ||
+    value < min ||
+    value > max ||
+    (field === "top_k" && !Number.isInteger(value))
+  ) {
     return null;
   }
-  return field === "top_k" ? Math.round(value) : value;
+  return value;
 }
 
 function draftsFrom(saved: SamplingDefaults): Drafts {
