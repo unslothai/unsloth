@@ -254,6 +254,17 @@ def _job_from_run(run: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# Jobs started here, until their history row exists: a retrieve right after create keeps the job's fields.
+_STARTED: dict[str, tuple[dict[str, Any], int]] = {}
+_STARTED_LIMIT = 16
+
+
+def _remember_start(run_id: str, config: dict[str, Any], created_at: int) -> None:
+    _STARTED[run_id] = (config, created_at)
+    while len(_STARTED) > _STARTED_LIMIT:
+        _STARTED.pop(next(iter(_STARTED)))
+
+
 def _for_caller(job: dict[str, Any], via_api_key: bool) -> dict[str, Any]:
     """An API key never sees host paths: a local model becomes its handle, an error loses its paths."""
     if host_paths_visible(via_api_key):
@@ -290,12 +301,13 @@ async def _job(run_id: str, current_subject: str, via_api_key: bool) -> dict[str
         phase = _status_field(status, "phase")
         failed = _status_field(status, "start_request_state") == "rejected" or phase == "error"
         message = _status_field(status, "error") or _status_field(status, "message")
+        config, created_at = _STARTED.get(run_id, ({}, None))
         return _for_caller(
             _job_object(
                 run_id,
                 status = "failed" if failed else _PHASE_STATUS.get(phase, "queued"),
-                config = {},
-                created_at = None,
+                config = config,
+                created_at = created_at,
                 error = (message or "Training failed") if failed else None,
             ),
             via_api_key,
@@ -303,15 +315,26 @@ async def _job(run_id: str, current_subject: str, via_api_key: bool) -> dict[str
     raise _bad_request(f"No such fine-tuning job: {_job_id(run_id)}", 404)
 
 
+def _object(value: Any, name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise _bad_request(f"{name} must be an object.")
+    return value
+
+
 def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
-    method = body.method or {"type": "supervised"}
+    method = _object(body.method, "method")
     method_type = method.get("type", "supervised")
     if method_type != "supervised":
         raise _bad_request(
             f"Fine-tuning method '{method_type}' is not supported yet; use 'supervised'."
         )
-    hyperparameters = dict(body.hyperparameters or {})
-    hyperparameters.update((method.get("supervised") or {}).get("hyperparameters") or {})
+    supervised = _object(method.get("supervised"), "method.supervised")
+    hyperparameters = dict(_object(body.hyperparameters, "hyperparameters"))
+    hyperparameters.update(
+        _object(supervised.get("hyperparameters"), "method.supervised.hyperparameters")
+    )
 
     config: dict[str, Any] = {"training_type": "LoRA/QLoRA", "format_type": "auto"}
     extra = body.model_extra or {}
@@ -328,6 +351,8 @@ def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
     config["local_datasets"] = [str(_find_file(body.training_file))]
     if body.validation_file:
         config["local_eval_datasets"] = [str(_find_file(body.validation_file))]
+        # Studio evaluates only when eval_steps > 0; OpenAI always validates a given validation_file.
+        config.setdefault("eval_steps", 0.1)
     if body.suffix:
         config["project_name"] = body.suffix
     if body.seed is not None:
@@ -370,13 +395,18 @@ async def create_fine_tuning_job(
         request, current_subject = current_subject, via_api_key = via_api_key
     )
     if started.status == "error" or not started.job_id:
-        raise _bad_request(started.message or started.error or "Training did not start", 409)
+        message = started.message or started.error or "Training did not start"
+        raise _bad_request(
+            message if host_paths_visible(via_api_key) else redact_paths_in_text(message), 409
+        )
+    created_at = int(datetime.now(timezone.utc).timestamp())
+    _remember_start(started.job_id, request.model_dump(), created_at)
     return _for_caller(
         _job_object(
             started.job_id,
             status = "validating_files",
             config = request.model_dump(),
-            created_at = None,
+            created_at = created_at,
         ),
         via_api_key,
     )
@@ -389,6 +419,22 @@ def _paged(rows: list[dict[str, Any]], after: Optional[str], limit: int) -> dict
     return {"object": "list", "data": rows[:limit], "has_more": len(rows) > limit}
 
 
+def _runs_after(after: Optional[str], count: int) -> list[dict[str, Any]]:
+    """Up to ``count`` runs older than ``after`` (newest first), paging through the whole history."""
+    runs: list[dict[str, Any]] = []
+    found, offset = after is None, 0
+    while len(runs) < count:
+        batch = list_runs(200, offset)["runs"]
+        if not batch:
+            break
+        for run in batch:
+            if found:
+                runs.append(run)
+            found = found or run["id"] == after
+        offset += len(batch)
+    return runs[:count]
+
+
 @router.get("/fine_tuning/jobs")
 async def list_fine_tuning_jobs(
     after: Optional[str] = None,
@@ -396,14 +442,15 @@ async def list_fine_tuning_jobs(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    runs = (await asyncio.to_thread(list_runs, 200, 0))["runs"]
+    runs = await asyncio.to_thread(_runs_after, _run_id(after) if after else None, limit + 1)
     jobs = [_for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key) for run in runs]
-    status = await _current_status(current_subject, via_api_key)
-    live_id = _status_field(status, "job_id") if status is not None else None
-    live_phase = _status_field(status, "phase") if status is not None else None
-    if live_id and live_phase != "idle" and all(run["id"] != live_id for run in runs):
-        jobs.insert(0, await _job(live_id, current_subject, via_api_key))
-    return _paged(jobs, after, limit)
+    if after is None:
+        status = await _current_status(current_subject, via_api_key)
+        live_id = _status_field(status, "job_id") if status is not None else None
+        live_phase = _status_field(status, "phase") if status is not None else None
+        if live_id and live_phase != "idle" and all(run["id"] != live_id for run in runs):
+            jobs.insert(0, await _job(live_id, current_subject, via_api_key))
+    return {"object": "list", "data": jobs[:limit], "has_more": len(jobs) > limit}
 
 
 @router.get("/fine_tuning/jobs/{job_id}")

@@ -140,11 +140,18 @@ def test_upload_then_create_starts_a_studio_run(studio):
         job = await client.fine_tuning.jobs.create(
             model = "unsloth/Qwen3-0.6B",
             training_file = uploaded.id,
+            validation_file = uploaded.id,
             suffix = "support-bot",
             seed = 7,
             method = {
                 "type": "supervised",
-                "supervised": {"hyperparameters": {"n_epochs": 2, "batch_size": 4}},
+                "supervised": {
+                    "hyperparameters": {
+                        "n_epochs": 2,
+                        "batch_size": 4,
+                        "learning_rate_multiplier": 0.5,
+                    }
+                },
             },
             extra_body = {"lora_r": 32, "max_seq_length": 4096},
         )
@@ -162,6 +169,8 @@ def test_upload_then_create_starts_a_studio_run(studio):
     assert request.local_datasets[0].endswith("_chats.jsonl")
     assert open(request.local_datasets[0], "rb").read() == CHATS
     assert (request.num_epochs, request.batch_size, request.random_seed) == (2, 4, 7)
+    assert float(request.learning_rate) == 1e-4
+    assert request.local_eval_datasets == request.local_datasets and request.eval_steps > 0
     assert (request.lora_r, request.max_seq_length, request.project_name) == (
         32,
         4096,
@@ -172,6 +181,7 @@ def test_upload_then_create_starts_a_studio_run(studio):
     assert job.training_file == uploaded.id
     # No history row until the worker is up: the live training status answers instead.
     assert retrieved.status == "validating_files"
+    assert (retrieved.model, retrieved.training_file) == ("unsloth/Qwen3-0.6B", uploaded.id)
 
 
 def test_finished_run_reads_as_a_succeeded_job(studio, tmp_path):
@@ -242,6 +252,7 @@ def test_refusals_are_openai_errors(studio):
         for kwargs in (
             {"training_file": "file-missing"},
             {"training_file": uploaded.id, "method": {"type": "dpo"}},
+            {"training_file": uploaded.id, "method": {"type": "supervised", "supervised": "x"}},
             {"training_file": uploaded.id, "extra_body": {"local_datasets": ["/etc/passwd"]}},
         ):
             try:
@@ -258,5 +269,21 @@ def test_refusals_are_openai_errors(studio):
             errors.append(404)
         return errors
 
-    assert _run(flow()) == [404, 400, 400, 400, 404]
+    assert _run(flow()) == [404, 400, 400, 400, 400, 404]
     assert calls["start"] == []
+
+
+def test_list_pages_through_the_whole_history(studio, monkeypatch):
+    client, _calls, _live = studio
+    runs = [{"id": f"job_{i:03d}", "status": "completed", "config_json": "{}"} for i in range(450)]
+    monkeypatch.setattr(
+        openai_fine_tuning,
+        "list_runs",
+        lambda limit, offset: {"runs": runs[offset : offset + limit], "total": len(runs)},
+    )
+    monkeypatch.setattr(openai_fine_tuning, "_trained_tokens", lambda run_id: None)
+
+    async def every_id():
+        return [job.id async for job in client.fine_tuning.jobs.list(limit = 100)]
+
+    assert _run(every_id()) == [f"ftjob_{i:03d}" for i in range(450)]
