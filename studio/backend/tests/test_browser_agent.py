@@ -431,3 +431,34 @@ def test_repeated_browser_calls_run_again_and_keep_the_tools():
         assert decision.action == "execute"
         controller.record_result(decision, "Done.")
     assert not controller.force_final_answer and controller.active_tools()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.google.com/url?q=http://127.0.0.1:8888/api/auth/me",
+        "https://duckduckgo.com/l/?uddg=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data",
+        "https://www.google.com/url?q=https://www.google.com/url?q%3Dhttp://10.0.0.1/",
+    ],
+)
+def test_redirect_target_is_checked_like_the_link(url):
+    # The tab opens the redirect's target, so a local target is refused like a direct link to it.
+    with pytest.raises(ValueError):
+        _request("browser_navigate", {"url": url})
+
+
+def test_redirect_target_honours_the_website_policy():
+    policy = {"allowedDomains": [], "blockedDomains": ["collector.example"]}
+    with pytest.raises(ValueError):
+        _request(
+            "browser_navigate",
+            {"url": "https://www.google.com/url?q=https://collector.example/x"},
+            policy,
+        )
+    # A redirect to an allowed site still opens, with the link as given.
+    assert _request(
+        "browser_navigate", {"url": "https://www.google.com/url?q=https://unsloth.ai/"}, policy
+    ) == {
+        "op": "navigate",
+        "url": "https://www.google.com/url?q=https://unsloth.ai/",
+    }

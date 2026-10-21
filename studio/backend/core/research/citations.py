@@ -20,7 +20,7 @@ from core.research.redaction import _escape_link_destination
 
 # unrolling avoids catastrophic backtracking on unclosed [Document: that would block the event loop.
 _DOCUMENT_CITATION = re.compile(r"\[(?:Document|MCP):[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
-_MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
+_MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)", re.IGNORECASE)
 _SOURCES_HEADING = re.compile(
     r"^(?:#{1,6}\s+|\*\*)?"
     r"(?:Sources?|References?|Bibliography|Works\s+Cited|Source\s+List)"
@@ -28,9 +28,10 @@ _SOURCES_HEADING = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
-_AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
+_AUTOLINK = re.compile(r"<(https?://[^>\s]+)>", re.IGNORECASE)
 # \x00 stops a URL glued to masked code from swallowing its placeholder.
-_RAW_URL = re.compile(r"https?://[^\s<>\x00]+")
+# Any case: a browser reads `HTTPS://` as https too.
+_RAW_URL = re.compile(r"https?://[^\s<>\x00]+", re.IGNORECASE)
 # Beside the pattern that restores them: a kind missing there leaves a raw sentinel in the
 # report. [0-9] not \d, which also matches other scripts' digits.
 _PLACEHOLDER_KINDS = ("research-code", "research-citation")

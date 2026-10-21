@@ -9,6 +9,7 @@ import { openChatItemById, useChatNavigationStore, visibleChatItems } from "@/fe
 import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isTauri } from "@/lib/api-base";
+import { unwrapRedirect } from "../address";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
@@ -629,6 +630,14 @@ function navigationContext(action: BrowserAction, context: Run) {
   };
 }
 
+/** Where a search engine's redirect link lands: the tab opens that page, so that page is the one gated. */
+function redirectEnd(url: string): string {
+  let target = url;
+  // Each hop's target is a strictly shorter part of the link, so this ends.
+  for (let next = unwrapRedirect(target); next !== target; next = unwrapRedirect(target)) target = next;
+  return target;
+}
+
 async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const { signal, session } = context;
   const { chat, reachedHosts } = session;
@@ -651,7 +660,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   patchAgentChat(chat, { working: true, runKey: context.runKey });
 
   if (action.op === "navigate") {
-    const url = action.url ?? "";
+    const url = redirectEnd(action.url ?? "");
     const gate = gateNavigation(url, navigationContext(action, context));
     const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };

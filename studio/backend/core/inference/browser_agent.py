@@ -20,7 +20,7 @@ import json
 import re
 import unicodedata
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from loggers import get_logger
 
@@ -400,6 +400,23 @@ def _host_problem(hostname: str) -> Optional[str]:
     return None
 
 
+def _redirect_target(url: str) -> Optional[str]:
+    """The page a search engine's redirect link lands on, as the browser tab unwraps it
+    (``unwrapRedirect`` in features/browser/address.ts), or None."""
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").removeprefix("www.")
+    except ValueError:
+        return None
+    query = parse_qs(parsed.query)
+    target = None
+    if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and parsed.path == "/l/":
+        target = (query.get("uddg") or [None])[0]
+    elif re.fullmatch(r"google\.[a-z.]+", host) and parsed.path == "/url":
+        target = (query.get("q") or query.get("url") or [None])[0]
+    return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
+
+
 def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     """The http(s) URL to open, or ValueError saying why it may not be opened."""
     from .tools import _validate_and_resolve_host
@@ -425,6 +442,10 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     ok, reason, _ips = _validate_and_resolve_host(hostname, port)
     if not ok:
         raise ValueError(reason.removeprefix("Blocked: "))
+    # The tab opens a redirect link's target, so the target has to pass the same checks.
+    target = _redirect_target(url)
+    if target is not None:
+        normalize_navigation_url(target, website_policy)
     return url
 
 

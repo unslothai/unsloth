@@ -51,7 +51,6 @@ import {
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
   type ReactNode,
@@ -93,6 +92,7 @@ import {
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
+import { mermaid } from "./mermaid-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
 import { spellLines } from "./reasoning-code-colour";
 import { useThinkingCodeColour } from "./use-thinking-code-colour";
