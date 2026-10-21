@@ -212,7 +212,7 @@ function visibleRows(rows: AggRow[], expanded: boolean): AggRow[] {
   if (expanded || rows.length <= TOP_ROWS + 1) return rows;
   const base = rows.find((r) => r.isBaseline);
   const rest = rows.filter((r) => !r.isBaseline).slice(0, TOP_ROWS);
-  return base ? [...rest, base] : rest;
+  return base ? [...rest, base].sort((a, b) => b.mean - a.mean) : rest;
 }
 
 function NoteChip({

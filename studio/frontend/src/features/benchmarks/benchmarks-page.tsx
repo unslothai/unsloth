@@ -199,6 +199,15 @@ function ShownRunNote({
           {ago(run.createdAt, locale)}
         </span>
       </span>
+      <span className="min-w-0 truncate text-foreground/80" title={run.model}>
+        ·{" "}
+        {[
+          `${modelShort(run.model)}${run.ggufVariant ? ` ${run.ggufVariant}` : ""}`,
+          run.meta.gpu,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </span>
       {changed && (
         <span className="min-w-0 truncate text-muted-foreground/80">
           · Run to measure {changed}

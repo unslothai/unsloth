@@ -57,7 +57,7 @@ const OFF: Variant = { label: "Speculation off", load: { speculative_type: "off"
 const MTP3: Variant = { label: "MTP · 3 draft tokens", load: { speculative_type: "mtp", spec_draft_n_max: 3 } };
 const MTP4: Variant = { label: "MTP · 4 draft tokens", load: { speculative_type: "mtp", spec_draft_n_max: 4 } };
 
-test("aggregate orders fastest first, baseline last, and measures against the baseline", () => {
+test("aggregate orders every row fastest first, baseline included, and measures against the baseline", () => {
   const rows = aggregate(
     [
       result(OFF.label, 0, 29),
@@ -78,6 +78,21 @@ test("aggregate orders fastest first, baseline last, and measures against the ba
   assert.equal(rows[0].acceptRate, 0.78);
   assert.equal(rows[2].isBaseline, true);
   assert.equal(rows[2].pct, null);
+});
+
+test("a baseline that isn't the slowest sits where its speed puts it", () => {
+  const F16: Variant = { label: "KV cache f16", load: { cache_type_kv: "f16" } };
+  const Q8: Variant = { label: "KV cache q8_0", load: { cache_type_kv: "q8_0" } };
+  const Q4: Variant = { label: "KV cache q4_0", load: { cache_type_kv: "q4_0" } };
+  const rows = aggregate(
+    [result(F16.label, 0, 109), result(Q8.label, 0, 111), result(Q4.label, 0, 100)],
+    [F16, Q8, Q4],
+    F16.label,
+  );
+  assert.deepEqual(
+    rows.map((r) => r.label),
+    [Q8.label, F16.label, Q4.label],
+  );
 });
 
 test("warm-ups are left out of the mean but a missing server rate falls back to the client one", () => {

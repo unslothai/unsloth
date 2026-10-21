@@ -972,9 +972,7 @@ export function aggregate(
     for (const r of rows)
       if (!r.isBaseline) r.pct = ((r.mean - base.mean) / base.mean) * 100;
   }
-  rows.sort(
-    (a, b) => Number(a.isBaseline) - Number(b.isBaseline) || b.mean - a.mean,
-  );
+  rows.sort((a, b) => b.mean - a.mean);
   return rows;
 }
 
