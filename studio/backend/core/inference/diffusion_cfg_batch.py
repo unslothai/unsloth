@@ -168,7 +168,9 @@ def _graph_count() -> int:
     """Dynamo's compiled-graph count (0 before Dynamo was ever imported)."""
     dynamo_utils = sys.modules.get("torch._dynamo.utils")
     try:
-        return int(dynamo_utils.counters["stats"]["unique_graphs"]) if dynamo_utils is not None else 0
+        return (
+            int(dynamo_utils.counters["stats"]["unique_graphs"]) if dynamo_utils is not None else 0
+        )
     except Exception:  # noqa: BLE001
         return 0
 
@@ -286,7 +288,9 @@ class CfgBatchRouter:
         self.module_ref = weakref.ref(module)
         # Traced inside a compiled caller, the router passes straight through (no Python of its own for Dynamo to
         # break on, and no doubled shape to recompile for).
-        self._is_compiling = getattr(getattr(_torch(), "compiler", None), "is_compiling", None) or (lambda: False)
+        self._is_compiling = getattr(getattr(_torch(), "compiler", None), "is_compiling", None) or (
+            lambda: False
+        )
         self.orig_forward = module.forward
         self.had_override = "forward" in module.__dict__
         self.prev_override = module.__dict__.get("forward")
@@ -536,7 +540,9 @@ class CfgBatchRouter:
             del b_args, b_kwargs
             if _graph_count() != graphs and self.render_compiled is None and not self.offloaded:
                 # a compiled region the markers did not show, on a resident denoiser: never again this load
-                self.disable("the doubled batch compiled a new graph (the denoiser runs compiled code)")
+                self.disable(
+                    "the doubled batch compiled a new graph (the denoiser runs compiled code)"
+                )
                 return
         except _NotBatchable as exc:
             self._shape_off(shape, f"not batchable: {exc}")

@@ -348,9 +348,7 @@ def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
     backend.unload()
 
 
-def test_deferred_default_tier_never_auto_skips(
-    fake_runtime, tmp_path, monkeypatch
-):
+def test_deferred_default_tier_never_auto_skips(fake_runtime, tmp_path, monkeypatch):
     # Speed unset (the UI default): a dense load stays eager, then the 3rd image engages `default`. The auto static
     # skip is lossy and opt-in (max only), so every render, the 3rd included, computes every step.
     from core.inference import diffusion as dmod

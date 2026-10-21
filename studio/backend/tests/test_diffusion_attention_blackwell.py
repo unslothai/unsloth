@@ -64,14 +64,19 @@ def test_auto_pick_still_reads_as_cudnn_for_every_caller(blackwell):
 def test_blackwell_auto_leaves_native_when_dispatch_already_picks_cudnn(blackwell):
     dit = _Dit(128)
     pick = select_attention_backend(_target(), "auto", speed_active = True)
-    assert apply_attention_backend(types.SimpleNamespace(transformer = dit), pick, target = _target()) is None
+    assert (
+        apply_attention_backend(types.SimpleNamespace(transformer = dit), pick, target = _target())
+        is None
+    )
     assert dit.set_to in (None, "native")
     assert blackwell["asked"] == [(torch.bfloat16, 128)]
 
 
 def test_an_explicit_cudnn_request_is_still_pinned_on_blackwell(blackwell):
     dit = _Dit(128)
-    engaged = apply_attention_backend(types.SimpleNamespace(transformer = dit), "_native_cudnn", target = _target())
+    engaged = apply_attention_backend(
+        types.SimpleNamespace(transformer = dit), "_native_cudnn", target = _target()
+    )
     assert engaged == "_native_cudnn" and dit.set_to == "_native_cudnn"
     assert blackwell["asked"] == []
 
@@ -102,8 +107,12 @@ def test_mixed_head_dims_need_cudnn_at_every_one(blackwell):
     assert att._native_dispatches_cudnn(pipe, _target()) is False
     blackwell["asked"].clear()
     att._NATIVE_DISPATCH_CACHE.clear()
-    assert att._native_dispatches_cudnn(types.SimpleNamespace(transformer = _Dit(64)), _target()) is True
-    assert att._native_dispatches_cudnn(types.SimpleNamespace(transformer = _Dit(64)), _target()) is True
+    assert (
+        att._native_dispatches_cudnn(types.SimpleNamespace(transformer = _Dit(64)), _target()) is True
+    )
+    assert (
+        att._native_dispatches_cudnn(types.SimpleNamespace(transformer = _Dit(64)), _target()) is True
+    )
     assert blackwell["asked"] == [(torch.bfloat16, 64)]  # cached per (device, dtype, head_dim)
 
 
@@ -112,4 +121,7 @@ def test_an_unaskable_probe_keeps_the_pin(blackwell, monkeypatch):
         raise RuntimeError("no device")
 
     monkeypatch.setattr(att, "_native_sdp_choice", boom)
-    assert att._native_dispatches_cudnn(types.SimpleNamespace(transformer = _Dit(128)), _target()) is False
+    assert (
+        att._native_dispatches_cudnn(types.SimpleNamespace(transformer = _Dit(128)), _target())
+        is False
+    )

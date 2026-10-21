@@ -480,7 +480,11 @@ def test_hv15_counts_branches_by_context_without_a_step_callback(loop_runtime, m
     backend.unload()
 
 
-def _load_h3(backend, transformer_cache, speed_mode = None):
+def _load_h3(
+    backend,
+    transformer_cache,
+    speed_mode = None,
+):
     from core.inference.video import _detect_load_family
 
     diffusers = sys.modules["diffusers"]

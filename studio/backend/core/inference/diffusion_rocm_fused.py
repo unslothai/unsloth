@@ -61,7 +61,9 @@ def _is_nvidia_linux() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return getattr(torch.version, "hip", None) is None and bool(getattr(torch.version, "cuda", None))
+    return getattr(torch.version, "hip", None) is None and bool(
+        getattr(torch.version, "cuda", None)
+    )
 
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).

@@ -297,7 +297,9 @@ def test_a_resident_denoiser_is_armed_by_default(monkeypatch):
     assert cb.install_cfg_batch(resident, offload_policy = "none") is None
     assert cb.router_for(resident).reason == "resident denoiser"
     # model offload swaps the forward slot between renders: render 1 would batch and later renders run plain
-    assert "model offload" in cb.cfg_batch_decline(_Pipe(Flux2Transformer2DModel()), offload_policy = "model")
+    assert "model offload" in cb.cfg_batch_decline(
+        _Pipe(Flux2Transformer2DModel()), offload_policy = "model"
+    )
     monkeypatch.setenv(cb.CFG_BATCH_ENV, "0")
     assert cb.cfg_batch_decline(_Pipe(Flux2Transformer2DModel()), offload_policy = "none") == (
         f"{cb.CFG_BATCH_ENV}=0"
@@ -321,6 +323,7 @@ def _timed(monkeypatch, cost):
     # fake costs are whole "seconds": keep the compute-bound gate out of the trial tests
     monkeypatch.setattr(cb, "_RESIDENT_MAX_PAIR_S", 1e9)
     monkeypatch.setattr(cb.CfgBatchRouter, "_sync", lambda self, latent: True)
+
     def forward(self, *a, **k):
         clock.now += clock.cost(int(k["hidden_states"].shape[0]))
         return Flux2Transformer2DModel.forward(self, *a, **k)
@@ -332,7 +335,9 @@ def _timed(monkeypatch, cost):
 
 
 @pytest.mark.parametrize("batched_cost, wins", [(1.2, True), (2.0, False)])
-def test_the_timing_trial_never_mixes_paths_and_repeats_bit_identically(monkeypatch, batched_cost, wins):
+def test_the_timing_trial_never_mixes_paths_and_repeats_bit_identically(
+    monkeypatch, batched_cost, wins
+):
     # Same seed twice in one process: render 1 (which runs the trial) and render 2 (which reads the verdict) give the
     # same result bit for bit, equal to the batched-only or the plain-only path.
     model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else batched_cost)
@@ -380,9 +385,24 @@ def test_a_shape_that_stays_plain_records_no_prediction(monkeypatch):
 def _quiet_flux():
     """The fake FLUX.2 transformer without its call log (a list append Dynamo would have to trace)."""
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, txt_ids, img_ids, return_dict = False, **_):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        txt_ids,
+        img_ids,
+        return_dict = False,
+        **_,
+    ):
         text = encoder_hidden_states.mean(dim = 1, keepdim = True)
-        return (hidden_states * self.w + text + timestep.view(-1, 1, 1) + txt_ids.mean() + img_ids.mean(),)
+        return (
+            hidden_states * self.w
+            + text
+            + timestep.view(-1, 1, 1)
+            + txt_ids.mean()
+            + img_ids.mean(),
+        )
 
     cls = type("Flux2Transformer2DModel", (Flux2Transformer2DModel,), {"forward": forward})
     cls.__module__ = "diffusers.models.fake"
@@ -403,10 +423,15 @@ def test_compiled_denoisers_are_seen_in_every_form():
     hooked = Flux2Transformer2DModel()
     hooked.add_module("blocks", torch.nn.ModuleList([torch.nn.Linear(1, 1)]))
     ref = types.SimpleNamespace(forward = torch.compile(hooked.blocks[0].forward))
-    hooked.blocks[0]._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": object()}, _fn_refs = [ref])
+    hooked.blocks[0]._diffusers_hook = types.SimpleNamespace(
+        hooks = {"group_offloading": object()}, _fn_refs = [ref]
+    )
     assert "below its hooks" in cb.compiled_denoiser(hooked)
     # resident: the doubled shape would only add a compile; offloaded: it saves an upload per step, so it batches
-    assert cb.cfg_batch_decline(_Pipe(marked), offload_policy = "none") == "the denoiser is compiled and resident"
+    assert (
+        cb.cfg_batch_decline(_Pipe(marked), offload_policy = "none")
+        == "the denoiser is compiled and resident"
+    )
     assert cb.cfg_batch_decline(_Pipe(_offloaded(marked)), offload_policy = "group") is None
 
 
@@ -414,7 +439,9 @@ def test_a_compile_on_a_resident_denoiser_after_install_keeps_every_render_plain
     model = Flux2Transformer2DModel()
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
-    model._unsloth_regional_compile_kwargs = {"dynamic": False}  # the deferred profile compiled the blocks
+    model._unsloth_regional_compile_kwargs = {
+        "dynamic": False
+    }  # the deferred profile compiled the blocks
     _flux_loop(model)
     cb.end_cfg_batch_render(pipe)
     _flux_loop(model)
@@ -428,7 +455,9 @@ def test_an_offloaded_shape_judged_before_a_compile_stays_plain_after_it(monkeyp
     _flux_loop(model)  # eager render: trial on step 1, steps 2-6 batched
     cb.end_cfg_batch_render(pipe)
     assert router.stats["batched_steps"] == 4
-    model._unsloth_regional_compile_kwargs = {"dynamic": False}  # compiled below the offload hooks afterwards
+    model._unsloth_regional_compile_kwargs = {
+        "dynamic": False
+    }  # compiled below the offload hooks afterwards
     del model.calls[:]
     _flux_loop(model)
     assert model.calls == [1] * 12  # no doubled call reaches the new compile on a follow-up prompt
@@ -446,13 +475,17 @@ def test_an_offloaded_compiled_denoiser_batches_from_its_trial_render(monkeypatc
     assert router.last_shape.compiled_at_trial and router.last_shape.trial_render == 0
 
 
-def test_a_doubled_call_compiling_on_a_follow_up_render_ends_batching_after_that_render(monkeypatch):
+def test_a_doubled_call_compiling_on_a_follow_up_render_ends_batching_after_that_render(
+    monkeypatch,
+):
     model = Flux2Transformer2DModel()
     pipe, router = _armed(model, monkeypatch)
     _flux_loop(model)
     cb.end_cfg_batch_render(pipe)
     graphs = iter(range(1000))
-    monkeypatch.setattr(cb, "_graph_count", lambda: next(graphs))  # every doubled call "compiles" from now on
+    monkeypatch.setattr(
+        cb, "_graph_count", lambda: next(graphs)
+    )  # every doubled call "compiles" from now on
     del model.calls[:]
     _flux_loop(model)
     assert model.calls == [1, 1, 1, 1] + [2] * 4  # render 2 stays on its one path
@@ -472,7 +505,9 @@ def test_a_doubled_call_that_compiles_a_graph_turns_batching_off(monkeypatch):
     _flux_loop(model)
     router = cb.router_for(pipe)
     assert "compiled a new graph" in router.disabled
-    assert model.calls[:4] == [1, 1, 1, 1] and model.calls[-8:] == [1] * 8  # nothing batched after the trial
+    assert (
+        model.calls[:4] == [1, 1, 1, 1] and model.calls[-8:] == [1] * 8
+    )  # nothing batched after the trial
 
 
 def test_a_router_traced_by_dynamo_passes_straight_through():
@@ -492,8 +527,13 @@ def test_a_router_traced_by_dynamo_passes_straight_through():
     for batch in (1, 2):
         x = torch.randn(batch, 4, 8)
         out = compiled(hidden_states = x, **{**kw, "timestep": torch.ones(batch)})[0]
-        torch.testing.assert_close(out, model.forward.orig_forward(hidden_states = x, **{**kw, "timestep": torch.ones(batch)})[0])
-    assert cb.router_for(pipe).stats["plain_calls"] == 0  # the traced calls never ran the router's own logic
+        torch.testing.assert_close(
+            out,
+            model.forward.orig_forward(hidden_states = x, **{**kw, "timestep": torch.ones(batch)})[0],
+        )
+    assert (
+        cb.router_for(pipe).stats["plain_calls"] == 0
+    )  # the traced calls never ran the router's own logic
 
 
 @pytest.mark.parametrize("pair_s, gated", [(0.3, True), (0.1, False)])
@@ -518,7 +558,9 @@ def test_an_offloaded_pair_is_never_gated_as_compute_bound(monkeypatch):
     pipe = _Pipe(_offloaded(model))
     assert cb.install_cfg_batch(pipe, offload_policy = "group") is None
     _flux_loop(model)
-    assert cb.router_for(pipe).last_shape.off is None and model.calls[-1] == 2  # an upload saved per step wins
+    assert (
+        cb.router_for(pipe).last_shape.off is None and model.calls[-1] == 2
+    )  # an upload saved per step wins
 
 
 def test_one_slow_plain_sample_does_not_decide_the_trial(monkeypatch):
@@ -543,7 +585,6 @@ def test_one_slow_plain_sample_does_not_decide_the_trial(monkeypatch):
 
 
 def test_declines(monkeypatch):
-
     class ZImageTransformer2DModel(Flux2Transformer2DModel):
         pass
 

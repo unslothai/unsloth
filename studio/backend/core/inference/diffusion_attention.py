@@ -522,7 +522,9 @@ AUTO_CUDNN = _AutoCudnn("_native_cudnn")
 # identical), so the pin only adds its per-call sdpa_kernel wrapper: per call 0.4-22% slower eager, within +-4% compiled
 # (exclusive card, FLUX.2-klein / Wan2.1 / Qwen-Image shapes). At head_dim 256 native picks FLASH there, so the probe
 # is per head dim.
-BLACKWELL_NATIVE_ATTN_ENV = "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
+BLACKWELL_NATIVE_ATTN_ENV = (
+    "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
+)
 _NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
@@ -3082,14 +3084,18 @@ def _native_sdp_choice(device: str, dtype: Any, head_dim: int) -> int:
 
 def _device_capability(device: str) -> tuple[int, int]:
     import torch
-
     return tuple(torch.cuda.get_device_capability(device))  # type: ignore[return-value]
 
 
 def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
     """True on a Blackwell (SM100+) NVIDIA card when torch's own SDPA dispatch picks cuDNN for every DiT head dim at the
     run dtype, so the ``auto`` pin would change no kernel. Unknown head dims, dtype or capability keep the pin."""
-    if (os.environ.get(BLACKWELL_NATIVE_ATTN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+    if (os.environ.get(BLACKWELL_NATIVE_ATTN_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return False
     if not _is_cuda_nvidia(target):
         return False
@@ -3250,7 +3256,11 @@ def apply_attention_backend(
             and not _cudnn_serves_pipe(pipe, target, logger)
         ):
             backend = None
-        if isinstance(backend, _AutoCudnn) and target is not None and _native_dispatches_cudnn(pipe, target):
+        if (
+            isinstance(backend, _AutoCudnn)
+            and target is not None
+            and _native_dispatches_cudnn(pipe, target)
+        ):
             if logger is not None:
                 logger.info(
                     "diffusion.attention: auto keeps native SDPA (it already dispatches cuDNN on this Blackwell card; "

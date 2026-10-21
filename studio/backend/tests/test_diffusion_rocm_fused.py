@@ -411,7 +411,9 @@ def test_tiny_flux2_transformer_default_on(monkeypatch):
         img_ids = ids.to(dev)[None].float(),
         txt_ids = torch.cartesian_prod(
             torch.arange(1), torch.arange(1), torch.arange(1), torch.arange(txt)
-        ).to(dev)[None].float(),
+        )
+        .to(dev)[None]
+        .float(),
         return_dict = False,
     )
     with torch.no_grad():
