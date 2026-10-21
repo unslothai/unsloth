@@ -361,11 +361,10 @@
 	--slider-fill: var(--control-accent);
 	--slider-track: rgb(0 0 0 / calc(0.065 * var(--contrast-wash-gain, 1)));
 	--slider-thumb: #ffffff;
-	--slider-thumb-hover: #ededed;
 	/* The border is an inset shadow: Chromium snaps border widths to whole
 	   pixels, so a 1.5px border renders as 1px. */
 	--slider-thumb-shadow: inset 0 0 0 1.5px #e3e3e3, 0 1px 3px rgb(0 0 0 / 0.06);
-	--slider-track-height: calc(0.125rem * var(--ui-space-scale, 1));
+	--slider-track-height: calc(0.1875rem * var(--ui-space-scale, 1));
 	--slider-thumb-size: calc(1.25rem * var(--ui-space-scale, 1));
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
@@ -572,7 +571,6 @@
 	/* Accent softened toward grey; flat white thumb. */
 	--slider-fill: color-mix(in oklab, var(--control-accent) 75%, #a0a0a0);
 	--slider-track: rgb(255 255 255 / calc(0.045 * var(--contrast-wash-gain, 1)));
-	--slider-thumb-hover: #dcdcdc;
 	--slider-thumb-shadow: 0 0 #0000;
 	/* Chat action icons: under the ink so they read as controls, not text.
 	   Hover restores full --foreground. */
@@ -5238,6 +5236,15 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		color-mix(in oklab, var(--primary) 9%, var(--background));
 }
 
+/* Whole pixels at any UI scale: a fractional track is snapped to a different
+   device-pixel height per row, so sliders on one panel look unequally thick. */
+@supports (width: round(1.5px, 1px)) {
+	:root {
+		--slider-track-height: round(calc(0.1875rem * var(--ui-space-scale, 1)), 1px);
+		--slider-thumb-size: round(calc(1.25rem * var(--ui-space-scale, 1)), 1px);
+	}
+}
+
 /* Native <input type="range"> in the shared slider look (components/ui/slider.tsx).
    --range-ratio (0..1) places the fill's end under the thumb's centre, which sits
    half a thumb in from each end. */
@@ -5288,7 +5295,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: var(--slider-thumb);
 	border: none;
 	box-shadow: var(--slider-thumb-shadow);
-	transition: background-color 100ms ease-out;
 }
 
 .native-range::-moz-range-thumb {
@@ -5299,15 +5305,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: var(--slider-thumb);
 	border: none;
 	box-shadow: var(--slider-thumb-shadow);
-	transition: background-color 100ms ease-out;
-}
-
-.native-range:not(:disabled):hover::-webkit-slider-thumb {
-	background: var(--slider-thumb-hover);
-}
-
-.native-range:not(:disabled):hover::-moz-range-thumb {
-	background: var(--slider-thumb-hover);
 }
 
 .native-range:focus-visible {

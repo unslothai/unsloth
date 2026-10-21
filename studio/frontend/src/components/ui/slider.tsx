@@ -142,7 +142,7 @@ function Slider({
           aria-label={props["aria-label"]}
           aria-labelledby={props["aria-labelledby"]}
           aria-valuetext={thumbValueText?.(values[index] ?? min, index)}
-          className="ring-(--slider-fill)/30 relative z-10 size-(--slider-thumb-size) rounded-full bg-(--slider-thumb) shadow-(--slider-thumb-shadow) hover:bg-(--slider-thumb-hover) block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 transition-colors duration-100 ease-out focus-visible:ring-4 focus-visible:outline-hidden"
+          className="ring-(--slider-fill)/30 relative z-10 size-(--slider-thumb-size) rounded-full bg-(--slider-thumb) shadow-(--slider-thumb-shadow) block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 focus-visible:ring-4 focus-visible:outline-hidden"
         />
       ))}
     </SliderPrimitive.Root>
