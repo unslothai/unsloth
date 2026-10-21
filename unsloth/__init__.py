@@ -252,11 +252,13 @@ if _IS_MLX:
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
+            fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
-        del _fix_untrusted_config, _fix_template_names
+        _fix_vocab_paths()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
     except Exception:
         pass
     try:

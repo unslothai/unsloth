@@ -1258,7 +1258,7 @@ def _plain_state_pre_hook(module, args, kwargs):
 def test_foreign_root_hook_declines_the_replica():
     dit = _FlagDit()
     dit.register_forward_pre_hook(_plain_state_pre_hook, with_kwargs = True)
-    assert "a hook outside Studio" in mg._hooks_present(dit)
+    assert "a hook outside Unsloth" in mg._hooks_present(dit)
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert replicas == [] and router.stats["replica_calls"] == 0

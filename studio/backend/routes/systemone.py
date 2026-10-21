@@ -179,7 +179,7 @@ def _require_enabled() -> None:
         raise _error(
             404,
             "api_usage_error",
-            "The Decision API is off. The Studio owner can turn it on in Settings > API.",
+            "The Decision API is off. The Unsloth owner can turn it on in Settings > API.",
         )
 
 
