@@ -348,8 +348,12 @@ export const BUDGET = {
   // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
   // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
-  transferBytes: 2_071_693,
-  rawBytes: 6_879_150,
+  // The Vulkan CPU fallback notices and the Compute backend picker's loading item (#14521) add 769 B raw / 257 B
+  // transfer to the eager chat and settings chunks (6,878,886 -> 6,879,655 B raw, 2,071,694 -> 2,071,951 B
+  // transfer against 36497673f, one machine and build, 97 chunks). Raised by that; main measured 1 B transfer
+  // over here, so transfer is set to the measured build.
+  transferBytes: 2_071_951,
+  rawBytes: 6_879_919,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
