@@ -739,3 +739,24 @@ def test_a_tensor_override_on_the_pin_keeps_the_child_numbering(argv):
     # tensor overrides, so the override neither widens nor moves to physical GPU 0.
     cmd, pin, note = _widen([1], argv, inherited = [0, 1])
     assert (pin, note, cmd) == ([1], "", argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["--spec-draft-device", "CUDA0", "-ot", "ffn.*=CUDA1"], id = "ot"),
+        pytest.param(["-ot", "ffn.*=CUDA1", "--spec-draft-device", "CUDA0"], id = "ot_first"),
+        pytest.param(["--spec-draft-device", "ROCm0", "-otd", "ffn.*=ROCm1"], id = "otd_rocm"),
+        pytest.param(
+            ["--mmproj-offload", "--mmproj-device", "CUDA0", "-ot", "ffn.*=CUDA1"], id = "mmproj"
+        ),
+    ],
+)
+def test_a_tensor_override_on_a_companion_card_keeps_the_widened_numbering(argv):
+    # Auto picked physical GPU 1 and the companion widens the child to [1, 0]. The
+    # override's CUDA1 was physical GPU 0 in that mask before tensor overrides were read,
+    # so it must not move onto physical GPU 1.
+    cmd, pin, note = _widen([1], argv, inherited = [0, 1])
+    assert pin == [1, 0] and note
+    buffers = [a.rpartition("=")[2] for a in cmd if "=" in a]
+    assert [pin[int(b[-1])] for b in buffers] == [0]

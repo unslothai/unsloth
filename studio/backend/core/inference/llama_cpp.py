@@ -7246,6 +7246,24 @@ def _widen_pin_ids_for_companion_devices(
             sites.append((site, tokens))
     if not sites and not excluded_sites:
         return list(main_ids), ""
+    # Companions widen the child mask first; a tensor-override buffer that was a valid
+    # position in that mask before tensor overrides were read keeps naming that card.
+    companion_mask = list(main_ids)
+    for site, tokens in sites:
+        if site.group != "tensor":
+            for _, physical in tokens:
+                if physical is not None and physical not in companion_mask:
+                    companion_mask.append(physical)
+    for index, (site, tokens) in enumerate(sites):
+        if site.group != "tensor":
+            continue
+        corrected = []
+        for token, physical in tokens:
+            match = _GPU_DEVICE_TOKEN_RE.match(_site_device_name(site, token))
+            if match and int(match.group(2)) < len(companion_mask):
+                physical = companion_mask[int(match.group(2))]
+            corrected.append((token, physical))
+        sites[index] = (site, corrected)
     widened = list(main_ids)
     for _, tokens in sites:
         for _, physical in tokens:
