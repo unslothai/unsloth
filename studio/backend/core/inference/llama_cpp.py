@@ -5258,6 +5258,50 @@ def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> 
         return False
 
 
+# A llama.cpp whose --fit measures a DSpark / DFlash / Eagle3 draft that borrows the
+# target's token_embd / output (common/fit.cpp retries the measurement next to an
+# allocation-free target context instead of "fitting without it"). No --help flag or
+# build number says so (prebuilt versions are the aged upstream tag), so read the
+# trace format string the new path compiles in whatever the log level.
+_FIT_MEASURES_BORROWED_DRAFT_MARKER = (
+    b"measuring the extra model next to an allocation-free target context"
+)
+_LLAMA_COMMON_LIB_GLOBS = ("libllama-common*", "llama-common*.dll")
+
+
+def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
+    """Whether ``bin_path``'s fitter sizes a borrowed-tensor draft itself.
+
+    common/fit.cpp is linked into the server in a static build and into
+    libllama-common beside it in a shared one (the prebuilt default), so both are
+    scanned. Fails closed: no marker keeps Studio's own sidecar reserve."""
+    if not bin_path:
+        return False
+    candidates = [Path(bin_path)]
+    try:
+        lib_dir = _llama_lib_dir(bin_path)
+        for pattern in _LLAMA_COMMON_LIB_GLOBS:
+            candidates.extend(sorted(lib_dir.glob(pattern)))
+    except Exception:  # noqa: BLE001 -- an unreadable lib dir is "not known"
+        pass
+    seen: set = set()
+    for candidate in candidates:
+        try:
+            # The soname chain (.so -> .so.0 -> .so.0.0.1) is one file: read it once.
+            candidate = candidate.resolve()
+            if candidate in seen or not candidate.is_file():
+                continue
+            seen.add(candidate)
+            st = candidate.stat()
+        except OSError:
+            continue
+        if _binary_has_marker(
+            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKER
+        ):
+            return True
+    return False
+
+
 def _swa_full_from_args_or_env(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -10686,6 +10730,7 @@ class LlamaCppBackend:
                 "flash_attn_takes_value": True,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
+                "fit_measures_borrowed_drafts": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "ctx_checkpoints_flag": None,
@@ -11114,6 +11159,9 @@ class LlamaCppBackend:
             "flash_attn_takes_value": flash_attn_takes_value,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
+            # Read off the build, not --help: no flag announces it (fails closed).
+            "fit_measures_borrowed_drafts": supports_fit_target
+            and _fit_measures_borrowed_drafts(bin_path),
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "ctx_checkpoints_flag": ctx_checkpoints_flag,
@@ -30021,6 +30069,9 @@ class LlamaCppBackend:
                         # unpriced, so charging the whole file would starve the target.
                         and not _draft_share_unknown
                         and (_apple_budget_mib > 0 or _fit_device_count == 1)
+                        # A build whose fitter measures the borrowed-tensor draft itself
+                        # already keeps room for it; a reserve on top would count it twice.
+                        and not server_caps.get("fit_measures_borrowed_drafts")
                     ):
                         # Priced even under --fit off: a startup-OOM retry turns the
                         # fitter on with the drafter still loaded. A positive context is always
@@ -31458,9 +31509,13 @@ class LlamaCppBackend:
                         None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
                     ),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
-                    dspark_fit_sized = not use_fit or bool(_sidecar_fit_reserve_mib),
+                    dspark_fit_sized = not use_fit
+                    or bool(_sidecar_fit_reserve_mib)
+                    or bool(server_caps.get("fit_measures_borrowed_drafts")),
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
-                    dflash_fit_sized = not use_fit or bool(_sidecar_fit_reserve_mib),
+                    dflash_fit_sized = not use_fit
+                    or bool(_sidecar_fit_reserve_mib)
+                    or bool(server_caps.get("fit_measures_borrowed_drafts")),
                     # So the fallback says unopenable, not missing. DSpark/DFlash never
                     # reach the drop.
                     mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),

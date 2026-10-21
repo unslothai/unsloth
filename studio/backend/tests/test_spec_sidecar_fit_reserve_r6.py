@@ -26,7 +26,8 @@ if _TESTS_DIR not in sys.path:
 import test_llama_cpp_placement as _placement  # noqa: E402
 import test_spec_sidecar_fit_reserve_r2 as _r2  # noqa: E402
 import test_spec_sidecar_fit_reserve_r4 as _r4  # noqa: E402
-from core.inference.llama_cpp import GgufLoadIntent  # noqa: E402
+from core.inference import llama_cpp as _lc  # noqa: E402
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
 
 _GIB = 1024 * 1024 * 1024
 _FLOOR = 1024 + 8 * 1024  # base margin + the 8 GiB sidecar
@@ -235,3 +236,58 @@ def test_an_arch_retry_onto_several_gpus_drops_the_scalar_reserve(tmp_path):
     assert _r4._margin(cmds[0]) >= _FLOOR
     assert "--model-draft" in cmds[1]
     assert _r4._margin(cmds[1]) < _FLOOR
+
+
+# A llama.cpp whose fitter measures the borrowed-tensor draft itself needs no reserve.
+
+_MARKER = b"measuring the extra model next to an allocation-free target context"
+
+
+def _write(path, payload = b""):
+    path.write_bytes(b"\x7fELF" + payload + b"\x00")
+    return path
+
+
+def test_native_measurement_is_read_from_the_shared_common_library(tmp_path):
+    binary = _write(tmp_path / "llama-server")
+    real = _write(tmp_path / "libllama-common.so.0.0.1", b"..." + _MARKER + b"...")
+    (tmp_path / "libllama-common.so.0").symlink_to(real.name)
+    (tmp_path / "libllama-common.so").symlink_to("libllama-common.so.0")
+    assert _lc._fit_measures_borrowed_drafts(str(binary))
+
+
+def test_native_measurement_is_read_from_a_static_server(tmp_path):
+    binary = _write(tmp_path / "llama-server", _MARKER)
+    assert _lc._fit_measures_borrowed_drafts(str(binary))
+
+
+def test_an_older_build_does_not_claim_native_measurement(tmp_path):
+    binary = _write(tmp_path / "llama-server")
+    _write(
+        tmp_path / "libllama-common.so",
+        b"failed to measure the memory of the extra model, fitting without it",
+    )
+    assert not _lc._fit_measures_borrowed_drafts(str(binary))
+    assert not _lc._fit_measures_borrowed_drafts(None)
+
+
+def test_a_missing_binary_fails_closed(tmp_path):
+    caps = LlamaCppBackend.probe_server_capabilities(str(tmp_path / "missing"))
+    assert caps["fit_measures_borrowed_drafts"] is False
+
+
+@pytest.mark.parametrize("native", [False, True], ids = ["older", "native"])
+def test_the_reserve_stands_down_when_the_fitter_measures_the_draft(tmp_path, native):
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        **_r2._CAPS,
+        "fit_measures_borrowed_drafts": native,
+    }
+    cmd = _placement._launch(
+        backend, gguf, speculative_type = "dspark", dspark_draft_path = _r4._sidecar(tmp_path)
+    )["cmd"]
+    assert "--model-draft" in cmd
+    if native:
+        assert _r4._margin(cmd) < _FLOOR
+    else:
+        assert _r4._margin(cmd) >= _FLOOR
