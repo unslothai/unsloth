@@ -205,7 +205,7 @@ def test_sequential_offload_is_refused_with_the_reason():
 
 
 def test_model_offload_replays_under_the_hook_and_records_again_when_weights_move(monkeypatch):
-    monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")  # the opt-in re-record path
+    monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")
     _cuda()
     accelerate = pytest.importorskip("accelerate")
     from accelerate import cpu_offload_with_hook
@@ -240,7 +240,7 @@ def test_model_offload_replays_under_the_hook_and_records_again_when_weights_mov
 def test_model_offload_re_records_a_moved_module_without_a_warm_up(monkeypatch):
     """Every onload of a model-offloaded denoiser may land at new addresses: the same key records again with no
     warm-up step (its kernels exist), and replays stay exact across many moves."""
-    monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")  # the opt-in re-record path
+    monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")
     _cuda()
     pytest.importorskip("accelerate")
     from accelerate import cpu_offload_with_hook
@@ -305,8 +305,7 @@ def test_model_offload_keeps_the_step_eager_by_default_with_the_reason():
 
 @pytest.mark.parametrize("opt_in", [False, True])
 def test_model_offload_records_nothing_after_the_first_render(monkeypatch, opt_in):
-    """Studio's low_vram placement: every render onloads the denoiser, runs its steps, then the next stage offloads it
-    and reuses its VRAM. Renders 2+ must not record a graph (the default); the opt-in records one per moved render."""
+    """Studio low_vram: renders 2+ record nothing by default; the opt-in records one per moved render."""
     _cuda()
     pytest.importorskip("accelerate")
     if opt_in:
@@ -326,7 +325,7 @@ def test_model_offload_records_nothing_after_the_first_render(monkeypatch, opt_i
             assert torch.equal(a, b)
         hook.offload()
         torch.cuda.empty_cache()
-        # the next stage takes the VRAM the denoiser freed, so its next onload lands elsewhere
+        # the next stage takes the freed VRAM, so the next onload lands elsewhere
         hold.append(torch.empty(4 << 20, device = "cuda"))
     if opt_in:
         assert later >= 1 and handles[0].stats["invalidations"] >= 1

@@ -31,12 +31,8 @@ CUDA_GRAPHS_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPHS"
 OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH"
 # =0: a block-streamed whole-step graph records its copies into the graph pool instead of the prefetcher's slot ring.
 STEP_SLOTS_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS"
-# =1: a model-offloaded denoiser (whole-module CPU offload) records its whole step again, re-recorded on every onload.
 MODEL_OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_MODEL_OFFLOAD_CUDA_GRAPH"
-# Default off: the hook re-uploads the denoiser every render (the text encoder and VAE reuse its VRAM in between), so
-# its weights land at new addresses and the step graph is recorded again on every render. Each replay saved about 1%
-# of a compiled step (FLUX.2-klein 4B, 1024^2), the per-render recording and its pool (~0.6 GB) cost more, and the
-# output is bit-identical either way. The per-block graphs refuse this placement for the same reason.
+# Default off: replay saved ~1% of a step (FLUX.2-klein 4B, 1024^2) but the per-render re-record + ~0.6 GB pool cost more.
 MODEL_OFFLOAD_REASON = (
     "model offload re-uploads the denoiser every render at new addresses, so its step graph would record again on "
     "every render; set " + MODEL_OFFLOAD_CUDA_GRAPH_ENV + "=1 to record it anyway"
