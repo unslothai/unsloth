@@ -48,6 +48,11 @@ def untile_scales(tiled: Any, rows: int, blocks: int) -> Any:
             f"tiled scales hold {flat.numel()} values, {rp * bp} expected for {rows}x{blocks}"
         )
     # tile (row // 128, block // 4) is 512 values: inner (row % 32, (row % 128) // 32, block % 4)
+    from .diffusion_single_file_converters import charge_host_ram
+
+    # the permuted copy, and while it is still live the trimmed copy when the block count is padded
+    trimmed = rows * blocks if blocks != bp else 0
+    charge_host_ram((rp * bp + trimmed) * flat.element_size())
     v = flat.reshape(rp // 128, bp // 4, 32, 4, 4).permute(0, 3, 2, 1, 4).reshape(rp, bp)
     return v[:rows, :blocks].contiguous()
 
@@ -59,6 +64,9 @@ def tile_scales(plain: Any) -> Any:
     rows, blocks = plain.shape
     rp, bp = _roundup(rows, 128), _roundup(blocks, 4)
     raw = plain.view(torch.uint8) if plain.element_size() == 1 else plain
+    from .diffusion_single_file_converters import charge_host_ram
+
+    charge_host_ram(2 * rp * bp * raw.element_size())  # the padded buffer and its permuted copy
     full = torch.zeros(rp, bp, dtype = raw.dtype, device = raw.device)
     full[:rows, :blocks] = raw
     out = full.reshape(rp // 128, 4, 32, bp // 4, 4).permute(0, 3, 2, 1, 4).reshape(-1).contiguous()
@@ -69,8 +77,22 @@ def swap_nibbles(packed: Any) -> Any:
     """High-first fp4 packing <-> low-first (``0xAB`` -> ``0xBA``)."""
     import torch
 
+    from .diffusion_single_file_converters import charge_host_ram
+
     u = packed.view(torch.uint8) if packed.dtype != torch.uint8 else packed
-    return ((u << 4) | (u >> 4)).to(torch.uint8)
+    # One output (the source stays memory-mapped), filled in bounded row chunks: the expression form held
+    # the left shift, the right shift and their OR at once, three packed copies.
+    flat = u.reshape(u.shape[0], -1) if u.dim() > 1 else u.reshape(-1, 1)
+    row = max(1, int(flat.shape[1]))
+    chunk = max(1, min(int(flat.shape[0]), _DEQUANT_CHUNK_BYTES // row))
+    charge_host_ram(u.numel() + chunk * row)
+    out = torch.empty_like(flat)
+    for start in range(0, int(flat.shape[0]), chunk):
+        part = flat[start : start + chunk]
+        dst = out[start : start + chunk]
+        torch.bitwise_left_shift(part, 4, out = dst)
+        dst |= part >> 4
+    return out.reshape(u.shape)
 
 
 def decode_layer(fmt: str, weight: Any, weight_scale: Any) -> tuple[Any, Any]:
@@ -96,19 +118,24 @@ def logical_cols(fmt: str, codes: Any) -> int:
     return int(codes.shape[1]) * (2 if fmt == NVFP4 else 1)
 
 
-def dequant_block(
-    fmt: str,
-    codes: Any,
-    scale: Any,
-    *,
-    tensor_scale: Any = None,
-    pre_quant_scale: Any = None,
-    dtype: Any = None,
-) -> Any:
-    """Dense ``[N, K]`` weight; ``pre_quant_scale`` folds into the columns: ``(x * s) @ W.T == x @ (W * s).T``."""
+# Row chunks of a fallback block dequantization keep its float32 / int32 intermediates under this many bytes.
+_DEQUANT_CHUNK_BYTES = 16 << 20
+
+
+def _dequant_temp_bytes_per_row(fmt: str, cols: int, pre_quant: bool) -> int:
+    """Peak bytes of intermediates one row of ``_dequant_block_rows`` holds at once (``cols`` logical columns).
+
+    nvfp4: int32 codes (2 per packed byte: 2 * cols), two masked int32 index tensors and two float32 gathers
+    of cols / 2 each (8 * cols), the stacked float32 values (4 * cols), the scaled float32 product (4 * cols);
+    the masks and gathers are freed before the product, so the peak is codes + gathers + stack. mxfp8: float32
+    codes and their product (8 * cols). A pre-quant scale adds one float32 product."""
+    peak = 14 * cols if fmt == NVFP4 else 8 * cols
+    return peak + (4 * cols if pre_quant else 0)
+
+
+def _dequant_block_rows(fmt, codes, scale, tensor_scale, pre_quant_scale):
     import torch
 
-    dtype = dtype or torch.bfloat16
     rows = int(codes.shape[0])
     if fmt == NVFP4:
         lut = torch.tensor(
@@ -116,11 +143,10 @@ def dequant_block(
         )
         c = codes.to(torch.int32)
         values = torch.stack((lut[c & 0x0F], lut[c >> 4]), dim = -1).reshape(rows, -1, 16)
+        del c
         step = scale.to(torch.float32)
         if tensor_scale is not None:
-            step = step * torch.as_tensor(
-                tensor_scale, dtype = torch.float32, device = codes.device
-            ).reshape(-1, 1)
+            step = step * tensor_scale
         weight = (values * step.unsqueeze(-1)).reshape(rows, -1)
     elif fmt == MXFP8:
         exp = scale.view(torch.uint8).to(torch.float32) - _E8M0_BIAS
@@ -130,8 +156,50 @@ def dequant_block(
     else:
         raise ValueError(f"not a block-scaled ComfyUI format: {fmt!r}")
     if pre_quant_scale is not None:
-        weight = weight * pre_quant_scale.to(torch.float32).reshape(1, -1)
-    return weight.to(dtype)
+        weight = weight * pre_quant_scale
+    return weight
+
+
+def dequant_block(
+    fmt: str,
+    codes: Any,
+    scale: Any,
+    *,
+    tensor_scale: Any = None,
+    pre_quant_scale: Any = None,
+    dtype: Any = None,
+) -> Any:
+    """Dense ``[N, K]`` weight; ``pre_quant_scale`` folds into the columns: ``(x * s) @ W.T == x @ (W * s).T``.
+
+    Dequantized in row chunks straight into the output, so the float32 intermediates stay bounded by
+    ``_DEQUANT_CHUNK_BYTES`` instead of several times the layer; every op is per row, so the result is
+    bit-identical to one pass."""
+    import torch
+
+    from .diffusion_single_file_converters import charge_host_ram
+
+    if fmt not in BLOCK_SIZES:
+        raise ValueError(f"not a block-scaled ComfyUI format: {fmt!r}")
+    dtype = dtype or torch.bfloat16
+    rows = int(codes.shape[0])
+    cols = logical_cols(fmt, codes)
+    per_row = _dequant_temp_bytes_per_row(fmt, cols, pre_quant_scale is not None)
+    chunk = max(1, min(rows, _DEQUANT_CHUNK_BYTES // max(per_row, 1)))
+    charge_host_ram(rows * cols * torch.empty((), dtype = dtype).element_size() + chunk * per_row)
+    ts = None
+    if tensor_scale is not None:
+        ts = torch.as_tensor(tensor_scale, dtype = torch.float32, device = codes.device).reshape(-1, 1)
+    pqs = None
+    if pre_quant_scale is not None:
+        pqs = pre_quant_scale.to(torch.float32).reshape(1, -1)
+    out = torch.empty((rows, cols), dtype = dtype, device = codes.device)
+    for start in range(0, rows, chunk):
+        stop = min(rows, start + chunk)
+        part_ts = ts if ts is None or ts.shape[0] == 1 else ts[start:stop]
+        out[start:stop] = _dequant_block_rows(
+            fmt, codes[start:stop], scale[start:stop], part_ts, pqs
+        ).to(dtype)
+    return out
 
 
 def mx_quantize_activation(x: Any) -> tuple[Any, Any]:
@@ -403,6 +471,8 @@ def build_runtime_linear(
 ) -> Any:
     import torch
 
+    from .diffusion_single_file_converters import charge_host_ram
+
     rows = int(codes.shape[0])
     if fmt == NVFP4:
         from .diffusion_nvfp4_linear import nvfp4_linear_class
@@ -426,6 +496,8 @@ def build_runtime_linear(
             # FlashInfer's activation global scale is the reciprocal of ComfyUI's decode-side input_scale.
             a_gsf = (1.0 / in_scale).clone()
             cls = nvfp4_linear_class()
+        if not codes.is_contiguous():
+            charge_host_ram(int(codes.numel()) * int(codes.element_size()))
         return cls(
             cols,
             rows,
@@ -438,6 +510,8 @@ def build_runtime_linear(
             activation_scales_baked = True,
         )
     if fmt == MXFP8:
+        if not codes.is_contiguous():
+            charge_host_ram(int(codes.numel()) * int(codes.element_size()))
         return mxfp8_linear_class()(
             int(codes.shape[1]),
             rows,

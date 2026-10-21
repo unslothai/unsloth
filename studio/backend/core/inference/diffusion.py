@@ -109,6 +109,12 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinals,
 )
 from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
+from .diffusion_zimage_cfg_split import (
+    install_zimage_cfg_split,
+    uninstall_zimage_cfg_split,
+    zimage_cfg_split_status,
+)
+from .diffusion_zimage_cfg_split import render as zimage_cfg_split_render
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
@@ -197,6 +203,9 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     learned_peak_label,
+    CFG_OFF_PART,
+    cfg_off_peaks_enabled,
+    without_cfg_off,
     live_vae_saver_tag,
     planned_vae_saver_tag,
     stream_window_pad_mib,
@@ -2501,7 +2510,7 @@ def _start_peak_probe(state: Any) -> Any:
             # cache (same count): a later peak above that start omits memory a fresh process allocates on its first
             # render
             return None
-        if _live_peak_identity(state) != tuple(identity):
+        if not _peak_identity_matches(state, identity):
             # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
             # saver the guard engaged for it, another attention backend): its peak belongs to no key
             return None
@@ -2555,14 +2564,26 @@ def _live_peak_identity(state: Any) -> tuple:
             speed = None  # a background compile is still pending: this render runs eager under a compiled tier
     except Exception:  # noqa: BLE001
         speed = None
-    # a family that can run classifier-free guidance records only renders that do (the doubled denoiser batch)
+    # Unknown guidance, or CFG on a family that never runs it, records nothing.
     family_obj = getattr(state, "family", None)
     expects_cfg = bool(getattr(family_obj, "uses_negative_prompt", False))
-    if bool(getattr(pipe, "_unsloth_peak_cfg", expects_cfg)) != expects_cfg:
+    cfg = getattr(pipe, "_unsloth_peak_cfg", expects_cfg)
+    if cfg is None:
         speed = None
+    elif bool(cfg) != expects_cfg:
+        if expects_cfg and cfg_off_peaks_enabled():
+            label = f"{label}|{CFG_OFF_PART}"
+        else:
+            speed = None
     if getattr(pipe, "_unsloth_loras", None):
         speed = None  # LoRA adapters add rank-dependent activations no key names
     return (family, label, speed)
+
+
+def _peak_identity_matches(state: Any, identity: Any) -> bool:
+    """The render runs the configuration the load's identity names (``cfg:off`` aside)."""
+    family, label, speed = _live_peak_identity(state)
+    return (family, without_cfg_off(label), speed) == tuple(identity)
 
 
 def _live_graph_mode(state: Any) -> str:
@@ -2715,7 +2736,7 @@ def _record_peak_probe(
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
             return
-        if _live_peak_identity(state) != tuple(identity):
+        if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
             return
         if cuda_graph.failed_capture_count() != getattr(probe, "failed_captures", 0):
@@ -2730,7 +2751,9 @@ def _record_peak_probe(
             # the SDPA probe could not tell math from a fused kernel: a quadratic peak stored as linear would
             # under-size every larger request
             return
-        family, quant, speed_mode = identity
+        family, quant, speed_mode = _live_peak_identity(
+            state
+        )  # the key this render ran (``cfg:off`` included)
         pipe = state.pipe
         index = getattr(probe.device, "index", None)
         graphs = cuda_graph.live_graph_count(index)
@@ -9543,6 +9566,10 @@ class DiffusionBackend:
                     try:
                         # the phase-table seed holds only where it was measured
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                        # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
+                        pipe._unsloth_peak_expects_cfg = bool(
+                            getattr(fam, "uses_negative_prompt", False)
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                     peak_vae = planned_vae_saver_tag(pipe, plan)
@@ -9602,6 +9629,8 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_learned_peak_mib"),
                                 plan.estimates.get("measured_learned_peak_pixels"),
                                 plan.estimates.get("measured_learned_peak_quadratic"),
+                                plan.estimates.get("measured_static_seed", True),
+                                plan.estimates.get("measured_learned_cfg_off", False),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
@@ -9873,6 +9902,8 @@ class DiffusionBackend:
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
                     # both branches through one offloaded forward; declines when CFG-parallel took the slot
                     install_cfg_batch(pipe, offload_policy = effective_policy, logger = logger)
+                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new
+                    install_zimage_cfg_split(pipe, offload_policy = effective_policy, logger = logger)
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -12545,12 +12576,17 @@ class DiffusionBackend:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
                         guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
                     # past what the measured placement reserved: stream resident groups again for this call
+                    try:
+                        guard_cfg = _negative_prompt_engaged(fam, guidance)
+                    except Exception:  # noqa: BLE001 - unknown: sized as a CFG request
+                        guard_cfg = None
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
                         condition_pixels = guard_condition_pixels,
+                        cfg = guard_cfg,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
@@ -12846,6 +12882,7 @@ class DiffusionBackend:
                                 ),
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
+                                zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
                             ):
@@ -13217,6 +13254,7 @@ class DiffusionBackend:
             prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         uninstall_cfg_parallel(state.pipe)
+        uninstall_zimage_cfg_split(state.pipe)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
@@ -13338,6 +13376,7 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "cfg_batch": cfg_batch_status(state.pipe),
+            "zimage_cfg_split": zimage_cfg_split_status(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
                 state.repo_id,
