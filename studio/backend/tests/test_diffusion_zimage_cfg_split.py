@@ -253,7 +253,6 @@ def test_static_step_skip_splits_and_turning_cfg_on_compiles_nothing_new():
     assert warm > 0
     _denoise(pipe, model, True, 12, 1, skip)
     assert _graphs() == warm
-    # The split sits above the skip: every guided step splits, then each branch is skipped or computed.
     assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 12, "batched": 0}
     assert skip.stats["skipped"] > 0
 
@@ -271,7 +270,6 @@ def test_static_step_skip_split_matches_the_batched_schedule(monkeypatch):
     monkeypatch.setenv(zs.ZIMAGE_CFG_SPLIT_ENV, "0")
     pipe_b, model_b, skip_b = _static_pipe(compile_blocks = False)
     batched = _denoise(pipe_b, model_b, True, 12, 2, skip_b)
-    # Two calls per step instead of one, the same steps skipped.
     assert split_stats["skipped"] == 2 * skip_b.stats["skipped"] > 0
     assert split_stats["computed"] == 2 * skip_b.stats["computed"]
     for s, b in zip(split, batched):
@@ -282,12 +280,10 @@ def test_static_step_skip_without_a_step_signal_keeps_the_batched_call():
     from core.inference import diffusion_step_skip as ss
 
     pipe, model, skip = _static_pipe(compile_blocks = False)
-    # No step-end callback: one counter per key, which a step's two calls would advance twice.
     ss.reset_static_step_skip(pipe, 12, step_signal = False)
     with zs.render(pipe, 1):
         _run(model, *_guided_args(_latent(3), torch.tensor([0.4]), 45, 9, 3))
     assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 0, "batched": 1}
-    # A CFG-parallel router installed after the skip takes the forward slot; the skip is still found.
     from core.inference.diffusion_multigpu import CfgParallelRouter
 
     model.__dict__["forward"] = CfgParallelRouter(model, primary = "cpu", secondary = "cpu")

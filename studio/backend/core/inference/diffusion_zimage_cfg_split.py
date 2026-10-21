@@ -77,7 +77,6 @@ def _skip_keys_calls_apart(skip: Any) -> bool:
 def _declined_now(module: Any) -> Optional[str]:
     slots = getattr(module, "__dict__", {})
     # FBCache keeps one residual per cache_context; two calls in one context would compare cond against uncond.
-    # Unreachable today: no Z-Image pipeline opens a cache_context, so apply_step_cache refuses them.
     if getattr(module, "_unsloth_step_cache", None):
         return "step cache"
     # The skip's own slot: a CFG-parallel router installed after it takes the forward slot and wraps it.
