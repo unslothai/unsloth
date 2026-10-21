@@ -923,6 +923,11 @@ def model_visible(
 
 def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> bool:
     access_options = {"offline": True} if offline else {}
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before any exists()/resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(reference):
+        return False
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
         try:
@@ -960,7 +965,12 @@ def require_model_access(
 ) -> None:
     access_options = {"offline": True} if offline else {}
     if not model_visible(reference, repo_type = repo_type, **access_options):
-        if repo_type == "model":
+        from utils.paths.path_utils import is_network_or_device_path
+
+        # The allowlist check below resolves the reference on disk: not for a share path.
+        if repo_type == "model" and not (
+            isinstance(reference, str) and is_network_or_device_path(reference)
+        ):
             require_model_allowed(reference)
         raise HTTPException(status_code = 404, detail = "Model not found")
 
@@ -1001,7 +1011,12 @@ def private_directory(path: str, folder: str) -> str:
     """Rebase import-time owner defaults; refuse account-external scans."""
     if not managed_account():
         return path
+    from utils.paths.path_utils import is_network_or_device_path
     from utils.paths.storage_roots import studio_root
+
+    # Before resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(path):
+        raise HTTPException(status_code = 404, detail = "Directory not found")
 
     normalized = normalize_path(path)
     if normalized != path:
@@ -1040,6 +1055,21 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
 
 
 def require_media_references(request) -> None:
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before the resolve()/is_dir() calls below: touching a share path is already an outbound SMB sign-in.
+    fields = (
+        "model_path",
+        "gguf_filename",
+        "transformer_prequant_path",
+        "text_encoder_file",
+        "vae_file",
+    )
+    for name in fields:
+        value = getattr(request, name, None)
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if isinstance(item, str) and is_network_or_device_path(item):
+                raise HTTPException(status_code = 404, detail = "Model not found")
     require_media_adapters(request)
     for name in ("gguf_filename", "transformer_prequant_path"):
         reference = getattr(request, name, None)
