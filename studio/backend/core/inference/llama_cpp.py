@@ -15699,9 +15699,7 @@ class LlamaCppBackend:
                 logger.debug(
                     f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
                 )
-                # A fault (signal / NTSTATUS / MSVC abort) is told apart from an ordinary
-                # failure such as a missing library. Suspect only, never proof: a driver
-                # can fault on exit after listing a working device.
+                # Suspect only, never proof: a driver can fault on exit after listing a device.
                 _crashed = LlamaCppBackend._is_signal_crash(result.returncode) or (
                     sys.platform == "win32" and LlamaCppBackend._is_abort_exit(result.returncode)
                 )
@@ -15709,8 +15707,7 @@ class LlamaCppBackend:
                 _load_probe_memo_put("vulkan", binary, [])
                 return []
         except subprocess.TimeoutExpired as e:
-            # Not proof of a broken driver: a healthy discrete card can take longer
-            # than this to answer. The load treats the driver as suspect, not absent.
+            # Suspect, not absent: a healthy discrete card can take longer than this.
             logger.info(f"vulkan GPU probe timed out: {e}")
             _load_probe_memo_put("vulkan_outcome", binary, "timeout")
             _load_probe_memo_put("vulkan", binary, [])
@@ -32142,8 +32139,6 @@ class LlamaCppBackend:
                     extra_args,
                     env,
                 )
-                # Set where the Vulkan probe is judged: it timed out, so the first
-                # launch gets the shorter suspect stall window.
                 _vulkan_suspect = False
 
                 # The unpinnable-drafter drop above rewrites argv, which cannot reach the
@@ -33045,17 +33040,11 @@ class LlamaCppBackend:
                             target = self._drain_stdout, daemon = True, name = "llama-stdout"
                         )
                         self._stdout_thread.start()
-                        # A Vulkan launch of an auto-Vulkan load that could still recover on
-                        # CPU: a driver stuck in init or shader compilation burns CPU and
-                        # touches fresh pages forever, so neither may renew the wait past a
-                        # ceiling sized to the model. Passed only when set, so a wait double
-                        # without the keywords still serves every other launch.
+                        # A driver stuck in init or shader compilation burns CPU and touches
+                        # fresh pages forever (#142), so an auto-Vulkan launch gets a ceiling.
                         _wait_timeout = self._HEALTH_STALL_TIMEOUT_S
                         _wait_kwargs = {}
                         if _cpu_fallback_eligible and not intent.cpu_fallback and label != "-cpu":
-                            # A probe that timed out or faulted leaves the driver suspect:
-                            # the first launch reaches the CPU replay sooner. min() so a
-                            # lowered _HEALTH_STALL_TIMEOUT_S still governs.
                             if _vulkan_suspect and not label:
                                 _wait_timeout = min(
                                     _wait_timeout, self._SUSPECT_VULKAN_STALL_TIMEOUT_S
@@ -33646,15 +33635,9 @@ class LlamaCppBackend:
                     else:
                         self._record_load_warning(_cuda_ctx_notice)
 
-                # An auto-selected Vulkan bundle whose probe saw no usable device (zero
-                # enumerated, or faulted in the driver) has nothing to offload to, yet
-                # starting it still loads ggml-vulkan and initialises that driver, which
-                # can hang or crash the child (#7213, #142). Start straight on the staged
-                # CPU runtime instead; a probe that lists a device is untouched. A timed
-                # out or faulted probe is NOT proof: a healthy card can take longer than the
-                # probe allows, and a driver can fault on exit after listing a device, so
-                # that launch stays on Vulkan under a shorter stall window. A bundle that
-                # already stalled or had no device this session goes straight to CPU.
+                # Zero Vulkan devices (or a stall earlier this session): start on the staged
+                # CPU runtime, since the bundle would still initialise a driver that can hang
+                # or crash (#7213, #142). A timed-out or faulted probe stays on Vulkan.
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _remembered = LlamaCppBackend._auto_vulkan_cpu_routes.get(
@@ -33662,9 +33645,7 @@ class LlamaCppBackend:
                     )
                     _vk_outcome = self._vulkan_probe_outcome(binary)
                     _vulkan_suspect = _vk_outcome in ("timeout", "crashed")
-                    # Only when a CPU replay can actually be built here (staged runtime
-                    # with a CPU library, a projector/drafter this build can pin), so the
-                    # restored-fallback block below never has to fail the load for it.
+                    # Only when a replay can be built, so the block below never fails the load.
                     if (
                         (_remembered or _vk_outcome == "none")
                         and self._cpu_isolated_replay(cmd, dict(env), server_caps) is not None
@@ -33789,11 +33770,8 @@ class LlamaCppBackend:
                     "Load cancelled during the llama-server health wait"
                 ):
                     return False
-                # A first auto-Vulkan launch that is still running but made no loading
-                # progress is a driver stuck in init or warmup: every rung below would
-                # respawn the same Vulkan child into the same hang, each with its own wait
-                # (#142). Replay on the staged CPU runtime first; if that cannot start,
-                # the rungs below still get their (bounded) Vulkan attempts.
+                # A stalled first launch is a stuck driver: the rungs below would respawn
+                # the same hang (#142), so replay on CPU first.
                 if (
                     not healthy
                     and getattr(self, "_health_wait_stalled", False)
@@ -33807,8 +33785,7 @@ class LlamaCppBackend:
                         _stalled_cmd, None, terminal = False, stalled = True
                     ):
                         healthy = True
-                        # Every later auto load of this build skips the hang this session;
-                        # keyed by revision, so an update or backend switch starts over.
+                        # Keyed by revision, so an update or backend switch starts over.
                         _stalled_revision = self._binary_revision(binary)
                         if _stalled_revision:
                             LlamaCppBackend._auto_vulkan_cpu_routes[_stalled_revision] = (
@@ -38233,12 +38210,9 @@ class LlamaCppBackend:
 
     # Extend the health deadline while startup work continues.
     _HEALTH_STALL_TIMEOUT_S = 600.0
-    # The first auto-Vulkan launch after a Vulkan probe timed out or faulted: a driver
-    # that may be hung gets half the window before the CPU replay takes over.
+    # First auto-Vulkan launch after the probe timed out or faulted.
     _SUSPECT_VULKAN_STALL_TIMEOUT_S = 300.0
-    # Ceiling on an auto-Vulkan launch that nothing renews, per GiB of model (never
-    # below the stall window): a stuck driver still allocates, so RSS and page faults
-    # cannot tell it from a load. Generous for a slow disk (~17 MB/s at 60 s/GiB).
+    # Unrenewable auto-Vulkan ceiling per GiB of model (never below the stall window).
     _AUTO_VULKAN_START_S_PER_GIB = 60.0
     # Builds whose auto-Vulkan launch stalled this session, by _binary_revision.
     _auto_vulkan_cpu_routes: dict = {}
@@ -38332,8 +38306,6 @@ class LlamaCppBackend:
         """
         deadline = time.monotonic() + timeout
         ceiling = deadline - timeout + max_total_s if max_total_s is not None else None
-        # Set only where the stall marker is written, so callers can tell a hung child
-        # (still running) apart from a crash or a cancel.
         self._health_wait_stalled = False
         work_sample = None
         work_sampled_at = None

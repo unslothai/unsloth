@@ -239,9 +239,7 @@ export function LlamaBackendSection() {
   // Null means the marker holds a choice a newer Unsloth wrote. Show it as
   // unknown rather than as Automatic, and let it be replaced deliberately.
   const unknownRecorded = status?.backendRequest === null;
-  // Before the first status arrives there is nothing to select, and a value with no item
-  // renders a blank Select that reads as "no backends at all". A failed fetch is not
-  // still loading: it reads unknown beside the error.
+  // A value with no item renders a blank Select that reads as "no backends at all".
   const statusPending = !status && !loadError;
   const value = status
     ? (selected ?? status.backendRequest ?? "unknown")

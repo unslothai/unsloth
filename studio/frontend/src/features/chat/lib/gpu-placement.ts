@@ -8,10 +8,8 @@
 // --fit. The Manual default; "all on GPU" is the slider's max.
 export const GPU_LAYERS_AUTO = -1;
 
-/** Why an automatic GGUF load runs on the CPU (`cpu_fallback_reason`, models/inference.py): the
- *  auto-selected Vulkan backend crashed at startup, saw no usable device before launch, or hung
- *  at startup. Every one of them is the backend's CPU replay, so callers treat them alike. Here
- *  rather than in types/api.ts because this module stays import-free for node:test. */
+/** Why an automatic GGUF load runs on the CPU (`cpu_fallback_reason`); every reason is the same
+ *  CPU replay. Here, not in types/api.ts, because this module stays import-free for node:test. */
 export const CPU_FALLBACK_REASONS = [
   "vulkan_startup_crash",
   "vulkan_no_device",
