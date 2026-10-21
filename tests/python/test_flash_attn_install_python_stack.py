@@ -81,13 +81,14 @@ class TestPrebuiltWheelTorchMapping:
             env = {
                 "python_tag": "cp313",
                 "torch_mm": "2.11",
-                "cuda_major": "13",
+                # cu12: cu13 cp311-cp313 resolves to our own build instead.
+                "cuda_major": "12",
                 "cxx11abi": "TRUE",
                 "platform_tag": "linux_x86_64",
             },
         )
         assert url is not None
-        assert "causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
+        assert "causal_conv1d-1.6.1+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
 
     def test_direct_wheel_url_reuses_torch210_on_212(self):
         url = wheel_utils.direct_wheel_url(
@@ -98,13 +99,14 @@ class TestPrebuiltWheelTorchMapping:
             env = {
                 "python_tag": "cp312",
                 "torch_mm": "2.12",
-                "cuda_major": "13",
+                # cu12: cu13 cp311-cp313 resolves to our own build instead.
+                "cuda_major": "12",
                 "cxx11abi": "TRUE",
                 "platform_tag": "linux_x86_64",
             },
         )
         assert url is not None
-        assert "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" in url
+        assert "mamba_ssm-2.3.1+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" in url
 
 
 class TestFlashAttnWheelSelection:

@@ -370,6 +370,8 @@ test("the Video hint names the reason the host has no video device", () => {
     !/gpu|graphics|coming soon/i.test(videoNavHint(true, "intel_mac") ?? ""),
     "an Intel Mac is pointed at graphics hardware that cannot run video",
   );
+  // Rosetta has Apple Silicon underneath: the fix is a native arm64 install, not new hardware.
+  assert.match(videoNavHint(true, "rosetta") ?? "", /arm64/, "a Rosetta host is not told the fix");
 });
 
 // Video runs on Metal, not MLX, so a broken MLX stack must not disable the row.

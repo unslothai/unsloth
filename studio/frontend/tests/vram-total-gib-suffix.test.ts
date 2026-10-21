@@ -21,8 +21,9 @@ const RENDERERS = [
   "features/settings/tabs/about-tab.tsx",
 ];
 
-// `[^`$]*` keeps the match inside one literal segment.
-const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
+// `[^`$]*` keeps the match inside one literal segment, so an unrelated "GB"
+// later in the file cannot be paired with an earlier total.
+const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb|gpuMemoryGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
 
 test("VRAM and RAM totals are labelled GiB, not GB", () => {
   const offenders: string[] = [];
