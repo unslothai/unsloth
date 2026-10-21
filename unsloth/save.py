@@ -674,11 +674,19 @@ def _free_cached_model(model):
             delete_strategy.execute()
 
 
-def _merge_lora(layer, name):
+def _merge_lora(
+    layer,
+    name,
+    dtype = None,
+):
     bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
-        if quant_state is not None:
+        if quant_state is not None and W.dtype == torch.float8_e4m3fn:
+            # FP8 quant_state is the fp32 scale, not the model dtype: dequant in fp32, save in model dtype.
+            W = fast_dequantize(W, quant_state, dtype = torch.float32)
+            dtype = dtype if isinstance(dtype, torch.dtype) else torch.bfloat16
+        elif quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
             W = fast_dequantize(W, quant_state)
         else:
@@ -1516,7 +1524,7 @@ def unsloth_save_model(
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
-            W, bias = _merge_lora(proj, name)
+            W, bias = _merge_lora(proj, name, torch_dtype)
 
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
