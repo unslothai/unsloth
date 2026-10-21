@@ -94,6 +94,10 @@ test("the Seed field has Random and Reuse last seed buttons", () => {
     page,
     /const runSeed = lastSeedOf\(res\.images\);\n\s+if \(runSeed !== null\) setSessionSeed\(runSeed\);/,
   );
+  // A HugeIcons glyph only this lazy page uses still lands in the eager icon chunk via the barrel
+  // and pushed the startup budget over, so Reuse last seed draws lucide's Recycle.
+  assert.match(page, /<Recycle className="size-4" strokeWidth=\{1\.5\} \/>/);
+  assert.doesNotMatch(page, /Recycle01Icon/);
 });
 
 test("inpaint mask options send nothing at their defaults", () => {

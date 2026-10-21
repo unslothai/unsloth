@@ -28,7 +28,6 @@ import {
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
-  Recycle01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -175,7 +174,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -6635,7 +6634,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <HugeiconsIcon icon={Recycle01Icon} className="size-4" />
+                      <Recycle className="size-4" strokeWidth={1.5} />
                     </Button>
                   </div>
                 </Field>
