@@ -2138,7 +2138,8 @@ def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
         pup, "_vulkan_rows", lambda b, retry_empty = False: order.append("probe") or []
     )
     sidecar.warm(binary = "b", model = model, mmproj = None)
-    assert order[:2] == ["probe", "slot"]
+    # An empty answer is retried once, still before the slot.
+    assert order[: order.index("slot")] == ["probe", "probe"]
     sidecar._cancel_idle_locked()
 
 
@@ -2373,8 +2374,8 @@ def test_one_torch_card_and_one_vulkan_device_launch_as_before(
 
 
 @pytest.mark.parametrize("cards", [1, 2])
-def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, monkeypatch, cards):
-    # The real spawn after the warm start's own probe: re-probing that empty answer would run it twice.
+def test_a_warm_start_retries_an_empty_vulkan_answer_once(spawn_argv, warmable, monkeypatch, cards):
+    # The warm start retries an empty answer once, as the launch it stands in for did; its real spawn adds none.
     import torch
 
     from core.inference import llama_cpp
@@ -2399,7 +2400,7 @@ def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, m
     # before). One card goes on to the spawn unpinned, as before pinning.
     out = sidecar.warm(binary = "/x/llama-server", model = model, mmproj = None)
     assert (out == "placement") is (cards > 1)
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_maintenance_waits_for_every_abandoned_vulkan_probe(monkeypatch):
@@ -2631,3 +2632,32 @@ def test_a_start_cancelled_before_its_probe_never_starts_one(monkeypatch):
     with pytest.raises(pup.UpsamplerCancelledError):
         pup._prefetch_vulkan_rows("b", cancel)
     assert calls == [] and pup._vulkan_probe_workers == []
+
+
+def test_a_lone_vulkan_device_of_another_vendor_declines_the_warm_start(spawn_argv, warmable, monkeypatch):
+    # A CUDA torch's image model on an RTX 4090 while Vulkan reaches only an AMD iGPU: not the same card.
+    import torch
+
+    state, run = spawn_argv
+    sidecar, launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    state["names"] = ["NVIDIA GeForce RTX 4090"]
+    state["ordinal"] = 0
+    state["rows"] = [{"index": 0, "name": "AMD Radeon Graphics (RADV RAPHAEL)"}]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "placement"
+    # The explicit launch is unchanged: unpinned, as before Vulkan pinning.
+    argv, env = run()
+    assert "--device" not in argv
+    # Its own NVIDIA row warm-starts as before.
+    state["rows"] = [{"index": 0, "name": "NVIDIA GeForce RTX 4090"}]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    sidecar._cancel_idle_locked()
+
+
+def test_maintenance_never_joins_an_unstarted_probe(monkeypatch):
+    # A worker is registered only once started, so a maintenance pass cannot hit "cannot join thread".
+    import inspect
+
+    source = inspect.getsource(pup._prefetch_vulkan_rows)
+    assert source.index("worker.start()") < source.index("_vulkan_probe_workers[:]")

@@ -965,8 +965,8 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
 
     def _work() -> None:
         try:
-            # Each warm start retries a cached empty answer once, as the launch it stands in for did.
-            rows = _vulkan_rows(binary, retry_empty = True)
+            # An empty answer (cached or fresh) is retried once, as the launch it stands in for did.
+            rows = _vulkan_rows(binary, retry_empty = True) or _vulkan_rows(binary, retry_empty = True)
             # One row on one torch card launches unpinned, so it needs no card lookup.
             if rows and (len(rows) > 1 or torch.cuda.device_count() > 1):
                 ordinal = _resident_cuda_ordinal()
@@ -979,8 +979,9 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
     if cancel is not None and cancel.is_set():
         raise UpsamplerCancelledError("Cancelled.")
     worker = threading.Thread(target = _work, name = "flux3-pup-vulkan-probe", daemon = True)
-    _vulkan_probe_workers[:] = [w for w in _vulkan_probe_workers if w.is_alive()] + [worker]
+    # Registered once started: joining a thread that has not started raises.
     worker.start()
+    _vulkan_probe_workers[:] = [w for w in _vulkan_probe_workers if w.is_alive()] + [worker]
     while worker.is_alive():
         worker.join(0.1)
         if cancel is not None and cancel.is_set():
@@ -1036,6 +1037,16 @@ def _vulkan_card_name(ordinal: int, torch) -> tuple:
     return name, names[:ordinal].count(name)
 
 
+def _vulkan_row_is_another_vendor(row_name: str, torch) -> bool:
+    """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row naming neither is another card."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    name = str(row_name or "").lower()
+    if LlamaCppBackend._torch_is_rocm(torch):
+        return not any(tag in name for tag in ("amd", "radeon", "instinct"))
+    return "nvidia" not in name
+
+
 def _vulkan_device_args(
     binary: str,
     ordinal: Optional[int],
@@ -1065,8 +1076,9 @@ def _vulkan_device_args(
         if not rows:
             return None if count > 1 else []
         if len(rows) == 1 and count == 1:
-            # Nothing to choose: no name match, so a renamed card never declines a single-GPU host.
-            return []
+            # Nothing to choose, so no name match (a renamed card never declines a single-GPU host),
+            # unless that one device is plainly another vendor's: then it is not the image model's card.
+            return None if _vulkan_row_is_another_vendor(rows[0]["name"], torch) else []
     except Exception:  # noqa: BLE001
         return []
     try:
