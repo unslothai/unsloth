@@ -207,6 +207,17 @@ BUNDLE_STATUS = dict(
         "skip_reason": None,
     },
 )
+# a backend switch for llama.cpp bundled with a whisper.cpp update; one skip dismisses both.
+MIGRATION_BUNDLE_STATUS = dict(
+    LLAMA_STATUS,
+    update_available = False,
+    llama_update_available = False,
+    latest_tag = LLAMA_STATUS["installed_tag"],
+    backend_migration_available = True,
+    from_backend = "rocm",
+    to_backend = "vulkan",
+    whisper = WHISPER_STATUS["whisper"],
+)
 
 # 921x534 and 768x500 reproduce the issue; taller viewports guard roomy layouts.
 VIEWPORTS = [
@@ -1028,6 +1039,23 @@ def exercise_skip_on_auth_route(page, label: str) -> None:
     page.evaluate("localStorage.removeItem('unsloth_llama_update_offer_suppression')")
 
 
+def check_bundled_skip_label(page, label: str) -> None:
+    """A skip dismisses the whole offer, so a bundle with a backend switch names it in the plural."""
+    toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
+    check(f"{label}: the card is up", toggle.count() == 1)
+    if toggle.count() != 1:
+        return
+    toggle.click()
+    skip = page.locator('[data-testid="llama-update-skip-button"]')
+    text = skip.text_content() if skip.count() == 1 else None
+    check(
+        f"{label}: the skip action reads plural",
+        text == "Skip these versions",
+        f"text={text!r}",
+    )
+    toggle.click()
+
+
 def exercise_llama_changelog(page, label: str) -> None:
     toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
     check(
@@ -1239,6 +1267,10 @@ def main() -> int:
                 f"summary={summary!r}",
             )
             exercise_llama_changelog(page, f"{width}x{height} bundle")
+            if (width, height) == (VIEWPORTS[2:5] if SPOT else VIEWPORTS)[0]:
+                llama_payload[0] = MIGRATION_BUNDLE_STATUS
+                boot(page, "/")
+                check_bundled_skip_label(page, f"{width}x{height} migration bundle")
             llama_payload[0] = LLAMA_STATUS
             context.close()
 

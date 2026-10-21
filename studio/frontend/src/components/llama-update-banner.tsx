@@ -330,10 +330,11 @@ export function LlamaUpdateBanner({
       : null;
   const llamaVersionChanged = Boolean(llamaRow?.versionChanged);
   const backendOnly = Boolean(backendChange) && !llamaVersionChanged;
-  const skipLabel = backendOnly
-    ? "Skip this change"
-    : bundled
-      ? "Skip these versions"
+  // a skip dismisses the whole offer, so a bundle reads plural even when llama.cpp only migrates.
+  const skipLabel = bundled
+    ? "Skip these versions"
+    : backendOnly
+      ? "Skip this change"
       : "Skip this version";
 
   function handleSkip(event: MouseEvent<HTMLButtonElement>) {
