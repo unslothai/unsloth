@@ -34,6 +34,8 @@ _ADALN_PREV: dict = {}
 # Survives uninstall, so a fused forward restored later by another layer still reaches a real forward.
 _ADALN_ORIGINAL: dict = {}
 COUNTS = {"rope_fused": 0, "rope_stock": 0, "adaln_fused": 0, "adaln_stock": 0}
+# Set by the first failed RoPE launch (JIT / driver / PTX): the rest of the load runs stock, not one failing JIT per call.
+_ROPE_FAILED = [False]
 
 
 def _mode(env: str) -> str:
@@ -154,7 +156,7 @@ def _make_rope(module_name: str) -> Callable:
         stock = _ROPE_STOCK.get(module_name) or _ROPE_ORIGINAL[module_name]
         # Checked first: Dynamo graph-breaks on Triton's import path, so a compiled block stays whole on stock.
         if not torch.compiler.is_compiling():
-            launch = _rope_kernel()
+            launch = None if _ROPE_FAILED[0] else _rope_kernel()
             if launch is not None and _rope_eligible(
                 x, freqs_cis, use_real, use_real_unbind_dim, sequence_dim
             ):
@@ -163,7 +165,7 @@ def _make_rope(module_name: str) -> Callable:
                     COUNTS["rope_fused"] += 1
                     return out
                 except Exception:  # noqa: BLE001 -- never fail a render over the fast path
-                    pass
+                    _ROPE_FAILED[0] = True
             COUNTS["rope_stock"] += 1
         return stock(
             x,
@@ -211,6 +213,7 @@ def install_rope(
 
 def uninstall_rope() -> None:
     with _LOCK:
+        _ROPE_FAILED[0] = False
         for name in list(_ROPE_STOCK):
             stock = _ROPE_STOCK.pop(name)
             mod = sys.modules.get(name)

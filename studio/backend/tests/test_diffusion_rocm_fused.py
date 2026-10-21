@@ -464,3 +464,29 @@ def test_stock_branch_never_loses_its_previous_forward(fake_kernels, monkeypatch
     finally:
         for n, fwd in _STOCK_FWD.items():
             getattr(nm, n).forward = fwd
+
+
+def test_a_failed_rope_launch_disables_the_fused_path_for_the_load(monkeypatch):
+    # A JIT / launch failure (unsupported arch, driver / PTX mismatch) is tried once, then the load runs stock.
+    calls = []
+
+    def failing_launch(x, cos, sin):
+        calls.append(1)
+        raise RuntimeError("PTX JIT compilation failed")
+
+    monkeypatch.setattr(rf, "_rope_kernel", lambda: failing_launch)
+    monkeypatch.setattr(rf, "_rope_eligible", lambda *a, **k: True)
+    _nvidia(monkeypatch)
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")["rope"] is True
+    x = torch.randn(1, 6, 2, 8)
+    pos = torch.randn(6, 4, dtype = torch.float64)
+    freqs = (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
+    want = stock_rope(x, freqs, sequence_dim = 1)
+    for _ in range(4):
+        assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), want)
+    assert len(calls) == 1
+    # The next load re-arms the fast path.
+    rf.uninstall()
+    rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
+    fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
+    assert len(calls) == 2
