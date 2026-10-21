@@ -461,7 +461,11 @@ def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     from .diffusion_single_file_converters import charge_host_ram
 
     rows = codes.shape[0]
-    charge_host_ram(codes.numel() * torch.empty((), dtype = dtype).element_size())
+    # Peak, not just the output: the float32 codes and their float32 product are live together (8 bytes per
+    # element); ConvRot's batched matmul holds the product, a float32 copy of it and its float32 result (12,
+    # measured); last the product and the output.
+    out_size = torch.empty((), dtype = dtype).element_size()
+    charge_host_ram(codes.numel() * max(12 if group else 8, 4 + out_size))
     weight = codes.to(torch.float32) * scale.to(torch.float32).reshape(-1, 1).expand(rows, 1)
     if group:
         from .diffusion_convrot import build_convrot_hadamard
@@ -1073,6 +1077,7 @@ def load_comfy_quant_transformer(
     # Without a runtime (fp8 below sm_89) layers widen to ``dtype`` in host RAM: refuse before an OOM.
     from .diffusion_single_file_converters import (
         HostRamBudget,
+        HostRamShortfallError,
         charge_cast,
         charge_host_ram,
         converted_host_bytes,
@@ -1245,6 +1250,8 @@ def load_comfy_quant_transformer(
         try:
             # Narrow tags first (full width is slow on a large DiT); anything unproven reruns at full width.
             converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
+        except HostRamShortfallError:
+            raise  # a refusal, not an unproven tag: the full-width retry would only allocate more
         except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
             converted = _convert_tagged(None)
     del state

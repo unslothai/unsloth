@@ -809,3 +809,62 @@ def test_a_stock_converter_row_reorder_of_kept_codes_is_checked(h3like_file, mon
     assert model._unsloth_comfy_quant["int8"] == 4
     fc1 = tensors["fc1.weight"]
     assert any(n >= fc1.numel() * fc1.element_size() for n in seen), seen
+
+
+def test_a_host_ram_refusal_in_the_narrow_pass_is_not_retried_at_full_width(
+    h3like_file, monkeypatch
+):
+    """The narrow-tag conversion pass retries at full width on any failure it cannot prove, but a host RAM
+    refusal is final: the full-width float64 tags (and a converter's unchecked joins over them) would only
+    allocate more."""
+    import core.inference.diffusion_single_file_converters as conv
+    import core.inference.diffusion_small_host as small_host
+
+    calls = []
+
+    def convert(checkpoint = None, **_kwargs):
+        calls.append(1)
+        out = {}
+        for key, value in checkpoint.items():
+            if key == "attn.qkv.weight":
+                for part, chunk in zip(("to_q", "to_k", "to_v"), value.chunk(3)):
+                    out[f"attn.{part}.weight"] = chunk
+            elif key == "fc1.weight":
+                gate, val = value.chunk(2)
+                out["ff.proj.weight"] = torch.cat([val, gate])
+            else:
+                out[key] = value
+        return out
+
+    monkeypatch.setattr(
+        cq,
+        "_mapping",
+        lambda cls: (
+            convert,
+            types.SimpleNamespace(
+                _should_convert_state_dict_to_diffusers = lambda a, b: set(a) != set(b),
+                _get_mapping_function_kwargs = lambda fn, **kw: {},
+            ),
+        ),
+    )
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 20, 1 << 20))
+    path, _dense, tensors = h3like_file
+    fc1_bytes = tensors["fc1.weight"].numel()
+
+    def charge(self, n):
+        if n >= fc1_bytes:  # the kept fc1 reorder does not fit
+            raise conv.HostRamShortfallError("Not enough system RAM to load h3like.safetensors")
+
+    monkeypatch.setattr(conv.HostRamBudget, "charge", charge)
+    with pytest.raises(conv.HostRamShortfallError):
+        cq.load_comfy_quant_transformer(
+            _H3Like,
+            path,
+            cq.refuse_comfy_quant(path),
+            {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+            family = "minimax-h3",
+            int8_backend = "native",
+        )
+    assert len(calls) == 1  # refused in the narrow pass, never converted again at full width

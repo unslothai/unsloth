@@ -900,3 +900,43 @@ def test_chunked_block_dequant_is_bit_identical_to_one_pass(monkeypatch, fmt):
             fmt, codes, scale, tensor_scale = tensor_scale, pre_quant_scale = pqs, dtype = torch.bfloat16
         )
         assert torch.equal(got, want), chunk_bytes
+
+
+@pytest.mark.parametrize("kind", ["int8_convrot", "fp8"])
+def test_int8_fp8_dequant_is_checked_for_its_float32_peak(monkeypatch, kind):
+    """int8 / fp8 dequantization holds float32 codes and their float32 product together (and ConvRot's
+    float32 matmul result); the check before it must cover the measured peak, not only the output."""
+    import threading
+    import time
+
+    import core.inference.diffusion_single_file_converters as conv
+
+    if _rss_anon_bytes() is None:
+        pytest.skip("needs /proc/self/status RssAnon")
+    rows, cols = 4096, 4096
+    gen = torch.Generator().manual_seed(3)
+    if kind == "int8_convrot":
+        codes = torch.randint(-127, 128, (rows, cols), dtype = torch.int8, generator = gen)
+        scale, group = torch.rand(rows, 1, generator = gen) / 127.0, 256
+    else:
+        codes = (torch.randn(rows, cols, generator = gen) * 50).to(torch.float8_e4m3fn)
+        scale, group = torch.tensor([0.01]), 0
+    seen = []
+    monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
+    peak, stop = [0], [False]
+
+    def sample():
+        while not stop[0]:
+            peak[0] = max(peak[0], _rss_anon_now())
+            time.sleep(0.0005)
+
+    _rss_anon_bytes()
+    start = _rss_anon_now()
+    thread = threading.Thread(target = sample, daemon = True)
+    thread.start()
+    out = cq._dequant(codes, scale, group, torch.bfloat16)
+    stop[0] = True
+    thread.join()
+    growth = peak[0] - start
+    assert out.shape == (rows, cols) and out.dtype == torch.bfloat16
+    assert seen and max(seen) >= 0.9 * growth, (seen, growth)
