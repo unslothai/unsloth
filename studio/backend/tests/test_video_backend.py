@@ -13428,7 +13428,12 @@ def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_re
             True,
         ),  # the split fell back to a hooked one-card placement: the compile moves below the hooks
         (True, False, False),  # the split landed resident: nothing to move
-        (False, True, False),  # planned offloaded: the speed layer already compiled for the hooks
+        (
+            False,
+            True,
+            True,
+        ),  # planned offloaded: the compile still moves below the hooks (no split at them)
+        (False, False, False),  # planned offloaded but nothing landed hooked: nothing to move
     ],
 )
 def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
