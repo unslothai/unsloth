@@ -21,7 +21,10 @@ from test_llama_cpp_mtp_detection import (  # noqa: F401 (stubs are installed on
     _make_fake_llama_server,
 )
 
-from core.inference.llama_cpp import _spec_draft_sampling_flags
+from core.inference.llama_cpp import (
+    _extra_args_select_stateful_sampler,
+    _spec_draft_sampling_flags,
+)
 
 _MTP_MODEL = "unsloth/Qwen3.6-27B-MTP-GGUF"
 _NON_MTP_MODEL = "unsloth/Qwen3-7B-Instruct-GGUF"
@@ -250,4 +253,65 @@ def test_stateful_sampler_keeps_greedy(monkeypatch, extra):
 )
 def test_stateless_sampler_extras_keep_probabilistic(monkeypatch, extra):
     flags = _flags(_backend(monkeypatch), "mtp", extra_args = extra)
+    assert _flags_dict(flags).get("--spec-draft-sampling") == "probabilistic"
+
+
+# llama.cpp (common/sampling.cpp common_sampler_types_from_names) lowercases each ';' name and
+# accepts kebab-case and underscore-free aliases; --sampler-seq chars are case-sensitive.
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--samplers", "penalties;top-k;adaptive-p"],
+        ["--samplers", "top_k;adaptivep"],
+        ["--samplers", "top_k;Adaptive_P"],
+        ["--sampler_seq", "ka"],
+        ["--mirostat", " 2"],
+        ["--mirostat", "2x"],
+        ["--mirostat"],
+        ["--samplers"],
+        ["--mirostat", "0", "--mirostat", "1"],
+        ["--samplers", "top_k", "--sampler-seq", "ka"],
+        ["--sampler-seq", "kpt", "--samplers", "adaptive_p"],
+    ],
+)
+def test_stateful_sampler_detection_matches_llama_cpp(extra):
+    assert _extra_args_select_stateful_sampler(extra) is True
+
+
+# Each occurrence overwrites the same field in common/arg.cpp, so the last one wins; names that
+# llama.cpp cannot match (surrounding whitespace, upper-case sequence chars) are dropped.
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--mirostat", "2", "--mirostat", "0"],
+        ["--mirostat=1", "--mirostat", "0"],
+        ["--samplers", "adaptive_p", "--samplers", "top_k;top_p;temperature"],
+        ["--sampler-seq", "a", "--sampler-seq", "kpt"],
+        ["--samplers", "adaptive_p", "--sampling-seq", "kypxt"],
+        ["--sampler-seq", "ka", "--samplers", "top_k;min_p"],
+        ["--samplers", "top_k; adaptive_p"],
+        ["--sampler-seq", "kA"],
+        ["--mirostat", "-0"],
+        ["--mirostat", "0x"],
+    ],
+)
+def test_stateless_after_llama_cpp_parsing(extra):
+    assert _extra_args_select_stateful_sampler(extra) is False
+
+
+def test_overridden_stateful_extras_keep_probabilistic(monkeypatch):
+    flags = _flags(
+        _backend(monkeypatch),
+        "mtp",
+        extra_args = [
+            "--mirostat",
+            "2",
+            "--samplers",
+            "adaptive_p",
+            "--mirostat",
+            "0",
+            "--samplers",
+            "top_k",
+        ],
+    )
     assert _flags_dict(flags).get("--spec-draft-sampling") == "probabilistic"

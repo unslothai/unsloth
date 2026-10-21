@@ -4770,34 +4770,54 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
 _SPEC_DRAFT_SAMPLING_ENV = "UNSLOTH_SPEC_DRAFT_SAMPLING"
 
 
+# llama.cpp common_sampler_types_from_names lowercases each ';'-separated name (no strip) and also
+# takes the kebab-case and underscore-free alias of every canonical name with an underscore.
+_ADAPTIVE_P_SAMPLER_NAMES = frozenset({"adaptive_p", "adaptive-p", "adaptivep"})
+_STOI_PREFIX = re.compile(r"[ \t\n\v\f\r]*[+-]?[0-9]+")
+
+
 def _extra_args_select_stateful_sampler(extra_args: Optional[Iterable[str]]) -> bool:
-    """Whether the extras pick Mirostat or adaptive-p (neither has an env var).
+    """Whether the extras leave Mirostat or adaptive-p in effect (neither has an env var).
 
     Rejection verification runs the target's sampler chain, then may emit the draft or a residual
     draw instead of that chain's pick. Mirostat updates mu inside apply on its own pick and
     adaptive-p updates its EMA only when the emitted token is its pick, so either would drift.
-    A malformed value counts as stateful (llama-server rejects it anyway)."""
+    Mirrors llama.cpp's parser: each occurrence overwrites, so the last --mirostat wins and the
+    last of --samplers / --sampler-seq / --sampling-seq sets the chain; --mirostat goes through
+    std::stoi, --samplers names are lowercased per ';' part, sequence chars are case-sensitive
+    ('a' = adaptive-p). A malformed or missing value counts as stateful (llama-server rejects it)."""
     if not extra_args:
         return False
     args = [str(a) for a in extra_args]
-    for i, raw in enumerate(args):
+    mirostat_on = False
+    adaptive_p_on = False
+    i = 0
+    while i < len(args):
+        raw = args[i]
         flag = _flag_name(raw)
+        i += 1
         if flag not in ("--mirostat", "--samplers", "--sampler-seq", "--sampling-seq"):
             continue
         _, eq, inline = raw.partition("=")
-        value = (inline if eq else (args[i + 1] if i + 1 < len(args) else "")).strip().lower()
-        if flag == "--mirostat":
-            try:
-                if int(value) != 0:
-                    return True
-            except ValueError:
-                return True
-        elif flag == "--samplers":
-            if "adaptive_p" in value.split(";"):
-                return True
-        elif "a" in value:
+        if eq:
+            value = inline
+        elif i < len(args):
+            value = args[i]
+            i += 1
+        else:
             return True
-    return False
+        if flag == "--mirostat":
+            match = _STOI_PREFIX.match(value)
+            if not match or not -(2**31) <= int(match.group(0)) < 2**31:
+                return True
+            mirostat_on = int(match.group(0)) != 0
+        elif flag == "--samplers":
+            adaptive_p_on = any(
+                name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in value.split(";")
+            )
+        else:
+            adaptive_p_on = "a" in value
+    return mirostat_on or adaptive_p_on
 
 
 def _spec_draft_sampling_flags(
