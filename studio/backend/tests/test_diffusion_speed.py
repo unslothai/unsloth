@@ -660,7 +660,58 @@ def test_cudnn_benchmark_opt_out_image_families():
     # Unmeasured families keep the benchmark.
     from core.inference.diffusion_families import _FAMILIES
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
-    assert off == {"qwen-image", "flux.1", "z-image", "sdxl"}
+    assert off == {
+        "qwen-image",
+        "flux.1",
+        "z-image",
+        "sdxl",
+        "flux.2-klein",
+        "flux.3-klein-base",
+        "flux.3-klein",
+    }
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "black-forest-labs/FLUX.2-klein-4B",
+        "black-forest-labs/FLUX.2-klein-base-4B",
+        "black-forest-labs/FLUX.2-klein-9B",
+        "unsloth/FLUX.2-klein-4B-FP8",
+        "black-forest-labs/flux-3-image-klein",
+        "black-forest-labs/flux-3-image-klein-base",
+    ],
+)
+def test_flux2_vae_families_keep_cudnn_benchmark_off(monkeypatch, repo):
+    # AutoencoderKLFlux2's per-process cudnn.benchmark conv pick rendered different pixels from identical latents.
+    from core.inference.diffusion_families import detect_family
+
+    family = detect_family(repo)
+    assert family is not None and family.cudnn_benchmark is False
+    torch = _stub_torch(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is False
+    assert torch.backends.cudnn.benchmark is False
+
+
+@pytest.mark.parametrize(
+    "repo, cap, pinned",
+    [
+        ("Tongyi-MAI/Z-Image-Turbo", (10, 0), True),
+        ("Tongyi-MAI/Z-Image-Turbo", (8, 9), True),
+        ("Tongyi-MAI/Z-Image-Turbo", (9, 0), False),
+        ("black-forest-labs/FLUX.1-schnell", (10, 0), False),
+    ],
+)
+def test_reduction_filter_archs(monkeypatch, repo, cap, pinned):
+    # Z-Image rendered another latent on 1 of 4 fresh B200 servers (a block reduction benchmarked to another R0_BLOCK).
+    from core.inference import diffusion_compile_config as cc
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.setattr(cc, "_device_capability", lambda: cap)
+    assert cc.family_filters_reductions(detect_family(repo)) is pinned
 
 
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):

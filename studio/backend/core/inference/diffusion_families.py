@@ -431,6 +431,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         pipeline_class = "Flux2KleinPipeline",
+        # AutoencoderKLFlux2: cudnn.benchmark's per-process conv pick (it flips under load) rendered 3 variants of one seed
+        # over 12 B200 servers from identical latents; off, 5/5 bit-identical. Both FLUX.3 Klein entries share this VAE.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
@@ -517,6 +520,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
+        # The FLUX.2 VAE (as flux.2-klein): cudnn.benchmark stays off so the decode is the same on every server.
+        cudnn_benchmark = False,
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
         # (black-forest-labs/flux-3-image-klein-comfy, byte-identical), which scored better than an INT8 built with
         # the keep-list, so the prequant loader reads it through the ComfyUI quant path. The FP8 file is Studio's own.
@@ -571,6 +576,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
+        # The FLUX.2 VAE (as flux.2-klein): cudnn.benchmark stays off so the decode is the same on every server.
+        cudnn_benchmark = False,
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
         # the loader checks the stored exclude set against it. The base has its own repo.
         prequant_repos = (
@@ -1026,7 +1033,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             auto_prefer = _GATED_AUTO_PREFER,
             preview_factors = "zimage",
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        # B200 races here too: 1 of 4 fresh servers benchmarked a block reduction at R0_BLOCK 1024 (others 4096) and
+        # rendered another latent on two of three seeds; with the filter 4/4 matched bitwise.
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS + ((10, 0),),
         cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",

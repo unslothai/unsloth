@@ -311,17 +311,17 @@
    "filter_reduction_configs_archs": []
   },
   "flux.2-klein": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": []
   },
   "flux.3-klein": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": []
   },
   "flux.3-klein-base": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": []
   },
@@ -473,6 +473,10 @@
     ],
     [
      12,
+     0
+    ],
+    [
+     10,
      0
     ]
    ]
