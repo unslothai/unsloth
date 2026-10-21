@@ -4,6 +4,7 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { escapeBidiControls } from "@/lib/escape-bidi-controls";
 import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -177,7 +178,12 @@ export function ToolCodeCell({
           <DownloadBtn code={code} name={downloadName} />
         </div>
       </div>
-      <HighlightedCode code={code} language={language} plain={streaming} />
+      {/* Display only: Copy and Download above keep the code as it runs. */}
+      <HighlightedCode
+        code={escapeBidiControls(code)}
+        language={language}
+        plain={streaming}
+      />
     </div>
   );
 }

@@ -2215,6 +2215,9 @@ type ContextUsageSnapshot = {
   contextTokens?: number;
   cachedTokens: number;
   cacheWriteTokens?: number;
+  modelId?: string;
+  reasoningKey?: string;
+  // a text-length guess from storage, replaced by any count
   estimated?: boolean;
 };
 
@@ -2616,7 +2619,7 @@ type ChatRuntimeStore = {
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
   setThreadContextUsage: (
     threadId: string,
-    usage: ContextUsageSnapshot,
+    usage: ContextUsageSnapshot | null,
   ) => void;
 };
 
@@ -4663,13 +4666,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   // Re-apply the incoming thread's usage: background runs never wrote the visible value.
   setActiveThreadId: (activeThreadId) =>
-    set((state) => ({
-      activeThreadId,
-      activeThreadEpoch: state.activeThreadEpoch + 1,
-      contextUsage: activeThreadId
+    set((state) => {
+      const own = activeThreadId
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
-        : null,
-    })),
+        : null;
+      return {
+        activeThreadId,
+        activeThreadEpoch: state.activeThreadEpoch + 1,
+        contextUsage:
+          own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
+      };
+    }),
   applyThreadScopedSettings: (threadId, settings) =>
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
@@ -5681,22 +5688,37 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // Write through to the thread's entry: the history loader runs once per mount.
   setContextUsage: (contextUsage) =>
     set((state) => {
-      if (!state.activeThreadId) return { contextUsage };
+      const stamped =
+        contextUsage && !contextUsage.modelId && state.params.checkpoint
+          ? { ...contextUsage, modelId: state.params.checkpoint }
+          : contextUsage;
+      if (!state.activeThreadId) return { contextUsage: stamped };
       const next = { ...state.contextUsageByThreadId };
-      if (contextUsage) {
-        next[state.activeThreadId] = contextUsage;
+      if (stamped) {
+        next[state.activeThreadId] = stamped;
       } else {
         delete next[state.activeThreadId];
       }
-      return { contextUsage, contextUsageByThreadId: next };
+      return { contextUsage: stamped, contextUsageByThreadId: next };
     }),
   setThreadContextUsage: (threadId, usage) =>
-    set((state) => ({
-      contextUsageByThreadId: {
-        ...state.contextUsageByThreadId,
-        [threadId]: usage,
-      },
-    })),
+    set((state) => {
+      if (!usage) {
+        if (!Object.hasOwn(state.contextUsageByThreadId, threadId)) return state;
+        const next = { ...state.contextUsageByThreadId };
+        delete next[threadId];
+        return { contextUsageByThreadId: next };
+      }
+      return {
+        contextUsageByThreadId: {
+          ...state.contextUsageByThreadId,
+          [threadId]:
+            usage.modelId || !state.params.checkpoint
+              ? usage
+              : { ...usage, modelId: state.params.checkpoint },
+        },
+      };
+    }),
 }));
 
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);

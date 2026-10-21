@@ -1,8 +1,9 @@
-import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
+import type { ExportedMessageRepository } from "@assistant-ui/react";
 import { saveChatMessage } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import { exportedItemToRecord } from "./delete-thread-message";
 import { RESEARCH_METADATA_KEYS } from "./research-message-sync";
+import { withMessageRevision } from "./saved-context-usage";
 
 // Mirrors studio_db._SERVER_MANAGED_LINK_KEYS.
 const SERVER_OWNED_METADATA_KEYS: readonly string[] = [
@@ -215,12 +216,22 @@ export async function updateThreadMessage(args: {
       }
     }
 
+    const previousContent = m.message.content;
+    const previousTools = Array.isArray(previousContent)
+      ? previousContent.filter((part) => !isEditablePart(part))
+      : [];
+    const unchanged = extractTaggedText(finalContent) === extractTaggedText(previousContent)
+      && JSON.stringify(finalContent.filter((part) => !isEditablePart(part))) === JSON.stringify(previousTools);
+
     return {
       ...m,
       message: {
         ...m.message,
         content: finalContent,
-        metadata: withoutGeminiContinuationReplay(m.message.metadata),
+        metadata:
+          unchanged
+            ? withoutGeminiContinuationReplay(m.message.metadata)
+            : withMessageRevision(withoutGeminiContinuationReplay(m.message.metadata)),
       },
     };
   }) as typeof currentExport.messages;

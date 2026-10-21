@@ -7,11 +7,17 @@ import { useEffect, useState } from "react";
 export interface GpuDevice {
     name: string | null;
     vramTotalGb: number | null;
+    sharedMemory?: boolean;
+    unifiedMemory?: boolean;
+    sharedMemoryHostBackedGb?: number | null;
 }
 
 interface ApiGpu {
     name?: string | null;
     vram_total_gb?: number | null;
+    shared_memory?: boolean;
+    unified_memory?: boolean;
+    shared_memory_host_backed_gb?: number | null;
 }
 
 export interface HardwareInfo {
@@ -110,6 +116,9 @@ async function fetchOnce(): Promise<HardwareInfo> {
                     ? data.gpus.map((g: ApiGpu) => ({
                         name: g?.name ?? null,
                         vramTotalGb: g?.vram_total_gb ?? null,
+                        sharedMemory: g?.shared_memory === true,
+                        unifiedMemory: g?.unified_memory === true,
+                        sharedMemoryHostBackedGb: g?.shared_memory_host_backed_gb ?? null,
                     }))
                     : [],
                 torch: data?.versions?.torch ?? null,

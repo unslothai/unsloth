@@ -41,7 +41,7 @@ def main(argv = None) -> int:
         "--device", default = "cuda:0", help = "the at-load path quantizes on the card when it has one"
     )
     p.add_argument(
-        "--venv-dir", default = None, help = "the transformers 5.10 sidecar (default: Studio's)"
+        "--venv-dir", default = None, help = "the transformers 5.10 sidecar (default: Unsloth's)"
     )
     p.add_argument("--hf-token", default = None)
     args = p.parse_args(argv)

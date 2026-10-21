@@ -121,9 +121,14 @@ test("a failure is only reported for the request still being awaited", () => {
 test("no project scope is opened where RAG cannot run", () => {
   assert.match(
     THREAD_DOCUMENTS_BAR,
-    /const projectId =\s*\(ragEnabled && ragSource\.type === "kb"\) \|\| ragUnavailable\s*\? null\s*: \(threadProjectId \?\? null\);/,
+    /const watchedProjectId = ragUnavailable \? null : \(threadProjectId \?\? null\);\s*const projectId =\s*ragEnabled && ragSource\.type === "kb" \? null : watchedProjectId;/,
   );
-  assert.match(THREAD_DOCUMENTS_BAR, /projectId \? \{ type: "project", projectId \} : null/);
+  // Watched beside an active KB too: retrieval adds the project there (#9485), so a
+  // send must still wait for a project source that is indexing.
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /watchedProjectId \? \{ type: "project", projectId: watchedProjectId \} : null/,
+  );
 });
 
 // Sources panel work has no composer row while running, so it must count as indexing.
@@ -650,20 +655,13 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
   );
 });
 
-// A knowledge base replaces every other scope in rag_scope.
-test("a knowledge-base queue does not wait on project sources", () => {
-  assert.match(
-    THREAD,
-    /const usesKnowledgeBaseAtQueueStart =\s*chatStateAtQueueStart\.ragEnabled &&\s*chatStateAtQueueStart\.ragSource\.type === "kb";/,
-  );
-  assert.match(THREAD, /usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,/);
-  assert.match(
-    THREAD,
-    /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,900}?const projectId = threadId/,
-  );
+// A knowledge base replaces only the thread's documents in rag_scope; the project's
+// sources still reach the run (#9485), so a KB queue waits on them like any other.
+test("a knowledge-base queue still waits on project sources", () => {
+  assert.doesNotMatch(THREAD, /usesKnowledgeBase/);
   assert.match(
     CHAT_ADAPTER,
-    /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}/,
+    /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}\s*: ragEnabled && resolvedThreadId\s*\? \{ thread_id: resolvedThreadId \}\s*: \{\}\),\s*\.\.\.\(projectRagEnabled && ragProjectId\s*\? \{ project_id: ragProjectId \}/,
   );
 });
 

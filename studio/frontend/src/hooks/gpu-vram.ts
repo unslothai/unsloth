@@ -106,6 +106,27 @@ export function deviceSharedMemorySplitGb(
   return totals.shared > 0 ? totals : null;
 }
 
+/** About-tab memory for a hardware row: an iGPU's own carve-out, else its whole total (borrowable RAM is not VRAM). */
+export function hardwareGpuMemoryGb(gpu: {
+  vramTotalGb: number | null;
+  sharedMemory?: boolean;
+  unifiedMemory?: boolean;
+  sharedMemoryHostBackedGb?: number | null;
+}): { gb: number; integrated: boolean } | null {
+  if (gpu.vramTotalGb == null) return null;
+  const integrated = gpu.sharedMemory === true || gpu.unifiedMemory === true;
+  const split = deviceSharedMemorySplitGb({
+    memory_total_gb: gpu.vramTotalGb,
+    shared_memory: gpu.sharedMemory === true,
+    unified_memory: gpu.unifiedMemory === true,
+    shared_memory_host_backed_gb: gpu.sharedMemoryHostBackedGb ?? null,
+  });
+  return {
+    gb: split && split.dedicated > 0 ? split.dedicated : gpu.vramTotalGb,
+    integrated,
+  };
+}
+
 export function gpuSharedHostMemoryGb(devices: MemoryTotalDevice[]): number {
   return gpuMemoryTotalsGb(devices).shared;
 }

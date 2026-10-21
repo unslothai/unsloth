@@ -149,6 +149,7 @@ test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
     "mlx_unavailable",
     "no_torch",
     "intel_mac",
+    "rosetta",
     "detection_failed",
   ]) {
     assert.equal(isServedByMlx(false, "mac", reason), false, reason);

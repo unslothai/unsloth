@@ -11,7 +11,9 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
+import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
+import { ALLOW_OVERSIZED_LOAD_STORAGE_KEY } from "@/lib/unified-memory-load-refusal";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { type Ref, useEffect, useRef, useState } from "react";
 import {
@@ -87,6 +89,9 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
     useChatRuntimeStore.getState().keepModelsLoaded ? "fit" : "off",
   );
   const [multiModelRead, setMultiModelRead] = useState(false);
+  const [allowOversizedLoad, setAllowOversizedLoad] = usePersistedToggle(
+    ALLOW_OVERSIZED_LOAD_STORAGE_KEY,
+  );
   const [isSavingMultiModel, setIsSavingMultiModel] = useState(false);
 
   useEffect(() => {
@@ -254,6 +259,20 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
             </SelectItem>
           </SelectContent>
         </Select>
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.resources.modelMemory.allowOversizedLoad")}
+        description={t(
+          "settings.resources.modelMemory.allowOversizedLoadDescription",
+        )}
+        hint={t("settings.resources.modelMemory.allowOversizedLoadHint")}
+      >
+        <Switch
+          aria-label={t("settings.resources.modelMemory.allowOversizedLoad")}
+          checked={allowOversizedLoad}
+          onCheckedChange={setAllowOversizedLoad}
+          data-testid="allow-oversized-load-switch"
+        />
       </SettingsRow>
       {error ? (
         <p className="pb-3 text-xs text-destructive">{error}</p>

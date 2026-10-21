@@ -5,6 +5,7 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
@@ -68,6 +69,12 @@ export interface DiffusionStatus {
   supports_lora?: boolean;
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
+  negative_prompt_min_guidance?: number | null;
+  // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
+  supports_guidance?: boolean;
+  // False when this load streams no denoise previews (native engine, families without a preview map).
+  supports_live_preview?: boolean;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
@@ -136,6 +143,8 @@ export interface DiffusionLoadProgress {
   bytes_total: number;
   fraction: number;
   error: string | null;
+  /** Absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface DiffusionLoadRequest {
@@ -183,6 +192,8 @@ export interface DiffusionLoadRequest {
   transformer_cache?: "off" | "fbcache" | "static";
   // torchao int8/fp8 builds can only take LoRAs before quantisation, so they must be baked at load.
   loras?: LoraSpecInput[];
+  // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
+  allow_oversized_load?: boolean;
 }
 
 export interface DiffusionGenerateRequest {
@@ -350,7 +361,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getDiffusionLoadProgress(signal)).phase,
@@ -372,6 +383,8 @@ export interface DiffusionDownloadPlan {
   checkpoint_bytes?: number;
   /** Why this pick cannot load as selected, or null when nothing is known to be wrong. */
   incompatible_reason?: string | null;
+  /** Absent on an older backend. */
+  incompatible_code?: string | null;
 }
 
 export async function getDiffusionDownloadPlan(
@@ -381,7 +394,7 @@ export async function getDiffusionDownloadPlan(
     await authFetch("/api/inference/images/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }

@@ -2873,7 +2873,7 @@ export function HubModelPicker({
   onBrowseHub,
   onConfigureConnection,
   onModelsChange,
-  onConfigure,
+  onConfigure: onConfigureProp,
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
@@ -2951,6 +2951,8 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  // Run settings is the chat load form, which the Images and Video pages never read.
+  const onConfigure = diffusionLoad ? undefined : onConfigureProp;
   const audioTaskPicker = taskFilterHasAudio(task);
   // What the backend actually holds, not the dropdown highlight: an image or video load evicts
   // the chat model and leaves the pick untouched, so rows kept a "Loaded" badge with nothing

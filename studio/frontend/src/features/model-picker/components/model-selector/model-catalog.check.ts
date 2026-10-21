@@ -1451,7 +1451,10 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   const artifactsByRepo = new Map<string, ModelArtifact[]>();
   for (const group of groups) {
     for (const artifact of group.artifacts) {
-      const hubRepo = isAudioCppFolderId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId;
+      // A gated vendor id the backend fetches from an open mirror is judged by that mirror.
+      const hubRepo =
+        artifact.fetchedFrom ??
+        (isAudioCppFolderId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId);
       const bucket = artifactsByRepo.get(hubRepo);
       if (bucket) bucket.push(artifact);
       else artifactsByRepo.set(hubRepo, [artifact]);

@@ -157,6 +157,7 @@ const NO_MLX_REASONS = new Set([
   "mlx_unavailable",
   "no_torch",
   "intel_mac",
+  "rosetta",
   "detection_failed",
 ]);
 

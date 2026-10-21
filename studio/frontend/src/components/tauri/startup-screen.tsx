@@ -11,6 +11,8 @@ import {
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import { useDocumentFlag } from "@/lib/document-flag";
@@ -75,7 +77,7 @@ function CheckingContent() {
   );
 }
 
-type InstallOptions = { skipLongPaths?: boolean };
+type InstallOptions = { skipLongPaths?: boolean; chatOnly?: boolean };
 
 function NotInstalledContent({
   onInstall,
@@ -85,6 +87,7 @@ function NotInstalledContent({
   const [phase, setPhase] = useState<
     "idle" | "checking" | "explain" | "elevating"
   >("idle");
+  const [chatOnly, setChatOnly] = useState(false);
 
   // Synchronous: a double click lands before the re-render that disables the buttons.
   const busy = useRef(false);
@@ -99,7 +102,7 @@ function NotInstalledContent({
       busy.current = false;
       setPhase("explain");
     } else {
-      onInstall();
+      onInstall({ chatOnly });
     }
   }
 
@@ -111,7 +114,7 @@ function NotInstalledContent({
     setPhase("elevating");
     const outcome = await enableWindowsLongPaths();
     // "failed" leaves setup.ps1's own UAC as the fallback.
-    onInstall({ skipLongPaths: outcome === "declined" });
+    onInstall({ skipLongPaths: outcome === "declined", chatOnly });
   }
 
   function skipLongPaths() {
@@ -119,7 +122,7 @@ function NotInstalledContent({
       return;
     }
     busy.current = true;
-    onInstall({ skipLongPaths: true });
+    onInstall({ skipLongPaths: true, chatOnly });
   }
 
   if (phase === "explain" || phase === "elevating") {
@@ -151,6 +154,20 @@ function NotInstalledContent({
         >
           Get Started
         </Button>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="install-chat-only"
+            checked={chatOnly}
+            disabled={phase !== "idle"}
+            onCheckedChange={(checked) => setChatOnly(checked === true)}
+          />
+          <Label
+            htmlFor="install-chat-only"
+            className="text-ui-12 font-normal text-muted-foreground"
+          >
+            Chat only (GGUF): smaller install, no training
+          </Label>
+        </div>
         <InstallLocation disabled={phase !== "idle"} />
       </div>
     </div>

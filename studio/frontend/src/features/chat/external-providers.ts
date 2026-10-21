@@ -369,7 +369,7 @@ export const CUSTOM_PROVIDER_PRESETS = [
   {
     providerType: "llama_cpp",
     displayName: "llama.cpp",
-    baseUrlPlaceholder: "http://localhost:8080/v1",
+    baseUrlPlaceholder: "http://localhost:9931/v1",
     modelIdsPlaceholder: "gpt-oss-20b\nqwen3-14b",
   },
   {

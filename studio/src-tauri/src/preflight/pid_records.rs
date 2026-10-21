@@ -1,4 +1,4 @@
-use crate::process_identity::ProcessOrigin;
+use crate::process_identity::{ProcessOrigin, RecordedStartTime};
 use std::path::Path;
 
 /// The pid of a live backend of THIS install serving `port`, if recorded. A health probe cannot
@@ -14,6 +14,7 @@ pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
         },
         origin: &|pid| crate::process_identity::origin_of(pid, &root, &interpreters),
         started_at: &crate::process_identity::process_start_time_secs,
+        identity: &crate::process_identity::linux_process_identity,
     };
     live_backend_pid_in(&root, port, &probe)
 }
@@ -37,6 +38,7 @@ struct Probe<'a> {
     is_live: &'a dyn Fn(u32) -> bool,
     origin: &'a dyn Fn(u32) -> ProcessOrigin,
     started_at: &'a dyn Fn(u32) -> Option<f64>,
+    identity: &'a dyn Fn(u32) -> Option<String>,
 }
 
 enum Recorded {
@@ -48,18 +50,16 @@ enum Recorded {
     Opaque,
 }
 
-const START_TIME_TOLERANCE_SECS: f64 =
-    crate::process_identity::PID_START_TIME_TOLERANCE_SECS;
-
-fn classify(pid: u32, recorded_start: Option<f64>, probe: &Probe) -> Recorded {
+fn classify(pid: u32, recorded_start: Option<RecordedStartTime>, probe: &Probe) -> Recorded {
     if !(probe.is_live)(pid) {
         return Recorded::Stale;
     }
-    // A start time mismatch proves pid reuse, which no executable evidence can override.
-    if let (Some(recorded), Some(actual)) = (recorded_start, (probe.started_at)(pid)) {
-        if (actual - recorded).abs() > START_TIME_TOLERANCE_SECS {
-            return Recorded::Stale;
-        }
+    if !crate::process_identity::recorded_start_matches(
+        recorded_start,
+        (probe.started_at)(pid),
+        (probe.identity)(pid),
+    ) {
+        return Recorded::Stale;
     }
     match (probe.origin)(pid) {
         ProcessOrigin::InsideTree => Recorded::OurBackend,
@@ -140,7 +140,7 @@ fn has_a_per_port_record(root: &Path, pid: u32) -> bool {
     false
 }
 
-fn recorded_start_time(path: &Path) -> Option<f64> {
+fn recorded_start_time(path: &Path) -> Option<RecordedStartTime> {
     crate::process_identity::recorded_pid_start_time(path)
 }
 
@@ -178,7 +178,29 @@ mod tests {
             is_live: &|_| true,
             origin,
             started_at: &|_| None,
+            identity: &|_| None,
         }
+    }
+
+    #[test]
+    fn a_stable_identity_survives_epoch_drift_and_rejects_reuse() {
+        let home = Home::new();
+        home.record(RECORDED_8888, "4242\n1000.0\n127.0.0.1\nlinux:boot:123\n");
+        let same = Probe {
+            started_at: &|_| Some(4600.0),
+            identity: &|_| Some("linux:boot:123".into()),
+            ..probe(&shared)
+        };
+        assert_eq!(
+            live_backend_pid_in(&home.path(), 8888, &same),
+            Some(RECORDED)
+        );
+        let reused = Probe {
+            started_at: &|_| Some(1000.0),
+            identity: &|_| Some("linux:boot:124".into()),
+            ..probe(&shared)
+        };
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &reused), None);
     }
 
     fn gone<'a>() -> Probe<'a> {
@@ -186,6 +208,7 @@ mod tests {
             is_live: &|_| false,
             origin: &|_| unreachable!("a dead pid is never attributed"),
             started_at: &|_| unreachable!("a dead pid is never timed"),
+            identity: &|_| unreachable!("a dead pid is never identified"),
         }
     }
 
@@ -243,6 +266,7 @@ mod tests {
             is_live: &|_| true,
             origin: &shared,
             started_at: &|_| Some(9999.0),
+            identity: &|_| None,
         };
 
         assert_eq!(live_backend_pid_in(&home.path(), 8888, &reused), None);
@@ -256,6 +280,7 @@ mod tests {
             is_live: &|_| true,
             origin: &shared,
             started_at: &|_| Some(1000.4),
+            identity: &|_| None,
         };
 
         assert_eq!(
@@ -273,6 +298,7 @@ mod tests {
             is_live: &|_| true,
             origin: &shared,
             started_at: &|_| Some(9999.0),
+            identity: &|_| None,
         };
 
         assert_eq!(
@@ -356,6 +382,7 @@ mod tests {
             is_live: &|_| true,
             origin: &ours,
             started_at: &|_| Some(9999.0),
+            identity: &|_| None,
         };
 
         assert_eq!(live_backend_pid_in(&home.path(), 8888, &reused), None);

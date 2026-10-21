@@ -8,6 +8,7 @@ import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 
 // `requested` null = left to the backend; `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
@@ -125,6 +126,8 @@ export interface VideoLoadProgress {
   downloaded_bytes: number;
   expected_bytes?: number | null;
   error?: string | null;
+  /** Absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface VideoLoadRequest {
@@ -164,6 +167,8 @@ export interface VideoLoadRequest {
   // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
   // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
   text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
+  allow_oversized_load?: boolean;
 }
 
 export interface VideoReferenceVideo {
@@ -282,7 +287,7 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
         await authFetch("/api/inference/video/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getVideoLoadProgress(signal)).phase,
@@ -296,7 +301,7 @@ export async function getVideoDownloadPlan(
     await authFetch("/api/inference/video/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }

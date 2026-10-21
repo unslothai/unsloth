@@ -68,6 +68,7 @@ import {
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
+  PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
   Search01Icon,
@@ -652,6 +653,7 @@ export function ProjectsPage() {
             <span className="flex-1">Name</span>
             <span className="shrink-0 sm:w-40">Updated</span>
             <span className="size-7 shrink-0" />
+            <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
           {Array.from({ length: 6 }).map((_, index) => (
@@ -705,6 +707,7 @@ export function ProjectsPage() {
                 )}
               />
             </button>
+            <span className="size-7 shrink-0" />
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
@@ -785,6 +788,19 @@ export function ProjectsPage() {
                   className="size-4"
                 />
               </button>
+              {/* As ChatGPT's project rows: a new chat is one click, beside the menu that also has it. */}
+              <button
+                type="button"
+                aria-label="New chat in project"
+                title="New chat in project"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  newChatInProject(project.id);
+                }}
+                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+              >
+                <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
+              </button>
               <div className="relative flex w-8 shrink-0 items-center justify-end">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -803,7 +819,7 @@ export function ProjectsPage() {
                     sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
+                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-[14px] border-0"
                   >
                     <ProjectMenuItems
                       project={project}
@@ -876,6 +892,8 @@ export function ProjectsPage() {
                             className="size-4"
                           />
                         </button>
+                        {/* Stands in for the project row's New chat, keeping pin and menu in line. */}
+                        <span className="size-7 shrink-0" />
                         <div className="relative flex w-8 shrink-0 items-center justify-end">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -894,7 +912,7 @@ export function ProjectsPage() {
                               sideOffset={0}
                               onClick={(e) => e.stopPropagation()}
                               onKeyDown={(e) => e.stopPropagation()}
-                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
+                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-[14px] border-0"
                             >
                               <DropdownMenuItem
                                 onSelect={() => {

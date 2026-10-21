@@ -4,6 +4,7 @@
 // Plain module so the node suite can import it.
 
 export const formatTokenCount = (n: number): string => {
+  if (n >= 999_950) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 };
@@ -29,7 +30,55 @@ export type ContextUsageBarInput = {
   estimated?: boolean;
 };
 
-/** Limit warning for the tooltip; read from the unclamped ratio since percent caps at 100. */
+export type ContextUsageRows = Pick<
+  ContextUsageBarInput,
+  "promptTokens" | "completionTokens" | "cached" | "cacheWrites"
+>;
+
+export function contextUsageRows(
+  usage:
+    | {
+        promptTokens: number;
+        completionTokens: number;
+        contextTokens?: number;
+        cachedTokens?: number;
+        cacheWriteTokens?: number;
+      }
+    | null
+    | undefined,
+  summedPrompt: boolean,
+): ContextUsageRows {
+  if (!usage) return {};
+  const context = usage.contextTokens;
+  if (context === undefined) {
+    return {
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      cached: usage.cachedTokens,
+      cacheWrites: usage.cacheWriteTokens,
+    };
+  }
+  const describesContext = summedPrompt
+    ? context === usage.promptTokens + usage.completionTokens
+    : context >= usage.promptTokens;
+  if (!describesContext) return {};
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: context - usage.promptTokens,
+    cached: usage.cachedTokens,
+    cacheWrites: usage.cacheWriteTokens,
+  };
+}
+
+/**
+ * Which limit warning the tooltip carries, if any.
+ *
+ * llama.cpp stops generating at the window, so its advice is to raise the limit before
+ * hitting it. MLX generates straight past instead, so the same wording would promise a
+ * stop that never comes -- and once a conversation is over the window there is something
+ * different to say about it. Read from the unclamped ratio: the reported percent caps at
+ * 100%, which is exactly the state being reported on.
+ */
 export type ContextLimitAdvice =
   | "none"
   | "stops-at-limit"
@@ -90,7 +139,7 @@ export function deriveContextUsageBar({
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
-    typeof used === "number" && Number.isFinite(used) ? used : null;
+    typeof used === "number" && Number.isFinite(used) && used >= 0 ? used : null;
 
   if (estimated && usedTokens !== null && usedTokens > 0) {
     const approx = `~${formatTokenCount(usedTokens)}`;

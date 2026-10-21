@@ -134,6 +134,15 @@ test("the untranslated health reason is not folded into a translated sentence", 
   assert.doesNotMatch(EN, /autoCurrentlyReason/);
 });
 
+test("the health reason shows only when Auto falls back to HTTPS", () => {
+  // On Xet the reason is the health cache's bookkeeping ("Xet download succeeded"), which read
+  // as a stray status line under the toggle.
+  assert.match(
+    ROW,
+    /const statusReason =\s*mode === "auto" && settings\?\.autoResolvesTo === "http"/,
+  );
+});
+
 test("a failed refresh keeps the install mode already loaded", () => {
   assert.match(PREFERENCE, /installMode === null && superseded \? superseded : installMode/);
 });

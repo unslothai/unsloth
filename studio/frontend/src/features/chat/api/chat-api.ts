@@ -451,11 +451,11 @@ export async function countChatInputTokens(payload: {
   studio_tool_history?: boolean;
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: serializedPayload,
   });
   return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }

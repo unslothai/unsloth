@@ -286,23 +286,68 @@ pub(crate) fn process_start_time_secs(pid: u32) -> Option<f64> {
 /// Same one-second window as `_pid_is_studio_backend` in Python.
 pub(crate) const PID_START_TIME_TOLERANCE_SECS: f64 = 1.0;
 
-/// Line two of a `studio-{port}-{pid}.pid` record (psutil epoch seconds); blank means unknown.
-pub(crate) fn recorded_pid_start_time(path: &Path) -> Option<f64> {
-    std::fs::read_to_string(path)
-        .ok()?
-        .lines()
-        .nth(1)?
-        .trim()
-        .parse()
-        .ok()
+/// Linux uses a boot ID and raw start ticks, which do not move with the wall clock.
+/// Epoch seconds remain on line two for older readers and other platforms.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RecordedStartTime {
+    Epoch(f64),
+    Linux(String),
 }
 
-/// A disagreeing start time proves pid reuse, which no executable evidence can override.
-pub(crate) fn pid_start_time_matches(pid: u32, recorded: Option<f64>) -> bool {
-    let (Some(recorded), Some(actual)) = (recorded, process_start_time_secs(pid)) else {
-        return true;
-    };
-    (actual - recorded).abs() <= PID_START_TIME_TOLERANCE_SECS
+pub(crate) fn recorded_pid_start_time(path: &Path) -> Option<RecordedStartTime> {
+    let body = std::fs::read_to_string(path).ok()?;
+    let lines: Vec<_> = body.lines().collect();
+    if let Some(identity) = lines.get(3) {
+        let parts: Vec<_> = identity.trim().split(':').collect();
+        if parts.len() == 3 && parts[0] == "linux" && !parts[1].is_empty() {
+            if let Ok(ticks) = parts[2].parse::<u64>() {
+                return Some(RecordedStartTime::Linux(format!(
+                    "linux:{}:{ticks}",
+                    parts[1]
+                )));
+            }
+        }
+    }
+    let epoch: f64 = lines.get(1)?.trim().parse().ok()?;
+    epoch.is_finite().then_some(RecordedStartTime::Epoch(epoch))
+}
+
+pub(crate) fn recorded_start_matches(
+    recorded: Option<RecordedStartTime>,
+    actual_epoch: Option<f64>,
+    actual_identity: Option<String>,
+) -> bool {
+    match recorded {
+        Some(RecordedStartTime::Linux(recorded)) => {
+            actual_identity.is_none_or(|actual| actual == recorded)
+        }
+        Some(RecordedStartTime::Epoch(recorded)) => actual_epoch
+            .is_none_or(|actual| (actual - recorded).abs() <= PID_START_TIME_TOLERANCE_SECS),
+        None => true,
+    }
+}
+
+pub(crate) fn pid_start_time_matches(pid: u32, recorded: Option<RecordedStartTime>) -> bool {
+    recorded_start_matches(
+        recorded,
+        process_start_time_secs(pid),
+        linux_process_identity(pid),
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_process_identity(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = &stat[stat.rfind(')')? + 1..];
+    let ticks: u64 = after_comm.split_whitespace().nth(19)?.parse().ok()?;
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let boot = boot.trim();
+    (!boot.is_empty()).then(|| format!("linux:{boot}:{ticks}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn linux_process_identity(_pid: u32) -> Option<String> {
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -474,6 +519,59 @@ fn executable_path_impl(_pid: u32) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_identity_ignores_epoch_drift_but_rejects_reuse() {
+        let recorded = Some(RecordedStartTime::Linux("linux:boot:123".into()));
+        for (actual, matches) in [
+            ("linux:boot:123", true),
+            ("linux:boot:124", false),
+            ("linux:other-boot:123", false),
+        ] {
+            assert_eq!(
+                recorded_start_matches(recorded.clone(), Some(4600.0), Some(actual.into())),
+                matches
+            );
+        }
+    }
+
+    #[test]
+    fn record_parser_prefers_identity_and_accepts_old_records() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "4242\n1000.0\n127.0.0.1\nlinux:boot:123\n").unwrap();
+        assert_eq!(
+            recorded_pid_start_time(file.path()),
+            Some(RecordedStartTime::Linux("linux:boot:123".into()))
+        );
+        for suffix in ["", "linux:boot:-1", "linux::123", "linux:boot:garbage"] {
+            std::fs::write(file.path(), format!("4242\n1000.0\n127.0.0.1\n{suffix}\n")).unwrap();
+            assert_eq!(
+                recorded_pid_start_time(file.path()),
+                Some(RecordedStartTime::Epoch(1000.0))
+            );
+        }
+    }
+
+    #[test]
+    fn missing_identity_keeps_the_record_and_legacy_tolerance_is_inclusive() {
+        assert!(recorded_start_matches(
+            Some(RecordedStartTime::Linux("linux:boot:123".into())),
+            Some(9999.0),
+            None
+        ));
+        for delta in [-1.0, 1.0] {
+            assert!(recorded_start_matches(
+                Some(RecordedStartTime::Epoch(1000.0)),
+                Some(1000.0 + delta),
+                None
+            ));
+        }
+        assert!(!recorded_start_matches(
+            Some(RecordedStartTime::Epoch(1000.0)),
+            Some(1001.01),
+            None
+        ));
+    }
 
     fn tree_with_venv(base: Option<&Path>, layout: &str) -> tempfile::TempDir {
         let tree = tempfile::tempdir().unwrap();

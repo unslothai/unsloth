@@ -37,6 +37,7 @@ import {
   useState,
 } from "react";
 import {
+  type ModelConfigFocus,
   type ModelConfigHandoffRequest,
   modelConfigTarget,
   modelConfigTargetIsResident,
@@ -461,6 +462,7 @@ function ModelSelectorContent({
   const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
     string | null
   >(null);
+  const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
 
   // The picker remounts on each open but this state does not, so re-derive on the open edge.
   const wasOpen = useRef(open);
@@ -474,6 +476,7 @@ function ModelSelectorContent({
     }
     if (!open && wasOpen.current) {
       setConfigTarget(null);
+      setConfigFocus(null);
     }
     wasOpen.current = open;
   }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);
@@ -524,6 +527,7 @@ function ModelSelectorContent({
       ? id.slice(NPU_MODEL_PREFIX.length)
       : undefined;
     setConfigTarget(modelConfigTarget(id, meta, displayName));
+    setConfigFocus(null);
   };
   const requestedConfigTarget = useMemo(
     () =>
@@ -560,6 +564,7 @@ function ModelSelectorContent({
   ) {
     setAdoptedConfigRequestId(configRequest.requestId);
     setConfigTarget(requestedConfigTarget);
+    setConfigFocus(configRequest.focus ?? null);
   }
   useEffect(() => {
     if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
@@ -622,7 +627,11 @@ function ModelSelectorContent({
                 visibleLoadedConfig,
               )}
               target={visibleConfigTarget}
-              onBack={() => setConfigTarget(null)}
+              onBack={() => {
+                setConfigTarget(null);
+                setConfigFocus(null);
+              }}
+              focusField={configFocus ?? undefined}
               onRun={(config, isDiffusion) =>
                 onSelect(
                   visibleConfigTarget.configId ?? visibleConfigTarget.id,

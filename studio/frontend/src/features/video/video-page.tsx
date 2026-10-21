@@ -194,6 +194,8 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
+import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -930,6 +932,7 @@ type VideoLoadAdvanced = Pick<
   | "transformer_quant"
   | "family_override"
   | "gpu_ids"
+  | "allow_oversized_load"
 >;
 
 function VideoGate({ children }: { children: ReactNode }) {
@@ -1187,7 +1190,14 @@ function VideoGenerator({
   const pickSeq = useRef(0);
   // handleLoad overwrites lastLoad at start, and a failure leaves the old model.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
-  // Resolving and staging do not set `busy`. Lazy state, since a ref cannot be written in render.
+  // Set only around a confirmed Load anyway retry.
+  const oversizedLoadOnce = useRef(false);
+  const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
+  // Synced after render (handleLoadRef is written during render).
+  const retryLoadRef = useRef<((repoId: string, opts: VideoLoadOptions, pinned?: VideoLoadAdvanced) => Promise<boolean>) | null>(null);
+  const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
+  // Which pick owns the page: resolving and staging do not set `busy`, so a pick can land on an
+  // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
   const dismissLoadToast = useCallback(() => {
@@ -2296,6 +2306,16 @@ function VideoGenerator({
     setSelectorOpen(false);
   }, [active]);
 
+  const offerLoadAnywayFor = useCallback(
+    (failure: unknown, code?: string | null): boolean => {
+      const attempt = lastLoadAttempt.current;
+      if (!attempt || !shouldOfferLoadAnyway({ code, failure, overrideSent: attempt.overrideSent })) return false;
+      offerLoadAnyway(failureMessage(failure) || "Failed to load model", attempt.retry);
+      return true;
+    },
+    [offerLoadAnyway],
+  );
+
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
@@ -2325,7 +2345,7 @@ function VideoGenerator({
       if (p.phase === "error") {
         pendingEvicted.current = [];
         dismissLoadToast();
-        reportLoadFailure(p.error, "Failed to load model");
+        if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         if (quantRevert.current) {
           revertPick(quantRevert.current);
@@ -2368,7 +2388,7 @@ function VideoGenerator({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
 
   // The unload failed so the load still runs; restore its poll and toast. refreshStatus cannot,
   // since a first load is not resident yet.
@@ -2536,6 +2556,8 @@ function VideoGenerator({
           controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)
             ? [Number(controls.selectedGpu)]
             : undefined,
+        // Only a confirmed Load anyway retry sets it, around the one loadOrStage call that snapshots this.
+        allow_oversized_load: oversizedLoadOnce.current ? true : undefined,
       };
     },
     [],
@@ -2577,7 +2599,9 @@ function VideoGenerator({
       // Read before the request: a Cancel in flight can reach the backend first and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
-      // Published now and settled in the finally, so a cancel waits for the whole path.
+      // An older pick's Load anyway prompt would retry a model this load supersedes.
+      dismissLoadAnyway();
+      // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
         settleLoad = resolve;
@@ -2601,6 +2625,13 @@ function VideoGenerator({
       lastLoad.current = { repoId, ...opts };
       setCanReapply(true);
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
+      const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+      const retryPick = pickSeq.current;
+      const retryOversized = retryWhileCurrent(
+        () => retryPick === pickSeq.current && startLoad === loadSeq.current,
+        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+      );
+      lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
         if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
@@ -2623,6 +2654,7 @@ function VideoGenerator({
           // Not an Advanced control: the partition is chosen per pick.
           h3_task: opts.h3Task,
           gpu_ids: advanced.gpu_ids,
+          allow_oversized_load: advanced.allow_oversized_load,
         });
         const answer = await startRequest;
         pendingEvicted.current = evictedSlotsFrom(answer);
@@ -2633,7 +2665,7 @@ function VideoGenerator({
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err, "Failed to start load");
+        if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
@@ -2668,6 +2700,8 @@ function VideoGenerator({
       canReapply,
       currentLoadAdvanced,
       pickToast,
+      offerLoadAnywayFor,
+      dismissLoadAnyway,
     ],
   );
 
@@ -2681,6 +2715,9 @@ function VideoGenerator({
     toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
+  useEffect(() => {
+    retryLoadRef.current = handleLoad;
+  }, [handleLoad]);
   handleLoadRef.current = handleLoad;
   // A download finishing while hidden must not evict the visible page's model; the pick is held.
   const stagedLoadDeferred = useRef(false);
@@ -2750,7 +2787,9 @@ function VideoGenerator({
       // Every Hub pick needs the plan: a cached checkpoint can still miss its base repo's encoder or VAE.
       // Bumped before the non-hub return so a local pick invalidates one in flight.
       const pick = ++pickSeq.current;
-      // The previous pick's staged intent dies with it, or its onReady loads the abandoned model.
+      dismissLoadAnyway();
+      // The previous pick's staged intent dies with it: a pick that stages nothing never calls
+      // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       stagedQuantRevert.current = null;
@@ -2763,6 +2802,7 @@ function VideoGenerator({
       // Read before the await: a newer pick replaces quantRevert.
       const ownRevert = quantRevert.current;
       let incompatible: string | null = null;
+      let incompatibleCode: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: opts.displayRepoId ?? repoId,
@@ -2776,6 +2816,8 @@ function VideoGenerator({
           // The two H3 denoisers are separate downloads.
           h3_task: opts.h3Task,
           gpu_ids: advanced.gpu_ids,
+          // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
+          allow_oversized_load: advanced.allow_oversized_load,
         });
         // Superseded; report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {
@@ -2784,6 +2826,7 @@ function VideoGenerator({
         }
         // The shared envelope's half of the incompatible-pairing check; video has no live path here.
         incompatible = plan.incompatible_reason ?? null;
+        incompatibleCode = plan.incompatible_code ?? null;
         if (!incompatible && plan.entries.length > 0) {
           const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
@@ -2809,13 +2852,29 @@ function VideoGenerator({
       }
       if (incompatible) {
         pickToast.dismiss(pickToastId);
-        toast.error(incompatible);
+        const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+        if (shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
+          offerLoadAnyway(incompatible, retryWhileCurrent(() => pick === pickSeq.current, () => {
+            oversizedLoadOnce.current = true;
+            try {
+              void loadOrStageRef.current(repoId, opts, source, undefined, familyOverrideRequired);
+            } finally {
+              oversizedLoadOnce.current = false;
+            }
+          }));
+        } else {
+          toast.error(incompatible);
+        }
         return false;
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, pickGuard, currentLoadAdvanced, pickToast],
+    [stage, pickGuard, currentLoadAdvanced, pickToast, offerLoadAnyway, dismissLoadAnyway],
   );
+  const loadOrStageRef = useRef(loadOrStage);
+  useEffect(() => {
+    loadOrStageRef.current = loadOrStage;
+  }, [loadOrStage]);
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
@@ -3050,7 +3109,8 @@ function VideoGenerator({
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
     pickToast.dismissAll();
-  }, [pickToast]);
+    dismissLoadAnyway();
+  }, [pickToast, dismissLoadAnyway]);
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
@@ -3522,7 +3582,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -4703,6 +4763,7 @@ function VideoGenerator({
         </div>
 
       </div>
+      {loadAnywayDialog}
     </div>
   );
 }

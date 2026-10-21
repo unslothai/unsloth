@@ -212,6 +212,8 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
+import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -726,6 +728,7 @@ function SliderField({
   max,
   step,
   onChange,
+  disabled,
 }: {
   label: string;
   hint?: ReactNode;
@@ -734,6 +737,7 @@ function SliderField({
   max: number;
   step: number;
   onChange: (v: number) => void;
+  disabled?: boolean;
 }) {
   return (
     <ParamSlider
@@ -745,6 +749,7 @@ function SliderField({
       max={max}
       step={step}
       onChange={onChange}
+      disabled={disabled}
     />
   );
 }
@@ -1443,6 +1448,7 @@ type LoadAdvanced = Pick<
   | "text_encoder_file"
   | "vae_file"
   | "engine"
+  | "allow_oversized_load"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1646,6 +1652,13 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
+  // Set only around a confirmed Load anyway retry.
+  const oversizedLoadOnce = useRef(false);
+  const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
+  // Synced after render (handleLoadRef is written during render).
+  const retryLoadRef = useRef<((repoId: string, opts: ImageLoadOptions, pinned?: LoadAdvanced) => Promise<boolean>) | null>(null);
+  const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
+  // Queued: "Generate anyway" is clickable before the refused run releases busy.
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
@@ -1955,6 +1968,20 @@ export function ImagesPage({
   const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
   const controlnetCapable = !external && controlnetSupported;
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
+  // A model that reads no guidance here runs at its default, which the request and recipe then carry.
+  const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
+  const effectiveGuidance = guidanceFixed
+    ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
+    : guidance;
+  // The guidance a negative prompt needs: 0 with no model loaded or on an older backend, the old rule.
+  const negativeMinGuidance =
+    status?.loaded && status.negative_prompt_min_guidance !== undefined
+      ? status.negative_prompt_min_guidance
+      : 0;
+  const negativeEngaged =
+    negativeCapable && (negativeMinGuidance === null || effectiveGuidance > negativeMinGuidance);
+  const livePreviewUnavailable =
+    !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
@@ -2783,6 +2810,17 @@ export function ImagesPage({
     setAspectOpen(false);
   }, [active]);
 
+  const offerLoadAnywayFor = useCallback(
+    (failure: unknown, code?: string | null): boolean => {
+      const attempt = lastLoadAttempt.current;
+      if (!attempt || !shouldOfferLoadAnyway({ code, failure, overrideSent: attempt.overrideSent })) return false;
+      offerLoadAnyway(failureMessage(failure) || "Failed to load model", attempt.retry);
+      return true;
+    },
+    [offerLoadAnyway],
+  );
+
+  // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     const seq = cancelSeq.current;
     try {
@@ -2832,7 +2870,7 @@ export function ImagesPage({
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         dismissLoadToast();
-        reportLoadFailure(p.error, "Failed to load model");
+        if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         // A load that failed AFTER starting leaves the previous pipeline loaded.
         if (quantRevert.current) {
@@ -2881,7 +2919,7 @@ export function ImagesPage({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
 
   // The unload failed, so restore the poll and toast. refreshStatus cannot: a first load is not resident.
   const restoreLoadTracking = useCallback(() => {
@@ -3160,6 +3198,9 @@ export function ImagesPage({
       // Read BEFORE the start request: a Cancel's unload can reach the backend first and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      // An older pick's Load anyway prompt would retry a model this load supersedes.
+      dismissLoadAnyway();
+      // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
         settleLoad = resolve;
@@ -3213,6 +3254,13 @@ export function ImagesPage({
       };
       setCanReapply(true);
       lastLoadRevert.current = { prev: prevLastLoad };
+      const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+      const retryPick = pickSeq.current;
+      const retryOversized = retryWhileCurrent(
+        () => retryPick === pickSeq.current && startLoad === loadSeq.current,
+        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+      );
+      lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
         if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
@@ -3240,6 +3288,7 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
+          allow_oversized_load: advanced.allow_oversized_load,
           ...componentFiles,
         });
         const answer = await startRequest;
@@ -3254,7 +3303,7 @@ export function ImagesPage({
         // Engine select from the resident build rather than replay the refused pick on the next Reapply.
         setEngineSeed("");
         dismissLoadToast();
-        reportLoadFailure(err, "Failed to start load");
+        if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
@@ -3281,7 +3330,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -3291,11 +3340,14 @@ export function ImagesPage({
   }, []);
   const applyEditSource = useCallback(
     (dataUrl: string) => {
+      // FLUX.2 klein and FLUX.3 edit through Reference; without this fallback the source lands hidden on Create.
       const target: WorkflowId | null = isWorkflowEnabled("edit", supported)
         ? "edit"
         : isWorkflowEnabled("transform", supported)
           ? "transform"
-          : null;
+          : isWorkflowEnabled("reference", supported)
+            ? "reference"
+            : null;
       if (target) setWorkflow(target);
       handleInitChange(dataUrl);
       if (target === "edit") {
@@ -3304,6 +3356,8 @@ export function ImagesPage({
         toast.success("Image added to Transform", {
           description: "The loaded model cannot follow edit instructions, so it redraws the image from your prompt.",
         });
+      } else if (target === "reference") {
+        toast.success("Image added to Reference. Describe the change and hit Generate.");
       } else {
         toast.info("Image set as the source", {
           description: "The loaded model cannot edit images. Load an edit model, then pick Edit.",
@@ -3366,6 +3420,9 @@ export function ImagesPage({
     toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
+  useEffect(() => {
+    retryLoadRef.current = handleLoad;
+  }, [handleLoad]);
   handleLoadRef.current = handleLoad;
   // Both diffusion pages stay mounted and a load evicts the GPU holder, so defer until visible.
   const stagedLoadDeferred = useRef(false);
@@ -3524,6 +3581,8 @@ export function ImagesPage({
         // A baked LoRA always runs the dense build path, which changes the file set.
         loras: advanced.loras,
         gpu_ids: advanced.gpu_ids,
+        // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
+        allow_oversized_load: advanced.allow_oversized_load,
         ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       });
     },
@@ -3543,13 +3602,18 @@ export function ImagesPage({
     ): Promise<boolean> => {
       const downloadOnly =
         downloadSnapshot !== undefined || (!forceLoad && modelSelectionAction === "download");
+      // Read before the first await: a confirmed Load anyway retry sets it only around this call.
+      const oversizedRetry = oversizedLoadOnce.current && !downloadOnly;
       // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
       // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
       // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
       // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
       // and return silently, leaving the selected model neither staged nor loaded.
       const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
-      // A pick that stages nothing never calls stage(), so the old staged job must die here.
+      if (!downloadOnly) dismissLoadAnyway();
+      // The previous pick's staged intent dies with it: a pick that stages nothing never calls
+      // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
+      // Only load intents have an owner; a download-only pick holds no token and answers true.
       const owns = () => token === undefined || downloadOnly || pickGuard.holds(token);
       // A download-only pick must not retire a staged load, or that model never loads.
       if (!downloadSnapshot && !downloadOnly) {
@@ -3578,6 +3642,8 @@ export function ImagesPage({
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
+      // The retry's override rides the same snapshot, so its plan and its load both carry it.
+      if (oversizedRetry) advanced = { ...advanced, allow_oversized_load: true };
       // Resolve the engine into the snapshot, so the plan and the load it fires cannot read different selects.
       if (!advanced.engine && sendsEngine(opts.kind, opts.filename)) {
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
@@ -3588,6 +3654,7 @@ export function ImagesPage({
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.
       let incompatible: string | null = null;
+      let incompatibleCode: string | null = null;
       try {
         const plan = await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
@@ -3598,6 +3665,7 @@ export function ImagesPage({
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
         }
         incompatible = plan.incompatible_reason ?? null;
+        incompatibleCode = plan.incompatible_code ?? null;
         if (!incompatible && plan.entries.length > 0) {
           if (!downloadOnly) {
             pendingStagedLoad.current = {
@@ -3651,7 +3719,20 @@ export function ImagesPage({
       }
       if (incompatible) {
         pickToast.dismiss(pickToastId);
-        toast.error(incompatible);
+        const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+        if (!downloadOnly && shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
+          const retrySource = source;
+          offerLoadAnyway(incompatible, retryWhileCurrent(() => pick === pickSeq.current, () => {
+            oversizedLoadOnce.current = true;
+            try {
+              void loadOrStageRef.current(repoId, opts, retrySource, undefined, familyOverrideRequired, undefined, true);
+            } finally {
+              oversizedLoadOnce.current = false;
+            }
+          }));
+        } else {
+          toast.error(incompatible);
+        }
         return downloadOnly;
       }
       if (downloadOnly) {
@@ -3660,8 +3741,12 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
   );
+  const loadOrStageRef = useRef(loadOrStage);
+  useEffect(() => {
+    loadOrStageRef.current = loadOrStage;
+  }, [loadOrStage]);
 
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
@@ -3690,7 +3775,8 @@ export function ImagesPage({
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
     pickToast.dismissAll();
-  }, [pickToast]);
+    dismissLoadAnyway();
+  }, [pickToast, dismissLoadAnyway]);
 
   // The backend rejects a gguf load with no filename, so name the file from the listing first.
   const loadGgufRepoPick = useCallback(
@@ -4573,13 +4659,13 @@ export function ImagesPage({
           res = await generateDiffusionImage({
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-            negative_prompt:
-              negativeCapable && guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+            negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
             width: w,
             height: h,
             steps,
-            guidance,
-            // The native engine seeds image j at seed+j, so offset by batch size.
+            guidance: effectiveGuidance,
+            // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
+            // would regenerate batch-mates.
             seed: baseSeed + i * batchSize,
             batch_size: batchSize,
             init_image: condInit,
@@ -4668,7 +4754,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -4946,7 +5032,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -5024,11 +5110,16 @@ export function ImagesPage({
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           Live preview
-          <InfoHint>Show a rough preview of the image while it denoises. Costs no measurable speed and never changes the final image.</InfoHint>
+          <InfoHint>
+            {livePreviewUnavailable
+              ? "The loaded model shows no preview while it denoises on this engine."
+              : "Show a rough preview of the image while it denoises. Costs no measurable speed and never changes the final image."}
+          </InfoHint>
         </span>
         <Switch
-          checked={livePreview}
+          checked={livePreview && !livePreviewUnavailable}
           onCheckedChange={(on) => setLivePreviewOff(!on)}
+          disabled={livePreviewUnavailable}
           aria-label="Live preview"
         />
       </div>
@@ -5663,7 +5754,11 @@ export function ImagesPage({
                 onChange={setNegativePrompt}
                 open={negativeOpen}
                 onOpenChange={setNegativeOpen}
-                hint="What to steer the image away from. Only used when guidance is above 0."
+                hint={
+                  negativeMinGuidance === null
+                    ? "What to steer the image away from."
+                    : `What to steer the image away from. Only used when guidance is above ${negativeMinGuidance}.`
+                }
               />
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
@@ -5843,12 +5938,17 @@ export function ImagesPage({
                 </div>
                 <SliderField
                   label="Guidance"
-                  hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
-                  value={guidance}
+                  hint={
+                    guidanceFixed
+                      ? "The loaded model is distilled to run without guidance, so this value has no effect and stays at its default."
+                      : "Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
+                  }
+                  value={effectiveGuidance}
                   min={0}
                   max={15}
                   step={0.5}
                   onChange={setGuidance}
+                  disabled={guidanceFixed}
                 />
               </>
             )}
@@ -6291,6 +6391,7 @@ export function ImagesPage({
 
       </div>
       )}
+      {loadAnywayDialog}
     </div>
   );
 }

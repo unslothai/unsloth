@@ -505,8 +505,6 @@ type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
   /** project captured when a new chat has no persisted row to read. */
   getQueueProjectId: () => string | null;
-  /** a knowledge base replaces every other scope, project sources included. */
-  usesKnowledgeBase: boolean;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
   append: (prompt: QueuedPrompt) => void | Promise<void>;
@@ -720,12 +718,14 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
         return true;
       }
     }
-    // The adapter sends kb_id alone, so project sources cannot reach this run.
-    if (item.target.usesKnowledgeBase) {
-      return false;
-    }
-    // Project sources are retrieved regardless of the Docs pill, and isIndexing() only answers while
-    // its bar is mounted, so probe directly using the queue's own project as the fallback.
+    // Project sources are retrieved whatever the Docs pill says (chat-adapter's
+    // rag_scope), and isIndexing() above only answers while the bar that watches
+    // them is mounted, which a background queue has not. So ask directly, and
+    // for a chat with no row yet use the project the queue was started in.
+    // Rethrowing: a row this probe could not read is not a chat with no project,
+    // and the catch below is what holds the prompt and asks again. The queue's
+    // own project is the fallback wherever the row is still missing, so a poll
+    // landing mid-navigation cannot probe the project the user moved to.
     const queueProjectId = item.target.getQueueProjectId();
     const projectId = threadId
       ? await resolveProjectId(threadId, undefined, {
@@ -4138,9 +4138,6 @@ const Composer: FC<{
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
-    const usesKnowledgeBaseAtQueueStart =
-      chatStateAtQueueStart.ragEnabled &&
-      chatStateAtQueueStart.ragSource.type === "kb";
     let deferModelResolution =
       chatStateAtQueueStart.modelLoading &&
       parseExternalModelId(
@@ -4402,7 +4399,6 @@ const Composer: FC<{
         indexingActiveRef.current,
       getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
-      usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,

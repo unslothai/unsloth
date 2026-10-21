@@ -44,7 +44,10 @@ export function videoNavHint(
   // that reads as a fix that would not work. Mirrors the backend's message for this host.
   if (chatOnlyReason === "intel_mac")
     return "Video generation requires Apple Silicon. This Intel Mac has no Metal device to run it.";
-  // The GPU exists but PyTorch cannot reach it (e.g. a +cpu wheel), so "get a GPU" is wrong.
+  if (chatOnlyReason === "rosetta")
+    return "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable video generation.";
+  // The GPU is there; PyTorch is what cannot reach it (a Windows update that resolved torch
+  // from PyPI leaves a +cpu wheel beside two working cards), so "get a GPU" is a lie.
   if (
     chatOnlyReason === "torch_cpu_build" ||
     chatOnlyReason === "torch_cuda_unavailable"

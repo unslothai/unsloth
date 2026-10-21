@@ -1023,14 +1023,15 @@ export function ThreadDocumentsBar({
     [],
   );
 
-  // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope.
   const threadProjectId = useThreadProjectId(effectiveThreadId);
   const projectUnresolved = threadProjectId === undefined;
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  // Retrieval keeps the project beside a KB (#9485), so it is always watched for indexing.
+  const watchedProjectId = ragUnavailable ? null : (threadProjectId ?? null);
   const projectId =
-    (ragEnabled && ragSource.type === "kb") || ragUnavailable
-      ? null
-      : (threadProjectId ?? null);
+    ragEnabled && ragSource.type === "kb" ? null : watchedProjectId;
+  // This chat's own choice if it made one, otherwise the saved default. Keeps a
+  // pick in one chat from redirecting every other chat in the project.
   const projectAttachmentTarget =
     projectAttachmentTargetByThread[
       effectiveThreadId ?? PENDING_CHAT_ATTACHMENT_KEY
@@ -1063,8 +1064,11 @@ export function ThreadDocumentsBar({
 
   // Retrieval already combines both scopes (core/rag/tool.py).
   const projectLister = useCallback(
-    () => (projectId ? listProjectDocuments(projectId) : Promise.resolve([])),
-    [projectId],
+    () =>
+      watchedProjectId
+        ? listProjectDocuments(watchedProjectId)
+        : Promise.resolve([]),
+    [watchedProjectId],
   );
   const {
     documents: projectDocuments,
@@ -1076,12 +1080,17 @@ export function ThreadDocumentsBar({
     retry: retryProject,
     canRetry: canRetryProject,
   } = useRagDocuments(
-    projectId ? { type: "project", projectId } : null,
+    watchedProjectId ? { type: "project", projectId: watchedProjectId } : null,
     projectLister,
   );
 
-  // Lets the composer hold a queued send until retrieval covers indexing docs
-  // (Composer.enqueueSend); both scopes hold until their first list lands.
+  // Tell the composer whether any doc is still indexing, so it can hold a queued send until
+  // retrieval covers them (Composer.enqueueSend). A KB or RAG off leaves only the project watched,
+  // which reads false without one. From the hooks, not the rows: work started in the Sources panel is
+  // in flight before either instance has a row for it, and a job already running on a reopened
+  // project arrives with the first list, so hold until that lands. Both scopes hold on their first
+  // list, for the same reason: reopening a chat whose own attachment was still indexing lists
+  // nothing until it lands either.
   const hasIndexing =
     threadIndexing || threadListLoading || projectIndexing || projectListLoading;
   useEffect(() => {
@@ -1298,7 +1307,7 @@ export function ThreadDocumentsBar({
       <LinkedFolderCard name={folderNames.get(folderId)} docs={docs} />
     </div>
   ));
-  const fileCount = documents.length + projectDocuments.length;
+  const fileCount = documents.length + (projectId ? projectDocuments.length : 0);
   useEffect(() => {
     useChatRuntimeStore.getState().setRagPanelFileCount(fileCount);
   }, [fileCount]);

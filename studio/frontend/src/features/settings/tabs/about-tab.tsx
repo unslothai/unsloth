@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
+import { hardwareGpuMemoryGb } from "@/hooks/gpu-vram";
 import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
 import { type TranslationKey, useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
@@ -89,6 +90,19 @@ function acceleratorRuntimes(hw: HardwareInfo): RuntimeRow[] {
     rows.push({ labelKey: "settings.about.xpu", version: hw.xpu });
   }
   return rows;
+}
+
+function aboutGpuMemoryText(
+  gpu: HardwareInfo["gpus"][number],
+  t: ReturnType<typeof useT>,
+): string {
+  const memory = hardwareGpuMemoryGb(gpu);
+  if (!memory) return "";
+  const gpuMemoryGb =
+    memory.gb < 1 ? memory.gb.toFixed(1) : Math.round(memory.gb);
+  return memory.integrated
+    ? ` · ${gpuMemoryGb} GiB (${t("settings.about.gpuIntegrated")})`
+    : ` · ${gpuMemoryGb} GiB`;
 }
 
 export function AboutTab() {
@@ -188,9 +202,7 @@ export function AboutTab() {
             >
               <code className="font-mono text-xs text-muted-foreground">
                 {gpu.name ?? "—"}
-                {gpu.vramTotalGb != null
-                  ? ` · ${Math.round(gpu.vramTotalGb)} GiB`
-                  : ""}
+                {aboutGpuMemoryText(gpu, t)}
               </code>
             </SettingsRow>
           ))}

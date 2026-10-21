@@ -1218,6 +1218,64 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
     return {"enabled": enabled, "dtype": dtype}
 
 
+def _unsloth_grpo_refuse_unscored_support(self):
+    """With compute_efficient no old / ref logps are scored here, so the gate below in
+    _get_per_token_logps_and_entropies never runs, and the zoo loss scores the current policy over
+    its own kept set against vLLM's logprobs. When that set cannot be the sampler's (an unsynced
+    vLLM sampler, a reference model, reused rollouts), mark the trainer refused, which the zoo loss
+    honours by scoring the full vocabulary."""
+    if getattr(self, "_unsloth_truncated_support_refused", False):
+        return
+    try:
+        from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+        if not grpo_truncated_support_kwargs(self):
+            return
+    except Exception:
+        return
+    mismatch = _unsloth_grpo_support_mismatch(self)
+    if mismatch:
+        import warnings
+        warnings.warn(
+            "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+            f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
+            "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
+            "Scoring over the full vocabulary instead.",
+            stacklevel = 2,
+        )
+        self._unsloth_truncated_support_refused = True
+
+
+def _unsloth_grpo_support_mismatch(self):
+    """Why UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 cannot score this trainer, or [] when it can.
+
+    Each scoring call rebuilds the top_k / top_p / min_p kept set from its own logits and always keeps the
+    scored token. That is the sampler's set only while the scored weights are the rollout's. A reference
+    model (beta != 0), or old logps TRL keeps because generation is not aligned to the optimizer step
+    (gradient_accumulation_steps % (steps_per_generation * num_iterations) != 0), keeps another set: a
+    token outside it gets a denominator that depends on the scored token, so the implied probabilities do
+    not sum to 1 and the PPO ratio / KL inputs are wrong. A shared set would need the sampler's kept ids.
+    """
+    reasons = []
+    if getattr(self, "_unsloth_vllm_sync_skip", False):
+        reasons.append("vLLM weight sync is skipped, so rollouts use the initial weights")
+    beta = getattr(self, "beta", 0.0)
+    if beta is not None and float(beta) != 0.0:
+        reasons.append(f"beta={beta} scores a reference model")
+    args = getattr(self, "args", None)
+    accumulation = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
+    steps_per_generation = int(getattr(args, "steps_per_generation", None) or accumulation)
+    num_iterations = getattr(self, "num_iterations", None)
+    if num_iterations is None:
+        num_iterations = getattr(args, "num_iterations", 1)
+    num_iterations = int(num_iterations or 1)
+    if accumulation % (steps_per_generation * num_iterations) != 0:
+        reasons.append(
+            f"num_iterations={num_iterations} / steps_per_generation={steps_per_generation} "
+            f"reuse rollouts across optimizer steps"
+        )
+    return reasons
+
+
 def _unsloth_grpo_accumulation_steps(trainer):
     """Gradient accumulation divisor for the GRPO loss. 1 whenever the model is not training.
 
@@ -2498,6 +2556,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         if compute_efficient:
             # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
             _unsloth_grpo_autocast_unscored(self)
+            # The current policy is then scored only in the zoo loss: refuse the kept set there too.
+            _unsloth_grpo_refuse_unscored_support(self)
             return None, None
         else:
             _unsloth_grpo_autocast(self)
@@ -2559,17 +2619,43 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 )
                 lm_head_bias = None
             _head_log_softmax = chunked_hidden_states_selective_log_softmax
+            # ZeRO-3 released the head after the forward: score with one gathered read-only copy.
+            _zero3_head = None
+            try:
+                from unsloth_zoo.fused_losses.cross_entropy_loss import (
+                    unsloth_zero3_gathered,
+                    unsloth_zero3_partitioned,
+                )
+            except (ImportError, NotImplementedError):
+                # Older zoo, or zoo refusing to import without an accelerator (CPU gloo workers).
+                pass
+            else:
+                if unsloth_zero3_partitioned(lm_head) or unsloth_zero3_partitioned(
+                    getattr(output_embeddings, "bias", None)
+                ):
+                    _zero3_head = (
+                        unsloth_zero3_gathered(lm_head),
+                        unsloth_zero3_gathered(getattr(output_embeddings, "bias", None)),
+                    )
+                    lm_head = _zero3_head[0]
+                    if lm_head_bias is not None:
+                        lm_head_bias = _zero3_head[1]
 
             def chunked_hidden_states_selective_log_softmax(
                 hidden_states, _lm_head, *args, **kwargs
             ):
                 # FSDP2's forward hooks replace Parameters. Read the current head
                 # at projection time, including the bias, instead of retaining a shard.
+                if _zero3_head is not None:
+                    head_weight, head_bias = _zero3_head
+                else:
+                    head_weight = output_embeddings.weight
+                    head_bias = getattr(output_embeddings, "bias", None)
                 if UNSLOTH_ZOO_HAS_HEAD_BIAS:
-                    kwargs["lm_head_bias"] = getattr(output_embeddings, "bias", None)
+                    kwargs["lm_head_bias"] = head_bias
                 return _head_log_softmax(
                     hidden_states,
-                    output_embeddings.weight,
+                    head_weight,
                     *args,
                     **kwargs,
                 )
@@ -2581,6 +2667,22 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
                 _support_kwargs = grpo_truncated_support_kwargs(self)
             except Exception:
+                _support_kwargs = {}
+            _support_mismatch = _unsloth_grpo_support_mismatch(self) if _support_kwargs else []
+            if _support_mismatch:
+                # Left unmarked, the zoo loss drops the kept set for the current policy as well.
+                if not getattr(self, "_unsloth_truncated_support_refused", False):
+                    import warnings
+                    warnings.warn(
+                        "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+                        f"{', '.join(_support_mismatch)}: those logprobs come from weights other "
+                        "than the rollout's, whose top_k / top_p / min_p kept set differs from the "
+                        "sampler's, so per-policy kept sets give unnormalised PPO ratios and KL. "
+                        "Scoring over the full vocabulary instead.",
+                        stacklevel = 2,
+                    )
+                    # Also silences the zoo's refusal, which would blame the unsloth version.
+                    self._unsloth_truncated_support_refused = True
                 _support_kwargs = {}
             if _support_kwargs:
                 from functools import partial
@@ -3584,6 +3686,14 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     return delta[keep], per_row
 
 
+def _unsloth_grpo_is_sequence_level(args_mode):
+    # One IS ratio per sequence: TRL's sequence_* and unsloth_zoo's geometric_* (verl seq_mean_k1),
+    # with the UNSLOTH_GRPO_VLLM_IS_MODE override unsloth_zoo's grpo_accumulated_loss applies.
+    import os as _os
+    mode = _os.environ.get("UNSLOTH_GRPO_VLLM_IS_MODE", "") or args_mode or "token_truncate"
+    return str(mode).startswith(("sequence_", "geometric_"))
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
@@ -3592,6 +3702,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_for
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_unscored_support))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
@@ -3602,6 +3714,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
@@ -3993,8 +4106,9 @@ def grpo_trainer_compute_loss(function_name, function):
                 delta,
                 flat_is_ratio,
                 completion_mask,
-                (getattr(self.args, "vllm_importance_sampling_mode", None) or "token_truncate")
-                in ("sequence_mask", "sequence_truncate"),
+                _unsloth_grpo_is_sequence_level(
+                    getattr(self.args, "vllm_importance_sampling_mode", None)
+                ),
             )
             mean_delta = (
                 torch.mean(delta)

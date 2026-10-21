@@ -50,6 +50,11 @@ export const de = {
     removeFromMessage: "Aus Nachricht entfernen",
   },
   browser: {
+    drafts: {
+      title: "Seite mit eingegebenem Text entladen?",
+      description: "Damit der Chat reaktionsschnell bleibt, laufen nur drei ausgeblendete Seiten mit eingegebenem Text weiter. Beim Fortfahren wird {pages} entladen. Nicht gespeicherter Text kann verloren gehen. Abbrechen kehrt zum vorherigen Tab zurück.",
+      confirm: "Entladen und fortfahren",
+    },
     agentSettings: {
       title: "Browsernutzung",
       enable: "Modelle den Browser nutzen lassen",
@@ -210,7 +215,7 @@ export const de = {
     importBookmarksDoneOne: "{count} Lesezeichen importiert.",
     importBookmarksDoneMany: "{count} Lesezeichen importiert.",
     importBookmarksNone: "Keine neuen Lesezeichen in dieser Datei.",
-    importBookmarksPartial: "{count} importiert, aber {leftOut} weitere passten nicht: Studio speichert bis zu {max} Lesezeichen.",
+    importBookmarksPartial: "{count} importiert, aber {leftOut} weitere passten nicht: Unsloth speichert bis zu {max} Lesezeichen.",
     importBookmarksFailed: "Die Datei konnte nicht gelesen werden. Wähle eine aus einem Browser exportierte Lesezeichen-HTML-Datei.",
     downloadsTitle: "Downloads",
     askWhereToSaveSetting: "Für jede Datei fragen, wo sie gespeichert werden soll",
@@ -261,7 +266,7 @@ export const de = {
     annotationScreenshotsAlways: "Immer beifügen",
     annotationScreenshotsNever: "Nie beifügen",
     clearDataSetting: "Browserdaten löschen",
-    clearDataSettingDescription: "Löscht Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten. Seiten speichern Cookies und Website-Daten nur, bis Studio neu geladen wird.",
+    clearDataSettingDescription: "Löscht Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten. Seiten speichern Cookies und Website-Daten nur, bis Unsloth neu geladen wird.",
     manage: "Verwalten",
     fullView: {
       enter: "Vollansicht",
@@ -838,6 +843,7 @@ export const de = {
       byProject: "Nach Projekt",
       inOneList: "In einer Liste",
       sortChatsBy: "Chats sortieren nach",
+      projectsHome: "Projektübersicht",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
       switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
@@ -1435,15 +1441,15 @@ export const de = {
       dictation: {
         audioUploadTitle: "Mit einer Aufnahme diktieren",
         audioUploadDescription:
-          "Ihr Browser benötigt eine sichere Verbindung (HTTPS), um direkt in Studio aufzunehmen. Verwenden Sie bei dieser HTTP-Verbindung stattdessen den Rekorder Ihres Smartphones oder wählen Sie eine gespeicherte Aufnahme aus. Ihr Studio-Server transkribiert das Audio und fügt den Text Ihrer Nachricht hinzu.",
+          "Ihr Browser benötigt eine sichere Verbindung (HTTPS), um direkt in Unsloth aufzunehmen. Verwenden Sie bei dieser HTTP-Verbindung stattdessen den Rekorder Ihres Smartphones oder wählen Sie eine gespeicherte Aufnahme aus. Ihr Unsloth-Server transkribiert das Audio und fügt den Text Ihrer Nachricht hinzu.",
         audioUploadChooseFile: "Aufnahme auswählen",
         audioUploadRecord: "Audio aufnehmen",
         audioUploadIphoneHint:
           "Speichern Sie auf dem iPhone eine Aufnahme aus Sprachmemos oder einer anderen Rekorder-App und wählen Sie sie dann hier aus.",
         audioUploadServerModelNote:
-          "Diese Aufnahme verwendet das oben angezeigte lokale Modell auf dem Studio-Server, auch wenn das normale Diktat eine andere Engine verwendet.",
+          "Diese Aufnahme verwendet das oben angezeigte lokale Modell auf dem Unsloth-Server, auch wenn das normale Diktat eine andere Engine verwendet.",
         audioUploadAutomatic: "Automatisch",
-        audioUploadModelReady: "Auf diesem Studio-Server bereit",
+        audioUploadModelReady: "Auf diesem Unsloth-Server bereit",
         audioUploadRetryTitle: "{file} konnte nicht transkribiert werden",
         audioUploadRetry: "Transkription wiederholen",
         audioUploadChooseModel:
@@ -1975,7 +1981,7 @@ export const de = {
         menuSubtitle: "Für die Dateisuche",
         device: "Embedding-Gerät",
         deviceDescription:
-          "Wo das Embedding-Modell läuft, für jedes Modell. Die GPU indexiert große Dokumentmengen schneller, belegt aber etwas VRAM bis zum Neustart von Studio.",
+          "Wo das Embedding-Modell läuft, für jedes Modell. Die GPU indexiert große Dokumentmengen schneller, belegt aber etwas VRAM bis zum Neustart von Unsloth.",
         deviceAuto: "Automatisch",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2411,6 +2417,9 @@ export const de = {
         multiModelDescriptionAlways:
           "Beim Laden eines Modells wird nie ein anderes entladen. Ein Modell, das nicht passt, wird nicht geladen. Das automatische Entladen im Leerlauf und das Training geben weiterhin Speicher frei.",
         multiModelHint: "Gilt für Chat-, Sprach-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
+        allowOversizedLoad: "Übergroße Modelle trotzdem laden",
+        allowOversizedLoadDescription: "Bild- und Videomodelle auch laden, wenn die Speicherprüfung meldet, dass sie nicht passen.",
+        allowOversizedLoadHint: "Gilt, wenn CPU und GPU sich einen Speicher teilen (Apple Silicon, integrierte GPUs). Unsloth verweigert das Laden, wenn die geschätzten Modellgewichte größer sind als der Speicher, der nach der Reserve für das Betriebssystem bleibt. Ist dies aktiviert, wird das Laden trotzdem versucht. Die Schätzung kann in beide Richtungen falsch sein: Ein zu großes Modell kann fehlschlagen, den gesamten Speicher belegen, starkes Auslagern verursachen, den Computer einfrieren oder Unsloth beenden. Standardmäßig aus.",
         mediaIdleUnloadDescription:
           "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
@@ -2861,7 +2870,7 @@ export const de = {
       importFailed: "Import fehlgeschlagen.",
       importFromSource: "Aus {source} importieren",
       importFromSourceDescription:
-        "Kopieren Sie Ihre {source}-Konversationen nach Studio, gruppiert nach Projekt.",
+        "Kopieren Sie Ihre {source}-Konversationen nach Unsloth, gruppiert nach Projekt.",
       importingAction: "Wird importiert...",
       importedSourceOneChat: "1 Konversation aus {source} importiert.",
       importedSourceChatCount:
@@ -3232,6 +3241,7 @@ export const de = {
       audioCppVersion: "audio.cpp-Version",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integriert",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3291,7 +3301,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Die App ist mit einem bereits laufenden Studio-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
+          "Die App ist mit einem bereits laufenden Unsloth-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",
@@ -3906,7 +3916,7 @@ export const de = {
         decisionColumnsMissing:
           "Entscheidungsmodelle brauchen die Spalten state, questions und gold (oder answers). Es fehlen: {columns}.",
         decisionOwnerOnly:
-          "Nur der Studio-Inhaber kann Entscheidungsmodelle feinabstimmen.",
+          "Nur der Unsloth-Inhaber kann Entscheidungsmodelle feinabstimmen.",
         hfDatasetRequired:
           "Wählen Sie zuerst einen Hugging Face-Datensatz aus.",
         hfDatasetSplitRequired:

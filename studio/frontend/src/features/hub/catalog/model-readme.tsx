@@ -22,7 +22,7 @@ import {
 } from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
-import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
+import { mermaid as streamdownMermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   createContext,
   startTransition,

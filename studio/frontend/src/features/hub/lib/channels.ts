@@ -47,7 +47,7 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     hint: "Freshly released models from the Unsloth channel.",
     owner: "unsloth",
     format: "all",
-    // Trending weighed against release age (lib/fresh-ranking.ts).
+    // Trending weighed against creation date (lib/fresh-ranking.ts).
     sort: "fresh",
   },
   {

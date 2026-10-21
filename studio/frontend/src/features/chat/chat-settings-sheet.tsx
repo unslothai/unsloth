@@ -1164,7 +1164,7 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length is above Studio&apos;s free-memory estimate
+                      Context length is above Unsloth&apos;s free-memory estimate
                       ({maxContextLength?.toLocaleString()} tokens). It may
                       still load, but macOS may have to compress or swap other
                       apps and generation may slow down. Lower the context,

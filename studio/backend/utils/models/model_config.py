@@ -979,7 +979,7 @@ def _build_vision_check_inline_helpers() -> str:
     )
 
 
-# Subprocess script run with transformers 5.x active: model_name + token via argv, JSON out.
+# Subprocess script run with transformers 5.x active: model_name via argv, token via env, JSON out.
 def _build_vision_check_script() -> str:
     return (
         r"""
@@ -1102,8 +1102,8 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    # Only an explicit token travels in argv; the env below enforces the boundary.
-    token_arg = hf_token if isinstance(hf_token, str) else ""
+    # Token only via the child env (argv is world-readable); the empty slot keeps the argv layout.
+    token_arg = ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
     sidecar_dir = _VENV_T5_DIR
@@ -3487,7 +3487,7 @@ def _gguf_repo_unreadable_message(
 ) -> str:
     if error is None:
         return (
-            f"Could not load the GGUF repo '{repo_id}': Studio is offline and the repo is not "
+            f"Could not load the GGUF repo '{repo_id}': Unsloth is offline and the repo is not "
             "in the local cache. Connect to the internet once to download it, then try again."
         )
     status = getattr(getattr(error, "response", None), "status_code", None)
@@ -3501,7 +3501,7 @@ def _gguf_repo_unreadable_message(
         # Anonymous access could not answer either: private, gated or missing without it.
         return (
             f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
-            f"{HUB_TOKEN_REJECTED_ERROR} If Studio reaches the Hub through a proxy, mirror "
+            f"{HUB_TOKEN_REJECTED_ERROR} If Unsloth reaches the Hub through a proxy, mirror "
             "or HF_ENDPOINT, check that as well."
         )
     return (
