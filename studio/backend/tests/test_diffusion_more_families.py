@@ -1068,7 +1068,6 @@ def test_an_opaque_local_load_with_a_shipped_grid_runs_its_step_count():
     ],
 )
 def test_a_parent_folder_keyword_does_not_pick_the_image_family(parent):
-    # Only the model's own folder / file names it: a keyword in a user name or backup folder above it is not evidence.
     sep = "\\" if "\\" in parent else "/"
     assert detect_family(sep.join([parent, "plain"])) is None
     assert detect_family(sep.join([parent, "plain", "model.safetensors"])) is None

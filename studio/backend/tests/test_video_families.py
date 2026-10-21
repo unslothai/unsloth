@@ -576,7 +576,6 @@ def test_the_a14b_row_prices_both_experts_not_one():
     ],
 )
 def test_a_parent_folder_keyword_does_not_pick_the_video_family(parent):
-    # A family keyword above the model's own folder (a user name, a backup drive, a pytest basetemp) names nothing.
     sep = "\\" if "\\" in parent else "/"
     assert detect_video_family(sep.join([parent, "my-videos"])) is None
     assert detect_video_family(sep.join([parent, "my-videos", "model-Q4_K_M.gguf"])) is None
@@ -593,7 +592,6 @@ def test_the_model_own_folder_or_file_still_names_the_video_family():
         fam = detect_video_family(path)
         return fam.name if fam else None
 
-    # The file, the folder holding it, and the folder itself each still name the family.
     assert name("/data/models/plain/ltx-2-19b-dev-Q4_K_M.gguf") == "ltx-2"
     assert name("/data/models/LTX-2-GGUF/model-Q4_K_M.gguf") == "ltx-2"
     assert name("/data/models/LTX-2-GGUF/Q4_K_M/model.gguf") == "ltx-2"
@@ -604,7 +602,6 @@ def test_the_model_own_folder_or_file_still_names_the_video_family():
         == "minimax-h3"
     )
     assert name("/data/models/Wan2.2-T2V-A14B-Diffusers") == "wan2.2-t2v-a14b"
-    # An HF cache snapshot answers by the repo id its models-- folder encodes, not the user's home.
     cache = "/home/h3/.cache/huggingface/hub/models--Lightricks--LTX-2/snapshots/0123abc"
     assert name(cache) == "ltx-2"
     assert name(cache + "/ltx-2-19b-dev-fp8.safetensors") == "ltx-2"
@@ -614,13 +611,11 @@ def test_the_model_own_folder_or_file_still_names_the_video_family():
         )
         is None
     )
-    # Repo ids (and repo id + file) are unchanged.
     assert name("MiniMaxAI/MiniMax-H3") == "minimax-h3"
     assert name("unsloth/LTX-2.3-GGUF/ltx-2.3-22b-dev-Q4_K_M.gguf") == "ltx-2"
 
 
 def test_a_parent_folder_keyword_does_not_pick_the_video_defaults():
-    # Generation defaults read the same identity: a Wan / LTX / distilled folder above an opaque checkpoint is no recipe.
     plain = default_video_generation_params("/data/plain/model.gguf", fallback = (7, 7.0))
     assert plain == (7, 7.0)
     for parent in ("/data/wan2.1/x", "/home/ltx/x", "/srv/distilled/x"):

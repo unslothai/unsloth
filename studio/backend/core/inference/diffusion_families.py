@@ -1322,7 +1322,6 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    # A local path matches only on the segments naming the model, never a parent folder (/home/flux/...).
     needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:

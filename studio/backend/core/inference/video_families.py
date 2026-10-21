@@ -1062,7 +1062,6 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
-    # A local path matches only on the segments naming the model, never a parent folder (/data/h3_backup/...).
     needle = model_identity(repo_id).lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:

@@ -46,12 +46,10 @@ def name_key_in(key: str, needle: str) -> bool:
     return bool(nk) and nk in normalize_family_name(low)
 
 
-# A local path names its model only in its last segment(s); the folders above it (a user's home, a backup drive, a pytest
-# basetemp) are arbitrary, so a family keyword there must not pick the family.
 _LOCAL_PATH = re.compile(r"^(?:[/\\~]|\.{1,2}[/\\]|[a-zA-Z]:[/\\])")
 _PATH_SPLIT = re.compile(r"[/\\]+")
 _WEIGHT_FILE_SUFFIXES = (".gguf", ".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin")
-# Folders that hold one model's files without naming it: a diffusers component, a ComfyUI-style kind folder, a quant tier.
+# Folders holding a model's files without naming it (diffusers component, ComfyUI kind folder, quant tier).
 _CONTAINER_SEGMENT = re.compile(
     r"^(?:transformer(?:_\d)?|unet|vae|text_encoder(?:_\d)?|tokenizer(?:_\d)?|scheduler|"
     r"diffusion_models|split_files|gguf|(?:u?d-)?(?:i?q\d\w*|f16|bf16|f32|fp8\w*|fp16|nvfp4|mxfp4))$",
@@ -60,10 +58,8 @@ _CONTAINER_SEGMENT = re.compile(
 
 
 def model_identity(text: Optional[str]) -> str:
-    """The part of ``text`` that names the model. A repo id (``org/name[/file]``) is returned unchanged. A local path keeps
-    only the model's own segments: an HF cache path ``.../models--org--name/snapshots/<sha>/file`` becomes
-    ``org/name/file``; any other path keeps its last segment, plus the folder holding a weight file, extended past
-    container folders (``transformer/``, ``Q4_K_M/``) to the folder that names the model."""
+    """The part of ``text`` naming the model: repo ids unchanged; a local path drops parent folders (an arbitrary
+    keyword there must not pick a family), and an HF cache path ``models--org--name/snapshots/<sha>/f`` -> ``org/name/f``."""
     text = text or ""
     if not _LOCAL_PATH.match(text):
         return text
