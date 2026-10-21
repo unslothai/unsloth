@@ -12,13 +12,31 @@ import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown } from "streamdown";
 import {
+  FINISHED_TEXT_REMEND,
   LITERAL_LINK_REMEND,
   hasIncompleteLinkRepair,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
- * remend runs on every settled body, so a version bump is a rendering change.
- * Only bare Streamdown is covered: no plugins, preprocessing, or DOM.
+ * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
+ * before parsing it, and Unsloth runs it on every settled body (marker completions only on a cut
+ * one), so a version bump is a rendering change.
+ *
+ * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
+ * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
+ * that forces one copy of it is dropped, or if the settled branch stops asking for the repair.
+ * That last one is checked by EVALUATING the `parseIncompleteMarkdown` expression that
+ * `markdown-text.tsx` writes and handing the result to a real
+ * `<Streamdown>` -- not by asserting on the package in isolation and hoping the wiring agrees.
+ *
+ * WHAT THIS FILE DOES NOT COVER, so that the paragraph above is not read as wider than it is: the
+ * render below is a bare `<Streamdown mode="streaming">` to static markup. It carries none of the
+ * other props `markdown-text.tsx` passes (`STREAMDOWN_PLUGINS`, `STREAMDOWN_COMPONENTS`,
+ * `parseMarkdownIntoBlocksFn`, `BlockComponent`), none of the `preprocessLaTeX` /
+ * `stabilizeStreamingMarkdown` pipeline that runs upstream of it, and no DOM. A regression that
+ * lives in one of those is not caught here.
+ *
+ * The first test fails on remend 1.3.0, which is the point of the bump.
  */
 
 // remend 1.3.0 misreads `\(`/`\[` math subscripts as open emphasis and appends a stray `_`.
@@ -85,8 +103,8 @@ const MARKDOWN_TEXT = new URL(
   import.meta.url,
 );
 
-/** Evaluates markdown-text.tsx's real expression at incrementalRender === null. */
-function settledParseIncompleteMarkdown(): boolean {
+/** The settled `parseIncompleteMarkdown`, evaluated from the source rather than restated. */
+function settledParseIncompleteMarkdown(cut: boolean): boolean {
   const source = readFileSync(MARKDOWN_TEXT, "utf8");
   const opened = source.indexOf("<Streamdown");
   assert.notEqual(
@@ -105,26 +123,29 @@ function settledParseIncompleteMarkdown(): boolean {
   );
   const value: unknown = new Function(
     "incrementalRender",
+    "cut",
     `return (${expression});`,
-  )(null);
+  )(null, cut);
   assert.equal(
     typeof value,
     "boolean",
-    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean at incrementalRender === null`,
+    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean for a settled part`,
   );
   return value as boolean;
 }
 
-function renderSettled(markdown: string): string {
+function renderSettled(markdown: string, cut = true): string {
   return renderToStaticMarkup(
     createElement(
       Streamdown,
       {
         mode: "streaming",
-        parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
-        remend: hasIncompleteLinkRepair(markdown)
-          ? LITERAL_LINK_REMEND
-          : undefined,
+        parseIncompleteMarkdown: settledParseIncompleteMarkdown(cut),
+        remend: !cut
+          ? FINISHED_TEXT_REMEND
+          : hasIncompleteLinkRepair(markdown)
+            ? LITERAL_LINK_REMEND
+            : undefined,
       },
       markdown,
     ),
@@ -143,8 +164,7 @@ test("a settled unfinished link remains text without a blocked placeholder", () 
 });
 
 test("the settled render path runs the repair, not just the package", () => {
-  // The tests above call remend directly; only rendering a truncated body shows the UI wiring.
-  // Cancelled or errored responses settle truncated, so they reach the settled path.
+  // The tests above call `remend` directly, so only a render shows the UI still repairs cut bodies.
   for (const [truncated, repaired] of [
     ["this is **bol", 'data-streamdown="strong"'],
     ["call `foo(", 'data-streamdown="inline-code"'],
@@ -177,7 +197,7 @@ const renderedText = (markup: string): string => {
 test("a complete document survives the settled render path unchanged", () => {
   const underscores = (text: string): number => (text.match(/_/g) ?? []).length;
   for (const complete of COMPLETE_LATEX_DOCUMENTS) {
-    const text = renderedText(renderSettled(complete));
+    const text = renderedText(renderSettled(complete, false));
     assert.equal(
       underscores(text),
       underscores(complete),
@@ -185,6 +205,61 @@ test("a complete document survives the settled render path unchanged", () => {
         `reader: ${JSON.stringify(text)}`,
     );
   }
+});
+
+test("a finished reply keeps its lone markers as written", () => {
+  for (const reply of [
+    "Fields marked with an asterisk (*) are required.",
+    "Add *.pyc to your .gitignore file.",
+    "Pass options with **kwargs to forward them.",
+    "Press the ` key to open the console.",
+    "Delete files matching *.tmp first.\n\nThen restart the server.",
+    "Unpack it with ***args in Python 2 style.",
+    "Use ***args to unpack them.\n",
+    "It costs ~~ 5 dollars.",
+    "Load it as ~~fast mode in the config.",
+  ]) {
+    const html = renderSettled(reply, false);
+    assert.doesNotMatch(
+      html,
+      /data-streamdown="(emphasis|strong|inline-code|strikethrough)"|<em>|<strong>|<code|<del/,
+      `a finished ${JSON.stringify(reply)} was restyled: ${html}`,
+    );
+    assert.equal(
+      renderedText(html).replace(/\s+/g, ""),
+      reply.replace(/\s+/g, ""),
+      `a finished ${JSON.stringify(reply)} did not reach the reader as written`,
+    );
+  }
+});
+
+test("a cut reply still hides a dangling image", () => {
+  for (const cut of [
+    "see ![alt](https://example.com/very/long/partial",
+    "see ![alt](data:image/png;base64,iVBORw0KGgo",
+  ]) {
+    const text = renderedText(renderSettled(cut));
+    assert.doesNotMatch(
+      text,
+      /!\[|example\.com|base64/,
+      `a cut ${JSON.stringify(cut)} showed its partial image: ${text}`,
+    );
+  }
+});
+
+test("a finished reply keeps remend's literal escapes", () => {
+  const list = renderSettled("- >= 16 GB of RAM", false);
+  assert.match(list, /<li[^>]*>&gt;= 16 GB of RAM<\/li>/);
+  assert.doesNotMatch(list, /blockquote/);
+  const ranges = renderSettled(
+    "It takes 5~10 minutes and uses 20~30 GB.",
+    false,
+  );
+  assert.doesNotMatch(ranges, /<del|data-streamdown="strikethrough"/);
+  assert.equal(
+    renderedText(ranges),
+    "It takes 5~10 minutes and uses 20~30 GB.",
+  );
 });
 
 const FRONTEND_ROOT = fileURLToPath(new URL("..", import.meta.url));

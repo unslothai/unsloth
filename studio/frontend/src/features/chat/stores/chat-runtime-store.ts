@@ -42,6 +42,7 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizeModelIdentity } from "../../hub/lib/model-identity";
@@ -456,7 +457,26 @@ const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
 const NESTED_MAP_SETTING_KEYS = new Set<string>(["inferenceParamsByModel"]);
 
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
+  // The server forgets before it merges, so an older queued edit to a forgotten key goes too.
+  const forget = more.forgetInferenceParamsByModel;
+  if (forget) {
+    const byModel = into.inferenceParamsByModel;
+    const merged = { ...into.forgetInferenceParamsByModel };
+    for (const [id, keys] of Object.entries(forget)) {
+      merged[id] = [...new Set([...(merged[id] ?? []), ...keys])];
+      const queued = byModel?.[id];
+      if (byModel && queued) {
+        byModel[id] = Object.fromEntries(
+          Object.entries(queued).filter(([key]) => !keys.includes(key)),
+        );
+      }
+    }
+    into.forgetInferenceParamsByModel = merged;
+  }
   for (const [key, value] of Object.entries(more)) {
+    if (key === "forgetInferenceParamsByModel") {
+      continue;
+    }
     const intoAny = into as Record<string, unknown>;
     const prev = intoAny[key];
     if (ATOMIC_SETTING_KEYS.has(key)) {
@@ -1763,6 +1783,16 @@ function isHeldThreadScopedField(field: string): boolean {
   return heldThreadScopedEdits.some((edit) => edit.field === field);
 }
 
+// Reports whether the edit was taken; with no chat open the caller persists globally as before.
+/** Whether a sampling edit made now goes to the open chat, as captureThreadScopedEdit decides it. */
+function threadCapturesSampling(): boolean {
+  const threadId = useChatRuntimeStore.getState().activeThreadId;
+  return (
+    threadId !== null &&
+    (threadId === threadScopedSettingsThreadId || threadId === pendingPairingThreadId)
+  );
+}
+
 function captureThreadScopedEdit(
   field: string,
   writeGlobal: (() => void) | null = null,
@@ -2475,6 +2505,9 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       maxTokensCap?: number;
       migrateOwnedGlobalQwenDefaults?: boolean;
+      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+       *  instead of overwritten, and its recommendation applies again on the next load. */
+      fromPreset?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -2725,7 +2758,12 @@ const SCALAR_SETTING_KEYS = [
 ] as const satisfies readonly ScalarSettingKey[];
 
 const locallyRememberedModels = new Set<string>();
-// Pre-hydration edits are held as patches: they name only touched keys and must merge.
+// Models showing a preset's values: their edits are filed as deltas and they are not snapshotted on leave.
+const modelsShowingPresetPick = new Set<string>();
+// Per-model edits made before the settings response landed, held as PATCHES rather than rows.
+// The set above is overlaid wholesale, which is right for a row built from a hydrated entry but
+// not for one typed before there was an entry: that row names only the keys the user touched, so
+// replacing with it would drop the temperature, top-p or seed the response is about to bring.
 const modelParamEditsBeforeHydration = new Map<string, PersistedInferenceParams>();
 /** Lazy and memoized, or the += 1 bumps stop accumulating; import cycle leaves the const in its TDZ. */
 let inferenceParamMutationVersionsCache: Record<
@@ -2916,6 +2954,19 @@ function getParamsByModelAfterEdit(
   if (!persist) {
     return outgoing;
   }
+  // After a preset pick the server holds only what was edited since, so this browser does too:
+  // a whole snapshot would file the preset's values and replay them on the next load.
+  if (modelsShowingPresetPick.has(nextParams.checkpoint)) {
+    const base = outgoing ?? state.paramsByModel;
+    const delta = recordMaxTokensAsMax(
+      pickRememberedChanges(changedParams),
+      rememberedWindow(nextParams.checkpoint),
+    );
+    const partial = state.rememberParamsPerModel && hasKeys(delta)
+      ? { ...base, [nextParams.checkpoint]: { ...base[nextParams.checkpoint], ...delta } }
+      : null;
+    return trackParamsByModel(state, partial, nextParams.checkpoint) ?? outgoing;
+  }
   const recorded = trackParamsByModel(
     state,
     getRememberedParamsPatch(
@@ -2938,12 +2989,85 @@ function getParamsByModelAfterEdit(
   return recorded ?? outgoing;
 }
 
+/** The map with the preset-owned keys of `modelId`'s entry dropped, keeping what presets do not
+ *  set (Fast mode, trust remote code) and, with a chat open, the sampling that chat captures. The
+ *  server is told which keys to drop, since its merge cannot remove one. */
+function forgetModelParams(
+  state: ChatRuntimeStore,
+  outgoing: Record<string, PersistedInferenceParams> | null,
+  modelId: string,
+): Record<string, PersistedInferenceParams> | null {
+  if (!(state.rememberParamsPerModel && modelId && state.settingsHydrated)) {
+    return outgoing;
+  }
+  const current = outgoing ?? state.paramsByModel;
+  const chatOwnsSampling = threadCapturesSampling();
+  const forgotten = Object.keys(getPresetOwnedParams(state.params)).filter(
+    (key) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
+  );
+  if (!chatOwnsSampling) {
+    modelsShowingPresetPick.add(modelId);
+  }
+  saveSettingsPatch({ forgetInferenceParamsByModel: { [modelId]: forgotten } });
+  const entry = current[modelId];
+  if (entry === undefined) {
+    return outgoing;
+  }
+  const kept = Object.fromEntries(
+    Object.entries(entry).filter(([key]) => !forgotten.includes(key)),
+  ) as PersistedInferenceParams;
+  const rest = Object.fromEntries(
+    Object.entries(current).filter(([id]) => id !== modelId),
+  );
+  return hasKeys(kept) ? { ...rest, [modelId]: kept } : rest;
+}
+
+/** Every preset-owned value the installation keeps, minus the sampling an open chat captures. */
+function persistPresetDefaults(params: InferenceParams): void {
+  const chatOwnsSampling = threadCapturesSampling();
+  const owned = getPresetOwnedParams(params) as Record<string, unknown>;
+  const defaults = Object.fromEntries(
+    Object.entries(owned).filter(
+      ([key]) => !(chatOwnsSampling && isThreadScopedParamKey(key)),
+    ),
+  ) as PersistedInferenceParams;
+  if (hasKeys(defaults)) {
+    saveSettingsPatch({ inferenceParams: defaults });
+  }
+}
+
+/** A model reaching the screen under a custom preset shows that preset's values, so its later edits
+ *  file only themselves; reaching it under Default or the user's own edits ends that. */
+function notePresetOnLoad(
+  state: ChatRuntimeStore,
+  modelId: string,
+  switched: boolean,
+  fromModelDefaults = false,
+): void {
+  if (!modelId || !(switched || fromModelDefaults)) return;
+  if (state.activePresetSource === "custom") {
+    modelsShowingPresetPick.add(modelId);
+  } else if (switched || state.activePresetSource === "builtin-default") {
+    // A same-model poll under edited values replaces nothing, so it keeps the mark.
+    modelsShowingPresetPick.delete(modelId);
+  }
+}
+
+/** Snapshot the model being switched away from, so a model that was never edited still keeps what it ran with. */
 function rememberOutgoingModel(
   state: ChatRuntimeStore,
   outgoing: InferenceParams,
 ): Record<string, PersistedInferenceParams> | null {
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
+  }
+  // A custom preset's values, or Default's fixed ones before a status lands, are not this model's
+  // own: filed, they outranked its recommendation on every later load (#14068).
+  if (
+    state.activePresetSource === "custom" ||
+    modelsShowingPresetPick.has(outgoing.checkpoint)
+  ) {
+    return null;
   }
   const picked = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
@@ -3044,6 +3168,13 @@ function getHydratedPresetState(
     nextState.activePresetSource =
       settings.activePresetSource ?? getPresetSource(activePreset);
   }
+  // A model resident before hydration loaded under the placeholder source, so restoring a custom
+  // preset here is its load under that preset.
+  notePresetOnLoad(
+    { ...state, ...nextState } as ChatRuntimeStore,
+    state.params.checkpoint,
+    nextState.activePresetSource !== undefined,
+  );
   return nextState;
 }
 
@@ -4306,7 +4437,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)
         : null;
-      // An interactive load reaches setCheckpoint later, so replay the model's settings here.
+      notePresetOnLoad(state, params.checkpoint, checkpointChanged, fromModelDefaults);
+      // An interactive local load arrives with the destination checkpoint and recommended params, reaching
+      // setCheckpoint only later, so replay here or the switch never restores the model's own settings.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
       const replayed = checkpointChanged || fromModelDefaults;
       const incomingParams = fromModelDefaults
@@ -4344,19 +4477,30 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         options?.persist !== false
           ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)
           : changedParams;
-      const paramsByModel = getParamsByModelAfterEdit(
-        state,
-        outgoing,
-        nextParams,
-        sharedParams,
-        options?.persist !== false && !fromModelDefaults,
-      );
+      // An edit belongs to the model the params now describe, so a call moving checkpoint and
+      // sliders at once files them under the destination.
+      const fromPreset = options?.fromPreset === true;
+      const paramsByModel = fromPreset
+        ? forgetModelParams(state, outgoing, nextParams.checkpoint)
+        : getParamsByModelAfterEdit(
+            state,
+            outgoing,
+            nextParams,
+            sharedParams,
+            options?.persist !== false && !fromModelDefaults,
+          );
       if (persistingGlobally) {
         persistParamEdit(
           sharedParams,
-          checkpointChanged ? null : paramsByModel,
+          checkpointChanged || fromPreset ? null : paramsByModel,
           nextParams.checkpoint,
         );
+        // The row is forgotten and an unmoved value sends nothing, so the defaults need the whole preset.
+        if (fromPreset) {
+          persistPresetDefaults(nextParams);
+        }
+        // Level with what was just written, or a chat opened later this session falls back to the
+        // sampling from before this model loaded.
         noteThreadScopedDefaults(sharedParams);
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
@@ -4559,6 +4703,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged && options?.persist !== false
           ? rememberOutgoingModel(state, state.params)
           : null;
+      notePresetOnLoad(state, modelId, checkpointChanged);
       // A compare pane's load reaches the store only here.
       const previousWindow = rememberedWindow(modelId);
       noteLoadedContext(modelId, options?.maxTokensCap);

@@ -34,7 +34,9 @@ import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
 import {
   type CSSProperties,
+  type MouseEvent,
   type ReactElement,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -199,9 +201,15 @@ export function LlamaUpdateBanner({
     whisper: useNotificationFrequency("whisper") === "off",
     audio: useNotificationFrequency("audio") === "off",
   };
-  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
+  const [detailsVersion, setDetailsVersion] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<{
+    key: string;
+    fromKeyboard: boolean;
+    message: string;
+  } | null>(null);
+  const clearSkipped = useCallback(() => setSkipped(null), []);
   // listen regardless of banner preference so muting the UI does not silence cross-tab reload_required resync.
-  const { status, visible, applying, apply, dismiss, snooze } =
+  const { status, visible, applying, apply, dismiss, undoDismiss, snooze } =
     useLlamaUpdateCheck({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
@@ -308,10 +316,11 @@ export function LlamaUpdateBanner({
         }
         setShownChannels([...shownChannels, ...fresh]);
       }
-    } else if (!show && shownChannels.length > 0) {
+    } else if (!(show || skipped) && shownChannels.length > 0) {
+      // the skip notice still stands for the card, so Undo can reopen it past the frequency gate.
       setShownChannels([]);
     }
-  }, [show, tabVisible, livePref, recordKey, shownChannels]);
+  }, [show, skipped, tabVisible, livePref, recordKey, shownChannels]);
   // a migration can reapply the automatic backend at the installed release.
   const backendChange =
     llamaRow && status?.backend_migration_available && status.to_backend
@@ -319,6 +328,28 @@ export function LlamaUpdateBanner({
       : null;
   const llamaVersionChanged = Boolean(llamaRow?.versionChanged);
   const backendOnly = Boolean(backendChange) && !llamaVersionChanged;
+  // a skip dismisses the whole offer, so a bundle reads plural even when llama.cpp only migrates.
+  const skipLabel = bundled
+    ? "Skip these versions"
+    : backendOnly
+      ? "Skip this change"
+      : "Skip this version";
+
+  function handleSkip(event: MouseEvent<HTMLButtonElement>) {
+    const skippedTag = bundled || backendOnly ? null : primary?.latestTag;
+    const key = dismiss();
+    if (!key) {
+      return;
+    }
+    setSkipped({
+      key,
+      // detail is 0 for Enter or Space, so only keyboard users get focus moved to Undo.
+      fromKeyboard: event.detail === 0,
+      message: skippedTag
+        ? `Skipped ${label} ${skippedTag}`
+        : `Skipped the ${label} ${bundled ? "updates" : "update"}`,
+    });
+  }
   // show the backend pair when a migration has no version change.
   const backendPair = backendOnly
     ? ([
@@ -331,24 +362,38 @@ export function LlamaUpdateBanner({
     backendOnly &&
     status?.from_backend === "rocm" &&
     status?.to_backend === "vulkan"
-      ? "Vulkan is >10% faster than ROCM. No restart needed after update"
-      : "No restart needed after update";
+      ? "Vulkan is >10% faster than ROCM. No restart needed"
+      : "No restart needed";
   const changelogTags =
     llamaRow?.versionChanged && llamaRow.installedTag && llamaRow.latestTag
       ? { installedTag: llamaRow.installedTag, latestTag: llamaRow.latestTag }
       : null;
-  const changelogKey = changelogTags
-    ? `${changelogTags.installedTag}\0${changelogTags.latestTag}`
-    : null;
-  const changelogAvailable = Boolean(changelogKey && !status?.source_build);
-  const changelogOpen =
-    changelogKey !== null && changelogVersion === changelogKey;
+  const changelogAvailable = Boolean(changelogTags && !status?.source_build);
+  // a different offer starts collapsed.
+  const detailsKey = [
+    ...rows.map(
+      (row) => `${row.component}\0${row.installedTag}\0${row.latestTag}`,
+    ),
+    backendChange ?? "",
+  ].join("\n");
+  const detailsOpen = !applying && detailsVersion === detailsKey;
   // the panel and its protective height floor must use the same predicate.
   const changelogPanelOpen = Boolean(
-    !applying && changelogAvailable && changelogOpen && changelogTags,
+    detailsOpen && changelogAvailable && changelogTags,
   );
-  // bundles omit a total because some components do not report a download size.
-  const sizeLabel = bundled ? null : sizeLabelOf(primary?.sizeBytes);
+  const sizeLabel = sizeLabelOf(
+    rows.every((row) => row.sizeBytes && row.sizeBytes > 0)
+      ? rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0)
+      : null,
+  );
+  const summary = [
+    bundled ? label : null,
+    sizeLabel ? `${sizeLabel} download` : null,
+    backendChange ? `${backendChange} backend` : null,
+    restartNote,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   // use the phase record because migration and source-build offers disappear while jobs run.
   const runningPhase = status?.job.runningPhase ?? null;
   const phaseIndex = rows.findIndex(
@@ -386,18 +431,39 @@ export function LlamaUpdateBanner({
     updateProgress,
     jobSucceeded,
   );
+  // a returning card or a hidden banner retires the notice.
+  useEffect(() => {
+    if (show || !enabled) {
+      setSkipped(null);
+    }
+  }, [show, enabled]);
+
+  if (!show) {
+    return skipped && enabled ? (
+      <SkippedNotice
+        message={skipped.message}
+        focusUndo={skipped.fromKeyboard}
+        positioned={positioned}
+        onUndo={() => {
+          undoDismiss(skipped.key);
+          setSkipped(null);
+        }}
+        onExpire={clearSkipped}
+      />
+    ) : null;
+  }
 
   // opacity and transform transitions can flash during gpu layer churn.
-  return show ? (
+  return (
     <div
       className={cn(
         positioned
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
               "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
-              // each bundled row adds one text-xs line to the open changelog's height floor.
+              // the desktop floor plus 22px for the details toggle; each bundled row adds one text-xs line.
               changelogPanelOpen
-                ? "min-h-[calc(117px+(93px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(224px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
+                ? "min-h-[calc(117px+(115px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(246px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
                 : "shrink-0",
             ),
       )}
@@ -410,32 +476,7 @@ export function LlamaUpdateBanner({
     >
       {/* fill the height floor even when the changelog content is short. */}
       <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
-        {applying ? null : (
-          <button
-            type="button"
-            onClick={dismiss}
-            className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={`Dismiss ${label} update notification`}
-          >
-            <svg
-              aria-hidden="true"
-              width="12"
-              height="12"
-              viewBox="0 0 14 14"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M11 3L3 11M3 3l8 8"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-        )}
-
-        <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
+        <div className="flex min-w-0 shrink-0 items-start gap-4">
           <Download
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"
@@ -445,21 +486,37 @@ export function LlamaUpdateBanner({
             <p className="font-heading text-base font-medium text-foreground">
               {title}
             </p>
-            {rows.map((row) => (
-              <VersionLine
-                key={row.component}
-                row={row}
-                bundled={bundled}
-                backendPair={row === llamaRow ? backendPair : null}
-              />
-            ))}
-            <p className="mt-1 text-ui-11 text-muted-foreground/70">
-              {sizeLabel ? `${sizeLabel} download · ` : ""}
-              {llamaVersionChanged && backendChange
-                ? `${backendChange} backend · `
-                : ""}
-              {restartNote}
+            <p
+              className="mt-0.5 text-xs text-muted-foreground"
+              data-testid="llama-update-summary"
+            >
+              {summary}
             </p>
+            {applying ? null : (
+              <button
+                type="button"
+                className="-mx-1 mt-1 block rounded px-1 text-xs font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70"
+                onClick={() =>
+                  setDetailsVersion(detailsOpen ? null : detailsKey)
+                }
+                aria-expanded={detailsOpen}
+                data-testid="llama-update-changelog-toggle"
+              >
+                {detailsOpen ? "Hide what's new" : "What's new"}
+              </button>
+            )}
+            {detailsOpen ? (
+              <div className="mt-2" data-testid="llama-update-details">
+                {rows.map((row) => (
+                  <VersionLine
+                    key={row.component}
+                    row={row}
+                    bundled={bundled}
+                    backendPair={row === llamaRow ? backendPair : null}
+                  />
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -491,53 +548,113 @@ export function LlamaUpdateBanner({
             />
           </div>
         ) : (
-          <div
-            className={cn(
-              "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
-              changelogAvailable ? "justify-between" : "justify-end",
-            )}
-          >
-            {changelogAvailable ? (
+          <div className="mt-4 flex shrink-0 flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            {detailsOpen ? (
               <Button
                 size="sm"
                 variant="ghost"
-                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
-                onClick={() =>
-                  setChangelogVersion(changelogOpen ? null : changelogKey)
-                }
-                aria-expanded={changelogOpen}
-                data-testid="llama-update-changelog-toggle"
+                className="-ml-2 mr-auto h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-muted-foreground hover:text-foreground"
+                onClick={handleSkip}
+                data-testid="llama-update-skip-button"
               >
-                {changelogOpen
-                  ? "Hide what's new"
-                  : bundled
-                    ? "llama.cpp changes"
-                    : "Show what's new"}
+                {skipLabel}
               </Button>
             ) : null}
-            <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
-                onClick={snooze}
-                data-testid="llama-update-snooze-button"
-              >
-                Remind me later
-              </Button>
-              <Button
-                size="sm"
-                // align the pill edge with the card padding.
-                className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
-                onClick={handleUpdate}
-                data-testid="llama-update-button"
-              >
-                Update
-              </Button>
-            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+              onClick={snooze}
+              data-testid="llama-update-snooze-button"
+            >
+              Later
+            </Button>
+            <Button
+              size="sm"
+              // align the pill edge with the card padding.
+              className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+              onClick={handleUpdate}
+              data-testid="llama-update-button"
+            >
+              Update
+            </Button>
           </div>
         )}
       </div>
     </div>
-  ) : null;
+  );
+}
+
+// long enough to read and reach Undo; hover or focus holds it open.
+const SKIPPED_NOTICE_MS = 6000;
+
+function SkippedNotice({
+  message,
+  focusUndo,
+  positioned,
+  onUndo,
+  onExpire,
+}: {
+  message: string;
+  focusUndo: boolean;
+  positioned: boolean;
+  onUndo: () => void;
+  onExpire: () => void;
+}): ReactElement {
+  const undoRef = useRef<HTMLButtonElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  // the skip button is gone, so keyboard focus moves to Undo instead of the page.
+  useEffect(() => {
+    if (focusUndo) {
+      undoRef.current?.focus({ preventScroll: true });
+    }
+  }, [focusUndo]);
+  // expiring under focus would drop it on the page body.
+  useEffect(() => {
+    if (hovered || focused) {
+      return;
+    }
+    const timer = setTimeout(onExpire, SKIPPED_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [hovered, focused, onExpire]);
+  return (
+    <div
+      className={cn(
+        "w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]",
+        positioned
+          ? "fixed bottom-4 right-4 z-[9998]"
+          : "pointer-events-auto shrink-0",
+      )}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setFocused(false);
+        }
+      }}
+      data-testid="llama-update-skipped"
+    >
+      <div className="flex items-center gap-3 rounded-[24px] bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+        {/* <output> carries the implicit status role, so screen readers announce the skip. */}
+        <output
+          className="block min-w-0 grow truncate text-ui-13 text-foreground"
+          title={message}
+        >
+          {message}
+        </output>
+        <Button
+          ref={undoRef}
+          size="sm"
+          variant="ghost"
+          className="h-auto shrink-0 whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+          onClick={onUndo}
+          data-testid="llama-update-undo-skip"
+        >
+          Undo
+        </Button>
+      </div>
+    </div>
+  );
 }

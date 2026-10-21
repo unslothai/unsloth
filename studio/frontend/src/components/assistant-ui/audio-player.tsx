@@ -110,7 +110,11 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
           step={0.01}
           value={progress}
           onChange={handleSeek}
-          className="h-1.5 w-full cursor-pointer accent-primary"
+          className="native-range w-full"
+          style={{
+            ["--range-ratio" as string]:
+              duration > 0 ? Math.min(1, progress / duration) : 0,
+          }}
         />
         <div className="flex justify-between text-ui-10 text-muted-foreground">
           <span>{formatTime(progress)}</span>

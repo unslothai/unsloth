@@ -50,3 +50,19 @@ test("rating is total tokens over total decode time, not a mean of rates", () =>
   ]);
   assert.equal(stats.tokensPerSecond, 50);
 });
+
+test("tokens split into what requests sent in and what the model sent back", () => {
+  const stats = computeStats([
+    queuedEntry({ id: "a", prompt_tokens: 30, completion_tokens: 10 }),
+    queuedEntry({
+      id: "b",
+      prompt_tokens: 20,
+      completion_tokens: null,
+      total_tokens: 25,
+    }),
+    queuedEntry({ id: "l", kind: "lifecycle", prompt_tokens: 999 }),
+  ]);
+  assert.equal(stats.inputTokens, 50);
+  assert.equal(stats.outputTokens, 15);
+  assert.equal(stats.totalTokens, 65);
+});

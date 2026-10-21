@@ -2732,7 +2732,13 @@ export function ChatPage({
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
-  const loadedCount = useChatRuntimeStore((state) => state.loadedModels.length);
+  const loadedModels = useChatRuntimeStore((state) => state.loadedModels);
+  const loadedCount = loadedModels.length;
+  const loadedNames = useMemo(
+    () =>
+      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
+    [loadedModels],
+  );
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
@@ -4655,6 +4661,7 @@ export function ChatPage({
                 onEject={handleEject}
                 onEjectAll={handleEjectAll}
                 loadedCount={loadedCount}
+                loadedNames={loadedNames}
                 onFoldersChange={refreshLocalModels}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}

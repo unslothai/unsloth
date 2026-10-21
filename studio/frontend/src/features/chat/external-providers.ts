@@ -28,6 +28,8 @@ export interface ExternalProviderConfig {
   maxOutputTokens?: number;
 
   hasApiKey?: boolean;
+  shared?: boolean;
+  sharedByOwner?: boolean;
 
   /** Sanitized backend-owned authorization state; never contains OAuth material. */
   authKind?: ProviderAuthKind;

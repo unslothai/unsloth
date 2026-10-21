@@ -120,6 +120,7 @@ interface ModelSelectorProps {
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
   loadedCount?: number;
+  loadedNames?: string[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -170,9 +171,12 @@ function ModelSelectorTrigger({
   dataTour,
   onEject,
   loadedCount = 0,
+  loadedNames,
+  // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
   loadedCount?: number;
+  loadedNames?: string[];
   currentModel?: ModelOption;
   isLoaded: boolean;
   showCloudIndicator?: boolean;
@@ -185,10 +189,17 @@ function ModelSelectorTrigger({
   placeholder?: string;
 }) {
   const severalLoaded = loadedCount > 1;
-  const triggerTitle = severalLoaded
-    ? `${loadedCount} models loaded`
-    : (currentModel?.name ?? placeholder);
-  const subtitle = severalLoaded ? currentModel?.name : currentModel?.description;
+  const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
+  const triggerTitle = listsNames
+    ? loadedNames?.join(" • ")
+    : severalLoaded
+      ? `${loadedCount} models loaded`
+      : (currentModel?.name ?? placeholder);
+  const subtitle = listsNames
+    ? undefined
+    : severalLoaded
+      ? currentModel?.name
+      : currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -272,7 +283,7 @@ function ModelSelectorTrigger({
               </span>
             )}
           </span>
-          {currentModel?.descriptionSuffix && (
+          {!listsNames && currentModel?.descriptionSuffix && (
             <span
               className={cn(
                 "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
@@ -463,6 +474,18 @@ function ModelSelectorContent({
     string | null
   >(null);
   const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
+  const [configStandalone, setConfigStandalone] = useState(false);
+
+  // Cleared during render, not in an effect: a reopen inside the exit animation dropped the adopted target.
+  const [renderedOpen, setRenderedOpen] = useState(open);
+  if (renderedOpen !== open) {
+    setRenderedOpen(open);
+    if (!open) {
+      setConfigTarget(null);
+      setConfigFocus(null);
+      setConfigStandalone(false);
+    }
+  }
 
   // The picker remounts on each open but this state does not, so re-derive on the open edge.
   const wasOpen = useRef(open);
@@ -473,10 +496,6 @@ function ModelSelectorContent({
           ? "connected"
           : defaultHubSection(hasAdditionalOnDeviceModels),
       );
-    }
-    if (!open && wasOpen.current) {
-      setConfigTarget(null);
-      setConfigFocus(null);
     }
     wasOpen.current = open;
   }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);
@@ -528,6 +547,7 @@ function ModelSelectorContent({
       : undefined;
     setConfigTarget(modelConfigTarget(id, meta, displayName));
     setConfigFocus(null);
+    setConfigStandalone(false);
   };
   const requestedConfigTarget = useMemo(
     () =>
@@ -565,6 +585,7 @@ function ModelSelectorContent({
     setAdoptedConfigRequestId(configRequest.requestId);
     setConfigTarget(requestedConfigTarget);
     setConfigFocus(configRequest.focus ?? null);
+    setConfigStandalone(configRequest.standalone === true);
   }
   useEffect(() => {
     if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
@@ -627,10 +648,14 @@ function ModelSelectorContent({
                 visibleLoadedConfig,
               )}
               target={visibleConfigTarget}
-              onBack={() => {
-                setConfigTarget(null);
-                setConfigFocus(null);
-              }}
+              onBack={
+                configStandalone
+                  ? undefined
+                  : () => {
+                      setConfigTarget(null);
+                      setConfigFocus(null);
+                    }
+              }
               focusField={configFocus ?? undefined}
               onRun={(config, isDiffusion) =>
                 onSelect(
@@ -758,6 +783,7 @@ export function ModelSelector({
   placeholder,
   loaded,
   loadedCount,
+  loadedNames,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -931,6 +957,7 @@ export function ModelSelector({
         dataTour={triggerDataTour}
         onEject={onEject ? () => handleEject() : undefined}
         loadedCount={loadedCount}
+        loadedNames={loadedNames}
         placeholder={placeholder}
       />
       <ModelSelectorContent

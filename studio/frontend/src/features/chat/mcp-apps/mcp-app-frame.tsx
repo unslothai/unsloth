@@ -20,8 +20,10 @@ import {
   RESIZE_FALLBACK,
   bridgeShim,
   cspFrameQuery,
+  forReview,
   newBridgeToken,
   toolApprovalScope,
+  toolArgsForReview,
   toolResultParams,
   withBridgeShim,
 } from "./mcp-ui";
@@ -76,17 +78,7 @@ interface PendingToolCall {
 const clampHeight = (h: number) =>
   Math.min(Math.max(h, MIN_HEIGHT), MAX_HEIGHT);
 
-function argsPreview(args: Record<string, unknown>): string {
-  if (Object.keys(args).length === 0) return "";
-  try {
-    const text = JSON.stringify(args, null, 2);
-    return text.length > 600 ? `${text.slice(0, 600)}…` : text;
-  } catch {
-    return "";
-  }
-}
-
-// CSP is fixed at request time, so declared domains ride the URL; never the auth token.
+// The shell's CSP is fixed at request time, so declared domains ride the URL; never the auth token.
 function frameSrc(csp: McpUiResource["ui"]["csp"] | null): string {
   const query = cspFrameQuery(csp);
   return apiUrl(`/api/inference/mcp-app-frame${query ? `?${query}` : ""}`);
@@ -203,7 +195,8 @@ export function McpAppFrame(props: McpAppFrameProps) {
       if (pendingRef.current.length >= MAX_PENDING_TOOL_CALLS) {
         throw new RpcError("Too many tool requests are waiting");
       }
-      const preview = argsPreview(args);
+      // The card shows what an Allow will post; a very long call says how much is not shown.
+      const preview = toolArgsForReview(args);
       const [allow, always] = await new Promise<[boolean, boolean]>((done) =>
         setQueue([
           ...pendingRef.current,
@@ -474,7 +467,9 @@ export function McpAppFrame(props: McpAppFrameProps) {
         >
           <div>
             {asking.link ? "This app wants to open " : "This app wants to run "}
-            <span className="font-mono break-all">{asking.name}</span>
+            <span className="font-mono break-all">
+              {forReview(asking.name)}
+            </span>
             {pendingCalls.length > 1
               ? ` (+${pendingCalls.length - 1} more waiting)`
               : ""}

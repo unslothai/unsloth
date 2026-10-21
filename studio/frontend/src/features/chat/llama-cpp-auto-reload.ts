@@ -37,7 +37,7 @@ function autoReloadConnections(): ExternalProviderConfig[] {
   const { providers, connectionsEnabled } = useExternalProvidersStore.getState();
   if (!connectionsEnabled) return [];
   return providers.filter(
-    (p) => p.providerType === "llama_cpp" && p.autoReloadModels === true,
+    (p) => p.providerType === "llama_cpp" && p.autoReloadModels === true && !p.sharedByOwner,
   );
 }
 

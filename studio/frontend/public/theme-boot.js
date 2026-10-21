@@ -29,3 +29,12 @@ try {
     root.setAttribute("data-palette", palette);
   }
 } catch (e) {}
+
+// One screen pixel in CSS px, for slider tracks (index.css); re-run when the zoom changes.
+try {
+  (function px() {
+    var r = devicePixelRatio || 1;
+    document.documentElement.style.setProperty("--device-px", 1 / r + "px");
+    matchMedia("(resolution:" + r + "dppx)").addEventListener("change", px, { once: true });
+  })();
+} catch (e) {}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
 import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -145,6 +146,8 @@ function FloatingMonitorPanel({
     constraintsElement,
     dockedBesideRunSettings || suppressed,
     suppressed,
+    undefined,
+    FLOATING_PANEL_POSITION_KEYS.liveMonitor,
   );
 
   // offsetWidth, not the rect: the panel animates in from scale 0.94.

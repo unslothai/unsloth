@@ -922,12 +922,12 @@ export function ContrastSliderRow() {
   return (
     <div className="flex w-64 items-center gap-3">
       <Slider
+        className="contrast-slider"
         value={[contrast]}
         min={0}
         max={100}
         step={1}
         onValueChange={(values: number[]) => patch({ contrast: values[0] })}
-        className="panel-slider"
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
       <NumericValueInput

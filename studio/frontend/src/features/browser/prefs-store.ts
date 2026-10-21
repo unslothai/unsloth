@@ -111,6 +111,11 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
     },
   ),
 );
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useBrowserPrefsStore.persist.getOptions().name) void useBrowserPrefsStore.persist.rehydrate();
+  });
+}
 
 /** The zoom a page is at unless the reader zooms it. */
 export function defaultZoom(): number {
