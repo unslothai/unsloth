@@ -264,7 +264,7 @@ export interface DiffusionGenerateRequest {
   // Sent only off their defaults (lib/sd-controls); refused (400) for a model without them.
   prompt_weighting?: boolean;
   clip_skip?: number;
-  guidance_rescale?: number;
+  cfg_rescale?: number;
   variation_seed?: number;
   variation_strength?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
@@ -361,7 +361,7 @@ export interface GalleryImage {
   // null = off; variation_seed is this image's own.
   prompt_weighting?: boolean | null;
   clip_skip?: number | null;
-  guidance_rescale?: number | null;
+  cfg_rescale?: number | null;
   variation_seed?: number | null;
   variation_strength?: number | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.

@@ -13,7 +13,7 @@ export interface SdControlsCapability {
     default: number;
     same_as_default_through?: number;
   } | null;
-  guidance_rescale?: {
+  cfg_rescale?: {
     min: number;
     max: number;
     default: number;
@@ -27,7 +27,7 @@ export interface SdControlsCapability {
 export interface SdControlsChoice {
   promptWeighting: boolean;
   clipSkip: number;
-  guidanceRescale: number;
+  cfgRescale: number;
   // Text field: empty = a random variation seed per Generate.
   variationSeed: string;
   variationStrength: number;
@@ -36,7 +36,7 @@ export interface SdControlsChoice {
 export const DEFAULT_SD_CONTROLS: SdControlsChoice = {
   promptWeighting: true,
   clipSkip: 1,
-  guidanceRescale: 0,
+  cfgRescale: 0,
   variationSeed: "",
   variationStrength: 0,
 };
@@ -47,7 +47,7 @@ export const FALLBACK_VARY_STRENGTH = 0.15;
 export interface SdControlsRequest {
   prompt_weighting?: boolean;
   clip_skip?: number;
-  guidance_rescale?: number;
+  cfg_rescale?: number;
   variation_seed?: number;
   variation_strength?: number;
 }
@@ -77,9 +77,9 @@ export function sdControlsRequestFields(
   const clip = capability.clip_skip;
   if (clip && choice.clipSkip > 1)
     out.clip_skip = Math.min(Math.round(choice.clipSkip), clip.max);
-  const rescale = capability.guidance_rescale;
-  if (rescale && choice.guidanceRescale > 0) {
-    out.guidance_rescale = Math.min(choice.guidanceRescale, rescale.max);
+  const rescale = capability.cfg_rescale;
+  if (rescale && choice.cfgRescale > 0) {
+    out.cfg_rescale = Math.min(choice.cfgRescale, rescale.max);
   }
   if (capability.variation_seed && choice.variationStrength > 0) {
     out.variation_strength = Math.min(choice.variationStrength, 1);
@@ -106,7 +106,7 @@ export function varyChoice(
 export function sdControlsFromRecipe(image: {
   prompt_weighting?: boolean | null;
   clip_skip?: number | null;
-  guidance_rescale?: number | null;
+  cfg_rescale?: number | null;
   variation_seed?: number | null;
   variation_strength?: number | null;
   batch_index?: number | null;
@@ -117,7 +117,7 @@ export function sdControlsFromRecipe(image: {
   return {
     promptWeighting: true,
     clipSkip: image.clip_skip ?? 1,
-    guidanceRescale: image.guidance_rescale ?? 0,
+    cfgRescale: image.cfg_rescale ?? 0,
     variationSeed:
       image.variation_seed != null && image.variation_strength
         ? String(Math.max(0, image.variation_seed - offset))
@@ -129,14 +129,13 @@ export function sdControlsFromRecipe(image: {
 /** Recipe rows, empty when every control was off. */
 export function sdControlsRecipeRows(image: {
   clip_skip?: number | null;
-  guidance_rescale?: number | null;
+  cfg_rescale?: number | null;
   variation_seed?: number | null;
   variation_strength?: number | null;
 }): [string, string][] {
   const rows: [string, string][] = [];
   if (image.clip_skip) rows.push(["CLIP skip", String(image.clip_skip)]);
-  if (image.guidance_rescale)
-    rows.push(["CFG rescale", String(image.guidance_rescale)]);
+  if (image.cfg_rescale) rows.push(["CFG rescale", String(image.cfg_rescale)]);
   if (image.variation_strength && image.variation_seed != null) {
     rows.push([
       "Variation",

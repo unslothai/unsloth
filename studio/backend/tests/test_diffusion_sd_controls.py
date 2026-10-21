@@ -209,8 +209,29 @@ def test_clip_skip_mapping(family, a1111, expected):
 def _fake_pipe(layers = 12):
     enc = SimpleNamespace(config = SimpleNamespace(num_hidden_layers = layers))
     return SimpleNamespace(
-        text_encoder = enc, tokenizer = object(), text_encoder_2 = enc, tokenizer_2 = object()
+        text_encoder = enc,
+        tokenizer = _WordTokenizer(pad = 2),
+        text_encoder_2 = enc,
+        tokenizer_2 = _WordTokenizer(pad = 0),
     )
+
+
+def test_long_plain_prompts_engage_the_chunked_encoder():
+    from core.inference.diffusion_prompt_weighting import exceeds_one_chunk
+
+    pipe = _fake_pipe()
+    fits = " ".join(f"w{i}" for i in range(CHUNK_TOKENS))
+    longer = fits + " extra"
+    assert not exceeds_one_chunk(pipe, fits)
+    assert exceeds_one_chunk(pipe, longer)
+    assert not weighting_engaged(None, SDXL, pipe, [fits])
+    assert weighting_engaged(None, SDXL, pipe, [longer])
+    # Literal mode still chunks a long prompt (webui's "None" emphasis), but not a short bracketed one.
+    assert weighting_engaged(SdControls(prompt_weighting = False), SDXL, pipe, [longer])
+    assert not weighting_engaged(SdControls(prompt_weighting = False), SDXL, pipe, ["(a:2)"])
+    # A long negative prompt alone engages it too, since both branches share one length.
+    assert weighting_engaged(None, SDXL, pipe, ["a fox", longer])
+    assert not weighting_engaged(None, FLUX, pipe, [longer])
 
 
 _TXT2IMG_PARAMS = {"prompt_embeds": 1, "guidance_rescale": 1, "negative_prompt": 1}
@@ -218,7 +239,7 @@ _TXT2IMG_PARAMS = {"prompt_embeds": 1, "guidance_rescale": 1, "negative_prompt":
 
 def test_defaults_request_nothing():
     assert not SdControls().requested()
-    assert not SdControls(prompt_weighting = False, clip_skip = 1, guidance_rescale = 0.0).requested()
+    assert not SdControls(prompt_weighting = False, clip_skip = 1, cfg_rescale = 0.0).requested()
     assert not SdControls(variation_seed = 5, variation_strength = 0.0).requested()
 
 
@@ -228,7 +249,7 @@ def test_flux_refuses_requested_controls_clearly():
     validate(SdControls(), FLUX, pipe, {}, "txt2img")
     validate(SdControls(clip_skip = 1, prompt_weighting = False), FLUX, pipe, {}, "txt2img")
     with pytest.raises(ValueError, match = "CLIP skip, CFG rescale applies to SDXL models only"):
-        validate(SdControls(clip_skip = 2, guidance_rescale = 0.5), FLUX, pipe, {}, "txt2img")
+        validate(SdControls(clip_skip = 2, cfg_rescale = 0.5), FLUX, pipe, {}, "txt2img")
     with pytest.raises(ValueError, match = "variation seed applies to SDXL"):
         validate(SdControls(variation_strength = 0.2), FLUX, pipe, {}, "txt2img")
     # FLUX keeps literal text, weight syntax or not.
@@ -240,15 +261,15 @@ def test_sdxl_status_and_validation():
     pipe.scheduler = SimpleNamespace(config = {"prediction_type": "v_prediction"})
     fields = status_fields(SDXL, pipe)
     assert fields["clip_skip"] == {"min": 1, "max": 12, "default": 1, "same_as_default_through": 2}
-    assert fields["guidance_rescale"]["default"] == 0.0
-    assert fields["guidance_rescale"]["recommended"] == 0.7
+    assert fields["cfg_rescale"]["default"] == 0.0
+    assert fields["cfg_rescale"]["recommended"] == 0.7
     pipe.scheduler = SimpleNamespace(config = {"prediction_type": "epsilon"})
-    assert status_fields(SDXL, pipe)["guidance_rescale"]["recommended"] is None
-    validate(SdControls(clip_skip = 12, guidance_rescale = 0.7), SDXL, pipe, _TXT2IMG_PARAMS, "txt2img")
+    assert status_fields(SDXL, pipe)["cfg_rescale"]["recommended"] is None
+    validate(SdControls(clip_skip = 12, cfg_rescale = 0.7), SDXL, pipe, _TXT2IMG_PARAMS, "txt2img")
     with pytest.raises(ValueError, match = "exceeds"):
         validate(SdControls(clip_skip = 13), SDXL, pipe, _TXT2IMG_PARAMS, "txt2img")
     with pytest.raises(ValueError, match = "CFG rescale is not available"):
-        validate(SdControls(guidance_rescale = 0.7), SDXL, pipe, {"prompt_embeds": 1}, "controlnet")
+        validate(SdControls(cfg_rescale = 0.7), SDXL, pipe, {"prompt_embeds": 1}, "controlnet")
     with pytest.raises(ValueError, match = "text-to-image"):
         validate(SdControls(variation_strength = 0.2), SDXL, pipe, _TXT2IMG_PARAMS, "img2img")
     # Inpaint's prepare_latents takes the same leading arguments but returns noised image latents.
@@ -260,11 +281,11 @@ def test_sdxl_status_and_validation():
 
 def test_guidance_rescale_passthrough():
     assert guidance_rescale_kwargs(None, _TXT2IMG_PARAMS) == {}
-    assert guidance_rescale_kwargs(SdControls(guidance_rescale = 0.0), _TXT2IMG_PARAMS) == {}
-    assert guidance_rescale_kwargs(SdControls(guidance_rescale = 0.7), _TXT2IMG_PARAMS) == {
+    assert guidance_rescale_kwargs(SdControls(cfg_rescale = 0.0), _TXT2IMG_PARAMS) == {}
+    assert guidance_rescale_kwargs(SdControls(cfg_rescale = 0.7), _TXT2IMG_PARAMS) == {
         "guidance_rescale": 0.7
     }
-    assert guidance_rescale_kwargs(SdControls(guidance_rescale = 0.7), {}) == {}
+    assert guidance_rescale_kwargs(SdControls(cfg_rescale = 0.7), {}) == {}
 
 
 def test_plain_prompt_leaves_the_call_untouched():
@@ -477,13 +498,13 @@ def test_request_model_ranges():
     from models.inference import DiffusionGenerateRequest
 
     ok = DiffusionGenerateRequest(
-        prompt = "x", clip_skip = 2, guidance_rescale = 0.7, variation_seed = 5, variation_strength = 0.15
+        prompt = "x", clip_skip = 2, cfg_rescale = 0.7, variation_seed = 5, variation_strength = 0.15
     )
     assert ok.clip_skip == 2 and ok.prompt_weighting is None
     plain = DiffusionGenerateRequest(prompt = "x")
     assert (
         plain.clip_skip,
-        plain.guidance_rescale,
+        plain.cfg_rescale,
         plain.variation_seed,
         plain.variation_strength,
     ) == (
@@ -495,8 +516,8 @@ def test_request_model_ranges():
     for bad in (
         {"clip_skip": 0},
         {"clip_skip": 13},
-        {"guidance_rescale": 1.5},
-        {"guidance_rescale": -0.1},
+        {"cfg_rescale": 1.5},
+        {"cfg_rescale": -0.1},
         {"variation_strength": 1.1},
         {"variation_seed": -1},
         {"variation_seed": 2**32},
@@ -517,7 +538,7 @@ def test_route_refuses_controls_the_engine_cannot_run():
     plain = SimpleNamespace(
         prompt_weighting = None,
         clip_skip = None,
-        guidance_rescale = None,
+        cfg_rescale = None,
         variation_seed = None,
         variation_strength = None,
     )
@@ -525,9 +546,9 @@ def test_route_refuses_controls_the_engine_cannot_run():
     with pytest.raises(ValueError, match = "diffusers engine only"):
         _sd_controls_kwargs(native_generate, SimpleNamespace(**{**vars(plain), "clip_skip": 3}))
     out = _sd_controls_kwargs(
-        diffusers_generate, SimpleNamespace(**{**vars(plain), "guidance_rescale": 0.7})
+        diffusers_generate, SimpleNamespace(**{**vars(plain), "cfg_rescale": 0.7})
     )
-    assert out["sd_controls"] == SdControls(guidance_rescale = 0.7)
+    assert out["sd_controls"] == SdControls(cfg_rescale = 0.7)
 
 
 def test_infotext_names_follow_webui():
@@ -544,7 +565,7 @@ def test_infotext_names_follow_webui():
         "variation_seed": 12,
         "variation_strength": 0.15,
         "clip_skip": 2,
-        "guidance_rescale": 0.7,
+        "cfg_rescale": 0.7,
     }
     text = _params_text(meta)
     assert "Variation seed: 12, Variation seed strength: 0.15" in text
@@ -553,7 +574,79 @@ def test_infotext_names_follow_webui():
         {
             k: v
             for k, v in meta.items()
-            if k not in ("variation_seed", "variation_strength", "clip_skip", "guidance_rescale")
+            if k not in ("variation_seed", "variation_strength", "clip_skip", "cfg_rescale")
         }
     )
     assert "Variation" not in plain and "Clip skip" not in plain and "CFG rescale" not in plain
+
+
+def test_long_plain_prompt_is_chunked_not_truncated(tiny_sdxl):
+    import torch
+
+    kwargs = {"prompt": "a red fox, " + "snowy forest, " * 40, "negative_prompt": "blurry"}
+    with torch.inference_mode():
+        weighted = apply_prompt_controls(tiny_sdxl, SDXL, None, kwargs, guidance = 7.0)
+    assert weighted is False  # no weight syntax: chunked only
+    assert "prompt" not in kwargs and kwargs["prompt_embeds"].shape[1] % 77 == 0
+    assert kwargs["prompt_embeds"].shape[1] > 77
+    assert kwargs["negative_prompt_embeds"].shape == kwargs["prompt_embeds"].shape
+    short = {"prompt": "a red fox, snowy forest", "negative_prompt": "blurry"}
+    assert apply_prompt_controls(tiny_sdxl, SDXL, None, short, guidance = 7.0) is False
+    assert short == {"prompt": "a red fox, snowy forest", "negative_prompt": "blurry"}
+
+
+# --- SD 1.x layout (one CLIP encoder, final_layer_norm after a skipped layer) ---
+
+
+@pytest.fixture(scope = "module")
+def tiny_sd15(tiny_sdxl):
+    """diffusers' SD 1.x ``StableDiffusionPipeline`` around the tiny SDXL's CLIP-L encoder: its own
+    ``encode_prompt`` (last_hidden_state, or a skipped layer plus final_layer_norm) is what is compared."""
+    diffusers = pytest.importorskip("diffusers")
+    return diffusers.StableDiffusionPipeline(
+        vae = tiny_sdxl.vae,
+        text_encoder = tiny_sdxl.text_encoder,
+        tokenizer = tiny_sdxl.tokenizer,
+        unet = tiny_sdxl.unet,
+        scheduler = tiny_sdxl.scheduler,
+        safety_checker = None,
+        feature_extractor = None,
+        requires_safety_checker = False,
+    )
+
+
+def test_sd15_encoder_matches_encode_prompt(tiny_sd15):
+    import torch
+
+    from core.inference.diffusion_prompt_weighting import encode_weighted_prompts
+    with torch.inference_mode():
+        ref = tiny_sd15.encode_prompt("a red fox", "cpu", 1, True, negative_prompt = "blurry")
+        mine = encode_weighted_prompts(
+            tiny_sd15, ["a red (fox:1.0)"], ["blurry"], guidance_engaged = True
+        )
+        assert torch.equal(ref[0], mine["prompt_embeds"])
+        assert torch.equal(ref[1], mine["negative_prompt_embeds"])
+        assert "pooled_prompt_embeds" not in mine
+        # A1111 "Clip skip 2" on SD 1.x = diffusers clip_skip 1: hidden_states[-2] then final_layer_norm.
+        skip = diffusers_clip_skip("sd15", 2)
+        assert skip == 1
+        try:
+            ref_skip = tiny_sd15.encode_prompt("a red fox", "cpu", 1, False, clip_skip = skip)[0]
+        except AttributeError:
+            # diffusers' SD 1.x clip_skip branch reads ``text_encoder.text_model``, which transformers 5 dropped:
+            # rebuild the same expression (pipeline_stable_diffusion.py encode_prompt) by hand.
+            ids = tiny_sd15.tokenizer(
+                "a red fox",
+                padding = "max_length",
+                max_length = 77,
+                truncation = True,
+                return_tensors = "pt",
+            ).input_ids
+            enc = tiny_sd15.text_encoder
+            hidden = enc(ids, output_hidden_states = True)[-1][-(skip + 1)]
+            ref_skip = getattr(enc, "text_model", enc).final_layer_norm(hidden)
+        mine_skip = encode_weighted_prompts(
+            tiny_sd15, ["a red fox"], None, guidance_engaged = False, clip_skip = skip
+        )
+        assert torch.equal(ref_skip, mine_skip["prompt_embeds"])
+        assert not torch.equal(ref_skip, ref[0])

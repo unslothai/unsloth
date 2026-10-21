@@ -12,7 +12,7 @@ it was.
   ``minimal_clip_skip`` 1 for SD 1.x and 2 for SDXL (``backend/diffusion_engine/sdxl.py``), and A1111 keeps SDXL on
   the penultimate layer unless ``sdxl_clip_l_skip`` is set. So A1111 N is diffusers ``N - 1`` on SD 1.x and
   ``N - 2`` on SDXL, where SDXL "CLIP skip 2" (common on Pony / Illustrious cards) is already the default.
-- CFG rescale is diffusers ``guidance_rescale`` (``rescale_noise_cfg``, arXiv 2305.08891 section 3.4), applied by
+- CFG rescale (request ``cfg_rescale``) is diffusers ``guidance_rescale`` (``rescale_noise_cfg``, arXiv 2305.08891 section 3.4), applied by
   the pipeline after the guided combination.
 - Variation seed: webui ``modules/rng.py`` ``ImageRNG.first``: the seed's noise is slerped toward the variation
   seed's noise by ``variation_strength`` (``slerp`` below, webui's formula including its nearly-parallel lerp branch).
@@ -29,7 +29,11 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Iterator, Optional, Sequence
 
-from .diffusion_prompt_weighting import encode_weighted_prompts, has_prompt_syntax
+from .diffusion_prompt_weighting import (
+    encode_weighted_prompts,
+    exceeds_one_chunk,
+    has_prompt_syntax,
+)
 
 # Family name -> the layer A1111 / Forge treat as CLIP skip 1 when converting to diffusers' count (SDXL already
 # reads the penultimate layer). SD 1.x would be 1; Studio's diffusers engine has no SD 1.x family.
@@ -49,7 +53,7 @@ class SdControls:
 
     prompt_weighting: Optional[bool] = None
     clip_skip: Optional[int] = None
-    guidance_rescale: Optional[float] = None
+    cfg_rescale: Optional[float] = None
     variation_seed: Optional[int] = None
     variation_strength: Optional[float] = None
 
@@ -57,7 +61,7 @@ class SdControls:
         return (
             self.prompt_weighting is True
             or (self.clip_skip is not None and self.clip_skip > 1)
-            or bool(self.guidance_rescale)
+            or bool(self.cfg_rescale)
             or bool(self.variation_strength)
         )
 
@@ -121,7 +125,7 @@ def status_fields(family: Any, pipe: Any) -> Optional[dict[str, Any]]:
             # A1111 values at or below this read the model's own layer (SDXL: 1 and 2 match).
             "same_as_default_through": _CLIP_SKIP_BASE.get(family.name, 1),
         },
-        "guidance_rescale": {
+        "cfg_rescale": {
             "min": 0.0,
             "max": GUIDANCE_RESCALE_MAX,
             "default": 0.0,
@@ -146,7 +150,7 @@ def validate(
             for name, on in (
                 ("prompt weighting", controls.prompt_weighting is True),
                 ("CLIP skip", controls.clip_skip is not None and controls.clip_skip > 1),
-                ("CFG rescale", bool(controls.guidance_rescale)),
+                ("CFG rescale", bool(controls.cfg_rescale)),
                 ("variation seed", bool(controls.variation_strength)),
             )
             if on
@@ -160,7 +164,7 @@ def validate(
             f"CLIP skip {controls.clip_skip} exceeds this model's text encoder depth "
             f"(at most {clip_skip_max(family.name, pipe)})."
         )
-    if controls.guidance_rescale and "guidance_rescale" not in call_params:
+    if controls.cfg_rescale and "guidance_rescale" not in call_params:
         raise ValueError(f"CFG rescale is not available for the {workflow} workflow of {label}.")
     if (controls.prompt_weighting is True or _clip_skip_engaged(controls, family)) and (
         "prompt_embeds" not in call_params
@@ -186,16 +190,18 @@ def weighting_engaged(
 ) -> bool:
     """Whether this call encodes its prompts here instead of in the pipeline.
 
-    Engaged by weight syntax (unless ``prompt_weighting`` is False) or a CLIP skip past the model's layer; a plain
-    prompt at the default CLIP skip leaves the pipeline's own encode path, so it renders bit-identically."""
+    Engaged by weight syntax (unless ``prompt_weighting`` is False), a prompt past 75 tokens (which
+    ``encode_prompt`` would truncate; webui chunks it, with or without emphasis) or a CLIP skip past the model's
+    layer. A plain prompt that fits in one chunk at the default CLIP skip leaves the pipeline's own encode path, so
+    it renders bit-identically."""
     if not supports_sd_controls(family, pipe):
         return False
     controls = controls or SdControls()
     if _clip_skip_engaged(controls, family):
         return True
-    if controls.prompt_weighting is False:
-        return False
-    return any(has_prompt_syntax(t) for t in texts)
+    if controls.prompt_weighting is not False and any(has_prompt_syntax(t) for t in texts):
+        return True
+    return any(exceeds_one_chunk(pipe, t) for t in texts)
 
 
 def apply_prompt_controls(
@@ -241,9 +247,9 @@ def apply_prompt_controls(
 
 
 def guidance_rescale_kwargs(controls: Optional[SdControls], call_params: Any) -> dict[str, Any]:
-    if controls is None or not controls.guidance_rescale or "guidance_rescale" not in call_params:
+    if controls is None or not controls.cfg_rescale or "guidance_rescale" not in call_params:
         return {}
-    return {"guidance_rescale": float(controls.guidance_rescale)}
+    return {"guidance_rescale": float(controls.cfg_rescale)}
 
 
 def slerp(val: float, low: Any, high: Any) -> Any:
@@ -367,7 +373,7 @@ def record_fields(
         "clip_skip": int(controls.clip_skip)
         if controls.clip_skip and controls.clip_skip > 1
         else None,
-        "guidance_rescale": float(controls.guidance_rescale) if controls.guidance_rescale else None,
+        "cfg_rescale": float(controls.cfg_rescale) if controls.cfg_rescale else None,
         "variation_seed": int(variation_seed_list[0]) if varied else None,
         "variation_seeds": [int(s) for s in variation_seed_list] if varied else None,
         "variation_strength": float(controls.variation_strength) if varied else None,

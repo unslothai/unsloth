@@ -17,7 +17,7 @@ import { readSrc } from "./helpers/kit.ts";
 const SDXL = {
   prompt_weighting: true,
   clip_skip: { min: 1, max: 12, default: 1, same_as_default_through: 2 },
-  guidance_rescale: { min: 0, max: 1, default: 0, recommended: null },
+  cfg_rescale: { min: 0, max: 1, default: 0, recommended: null },
   variation_seed: true,
   vary_strength: 0.15,
   prediction_type: "epsilon",
@@ -35,7 +35,7 @@ test("a model without the controls never gets them", () => {
   const choice = {
     promptWeighting: false,
     clipSkip: 3,
-    guidanceRescale: 0.7,
+    cfgRescale: 0.7,
     variationSeed: "5",
     variationStrength: 0.2,
   };
@@ -48,14 +48,14 @@ test("non-default values map to request fields", () => {
     sdControlsRequestFields(SDXL, {
       promptWeighting: false,
       clipSkip: 2,
-      guidanceRescale: 0.7,
+      cfgRescale: 0.7,
       variationSeed: "42",
       variationStrength: 0.25,
     }),
     {
       prompt_weighting: false,
       clip_skip: 2,
-      guidance_rescale: 0.7,
+      cfg_rescale: 0.7,
       variation_strength: 0.25,
       variation_seed: 42,
     },
@@ -108,7 +108,7 @@ test("recipe restore and rows", () => {
   assert.deepEqual(sdControlsFromRecipe({}), DEFAULT_SD_CONTROLS);
   const restored = sdControlsFromRecipe({
     clip_skip: 2,
-    guidance_rescale: 0.7,
+    cfg_rescale: 0.7,
     variation_seed: 15,
     variation_strength: 0.2,
     batch_index: 3,
@@ -146,25 +146,35 @@ test("the page gates the controls and Vary on the status capability", () => {
 });
 
 test("AUTOMATIC1111 parameters import the controls", async () => {
-  const { parseA1111Parameters, recipeSettings, unknownRecipeKeys } = await import(
-    "../src/features/images/lib/image-metadata.ts"
-  );
+  const { parseA1111Parameters, recipeSettings, unknownRecipeKeys } =
+    await import("../src/features/images/lib/image-metadata.ts");
   const parsed = parseA1111Parameters(
     "a (fox:1.2)\nSteps: 25, Sampler: Euler, CFG scale: 5, Seed: 11, Size: 832x1216, Model: m, Variation seed: 12, Variation seed strength: 0.15, Clip skip: 2, CFG rescale: 0.7",
   );
   assert.ok(parsed);
   assert.deepEqual(unknownRecipeKeys(parsed), []);
-  const settings = recipeSettings(parsed, { width: 1024, height: 1024, steps: 9, guidance: 0 });
+  const settings = recipeSettings(parsed, {
+    width: 1024,
+    height: 1024,
+    steps: 9,
+    guidance: 0,
+  });
   assert.equal(settings.clip_skip, 2);
-  assert.equal(settings.guidance_rescale, 0.7);
+  assert.equal(settings.cfg_rescale, 0.7);
   assert.equal(settings.variation_seed, 12);
   assert.equal(settings.variation_strength, 0.15);
   const clamped = recipeSettings(
-    { prompt: "p", clip_skip: 40, guidance_rescale: 3, variation_seed: 2 ** 40, variation_strength: -1 },
+    {
+      prompt: "p",
+      clip_skip: 40,
+      cfg_rescale: 3,
+      variation_seed: 2 ** 40,
+      variation_strength: -1,
+    },
     { width: 1024, height: 1024, steps: 9, guidance: 0 },
   );
   assert.equal(clamped.clip_skip, 12);
-  assert.equal(clamped.guidance_rescale, 1);
+  assert.equal(clamped.cfg_rescale, 1);
   assert.equal(clamped.variation_seed, undefined);
   assert.equal(clamped.variation_strength, 0);
 });

@@ -22,8 +22,9 @@ Layer selection is diffusers' own (``StableDiffusionXLPipeline.encode_prompt``: 
 ``StableDiffusionPipeline.encode_prompt``: ``hidden_states[-(clip_skip + 1)]`` then ``final_layer_norm``), so at
 weight 1 a single-chunk prompt reproduces the pipeline's encoding bit for bit.
 
-A prompt the parser reads back unchanged (no brackets, escapes or BREAK) never reaches this module: the pipeline
-encodes it exactly as before. No torch import at module level.
+A prompt the parser reads back unchanged (no brackets, escapes or BREAK) that fits in 75 tokens never reaches this
+module: the pipeline encodes it exactly as before. A longer one is chunked here instead of truncated. No torch import
+at module level.
 """
 
 from __future__ import annotations
@@ -116,6 +117,26 @@ def has_prompt_syntax(text: Optional[str]) -> bool:
         return False
     parsed = parse_prompt_attention(text)
     return not (len(parsed) == 1 and parsed[0][0] == text and parsed[0][1] == 1.0)
+
+
+def exceeds_one_chunk(pipe: Any, text: Optional[str]) -> bool:
+    """True when ``text`` holds more than 75 CLIP tokens in any of the pipeline's tokenizers, i.e. when
+    ``encode_prompt`` would truncate it (77 = ``<bos>`` + 75 + ``<eos>``). Counted after the pipeline's own
+    ``maybe_convert_prompt``, as ``encode_prompt`` tokenizes."""
+    if not text:
+        return False
+    convert = getattr(pipe, "maybe_convert_prompt", None)
+    for tokenizer, _ in _encoders(pipe):
+        converted = convert(text, tokenizer) if convert is not None else text
+        warned = getattr(tokenizer, "deprecation_warnings", None)
+        if isinstance(warned, dict):
+            warned["sequence-length-is-longer-than-the-specified-maximum"] = True
+        ids = tokenizer(converted, truncation = False, add_special_tokens = False, verbose = False)[
+            "input_ids"
+        ]
+        if len(ids) > CHUNK_TOKENS:
+            return True
+    return False
 
 
 def _special_ids(tokenizer: Any) -> tuple[int, int, int, Optional[int]]:
@@ -241,7 +262,9 @@ def _encode_chunk(
         z = encoder(input_ids, attention_mask = mask)[0]
     else:
         out = encoder(input_ids, attention_mask = mask, output_hidden_states = True)
-        z = encoder.text_model.final_layer_norm(out[-1][-(clip_skip + 1)])
+        # transformers 5 flattened CLIPTextModel (no ``.text_model``); 4.x nests it.
+        final_norm = getattr(encoder, "text_model", encoder).final_layer_norm
+        z = final_norm(out[-1][-(clip_skip + 1)])
     return z, None
 
 

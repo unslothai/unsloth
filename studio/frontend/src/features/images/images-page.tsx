@@ -2864,7 +2864,7 @@ export function ImagesPage({
       }
       if (!status?.sd_controls) {
         if (settings.clip_skip && settings.clip_skip > 1) notApplied.unshift(`CLIP skip ${settings.clip_skip}`);
-        if (settings.guidance_rescale) notApplied.unshift(`CFG rescale ${settings.guidance_rescale}`);
+        if (settings.cfg_rescale) notApplied.unshift(`CFG rescale ${settings.cfg_rescale}`);
         if (settings.variation_strength) notApplied.unshift("variation seed");
       }
       if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
@@ -5615,8 +5615,8 @@ export function ImagesPage({
                 <InfoHint>
                   AUTOMATIC1111 syntax: (word:1.2) weights a word, (word) is 1.1x, [word] is 1/1.1x,
                   \( and \) type a literal bracket, BREAK starts a new 75-token chunk. Prompts past 75
-                  tokens are encoded in chunks instead of cut off. A prompt without this syntax renders
-                  exactly as before. Off reads brackets as plain text.
+                  tokens are encoded in chunks instead of cut off. A prompt without this syntax that fits in
+                  75 tokens renders exactly as before. Off reads brackets as plain text.
                 </InfoHint>
               </span>
               <Switch
@@ -5637,19 +5637,19 @@ export function ImagesPage({
               onChange={(v) => setSdChoice((c) => ({ ...c, clipSkip: v }))}
             />
           )}
-          {sdCaps.guidance_rescale && (
+          {sdCaps.cfg_rescale && (
             <SliderField
               label="CFG rescale"
               hint={
-                sdCaps.guidance_rescale.recommended
-                  ? `Rescales the guided prediction to fix overexposure. This is a v-prediction model: ${sdCaps.guidance_rescale.recommended} is the value from the zero-terminal-SNR paper. 0 = off.`
+                sdCaps.cfg_rescale.recommended
+                  ? `Rescales the guided prediction to fix overexposure. This is a v-prediction model: ${sdCaps.cfg_rescale.recommended} is the value from the zero-terminal-SNR paper. 0 = off.`
                   : "Rescales the guided prediction to fix overexposure, mostly for v-prediction checkpoints (0.7 there). 0 = off."
               }
-              value={sdChoice.guidanceRescale}
+              value={sdChoice.cfgRescale}
               min={0}
-              max={sdCaps.guidance_rescale.max}
+              max={sdCaps.cfg_rescale.max}
               step={0.05}
-              onChange={(v) => setSdChoice((c) => ({ ...c, guidanceRescale: v }))}
+              onChange={(v) => setSdChoice((c) => ({ ...c, cfgRescale: v }))}
             />
           )}
           {sdCaps.variation_seed && (

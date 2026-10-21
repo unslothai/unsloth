@@ -5074,8 +5074,9 @@ class DiffusionGenerateRequest(BaseModel):
     prompt_weighting: Optional[bool] = Field(
         None,
         description = "AUTOMATIC1111 prompt syntax on SDXL: (word:1.2), (word), [word], \\( escapes and "
-        "BREAK, with prompts past 75 tokens encoded in chunks instead of truncated. Omitted: on, and "
-        "a prompt without that syntax renders exactly as before. false reads brackets literally. "
+        "BREAK. Omitted: on. A prompt without that syntax that fits in 75 CLIP tokens renders exactly "
+        "as before; a longer one is encoded in 75-token chunks instead of truncated. false reads "
+        "brackets literally (long prompts still chunk). "
         "true is refused for a model without the control.",
     )
     clip_skip: Optional[int] = Field(
@@ -5086,7 +5087,7 @@ class DiffusionGenerateRequest(BaseModel):
         "both read the penultimate layer the model already uses (as in A1111 and Forge), 3 reads one "
         "layer earlier. Values above 1 are refused for models without the control.",
     )
-    guidance_rescale: Optional[float] = Field(
+    cfg_rescale: Optional[float] = Field(
         None,
         ge = 0.0,
         le = 1.0,
@@ -5306,7 +5307,7 @@ class GalleryImage(BaseModel):
     clip_skip: Optional[int] = Field(
         None, description = "CLIP skip (AUTOMATIC1111 numbering) above 1; null = the model's layer"
     )
-    guidance_rescale: Optional[float] = Field(None, description = "CFG rescale; null = off")
+    cfg_rescale: Optional[float] = Field(None, description = "CFG rescale; null = off")
     variation_seed: Optional[int] = Field(
         None, description = "Variation seed THIS image used; null = no variation"
     )
@@ -5780,7 +5781,7 @@ class DiffusionStatusResponse(BaseModel):
     sd_controls: Optional[Dict[str, Any]] = Field(
         None,
         description = "SDXL prompt weighting, CLIP skip, CFG rescale and variation seed: "
-        "{prompt_weighting, clip_skip {min, max, default, same_as_default_through}, guidance_rescale "
+        "{prompt_weighting, clip_skip {min, max, default, same_as_default_through}, cfg_rescale "
         "{min, max, default, recommended}, variation_seed, vary_strength, prediction_type}. Null when "
         "the loaded model has none of them (every non-SDXL family, the native and MLX engines).",
     )

@@ -51910,7 +51910,7 @@ def _sd_controls_kwargs(generate: Any, request: Any) -> dict:
     controls = SdControls(
         prompt_weighting = getattr(request, "prompt_weighting", None),
         clip_skip = getattr(request, "clip_skip", None),
-        guidance_rescale = getattr(request, "guidance_rescale", None),
+        cfg_rescale = getattr(request, "cfg_rescale", None),
         variation_seed = getattr(request, "variation_seed", None),
         variation_strength = getattr(request, "variation_strength", None),
     )
@@ -52490,7 +52490,7 @@ async def _generate_diffusion_image_run(
                         "schedule_type": result.get("schedule_type"),
                         "prompt_weighting": result.get("prompt_weighting"),
                         "clip_skip": result.get("clip_skip"),
-                        "guidance_rescale": result.get("guidance_rescale"),
+                        "cfg_rescale": result.get("cfg_rescale"),
                         "variation_seed": (
                             result["variation_seeds"][index]
                             if result.get("variation_seeds")

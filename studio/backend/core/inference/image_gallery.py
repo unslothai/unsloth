@@ -81,8 +81,8 @@ def _params_text(meta: dict[str, Any]) -> str:
         )
     if meta.get("clip_skip"):
         fields += f", Clip skip: {meta['clip_skip']}"
-    if meta.get("guidance_rescale"):
-        fields += f", CFG rescale: {meta['guidance_rescale']}"
+    if meta.get("cfg_rescale"):
+        fields += f", CFG rescale: {meta['cfg_rescale']}"
     if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
         fields += f", Denoising strength: {meta['strength']}"
     if meta.get("generator"):

@@ -656,7 +656,7 @@ test("a newer recipe loads what this build knows and names what it does not", ()
   const future = {
     ...JSON.parse(RECIPE),
     schema_version: 2,
-    cfg_rescale: 0.7,
+    freeu_b1: 1.1,
     tiling: false,
     empty_list: [],
     unset: null,
@@ -665,7 +665,7 @@ test("a newer recipe loads what this build knows and names what it does not", ()
   assert.ok(recipe);
   const settings = recipeSettings(recipe, defaults);
   assert.equal(settings.seed, 6630007);
-  assert.deepEqual(unknownRecipeKeys(recipe), ["cfg_rescale", "tiling"]);
+  assert.deepEqual(unknownRecipeKeys(recipe), ["freeu_b1", "tiling"]);
   assert.equal(newerRecipeSchema(recipe), true);
   // Every key today's recipe writes is known, so a current image reports nothing.
   assert.deepEqual(unknownRecipeKeys(JSON.parse(RECIPE)), []);
