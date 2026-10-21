@@ -866,24 +866,145 @@ def _resident_cuda_ordinal() -> Optional[int]:
 def _child_device_mask(ordinal: Optional[int]) -> dict:
     """Pin llama-server to the image model's card: left alone it splits layers over every visible GPU, onto a card the
     memory probe never read."""
-    if ordinal is None:
+    # LLAMA_ARG_DEVICE is the user's own pick, and names devices a narrowed mask would renumber.
+    if ordinal is None or ordinal < 0 or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
         return {}
     try:
         import torch
 
         if torch.cuda.device_count() <= 1:
             return {}
+        from core.inference.llama_cpp import LlamaCppBackend
+
         var = "CUDA_VISIBLE_DEVICES"
-        if getattr(torch.version, "hip", None) and os.environ.get(var) is None:
+        # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one counts as unset.
+        if LlamaCppBackend._torch_is_rocm(torch) and (
+            (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip() or os.environ.get(var) is None
+        ):
             var = "HIP_VISIBLE_DEVICES"
-        parent = os.environ.get(var)
+        parent = (os.environ.get(var) or "").strip() or None
         if parent is None:
             return {var: str(ordinal)}
         # Torch indexes inside the parent's mask, so the child keeps that entry (an index or a UUID).
         entries = [entry.strip() for entry in parent.split(",") if entry.strip()]
-        return {var: entries[ordinal]} if ordinal < len(entries) else {}
+        if var == "HIP_VISIBLE_DEVICES":
+            # clr keeps the first of a repeated HIP entry (utils/hardware/amd.py), so 0,0,1 exposes two devices.
+            entries = list(dict.fromkeys(entries))
+        return {var: entries[ordinal]} if 0 <= ordinal < len(entries) else {}
     except Exception:  # noqa: BLE001 -- no mask: llama.cpp's own device choice
         return {}
+
+
+_VULKAN_ROWS_TTL_S = 120.0
+_vulkan_rows_memo: dict = {}
+
+
+def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
+    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    try:
+        key = (binary, os.path.getmtime(binary))
+    except OSError:
+        key = (binary, None)
+    hit = _vulkan_rows_memo.get(key)
+    if (
+        hit is not None
+        and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
+        and (hit[0] or not retry_empty)
+    ):
+        return hit[0]
+    rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
+    _vulkan_rows_memo.clear()
+    _vulkan_rows_memo[key] = (rows, time.monotonic())
+    return rows
+
+
+def _user_device_pick(binary: Optional[str] = None) -> bool:
+    """LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU / Vulkan mask set by the user; with ``binary``, a Vulkan mask counts
+    only where Vulkan may load (CUDA and HIP ignore it)."""
+    if any(
+        str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")
+    ):
+        return True
+    if not str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip():
+        return False
+    if binary is None or str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
+        return True
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return bool(LlamaCppBackend._is_vulkan_backend(binary))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _prefetch_vulkan_rows(binary: str) -> None:
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        if not _user_device_pick() and LlamaCppBackend._is_vulkan_backend(binary):
+            _vulkan_rows(binary)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _vulkan_device_args(
+    binary: str,
+    ordinal: Optional[int],
+    retry_empty: bool = False,
+) -> Optional[list]:
+    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown."""
+    if ordinal is None or ordinal < 0:
+        return []
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        import torch
+
+        # The user's own device pick wins (a Vulkan mask renumbers what the probe lists).
+        if _user_device_pick():
+            return []
+        # Backends loaded from GGML_BACKEND_PATH are not the ones beside the binary the probe would list.
+        if str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
+            return None if torch.cuda.device_count() > 1 else []
+        if not LlamaCppBackend._is_vulkan_backend(binary):
+            return []
+        # The card lookup reads HIP masks, which only a ROCm torch applies: elsewhere one could name the wrong card.
+        if (
+            os.environ.get("HIP_VISIBLE_DEVICES") or ""
+        ).strip() and not LlamaCppBackend._torch_is_rocm(torch):
+            return None if torch.cuda.device_count() > 1 else []
+        # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
+        rows = _vulkan_rows(binary, retry_empty = retry_empty)
+        if not rows:
+            return None if torch.cuda.device_count() > 1 else []
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        from core.inference.sd_cpp_backend import (
+            _normalized_card_name,
+            _without_driver_tag,
+            physical_card_name,
+            sd_cpp_device_named,
+        )
+
+        # By name, as the image engine pins its Vulkan build: no torch ordinal maps onto Vulkan's index.
+        listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
+        name, position = physical_card_name(ordinal)
+        device = sd_cpp_device_named(binary, name, position = position, listing = listing)
+        if not device:
+            return None
+        # Exact model match: containment takes an `RX 7600 XT` for an `RX 7600`.
+        import torch
+
+        matched = next((row["name"] for row in rows if f"Vulkan{row['index']}" == device), "")
+        exact = bool(name) and _normalized_card_name(
+            _without_driver_tag(matched)
+        ) == _normalized_card_name(name)
+        if not exact and (len(rows) > 1 or torch.cuda.device_count() > 1):
+            return None
+        return [] if len(rows) == 1 else ["--device", device]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _accelerator_memory_mib(
@@ -1136,6 +1257,8 @@ class PromptUpsamplerSidecar:
             cmd += ["--mmproj", mmproj]
             if layers == 0:
                 cmd.append("--no-mmproj-offload")
+        if layers:
+            cmd += _vulkan_device_args(binary, ordinal, retry_empty = True) or []
         sock.close()
         if is_process_shutting_down():
             raise UpsamplerUnavailableError("Unsloth is shutting down.")
@@ -1377,6 +1500,11 @@ class PromptUpsamplerSidecar:
             # every eviction.
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
                 return "gpu"
+            # A user-picked device is not the card the memory probe reads; its first enhanced run starts it.
+            if _user_device_pick(binary) and _cuda_device_count() > 1:
+                return "placement"
+            # The Vulkan probe can take its full timeout, so it runs before the slot that renders queue behind.
+            _prefetch_vulkan_rows(binary)
             # The engine's generation slot, held until the server is up: a render or model transition that arrives
             # meanwhile queues behind the start instead of overlapping it (a load cancels it first through
             # stop_for_handover). Not taken while one runs or a load is in flight.
@@ -1387,7 +1515,9 @@ class PromptUpsamplerSidecar:
             ordinal = _resident_cuda_ordinal()
             # Unpinnable on a multi-GPU host (the native engine records its card elsewhere): the server would split
             # over every visible card and the probe below would read the wrong one. Its first enhanced run starts it.
-            if ordinal is None and _cuda_device_count() > 1:
+            if (ordinal is None and _cuda_device_count() > 1) or _vulkan_device_args(
+                binary, ordinal
+            ) is None:
                 return "placement"
             free_mib, total_mib, device = _accelerator_memory_mib(ordinal)
             if free_mib is None or device not in ("cuda", "mps"):

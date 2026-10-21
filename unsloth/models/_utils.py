@@ -169,6 +169,8 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     cuda_gate_capabilities,
     gfx101x_triton_workaround_applied,
+    xpu_supports_native_bf16,
+    zoo_shares_xpu_bf16,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
 from unsloth_zoo.log import logger
@@ -3996,7 +3998,7 @@ elif DEVICE_TYPE == "hip":
 
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
-    SUPPORTS_BFLOAT16 = True
+    SUPPORTS_BFLOAT16 = xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else True
 elif DEVICE_TYPE == "npu":
     # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
@@ -8141,6 +8143,19 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
+        return torch.no_grad()
+    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies.
+    if os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in ("1", "true", "yes", "on"):
+        return torch.no_grad()
+    if isinstance(shared_state, dict) and "DEEPSPEED" in str(
+        shared_state.get("distributed_type", "")
+    ):
+        return torch.no_grad()
+    try:
+        first = next(iter(model.parameters()), None)
+    except Exception:
+        first = None
+    if first is not None and hasattr(first, "ds_id"):
         return torch.no_grad()
     return torch.inference_mode()
 
