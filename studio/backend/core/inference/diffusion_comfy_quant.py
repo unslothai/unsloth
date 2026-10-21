@@ -1036,9 +1036,7 @@ def load_comfy_quant_transformer(
         NVFP4: nvfp4_backend,
         MXFP8: mxfp8_backend,
     }
-    # Before the widening (the read above is memory-mapped): with no runtime for the format (fp8 below
-    # sm_89) every layer is widened to ``dtype`` in host RAM, 26 GB for an fp8 Krea 2, which used to
-    # take the whole app down.
+    # Without a runtime (fp8 below sm_89) layers widen to ``dtype`` in host RAM: refuse before an OOM.
     from .diffusion_single_file_converters import converted_host_bytes, refuse_host_ram_shortfall
 
     _widened = {

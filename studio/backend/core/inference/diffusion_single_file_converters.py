@@ -349,15 +349,11 @@ CONVERTERS: dict = {
 }
 
 
-# ------------------------------------------------------------------ host RAM a single-file DiT load writes
-
-# safetensors header dtype -> bytes per element
 _ST_ITEMSIZE = {
     "F64": 8, "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "F8_E8M0": 1,
     "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
 }  # fmt: skip
 _ST_FLOATS = ("F64", "F32", "F16", "BF16", "F8_E4M3", "F8_E5M2")
-# Below this the load cannot be what takes a host down; never refuse on it.
 HOST_RAM_CHECK_MIN_MIB = 1024
 _MIB = 1024 * 1024
 
@@ -381,17 +377,11 @@ def converted_host_bytes(
     keep_fp32: Any = (),
     dequantized: Any = None,
 ) -> int:
-    """Bytes of ANONYMOUS host RAM loading ``path`` at ``dtype`` writes, from the header alone.
+    """Anonymous host RAM bytes loading ``path`` at ``dtype`` writes, from the header alone.
 
-    safetensors hands CPU tensors back memory-mapped, so a tensor already stored at its target dtype
-    costs page cache the OS can drop. Every other float tensor is widened (fp8 -> bf16 doubles it) into
-    fresh private memory that stays resident for the life of the model. ``keep_fp32`` = module names
-    kept in float32 (matched on any key segment, the ``_keep_in_fp32_modules`` rule, so original-layout
-    names under-match only small norms); ``dequantized(key)`` names ComfyUI-quantized weights that are
-    expanded to ``dtype`` (True; their codes are mapped, the expansion is not), False for one kept as
-    codes, None for any other key. Block formats are counted per stored element, under their logical
-    size, which only ever under-asks. 0 for an
-    unreadable header: no claim."""
+    Tensors already at the target dtype stay memory-mapped (droppable page cache) and cost 0.
+    ``dequantized(key)``: True = quantized weight widened to ``dtype``, False = kept as codes,
+    None = not quantized. Unreadable header returns 0 (no claim)."""
     from .diffusion_comfy_quant import _read_header
 
     try:
@@ -412,7 +402,6 @@ def converted_host_bytes(
             continue
         verdict = dequantized(key) if dequantized is not None else None
         if verdict is not None:
-            # A quantized weight: widened to ``dtype`` (True) or kept as codes on a runtime (False)
             total += numel * _ST_ITEMSIZE[target] if verdict else 0
             continue
         if stored not in _ST_FLOATS:
@@ -424,10 +413,8 @@ def converted_host_bytes(
 
 
 def refuse_host_ram_shortfall(path: str, need_bytes: int, why: str, logger: Any = None) -> None:
-    """Raise ``HostRamShortfallError`` when ``need_bytes`` of new host RAM plus the small-host reserve
-    exceed what this host has free right now, instead of letting the load run the process out of
-    memory: on Linux the OOM killer takes the whole server, on Windows an exhausted commit limit ends
-    it inside native code. ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the check."""
+    """Raise ``HostRamShortfallError`` if ``need_bytes`` plus the reserve exceed free host RAM (an OOM
+    kills the whole server). ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the check."""
     import os
 
     from .diffusion_small_host import (
@@ -497,8 +484,7 @@ def load_original_layout_transformer(
     keep = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
     if isinstance(keep, str):
         keep = [keep]
-    # Before a byte is read: an fp8 file widened to bf16 (13B Krea 2: ~26 GB) used to run the host out of
-    # memory, which kills the whole app rather than failing this load.
+    # Before any read: fp8 widened to bf16 (13B Krea 2: ~26 GB) used to OOM the whole app.
     refuse_host_ram_shortfall(
         path,
         converted_host_bytes(path, dtype, keep_fp32 = keep),

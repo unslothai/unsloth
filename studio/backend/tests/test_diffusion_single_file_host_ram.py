@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A single-file DiT whose weights are widened on load (an fp8 / fp8_scaled ComfyUI Krea 2 file on a
-GPU with no fp8 runtime: 13 GB on disk, ~26 GB of bf16 in host RAM) must be refused, readably and
-before the widening, when the host cannot hold it. Before this the load ran the host out of memory,
-which ends the whole app (Linux OOM killer, Windows commit limit) instead of failing the one load.
-Files already stored at the compute dtype stay memory-mapped and are never refused.
-
-Built on the tiny Krea 2 and its inverse ComfyUI-layout map from the Krea 2 single-file tests."""
+"""A single-file DiT widened on load beyond free host RAM is refused before widening (it used to OOM
+the app); files already at the compute dtype stay memory-mapped and are never refused."""
 
 from __future__ import annotations
 
