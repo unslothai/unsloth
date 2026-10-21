@@ -771,6 +771,21 @@ def _is_gpu_device_lost(exc: BaseException) -> bool:
     return any(marker in text for marker in _GPU_DEVICE_LOST_MARKERS)
 
 
+class _UnloadedSince:
+    """A load cancel event that is set once ``backend`` was unloaded after ``epoch`` was read.
+    load_model clears the backend's own cancel event on entry, which would forget that."""
+
+    __slots__ = ("_backend", "_epoch", "_event")
+
+    def __init__(self, backend, epoch: int, event: Optional[threading.Event]):
+        self._backend, self._epoch, self._event = backend, epoch, event
+
+    def is_set(self) -> bool:
+        return getattr(self._backend, "_unload_epoch", 0) != self._epoch or bool(
+            self._event is not None and self._event.is_set()
+        )
+
+
 class _CombinedCancelEvent:
     __slots__ = ("_events",)
 
@@ -8531,12 +8546,16 @@ def _load_with_auto_tensor_layer_retry(
     def cancelled() -> bool:
         return (
             self._cancel_event.is_set()
-            or bool(load_cancel_event is not None and load_cancel_event.is_set())
+            or retry_cancel_event.is_set()
             or getattr(self, "_health_wait_cancelled", False)
             or self._spawn_is_stale()
         )
 
     with self._serial_load_lock:
+        # An unload landing after the first attempt started cancels the retry too.
+        retry_cancel_event = _UnloadedSince(
+            self, getattr(self, "_unload_epoch", 0), load_cancel_event
+        )
         previous = self._auto_split_attempt
         attempt = _AutoSplitAttempt()
         self._auto_split_attempt = attempt
@@ -8557,7 +8576,7 @@ def _load_with_auto_tensor_layer_retry(
                     raise
                 logger.warning(f"Auto tensor split abandoned ({exc}); loading without it")
             self._auto_split_attempt = _AutoSplitAttempt(allowed = False)
-            ok = load(self, intent, load_cancel_event = load_cancel_event)
+            ok = load(self, intent, load_cancel_event = retry_cancel_event)
             return ok
         finally:
             self._auto_split_attempt = previous
@@ -27987,6 +28006,9 @@ class LlamaCppBackend:
                             binary, model_identifier, _planned_cache_pair
                         ):
                             _split_excluded = "this build aborted on --split-mode tensor earlier"
+                        elif not _replanned_flash_attn(True):
+                            # llama.cpp refuses SPLIT_MODE_TENSOR without flash attention.
+                            _split_excluded = "flash attention is off, which tensor split needs"
                         try:
                             if _split_excluded is not None:
                                 _split_decision = _SplitDecision(
@@ -28136,9 +28158,7 @@ class LlamaCppBackend:
                                     split_mode_override = split_mode_override,
                                     # Unregistered helper loads net no reservations; the
                                     # pair still avoids every card a served model holds.
-                                    shared_gpus = _shared_gpus.union(
-                                        self._vram_reserved_by_others_mib()
-                                    ),
+                                    shared_gpus = _shared_gpus.union(self._gpus_held_by_others()),
                                     platform_reason = _split_platform,
                                 )
                                 if (
@@ -37166,6 +37186,15 @@ class LlamaCppBackend:
         if self not in _serving_backends_snapshot():
             return {}
         return self._vram_reserved_by_others_mib()
+
+    def _gpus_held_by_others(self) -> frozenset:
+        """GPUs a reservation names, or a live child's devices when it published no plan (Manual)."""
+        held = set(self._vram_reserved_by_others_mib())
+        for backend in _serving_backends_snapshot():
+            if backend is not self and getattr(backend, "is_active", False):
+                if not getattr(backend, "_planned_vram_mib", None):
+                    held.update(getattr(backend, "_child_gpu_physical_ids", None) or ())
+        return frozenset(held)
 
     def _vram_reserved_by_others_mib(self) -> dict[int, int]:
         """_other_planned_vram_mib without its registration gate (the auto split's exclusion)."""

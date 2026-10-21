@@ -1855,3 +1855,59 @@ def test_failed_cpu_replay_keeps_no_split_state(tmp_path, monkeypatch):
     assert "_try_auto_vulkan_cpu_fallback" in _frames(result), result
     assert any("none" in c for c in spawns)
     _assert_no_split_state(backend)
+
+
+# --------------------------------------------------------------------------
+# 9. Round 8: unload before the retry, Manual residents, flash attention off
+# --------------------------------------------------------------------------
+
+
+def test_unload_before_the_layer_retry_cancels_it(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    real = llama_cpp_module.logger.warning
+
+    def warn(msg, *a, **k):
+        # Between the retry's cancellation check and the retry itself.
+        if "Auto tensor split abandoned" in str(msg):
+            backend.unload_model()
+        return real(msg, *a, **k)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "warning", warn)
+    result, spawns = _launch_scripted(
+        backend, gguf, _tensor_crashes(["boom"], rc = 1), gpu_memory_mode = "auto", n_ctx = 4096
+    )
+    assert result is False
+    assert [_split_flag(c) for c in spawns] == ["tensor"]
+    assert not backend.is_loaded
+
+
+def test_wired_auto_pair_avoids_a_manual_residents_gpu(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    # A Manual (-ngl N) resident publishes no plan; its child still runs on GPU 1.
+    resident = types.SimpleNamespace(
+        is_active = True, _planned_vram_mib = {}, _child_gpu_physical_ids = (1,)
+    )
+    monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [resident])
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+
+
+@pytest.mark.parametrize("flag", ["--flash-attn", "-fa"])
+def test_wired_flash_attention_off_keeps_layer_up_front(tmp_path, monkeypatch, flag):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096, extra_args = [flag, "off"])[
+        "cmd"
+    ]
+    assert _split_flag(cmd) != "tensor"
+    reason = backend._auto_split_decision.reason
+    assert "flash attention" in reason and "abandoned" not in reason
