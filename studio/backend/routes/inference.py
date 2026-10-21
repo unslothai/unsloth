@@ -40535,8 +40535,7 @@ async def _truncated_llama_embedding_inputs(
 
     out, cut = [], False
     for index, item in enumerate(items):
-        # An ASCII token is at least one byte, so a short ASCII string fits without a /tokenize
-        # round trip; normalization can expand non-ASCII text past its byte length.
+        # Short ASCII skips /tokenize (>= 1 byte per token); normalization can expand non-ASCII.
         if isinstance(item, str) and (not item.isascii() or len(item) + 8 > limit):
             if index not in cache:
                 cache[index] = [await tokenize(item, True), None]
@@ -40723,7 +40722,6 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 headers = upstream_headers,
                 timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             )
-            # Retry cut to the reported limit: ubatch, then n_ctx.
             original, cache, limit = body.get("input"), {}, None
             for _ in range(2):
                 reported = _llama_embedding_overflow_limit(resp) if truncate else None
