@@ -21,8 +21,10 @@ from test_llama_cpp_mtp_detection import (  # noqa: F401 (stubs are installed on
     _make_fake_llama_server,
 )
 
+import core.inference.llama_cpp as _llama_cpp_mod
 from core.inference.llama_cpp import (
     _extra_args_select_stateful_sampler,
+    _llama_config_paths,
     _spec_draft_sampling_flags,
 )
 
@@ -46,9 +48,15 @@ _HELP_WITHOUT = """\
 
 
 @pytest.fixture(autouse = True)
-def _no_inherited_choice(monkeypatch):
+def _no_inherited_choice(monkeypatch, tmp_path):
     monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_SAMPLING", raising = False)
     monkeypatch.delenv("UNSLOTH_SPEC_DRAFT_SAMPLING", raising = False)
+    # No real /etc or ~/.config llama.cpp config.ini leaks into the tests.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        _llama_cpp_mod, "_LLAMA_SYSTEM_CONFIG_PATH", str(tmp_path / "etc" / "config.ini")
+    )
 
 
 def _backend(monkeypatch, *, sampling = True):
@@ -315,3 +323,154 @@ def test_overridden_stateful_extras_keep_probabilistic(monkeypatch):
         ],
     )
     assert _flags_dict(flags).get("--spec-draft-sampling") == "probabilistic"
+
+
+# llama.cpp (common/arg.cpp common_params_apply_system_config) applies /etc/llama.cpp/config.ini,
+# then ${XDG_CONFIG_HOME:-~/.config}/llama.cpp/config.ini, before the env and the CLI.
+def _write_config(
+    tmp_path,
+    text,
+    where = "user",
+):
+    if where == "user":
+        path = tmp_path / "xdg" / "llama.cpp" / "config.ini"
+    elif where == "home":
+        path = tmp_path / "home" / ".config" / "llama.cpp" / "config.ini"
+    else:
+        path = tmp_path / "etc" / "config.ini"
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(text)
+    return path
+
+
+def _emits(monkeypatch, extra_args = None):
+    flags = _flags(_backend(monkeypatch), "mtp", extra_args = extra_args)
+    assert "--spec-type" in flags
+    return _flags_dict(flags).get("--spec-draft-sampling") == "probabilistic"
+
+
+def test_config_mirostat_and_greedy_choice_win(monkeypatch, tmp_path):
+    _write_config(tmp_path, "[*]\nmirostat = 2\nspec-draft-sampling = greedy\n")
+    assert not _emits(monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[*]\nspec-draft-sampling = probabilistic\n",
+        "[*]\nspec-draft-sampling = greedy\n",
+        "spec-draft-sampling = greedy\n",
+        "[default]\nLLAMA_ARG_SPEC_DRAFT_SAMPLING = greedy\n",
+    ],
+)
+def test_config_draft_sampling_choice_wins(monkeypatch, tmp_path, text):
+    _write_config(tmp_path, text)
+    assert not _emits(monkeypatch)
+    # Even extras that would otherwise allow it: the config already chose.
+    assert not _emits(monkeypatch, ["--mirostat", "0"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[*]\nmirostat = 2\n",
+        "mirostat=1 ; comment\n",
+        "[default]\nsamplers = adaptive_p\n",
+        "[*]\nsampler-seq = ka\n",
+        "[*]\nsampling-seq = kpa\n",
+        "[*]\nmirostat = 2x\n",
+        "[*]\nmirostat = 0\n[default]\nmirostat = 2\n",
+    ],
+)
+def test_config_stateful_sampler_keeps_greedy(monkeypatch, tmp_path, text):
+    _write_config(tmp_path, text)
+    assert not _emits(monkeypatch)
+
+
+def test_cli_extras_override_config_samplers(monkeypatch, tmp_path):
+    _write_config(tmp_path, "[*]\nmirostat = 2\nsamplers = adaptive_p\n")
+    assert not _emits(monkeypatch, ["--mirostat", "0"])
+    assert _emits(monkeypatch, ["--mirostat", "0", "--samplers", "top_k;top_p"])
+    _write_config(tmp_path, "[*]\nsampler-seq = ka\n")
+    assert _emits(monkeypatch, ["--sampler-seq", "kpt"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[*]\nmirostat = 0\nctx-size = 8192\n",
+        "[*]\nmirostat = 2\n[default]\nmirostat = 0\n",
+        "[*]\nmirostat = 0 ; was 2\n",
+        "[*]\nmirostat = 2\n[*]\nctx-size = 4096\n",
+        "[unsloth/Qwen3.6-27B-MTP-GGUF:Q4_K_M]\nmirostat = 2\nspec-draft-sampling = greedy\n",
+        "[*]\nsamplers = top_k;top_p;temperature\n",
+        # ';' starts an INI comment, so llama.cpp reads only "top_k" here.
+        "[*]\nsamplers = top_k;adaptive_p\n",
+        "[*]\nSPEC-DRAFT-SAMPLING = greedy\nMirostat = 2\n",
+    ],
+)
+def test_stateless_config_keeps_probabilistic(monkeypatch, tmp_path, text):
+    _write_config(tmp_path, text)
+    assert _emits(monkeypatch)
+
+
+def test_user_config_overrides_system_config(monkeypatch, tmp_path):
+    _write_config(tmp_path, "[*]\nmirostat = 2\n", where = "etc")
+    assert not _emits(monkeypatch)
+    _write_config(tmp_path, "[*]\nmirostat = 0\n")
+    assert _emits(monkeypatch)
+    _write_config(tmp_path, "[*]\nspec-draft-sampling = greedy\n", where = "etc")
+    assert not _emits(monkeypatch)
+
+
+def test_home_config_used_without_xdg(monkeypatch, tmp_path):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    _write_config(tmp_path, "[*]\nmirostat = 2\n", where = "home")
+    assert not _emits(monkeypatch)
+    # A set XDG_CONFIG_HOME replaces ~/.config.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert _emits(monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[*]\n  mirostat = 2\n",
+        "[*]\nmirostat = 2\n???\n",
+        "[ ]\nmirostat = 2\n",
+    ],
+)
+def test_unparsable_config_is_ignored(monkeypatch, tmp_path, text):
+    # llama-server refuses to start on these, so they decide nothing here.
+    _write_config(tmp_path, text)
+    assert _emits(monkeypatch)
+
+
+def test_unreadable_config_never_breaks_the_load(monkeypatch, tmp_path):
+    (tmp_path / "xdg" / "llama.cpp" / "config.ini").mkdir(parents = True)
+    assert _emits(monkeypatch)
+    _write_config(tmp_path, "[*]\nmirostat = 2\n", where = "etc")
+
+    def _boom(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("builtins.open", _boom)
+    assert _spec_draft_sampling_flags({"supports_spec_draft_sampling": True}, None) == _PROB
+
+
+def test_config_paths_per_platform(tmp_path):
+    assert _llama_config_paths({"PROGRAMDATA": "P", "APPDATA": "A"}, "win32") == [
+        str(Path("P") / "llama.cpp" / "config.ini"),
+        str(Path("A") / "llama.cpp" / "config.ini"),
+    ]
+    assert _llama_config_paths({}, "win32") == []
+    etc = _llama_cpp_mod._LLAMA_SYSTEM_CONFIG_PATH
+    for plat in ("linux", "darwin"):
+        assert _llama_config_paths({"XDG_CONFIG_HOME": "/x", "HOME": "/h"}, plat) == [
+            etc,
+            "/x/llama.cpp/config.ini",
+        ]
+        assert _llama_config_paths({"XDG_CONFIG_HOME": "", "HOME": "/h"}, plat) == [
+            etc,
+            "/h/.config/llama.cpp/config.ini",
+        ]

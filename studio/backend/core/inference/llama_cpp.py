@@ -4776,21 +4776,37 @@ _ADAPTIVE_P_SAMPLER_NAMES = frozenset({"adaptive_p", "adaptive-p", "adaptivep"})
 _STOI_PREFIX = re.compile(r"[ \t\n\v\f\r]*[+-]?[0-9]+")
 
 
-def _extra_args_select_stateful_sampler(extra_args: Optional[Iterable[str]]) -> bool:
+def _apply_sampler_setting(state: list, key: str, value: str) -> bool:
+    """Fold one --mirostat / --samplers / --sampler-seq value into ``state`` = [mirostat_on,
+    adaptive_p_on] like llama.cpp: each occurrence overwrites, --mirostat goes through std::stoi,
+    --samplers names are lowercased per ';' part, sequence chars are case-sensitive ('a' =
+    adaptive-p). Returns False for a value llama-server rejects (callers count that as stateful)."""
+    if key == "mirostat":
+        match = _STOI_PREFIX.match(value)
+        if not match or not -(2**31) <= int(match.group(0)) < 2**31:
+            return False
+        state[0] = int(match.group(0)) != 0
+    elif key == "samplers":
+        state[1] = any(name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in value.split(";"))
+    else:
+        state[1] = "a" in value
+    return True
+
+
+def _extra_args_select_stateful_sampler(
+    extra_args: Optional[Iterable[str]], base: tuple[bool, bool] = (False, False)
+) -> bool:
     """Whether the extras leave Mirostat or adaptive-p in effect (neither has an env var).
 
     Rejection verification runs the target's sampler chain, then may emit the draft or a residual
     draw instead of that chain's pick. Mirostat updates mu inside apply on its own pick and
     adaptive-p updates its EMA only when the emitted token is its pick, so either would drift.
-    Mirrors llama.cpp's parser: each occurrence overwrites, so the last --mirostat wins and the
-    last of --samplers / --sampler-seq / --sampling-seq sets the chain; --mirostat goes through
-    std::stoi, --samplers names are lowercased per ';' part, sequence chars are case-sensitive
-    ('a' = adaptive-p). A malformed or missing value counts as stateful (llama-server rejects it)."""
-    if not extra_args:
-        return False
-    args = [str(a) for a in extra_args]
-    mirostat_on = False
-    adaptive_p_on = False
+    ``base`` = (mirostat_on, adaptive_p_on) from llama.cpp's config.ini, which the CLI overrides.
+    Mirrors llama.cpp's parser: the last --mirostat wins and the last of --samplers /
+    --sampler-seq / --sampling-seq sets the chain. A malformed or missing value counts as
+    stateful (llama-server rejects it)."""
+    state = list(base)
+    args = [str(a) for a in (extra_args or ())]
     i = 0
     while i < len(args):
         raw = args[i]
@@ -4806,18 +4822,118 @@ def _extra_args_select_stateful_sampler(extra_args: Optional[Iterable[str]]) -> 
             i += 1
         else:
             return True
-        if flag == "--mirostat":
-            match = _STOI_PREFIX.match(value)
-            if not match or not -(2**31) <= int(match.group(0)) < 2**31:
-                return True
-            mirostat_on = int(match.group(0)) != 0
-        elif flag == "--samplers":
-            adaptive_p_on = any(
-                name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in value.split(";")
-            )
-        else:
-            adaptive_p_on = "a" in value
-    return mirostat_on or adaptive_p_on
+        if not _apply_sampler_setting(state, flag[2:], value):
+            return True
+    return state[0] or state[1]
+
+
+# llama.cpp (common/arg.cpp common_params_apply_system_config) applies these before the env and
+# the CLI, a later file over an earlier one: /etc/llama.cpp/config.ini (%PROGRAMDATA% on
+# Windows), then fs_get_config_directory()/config.ini.
+_LLAMA_SYSTEM_CONFIG_PATH = "/etc/llama.cpp/config.ini"
+_INI_HEADER = re.compile(r"\[[ \t]*([^\] \t][^\]]*)\][ \t]*(?:[;#].*)?")
+_INI_KV = re.compile(r"([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*=[ \t]*(.*?)[ \t]*(?:[;#].*)?")
+_INI_SKIP = re.compile(r"[ \t]*(?:[;#].*)?")
+_CONFIG_SAMPLER_KEYS = ("mirostat", "samplers", "sampler-seq", "sampling-seq")
+_CONFIG_SPEC_DRAFT_SAMPLING_KEYS = ("spec-draft-sampling", "LLAMA_ARG_SPEC_DRAFT_SAMPLING")
+
+
+def _llama_config_paths(
+    env: Optional[Mapping[str, str]] = None, platform: Optional[str] = None
+) -> list[str]:
+    """The config.ini files llama-server reads, in apply order (common/common.cpp
+    fs_get_config_directory): Windows %PROGRAMDATA% then %APPDATA%; elsewhere (macOS too)
+    /etc then ${XDG_CONFIG_HOME:-$HOME/.config}, $HOME falling back to the passwd entry.
+    An unset or empty variable skips that file, as in llama.cpp."""
+    e = os.environ if env is None else env
+    plat = sys.platform if platform is None else platform
+    paths = []
+    if plat == "win32":
+        for var in ("PROGRAMDATA", "APPDATA"):
+            if e.get(var):
+                paths.append(os.path.join(e[var], "llama.cpp", "config.ini"))
+        return paths
+    paths.append(_LLAMA_SYSTEM_CONFIG_PATH)
+    config_dir = e.get("XDG_CONFIG_HOME") or ""
+    if not config_dir:
+        home = e.get("HOME") or ""
+        if not home:
+            try:
+                import pwd
+                home = pwd.getpwuid(os.getuid()).pw_dir or ""
+            except Exception:
+                home = ""
+        if not home:
+            return paths
+        config_dir = os.path.join(home, ".config")
+    paths.append(os.path.join(config_dir, "llama.cpp", "config.ini"))
+    return paths
+
+
+def _parse_llama_config_ini(text: str) -> Optional[dict[str, dict[str, str]]]:
+    """Sections of a llama.cpp config.ini (common/preset.cpp parse_ini_from_file), or None when
+    llama.cpp would reject the file. Keys before any header land in "default"; a repeated header
+    restarts its section and a repeated key keeps the last value; a value ends at whitespace
+    followed by ';', '#' or the line end."""
+    sections: dict[str, dict[str, str]] = {}
+    current = "default"
+    for line in re.split(r"\r\n|\n|\r", text):
+        m = _INI_KV.fullmatch(line)
+        if m:
+            sections.setdefault(current, {})[m.group(1)] = m.group(2)
+            continue
+        m = _INI_HEADER.fullmatch(line)
+        if m:
+            current = m.group(1)
+            sections[current] = {}
+            continue
+        if not _INI_SKIP.fullmatch(line):
+            return None
+    return sections
+
+
+def _llama_config_spec_settings(
+    env: Optional[Mapping[str, str]] = None, platform: Optional[str] = None
+) -> tuple[bool, tuple[bool, bool]]:
+    """(sets spec-draft-sampling, (mirostat_on, adaptive_p_on)) after llama-server's config files.
+
+    Each file applies its [*] section, then its default one (keys before any header or under
+    [default]); model-named sections are presets for router mode and do not apply here. A
+    missing, unreadable or unparsable file counts as absent (llama-server refuses to start on
+    an unparsable one anyway); a sampler value llama-server would reject counts as stateful."""
+    sets_draft_sampling = False
+    state = [False, False]
+    for path in _llama_config_paths(env, platform):
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, "rb") as fh:
+                text = fh.read(1 << 20).decode("utf-8", errors = "replace")
+        except (OSError, ValueError):
+            continue
+        sections = _parse_llama_config_ini(text)
+        if sections is None:
+            continue
+        for name in ("*", "default"):
+            section = sections.get(name) or {}
+            if any(k in section for k in _CONFIG_SPEC_DRAFT_SAMPLING_KEYS):
+                sets_draft_sampling = True
+            if "mirostat" in section:
+                if not _apply_sampler_setting(state, "mirostat", section["mirostat"]):
+                    state[0] = True
+            # The chain keys write the same field; when one section holds several, any
+            # adaptive-p among them keeps the greedy draft.
+            chain = [k for k in _CONFIG_SAMPLER_KEYS[1:] if k in section]
+            if chain:
+                adaptive = False
+                for key in chain:
+                    probe = [False, False]
+                    _apply_sampler_setting(
+                        probe, "samplers" if key == "samplers" else "seq", section[key]
+                    )
+                    adaptive = adaptive or probe[1]
+                state[1] = adaptive
+    return sets_draft_sampling, (state[0], state[1])
 
 
 def _spec_draft_sampling_flags(
@@ -4830,15 +4946,24 @@ def _spec_draft_sampling_flags(
     rejected. Probabilistic drafting samples the draft and verifies it by rejection sampling
     (accept with min(1, p/q), else resample from max(0, p - q)): the output distribution is
     the target's either way, and at temperature 0 llama-server keeps the greedy match.
-    Not emitted when the build lacks the flag, when the user's extras or the inherited
-    LLAMA_ARG_SPEC_DRAFT_SAMPLING already choose, or with UNSLOTH_SPEC_DRAFT_SAMPLING=greedy."""
+    Not emitted when the build lacks the flag, when the user's extras, the inherited
+    LLAMA_ARG_SPEC_DRAFT_SAMPLING or llama.cpp's config.ini already choose, when Mirostat or
+    adaptive-p stays in effect after config.ini and the extras, or with
+    UNSLOTH_SPEC_DRAFT_SAMPLING=greedy."""
     if not caps or not caps.get("supports_spec_draft_sampling"):
         return []
     if _extra_args_set_any_flag(extra_args, {"--spec-draft-sampling"}):
         return []
-    if _extra_args_select_stateful_sampler(extra_args):
-        return []
     if os.environ.get("LLAMA_ARG_SPEC_DRAFT_SAMPLING"):
+        return []
+    try:
+        config_sets_choice, config_samplers = _llama_config_spec_settings()
+    except Exception as e:
+        logger.debug(f"llama.cpp config.ini scan failed, ignoring it: {e}")
+        config_sets_choice, config_samplers = False, (False, False)
+    if config_sets_choice:
+        return []
+    if _extra_args_select_stateful_sampler(extra_args, config_samplers):
         return []
     mode = (os.environ.get(_SPEC_DRAFT_SAMPLING_ENV) or "probabilistic").strip().lower()
     if mode not in ("probabilistic", "greedy"):
