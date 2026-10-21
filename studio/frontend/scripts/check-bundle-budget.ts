@@ -325,11 +325,13 @@ export const BUDGET = {
   // Main at dcf5c4009 measures 6,870,312 B raw / 2,068,954 B transfer, already over the line above. Browser panel
   // page downloads add 1,468 B raw / 354 B transfer on top (6,871,780 B raw, 2,069,308 B transfer, one machine and
   // build, Node 24, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Browser store sync across windows (#14277) adds 545 B raw / 288 B transfer on top (6,872,325 B raw, 2,069,596 B
+  // transfer merged with main at 4962983b0, Node 24, 97 chunks). Raised to that plus the same margin.
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  transferBytes: 2_069_861,
-  rawBytes: 6_872_929,
+  transferBytes: 2_070_149,
+  rawBytes: 6_873_474,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
