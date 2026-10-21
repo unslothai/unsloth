@@ -256,11 +256,13 @@ test("the gallery seed fallback waits until the archive is known to be empty", (
   // An archive change made elsewhere (Settings) re-runs the check even when the strip is unchanged.
   assert.match(
     page,
-    /subscribeGalleryChanged\("images", \(\) => setArchiveChangeKey\(\(k\) => k \+ 1\)\)/,
+    /subscribeArchiveChanged\("images", \(\) => setArchiveChangeKey\(\(k\) => k \+ 1\)\)/,
   );
   const dialog = readSrc("features/settings/components/archived-media-dialog.tsx");
   assert.match(dialog, /if \(!succeeded\) break;\n\s+changed = true;/);
-  assert.match(dialog, /if \(changed\) notifyGalleryChanged\(kind\);/);
+  assert.match(dialog, /if \(changed\) notifyArchiveChanged\(kind\);/);
+  // The gallery event (which refetches the active strip) still fires only for a restore.
+  assert.match(dialog, /if \(restored\) notifyGalleryChanged\(kind\);/);
   // Unknown or non-empty archive: no gallery seed, so an archived newest image is never skipped.
   assert.equal(reusableSeed(null, [{ seed: 7, created_at: 1 }], true), null);
 });

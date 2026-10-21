@@ -139,6 +139,7 @@ import {
   restorePinOrder,
   serializeById,
   sortGalleryItems,
+  subscribeArchiveChanged,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
 import {
@@ -1873,7 +1874,7 @@ export function ImagesPage({
   // Bumped when the archive changes elsewhere (Settings restore or delete), which the strip may not show.
   const [archiveChangeKey, setArchiveChangeKey] = useState(0);
   useEffect(
-    () => subscribeGalleryChanged("images", () => setArchiveChangeKey((k) => k + 1)),
+    () => subscribeArchiveChanged("images", () => setArchiveChangeKey((k) => k + 1)),
     [],
   );
   useEffect(() => {

@@ -49,7 +49,7 @@ import {
 } from "@/features/video/api";
 import { videoThumbnailQueue } from "@/features/video/thumbnail-request-queue";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
-import { notifyGalleryChanged } from "@/lib/gallery-flags";
+import { notifyArchiveChanged, notifyGalleryChanged } from "@/lib/gallery-flags";
 import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
@@ -521,6 +521,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     if (running.current) return;
     running.current = true;
     setBusy(true);
+    let restored = false;
     let changed = false;
     try {
       for (const row of targets) {
@@ -530,11 +531,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             : await handleRestore(row);
         if (!succeeded) break;
         changed = true;
+        if (action === "restore") restored = true;
       }
     } finally {
-      // Refresh the persistent gallery once, including after a partially successful batch. A delete
-      // counts too: the page also tracks whether the archive is empty.
-      if (changed) notifyGalleryChanged(kind);
+      // refresh the persistent gallery once, including after a partially successful batch.
+      if (restored) notifyGalleryChanged(kind);
+      // A delete leaves the strip as it was, but the Images page tracks whether the archive is empty.
+      if (changed) notifyArchiveChanged(kind);
       running.current = false;
       setBusy(false);
       setConfirming(null);
