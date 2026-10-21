@@ -356,7 +356,7 @@ def _is_block_list(container, no_split):
     return True
 
 
-def find_shard_units(model) -> list:
+def find_shard_units(model, ignored_params = ()) -> list:
     """Repeated decoder / vision / audio blocks in module order: every child of the outermost
     nn.ModuleLists of blocks (model.layers, language_model.layers, vision_tower.*.layers, ...); never a
     unit inside a unit (MoE experts, fused-LoRA Linears stay in their block's unit). Only when no such list
@@ -390,8 +390,60 @@ def find_shard_units(model) -> list:
     # Module (pre-)order = forward order for the usual layouts; the fallback units are re-sorted in.
     order = {id(m): i for i, m in enumerate(model.modules())}
     units.sort(key = lambda m: order.get(id(m), 0))
-    check_shard_units(model, units)
+    units, dropped = _drop_units_sharing_params(model, units, ignored_params)
+    if dropped:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(dropped)} blocks ({', '.join(sorted(set(dropped)))}) in the "
+            "root unit: they share parameters with other blocks or modules (Zamba2's shared transformer), "
+            "which one FSDP2 unit each would silently untie."
+        )
+    check_shard_units(model, units, ignored_params)
     return units
+
+
+def _units_sharing_params(
+    model,
+    units,
+    ignored = (),
+):
+    """Indices of units sharing a parameter with another unit or an outside module: fully_shard(unit)
+    would untie it. Counted per unit, so one module instance reused by two units is caught too."""
+    skip = {id(p) for p in ignored}
+    holders = {}
+    for i, unit in enumerate(units):
+        for p in unit.parameters():
+            holders.setdefault(id(p), set()).add(i)
+    unit_ids = {id(u) for u in units}
+    outside = set()
+    stack = [model]
+    while stack:
+        module = stack.pop()
+        if id(module) in unit_ids:
+            continue
+        outside.update(id(p) for p in module.parameters(recurse = False))
+        stack.extend(module.children())
+    bad = []
+    for i, unit in enumerate(units):
+        for p in unit.parameters():
+            if id(p) not in skip and (id(p) in outside or len(holders[id(p)]) > 1):
+                bad.append(i)
+                break
+    return bad
+
+
+def _drop_units_sharing_params(
+    model,
+    units,
+    ignored_params = (),
+):
+    """Drop sharing units into the root, repeated: the root may then share with another unit."""
+    dropped = []
+    while True:
+        bad = set(_units_sharing_params(model, units, ignored_params))
+        if not bad:
+            return units, dropped
+        dropped += [type(units[i]).__name__ for i in bad]
+        units = [u for i, u in enumerate(units) if i not in bad]
 
 
 def _block_compiled(module):
@@ -399,7 +451,11 @@ def _block_compiled(module):
     return bool(getattr(getattr(type(module), "forward", None), "_unsloth_block_compiled", False))
 
 
-def check_shard_units(model, units):
+def check_shard_units(
+    model,
+    units,
+    ignored_params = (),
+):
     """The one hard torch.compile rule: no FSDP unit inside a (compiled) decoder block or inside another
     unit. Unsloth compiles each decoder block's forward (fullgraph=False); FSDP2's hooks are dynamo
     disabled, so a unit nested inside the block (an expert, a router, a LoRA / norm submodule) is a silent
@@ -434,7 +490,28 @@ def check_shard_units(model, units):
                     "routers and LoRA inside their block's unit."
                 )
             ancestor = parents.get(id(ancestor))
+    if ignored_params is not None:
+        _refuse_units_sharing_params(model, units, ignored_params, names)
     return True
+
+
+def _refuse_units_sharing_params(
+    model,
+    units,
+    ignored_params,
+    names = None,
+):
+    shared = _units_sharing_params(model, units, ignored_params)
+    if not shared:
+        return
+    unit = units[shared[0]]
+    if names is None:
+        names = {id(m): n for n, m in model.named_modules(remove_duplicate = False)}
+    raise RuntimeError(
+        f"Unsloth: native FSDP2 shard unit `{names.get(id(unit), type(unit).__name__)}` holds parameters "
+        "that another unit or module also holds (tied / shared weights). One FSDP2 unit per holder would "
+        "silently untie them: keep every holder of a shared parameter in one unit (or the root)."
+    )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1048,9 +1125,15 @@ def _large_root_embeddings(model, units, fraction):
     for module in model.modules():
         for p in module.parameters(recurse = False):
             owners.setdefault(id(p), set()).add(id(module))
+    # Tables inside a decoder block (one kept in the root for sharing weights) would nest in it.
+    in_block = set()
+    for module in model.modules():
+        if isinstance(module, nn.ModuleList) and _is_block_list(module, ()):
+            for child in module.children():
+                in_block.update(id(m) for m in child.modules())
     extra = []
     for _, module in model.named_modules():
-        if not isinstance(module, nn.Embedding):
+        if not isinstance(module, nn.Embedding) or id(module) in in_block:
             continue
         params = list(module.parameters())
         if not params or any(id(p) in inside or id(p) in skip for p in params):
@@ -1216,13 +1299,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "wrap it again."
         )
     config = config or FSDP2Config.from_env()
-    units = list(config.units) if config.units is not None else find_shard_units(model)
-    extra_units = (
-        _large_root_embeddings(model, units, config.split_large_root_embeddings)
-        if config.units is None
-        else []
-    )
-    check_shard_units(model, units + extra_units)
+    if config.units is not None:
+        # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
+        check_shard_units(model, list(config.units), ignored_params = None)
     _refuse_tensor_parallel_model(model)
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
@@ -1275,6 +1354,20 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     # the agreed value, or a rank that fit alone keeps its blocks gathered while the others reshard, and
     # their backward collectives no longer match.
     resolve_reshard_after_forward(layout, config.reshard_after_forward, note = False)
+    # Units after the layout: frozen weights it replicates may be shared by blocks that keep their own unit.
+    ignored_params = set(config.ignored_params or ())
+    if layout.replicate_frozen and _supports_ignored_params(fully_shard):
+        ignored_params.update(p for p in model.parameters() if not p.requires_grad)
+    units = (
+        list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
+    )
+    extra_units = (
+        _large_root_embeddings(model, units, config.split_large_root_embeddings)
+        if config.units is None
+        else []
+    )
+    if extra_units:
+        check_shard_units(model, units + extra_units, ignored_params = None)
     gather_dtype = param_dtype
     if (
         config.param_dtype is None
@@ -1321,6 +1414,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         replicated = set(ignored)
         if layout.replicate_frozen:
             replicated.update(p for p in model.parameters() if not p.requires_grad)
+        _refuse_units_sharing_params(model, units + list(extra_units), replicated)
         if replicated:
             if not _supports_ignored_params(fully_shard):
                 raise RuntimeError(

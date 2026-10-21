@@ -942,6 +942,12 @@ def _find_free_port(
 
 
 from utils.paths.storage_roots import studio_root as _studio_root
+from utils.pid_records import (
+    RecordedStart,
+    linux_process_identity,
+    recorded_start,
+    pid_start_matches,
+)
 
 # Legacy single-instance file; still read so `stop` finds an older build's server.
 _PID_FILE = _studio_root() / "studio.pid"
@@ -969,6 +975,7 @@ def _pid_alive(pid: int) -> bool:
         # os.kill(pid, 0) raises OSError for every pid on Windows, so tasklist is
         # the only usable probe here.
         import subprocess
+
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
@@ -977,13 +984,13 @@ def _pid_alive(pid: int) -> bool:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
-            ).stdout
+            )
         except Exception:
-            # Unconfirmed means keep, matching the CLI's _pid_alive. Pruning a live server's record is what lets the
-            # next launch fall back past it and strand it; a stale record instead costs one clear "already running"
-            # message.
+            # An uncertain probe must not erase a live backend's record.
             return True
-        return f'"{int(pid)}"' in out
+        if out.returncode != 0:
+            return True
+        return f'"{int(pid)}"' in out.stdout
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1001,7 +1008,7 @@ def _process_create_time(pid: int) -> "float | None":
         return None
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
+def _read_pid_record(path: Path) -> "tuple[int, RecordedStart, str | None] | None":
     try:
         lines = path.read_text(encoding = "utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
@@ -1016,28 +1023,13 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None
     # kill(0) signals our whole process group; kill(1) is init. Never either.
     if pid < 2:
         return None
-    created = None
-    if len(lines) > 1:
-        try:
-            created = float(lines[1].strip())
-        except ValueError:
-            created = None
+    created = recorded_start(lines)
     address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
     return pid, created, address
 
 
-def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """False only when a recorded start time proves this PID is a different process. Any recorded time matching
-    is enough: a stale record must not veto a live server that reused the PID. Untimed records cannot be
-    checked at all, so they are trusted, since a legacy `python run.py` has no telltale argv and guessing
-    from the command line rejected real servers."""
-    known = [c for c in created_times if c is not None]
-    if not known:
-        return True
-    actual = _process_create_time(pid)
-    if actual is None:
-        return True
-    return any(abs(actual - c) < 1.0 for c in known)
+def _pid_is_studio_backend(pid: int, created_times: "Sequence[RecordedStart]" = ()) -> bool:
+    return pid_start_matches(pid, created_times, _process_create_time)
 
 
 def _own_studio_on_port(port: int, host: str) -> "int | None":
@@ -1090,6 +1082,40 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     return pid
 
 
+def _pid_record_version(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    # Reading the record can change atime without replacing or rewriting it.
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _prune_dead_pid_records() -> None:
+    """Requires the cache lock. Epoch drift is not proof of death; per-port records
+    can be replaced without this lock, so recheck the file and PID before unlinking.
+    """
+    me = os.getpid()
+    for pattern in (STARTUP_MARKER_GLOB, PID_FILE_GLOB):
+        try:
+            paths = list(_studio_root().glob(pattern))
+        except OSError:
+            continue
+        for path in paths:
+            if path in _OWN_STARTUP_MARKERS or path == _OWN_PID_FILE:
+                continue
+            try:
+                before = _pid_record_version(path)
+                record = _read_pid_record(path)
+                if record is None or record[0] == me or _pid_alive(record[0]):
+                    continue
+                if path.stem.rsplit("-", 1)[-1] != str(record[0]):
+                    continue
+                if _read_pid_record(path) != record or _pid_record_version(path) != before:
+                    continue
+                if not _pid_alive(record[0]):
+                    path.unlink(missing_ok = True)
+            except OSError:
+                continue
+
+
 def write_startup_marker() -> None:
     """Record that this process is coming up, before uvicorn starts. The per-port record cannot be written
     until uvicorn reports the bound port, and lifespan startup runs well before that. Two overlapping
@@ -1098,20 +1124,20 @@ def write_startup_marker() -> None:
     clear takes, so the marker cannot appear in the gap between a sibling's probe and its rmtree."""
     me = os.getpid()
     created = _process_create_time(me)
-    body = f"{me}\n{created if created is not None else ''}\n"
+    identity = linux_process_identity(me)
+    body = f"{me}\n{created if created is not None else ''}\n\n{identity or ''}\n"
     try:
-        from utils.cache_cleanup import compiled_cache_lock, LOCK_BUSY
+        from utils.cache_cleanup import compiled_cache_lock, LOCK_BUSY, LOCK_HELD
     except Exception:
         import contextlib
-
-        # No lock available means an unserialized publish, which is what this
-        # did before the lock existed. Startup still has to happen.
-        compiled_cache_lock = contextlib.nullcontext
-        LOCK_BUSY = None
+        compiled_cache_lock = lambda **kwargs: contextlib.nullcontext()
+        LOCK_BUSY, LOCK_HELD = "busy", "held"
     # A longer budget than a clear takes: publishing behind a holder that is mid-rmtree is the case worth
     # waiting out. Publishing anyway if the wait runs out is still right, because a marker that never appears
     # makes this backend invisible.
     with compiled_cache_lock(timeout = 30.0) as lock_state:
+        if lock_state == LOCK_HELD:
+            _prune_dead_pid_records()
         published_unlocked = lock_state == LOCK_BUSY
         if published_unlocked:
             logger.warning(
@@ -1206,7 +1232,7 @@ def _record_written_at(path: Path) -> float:
         return 0.0
 
 
-def _timed_records() -> "list[tuple[tuple[int, float | None, str | None], float]]":
+def _timed_records() -> "list[tuple[tuple[int, RecordedStart, str | None], float]]":
     """Every startup marker and per-port record, each with its write time."""
     paths: "list[Path]" = []
     for pattern in (STARTUP_MARKER_GLOB, PID_FILE_GLOB):
@@ -1222,7 +1248,7 @@ def _timed_records() -> "list[tuple[tuple[int, float | None, str | None], float]
     return found
 
 
-def _legacy_record() -> "tuple[tuple[int, float | None, str | None], float] | None":
+def _legacy_record() -> "tuple[tuple[int, RecordedStart, str | None], float] | None":
     try:
         if not _PID_FILE.is_file():
             return None
@@ -1283,7 +1309,7 @@ def live_sibling_backend() -> "int | None":
     return _live_sibling(timed + [_legacy_record()], me, timed)
 
 
-def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
+def _per_port_records() -> "list[tuple[int, RecordedStart, str | None] | None]":
     try:
         return [_read_pid_record(p) for p in _studio_root().glob(PID_FILE_GLOB)]
     except OSError:
@@ -1369,7 +1395,8 @@ def _write_pid_file(port: int, host: str = ""):
         # later launch whether this server would actually block it.
         created = _process_create_time(os.getpid())
         address = ",".join(sorted(_bind_addresses(host, port))) if host else ""
-        body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}"
+        identity = linux_process_identity(os.getpid())
+        body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}\n{identity or ''}\n"
         # Write-then-rename: `stop` reads these concurrently, and a reader that
         # catches the truncate window sees a corrupt record and deletes it.
         tmp = path.with_name(path.name + ".tmp")

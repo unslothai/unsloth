@@ -121,8 +121,9 @@ test("the document search header stays one line, with the summary first and the 
   assert.match(fallback, /const wrapWhenOpen = !singleLine;/);
 });
 
-// A search lists each document once in its expanded card, with the pages it cited, not every
-// passage; documents open in Studio's browser; no separate Document Sources strip or PDF sheet.
+// A search lists each document once in its expanded card, with the pages it cited; its passages
+// wait behind "Show passages" (#13788); documents open in Studio's browser; no separate Document
+// Sources strip or PDF sheet.
 test("a document search lists each document once in the card, with its cited pages", () => {
   const read = (path: string) =>
     readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
@@ -131,7 +132,12 @@ test("a document search lists each document once in the card, with its cited pag
     kb,
     /shown\.map\(\(citation, i\) => \(\s*<CitationBadge[\s\S]*?pages=\{pagesByDocument\.get\(/,
   );
-  assert.ok(!kb.includes("{citation.text}"), "passage snippets are not shown");
+  assert.ok(!kb.includes("{citation.text}"), "the chips carry no passage text");
+  assert.match(
+    kb,
+    /\{showPassages \? \(\s*<KnowledgeBasePassages/,
+    "passages render only once asked for",
+  );
   // A model-chosen top_k has no ceiling: the rest wait behind "Show N more".
   assert.match(kb, /documents\.slice\(0, DOCUMENTS_SHOWN\)/);
   assert.match(kb, /Show \{documents\.length - shown\.length\} more/);

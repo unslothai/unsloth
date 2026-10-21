@@ -65,6 +65,63 @@ _FLUX3_SOURCES: tuple[str, ...] = (
     "L['image_rotary_emb'][1]",
 )
 
+# FLUX.1: Studio pads T5 to 256 tokens, or 512 for a longer prompt (diffusion_text_length.flux_t5_sequence_length),
+# so the first prompt past 256 tokens was a new shape. Double blocks see the text stream beside the image tokens,
+# single blocks take both, and the rotary tables span text + image.
+_FLUX1_SOURCES: tuple[str, ...] = (
+    "L['hidden_states']",
+    "L['encoder_hidden_states']",
+    "L['image_rotary_emb'][0]",
+    "L['image_rotary_emb'][1]",
+    r".*\['hidden_states'\]$",
+    r".*\['encoder_hidden_states'\]$",
+    r".*\['image_rotary_emb'\]\[[01]\]$",
+)
+
+# Z-Image: the pipeline drops the padded caption tokens (pipeline_z_image.py, ``prompt_embeds[i][prompt_masks[i]]``)
+# and the transformer pads the caption to a multiple of 32, so every new 32-token bucket was a new shape. The
+# context refiner sees the caption alone, the main layers the unified caption + image sequence, both positionally
+# as (x, attn_mask, freqs_cis, ...).
+_ZIMAGE_SOURCES: tuple[str, ...] = (
+    "L['x']",
+    "L['attn_mask']",
+    "L['freqs_cis']",
+    r".*\['args'\]\[[0-2]\]$",
+)
+
+# Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_prompt_length_policy checks
+# it covers diffusion_families and video_families). A tuple: the denoiser's text length follows the prompt, and these
+# are the repeated block's dynamo sources that carry it. FIXED_LENGTH: the pipeline pads every prompt to one length
+# (padding="max_length" to max_sequence_length, masked), so a new prompt never changes a shape.
+FIXED_LENGTH = "fixed"
+PROMPT_LENGTH_POLICY: dict[str, Any] = {
+    "FluxTransformer2DModel": _FLUX1_SOURCES,
+    "Flux2Transformer2DModel": FIXED_LENGTH,  # Mistral / Qwen3 padded to max_sequence_length 512
+    "Flux3Transformer2DModel": _FLUX3_SOURCES,
+    "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
+    "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
+    "ZImageTransformer2DModel": _ZIMAGE_SOURCES,
+    "Krea2Transformer2DModel": FIXED_LENGTH,  # padded to max_sequence_length 512
+    "Lumina2Transformer2DModel": FIXED_LENGTH,  # Gemma padded to max_sequence_length 256
+    "HunyuanImageTransformer2DModel": FIXED_LENGTH,  # padded to the tokenizer max length
+    "HiDreamImageTransformer2DModel": FIXED_LENGTH,  # T5 / Llama padded to max_sequence_length 128
+    "Ideogram4Transformer2DModel": FIXED_LENGTH,  # token ids left-padded into max_sequence_length 2048
+    "UNet2DConditionModel": FIXED_LENGTH,  # CLIP padded to 77
+    "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
+    "LTX2VideoTransformer3DModel": FIXED_LENGTH,  # Gemma left-padded to max_sequence_length 1024
+    "WanTransformer3DModel": FIXED_LENGTH,  # UMT5 padded to max_sequence_length 512
+    "HunyuanVideo15Transformer3DModel": FIXED_LENGTH,  # padded to the tokenizer max length
+}
+
+
+def prompt_length_varies(transformer: Any) -> bool:
+    """Whether ``transformer``'s text length follows the prompt (a class or an instance), so every new prompt length is
+    a new input shape. An unclassified class answers False: it keeps what it does today."""
+    cls = transformer if isinstance(transformer, type) else type(transformer)
+    return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
+
+
+# What the compile arms (FLUX.1 and Z-Image are classified above but not armed here).
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "Flux3Transformer2DModel": _FLUX3_SOURCES,
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
