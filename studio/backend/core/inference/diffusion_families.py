@@ -24,6 +24,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
 from .family_name_match import (
+    model_identity,
     name_key_in,
     normalize_family_name,
     token_in_name,
@@ -1321,7 +1322,8 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    needle = repo_id.lower()
+    # A local path matches only on the segments naming the model, never a parent folder (/home/flux/...).
+    needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:
         # Do not let a generic family (qwen-image) swallow a variant it cannot run (qwen-image-LAYERED). Scoped to the
@@ -1476,7 +1478,9 @@ def _family_from_content(
     if not path:
         return fam
     needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
-    vetoed = fam is None and any(_best_family_match(n.lower()) is not None for n in needles)
+    vetoed = fam is None and any(
+        _best_family_match(model_identity(n).lower()) is not None for n in needles
+    )
     name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
     if name is None:
         return None
@@ -2087,7 +2091,7 @@ def transformer_variant_differs_from_base(
 def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
     """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
+        needle = model_identity(identifier).lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
             if name_key_in(key, needle):
                 return steps, guidance

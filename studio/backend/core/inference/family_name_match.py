@@ -44,3 +44,42 @@ def name_key_in(key: str, needle: str) -> bool:
         return True
     nk = normalize_family_name(k)
     return bool(nk) and nk in normalize_family_name(low)
+
+
+# A local path names its model only in its last segment(s); the folders above it (a user's home, a backup drive, a pytest
+# basetemp) are arbitrary, so a family keyword there must not pick the family.
+_LOCAL_PATH = re.compile(r"^(?:[/\\~]|\.{1,2}[/\\]|[a-zA-Z]:[/\\])")
+_PATH_SPLIT = re.compile(r"[/\\]+")
+_WEIGHT_FILE_SUFFIXES = (".gguf", ".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin")
+# Folders that hold one model's files without naming it: a diffusers component, a ComfyUI-style kind folder, a quant tier.
+_CONTAINER_SEGMENT = re.compile(
+    r"^(?:transformer(?:_\d)?|unet|vae|text_encoder(?:_\d)?|tokenizer(?:_\d)?|scheduler|"
+    r"diffusion_models|split_files|gguf|(?:u?d-)?(?:i?q\d\w*|f16|bf16|f32|fp8\w*|fp16|nvfp4|mxfp4))$",
+    re.IGNORECASE,
+)
+
+
+def model_identity(text: Optional[str]) -> str:
+    """The part of ``text`` that names the model. A repo id (``org/name[/file]``) is returned unchanged. A local path keeps
+    only the model's own segments: an HF cache path ``.../models--org--name/snapshots/<sha>/file`` becomes
+    ``org/name/file``; any other path keeps its last segment, plus the folder holding a weight file, extended past
+    container folders (``transformer/``, ``Q4_K_M/``) to the folder that names the model."""
+    text = text or ""
+    if not _LOCAL_PATH.match(text):
+        return text
+    parts = [p for p in _PATH_SPLIT.split(text) if p]
+    for i in range(len(parts) - 1, -1, -1):
+        seg = parts[i]
+        if seg.lower().startswith("models--") and len(seg) > len("models--"):
+            rest = parts[i + 1 :]
+            if len(rest) >= 2 and rest[0].lower() == "snapshots":
+                rest = rest[2:]
+            return "/".join([seg[len("models--") :].replace("--", "/"), *rest])
+    if not parts:
+        return ""
+    start = len(parts) - 1
+    if start > 0 and parts[-1].lower().endswith(_WEIGHT_FILE_SUFFIXES):
+        start -= 1
+    while 0 < start and _CONTAINER_SEGMENT.match(parts[start]):
+        start -= 1
+    return "/".join(parts[start:])

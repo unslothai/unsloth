@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
-from .family_name_match import normalize_family_name, token_in_name, token_length
+from .family_name_match import model_identity, normalize_family_name, token_in_name, token_length
 from .family_profile import AutoPrefer, ConvRotSpec, FamilyProfile, UntiledVae
 
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
@@ -1062,7 +1062,8 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
-    needle = repo_id.lower()
+    # A local path matches only on the segments naming the model, never a parent folder (/data/h3_backup/...).
+    needle = model_identity(repo_id).lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
@@ -1706,7 +1707,7 @@ def video_generation_variant(
     ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults. Family-scoped
     keys (``_FAMILY_SCOPED_DEFAULT_KEYS``) match only for their own family."""
     for identifier in identifiers:
-        whole = (identifier or "").lower()
+        whole = model_identity(identifier).lower()
         name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             scope = _FAMILY_SCOPED_DEFAULT_KEYS.get(key)
