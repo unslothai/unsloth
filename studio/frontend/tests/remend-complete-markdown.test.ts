@@ -228,11 +228,15 @@ test("a finished reply keeps its lone markers as written", () => {
     "Pass options with **kwargs to forward them.",
     "Press the ` key to open the console.",
     "Delete files matching *.tmp first.\n\nThen restart the server.",
+    "Unpack it with ***args in Python 2 style.",
+    "Use ***args to unpack them.\n",
+    "It costs ~~ 5 dollars.",
+    "Load it as ~~fast mode in the config.",
   ]) {
     const html = renderSettled(reply, false);
     assert.doesNotMatch(
       html,
-      /data-streamdown="(emphasis|strong|inline-code)"|<em>|<strong>|<code/,
+      /data-streamdown="(emphasis|strong|inline-code|strikethrough)"|<em>|<strong>|<code|<del/,
       `a finished ${JSON.stringify(reply)} was restyled: ${html}`,
     );
     assert.equal(

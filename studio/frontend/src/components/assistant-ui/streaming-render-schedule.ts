@@ -1034,8 +1034,10 @@ export const LITERAL_LINK_REMEND = { links: false, images: false } as const;
 export const FINISHED_TEXT_REMEND = {
   ...LITERAL_LINK_REMEND,
   bold: false,
+  boldItalic: false,
   inlineCode: false,
   italic: false,
+  strikethrough: false,
 } as const;
 
 export function repairStreamingMarkdown(source: string): string {
