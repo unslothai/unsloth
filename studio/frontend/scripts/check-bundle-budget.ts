@@ -322,11 +322,14 @@ export const BUDGET = {
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
   // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
+  // Main at dcf5c4009 measures 6,870,312 B raw / 2,068,954 B transfer, already over the line above. Browser panel
+  // page downloads add 1,468 B raw / 354 B transfer on top (6,871,780 B raw, 2,069,308 B transfer, one machine and
+  // build, Node 24, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Sharing a connection with every account adds the shared flags to the eager provider mapping: 180 B raw /
   // 20 B transfer (6,862,624 -> 6,862,804 B raw, 2,066,394 -> 2,066,414 B transfer against 723a43b02, one
   // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
-  transferBytes: 2_067_247,
-  rawBytes: 6_864_218,
+  transferBytes: 2_069_517,
+  rawBytes: 6_872_120,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
