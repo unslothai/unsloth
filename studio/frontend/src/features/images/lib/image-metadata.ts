@@ -1112,7 +1112,17 @@ const loraKey = (name: string) =>
     .pop()
     ?.toLowerCase() ?? "";
 
-/** Resolve `<lora:name:weight>` tags against the installed LoRAs by file stem; returns unmatched names. */
+// The tag's whole relative path, for an exact match before falling back to the bare stem.
+const loraPathKey = (name: string) =>
+  name
+    .trim()
+    .replace(LORA_EXTENSIONS, "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .toLowerCase();
+
+/** Resolve `<lora:name:weight>` tags against the installed LoRAs: the exact relative path first, else a
+ *  file stem only one adapter has; returns unmatched names. */
 export function matchLoraTags(
   tags: unknown,
   available: readonly { id: string; display_name: string; source?: string }[],
@@ -1128,10 +1138,24 @@ export function matchLoraTags(
     if (!tag || typeof tag !== "object") continue;
     const { name, weight, unet_weight, dyn_dim } = tag as Partial<LoraTag>;
     if (typeof name !== "string" || typeof weight !== "number") continue;
+    const path = loraPathKey(name);
     const key = loraKey(name);
-    const hit = local.find(
-      (a) => loraKey(a.id) === key || loraKey(a.display_name) === key,
-    );
+    // An id is unique, so its exact path decides; a display name or bare stem must name one adapter only.
+    const byId = local.filter((a) => loraPathKey(a.id) === path);
+    const candidates =
+      byId.length > 0
+        ? byId
+        : local.filter(
+            (a) =>
+              loraPathKey(a.display_name) === path ||
+              loraKey(a.id) === key ||
+              loraKey(a.display_name) === key,
+          );
+    if (candidates.length > 1) {
+      notes.push(`LoRA ${name} (ambiguous: ${candidates.length} adapters named ${key})`);
+      continue;
+    }
+    const hit = candidates[0];
     if (!hit) {
       unmatched.push(name);
       continue;

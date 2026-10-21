@@ -449,3 +449,22 @@ test("steps past the request limit are reported as clamped", () => {
   assert.deepEqual(importNotApplied({ prompt: "p", steps: 0 }, "sdxl"), ["Steps 0 (clamped to 1)"]);
   assert.deepEqual(importNotApplied({ prompt: "p", steps: 100 }, "sdxl"), []);
 });
+
+test("a LoRA tag takes the exact path first and never guesses between same-named adapters", () => {
+  const available = [
+    { id: "sdxl/detail.safetensors", display_name: "detail", source: "local" },
+    { id: "flux/detail.safetensors", display_name: "detail", source: "local" },
+    { id: "styles/Pixel_Art.safetensors", display_name: "Pixel_Art", source: "local" },
+  ];
+  const m = matchLoraTags(
+    [
+      { name: "flux\\detail", weight: 1 },
+      { name: "detail", weight: 0.5 },
+      { name: "pixel_art", weight: 1 },
+    ],
+    available,
+  );
+  assert.deepEqual(m.loras, ["flux/detail.safetensors:1", "styles/Pixel_Art.safetensors:1"]);
+  assert.deepEqual(m.unmatched, []);
+  assert.deepEqual(m.notes, ["LoRA detail (ambiguous: 2 adapters named detail)"]);
+});
