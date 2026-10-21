@@ -339,8 +339,11 @@ def _wired_backend(
     monkeypatch.delenv(sp.AUTO_TENSOR_SPLIT_ENV, raising = False)
     # The spawned llama-server is a stand-in whose pid names no child of ours. Stopping it must
     # never walk this host's real process table: with pid 1 that walk was every process the
-    # user owned, and the unload SIGTERMed all of them.
+    # user owned, and the unload SIGTERMed all of them. The group kill and the survivor
+    # tree kill are stubbed for the same reason.
     backend._collect_descendants = lambda _pid: ([], True)
+    backend._leading_process_group = lambda _pid: None
+    backend._tree_kill_surviving_process = lambda _pid: True
     return backend, gguf
 
 
@@ -558,6 +561,28 @@ def test_utilisation_helper_takes_the_max_sample(monkeypatch):
     )
     got = LlamaCppBackend._gpu_utilization_by_physical_id(samples = 2, interval_s = 0)
     assert got == {0: 2.0, 1: 77.0}
+
+
+@pytest.mark.parametrize("second", ["exit", "raise"])
+def test_utilisation_helper_keeps_samples_read_before_a_failed_one(monkeypatch, second):
+    from types import SimpleNamespace
+
+    from utils.hardware import gpu_query
+
+    calls = []
+
+    def run(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            return SimpleNamespace(returncode = 0, stdout = "0, 0\n1, 95\n")
+        if second == "raise":
+            raise subprocess.TimeoutExpired("nvidia-smi", 5)
+        return SimpleNamespace(returncode = 9, stdout = "")
+
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", run)
+    got = LlamaCppBackend._gpu_utilization_by_physical_id(samples = 2, interval_s = 0)
+    assert got == {0: 0.0, 1: 95.0}
 
 
 def test_wired_other_studio_model_on_gpu1_blocks_the_pair(tmp_path, monkeypatch):
@@ -1039,6 +1064,21 @@ def test_wired_unload_clears_the_auto_decision(tmp_path, monkeypatch):
     assert backend._auto_tensor_live is False
 
 
+def test_wired_unload_of_a_fake_server_signals_nothing(tmp_path, monkeypatch):
+    import utils.process_lifetime as lifetime
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    sent = []
+    monkeypatch.setattr(lifetime, "terminate_pid", lambda pid, **_k: sent.append(("pid", pid)))
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append(("pg", pgid)))
+    _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    assert backend._process.pid == _FAKE_SERVER_PID
+    backend.unload_model()
+    assert sent == []
+
+
 def test_gpu_names_use_nvidia_smi_indices_when_the_planner_does(monkeypatch):
     # Planner ids are nvidia-smi (PCI) indices; torch FASTEST_FIRST ordinals would swap the names.
     from utils.hardware import gpu_query
@@ -1124,6 +1164,66 @@ def _launch_scripted(backend, gguf, behave, **load_kwargs):
 
 def _tensor_crashes(lines, rc = 134):
     return lambda cmd: (False, lines, rc) if _split_flag(cmd) == "tensor" else (True, [], 0)
+
+
+def _record_warnings(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    seen = []
+    real = llama_cpp_module.logger.warning
+    monkeypatch.setattr(
+        llama_cpp_module.logger,
+        "warning",
+        lambda msg, *a, **k: seen.append(str(msg)) or real(msg, *a, **k),
+    )
+    return seen
+
+
+def test_wired_auto_tensor_post_health_failure_is_not_retried(tmp_path, monkeypatch):
+    # A healthy tensor server whose load then fails (audio codec setup) is not a tensor
+    # failure: relaunching on layer would kill the healthy server for nothing.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    backend._apply_detected_audio = lambda *a, **k: False
+    result, spawns = _launch_scripted(
+        backend, gguf, lambda cmd: (True, [], 0), gpu_memory_mode = "auto", n_ctx = 4096
+    )
+    assert result is False
+    assert [_split_flag(c) for c in spawns] == ["tensor"]
+
+
+@pytest.mark.parametrize("flag", ["_health_wait_cancelled", "_shutting_down"])
+def test_wired_auto_tensor_torn_down_mid_load_is_not_retried(tmp_path, monkeypatch, flag):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    warnings = _record_warnings(monkeypatch)
+
+    def behave(cmd):
+        setattr(backend, flag, True)
+        return False, [], 1
+
+    try:
+        result, spawns = _launch_scripted(backend, gguf, behave, gpu_memory_mode = "auto", n_ctx = 4096)
+    finally:
+        backend._shutting_down = False
+    assert not isinstance(result, bool) or result is False
+    assert [_split_flag(c) for c in spawns] == ["tensor"]
+    assert not [w for w in warnings if "loading without it" in w]
+
+
+def test_wired_abandoned_auto_tensor_warns_once(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    warnings = _record_warnings(monkeypatch)
+    result, spawns = _launch_scripted(
+        backend, gguf, _tensor_crashes(["boom"], rc = 1), gpu_memory_mode = "auto", n_ctx = 4096
+    )
+    assert result is True
+    assert [_split_flag(c) for c in spawns][0] == "tensor"
+    assert len([w for w in warnings if "loading without it" in w]) == 1
 
 
 def test_wired_scheduler_abort_on_auto_tensor_does_not_block_the_layer_load(tmp_path, monkeypatch):
@@ -1362,3 +1462,169 @@ def test_gpu_names_fall_back_to_the_nvml_inventory(monkeypatch):
         ],
     )
     assert LlamaCppBackend._gpu_names_by_physical_id() == {0: "Tesla T4", 1: "Tesla T4"}
+
+
+# --------------------------------------------------------------------------
+# 7. Admission prices what the tensor planner charges (round 3)
+# --------------------------------------------------------------------------
+
+
+def _native_ctx(backend, n):
+    read = backend._read_gguf_metadata
+
+    def read_metadata(path):
+        read(path)
+        backend._context_length = n
+
+    backend._read_gguf_metadata = read_metadata
+
+
+def _mtp_reserve(
+    backend,
+    per_ctx = None,
+    flat = 0,
+    kv_sized = True,
+):
+    _with_mtp_caps(backend)
+    backend._mtp_draft_kv_bytes = lambda ctx, *a, **k: (
+        (int(ctx) * per_ctx if per_ctx else 0) if kv_sized else None
+    )
+    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: flat + (
+        int(ctx) * per_ctx if per_ctx else 0
+    )
+
+
+def _assert_same_load(off, on):
+    assert _split_flag(on["cmd"]) != "tensor"
+    assert _norm_cmd(on) == _norm_cmd(off)
+    assert on["env"].get("CUDA_VISIBLE_DEVICES") == off["env"].get("CUDA_VISIBLE_DEVICES")
+
+
+@pytest.mark.parametrize(
+    "load_kwargs",
+    [{"n_ctx": 16384}, {"n_ctx": 0, "extra_args": ["--ctx-size", "16384"]}],
+)
+def test_wired_requested_context_past_native_is_not_shortened(tmp_path, monkeypatch, load_kwargs):
+    def setup(b):
+        _kv_per_token(b, 16)
+        _native_ctx(b, 8192)
+
+    off, on, _ = _launch_off_vs_on(
+        tmp_path,
+        monkeypatch,
+        memory = TWO_T4_MEM,
+        model_gib = 6,
+        names = TWO_T4_NAMES,
+        setup = setup,
+        gpu_memory_mode = "auto",
+        **load_kwargs,
+    )
+    _assert_same_load(off, on)
+
+
+def test_wired_unpriceable_kv_with_auto_context_keeps_todays_load(tmp_path, monkeypatch):
+    def setup(b):
+        b._can_estimate_kv = lambda: False
+        _native_ctx(b, 32768)
+
+    off, on, _ = _launch_off_vs_on(
+        tmp_path,
+        monkeypatch,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+        model_gib = 8,
+        names = TWO_T4_NAMES,
+        setup = setup,
+        gpu_memory_mode = "auto",
+        n_ctx = 0,
+    )
+    _assert_same_load(off, on)
+
+
+@pytest.mark.parametrize("model_gib", [18.5, 19.5])
+def test_wired_unsized_drafter_kv_is_priced_like_the_planner(tmp_path, monkeypatch, model_gib):
+    # The planner adds a 2 GiB cushion ON TOP of the drafter weights it can size.
+    def setup(b):
+        _kv_per_token(b, 200)
+        _mtp_reserve(b, flat = int(1.5 * GIB), kv_sized = False)
+
+    off, on, backend = _launch_off_vs_on(
+        tmp_path,
+        monkeypatch,
+        memory = [(i, 15_360, 15_360) for i in range(4)],
+        model_gib = model_gib,
+        names = {i: T4 for i in range(4)},
+        setup = setup,
+        model_identifier = _MTP_MODEL,
+        gpu_memory_mode = "auto",
+        n_ctx = 32768,
+        speculative_type = "mtp",
+    )
+    _assert_same_load(off, on)
+    assert "abandoned" not in backend._auto_split_decision.reason
+
+
+def test_wired_measured_mtp_reserve_is_not_overcharged(tmp_path, monkeypatch):
+    # A byte-accurate 256 MiB reserve, which a forced tensor load fits.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 26.2, names = TWO_T4_NAMES
+    )
+    _mtp_reserve(backend, flat = 256 * 1024**2)
+    cmd = _launch(
+        backend,
+        gguf,
+        model_identifier = _MTP_MODEL,
+        gpu_memory_mode = "auto",
+        n_ctx = 4096,
+        speculative_type = "mtp",
+    )["cmd"]
+    assert _split_flag(cmd) == "tensor"
+
+
+def test_wired_cpu_drafter_is_not_priced_on_the_gpu(tmp_path, monkeypatch):
+    # -ngld 0 puts a 4 GiB sidecar drafter in host memory; a forced tensor load fits.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 25.5, names = TWO_T4_NAMES
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._get_gguf_size_bytes = (
+        lambda path: 4 * GIB if str(path) == str(sidecar) else int(25.5 * GIB)
+    )
+    _mtp_reserve(backend, flat = 4 * GIB)
+    probe = backend.probe_server_capabilities
+    backend.probe_server_capabilities = lambda binary = None: dict(
+        probe(binary), supports_dspark = True, spec_draft_n_max_flag = "--spec-draft-n-max"
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        n_ctx = 4096,
+        dspark_draft_path = str(sidecar),
+        extra_args = ("--spec-draft-ngl", "0"),
+    )["cmd"]
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert _split_flag(cmd) == "tensor"
+
+
+def test_wired_auto_context_keeps_the_auto_drafter_drop(tmp_path, monkeypatch):
+    # main drops an Auto drafter rather than shorten the context; tensor kept it at 24857.
+    def setup(b):
+        _kv_per_token(b, 128)
+        _mtp_reserve(b, per_ctx = 128 * 1024)
+        _native_ctx(b, 32768)
+
+    off, on, _ = _launch_off_vs_on(
+        tmp_path,
+        monkeypatch,
+        memory = TWO_T4_MEM,
+        model_gib = 22,
+        names = TWO_T4_NAMES,
+        setup = setup,
+        model_identifier = _MTP_MODEL,
+        gpu_memory_mode = "auto",
+        n_ctx = 0,
+        speculative_type = "auto",
+    )
+    _assert_same_load(off, on)
+    assert "--spec-type" not in on["cmd"]

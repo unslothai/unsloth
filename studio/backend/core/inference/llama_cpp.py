@@ -8529,8 +8529,11 @@ def _load_with_auto_tensor_layer_retry(
         return load(self, intent, load_cancel_event = load_cancel_event)
 
     def cancelled() -> bool:
-        return self._cancel_event.is_set() or bool(
-            load_cancel_event is not None and load_cancel_event.is_set()
+        return (
+            self._cancel_event.is_set()
+            or bool(load_cancel_event is not None and load_cancel_event.is_set())
+            or getattr(self, "_health_wait_cancelled", False)
+            or self._spawn_is_stale()
         )
 
     with self._serial_load_lock:
@@ -8539,7 +8542,9 @@ def _load_with_auto_tensor_layer_retry(
         self._auto_split_attempt = attempt
         try:
             try:
-                success = load(self, intent, load_cancel_event = load_cancel_event)
+                # An engaged attempt that did not start raises; a False is terminal
+                # (cancelled, or failed after a healthy start) and is not retried.
+                return load(self, intent, load_cancel_event = load_cancel_event)
             except Exception as exc:
                 if not attempt.engaged:
                     raise
@@ -8548,10 +8553,6 @@ def _load_with_auto_tensor_layer_retry(
                         return False
                     raise
                 logger.warning(f"Auto tensor split abandoned ({exc}); loading without it")
-                success = False
-            if success or not attempt.engaged or cancelled():
-                return success
-            logger.warning("Auto tensor split did not start; loading without it")
             self._auto_split_attempt = _AutoSplitAttempt(allowed = False)
             return load(self, intent, load_cancel_event = load_cancel_event)
         finally:
@@ -13175,14 +13176,13 @@ class LlamaCppBackend:
         """nvidia-smi index -> compute utilisation percent, the max over ``samples``
         readings ``interval_s`` apart, so a card mid-job between kernels is not read
         as idle. Only returned when the GPU ids Studio plans with ARE nvidia-smi (PCI)
-        indices; empty otherwise or on any error (the split policy then relies on the
-        free-memory check alone)."""
+        indices; empty otherwise (the split policy then relies on the free-memory check
+        alone). An error keeps the readings taken before it, so a busy card stays busy."""
         if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
             return {}
+        util: dict[int, float] = {}
         try:
             from utils.hardware import gpu_query
-
-            util: dict[int, float] = {}
             for i in range(max(1, samples)):
                 if i:
                     time.sleep(interval_s)
@@ -13202,7 +13202,7 @@ class LlamaCppBackend:
                     **_windows_hidden_subprocess_kwargs(),
                 )
                 if result.returncode != 0:
-                    return {}
+                    return util
                 for line in (result.stdout or "").splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
@@ -13214,7 +13214,7 @@ class LlamaCppBackend:
                     util[idx] = max(util.get(idx, 0.0), pct)
             return util
         except Exception:
-            return {}
+            return util
 
     @staticmethod
     def _is_datacenter_gpu(gpu_indices = None) -> bool:
@@ -27892,6 +27892,46 @@ class LlamaCppBackend:
                         explicit_ctx = False
                         _replayed_ctx_refit = True
 
+                    # Normalize the speculative reserve BEFORE anything prices it.
+                    # _mtp_bytes reads mtp_overhead_fn at call time, so leaving this
+                    # until after the probes below charged the projector probe the full
+                    # GPU-drafter footprint for a drafter pinned to the CPU (-ngld 0),
+                    # which allocates none of it: the probe then answers "does not fit",
+                    # pins the projector, and costs ~8.8x on every image encode for
+                    # memory nothing was holding. _draft_cpu_no_embedded is settled well
+                    # above, and every input this needs with it, so there is nothing to
+                    # wait for.
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # Nothing speculative is GPU-resident: the drafter that launches
+                        # is the separate CPU-offloaded one, and any embedded head it
+                        # displaced does not run. The flat fraction below is gated on
+                        # this; the byte-accurate callback was not, so the fit went on
+                        # charging VRAM no drafter allocates.
+                        # Two terms survive: a recurrent target's rollback snapshots and
+                        # the verification output rows sit in the TARGET context, so
+                        # pinning the drafter to CPU does not move them. Charge those
+                        # alone. Flat in ctx (both are per-slot), hence the same
+                        # _np/_n_ubatch keywords the replaced callback takes, so
+                        # _mtp_bytes can still re-price slots.
+                        def _cpu_draft_target_state(
+                            _ctx: int,
+                            _np: int = n_parallel,
+                            _n_ubatch: Optional[int] = _effective_ubatch,
+                            _n: int = _mtp_eff_n_max,
+                            _rollback: bool = _target_rollback,
+                        ) -> int:
+                            if _n <= 0:
+                                return 0
+                            rollback = self._rollback_state_bytes(_np) * _n if _rollback else 0
+                            return rollback + self._spec_verify_rows_bytes(_np, _n)
+
+                        mtp_overhead_fn = (
+                            _cpu_draft_target_state
+                            if _cpu_draft_target_state(effective_ctx) > 0
+                            else None
+                        )
+                        _mtp_kv_unsized = False
+
                     # Auto split mode (core/inference/split_policy.py): with no explicit
                     # choice (toggle off, no placement pass-through, no inherited
                     # LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_TENSOR_SPLIT) a dense model, or a
@@ -27979,14 +28019,15 @@ class LlamaCppBackend:
                                     )
                                     for idx, free in gpus
                                 ]
-                                # The tensor gates below, priced on the pair up front: every
-                                # card clears the per-device tensor compute buffer, and the
-                                # pooled budget holds weights + MTP floor + soft overhead
-                                # (the MTP floor at its larger, flat-reserve value). A
-                                # requested context is priced in full too (KV, the drafter at
-                                # that length, the per-device context scratch): main's layer
-                                # placement adds GPUs to honor it, so a pair that would cut it
-                                # keeps layer split. Unpriceable (no KV dims): no auto tensor.
+                                # The tensor gates below, priced on the pair up front with
+                                # the planner's own terms: every card clears the per-device
+                                # tensor compute buffer, and the pooled budget holds weights,
+                                # soft overhead, the flat cushion for a GPU drafter it cannot
+                                # size, and KV + drafter + context scratch at the requested
+                                # context (Auto: the planner's floor). main's layer placement
+                                # adds GPUs to honor a requested context, so a pair that would
+                                # cut it keeps layer split. Unpriceable (no KV dims): no auto
+                                # tensor, whose planner would then cap the context.
                                 _auto_tp_bytes = self._estimate_compute_buffer_bytes(
                                     n_ubatch = _effective_ubatch,
                                     n_parallel = n_parallel,
@@ -27998,32 +28039,31 @@ class LlamaCppBackend:
                                     else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
                                 )
                                 _auto_ctx = (
-                                    effective_ctx if (explicit_ctx and effective_ctx > 0) else 0
+                                    effective_ctx
+                                    if (explicit_ctx and effective_ctx > 0)
+                                    else (min(2048, effective_ctx) if effective_ctx > 0 else 2048)
                                 )
-                                _auto_ctx_priced = not _auto_ctx or self._can_estimate_kv()
+                                _auto_ctx_priced = self._can_estimate_kv()
+                                # The planner's _mtp_reserves_gpu (the CPU drafter is normalized above).
+                                _auto_mtp_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
                                 _auto_kv_bytes = 0
                                 _auto_cc_mib = 0.0
-                                _auto_mtp_floor = 0
+                                _auto_mtp_floor = (
+                                    2 * 1024**3
+                                    if _auto_mtp_gpu
+                                    and (mtp_overhead_fn is None or _mtp_kv_unsized)
+                                    else 0
+                                )
                                 # Priced through the load's own closures under the tensor
                                 # attention plan, the one this pair would launch with.
                                 _auto_layer_fa = planned_flash_attn
                                 planned_flash_attn = _replanned_flash_attn(True)
                                 try:
-                                    if _auto_ctx and _auto_ctx_priced:
-                                        _auto_kv_bytes = _kv_bytes(_auto_ctx)
-                                        _auto_cc_mib = _cc_bytes(_auto_ctx) / (1024 * 1024)
-                                    if _mtp_will_engage or mtp_overhead_fn is not None:
-                                        _auto_mtp_floor = max(
-                                            2 * 1024**3,
-                                            _mtp_bytes(
-                                                _auto_ctx
-                                                or (
-                                                    min(2048, effective_ctx)
-                                                    if effective_ctx > 0
-                                                    else 2048
-                                                )
-                                            ),
+                                    if _auto_ctx_priced:
+                                        _auto_kv_bytes = _kv_bytes(_auto_ctx) + _mtp_bytes(
+                                            _auto_ctx
                                         )
+                                        _auto_cc_mib = _cc_bytes(_auto_ctx) / (1024 * 1024)
                                 finally:
                                     planned_flash_attn = _auto_layer_fa
                                 _auto_soft = self._CUDA_CONTEXT_RESERVE_BYTES
@@ -28031,7 +28071,7 @@ class LlamaCppBackend:
                                     _auto_soft += int(
                                         mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
                                     )
-                                if _mtp_will_engage:
+                                if _auto_mtp_gpu:
                                     _auto_soft += self._MTP_DRAFT_COMPUTE_BYTES
                                 _auto_required_mib = (
                                     model_size + _auto_mtp_floor + _auto_soft + _auto_kv_bytes
@@ -28216,46 +28256,6 @@ class LlamaCppBackend:
                             _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         extra_args = strip_split_mode_only(extra_args)
                         planned_flash_attn = _replanned_flash_attn(tensor_parallel)
-
-                    # Normalize the speculative reserve BEFORE anything prices it.
-                    # _mtp_bytes reads mtp_overhead_fn at call time, so leaving this
-                    # until after the probes below charged the projector probe the full
-                    # GPU-drafter footprint for a drafter pinned to the CPU (-ngld 0),
-                    # which allocates none of it: the probe then answers "does not fit",
-                    # pins the projector, and costs ~8.8x on every image encode for
-                    # memory nothing was holding. _draft_cpu_no_embedded is settled well
-                    # above, and every input this needs with it, so there is nothing to
-                    # wait for.
-                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
-                        # Nothing speculative is GPU-resident: the drafter that launches
-                        # is the separate CPU-offloaded one, and any embedded head it
-                        # displaced does not run. The flat fraction below is gated on
-                        # this; the byte-accurate callback was not, so the fit went on
-                        # charging VRAM no drafter allocates.
-                        # Two terms survive: a recurrent target's rollback snapshots and
-                        # the verification output rows sit in the TARGET context, so
-                        # pinning the drafter to CPU does not move them. Charge those
-                        # alone. Flat in ctx (both are per-slot), hence the same
-                        # _np/_n_ubatch keywords the replaced callback takes, so
-                        # _mtp_bytes can still re-price slots.
-                        def _cpu_draft_target_state(
-                            _ctx: int,
-                            _np: int = n_parallel,
-                            _n_ubatch: Optional[int] = _effective_ubatch,
-                            _n: int = _mtp_eff_n_max,
-                            _rollback: bool = _target_rollback,
-                        ) -> int:
-                            if _n <= 0:
-                                return 0
-                            rollback = self._rollback_state_bytes(_np) * _n if _rollback else 0
-                            return rollback + self._spec_verify_rows_bytes(_np, _n)
-
-                        mtp_overhead_fn = (
-                            _cpu_draft_target_state
-                            if _cpu_draft_target_state(effective_ctx) > 0
-                            else None
-                        )
-                        _mtp_kv_unsized = False
 
                     # Projector placement, the FIRST thing given up when the load does
                     # not fit: the encoder runs once per image, layers once per token,
@@ -29039,6 +29039,21 @@ class LlamaCppBackend:
                             vram_fraction = _vram_frac,
                             explicit_ctx = explicit_ctx,
                         )
+                        # main keeps a requested context (adding GPUs, or past the native
+                        # length), and Auto drops a GPU drafter before it shortens one.
+                        if (
+                            _auto.engaged
+                            and effective_ctx < target_ctx
+                            and (
+                                explicit_ctx
+                                or (
+                                    _mtp_reserves_gpu
+                                    and (_canonicalize_spec_mode(speculative_type) or "auto")
+                                    == "auto"
+                                )
+                            )
+                        ):
+                            raise _AutoSplitAbandoned("the tensor plan shortened the context")
                         use_fit = False
                         _tp_planned = True
                         if explicit_ctx and not self._can_estimate_kv():
