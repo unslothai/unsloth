@@ -1146,3 +1146,39 @@ def test_cuda_split_never_runs_the_rocm_sdpa_probe(monkeypatch, engine):
     monkeypatch.setattr(da, "sdpa_math_only", lambda t: pytest.fail("ROCm probe on CUDA"))
     refined, _ = _refine(_plan())
     assert refined.layer_split is not None
+
+
+_TWO_EXPERTS = {  # only moving the second expert fits both cards
+    "transformer": (9000, "dit"),
+    "transformer_2": (9000, "dit"),
+    "text_encoder": (4000, "text_encoder"),
+    "vae": (500, "other"),
+}
+
+
+def test_rocm_second_expert_moves_only_to_a_card_that_runs_the_attention_backend(
+    monkeypatch, engine
+):
+    from core.inference import diffusion_attention as da
+    from core.inference.diffusion_attention import ATTENTION_BACKEND_ATTR
+
+    _cards(monkeypatch, sizes = _TWO_EXPERTS, sec_limit = 16000)
+    plan = _plan()
+    cuda, _ = _refine(plan)
+    assert "transformer_2" in (cuda.secondary_components or ())  # the component split moves the expert
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _MI300})
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    pipe.transformer_2 = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    rocm, _ = _refine(_plan(), pipe = pipe)
+    assert "transformer_2" in (rocm.secondary_components or ())  # native SDPA, fused on both cards
+    for tag in ("flash", "aiter"):  # pinned to gfx1100: the gfx942 card must not run the expert
+        setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, tag)
+        setattr(pipe.transformer_2, ATTENTION_BACKEND_ATTR, tag)
+        rocm, _ = _refine(_plan(), pipe = pipe)
+        assert "transformer_2" not in (rocm.secondary_components or ())
+    setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, None)
+    setattr(pipe.transformer_2, ATTENTION_BACKEND_ATTR, None)
+    monkeypatch.setattr(da, "sdpa_math_only", lambda t: t.torch_device == "cuda:1")
+    rocm, _ = _refine(_plan(), pipe = pipe)
+    assert "transformer_2" not in (rocm.secondary_components or ())
