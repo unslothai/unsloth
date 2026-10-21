@@ -264,7 +264,7 @@ def _studio_datasets_fallback() -> Optional[Path]:
         from utils.paths.storage_roots import cache_root
         return _safe_resolve(cache_root() / "hf-datasets")
     except Exception as exc:  # noqa: BLE001 - a broken root must not widen the list
-        logger.debug(f"Could not resolve the Studio dataset fallback cache: {exc}")
+        logger.debug(f"Could not resolve the Unsloth dataset fallback cache: {exc}")
         return None
 
 

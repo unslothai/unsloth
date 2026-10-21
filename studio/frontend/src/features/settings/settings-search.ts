@@ -35,6 +35,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
+    "settings.general.developerMode.sectionTitle",
+    "settings.general.developerMode.videoCpu",
     "settings.general.hub.sectionTitle",
     "settings.general.hub.source",
     "settings.general.hub.endpoint",
@@ -98,6 +100,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.modelMemory.title",
     "settings.resources.modelMemory.keepResident",
     "settings.resources.modelMemory.noRamReserve",
+    "settings.resources.modelMemory.multiModel",
+    "settings.general.modelAutoSwitch.mediaIdleUnload",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
@@ -123,10 +127,13 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.modelSelection.title",
     "settings.chat.modelSelection.fitOnDeviceOnly",
     "settings.chat.currentDate.label",
+    "settings.chat.memory.title",
+    "settings.chat.memory.enable",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
+    "settings.chat.keepRunningWhenTabClosed",
     "settings.chat.toolResultLimit",
     "settings.chat.firstTokenLabel",
     "settings.chat.autoScroll",
@@ -188,6 +195,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.library.cardSize",
     "settings.library.imageLayout",
     "settings.library.showCardDates",
+    "settings.library.imageInfoStamp",
     "settings.library.startTab",
     "settings.library.sort",
     "settings.library.suggestedLimit",
@@ -227,6 +235,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.audioApi.title",
     "settings.apiKeys.decisionApi.title",
     "settings.apiKeys.mcp.title",
+    "settings.general.modelAutoSwitch.keepKv",
   ],
   // the English card labels cannot match localized keys, so the header carries both entries.
   "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
@@ -355,9 +364,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
 export function createSettingsSearchIndex({
   desktop,
   closeToTray,
+  menuBarIcon,
 }: {
   desktop: boolean;
   closeToTray: boolean;
+  menuBarIcon: boolean;
 }): Record<SettingsTab, TranslationKey[]> {
   if (!desktop) {
     return SETTINGS_SEARCH_INDEX;
@@ -370,6 +381,7 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+      ...(menuBarIcon ? (["settings.general.startup.menuBarIcon"] as const) : []),
       // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
       // Tauri repair controller, so indexing it on the web build would scroll to a row
       // that is not there. Worth indexing at all because the capability message for a host
@@ -395,6 +407,7 @@ const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.sandbox.python",
   "settings.sandbox.terminal",
   "settings.apiKeys.mcp.title",
+  "settings.general.modelAutoSwitch.keepKv",
   "settings.chat.toolResultLimit",
   "settings.chat.firstTokenLabel",
 ]);
@@ -434,7 +447,18 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
+  // match swap, fit, evict and the model kinds the multi-model labels omit.
+  "settings.resources.modelMemory.multiModel":
+    "settings.resources.modelMemory.multiModelKeywords",
+  "settings.general.modelAutoSwitch.mediaIdleUnload":
+    "settings.resources.modelMemory.mediaIdleUnloadKeywords",
+  "settings.general.modelAutoSwitch.keepKv":
+    "settings.general.modelAutoSwitch.keepKvKeywords",
+  "settings.chat.memory.title": "settings.chat.memory.keywords",
+  "settings.chat.memory.enable": "settings.chat.memory.keywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  "settings.chat.keepRunningWhenTabClosed":
+    "settings.chat.keepRunningWhenTabClosedKeywords",
   "settings.chat.firstTokenLabel": "settings.chat.firstTokenKeywords",
   "settings.chat.toolResultLimit": "settings.chat.toolResultLimitKeywords",
   // match action verbs omitted from these descriptive labels.

@@ -3,7 +3,6 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
-import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   signalRunningLlamaJob,
   subscribeToLlamaJobStarted,
@@ -12,6 +11,7 @@ import {
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
 } from "@/lib/llama-job-lifecycle";
+import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -656,9 +656,9 @@ export function useLlamaUpdateCheck({
     });
   }, [enabled, readStatus, surfaceIfAvailable]);
 
-  const dismiss = useCallback(() => {
+  const dismiss = useCallback((): string | null => {
     const current = statusRef.current;
-    if (!current) return;
+    if (!current) return null;
     const suppression: OfferSuppression = {
       kind: "dismissed",
       offerKey: offerKey(current),
@@ -666,7 +666,22 @@ export function useLlamaUpdateCheck({
     suppressionRef.current = suppression;
     publishOfferSuppression(suppression);
     presentStatus(current);
+    return suppression.offerKey;
   }, [presentStatus]);
+
+  // a later snooze or a skip of another offer is left alone.
+  const undoDismiss = useCallback(
+    (key: string) => {
+      const suppression = suppressionRef.current;
+      if (suppression?.kind !== "dismissed" || suppression.offerKey !== key) {
+        return;
+      }
+      clearSuppression();
+      const current = statusRef.current;
+      if (current) presentStatus(current);
+    },
+    [clearSuppression, presentStatus],
+  );
 
   const snooze = useCallback(() => {
     const current = statusRef.current;
@@ -753,6 +768,7 @@ export function useLlamaUpdateCheck({
     applying: enabled && applying,
     apply,
     dismiss,
+    undoDismiss,
     snooze,
   };
 }

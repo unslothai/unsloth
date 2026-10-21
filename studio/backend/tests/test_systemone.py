@@ -1052,7 +1052,7 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     import storage.studio_db as studio_db
 
     monkeypatch.setattr(studio_db, "upsert_app_settings", settings.update)
-    reason = "The Decision API needs PyTorch, which this Studio install does not include."
+    reason = "The Decision API needs PyTorch, which this Unsloth install does not include."
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: reason)
     preview = client.post(
         "/api/settings/systemone/validate",

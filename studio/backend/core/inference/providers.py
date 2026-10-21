@@ -280,6 +280,42 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # is allowed"). Strip both so the server uses its required defaults.
         "body_omit": ("temperature", "top_p"),
     },
+    "zai": {
+        "display_name": "Z.ai",
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "default_models": [
+            "glm-5.3",
+            "glm-5.3-flash",
+            "glm-5.3-flashx",
+            "glm-5.2",
+            "glm-4.7-flash",
+            "glm-4.5-flash",
+            "glm-4.6v-flash",
+        ],
+        "model_capabilities": {
+            "glm-5.3": {"vision": False},
+            "glm-5.3-flash": {"vision": True},
+            "glm-5.3-flashx": {"vision": True},
+            "glm-5.2": {"vision": False},
+            "glm-5.1": {"vision": False},
+            "glm-5": {"vision": False},
+            "glm-4.7": {"vision": False},
+            "glm-4.6": {"vision": False},
+            "glm-4.5": {"vision": False},
+            "glm-4.5-air": {"vision": False},
+            "glm-4.7-flash": {"vision": False},
+            "glm-4.5-flash": {"vision": False},
+            "glm-4.6v-flash": {"vision": True},
+        },
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Z.ai API key. China mainland: use base URL https://open.bigmodel.cn/api/paas/v4",
+        "body_omit": ("presence_penalty",),
+    },
     "qwen": {
         "display_name": "Qwen",
         "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -296,6 +332,32 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "DashScope API key. China mainland: override base URL to https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
+    "qwencloud": {
+        "display_name": "QwenCloud",
+        "base_url": "https://maas.qwencloudapi.com/compatible-mode/v1",
+        "default_models": [
+            "qwen3.8-max",
+            "qwen3.7-plus",
+            "qwen3.8-flash",
+        ],
+        "model_capabilities": {
+            "qwen3.8-max": {"vision": True, "studio_tools": True},
+            "qwen3.7-plus": {"vision": True, "studio_tools": True},
+            "qwen3.8-flash": {"vision": True, "studio_tools": True},
+        },
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "QwenCloud pay-as-you-go API key (sk-ws-) from https://home.qwencloud.com/api-keys",
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:realtime|livetranslate|tts|asr|s2s|embedding|rerank|ocr)\b"
+            r"|^(?:qwen-audio|qwen-image|wan\d|z-image|cosyvoice|happyhorse|happyoyster|"
+            r"tongyi-tingwu|ccai-pro|pre-mock)"
+        ),
     },
     "huggingface": {
         "display_name": "Hugging Face",
@@ -395,7 +457,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "llama_cpp": {
         "display_name": "llama.cpp",
-        "base_url": "http://localhost:8080/v1",
+        "base_url": "http://localhost:9931/v1",
         "default_models": [],
         "supports_streaming": True,
         "supports_vision": True,

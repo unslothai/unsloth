@@ -47,6 +47,11 @@ export const en = {
     removeFromMessage: "Remove from message",
   },
   browser: {
+    drafts: {
+      title: "Unload a page with entered text?",
+      description: "To keep the chat responsive, only three hidden pages with entered text stay running. Continuing will unload {pages}, which may lose unsaved text. Cancel returns to the previous tab.",
+      confirm: "Unload and continue",
+    },
     agentSettings: {
       title: "Browser use",
       enable: "Let models use the browser",
@@ -207,7 +212,7 @@ export const en = {
     importBookmarksDoneOne: "Imported {count} bookmark.",
     importBookmarksDoneMany: "Imported {count} bookmarks.",
     importBookmarksNone: "No new bookmarks in that file.",
-    importBookmarksPartial: "Imported {count}, but {leftOut} more didn't fit: Studio keeps up to {max} bookmarks.",
+    importBookmarksPartial: "Imported {count}, but {leftOut} more didn't fit: Unsloth keeps up to {max} bookmarks.",
     importBookmarksFailed: "Couldn't read that file. Choose a bookmarks HTML file exported from a browser.",
     downloadsTitle: "Downloads",
     askWhereToSaveSetting: "Ask where to save each file",
@@ -258,7 +263,7 @@ export const en = {
     annotationScreenshotsAlways: "Always include",
     annotationScreenshotsNever: "Never include",
     clearDataSetting: "Clear browsing data",
-    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep cookies and site data only until Studio is reloaded.",
+    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep cookies and site data only until Unsloth is reloaded.",
     manage: "Manage",
     fullView: {
       enter: "Enter full view",
@@ -493,7 +498,7 @@ export const en = {
     seedHelp: "Sets the engine's random seed. Concurrent chats can still change sampled replies.",
     default: "Default",
     installRequired: "install required",
-    ownerRequired: "Ask the Studio owner to install this engine.",
+    ownerRequired: "Ask the Unsloth owner to install this engine.",
     cancelInstall: "Cancel installation",
     installed: "Installed {version}",
     repair: "Repair",
@@ -506,8 +511,8 @@ export const en = {
     installAndLoad: "Install and load",
     confirm: "Install {engine} {version}? This can download several GB.",
     confirmSized: "Install {engine} {version}? About {size} to download.",
-    wslSetup: "On Windows, {engine} runs in a private WSL2 environment Studio sets up. Expect one administrator prompt and possibly a restart.",
-    wslReady: "On Windows, {engine} runs inside Studio's private WSL2 environment.",
+    wslSetup: "On Windows, {engine} runs in a private WSL2 environment Unsloth sets up. Expect one administrator prompt and possibly a restart.",
+    wslReady: "On Windows, {engine} runs inside Unsloth's private WSL2 environment.",
     wslRestart: "Restart Windows to finish turning on WSL2, then click Install again.",
     background: "Installs in the background.",
     failed: "Engine installation failed. Retry or use the default engine.",
@@ -897,6 +902,7 @@ export const en = {
       byProject: "By project",
       inOneList: "In one list",
       sortChatsBy: "Sort chats by",
+      projectsHome: "Projects home",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
       switchedToManual: "Sorted manually: drag rows to reorder",
@@ -1060,6 +1066,9 @@ export const en = {
       resetButton: "Reset",
       resetDone: "Library settings reset",
       storageSection: "Storage",
+      downloadsSection: "Image downloads",
+      imageInfoStamp: "Info stamp",
+      imageInfoStampDescription: "Show the model, date and seed along the bottom of images you download from the Images page. The generation settings are saved inside the file either way.",
       storageDescription: "Open a category to see its files largest first, and delete what you no longer need.",
       storageUsed: "{size} used by the Library",
       storageDisk: "{free} free of {total} on this disk",
@@ -1496,15 +1505,15 @@ export const en = {
       dictation: {
         audioUploadTitle: "Dictate with a recording",
         audioUploadDescription:
-          "Your browser requires a secure connection (HTTPS) to record directly in Studio. On this HTTP connection, use your phone's recorder or choose a saved recording instead. Your Studio server will transcribe the audio and add the text to your message.",
+          "Your browser requires a secure connection (HTTPS) to record directly in Unsloth. On this HTTP connection, use your phone's recorder or choose a saved recording instead. Your Unsloth server will transcribe the audio and add the text to your message.",
         audioUploadChooseFile: "Choose recording",
         audioUploadRecord: "Record audio",
         audioUploadIphoneHint:
           "On iPhone, save a recording from Voice Memos or another recorder app, then choose it here.",
         audioUploadServerModelNote:
-          "This recording uses the local model shown above on the Studio server, even if normal dictation uses a different engine.",
+          "This recording uses the local model shown above on the Unsloth server, even if normal dictation uses a different engine.",
         audioUploadAutomatic: "Automatic",
-        audioUploadModelReady: "Ready on this Studio server",
+        audioUploadModelReady: "Ready on this Unsloth server",
         audioUploadRetryTitle: "Could not transcribe {file}",
         audioUploadRetry: "Retry transcription",
         audioUploadChooseModel:
@@ -1664,9 +1673,9 @@ export const en = {
         autoDescription: "Read each reply aloud as soon as it finishes",
         engineLabel: "TTS engine",
         engineSystemDescription: "Built-in device voices",
-        engineStudioDescription: "Uses the speech model loaded in Audio",
+        engineStudioDescription: "Speaks with a model loaded in Audio › Text to Speech",
         engineSystem: "System voices",
-        engineStudio: "Load TTS model",
+        engineStudio: "Unsloth model",
         engineCustom: "Custom endpoint",
         engineCustomDescription:
           "An OpenAI-compatible TTS server from your connections (e.g. Kokoro)",
@@ -1677,8 +1686,12 @@ export const en = {
         customModelLabel: "Model",
         customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",
         modelLabel: "TTS model",
-        modelDescription:
-          "Load a speech model in Audio. It replaces the chat model.",
+        modelDescription: "None loaded. Load one in Audio › Text to Speech.",
+        modelLoaded: "{model} is loaded",
+        keepBothLabel: "Keep the chat model loaded",
+        keepBothDescription:
+          "Keep multiple models loaded is Off, so loading a speech model unloads the chat model.",
+        keepBothAction: "Keep both loaded",
         openAudioAction: "Open Audio",
         voiceLabel: "Voice",
         voiceDescription: "Best voices on this device",
@@ -1753,6 +1766,32 @@ export const en = {
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
       },
+      developerMode: {
+        sectionTitle: "Developer mode",
+        videoCpu: "Allow video generation on CPU (experimental)",
+        videoCpuDescription:
+          "Lets the Video page run on a host with no supported GPU. Off by default; unsupported and very slow.",
+        notApplicable:
+          "Has no effect on this machine: video either already runs on its GPU, or is blocked by something the CPU cannot work around.",
+        forcedOnByEnv:
+          "Turned on by UNSLOTH_VIDEO_ALLOW_CPU in the backend environment.",
+        forcedOffByEnv:
+          "Turned off by UNSLOTH_VIDEO_ALLOW_CPU in the backend environment.",
+        confirmTitle: "Enable CPU video generation?",
+        confirmWarning:
+          "CPU video generation may take hours, consume large amounts of RAM, and may freeze your system. Continue at your own risk.",
+        ramBelowMinimum:
+          "This machine has {host} GB of RAM, below the {min} GB the smallest video model needs on CPU. Loading is likely to fail or freeze the system.",
+        ramOk:
+          "This machine has {host} GB of RAM. The smallest video model needs about {min} GB on CPU; larger models need far more.",
+        ramUnknown:
+          "The smallest video model needs about {min} GB of RAM on CPU; larger models need far more.",
+        performanceEstimate:
+          "Expect minutes per denoising step: a 5-frame 832x480 clip from Wan2.1 1.3B at 3 steps took about 4 minutes on 16 CPU threads, and a full-length clip at default settings can take hours.",
+        confirmAction: "Enable anyway",
+        loadError: "Failed to load Developer mode settings.",
+        saveError: "Failed to save Developer mode settings.",
+      },
       modelAutoSwitch: {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
@@ -1778,9 +1817,10 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
-        keepKv: "Keep chat context across idle unload",
+        keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+        keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
           "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
@@ -1879,6 +1919,11 @@ export const en = {
         closeToTrayDescription:
           "Keep Unsloth and its server running in the background when you close the main window.",
         closeToTraySaveError: "Failed to update the close to system tray setting.",
+
+        menuBarIcon: "Show in menu bar",
+        menuBarIconDescription:
+          "Show the Unsloth icon in the macOS menu bar. When hidden, Unsloth stays in the Dock instead, including when it starts at login.",
+        menuBarIconSaveError: "Failed to update the menu bar icon setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -1980,8 +2025,8 @@ export const en = {
         downloadFailed: "Couldn't start the download",
         downloadConflict: "Resume this download from the Hub",
         downloadBusy: "Download already in progress",
-        pin: "Pin to the RAG menu",
-        unpin: "Unpin from the RAG menu",
+        pin: "Pin to the Files menu",
+        unpin: "Unpin from the Files menu",
         menuChip: "Model",
         moreModels: "More models",
         pinMoreModels: "Pin more models",
@@ -1997,7 +2042,7 @@ export const en = {
         menuSubtitle: "Powers file search",
         device: "Embedding device",
         deviceDescription:
-          "Where the embedding model runs, for every model. GPU indexes large document sets faster but keeps some VRAM in use until Studio restarts.",
+          "Where the embedding model runs, for every model. GPU indexes large document sets faster but keeps some VRAM in use until Unsloth restarts.",
         deviceAuto: "Automatic",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2070,6 +2115,8 @@ export const en = {
         subtitle:
           "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
         retry: "Try again",
+        exportCsv: "Export CSV",
+        exportError: "Couldn't export your token usage",
         privacyNote:
           "Stats are computed from local chat, API usage, and training history held by your Unsloth install. API prompts, responses, and keys are never stored for stats. Nothing is sent to Unsloth or any third party.",
         emptyChats:
@@ -2400,8 +2447,20 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         multiModel: "Keep multiple models loaded",
-        multiModelDescription: "Loading a model keeps the others in memory.",
-        multiModelHint: "Each loaded model answers the requests that name it. With several GPUs, a new model goes to a GPU no other model uses when one has room. When it does not fit beside the others, the models not in use are unloaded first, then it replaces the active model. Training unloads the extra models before the active one.",
+        multiModelOff: "Off",
+        multiModelFit: "When they fit",
+        multiModelAlways: "Always",
+        multiModelDescription: "Loading a chat, speech, image or video model unloads the other ones.",
+        multiModelDescriptionFit:
+          "Loading a model keeps the others when they fit. When they don't, it unloads the ones not in use first, then the active one.",
+        multiModelDescriptionAlways:
+          "Loading a model never unloads another. A model that does not fit is not loaded. Idle auto-unload and training still free memory.",
+        multiModelHint: "Covers chat, speech, image and video models. Each loaded chat model answers the requests that name it. With several GPUs, Unsloth tries to place a new model on a GPU no other model uses. “When they fit” leaves about 1 GB spare. “When they fit” and “Always” never unload a model on another GPU.",
+        allowOversizedLoad: "Allow oversized model loads",
+        allowOversizedLoadDescription: "Load image and video models even when the memory check says they will not fit.",
+        allowOversizedLoadHint: "Applies where the CPU and GPU share one memory pool (Apple Silicon, integrated GPUs). Unsloth refuses a load when its estimate of the model weights is larger than the memory left after reserving room for the operating system. With this on, those loads are attempted anyway. The estimate can be wrong either way: an oversized load can fail, use up all memory, make the computer swap heavily or stop responding, or stop Unsloth. Off by default.",
+        mediaIdleUnloadDescription:
+          "Free VRAM by unloading the image and video models after this many idle seconds. 0 keeps them loaded, minimum 60.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
         mlockNotApplicable: "Fully on the GPU: nothing in system RAM to lock. Idle auto-unload stays off.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
@@ -2411,6 +2470,10 @@ export const en = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+        multiModelKeywords:
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat speech tts voice read aloud always idle",
+        mediaIdleUnloadKeywords:
+          "image video diffusion idle unload ttl timeout seconds free vram gpu memory",
       },
       storage: {
         title: "Storage",
@@ -2716,6 +2779,13 @@ export const en = {
         "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      keepRunningWhenTabClosed: "Keep running after the tab closes",
+      keepRunningWhenTabClosedDescription:
+        "Replies, web search, and Deep Research keep going on the server after the tab closes. Turn off to stop them instead.",
+      keepRunningWhenTabClosedHint:
+        "Reopen the chat on any device to pick up a run that kept going. When off, a run stops within about a minute of its last tab closing, so a reload does not stop it. Applies to runs started after you change this. Temporary chats, replies from API models or to attachments, and turns that use the browser panel always stop with their tab.",
+      keepRunningWhenTabClosedKeywords:
+        "background tab close closed leave keep running continue stop cancel deep research web search resume reconnect device phone",
       firstTokenLabel: "First-token waiting limit",
       firstTokenDescription: "How long local GGUF models may wait without prompt-processing progress before the first token. Applies to new waits for all accounts. Unlimited keeps waiting until you stop.",
       firstTokenDefault: "20 min (default)",
@@ -2748,6 +2818,22 @@ export const en = {
         visibility: "Thinking",
         visibilityDescription:
           "How reasoning opens. You can still expand or collapse any block yourself.",
+      },
+      memory: {
+        title: "Memory",
+        description: "Notes every chat reads, for every model, local or cloud. Chats in a project also read that project's AGENTS.md.",
+        enable: "Use memory in chats",
+        enableDescription: "Send these notes with every chat.",
+        locked: "Turned off for this install by UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Memory notes",
+        placeholder: "For example:\n- I write Python and use uv.\n- Keep answers short.",
+        hint: "Saved to {path}. You can also edit that file in any text editor.",
+        size: "{used} / {max} KB",
+        save: "Save",
+        saved: "Memory saved",
+        loadError: "Failed to load memory.",
+        saveError: "Failed to save memory.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md",
       },
       currentDate: {
         label: "Tell the model today's date",
@@ -2830,7 +2916,7 @@ export const en = {
       importFailed: "Import failed.",
       importFromSource: "Import from {source}",
       importFromSourceDescription:
-        "Copy your {source} conversations into Studio, grouped by the project they belong to.",
+        "Copy your {source} conversations into Unsloth, grouped by the project they belong to.",
       importingAction: "Importing...",
       importedSourceOneChat: "Imported 1 conversation from {source}.",
       importedSourceChatCount: "Imported {count} conversations from {source}.",
@@ -3169,14 +3255,14 @@ export const en = {
       },
       mcp: {
         title: "Agent access (MCP)",
-        description: "Let coding agents such as Claude Code and Codex use Unsloth over MCP. Agents sign in with an access token from this page.",
+        description: "Let coding agents such as Claude Code and Codex use Unsloth over MCP. Agents sign in with an Unsloth API key from this page.",
         enable: "Allow agent connections",
-        enableDescription: "Serves /mcp/ to requests that carry an Unsloth access token.",
+        enableDescription: "Serves /mcp/ to requests that carry an Unsloth API key.",
         lockedByEnv: "Set by {name}.",
         loadError: "Couldn't load agent access settings.",
         saveError: "Couldn't save the agent access setting.",
         agent: "Agent",
-        exportKeyHint: "Set {name} to an access token from this page before you start the agent.",
+        exportKeyHint: "Set {name} to an Unsloth API key from this page before you start the agent.",
         configFileHint: "Add this to {path}.",
         keywords: "mcp model context protocol agents claude codex tools",
       },
@@ -3192,6 +3278,7 @@ export const en = {
       audioCppVersion: "audio.cpp Version",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrated",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3250,7 +3337,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app connected to an already-running Studio server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
+          "The app connected to an already-running Unsloth server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
@@ -3583,6 +3670,36 @@ export const en = {
       uploadDetailsTooltip:
         "Up to {limit} per file. PDF, DOCX and TXT are not ready-to-train datasets, so convert them in Learning Recipes first.",
       viewDataset: "View dataset",
+      previewTokens: "Preview tokens",
+      tokenPreview: {
+        title: "Token preview",
+        description: "How {model} tokenizes this data for training. Only the tokenizer is downloaded.",
+        datasetTab: "Dataset samples",
+        textTab: "Your text",
+        trained: "Trained",
+        masked: "Masked",
+        completionsOnly: "Assistant completions only",
+        allTokens: "All tokens trained",
+        responseMarker: "Response marker",
+        maskingNotApplied: "The chat markers were not found, so every token is trained.",
+        loading: "Loading the tokenizer. The first preview takes a little longer...",
+        shuffle: "Shuffle samples",
+        showIds: "Show token IDs",
+        copyIds: "Copy IDs",
+        copied: "Token IDs copied",
+        sample: "Sample {index}",
+        stats: "{tokens} tokens, {trained} trained ({percent}%)",
+        truncated: "Cut to {max} of {full} tokens by the context length.",
+        noTrained: "No token in this row is trained, so training skips it.",
+        hiddenTokens: "{count} more tokens not shown",
+        multimodal: "Image and audio rows are not shown here. You can still try the tokenizer on your own text.",
+        textPlaceholder: "Type or paste text to see its tokens...",
+        textHint: "With assistant completions only, just the text after an assistant marker is trained.",
+        insertExample: "Insert chat example",
+        vocab: "Vocabulary: {count} tokens",
+        retry: "Try again",
+        packing: "Packing is on: the run joins rows into context-length sequences, so where a row is cut can differ from this per-row view.",
+      },
       uploadFailed: "Upload failed",
       unknownError: "Unknown error",
       unsupportedFileType: "Unsupported file type",
@@ -3642,6 +3759,21 @@ export const en = {
         "Used in training output folder names, export defaults, and history.",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
+      drafterSettings: "Speculative Decoding Drafter",
+      drafterTrain: "Train a speculative decoding drafter",
+      drafterTrainTooltip: "Trains a small draft head after fine-tuning so inference runs faster in llama.cpp and vLLM; outputs are unchanged.",
+      drafterChecking: "Checking this model...",
+      drafterUnavailable: "Not available for this model: {reason}",
+      drafterRetrainMtp: "Retrains this model's MTP head",
+      drafterEagle3: "Trains an EAGLE-3 drafter (this model has no MTP head)",
+      drafterDataSource: "Training data",
+      drafterDataSourceDataset: "Dataset answers",
+      drafterDataSourceRegenerate: "Model's own answers (slower, better)",
+      drafterMaxExamples: "Examples",
+      drafterEpochs: "Epochs",
+      drafterLearningRate: "Learning rate",
+      drafterLearningRateDefault: "Default",
+      drafterDraftSteps: "Draft tokens",
       maxSteps: "Max Steps",
       epochs: "Epochs",
       useMaxSteps: "Use Max Steps",
@@ -3781,7 +3913,7 @@ export const en = {
         decisionColumnsMissing:
           "Decision models need state, questions and gold (or answers) columns. Missing: {columns}.",
         decisionOwnerOnly:
-          "Only the Studio owner can fine-tune decision models.",
+          "Only the Unsloth owner can fine-tune decision models.",
         hfDatasetRequired: "Select a Hugging Face dataset first.",
         hfDatasetSplitRequired: "Select or enter a train split first.",
         localDatasetRequired: "Select a local dataset first.",
@@ -3987,6 +4119,7 @@ export const en = {
         configuring: "Configuring",
         training: "Training",
         finalizing: "Saving model",
+        trainingDrafter: "Training drafter",
         completed: "Completed",
         error: "Error",
         stopped: "Stopped",
@@ -4277,6 +4410,7 @@ export const en = {
       moreActions: "More actions",
       chatAboutThis: "Chat about this",
       chatWithModel: "Chat with this model",
+      editImage: "Edit image",
       addToFavorites: "Add to Favorites",
       regenerateTitle: "Regenerate title",
       removeFromFavorites: "Remove from Favorites",
@@ -4486,6 +4620,7 @@ export const en = {
       skippedOverLimit: "{count} more past the {limit} file limit.",
       chatFilesWaiting: "{count} will be attached once a model that reads them is loaded.",
       openFilesFailed: "Could not open the files",
+      editImageFailed: "Could not open the image for editing",
       speechModel: "{name} is a speech model",
       speechModelDescription: "Pick it from the model menu on the Audio page.",
       noMediaLink: "The server returned no link to play this file.",

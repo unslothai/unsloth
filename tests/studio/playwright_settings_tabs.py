@@ -523,6 +523,53 @@ def run_keystroke_search(page) -> None:
     report["steps"].append("keystroke-search")
 
 
+def assert_model_memory_rows() -> None:
+    """The image/video idle row moved to Model memory; keepKv renders without a backend."""
+    labels = {
+        tab: report["tabs"][tab]["settled"].get("labels", []) for tab in ("resources", "api-keys")
+    }
+    expected = [
+        ("resources", "Keep multiple models loaded", True),
+        ("resources", "Idle auto-unload for image and video", True),
+        ("api-keys", "Idle auto-unload for image and video", False),
+        ("api-keys", "Keep chat context across unloads", True),
+    ]
+    for tab, label, present in expected:
+        if (label in labels[tab]) != present:
+            fail(f"{tab}: '{label}' {'missing' if present else 'still renders'} ({labels[tab]})")
+
+
+PANEL_SCROLL_JS = """(sel) => {
+    const root = document.querySelector(sel);
+    return root ? { top: root.scrollTop, max: root.scrollHeight - root.clientHeight } : null;
+}"""
+
+
+def run_scroll_resets_on_tab_switch(page) -> None:
+    """A tab opens at its top, not at the offset the previous tab was scrolled to (#14337)."""
+    until(page, DIALOG_GONE)
+    open_dialog(page, "appearance")
+    settle_panel(page)
+    page.evaluate(
+        "(sel) => { const r = document.querySelector(sel); r.scrollTop = r.scrollHeight; }", PANEL
+    )
+    scrolled = page.evaluate(PANEL_SCROLL_JS, PANEL)
+    report["scroll_reset"] = {"scrolled": scrolled}
+    if not scrolled or scrolled["top"] <= 0:
+        fail(f"scroll reset: appearance panel did not scroll, nothing to test ({scrolled})")
+        close_dialog(page)
+        return
+    click_tab_and_observe(page, "general")
+    after = page.evaluate(PANEL_SCROLL_JS, PANEL)
+    report["scroll_reset"]["after"] = after
+    if not after or after["top"] != 0:
+        fail(f"scroll reset: general opened at {after}, appearance was left at {scrolled['top']}")
+    else:
+        log(f"scroll reset: general opened at the top, appearance was left at {scrolled['top']}")
+    close_dialog(page)
+    report["steps"].append("scroll-reset")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
@@ -553,6 +600,7 @@ def run(page) -> None:
                 f"blank frames {obs['blank_frames']}/{obs['frames_sampled']}"
             )
     report["steps"].append("all-tabs-render")
+    assert_model_memory_rows()
 
     run_lan_address_actions(page)
 
@@ -630,6 +678,8 @@ def run(page) -> None:
     report["steps"].append("search-jump")
 
     run_keystroke_search(page)
+
+    run_scroll_resets_on_tab_switch(page)
 
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
 

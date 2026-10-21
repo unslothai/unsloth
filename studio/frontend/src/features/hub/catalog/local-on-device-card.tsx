@@ -21,8 +21,8 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  CubeIcon,
   Folder01Icon,
+  LayerIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -145,7 +145,7 @@ function BaseModelReference({
     <div className="flex min-w-0 items-center gap-2 rounded-[10px] border border-border/55 bg-muted/35 px-3 py-2">
       <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-background/70 text-muted-foreground">
         <HugeiconsIcon
-          icon={CubeIcon}
+          icon={LayerIcon}
           strokeWidth={1.75}
           className="size-3.5"
         />

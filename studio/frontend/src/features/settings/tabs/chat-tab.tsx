@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LazyImportBoundary } from "@/components/lazy-import-boundary";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -44,7 +46,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
@@ -63,6 +65,13 @@ import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+// Off the startup bundle: the settings chunk loads eagerly, this section only when the Chat tab opens.
+const ChatMemorySection = lazy(() =>
+  import("../components/chat-memory-section").then((module) => ({
+    default: module.ChatMemorySection,
+  })),
+);
 
 // Adjustable "+" menu items shown in settings; the list shows them in the user's order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -281,6 +290,7 @@ function ToolResultLimitRow() {
 export function ChatTab() {
   const isOwner = useIsAccountOwner();
   const t = useT();
+  const pillId = useId();
   const navigate = useNavigate();
   const resetPlusMenu = usePlusMenuPrefsStore((state) => state.resetMenu);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -302,6 +312,12 @@ export function ChatTab() {
   );
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
+  );
+  const keepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.keepRunningWhenTabClosed,
+  );
+  const setKeepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.setKeepRunningWhenTabClosed,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
@@ -528,6 +544,17 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.keepRunningWhenTabClosed")}
+          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
+          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
+            checked={keepRunningWhenTabClosed}
+            onCheckedChange={setKeepRunningWhenTabClosed}
+          />
+        </SettingsRow>
         {isOwner ? <ToolResultLimitRow /> : null}
         {isOwner ? <FirstTokenTimeoutRow /> : null}
         <SettingsRow
@@ -546,12 +573,15 @@ export function ChatTab() {
                 aria-pressed={autoScrollWhileGenerating === follow}
                 onClick={() => setAutoScrollWhileGenerating(follow)}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   autoScrollWhileGenerating === follow
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
+                )}
                 {t(
                   follow
                     ? "settings.chat.autoScrollAuto"
@@ -648,6 +678,12 @@ export function ChatTab() {
           />
         </SettingsRow>
       </SettingsSection>
+
+      <LazyImportBoundary fallback={null}>
+        <Suspense fallback={null}>
+          <ChatMemorySection />
+        </Suspense>
+      </LazyImportBoundary>
 
       <SettingsSection title={t("settings.chat.groups.display.title")}>
         <SettingsRow

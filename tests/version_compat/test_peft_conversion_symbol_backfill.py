@@ -931,12 +931,30 @@ def test_a_moe_named_model_that_is_not_fused_still_loads():
         assert stand_in.get(model_type, "fallback") == "fallback", model_type
 
 
+def test_a_not_fused_class_name_alias_loads_in_its_own_case():
+    """Upstream keys the Qwen3-Omni MoE thinker aliases by class name, mapped to the dense
+    Qwen2.5-Omni thinker. Matching the carve-out only in lowercase refused them on the "moe" hint."""
+    stand_in = F._UnavailableConversionPatternMap()
+    for alias in ("Qwen3OmniMoeThinkerModel", "Qwen3OmniMoeThinkerForConditionalGeneration"):
+        assert alias in F._PEFT_MOE_NAMED_NOT_FUSED, alias
+        assert stand_in.get(alias) is None, alias
+
+
 def test_a_fused_moe_model_is_still_refused():
     """The carve-out must not reach the types that really do need the rewrite."""
     stand_in = F._UnavailableConversionPatternMap()
     for model_type in ("qwen3_moe", "minimax", "deepseek_v3", "olmoe"):
         with pytest.raises(RuntimeError, match = "conversion map"):
             stand_in.get(model_type)
+
+
+def test_a_fused_class_name_alias_is_refused_in_its_own_case():
+    """Upstream keys some fused entries by class name (UnlimitedOcrTextModel), which says nothing
+    about MoE: lowercasing it before the snapshot lookup let it fall through to a silent None."""
+    stand_in = F._UnavailableConversionPatternMap()
+    assert F._PEFT_MOE_CONVERSION_PATTERNS["UnlimitedOcrTextModel"] == "qwen2_moe"
+    with pytest.raises(RuntimeError, match = "conversion map"):
+        stand_in.get("UnlimitedOcrTextModel")
 
 
 def test_an_unknown_moe_name_is_still_refused():

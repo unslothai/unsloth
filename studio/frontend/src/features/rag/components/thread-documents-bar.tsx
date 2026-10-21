@@ -276,6 +276,20 @@ const HEADER_ICON = { width: 16, height: 16 } as const;
 
 const CompactCardsContext = createContext(false);
 
+/** The chat the files bar last showed, across remounts. */
+let panelThreadItemId: string | null = null;
+
+function HeaderTip({ label, children }: { label: string; children: ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[calc(260px*var(--ui-space-scale,1))]">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 const PILL =
   "inline-flex h-8 max-w-[calc(14rem*var(--ui-space-scale,1))] items-center gap-1.5 rounded-full px-3 text-ui-13 transition-colors";
 
@@ -793,35 +807,38 @@ function ChatFilesPanel({
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {headerControls}
           {children ? (
-            <button
-              type="button"
-              // A narrow glyph: 4px from Add files reads as crowded next to the X.
-              className="unsloth-files-panel-icon-btn ml-3"
-              onClick={() => {
-                setCollapsed(!compact);
-                setShowAll(false);
-              }}
-              aria-expanded={!compact}
-              aria-label={compact ? "Expand files" : "Collapse files"}
-              title={compact ? "Expand files" : "Collapse files"}
-            >
-              <HugeiconsIcon
-                icon={compact ? ChevronDownStandardIcon : ChevronUpStandardIcon}
-                strokeWidth={1.75}
-                style={HEADER_ICON}
-              />
-            </button>
+            <HeaderTip label={compact ? "Expand files" : "Collapse files"}>
+              <button
+                type="button"
+                // A narrow glyph: 4px from Add files reads as crowded next to the X.
+                className="unsloth-files-panel-icon-btn ml-3"
+                onClick={() => {
+                  setCollapsed(!compact);
+                  setShowAll(false);
+                }}
+                aria-expanded={!compact}
+                aria-label={compact ? "Expand files" : "Collapse files"}
+              >
+                <HugeiconsIcon
+                  // The panel opens upward from the composer, so up expands and down collapses.
+                  icon={compact ? ChevronUpStandardIcon : ChevronDownStandardIcon}
+                  strokeWidth={1.75}
+                  style={HEADER_ICON}
+                />
+              </button>
+            </HeaderTip>
           ) : null}
           {onClose ? (
-            <button
-              type="button"
-              className="unsloth-files-panel-icon-btn"
-              onClick={onClose}
-              aria-label={closeLabel ?? "Close"}
-              title={closeLabel}
-            >
-              <XIcon style={HEADER_ICON} />
-            </button>
+            <HeaderTip label={closeLabel ?? "Close"}>
+              <button
+                type="button"
+                className="unsloth-files-panel-icon-btn"
+                onClick={onClose}
+                aria-label={closeLabel ?? "Close"}
+              >
+                <XIcon style={HEADER_ICON} />
+              </button>
+            </HeaderTip>
           ) : null}
         </div>
       </div>
@@ -967,6 +984,8 @@ export function ThreadDocumentsBar({
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  const ragPanelHidden = useChatRuntimeStore((s) => s.ragPanelHidden);
+  const setRagPanelHidden = useChatRuntimeStore((s) => s.setRagPanelHidden);
   const ragToolDisabled = useRagToolDisabled();
   const projectAttachmentDefault = useChatRuntimeStore(
     (s) => s.projectAttachmentTarget,
@@ -1009,18 +1028,16 @@ export function ThreadDocumentsBar({
     [],
   );
 
-  // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,
-  // but a KB preference left over while the pill is off does not.
   const threadProjectId = useThreadProjectId(effectiveThreadId);
   // Attaching before the row has been read would file the file by guess.
   const projectUnresolved = threadProjectId === undefined;
   // A host where the vector extension cannot load answers 503 to every project
   // source request, so do not open a scope it can only fail.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  // Retrieval keeps the project beside a KB (#9485), so it is always watched for indexing.
+  const watchedProjectId = ragUnavailable ? null : (threadProjectId ?? null);
   const projectId =
-    (ragEnabled && ragSource.type === "kb") || ragUnavailable
-      ? null
-      : (threadProjectId ?? null);
+    ragEnabled && ragSource.type === "kb" ? null : watchedProjectId;
   // This chat's own choice if it made one, otherwise the saved default. Keeps a
   // pick in one chat from redirecting every other chat in the project.
   const projectAttachmentTarget =
@@ -1057,8 +1074,11 @@ export function ThreadDocumentsBar({
   // from another chat is visible rather than silently in effect. Retrieval already
   // combines both scopes (core/rag/tool.py).
   const projectLister = useCallback(
-    () => (projectId ? listProjectDocuments(projectId) : Promise.resolve([])),
-    [projectId],
+    () =>
+      watchedProjectId
+        ? listProjectDocuments(watchedProjectId)
+        : Promise.resolve([]),
+    [watchedProjectId],
   );
   const {
     documents: projectDocuments,
@@ -1070,13 +1090,13 @@ export function ThreadDocumentsBar({
     retry: retryProject,
     canRetry: canRetryProject,
   } = useRagDocuments(
-    projectId ? { type: "project", projectId } : null,
+    watchedProjectId ? { type: "project", projectId: watchedProjectId } : null,
     projectLister,
   );
 
   // Tell the composer whether any doc is still indexing, so it can hold a queued send until
-  // retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope is null, so both lists are
-  // empty and this reads false. From the hooks, not the rows: work started in the Sources panel is
+  // retrieval covers them (Composer.enqueueSend). A KB or RAG off leaves only the project watched,
+  // which reads false without one. From the hooks, not the rows: work started in the Sources panel is
   // in flight before either instance has a row for it, and a job already running on a reopened
   // project arrives with the first list, so hold until that lands. Both scopes hold on their first
   // list, for the same reason: reopening a chat whose own attachment was still indexing lists
@@ -1166,6 +1186,14 @@ export function ThreadDocumentsBar({
 
   // Keyed by the list item id, stable while a new chat materializes, so only a real switch drops the queue.
   const threadItemId = useAuiState(({ threadListItem }) => threadListItem.id);
+  // A hidden panel comes back in the next chat. Keyed outside the component: sending the first
+  // message moves the composer, which remounts this bar in the same chat.
+  useEffect(() => {
+    if (panelThreadItemId !== null && panelThreadItemId !== threadItemId) {
+      useChatRuntimeStore.getState().setRagPanelHidden(false);
+    }
+    panelThreadItemId = threadItemId;
+  }, [threadItemId]);
   const { enqueue: queueAttach, queued } = useUploadQueue<RagUploadItem>(
     attach,
     uploading || projectUploading,
@@ -1302,7 +1330,10 @@ export function ThreadDocumentsBar({
       <LinkedFolderCard name={folderNames.get(folderId)} docs={docs} />
     </div>
   ));
-  const fileCount = documents.length + projectDocuments.length;
+  const fileCount = documents.length + (projectId ? projectDocuments.length : 0);
+  useEffect(() => {
+    useChatRuntimeStore.getState().setRagPanelFileCount(fileCount);
+  }, [fileCount]);
   const countSuffix = fileCount === 1 ? "1 file" : `${fileCount} files`;
   // Every branch, always the first fragment child: an "Add" must open after the source
   // moves, and deleting the active KB in it must not remount it.
@@ -1326,6 +1357,9 @@ export function ThreadDocumentsBar({
   // A KB source uploads via the KB dialog, not here; show which KB is active.
   if (ragEnabled && ragSource.type === "kb") {
     const kbId = ragSource.kbId;
+    if (ragPanelHidden) {
+      return kbDialog;
+    }
     return (
       <>
         {kbDialog}
@@ -1334,8 +1368,8 @@ export function ThreadDocumentsBar({
           key="kb"
           icon={FileDatabaseIcon}
           title={activeKbName ? `Knowledge base: ${activeKbName}` : "Knowledge base"}
-          onClose={() => setRagEnabled(false)}
-          closeLabel="Stop chatting with files"
+          onClose={() => setRagPanelHidden(true)}
+          closeLabel="Hide files"
           headerControls={
             <button
               ref={kbChipRef}
@@ -1351,16 +1385,19 @@ export function ThreadDocumentsBar({
     );
   }
   // project sources stay visible with Docs off because retrieval uses them; thread scope is inert.
+  // Hiding keeps retrieval; turning on Chat with files or opening another chat shows them again.
   if (!ragEnabled) {
     return (
       <>
         {kbDialog}
-        {projectDocuments.length > 0 ? (
+        {projectDocuments.length > 0 && !ragPanelHidden ? (
           <ChatFilesPanel
             key="project"
             icon={FolderAttachmentIcon}
             title={ragToolDisabled ? "Project sources not used" : "Project sources"}
             count={countSuffix}
+            onClose={() => setRagPanelHidden(true)}
+            closeLabel="Hide sources"
             note={
               <span
                 className="hidden truncate text-ui-12 text-muted-foreground @[32rem]/files-panel:inline"
@@ -1399,6 +1436,9 @@ export function ThreadDocumentsBar({
     ? "Still loading this chat's project. Try again in a moment."
     : undefined;
 
+  if (ragPanelHidden) {
+    return kbDialog;
+  }
   return (
     <>
       {kbDialog}
@@ -1411,8 +1451,8 @@ export function ThreadDocumentsBar({
         info="Add or drop documents, spreadsheets, slides, e-books, email or code. The model searches them as you chat and cites what it uses."
         onDropItems={queueAttach}
         dropDisabledReason={busyReason}
-        onClose={() => setRagEnabled(false)}
-        closeLabel="Stop chatting with files"
+        onClose={() => setRagPanelHidden(true)}
+        closeLabel="Hide files"
         note={
           ragToolDisabled && fileCount > 0 ? (
             <span
@@ -1435,20 +1475,23 @@ export function ThreadDocumentsBar({
                 }
               />
             ) : null}
-            <button
-              type="button"
-              disabled={busy}
-              onClick={pickFiles}
-              className="unsloth-files-panel-action"
-              title={
+            <HeaderTip
+              label={
                 busyReason ??
                 (sharesWithProject
                   ? "Add files for retrieval, shared with every chat in this project"
                   : "Add files for retrieval in this chat")
               }
             >
-              Add files
-            </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={pickFiles}
+                className="unsloth-files-panel-action"
+              >
+                Add files
+              </button>
+            </HeaderTip>
           </>
         }
       >

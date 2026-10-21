@@ -32,6 +32,7 @@ from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import safe_error_detail
 
 try:
@@ -102,6 +103,9 @@ def _resolve_export_hf_token(
             status_code = 400,
             detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
         )
+    # An empty token pushes with the operator's own login (hf auth login), never a managed account's.
+    if push_to_hub and token is None and account_access.managed_account():
+        return False
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
@@ -110,10 +114,14 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     if not account_access.managed_account():
         return None
     from utils.models import get_base_model_from_lora
+    from core.export.decision import adapter_load_bases
 
-    base = get_base_model_from_lora(checkpoint_path)
-    if base:
-        account_access.require_model_access(base)
+    bases = adapter_load_bases(checkpoint_path)
+    base = get_base_model_from_lora(checkpoint_path) or next(iter(bases), None)
+    # The decision loader prefers its own config's base, so every base named is checked.
+    for name in dict.fromkeys([base, *bases]):
+        if name:
+            account_access.require_model_access(name)
     return base or None
 
 
@@ -147,7 +155,8 @@ async def load_checkpoint(
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,
-            trust_remote_code = request.trust_remote_code,
+            # Downgraded, not refused: the Export tab always sends true for local models.
+            trust_remote_code = request.trust_remote_code and not managed_remote_code_refused(),
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
             # A supplied token cannot say whether it came from a session or an API key.
@@ -373,6 +382,20 @@ def _export_details(
         return {"output_path": output_path}
 
 
+def _with_drafter(
+    details: Optional[Dict[str, Any]], output_path: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Adds the trained drafter an export carries (drafter.json), when there is one."""
+    try:
+        from core.export.drafter_export import export_drafter_details
+        drafter = export_drafter_details(output_path)
+    except Exception:
+        drafter = None
+    if drafter is None or details is None:
+        return details
+    return {**details, "drafter": drafter}
+
+
 def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """A decision GGUF lands in the run folder's gguf/; not registered as a chat model folder."""
     if not output_path:
@@ -457,7 +480,10 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -518,7 +544,10 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -574,7 +603,10 @@ async def export_gguf(
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True)
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            )
         return ExportOperationResponse(success = True, message = message, details = details)
     except HTTPException:
         raise
@@ -732,7 +764,10 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise

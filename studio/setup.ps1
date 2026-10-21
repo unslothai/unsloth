@@ -2627,6 +2627,7 @@ function Get-IntelRegistryAdapterNames {
 function Get-ProbableStudioVenvDir {
     $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
             elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { Join-Path $env:UNSLOTH_HOME.Trim() "studio" }
             else { $null }
     # Expand a leading ~ like the canonical resolver; without it the path stays cwd-relative.
     if ($root -and ($root -eq "~" -or $root -like "~/*" -or $root -like "~\*")) {
@@ -3521,6 +3522,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $env:UNSLOTH_STUDIO_HOME.Trim()
         } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
             $env:STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+            $env:UNSLOTH_HOME.Trim()
         } else {
             $_unslothRoot
         }
@@ -3555,6 +3558,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
 } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
     $_studioOverrideVar = "STUDIO_HOME"
     $_studioOverride = $env:STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+    $_studioOverrideVar = "UNSLOTH_HOME (studio child)"
+    $_studioOverride = Join-Path $env:UNSLOTH_HOME.Trim() "studio"
 }
 if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
@@ -3644,23 +3650,19 @@ function Test-MasterRootNoteIsHonoured {
     # warned about nothing, and was then honoured by nobody.
     $legacyStudio = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")
     if ($legacyStudio -and ($here -ieq $legacyStudio)) {
-        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio is the" -ForegroundColor Yellow
+        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio is the" -ForegroundColor Yellow
         Write-StudioLine "        default install at $here, where no reader honours a recorded root." -ForegroundColor Yellow
         Write-StudioLine "        That root cannot be recorded, so a later launch or uninstall will" -ForegroundColor Yellow
         Write-StudioLine "        not find them. Set UNSLOTH_STUDIO_HOME to $norm\studio, or re-set" -ForegroundColor Yellow
         Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
         return $false
     }
-    # A note must describe the tree it is written into: every reader requires the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
-    # a removal at the original install. install.ps1 does not read UNSLOTH_HOME yet, so a master
-    # root on an ordinary install leaves Studio at the legacy path with the runtimes elsewhere,
-    # which is that shape: say so, rather than leave a file that behaves as no note at all.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
-    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio lives at" -ForegroundColor Yellow
+    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio lives at" -ForegroundColor Yellow
     Write-StudioLine "        $here, which is outside it. That root cannot be recorded, so a later" -ForegroundColor Yellow
     Write-StudioLine "        launch or uninstall will not find them. Set UNSLOTH_STUDIO_HOME to" -ForegroundColor Yellow
     Write-StudioLine "        $norm\studio, or re-set UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
@@ -5148,9 +5150,7 @@ if ($HasNvidiaSmi) {
     # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
     # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
     # VAR=value resolves as a command name here and sets nothing.
-    # Both claims are conditional: an explicit index pin is honoured for any arch, and
-    # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
-    # is published, so the usual advice would abort the next update instead of helping.
+    # Conditional: an explicit index pin is honoured for any arch.
     $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                    (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     if ($unsupPinned) {
@@ -5161,14 +5161,10 @@ if ($HasNvidiaSmi) {
         substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
         substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
     }
-    if ((Get-HostMachineArch) -eq "arm64") {
-        substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
-    } else {
-        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
-        substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
-        substep "until you install or update again." "Yellow"
-    }
+    substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+    substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+    substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+    substep "until you install or update again." "Yellow"
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
@@ -5202,12 +5198,19 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
 } elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
     step "long paths" "disabled; already asked earlier in this update" "Yellow"
+} elseif ($env:UNSLOTH_SKIP_LONG_PATHS -eq '1') {
+    # Declined on the desktop app's explainer: no second UAC.
+    step "long paths" "disabled; skipped at your request" "Yellow"
+    substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
+    substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
+    Write-StudioLine "   Windows will show a 'Registry Console Tool' prompt (reg.exe, verified publisher Microsoft Windows)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
-        $proc = Start-Process -FilePath "reg.exe" `
+        # The system directory itself, not a PATH lookup: this is the binary the prompt names.
+        $proc = Start-Process -FilePath "$([Environment]::SystemDirectory)\reg.exe" `
             -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
@@ -5744,16 +5747,8 @@ function Resolve-ReusedSetupPython {
         (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
         return $env:UNSLOTH_SETUP_PYTHON
     }
-    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
-            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
-            else { Join-Path $env:USERPROFILE ".unsloth\studio" }
-    if ($root -eq "~") {
-        # Join-Path with an empty child throws on Windows PowerShell 5.1.
-        $root = $env:USERPROFILE
-    } elseif ($root -like "~/*" -or $root -like "~\*") {
-        $root = Join-Path $env:USERPROFILE $root.Substring(1).TrimStart('/', '\')
-    }
-    $venvPy = Join-Path $root "unsloth_studio\Scripts\python.exe"
+    # Root preflight already applied the overrides, including any staged update.
+    $venvPy = Join-Path $VenvDir "Scripts\python.exe"
     if (Test-Path -LiteralPath $venvPy) { return $venvPy }
     return $null
 }
@@ -9621,7 +9616,9 @@ Complete-FrontendBuildBackground -IfDone
 # corrupt runtime must be installed or repaired even when the venv is current.
 if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
-    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    # Must match mxc_runtime._installed_package_root(): ARM64 PCs get Microsoft's ARM64 build.
+    $_mxcArchDir = if ((Get-UvHostArch) -eq "arm64") { "windows-arm64" } else { "windows-x86_64" }
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\$_mxcArchDir"
     if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
         substep "installing Windows MXC Preview runtime..."
         # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
@@ -9650,7 +9647,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         } elseif ($_mxcExit -eq 3) {
             step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
         } else {
-            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+            step "MXC Preview" "prebuilt unavailable; Unsloth Studio will use software safeguards" "Yellow"
         }
         if ($script:UnslothVerbose -and $_mxcOutput) {
             Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
@@ -10247,6 +10244,8 @@ if ($LocalLlamaCppLinked) {
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 # A pre-CUDA 11 library still proves physical NVIDIA presence, even when AMD/Intel selects torch.
                 if ($script:NvidiaDriverLibraryOnly) { $expectedKinds += $_nvidiaKinds }
+                # ARM64 Vulkan (a Vulkan GPU found, or UNSLOTH_LLAMA_CPP_BACKEND=vulkan) can land on any ARM64 host.
+                if (Test-WinArm64Venv) { $expectedKinds += "windows-arm64-vulkan" }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -10282,18 +10281,9 @@ if ($LocalLlamaCppLinked) {
         # marker, so forwarding a second copy from here could only ever disagree
         # with it. The override does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $windowsArm64 = (
-            $env:OS -eq "Windows_NT" -and
-            (
-                "$($env:PROCESSOR_ARCHITECTURE)".ToUpperInvariant() -eq "ARM64" -or
-                "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
-            )
-        )
         if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
-            } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
@@ -10561,6 +10551,9 @@ if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
         }
     } elseif ($audioCppExit -eq 3) {
         step "audio.cpp" "install busy; keeping existing runtime" "Yellow"
+    } elseif ($audioCppOutput -match "cannot be read by this account") {
+        # An elevated run left it owned by Administrators (#14052); only an elevated shell can remove it.
+        step "audio.cpp" "$AudioCppDir is unreadable (left by an elevated run); in an elevated PowerShell run Remove-Item -Recurse -Force `"$AudioCppDir`", then unsloth studio update" "Yellow"
     } else {
         step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "Yellow"
     }

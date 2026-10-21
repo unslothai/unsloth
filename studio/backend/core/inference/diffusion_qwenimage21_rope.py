@@ -24,7 +24,9 @@ _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 
 _FINGERPRINTS: dict[str, frozenset] = {
     "apply_rotary_emb_qwen": frozenset({"ba81dd3fc907c23a"}),
-    "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d"}),
+    # 0.41.0 splits heads by ``attn.heads``; main d42ebf9c by ``attn.inner_dim // attn.heads`` (tensor parallel),
+    # the same split whenever the projections hold every head, which is all Studio runs.
+    "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d", "4c3830595aef56a0"}),
 }
 
 _LOCK = threading.Lock()
@@ -225,6 +227,23 @@ def install(logger: Any = None, device: Any = None) -> bool:
             "diffusion.qwenimage21: RoPE runs in real arithmetic inside the compiled blocks"
         )
     return True
+
+
+def probe_split_cards(cards: Any) -> tuple:
+    """A layer split runs its blocks on several cards, and the real-arithmetic wrapper reads each card's own probe
+    (an unprobed card keeps the complex form). Probes every card not yet probed; nothing when no install probed a
+    card (the patch is not in use). Returns the cards whose probe passed."""
+    if real_rope_disabled() or not _FUSION:
+        return ()
+    import torch
+
+    for index in cards:
+        if index not in _FUSION:
+            try:
+                _FUSION[index] = probe_fusion(torch.device("cuda", int(index)))
+            except Exception:  # noqa: BLE001 - that card keeps the complex form
+                _FUSION[index] = None
+    return tuple(index for index in cards if _FUSION.get(index) is not None)
 
 
 def uninstall() -> None:

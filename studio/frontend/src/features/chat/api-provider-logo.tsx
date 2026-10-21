@@ -20,7 +20,9 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter", "liquid", "typesafe"]);
+const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid", "typesafe"]);
+// Pale brand marks get a hairline edge on light surfaces instead of inverting.
+const LIGHT_OUTLINE_LOGOS = new Set(["openrouter"]);
 
 /** Shared hub or connection logo; monochrome ones invert in dark mode. */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
@@ -43,6 +45,9 @@ export function ApiProviderLogo({ providerType, className, title }: ApiProviderL
       className={cn(
         "shrink-0 object-contain",
         providerType && DARK_INVERT_LOGOS.has(providerType) && "dark:invert",
+        providerType &&
+          LIGHT_OUTLINE_LOGOS.has(providerType) &&
+          "drop-shadow-[0_0_0.5px_rgb(0_0_0/0.7)] dark:drop-shadow-none",
         className,
       )}
     />

@@ -210,6 +210,30 @@ def _llama_cpp_scripts_pin():
         os.environ.pop("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", None)
 
 
+@contextlib.contextmanager
+def _converter_remote_code(approved: bool):
+    """Keep convert_hf_to_gguf.py to the load's consent-gated trust decision for one conversion.
+
+    The converter loads several architectures' tokenizers with trust_remote_code=True, so a
+    checkpoint loaded with built-in classes (never seen by the consent gate) could run its
+    auto_map code there. Transformers imports that code only from its HF_MODULES_CACHE copy,
+    which the converter child inherits: a path no directory can be created at refuses it.
+    Covers the MLX save path too, which has no guard of its own.
+    """
+    if approved:
+        yield
+        return
+    existing = os.environ.get("HF_MODULES_CACHE")
+    os.environ["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
+    try:
+        yield
+    finally:
+        if existing is None:
+            os.environ.pop("HF_MODULES_CACHE", None)
+        else:
+            os.environ["HF_MODULES_CACHE"] = existing
+
+
 def _multi_gpu_device_map_kwargs() -> dict:
     """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
 
@@ -667,6 +691,13 @@ def _open_hub_repo(hf_api, repo_id, private):
     return repo_id
 
 
+def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
+    if hf_token is None:
+        from huggingface_hub import get_token
+        return get_token()
+    return hf_token
+
+
 def _push_mlx_merged(
     model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
 ):
@@ -722,6 +753,22 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         logger.warning(f"Could not publish the model card: {exception}")
 
 
+def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
+    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
+    weight entries that point outside the folder."""
+    from core.export.decision import adapter_base_changed
+    from utils.security.file_security import escaping_weight_references
+
+    if pinned_base and adapter_base_changed(checkpoint_path, pinned_base):
+        return "The adapter's base model changed after it was checked. Load it again."
+    if escaping_weight_references(checkpoint_path):
+        return "This checkpoint's weight index names files outside its folder."
+    # A local base loads too: its own index must stay inside its folder as well.
+    if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
+        return "The base model's weight index names files outside its folder."
+    return None
+
+
 class ExportBackend:
     # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
     decision: Optional[dict] = None
@@ -729,6 +776,7 @@ class ExportBackend:
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
+        self._checkpoint_token = None
         self.current_model = None
         self.current_tokenizer = None
         self.is_vision = False
@@ -757,6 +805,7 @@ class ExportBackend:
             self.current_model = None
             self.current_tokenizer = None
             self.current_checkpoint = None
+            self._checkpoint_token = None
             self._audio_type = None
             self.decision = None
 
@@ -813,6 +862,7 @@ class ExportBackend:
         # Loaders only: the probes' cache guards refuse an anonymous read, which offline
         # misreads a cached VLM as a text model.
         probe_token = token or None
+        pinned_base = base_model
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -830,6 +880,11 @@ class ExportBackend:
                     token = token,
                     base_model = base_model,
                 )
+
+            # The decision loader above checks its own base against the pin.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             checkpoint_path_obj = Path(checkpoint_path)
 
@@ -880,6 +935,11 @@ class ExportBackend:
                 if self.diffusion_lm_profile:
                     # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
                     self.is_vision = False
+
+            # Again right before the load: the folder may have been edited during the probes.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -1043,6 +1103,9 @@ class ExportBackend:
             self.current_model = model
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
+            self._checkpoint_token = token
+            if not self.is_peft and not _IS_MLX:
+                self._attach_full_checkpoint_mtp_head(checkpoint_path)
 
             if self._audio_type:
                 model_type = f"Audio ({self._audio_type})"
@@ -1147,6 +1210,8 @@ class ExportBackend:
         except DecisionExportError as exc:
             return False, str(exc)
         self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # The base is loaded only at export: kept here and rechecked right before that load.
+        self._decision_base_pin = resolved if adapter_only else None
         # An adapter folder loads its base at export time, under the credential of this load.
         self._decision_token = token
         self.is_vision = False
@@ -1172,8 +1237,23 @@ class ExportBackend:
                 "Decision model GGUF export does not support imatrix or Q4NX conversion.",
                 None,
             )
-        from core.export.decision import DecisionExportError, run_decision_gguf_export
+        from core.export.decision import DecisionExportError, adapter_base, run_decision_gguf_export
 
+        pinned = getattr(self, "_decision_base_pin", None)
+        if pinned:
+            try:
+                current = adapter_base(self.current_checkpoint)
+            except DecisionExportError as exc:
+                return False, str(exc), None
+            if current != pinned:
+                return (
+                    False,
+                    "The adapter's base model changed after it was loaded. Load it again.",
+                    None,
+                )
+        refusal = _checkpoint_load_refusal(self.current_checkpoint, pinned)
+        if refusal:
+            return False, refusal, None
         try:
             data = run_decision_gguf_export(
                 self.current_checkpoint,
@@ -1425,10 +1505,18 @@ class ExportBackend:
                     else save_directory
                 )
                 self._write_export_metadata(final_dir)
+                if not _IS_MLX:
+                    # Compressed / torchao siblings carry no stitched MTP head; an EAGLE-3 drafter ships.
+                    self._package_drafter_merged(
+                        final_dir,
+                        repo_id if push_to_hub else None,
+                        allow_mtp = not (is_compressed or is_torchao),
+                    )
                 logger.info(f"Model saved successfully to {final_dir}")
                 output_path = str(Path(final_dir).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1468,6 +1556,7 @@ class ExportBackend:
                                     save_method = save_method,
                                     **merged_token_kw,
                                 )
+                                self._package_drafter_merged(upload_dir, repo_id)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
                             if _holds_checkpoint_weights(upload_dir):
@@ -1576,12 +1665,15 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                    # A full fine-tune trained with a drafter ships it like a merged export.
+                    self._package_drafter_merged(save_directory, repo_id if push_to_hub else None)
 
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1617,6 +1709,7 @@ class ExportBackend:
                             )
                             self.current_model.save_pretrained(upload_dir)
                             self.current_tokenizer.save_pretrained(upload_dir)
+                            self._package_drafter_merged(upload_dir, repo_id)
                         hf_api = HfApi(token = hf_token)
                         repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         repo_id = getattr(repo_url, "repo_id", repo_id)
@@ -1700,6 +1793,8 @@ class ExportBackend:
             )
         # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        # True only after the load's consent gate passed; only then may the converter run auto_map code.
+        remote_code_approved = bool(getattr(self, "trust_remote_code", False))
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
         # push shares and names token= itself.
         local_token_kw = (
@@ -1712,6 +1807,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         exported_ggufs: List[str] = []
+        drafter_gguf_files: List[str] = []
         exported_modelfile = False
         exported_modelfile_bytes: Optional[bytes] = None
         exported_is_vlm = False
@@ -1754,7 +1850,7 @@ class ExportBackend:
                 try:
                     # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
                     # llama-quantize gguf API; scoped to the conversion.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
                             self.current_tokenizer,
@@ -1801,6 +1897,10 @@ class ExportBackend:
                             "GGUF conversion produced only AppleDouble metadata companions "
                             f"and no usable .gguf file for {abs_save_dir}"
                         )
+                    drafter_gguf_files = self._package_drafter_gguf(
+                        reported.get("save_directory") or _model_tmp, abs_save_dir, exported_ggufs
+                    )
+                    exported_ggufs.extend(f for f in drafter_gguf_files if f.endswith(".gguf"))
                     exported_is_vlm = bool(
                         reported.get("is_vlm", getattr(self, "is_vision", False))
                     )
@@ -1898,6 +1998,7 @@ class ExportBackend:
                         )
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1922,6 +2023,7 @@ class ExportBackend:
                         allow_patterns = [
                             *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
                             *(["Modelfile"] if exported_modelfile else []),
+                            *(["drafter.json"] if drafter_gguf_files else []),
                         ],
                     )
                     if exported_config is not None:
@@ -1956,7 +2058,7 @@ class ExportBackend:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
                     # Converts as well as pushes, so it needs the same scoped pin.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         self.current_model.push_to_hub_gguf(
                             repo_id,
                             self.current_tokenizer,
@@ -1986,6 +2088,98 @@ class ExportBackend:
                     output_path,
                 )
             return False, f"GGUF export failed: {str(e)}", None
+
+    def _attach_full_checkpoint_mtp_head(self, checkpoint_path: str) -> None:
+        """A full fine-tune keeps its trained MTP head only inside its shards, which transformers
+        drops on load: attach it so every export writes it back."""
+        try:
+            from core.export.drafter_export import training_manifest
+
+            if not os.path.isdir(checkpoint_path) or os.path.isfile(
+                os.path.join(checkpoint_path, "adapter_config.json")
+            ):
+                return
+            manifest = training_manifest(checkpoint_path)
+            if not manifest or manifest.get("strategy") != "mtp":
+                return
+            from unsloth import FastModel
+
+            FastModel.get_mtp_head(self.current_model, source = checkpoint_path)
+            logger.info(f"Attached the trained MTP head from {checkpoint_path}")
+        except Exception as exception:
+            logger.warning(f"Could not attach the trained MTP head: {exception}")
+
+    def _package_drafter_merged(
+        self,
+        final_dir: str,
+        repo_id: Optional[str],
+        allow_mtp: bool = True,
+    ) -> None:
+        """Ship the drafter trained with this fine-tune next to a merged export (best-effort: the
+        merged model is valid without it)."""
+        try:
+            from core.export.drafter_export import package_merged
+            info = package_merged(
+                self.current_checkpoint,
+                final_dir,
+                verifier = repo_id,
+                allow_mtp = allow_mtp,
+                token = self._checkpoint_token,
+            )
+            if info:
+                logger.info(f"Packaged the trained {info['strategy']} drafter into {final_dir}")
+        except Exception as exception:
+            logger.warning(f"Could not package the trained drafter: {exception}")
+
+    def _package_drafter_lora(
+        self,
+        adapter_dir: str,
+        head_saved: Optional[bool] = None,
+    ) -> bool:
+        try:
+            from core.export.drafter_export import package_lora
+            return (
+                package_lora(
+                    self.current_checkpoint, adapter_dir, head_saved, token = self._checkpoint_token
+                )
+                is not None
+            )
+        except Exception as exception:
+            logger.warning(f"Could not carry the drafter manifest with the adapter: {exception}")
+            return False
+
+    def _push_drafter_lora_manifest(self, hf_api, repo_id: str) -> None:
+        """push_to_hub uploads the head beside the adapter but not Studio's manifest."""
+        try:
+            from unsloth.save import _attached_mtp_head
+            from core.export.drafter_export import DRAFTER_MANIFEST
+            with tempfile.TemporaryDirectory() as tmp:
+                head = _attached_mtp_head(self.current_model) is not None
+                if self._package_drafter_lora(tmp, head_saved = head):
+                    hf_api.upload_file(
+                        path_or_fileobj = os.path.join(tmp, DRAFTER_MANIFEST),
+                        path_in_repo = DRAFTER_MANIFEST,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                    )
+        except Exception as exception:
+            logger.warning(f"Could not upload the drafter manifest with the adapter: {exception}")
+
+    def _package_drafter_gguf(self, merged_dir: str, gguf_dir: str, ggufs: List[str]) -> List[str]:
+        try:
+            from core.export.drafter_export import package_gguf
+
+            info, files = package_gguf(
+                self.current_checkpoint, merged_dir, gguf_dir, ggufs, token = self._checkpoint_token
+            )
+            if info:
+                logger.info(f"Packaged the trained {info['strategy']} drafter with the GGUF export")
+            return files
+        except Exception as exception:
+            logger.warning(
+                f"Could not package the trained drafter with the GGUF export: {exception}"
+            )
+            return []
 
     def _write_q4nx_companions(self, q4nx_dir: Path, config: Optional[bytes]) -> None:
         """The tokenizer files FastFlowLM loads next to model.q4nx (see q4nx.CONFIG_FILES)."""
@@ -2357,11 +2551,13 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                    self._package_drafter_lora(save_directory)
                 self._write_export_metadata(save_directory)
                 logger.info(f"Adapter saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -2418,6 +2614,7 @@ class ExportBackend:
                     _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
+                    self._push_drafter_lora_manifest(hf_api, repo_id)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path
