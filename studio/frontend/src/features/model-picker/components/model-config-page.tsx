@@ -26,10 +26,12 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  getCachedModelPath,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
@@ -68,6 +70,7 @@ import {
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
   DRAFTER_MODEL_SPEC_TYPES,
   MLX_SPECULATIVE_TYPES,
@@ -76,6 +79,7 @@ import {
   mlxSpeculativeMode,
   resolveSpeculativeType,
 } from "@/lib/speculative-modes";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import {
   type ReactNode,
@@ -158,6 +162,7 @@ import {
 } from "../model-config/model-config-draft";
 import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
+import { resolveModelLocation, shortModelLocation } from "../model-config/model-location";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
   CACHE_RAM_MAX,
@@ -226,6 +231,8 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ChevronLeftIcon,
 } from "lucide-react";
@@ -2350,6 +2357,79 @@ function ExtraArgsRow({
   );
 }
 
+/** Read-only on-disk location: short name by default, click for the full selectable path. */
+function ModelLocationRow({ path }: { path: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+  const handleCopy = () => {
+    void copyToClipboard(path).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => setCopied(false), 1800);
+    });
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className={ROW_CLASS}>
+        <span className={`${LABEL_CLASS} shrink-0`}>Location</span>
+        <div className="flex min-w-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setExpanded((open) => !open)}
+            aria-expanded={expanded}
+            aria-label={expanded ? "Hide full model location" : "Show full model location"}
+            title={path}
+            className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-ui-11 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {/* Clipped from the left so the file's quant suffix stays in view. */}
+            <span dir="rtl" className="min-w-0 truncate text-left">
+              <bdi dir="ltr">{shortModelLocation(path)}</bdi>
+            </span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.75}
+              className={`size-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+            />
+          </button>
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                onClick={handleCopy}
+                aria-label="Copy model location"
+                className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+              >
+                <HugeiconsIcon
+                  icon={copied ? Tick02Icon : Copy01Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="tooltip-compact">
+              {copied ? "Copied" : "Copy path"}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+      {expanded && (
+        <p className="select-all break-all rounded-md bg-[var(--panel-input-surface)] px-2 py-1.5 font-mono text-ui-11 leading-snug text-muted-foreground">
+          {path}
+        </p>
+      )}
+    </div>
+  );
+}
+
 interface ModelConfigPageProps {
   target: ModelPickTarget;
   onBack?: () => void;
@@ -2607,6 +2687,45 @@ export function ModelConfigPage({
   const nativePathToken =
     target.meta.nativePathToken ??
     (isActiveModel ? activeNativePathToken : null);
+  const modelLocation = useMemo(() => resolveModelLocation(target), [target]);
+  const locationRepoId =
+    modelLocation?.kind === "cachedRepo" ? modelLocation.repoId : null;
+  const locationVariant =
+    modelLocation?.kind === "cachedRepo" ? modelLocation.variant : undefined;
+  const locationKey =
+    locationRepoId != null
+      ? `${locationRepoId}\n${locationVariant ?? ""}`
+      : null;
+  // Key-matched: a target switch must not show the previous model's path while its lookup runs.
+  const [resolvedLocation, setResolvedLocation] = useState<{
+    key: string;
+    path: string;
+  } | null>(null);
+  useEffect(() => {
+    // The row lives under Advanced settings: no lookup until it can show.
+    if (locationRepoId == null || !showAdvanced) {
+      return;
+    }
+    let cancelled = false;
+    void getCachedModelPath(locationRepoId, locationVariant)
+      .then((resolved) => {
+        if (!cancelled) {
+          setResolvedLocation({
+            key: `${locationRepoId}\n${locationVariant ?? ""}`,
+            path: resolved.path,
+          });
+        }
+      })
+      // Not in the cache (a pick still to download, an external provider id): stay hidden.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [locationRepoId, locationVariant, showAdvanced]);
+  const cachedLocationPath =
+    resolvedLocation?.key === locationKey ? resolvedLocation.path : null;
+  const modelLocationPath =
+    modelLocation?.kind === "path" ? modelLocation.path : cachedLocationPath;
   const templateDefaults = useDefaultChatTemplate(
     target.id,
     target.ggufVariant,
@@ -3825,6 +3944,9 @@ export function ModelConfigPage({
               onCheckedChange={toggleAdvanced}
             />
 
+            {showAdvanced && modelLocationPath && (
+              <ModelLocationRow path={modelLocationPath} />
+            )}
             {showAdvanced && (
               <GgufAdvancedSettings
                 config={config}
@@ -3878,6 +4000,9 @@ export function ModelConfigPage({
                   checked={showAdvanced}
                   onCheckedChange={toggleAdvanced}
                 />
+                {showAdvanced && modelLocationPath && (
+                  <ModelLocationRow path={modelLocationPath} />
+                )}
                 {showAdvanced && (
                   <MlxAdvancedSettings
                     config={config}
