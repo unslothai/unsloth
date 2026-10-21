@@ -365,7 +365,7 @@
 	   pixels, so a 1.5px border renders as 1px. */
 	--slider-thumb-shadow: inset 0 0 0 1.5px #e3e3e3, 0 1px 3px rgb(0 0 0 / 0.06);
 	--slider-track-height: calc(0.1875rem * var(--ui-space-scale, 1));
-	--slider-thumb-size: calc(1.25rem * var(--ui-space-scale, 1));
+	--slider-thumb-size: calc(1.375rem * var(--ui-space-scale, 1));
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
 	   copy/download, user action bar, delete button). One token drives
@@ -4256,14 +4256,14 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-left: calc(1.375rem * var(--ui-space-scale, 1));
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-left: calc(1.375rem * var(--ui-space-scale, 1));
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
@@ -5241,7 +5241,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 @supports (width: round(1.5px, 1px)) {
 	:root {
 		--slider-track-height: round(calc(0.1875rem * var(--ui-space-scale, 1)), 1px);
-		--slider-thumb-size: round(calc(1.25rem * var(--ui-space-scale, 1)), 1px);
+		--slider-thumb-size: round(calc(1.375rem * var(--ui-space-scale, 1)), 1px);
 	}
 }
 

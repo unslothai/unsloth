@@ -6,7 +6,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-const THUMB_SIZE_PX = 20;
+const THUMB_SIZE_PX = 22;
 
 function getThumbInBoundsOffset(width: number, percent: number) {
   const halfWidth = width / 2;
