@@ -1465,6 +1465,13 @@ def _iter_tensors(obj: Any, depth: int = 0) -> Iterator[Any]:
             yield from _iter_tensors(v, depth + 1)
 
 
+def _to_primary(out: Any, primary: Any) -> Any:
+    """Copy a replica result home with captures held off: the job's own hold dropped when the worker finished."""
+    from .diffusion_cuda_graph import outside_capture
+    with outside_capture():
+        return move_to_device(out, primary)
+
+
 class _ReplicaWorker:
     """One daemon thread bound to the replica's card: set_device, grad / inference / autocast mode and the caller's
     context variables (inductor overrides live in one on torch >= 2.12) are applied per job."""
@@ -1941,7 +1948,7 @@ class CfgParallelRouter:
         self.stats["replica_calls"] += 1
         self.stats["steps_parallel"] += 1
         self.stats["pairs_parallel"] += 1
-        return first, move_to_device(second, self.primary)
+        return first, _to_primary(second, self.primary)
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
@@ -2040,7 +2047,7 @@ class CfgParallelRouter:
             self.prefetched.clear()
             return None
         self.stats["predicted_hits"] += 1
-        return move_to_device(out, self.primary)
+        return _to_primary(out, self.primary)
 
     def _drop_pending(self) -> None:
         pending, self.pending = self.pending, None
@@ -2158,7 +2165,7 @@ class CfgParallelRouter:
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
         out = self.worker.call(_replica_call(replica, r_args, r_kwargs))
-        return move_to_device(out, self.primary)
+        return _to_primary(out, self.primary)
 
 
 def _replica_call(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:

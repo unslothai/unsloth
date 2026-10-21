@@ -385,3 +385,22 @@ def test_a_worker_that_fails_to_start_releases_its_capture_hold(monkeypatch):
         mg._ReplicaWorker(torch.device("cpu"))
     assert cg._OUTSIDE_JOBS == 0
 
+
+def test_captures_stay_held_off_while_a_replica_result_is_copied_home(_zs, monkeypatch):
+    model = _zimage()
+    pipe = types.SimpleNamespace(transformer = model)
+    _zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+    router, _replicas = _router(model)
+    held = []
+    move = mg.move_to_device
+
+    def recording(obj, device, *a, **kw):
+        if device == router.primary:
+            held.append(cg._OUTSIDE_JOBS)
+        return move(obj, device, *a, **kw)
+
+    monkeypatch.setattr(mg, "move_to_device", recording)
+    _zimage_steps(model, pipe, 3)
+    assert router.stats["pairs_parallel"] == 3
+    assert held and all(n >= 1 for n in held)
+    assert cg._OUTSIDE_JOBS == 0
