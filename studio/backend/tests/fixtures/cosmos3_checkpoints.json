@@ -1,0 +1,1462 @@
+{
+ "nvidia/Cosmos3-Edge-Policy-DROID@a7c7288f9b6ac1684e993007b0f9703dd26e58ef": {
+  "config": {
+   "architectures": [
+    "Cosmos3ForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_omni"
+  },
+  "listing": [
+   [
+    ".gitattributes",
+    1678
+   ],
+   [
+    "BIAS.md",
+    4720
+   ],
+   [
+    "EXPLAINABILITY.md",
+    3189
+   ],
+   [
+    "PRIVACY.md",
+    1215
+   ],
+   [
+    "README.md",
+    25527
+   ],
+   [
+    "SAFETY.md",
+    3677
+   ],
+   [
+    "chat_template.jinja",
+    12158
+   ],
+   [
+    "checkpoint.json",
+    192
+   ],
+   [
+    "config.json",
+    7527
+   ],
+   [
+    "convert_cosmos3_to_diffusers.py",
+    55483
+   ],
+   [
+    "generation_config.json",
+    159
+   ],
+   [
+    "images/benchmark-robolab.png",
+    205014
+   ],
+   [
+    "model.safetensors.index.json",
+    104914
+   ],
+   [
+    "model_index.json",
+    555
+   ],
+   [
+    "modular_model_index.json",
+    1335
+   ],
+   [
+    "preprocessor_config.json",
+    334
+   ],
+   [
+    "processor_config.json",
+    781
+   ],
+   [
+    "scheduler/scheduler_config.json",
+    888
+   ],
+   [
+    "special_tokens_map.json",
+    563
+   ],
+   [
+    "text_tokenizer/chat_template.jinja",
+    12158
+   ],
+   [
+    "text_tokenizer/special_tokens_map.json",
+    563
+   ],
+   [
+    "text_tokenizer/tokenizer.json",
+    17077500
+   ],
+   [
+    "text_tokenizer/tokenizer_config.json",
+    177253
+   ],
+   [
+    "tokenizer.json",
+    17077500
+   ],
+   [
+    "tokenizer_config.json",
+    177253
+   ],
+   [
+    "transformer/config.json",
+    1079
+   ],
+   [
+    "transformer/cosmos_framework_model.safetensors",
+    11032
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+    5000041944
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+    1748779008
+   ],
+   [
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    53623
+   ],
+   [
+    "vae/config.json",
+    1755
+   ],
+   [
+    "vae/diffusion_pytorch_model.safetensors",
+    1409400600
+   ],
+   [
+    "video_preprocessor_config.json",
+    367
+   ],
+   [
+    "vision_encoder/model.safetensors",
+    978739880
+   ]
+  ],
+  "model_index": {
+   "_class_name": "Cosmos3OmniPipeline",
+   "_diffusers_version": "0.40.0.dev0",
+   "default_use_system_prompt": false,
+   "enable_safety_checker": false,
+   "safety_checker": [
+    null,
+    null
+   ],
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    null,
+    null
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "PreTrainedTokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "use_native_flow_schedule": true,
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ]
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "backbone_type": "cosmos3_edge_nemotron_dense",
+   "hidden_size": 2048,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 28,
+   "sound_gen": false
+  }
+ },
+ "nvidia/Cosmos3-Edge@344d602b128d1bbdacb43b08d0a3626f46343e29": {
+  "config": {
+   "architectures": [
+    "Cosmos3EdgeForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_edge"
+  },
+  "listing": [
+   [
+    ".gitattributes",
+    2896
+   ],
+   [
+    "BIAS.md",
+    4720
+   ],
+   [
+    "EXPLAINABILITY.md",
+    3189
+   ],
+   [
+    "PRIVACY.md",
+    1215
+   ],
+   [
+    "README.md",
+    53043
+   ],
+   [
+    "SAFETY.md",
+    3677
+   ],
+   [
+    "assets/benchmark-image2video.png",
+    58518
+   ],
+   [
+    "assets/benchmark-overall.png",
+    81007
+   ],
+   [
+    "assets/diffusers_outputs/edge_action_fd_diffusers_chunk_00.mp4",
+    14797
+   ],
+   [
+    "assets/diffusers_outputs/edge_action_fd_diffusers_chunk_01.mp4",
+    13183
+   ],
+   [
+    "assets/diffusers_outputs/edge_action_fd_umi_2chunk_diffusers.mp4",
+    23553
+   ],
+   [
+    "assets/diffusers_outputs/edge_action_id_av_inverse_0_diffusers.json",
+    15925
+   ],
+   [
+    "assets/diffusers_outputs/edge_action_id_av_inverse_1_diffusers.json",
+    15676
+   ],
+   [
+    "assets/diffusers_outputs/edge_i2v_diffusers.mp4",
+    1278049
+   ],
+   [
+    "assets/edge_action_fd_umi_2chunk_output.mp4",
+    32755
+   ],
+   [
+    "assets/edge_action_id_av_0_output.json",
+    11216
+   ],
+   [
+    "assets/edge_action_id_av_0_output.png",
+    113804
+   ],
+   [
+    "assets/edge_action_id_av_1_output.json",
+    10990
+   ],
+   [
+    "assets/edge_action_id_av_1_output.png",
+    102489
+   ],
+   [
+    "assets/edge_i2v_output.mp4",
+    8053812
+   ],
+   [
+    "assets/example_action_fd_umi_action_chunks.json",
+    10350
+   ],
+   [
+    "assets/example_action_fd_umi_first_frame.png",
+    67026
+   ],
+   [
+    "assets/example_action_id_av_0_input.mp4",
+    1125838
+   ],
+   [
+    "assets/example_action_id_av_1_input.mp4",
+    1639407
+   ],
+   [
+    "assets/example_i2v_input.jpg",
+    860765
+   ],
+   [
+    "assets/example_i2v_prompt.json",
+    9186
+   ],
+   [
+    "assets/example_reasoning_input.png",
+    230656
+   ],
+   [
+    "assets/example_reasoning_prompt.json",
+    151
+   ],
+   [
+    "assets/negative_prompt.json",
+    17578
+   ],
+   [
+    "chat_template.jinja",
+    12158
+   ],
+   [
+    "config.json",
+    1679
+   ],
+   [
+    "generation_config.json",
+    154
+   ],
+   [
+    "images/benchmark-reasoning.png",
+    265797
+   ],
+   [
+    "model.safetensors.index.json",
+    68564
+   ],
+   [
+    "model_index.json",
+    555
+   ],
+   [
+    "modular_model_index.json",
+    1357
+   ],
+   [
+    "preprocessor_config.json",
+    334
+   ],
+   [
+    "processor_config.json",
+    875
+   ],
+   [
+    "scheduler/scheduler_config.json",
+    889
+   ],
+   [
+    "special_tokens_map.json",
+    563
+   ],
+   [
+    "text_tokenizer/chat_template.jinja",
+    12158
+   ],
+   [
+    "text_tokenizer/special_tokens_map.json",
+    563
+   ],
+   [
+    "text_tokenizer/tokenizer.json",
+    17077500
+   ],
+   [
+    "text_tokenizer/tokenizer_config.json",
+    393
+   ],
+   [
+    "tokenizer.json",
+    17077500
+   ],
+   [
+    "tokenizer_config.json",
+    177253
+   ],
+   [
+    "transformer/config.json",
+    1075
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+    5000040072
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+    1739335512
+   ],
+   [
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    53623
+   ],
+   [
+    "vae/config.json",
+    1755
+   ],
+   [
+    "vae/diffusion_pytorch_model.safetensors",
+    1409400600
+   ],
+   [
+    "video_preprocessor_config.json",
+    367
+   ],
+   [
+    "vision_encoder/model.safetensors",
+    978739880
+   ]
+  ],
+  "model_index": {
+   "_class_name": "Cosmos3OmniPipeline",
+   "_diffusers_version": "0.40.0.dev0",
+   "default_use_system_prompt": false,
+   "enable_safety_checker": false,
+   "safety_checker": [
+    null,
+    null
+   ],
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    null,
+    null
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "PreTrainedTokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "use_native_flow_schedule": true,
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ]
+  },
+  "scheduler_config": {
+   "_class_name": "UniPCMultistepScheduler",
+   "_diffusers_version": "0.40.0.dev0",
+   "beta_end": 0.02,
+   "beta_schedule": "linear",
+   "beta_start": 0.0001,
+   "disable_corrector": [],
+   "dynamic_thresholding_ratio": 0.995,
+   "final_sigmas_type": "zero",
+   "flow_shift": 1.0,
+   "lower_order_final": true,
+   "num_train_timesteps": 1000,
+   "predict_x0": true,
+   "prediction_type": "flow_prediction",
+   "rescale_betas_zero_snr": false,
+   "sample_max_value": 1.0,
+   "shift_terminal": null,
+   "sigma_max": 200.0,
+   "sigma_min": 0.147,
+   "solver_order": 2,
+   "solver_p": null,
+   "solver_type": "bh2",
+   "steps_offset": 0,
+   "thresholding": false,
+   "time_shift_type": "exponential",
+   "timestep_spacing": "linspace",
+   "trained_betas": null,
+   "use_beta_sigmas": false,
+   "use_dynamic_shifting": false,
+   "use_exponential_sigmas": false,
+   "use_flow_sigmas": true,
+   "use_karras_sigmas": true
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "backbone_type": "cosmos3_edge_nemotron_dense",
+   "hidden_size": 2048,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 28,
+   "sound_gen": false
+  },
+  "vae_config": {
+   "_class_name": "AutoencoderKLWan",
+   "scale_factor_spatial": 16,
+   "scale_factor_temporal": 4,
+   "z_dim": 48
+  }
+ },
+ "nvidia/Cosmos3-Nano-Policy-DROID@805c0d6d46196ecdc789213a6de72303c383895b": {
+  "config": {
+   "architectures": [
+    "Cosmos3ForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_omni"
+  },
+  "listing": [
+   [
+    ".gitattributes",
+    1694
+   ],
+   [
+    "BIAS.md",
+    4720
+   ],
+   [
+    "EXPLAINABILITY.md",
+    3189
+   ],
+   [
+    "PRIVACY.md",
+    1215
+   ],
+   [
+    "README.md",
+    22855
+   ],
+   [
+    "SAFETY.md",
+    3677
+   ],
+   [
+    "assets/Pick_up_the_banana_and_place_it_in_the_bowl_0_env0_viewport.mp4",
+    864271
+   ],
+   [
+    "chat_template.json",
+    5499
+   ],
+   [
+    "checkpoint.json",
+    2
+   ],
+   [
+    "config.json",
+    7735
+   ],
+   [
+    "generation_config.json",
+    269
+   ],
+   [
+    "images/benchmark-action-2.png",
+    85391
+   ],
+   [
+    "images/benchmark-roboarena.png",
+    282424
+   ],
+   [
+    "merges.txt",
+    1671839
+   ],
+   [
+    "model.safetensors.index.json",
+    112501
+   ],
+   [
+    "model_index.json",
+    425
+   ],
+   [
+    "modular_model_index.json",
+    1396
+   ],
+   [
+    "preprocessor_config.json",
+    390
+   ],
+   [
+    "scheduler/scheduler_config.json",
+    884
+   ],
+   [
+    "text_tokenizer/added_tokens.json",
+    707
+   ],
+   [
+    "text_tokenizer/chat_template.jinja",
+    5292
+   ],
+   [
+    "text_tokenizer/merges.txt",
+    1671853
+   ],
+   [
+    "text_tokenizer/special_tokens_map.json",
+    613
+   ],
+   [
+    "text_tokenizer/tokenizer.json",
+    11422654
+   ],
+   [
+    "text_tokenizer/tokenizer_config.json",
+    5404
+   ],
+   [
+    "text_tokenizer/vocab.json",
+    2776833
+   ],
+   [
+    "tokenizer.json",
+    7032403
+   ],
+   [
+    "tokenizer_config.json",
+    10868
+   ],
+   [
+    "transformer/config.json",
+    1386
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00001-of-00007.safetensors",
+    4902249008
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00002-of-00007.safetensors",
+    4999863656
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00003-of-00007.safetensors",
+    4932719448
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00004-of-00007.safetensors",
+    4983084656
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00005-of-00007.safetensors",
+    4949498576
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00006-of-00007.safetensors",
+    4261644464
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00007-of-00007.safetensors",
+    1317303952
+   ],
+   [
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    78446
+   ],
+   [
+    "vae/config.json",
+    1750
+   ],
+   [
+    "vae/diffusion_pytorch_model.safetensors",
+    1409400600
+   ],
+   [
+    "video_preprocessor_config.json",
+    385
+   ],
+   [
+    "vision_encoder/config.json",
+    509
+   ],
+   [
+    "vision_encoder/model.safetensors",
+    1152811416
+   ],
+   [
+    "vocab.json",
+    2776833
+   ]
+  ],
+  "model_index": {
+   "_class_name": "Cosmos3OmniDiffusersPipeline",
+   "_diffusers_version": "0.37.1",
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "Qwen2TokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ],
+   "vision_encoder": [
+    "transformers",
+    "Qwen3VLVisionModel"
+   ]
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "hidden_size": 4096,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 36,
+   "sound_gen": false
+  }
+ },
+ "nvidia/Cosmos3-Nano@e59a53c25979a090fa8706c9acc0c254a6e89b92": {
+  "config": {
+   "architectures": [
+    "Cosmos3ForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_omni"
+  },
+  "listing": [
+   [
+    ".gitattributes",
+    2357
+   ],
+   [
+    "BIAS.md",
+    4720
+   ],
+   [
+    "EXPLAINABILITY.md",
+    3189
+   ],
+   [
+    "PRIVACY.md",
+    1215
+   ],
+   [
+    "README.md",
+    43142
+   ],
+   [
+    "SAFETY.md",
+    3677
+   ],
+   [
+    "assets/example_action_fd_agibotworld_4chunk_output.mp4",
+    672918
+   ],
+   [
+    "assets/example_action_fd_agibotworld_action_chunks.json",
+    48386
+   ],
+   [
+    "assets/example_action_fd_agibotworld_first_frame.png",
+    637580
+   ],
+   [
+    "assets/example_action_id_av_0_input.mp4",
+    1125838
+   ],
+   [
+    "assets/example_action_id_av_0_output.json",
+    15976
+   ],
+   [
+    "assets/example_action_id_av_0_output.png",
+    135678
+   ],
+   [
+    "assets/example_action_id_av_1_input.mp4",
+    1639407
+   ],
+   [
+    "assets/example_action_id_av_1_output.json",
+    15704
+   ],
+   [
+    "assets/example_action_id_av_1_output.png",
+    133968
+   ],
+   [
+    "assets/example_i2v_input.jpg",
+    860765
+   ],
+   [
+    "assets/example_i2v_output.mp4",
+    22843643
+   ],
+   [
+    "assets/example_i2v_prompt.json",
+    9176
+   ],
+   [
+    "assets/example_i2vs_output.mp4",
+    17843192
+   ],
+   [
+    "assets/example_reasoning_input.png",
+    230656
+   ],
+   [
+    "assets/example_reasoning_prompt.json",
+    151
+   ],
+   [
+    "assets/example_t2v_diffusers_output.mp4",
+    1541990
+   ],
+   [
+    "assets/example_t2v_output.mp4",
+    9163599
+   ],
+   [
+    "assets/example_t2v_prompt.json",
+    7710
+   ],
+   [
+    "assets/example_t2v_prompt_short.txt",
+    46
+   ],
+   [
+    "assets/example_t2vs_output.mp4",
+    4053521
+   ],
+   [
+    "assets/example_t2vs_prompt.json",
+    8885
+   ],
+   [
+    "assets/negative_prompt.json",
+    15379
+   ],
+   [
+    "chat_template.json",
+    5499
+   ],
+   [
+    "checkpoint.json",
+    2
+   ],
+   [
+    "config.json",
+    8166
+   ],
+   [
+    "generation_config.json",
+    269
+   ],
+   [
+    "images/benchmark-action-1.png",
+    101013
+   ],
+   [
+    "images/benchmark-overall.png",
+    268890
+   ],
+   [
+    "images/benchmark-reasoning.png",
+    2683196
+   ],
+   [
+    "images/benchmark-visual-audio.png",
+    366106
+   ],
+   [
+    "merges.txt",
+    1671839
+   ],
+   [
+    "model.safetensors.index.json",
+    112969
+   ],
+   [
+    "model_index.json",
+    502
+   ],
+   [
+    "modular_model_index.json",
+    1667
+   ],
+   [
+    "preprocessor_config.json",
+    390
+   ],
+   [
+    "scheduler/scheduler_config.json",
+    884
+   ],
+   [
+    "sound_tokenizer/config.json",
+    1310
+   ],
+   [
+    "sound_tokenizer/diffusion_pytorch_model.safetensors",
+    1985176840
+   ],
+   [
+    "text_tokenizer/added_tokens.json",
+    707
+   ],
+   [
+    "text_tokenizer/chat_template.jinja",
+    5292
+   ],
+   [
+    "text_tokenizer/merges.txt",
+    1671853
+   ],
+   [
+    "text_tokenizer/special_tokens_map.json",
+    613
+   ],
+   [
+    "text_tokenizer/tokenizer.json",
+    11422654
+   ],
+   [
+    "text_tokenizer/tokenizer_config.json",
+    5404
+   ],
+   [
+    "text_tokenizer/vocab.json",
+    2776833
+   ],
+   [
+    "tokenizer.json",
+    7032403
+   ],
+   [
+    "tokenizer_config.json",
+    10868
+   ],
+   [
+    "transformer/config.json",
+    1383
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00001-of-00007.safetensors",
+    4902257280
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00002-of-00007.safetensors",
+    4999863656
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00003-of-00007.safetensors",
+    4932719448
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00004-of-00007.safetensors",
+    4983084656
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00005-of-00007.safetensors",
+    4949498576
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00006-of-00007.safetensors",
+    4261644464
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00007-of-00007.safetensors",
+    1318361208
+   ],
+   [
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    78854
+   ],
+   [
+    "vae/config.json",
+    1750
+   ],
+   [
+    "vae/diffusion_pytorch_model.safetensors",
+    1409400600
+   ],
+   [
+    "video_preprocessor_config.json",
+    385
+   ],
+   [
+    "vision_encoder/config.json",
+    509
+   ],
+   [
+    "vision_encoder/model.safetensors",
+    1152811416
+   ],
+   [
+    "vocab.json",
+    2776833
+   ]
+  ],
+  "model_index": {
+   "_class_name": "Cosmos3OmniDiffusersPipeline",
+   "_diffusers_version": "0.37.1",
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    "diffusers",
+    "Cosmos3AVAEAudioTokenizer"
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "Qwen2TokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ],
+   "vision_encoder": [
+    "transformers",
+    "Qwen3VLVisionModel"
+   ]
+  },
+  "scheduler_config": {
+   "_class_name": "UniPCMultistepScheduler",
+   "_diffusers_version": "0.37.1",
+   "beta_end": 0.02,
+   "beta_schedule": "linear",
+   "beta_start": 0.0001,
+   "disable_corrector": [],
+   "dynamic_thresholding_ratio": 0.995,
+   "final_sigmas_type": "zero",
+   "flow_shift": 1.0,
+   "lower_order_final": true,
+   "num_train_timesteps": 1000,
+   "predict_x0": true,
+   "prediction_type": "flow_prediction",
+   "rescale_betas_zero_snr": false,
+   "sample_max_value": 1.0,
+   "shift_terminal": null,
+   "sigma_max": 200.0,
+   "sigma_min": 0.147,
+   "solver_order": 2,
+   "solver_p": null,
+   "solver_type": "bh2",
+   "steps_offset": 0,
+   "thresholding": false,
+   "time_shift_type": "exponential",
+   "timestep_spacing": "linspace",
+   "trained_betas": null,
+   "use_beta_sigmas": false,
+   "use_dynamic_shifting": false,
+   "use_exponential_sigmas": false,
+   "use_flow_sigmas": true,
+   "use_karras_sigmas": true
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "hidden_size": 4096,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 36,
+   "sound_gen": true
+  },
+  "vae_config": {
+   "_class_name": "AutoencoderKLWan",
+   "scale_factor_spatial": 16,
+   "scale_factor_temporal": 4,
+   "z_dim": 48
+  }
+ },
+ "nvidia/Cosmos3-Super@f543c56225b2e04d0ad141e29655be3a45d9c455": {
+  "config": {
+   "architectures": [
+    "Cosmos3ForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_omni"
+  },
+  "listing": [
+   [
+    ".gitattributes",
+    2000
+   ],
+   [
+    "BIAS.md",
+    4720
+   ],
+   [
+    "EXPLAINABILITY.md",
+    3189
+   ],
+   [
+    "PRIVACY.md",
+    1215
+   ],
+   [
+    "README.md",
+    42915
+   ],
+   [
+    "SAFETY.md",
+    3677
+   ],
+   [
+    "assets/example_action_fd_agibotworld_4chunk_output.mp4",
+    672918
+   ],
+   [
+    "assets/example_action_fd_agibotworld_action_chunks.json",
+    48386
+   ],
+   [
+    "assets/example_action_fd_agibotworld_first_frame.png",
+    637580
+   ],
+   [
+    "assets/example_action_id_av_0_input.mp4",
+    1125838
+   ],
+   [
+    "assets/example_action_id_av_0_output.json",
+    15976
+   ],
+   [
+    "assets/example_action_id_av_0_output.png",
+    135678
+   ],
+   [
+    "assets/example_action_id_av_1_input.mp4",
+    1639407
+   ],
+   [
+    "assets/example_action_id_av_1_output.json",
+    15704
+   ],
+   [
+    "assets/example_action_id_av_1_output.png",
+    133968
+   ],
+   [
+    "assets/example_i2v_input.jpg",
+    860765
+   ],
+   [
+    "assets/example_i2v_output.mp4",
+    17298256
+   ],
+   [
+    "assets/example_i2v_prompt.json",
+    9176
+   ],
+   [
+    "assets/example_i2vs_output.mp4",
+    15752836
+   ],
+   [
+    "assets/example_reasoning_input.png",
+    230656
+   ],
+   [
+    "assets/example_reasoning_prompt.json",
+    151
+   ],
+   [
+    "assets/example_t2v_diffusers_output.mp4",
+    1693143
+   ],
+   [
+    "assets/example_t2v_output.mp4",
+    9514932
+   ],
+   [
+    "assets/example_t2v_prompt.json",
+    7710
+   ],
+   [
+    "assets/example_t2v_prompt_short.txt",
+    46
+   ],
+   [
+    "assets/example_t2vs_output.mp4",
+    4407722
+   ],
+   [
+    "assets/example_t2vs_prompt.json",
+    8885
+   ],
+   [
+    "assets/negative_prompt.json",
+    15379
+   ],
+   [
+    "chat_template.json",
+    5499
+   ],
+   [
+    "checkpoint.json",
+    2
+   ],
+   [
+    "config.json",
+    8168
+   ],
+   [
+    "generation_config.json",
+    269
+   ],
+   [
+    "images/benchmark-action-1.png",
+    101013
+   ],
+   [
+    "images/benchmark-overall.png",
+    268890
+   ],
+   [
+    "images/benchmark-reasoning.png",
+    2683196
+   ],
+   [
+    "images/benchmark-visual-audio.png",
+    366106
+   ],
+   [
+    "merges.txt",
+    1671839
+   ],
+   [
+    "model.safetensors.index.json",
+    180394
+   ],
+   [
+    "model_index.json",
+    502
+   ],
+   [
+    "modular_model_index.json",
+    1672
+   ],
+   [
+    "preprocessor_config.json",
+    390
+   ],
+   [
+    "scheduler/scheduler_config.json",
+    884
+   ],
+   [
+    "sound_tokenizer/config.json",
+    1310
+   ],
+   [
+    "sound_tokenizer/diffusion_pytorch_model.safetensors",
+    1985176840
+   ],
+   [
+    "text_tokenizer/added_tokens.json",
+    707
+   ],
+   [
+    "text_tokenizer/chat_template.jinja",
+    5292
+   ],
+   [
+    "text_tokenizer/merges.txt",
+    1671853
+   ],
+   [
+    "text_tokenizer/special_tokens_map.json",
+    613
+   ],
+   [
+    "text_tokenizer/tokenizer.json",
+    11422654
+   ],
+   [
+    "text_tokenizer/tokenizer_config.json",
+    5404
+   ],
+   [
+    "text_tokenizer/vocab.json",
+    2776833
+   ],
+   [
+    "tokenizer.json",
+    7032403
+   ],
+   [
+    "tokenizer_config.json",
+    10868
+   ],
+   [
+    "transformer/config.json",
+    1383
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00001-of-00027.safetensors",
+    4932307384
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00002-of-00027.safetensors",
+    4802610968
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00003-of-00027.safetensors",
+    4949368056
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00004-of-00027.safetensors",
+    4802610968
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00005-of-00027.safetensors",
+    4949368096
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00006-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00007-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00008-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00009-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00010-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00011-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00012-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00013-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00014-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00015-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00016-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00017-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00018-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00019-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00020-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00021-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00022-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00023-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00024-of-00027.safetensors",
+    4802611024
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00025-of-00027.safetensors",
+    4949368104
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00026-of-00027.safetensors",
+    4425141960
+   ],
+   [
+    "transformer/diffusion_pytorch_model-00027-of-00027.safetensors",
+    1658435704
+   ],
+   [
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    138887
+   ],
+   [
+    "vae/config.json",
+    1750
+   ],
+   [
+    "vae/diffusion_pytorch_model.safetensors",
+    1409400600
+   ],
+   [
+    "video_preprocessor_config.json",
+    385
+   ],
+   [
+    "vision_encoder/config.json",
+    509
+   ],
+   [
+    "vision_encoder/model.safetensors",
+    1190568352
+   ],
+   [
+    "vocab.json",
+    2776833
+   ]
+  ],
+  "model_index": {
+   "_class_name": "Cosmos3OmniDiffusersPipeline",
+   "_diffusers_version": "0.37.1",
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    "diffusers",
+    "Cosmos3AVAEAudioTokenizer"
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "Qwen2TokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ],
+   "vision_encoder": [
+    "transformers",
+    "Qwen3VLVisionModel"
+   ]
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "hidden_size": 5120,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 64,
+   "sound_gen": true
+  }
+ }
+}

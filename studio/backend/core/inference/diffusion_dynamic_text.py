@@ -89,6 +89,15 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     r".*\['args'\]\[[0-2]\]$",
 )
 
+# Cosmos3: the pipeline tokenizes the chat-templated prompt without padding (pipeline_cosmos3_omni.py ``_tokenize``) and
+# the transformer runs it as the understanding stream beside the generated tokens, so every prompt length is a new
+# shape. Each decoder layer takes (und_seq, gen_seq, rotary_emb) with the rotary tables cut at the text length.
+_COSMOS3_SOURCES: tuple[str, ...] = (
+    "L['und_seq']",
+    "L['rotary_emb'][0]",
+    "L['rotary_emb'][1]",
+)
+
 # Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_prompt_length_policy checks
 # it covers diffusion_families and video_families). A tuple: the denoiser's text length follows the prompt, and these
 # are the repeated block's dynamo sources that carry it. FIXED_LENGTH: the pipeline pads every prompt to one length
@@ -111,6 +120,7 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "LTX2VideoTransformer3DModel": FIXED_LENGTH,  # Gemma left-padded to max_sequence_length 1024
     "WanTransformer3DModel": FIXED_LENGTH,  # UMT5 padded to max_sequence_length 512
     "HunyuanVideo15Transformer3DModel": FIXED_LENGTH,  # padded to the tokenizer max length
+    "Cosmos3OmniTransformer": _COSMOS3_SOURCES,
 }
 
 

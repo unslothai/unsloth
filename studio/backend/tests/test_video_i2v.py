@@ -35,6 +35,9 @@ def _fam(name):
     [
         ("wan2.2-ti2v-5b", "WanImageToVideoPipeline"),
         ("ltx-2", "LTX2ImageToVideoPipeline"),
+        # Cosmos3's own pipeline takes the frame (image=), so its i2v class is its t2v class.
+        ("cosmos3-nano", "Cosmos3OmniPipeline"),
+        ("cosmos3-edge", "Cosmos3OmniPipeline"),
     ],
 )
 def test_declared_families_take_a_first_frame_through_their_i2v_pipeline(name, i2v_class):
@@ -61,11 +64,42 @@ def test_text_only_families_take_no_frame(name):
 
 def test_i2v_class_is_never_the_t2v_class():
     # A family naming its own t2v class as the i2v one would "swap" to the same class and pass the image to a
-    # __call__ that ignores it.
+    # __call__ that ignores it, unless that class is listed as taking the frame itself (Cosmos3OmniPipeline's image=).
+    from core.inference.video_families import I2V_IN_T2V_PIPELINE_CLASSES
     for fam in _FAMILIES:
         if fam.i2v_pipeline_class:
-            assert fam.i2v_pipeline_class != fam.pipeline_class
+            assert (
+                fam.i2v_pipeline_class != fam.pipeline_class
+                or fam.i2v_pipeline_class in I2V_IN_T2V_PIPELINE_CLASSES
+            )
             assert fam.i2v_pipeline_class.endswith("Pipeline")
+
+
+def test_cosmos3_allow_listed_i2v_classes_take_the_image_themselves():
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
+    import inspect
+
+    import diffusers
+
+    from core.inference.diffusion_families import _installed_at_least, pipeline_class_requirement
+    from core.inference.video_families import I2V_IN_T2V_PIPELINE_CLASSES
+
+    # The invariant above exempts these classes because their own __call__ takes the frame. Checked
+    # against diffusers: a listed class that lost image= would get the frame and drop it.
+    too_old = []
+    for name in sorted(I2V_IN_T2V_PIPELINE_CLASSES):
+        minimum, _ = pipeline_class_requirement(name)
+        # Python 3.9 installs diffusers 0.36.0, which has no Cosmos3OmniPipeline. The installed
+        # version is read on its release, as Studio's listing gate reads it (0.40.0+dfsg and
+        # 0.40.0rc1 are 0.40.0).
+        if minimum and not _installed_at_least(diffusers.__version__, minimum):
+            too_old.append(f"{name} (>= {minimum})")
+            continue
+        cls = getattr(diffusers, name, None)
+        assert cls is not None, f"diffusers {diffusers.__version__} has no {name}"
+        assert "image" in inspect.signature(cls.__call__).parameters, name
+    if too_old:
+        pytest.skip(f"diffusers {diffusers.__version__} predates {', '.join(too_old)}")
 
 
 # ── request validation ──────────────────────────────────────────────────────────────────────────
@@ -74,13 +108,15 @@ def test_i2v_class_is_never_the_t2v_class():
 def test_first_frame_accepted_only_where_declared():
     validate_video_keyframe_conditioning(_fam("wan2.2-ti2v-5b"), None, has_keyframes = True)
     validate_video_keyframe_conditioning(_fam("ltx-2"), None, has_keyframes = True)
+    validate_video_keyframe_conditioning(_fam("cosmos3-nano"), None, has_keyframes = True)
+    validate_video_keyframe_conditioning(_fam("cosmos3-edge"), None, has_keyframes = True)
     for name in ("wan2.2-t2v-a14b", "hunyuanvideo-1.5"):
         with pytest.raises(ValueError, match = "no first or last frame"):
             validate_video_keyframe_conditioning(_fam(name), None, has_keyframes = True)
 
 
 def test_last_frame_refused_by_first_frame_only_families():
-    for name in ("wan2.2-ti2v-5b", "ltx-2"):
+    for name in ("wan2.2-ti2v-5b", "ltx-2", "cosmos3-nano", "cosmos3-edge"):
         with pytest.raises(ValueError, match = "first frame only"):
             validate_video_keyframe_conditioning(
                 _fam(name), None, has_keyframes = True, has_last_frame = True
@@ -109,6 +145,13 @@ def test_text_to_video_requests_are_never_judged():
         ("ltx-2", (3, 2), (768, 512)),
         ("ltx-2", (2, 3), (512, 768)),
         ("ltx-2", (9, 16), (704, 1216)),
+        ("cosmos3-nano", (1920, 1080), (1280, 720)),
+        # Records today's preset choice: 16:10 (1.60) is nearer the (832, 480) "faster" preset
+        # (1.73) than 1280x720 (1.78), so Nano renders a 16:10 frame at 480p.
+        ("cosmos3-nano", (1920, 1200), (832, 480)),
+        ("cosmos3-nano", (1080, 1920), (720, 1280)),
+        ("cosmos3-edge", (1920, 1080), (832, 480)),
+        ("cosmos3-edge", (1080, 1920), (480, 832)),
     ],
 )
 def test_first_frame_canvas_is_the_nearest_aspect_preset(name, aspect, expected):
@@ -208,6 +251,8 @@ def test_hv15_i2v_weights_are_refused_by_the_t2v_family(repo, family):
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
         "unsloth/Wan2.2-TI2V-5B-GGUF",
         "MiniMaxAI/MiniMax-H3",
+        "nvidia/Cosmos3-Nano",
+        "nvidia/Cosmos3-Edge",
     ],
 )
 def test_supported_checkpoints_are_not_refused(repo):

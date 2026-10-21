@@ -1571,7 +1571,7 @@ _MIRROR_PAIRS: tuple[tuple[str, str], ...] = _GATED_MIRROR_PAIRS + _UNGATED_MIRR
 # canonical_base / prefer_ungated_mirror answer for video ids and nothing image-side changes.
 # Absent on purpose: HunyuanVideo-1.5, whose Tencent Hunyuan Community licence is limited to a Territory that excludes
 # the EU, UK and South Korea, which a public Hub repo cannot honour (the reason HunyuanImage-2.1 has no mirror either);
-# and Wan2.1-T2V-1.3B / -14B, for which no unsloth repo exists to carry the files.
+# and Wan2.1-T2V-1.3B / -14B and Cosmos3-Nano / -Edge, for which no unsloth repo exists to carry the files.
 _VIDEO_GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Lightricks/LTX-2.5-Diffusers", "unsloth/LTX-2.5-FP8"),
     # The split single-file release (text_encoders/, vae/, latent_upscale_models/, diffusion_models/ bf16 DiTs). In the
@@ -2238,6 +2238,9 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     # the first release that can carry it. ``_version_tuple`` stops at the first non-numeric part,
     # so a 0.41.0.dev0 build from main reads as (0, 41, 0) and satisfies this too.
     "QwenImage21Pipeline": "0.41.0",
+    # Cosmos3OmniPipeline is in 0.39.0, but Cosmos3-Edge's model_index sets use_native_flow_schedule, a pipeline
+    # config 0.40.0 added; 0.39.0 would drop it with a warning and sample Edge on the wrong schedule.
+    "Cosmos3OmniPipeline": "0.40.0",
     # FLUX.3 Image Klein (huggingface/diffusers#15046) is in no release yet, so the first one that can carry it is
     # 0.42.0. Main and the PR branch both report 0.41.0.dev0, which reads as the 0.41.0 release that lacks it, so the
     # listing probes the module file instead (``_PIPELINE_PROBE_FILES``).
@@ -2371,6 +2374,10 @@ def _local_pipeline_component_is_complete(
     identity = class_name.replace("_", "").lower()
     for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
         if not any(token in identity for token in tokens):
+            continue
+        # Text tokenizers come from transformers; a diffusers class named *Tokenizer is a model with a config.json and
+        # weights (Cosmos3-Nano's sound_tokenizer, Cosmos3AVAEAudioTokenizer).
+        if tokens[0] == "tokenizer" and library_name == "diffusers":
             continue
         # Configs can exceed the manifest cap: LTX-2's Gemma3 tokenizer_config.json is 1.1 MB.
         if not any(

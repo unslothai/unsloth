@@ -679,6 +679,8 @@ def fake_runtime(monkeypatch):
     diffusers.WanTransformer3DModel = _FakeTransformer
     diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
     diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
+    diffusers.Cosmos3OmniPipeline = _FakePipeline
+    diffusers.Cosmos3OmniTransformer = _FakeTransformer
     # A CLASS, and named the way diffusers names it: the cache layer matches on
     # type(...).__name__ to tell its own FBCache config from a MagCache / PAB one, so a lambda
     # returning a tuple reads as "some other cache" and makes the teardown unverifiable.
@@ -9618,6 +9620,8 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
     from core.inference.video_families import _FAMILIES
 
     _allow_te_prequant(monkeypatch)
+    # Cosmos3-Nano enables the Cosmos guardrail, which this hermetic runtime does not install; the plan is the question.
+    monkeypatch.setenv("UNSLOTH_COSMOS3_SAFETY_CHECKER", "0")
     calls = _capture_plan(monkeypatch)
     for fam in _FAMILIES:
         if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
@@ -13773,6 +13777,16 @@ def test_wan_load_turns_cudnn_benchmark_back_off(fake_runtime, monkeypatch):
     assert "cudnn_benchmark" not in backend.status()["speed_optims"]
 
 
+def test_vae_fused_encoder_opt_out_families():
+    # Cosmos3-Edge is measured: its I2V conditioning encode through the fused passes changed the sample. Cosmos3-Nano
+    # runs the same VAE and the same conditioning, so it takes the same setting.
+    from core.inference.video_families import _FAMILIES
+    assert {fam.name for fam in _FAMILIES if not fam.vae_fused_encoder} == {
+        "cosmos3-edge",
+        "cosmos3-nano",
+    }
+
+
 def test_cudnn_benchmark_opt_out_families():
     # Every family on the Wan or HunyuanVideo-1.5 VAE opts out (reproducibility), LTX-2 keeps its re-tune opt-out.
     from core.inference.video_families import _FAMILIES
@@ -13785,11 +13799,15 @@ def test_cudnn_benchmark_opt_out_families():
         "ltx-2.5",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
+        "cosmos3-edge",
+        "cosmos3-nano",
     } <= off
     assert all(
         fam.vae_force_fp32
         or fam.name in ("ltx-2", "ltx-2.5")
         or fam.name.startswith("hunyuanvideo-1.5")
+        # The Wan2.2 VAE in bf16, as the Cosmos3 cards run it.
+        or fam.name in ("cosmos3-edge", "cosmos3-nano")
         for fam in _FAMILIES
         if not fam.cudnn_benchmark
     )
@@ -14128,3 +14146,194 @@ def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
     _load_gguf(backend, tmp_path)
     assert speed_offload and set(speed_offload) == {not split_expected}
     assert (seen == [backend._state.pipe]) if moved else (seen == [])
+
+
+# Cosmos3-Edge fakes: Cosmos3OmniPipeline's __call__ names the card's settings (the prompt templates, fps) and takes the
+# first frame itself (image=), so the signature gates engage; it returns Cosmos3OmniPipelineOutput(video=...), already
+# unbatched, and ships UniPC at flow shift 1.0 with Karras sigmas on.
+
+
+class _FakeUniPC:
+    def __init__(self, config) -> None:
+        self.config = dict(config)
+
+    @classmethod
+    def from_config(cls, config, **overrides):
+        return cls({**dict(config), **overrides})
+
+
+class _FakeCosmos3Pipeline(_FakePipe):
+    """The loaded object is an instance of the class diffusers names, as with the real pipeline: Cosmos3 takes the
+    first frame through its own __call__, so the image-to-video swap finds nothing to swap."""
+
+    last: dict = {}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scheduler = _FakeUniPC(
+            {"flow_shift": 1.0, "use_karras_sigmas": True, "use_flow_sigmas": True}
+        )
+
+    @classmethod
+    def from_pretrained(cls, repo, **kwargs):
+        _FakeCosmos3Pipeline.last = {"repo": repo, **kwargs}
+        return cls()
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        image = None,
+        num_frames = None,
+        height = None,
+        width = None,
+        fps = 24.0,
+        num_inference_steps = 35,
+        guidance_scale = 6.0,
+        generator = None,
+        callback_on_step_end = None,
+        add_resolution_template = True,
+        add_duration_template = True,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "image": image,
+            "num_frames": num_frames,
+            "height": height,
+            "width": width,
+            "fps": fps,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "add_resolution_template": add_resolution_template,
+            "add_duration_template": add_duration_template,
+            **kwargs,
+        }
+        if callback_on_step_end is not None:
+            for step in range(int(num_inference_steps or 1)):
+                callback_on_step_end(self, step, 0, {})
+        return types.SimpleNamespace(video = [object() for _ in range(int(num_frames or 1))])
+
+
+@pytest.fixture
+def fake_cosmos3(fake_runtime):
+    sys.modules["diffusers"].Cosmos3OmniPipeline = _FakeCosmos3Pipeline
+    _FakeCosmos3Pipeline.last = {}
+    yield
+
+
+def test_cosmos3_edge_renders_with_the_model_card_call(fake_cosmos3):
+    backend = VideoBackend()
+    status = backend.load_pipeline("nvidia/Cosmos3-Edge", model_kind = "pipeline")
+    assert status["family"] == "cosmos3-edge"
+    assert (status["defaults"]["steps"], status["defaults"]["guidance"]) == (20, 6.0)
+    # Studio renders video only: no sound tokenizer is loaded.
+    assert _FakeCosmos3Pipeline.last["sound_tokenizer"] is None
+    pipe = backend._state.pipe
+    # The card rebuilds UniPC at flow shift 12 with Karras sigmas off; the shipped config has 1.0 and on.
+    assert pipe.scheduler.config["flow_shift"] == 12.0
+    assert pipe.scheduler.config["use_karras_sigmas"] is False
+
+    result = backend.generate(prompt = "a robot arm picks up a cup", steps = 2)
+    call = pipe.last_kwargs
+    # The card's call: no resolution or duration sentence appended to the prompt and the negative prompt.
+    assert call["add_resolution_template"] is False and call["add_duration_template"] is False
+    assert call["fps"] == 24.0
+    assert (call["width"], call["height"], call["num_frames"]) == (832, 480, 121)
+    assert call["image"] is None
+    # The clip is read from .video, not .frames.
+    assert result["num_frames"] == 121 and result["mp4_bytes"] == b"MP4"
+
+
+def test_cosmos3_edge_first_frame_reaches_the_pipeline_unfitted(fake_cosmos3):
+    backend = VideoBackend()
+    backend.load_pipeline("nvidia/Cosmos3-Edge", model_kind = "pipeline")
+    result = backend.generate(prompt = "a robot arm", steps = 2, first_frame = _data_url(1920, 1080))
+    call = backend._state.pipe.last_kwargs
+    # The pipeline resizes and centre-crops onto the canvas itself, so it gets the source pixels.
+    assert call["image"].size == (1920, 1080)
+    assert (result["width"], result["height"]) == (832, 480)
+    assert result["conditioning"] == "i2va"
+    assert call["add_resolution_template"] is False and call["add_duration_template"] is False
+
+
+class _FakeCosmos3NoTemplates(_FakeCosmos3Pipeline):
+    """A Cosmos3OmniPipeline from before the template flags: the family's call settings must not reach **kwargs."""
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        image = None,
+        num_frames = None,
+        height = None,
+        width = None,
+        num_inference_steps = 35,
+        guidance_scale = 6.0,
+        generator = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self.last_kwargs = dict(kwargs, prompt = prompt, image = image, num_frames = num_frames)
+        return types.SimpleNamespace(video = [object() for _ in range(int(num_frames or 1))])
+
+
+def test_a_signature_without_the_template_flags_gets_neither(fake_cosmos3):
+    sys.modules["diffusers"].Cosmos3OmniPipeline = _FakeCosmos3NoTemplates
+    backend = VideoBackend()
+    backend.load_pipeline("nvidia/Cosmos3-Edge", model_kind = "pipeline")
+    backend.generate(prompt = "a robot arm", steps = 2)
+    call = backend._state.pipe.last_kwargs
+    assert "add_resolution_template" not in call and "add_duration_template" not in call
+
+
+def test_cosmos3_nano_keeps_the_pipeline_templates(fake_cosmos3, monkeypatch):
+    # Nano's card is not one recipe (its diffusers example keeps the templates, its serving examples drop them), so its
+    # row declares no call settings and the pipeline's defaults stand.
+    monkeypatch.setenv("UNSLOTH_COSMOS3_SAFETY_CHECKER", "0")
+    backend = VideoBackend()
+    backend.load_pipeline("nvidia/Cosmos3-Nano", model_kind = "pipeline")
+    backend.generate(prompt = "a robot arm", steps = 2)
+    call = backend._state.pipe.last_kwargs
+    assert call["add_resolution_template"] is True and call["add_duration_template"] is True
+
+
+def test_cosmos3_edge_takes_a_first_frame_only(fake_cosmos3):
+    backend = VideoBackend()
+    status = backend.load_pipeline("nvidia/Cosmos3-Edge", model_kind = "pipeline")
+    assert status["supports_first_frame"] is True
+    assert status["supports_last_frame"] is False and status["supports_keyframes"] is False
+    with pytest.raises(ValueError):
+        backend.generate(prompt = "a robot arm", steps = 2, last_frame = _data_url(64, 64))
+    assert backend.generate_progress()["active"] is False
+
+
+def test_cosmos3_edge_text_render_after_an_image_render_passes_no_image(fake_cosmos3):
+    backend = VideoBackend()
+    backend.load_pipeline("nvidia/Cosmos3-Edge", model_kind = "pipeline")
+    backend.generate(prompt = "a robot arm", steps = 2, first_frame = _data_url(1920, 1080))
+    backend.generate(prompt = "a robot arm", steps = 2)
+    assert backend._state.pipe.last_kwargs["image"] is None
+
+
+class _FakeCosmos3Raises(_FakeCosmos3Pipeline):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        raise RuntimeError("cosmos3 render failed")
+
+
+def test_a_failed_cosmos3_edge_render_leaves_the_backend_idle(fake_cosmos3):
+    sys.modules["diffusers"].Cosmos3OmniPipeline = _FakeCosmos3Raises
+    backend = VideoBackend()
+    backend.load_pipeline("nvidia/Cosmos3-Edge", model_kind = "pipeline")
+    with pytest.raises(RuntimeError, match = "cosmos3 render failed"):
+        backend.generate(prompt = "a robot arm", steps = 2)
+    assert backend.generate_progress()["active"] is False
+    assert backend.status()["loaded"] is True

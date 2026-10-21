@@ -100,7 +100,13 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
 }
 
 # family -> open seam bug below the floor. Strict xfail, so the fix landing forces the entry out.
-KNOWN_SEAMS: dict[str, str] = {}
+KNOWN_SEAMS: dict[str, str] = {
+    # Cosmos3 decodes untiled whenever it fits (any speed tier); these stock 16x tiles are only the out-of-memory
+    # fallback. Seam audit, Cosmos3-Edge 832x480 x 121 frames, stock tiles vs untiled on the same latent: t2v PSNR
+    # 48.6 dB mean / 46.1 min, i2v 41.7 / 39.7; the worst column / row sits in a seam band at ~2 levels.
+    "cosmos3-nano": "stock AutoencoderKLWan@16x fallback tiles: 4-latent edge tile at 480 / 832 px",
+    "cosmos3-edge": "stock AutoencoderKLWan@16x fallback tiles: 4-latent edge tile at 480 / 640 / 832 px",
+}
 
 GEOMETRY_PRESERVING = {
     "diffusion_vae_fused": "batched stock tiled_decode: the stock attributes' tiles, decoded as one batch",

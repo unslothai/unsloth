@@ -342,7 +342,9 @@ def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
     """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3)."""
     if image_fam is not None and not image_fam.pipeline_only:
         return True
-    if video_fam is None or video_fam.is_moe:
+    from core.inference.video_families import PIPELINE_ONLY_VIDEO_FAMILIES
+
+    if video_fam is None or video_fam.is_moe or video_fam.name in PIPELINE_ONLY_VIDEO_FAMILIES:
         return False
     if not getattr(video_fam, "modular_workflow", None):
         return True

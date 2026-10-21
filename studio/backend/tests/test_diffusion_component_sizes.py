@@ -9,12 +9,13 @@ import json
 import os
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from core.inference import diffusion_component_sizes as dcs
 from core.inference import video_stream_residency as vsr
-from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
+from core.inference.video_families import COSMOS3_FAMILIES, _FAMILIES as VIDEO_FAMILIES
 
 _GB = 1000.0**3
 
@@ -1759,3 +1760,77 @@ def test_transformers_folders_recognise_only_transformers_stems(tmp_path):
     _component(tmp_path, "vae", 0.1)
     sizes = dcs.local_component_sizes(tmp_path)
     assert sizes.get("text_encoder") is None and "text_encoder" in sizes.unknown
+
+
+# ── Cosmos3 ──────────────────────────────────────────────────────────────────
+
+# Cosmos3's omni transformer is also its text model: Cosmos3OmniPipeline takes a text_tokenizer and no text encoder
+# (pipeline_cosmos3_omni.py:419-430 at diffusers d42ebf9), so its rows price the text term at 0.0 and its snapshots have
+# no text_encoder/. Listings and model_index.json are public Hub metadata of nvidia/Cosmos3-Nano@e59a53c2 and
+# nvidia/Cosmos3-Edge@344d602b (fixtures/cosmos3_checkpoints.json).
+_COSMOS3_CHECKPOINTS = json.loads(
+    (Path(__file__).parent / "fixtures" / "cosmos3_checkpoints.json").read_text(encoding = "utf-8")
+)
+# Keyed "<repo>@<revision>", one revision per repo.
+_COSMOS3_ENTRY = {key.partition("@")[0]: entry for key, entry in _COSMOS3_CHECKPOINTS.items()}
+
+
+@pytest.mark.parametrize(
+    "table, expected",
+    [
+        ((30.4, 0.0, 1.4), True),
+        ((30.4, 0, 1.4), True),
+        (None, False),
+        ((), False),
+        ((30.4,), False),
+        ((30.4, None, 1.4), False),
+        ((30.4, "n/a", 1.4), False),
+        ((30.4, float("nan"), 1.4), False),
+        ((30.4, 0.05, 1.4), False),
+    ],
+    ids = [
+        "zero",
+        "int-zero",
+        "none",
+        "empty",
+        "short",
+        "none-term",
+        "text-term",
+        "nan-term",
+        "small-encoder",
+    ],
+)
+def test_the_cosmos3_no_text_encoder_check_survives_malformed_tables(table, expected):
+    assert (
+        dcs.video_family_has_no_text_encoder(SimpleNamespace(bf16_components_gb = table)) is expected
+    )
+    assert dcs.video_family_has_no_text_encoder(object()) is False  # no table at all
+
+
+def test_cosmos3_rows_require_no_text_encoder_while_a_wan_row_does():
+    # A Cosmos3 snapshot has no text_encoder/ folder; requiring one would mark every cached snapshot incomplete and
+    # send the load back to the Hub.
+    for name in COSMOS3_FAMILIES:
+        assert dcs.video_required_roles(_fam(name)) == ("transformer", "vae")
+    assert dcs.video_required_roles(_fam("wan2.2-ti2v-5b")) == (
+        "transformer",
+        "text_encoder",
+        "vae",
+    )
+
+
+@pytest.mark.parametrize("name", ["cosmos3-nano", "cosmos3-edge"], ids = ["nano", "edge"])
+def test_a_cosmos3_snapshot_without_a_text_encoder_prices_a_complete_zero_text_term(tmp_path, name):
+    # A Cosmos3 snapshot holds transformer/ and vae/ weights and no text_encoder/, so the size header prices the text
+    # term as a known 0.0 rather than as unknown.
+    fam = _fam(name)
+    entry = _COSMOS3_ENTRY[fam.base_repo]
+    assert not any(path.startswith("text_encoder/") for path, _size in entry["listing"])
+    denoiser_gb, _text_gb, vae_gb = fam.bf16_components_gb
+    (tmp_path / "model_index.json").write_text(json.dumps(entry["model_index"]), encoding = "utf-8")
+    _component(tmp_path, "transformer", denoiser_gb)
+    _component(tmp_path, "vae", vae_gb)
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert dcs.video_header_terms(fam, sizes) == pytest.approx((denoiser_gb, 0.0, vae_gb))
+    # A family with a text encoder reads the same snapshot as missing one.
+    assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), sizes)[1] is None

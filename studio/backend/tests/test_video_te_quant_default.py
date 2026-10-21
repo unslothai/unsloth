@@ -50,9 +50,15 @@ HV15_BASES = (
 
 
 def test_every_generic_path_video_family_has_a_default():
-    """Every family that casts its own encoder in place defaults to a hosted one; only H3 and LTX-2.5 resolve theirs."""
+    """Every family that casts its own encoder in place defaults to a hosted one; only H3 and LTX-2.5 resolve theirs,
+    and Cosmos3 has no text encoder to cast (its transformer is its own text model)."""
     assert {f.name for f in _FAMILIES if f.te_quant_auto} == set(EXPECTED_DEFAULTS)
-    assert {f.name for f in _FAMILIES if not f.te_quant_auto} == {"minimax-h3", "ltx-2.5"}
+    assert {f.name for f in _FAMILIES if not f.te_quant_auto} == {
+        "minimax-h3",
+        "ltx-2.5",
+        "cosmos3-nano",
+        "cosmos3-edge",
+    }
 
 
 def test_the_two_hunyuanvideo_repacks_share_one_encoder_and_not_qwen_images():
@@ -118,6 +124,36 @@ def test_families_with_their_own_tristate_get_the_raw_request(name):
     assert fam.te_quant_auto is None
     for raw in (None, "none", "int8"):
         assert video_te_quant_request(fam, raw) == (raw, False)
+
+
+@pytest.mark.parametrize("name", ["cosmos3-nano", "cosmos3-edge"])
+def test_a_cosmos3_family_has_no_text_encoder_to_default(name):
+    """Cosmos3OmniPipeline has a tokenizer and no text encoder (the transformer is its own text model), so nothing is
+    hosted to default to: every request comes back as given, and no scheme resolves a pre-cast encoder file."""
+    fam = _family(name)
+    assert fam.te_quant_auto is None and fam.te_prequant_repos == ()
+    for raw in (None, "", "auto", "AUTO", "none", "fp8"):
+        assert video_te_quant_request(fam, raw) == (raw, False), raw
+        # As the load, the worker plan and download_plan call it. Speed="off" turns an unset request into "none" only
+        # for a family with a hosted default (and LTX-2.5); here it stays unset.
+        for speed_mode in ("default", "off"):
+            got = video_te_quant_request(fam, raw, base = fam.base_repo, speed_mode = speed_mode)
+            assert got == (raw, False), (raw, speed_mode)
+    for mode in (None, "fp8", "int8"):
+        sources = tpq.te_prequant_sources_for_base(
+            fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16
+        )
+        assert sources == {}, mode
+
+
+def test_only_the_cosmos3_families_have_no_text_encoder_to_quantize():
+    """A 0.0 text-encoder term in bf16_components_gb means the family has none (video_family_has_no_text_encoder).
+    The set is exact, so a later family priced at 0.0 is a decision, and it stays out of the hosted defaults."""
+    from core.inference.diffusion_component_sizes import video_family_has_no_text_encoder
+
+    no_encoder = {f.name for f in _FAMILIES if video_family_has_no_text_encoder(f)}
+    assert no_encoder == {"cosmos3-nano", "cosmos3-edge"}
+    assert not any(f.te_quant_auto for f in _FAMILIES if f.name in no_encoder)
 
 
 def test_unsupported_hardware_gets_no_hosted_encoder_for_the_default():

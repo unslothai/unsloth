@@ -1,21 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Families sample at ComfyUI's static sigma shift: the loader rebuilds the shipped scheduler."""
+"""Families sample at ComfyUI's static sigma shift: the loader rebuilds the shipped scheduler. The Cosmos3 rows rebuild
+it with their model cards' settings instead (scheduler_overrides)."""
 
 from __future__ import annotations
 
+import json
 import types
+from pathlib import Path
+
+import pytest
 
 from core.inference.diffusion_families import comfy_flow_shift_for, detect_family
 from core.inference.diffusion_flow_shift import (
     apply_comfy_flow_shift,
+    apply_scheduler_overrides,
     flow_shift_overrides,
     install_sample_sigmas,
     pipe_sample_sigmas,
     sample_sigmas_for_steps,
 )
-from core.inference.video_families import detect_video_family
+from core.inference.video_families import VideoFamily, detect_video_family
 
 
 class _Config(dict):
@@ -118,3 +124,110 @@ def test_sample_sigmas_follow_the_checkpoint_grid():
         assert pipe_sample_sigmas(pipe) is None
     # A pipeline that already carries one (diffusers with #14950) keeps it without reading the file.
     assert install_sample_sigmas(_pipe({"sample_sigmas": [1.0, 0.5]}), None) == (1.0, 0.5)
+
+
+# ── Cosmos3 ──────────────────────────────────────────────────────────────────
+
+# The shipped scheduler_config.json of nvidia/Cosmos3-Nano@e59a53c2 and nvidia/Cosmos3-Edge@344d602b (public Hub
+# metadata, fixtures/cosmos3_checkpoints.json): UniPC at flow_shift 1.0 with Karras sigmas on. Each row carries its
+# card's from_config values as scheduler_overrides; only Edge's (Karras off, shift 12.0) change the sigmas.
+_COSMOS3_CHECKPOINTS = json.loads(
+    (Path(__file__).parent / "fixtures" / "cosmos3_checkpoints.json").read_text(encoding = "utf-8")
+)
+# Keyed "<repo>@<revision>", one revision per repo.
+_COSMOS3_SCHEDULERS = {
+    key.partition("@")[0]: entry.get("scheduler_config")
+    for key, entry in _COSMOS3_CHECKPOINTS.items()
+}
+_COSMOS3_NANO = _COSMOS3_SCHEDULERS["nvidia/Cosmos3-Nano"]
+_COSMOS3_EDGE = _COSMOS3_SCHEDULERS["nvidia/Cosmos3-Edge"]
+
+
+class _Log:
+    """Records ``logger.<level>(fmt, *args)``; the backend logger is structlog, which caplog does not see."""
+
+    def __init__(self):
+        self.lines = []
+
+    def info(self, fmt, *args, **kwargs):
+        self.lines.append(("info", fmt % args if args else fmt))
+
+    def warning(self, fmt, *args, **kwargs):
+        self.lines.append(("warning", fmt % args if args else fmt))
+
+
+class _RejectingScheduler(_FakeScheduler):
+    @classmethod
+    def from_config(cls, config, **overrides):
+        # What UniPC raises for a value it does not implement (solver_type="bh3", for one). The message does not name
+        # the overrides, so a warning that names them has to do so itself.
+        raise NotImplementedError(f"bh3 is not implemented for {cls}")
+
+
+@pytest.mark.parametrize(
+    "name, config",
+    [("cosmos3-nano", _COSMOS3_NANO), ("cosmos3-edge", _COSMOS3_EDGE)],
+    ids = ["nano", "edge"],
+)
+def test_cosmos3_scheduler_overrides_rebuild_the_shipped_scheduler_once(name, config):
+    # UniPC has no set_shift, and both shipped scheduler_config.json keep flow_shift 1.0 with Karras sigmas on, so
+    # the cards' settings arrive by rebuilding the scheduler once at load.
+    overrides = detect_video_family("", override = name).scheduler_overrides
+    shipped = _FakeScheduler(**config)
+    pipe = types.SimpleNamespace(scheduler = shipped)
+    log = _Log()
+    assert apply_scheduler_overrides(pipe, overrides, log) is True
+    rebuilt = pipe.scheduler
+    assert type(rebuilt) is _FakeScheduler and rebuilt is not shipped
+    # The overrides land and every other shipped key survives.
+    assert rebuilt.config == {**config, **dict(overrides)}
+    assert [level for level, _line in log.lines] == ["info"]
+    assert all(key in log.lines[0][1] for key, _value in overrides)
+    # Idempotent: applied again, the rebuilt scheduler stays.
+    assert apply_scheduler_overrides(pipe, overrides, log) is False
+    assert pipe.scheduler is rebuilt and len(log.lines) == 1
+
+
+def test_cosmos3_scheduler_overrides_already_in_the_config_change_nothing():
+    overrides = detect_video_family("nvidia/Cosmos3-Edge").scheduler_overrides
+    held = _FakeScheduler(**{**_COSMOS3_EDGE, "flow_shift": 12.0, "use_karras_sigmas": False})
+    pipe = types.SimpleNamespace(scheduler = held)
+    assert apply_scheduler_overrides(pipe, overrides) is False
+    assert pipe.scheduler is held
+    # Half of Edge's pair is not enough: with Karras on the shift is never read, so it still rebuilds.
+    half = _FakeScheduler(**{**_COSMOS3_EDGE, "flow_shift": 12.0})
+    pipe = types.SimpleNamespace(scheduler = half)
+    assert apply_scheduler_overrides(pipe, overrides) is True
+    assert pipe.scheduler.config["use_karras_sigmas"] is False
+
+
+def test_empty_cosmos3_overrides_and_pipes_without_a_scheduler_are_no_ops():
+    shipped = _FakeScheduler(**_COSMOS3_NANO)
+    # The field's default, which every non-Cosmos3 family keeps: the shipped scheduler stays.
+    default = VideoFamily.__dataclass_fields__["scheduler_overrides"].default_factory()
+    for overrides in (default, (), None):
+        pipe = types.SimpleNamespace(scheduler = shipped)
+        assert apply_scheduler_overrides(pipe, overrides) is False
+        assert pipe.scheduler is shipped
+    overrides = detect_video_family("nvidia/Cosmos3-Nano").scheduler_overrides
+    for pipe in (
+        types.SimpleNamespace(),
+        types.SimpleNamespace(scheduler = None),
+        types.SimpleNamespace(scheduler = object()),  # no config to rebuild from
+    ):
+        assert apply_scheduler_overrides(pipe, overrides) is False
+
+
+def test_a_scheduler_rejecting_cosmos3_overrides_keeps_the_shipped_schedule():
+    overrides = detect_video_family("nvidia/Cosmos3-Edge").scheduler_overrides
+    shipped = _RejectingScheduler(**_COSMOS3_EDGE)
+    pipe = types.SimpleNamespace(scheduler = shipped)
+    log = _Log()
+    # The load has already taken minutes: keep the shipped schedule and say why, rather than fail it.
+    assert apply_scheduler_overrides(pipe, overrides, log) is False
+    assert pipe.scheduler is shipped
+    assert [level for level, _line in log.lines] == ["warning"]
+    warning = log.lines[0][1]
+    assert all(key in warning for key, _value in overrides) and "not implemented" in warning
+    assert apply_scheduler_overrides(pipe, overrides) is False  # no logger: the same, silently
+    assert pipe.scheduler is shipped

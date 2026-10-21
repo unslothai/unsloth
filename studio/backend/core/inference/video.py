@@ -59,7 +59,8 @@ from .diffusion_attention import (
     report_attention_run,
     select_attention_backend,
 )
-from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
+from .diffusion_component_sizes import video_family_has_no_text_encoder
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
@@ -234,11 +235,13 @@ from .video_families import (
     VIDEO_GENERATION_BUSY_MSG,
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
+    COSMOS3_FAMILIES,
     LTX_FAMILIES,
     assert_local_pipeline_family,
     assert_ltx_pick_supported,
     assert_supported_ltx_version,
     ltx_family_by_name,
+    local_cosmos3_pipeline_family,
     local_ltx_pipeline_family,
     pipeline_available_video_families,
     VideoFamily,
@@ -1332,12 +1335,22 @@ def _resolve_load_family_with_source(
         or (gguf_filename and detect_video_family(f"{repo_id}/{gguf_filename}"))
         or None
     )
+    if fam is None and not gguf_filename:
+        # A renamed local Cosmos3 folder: its model_index.json, config.json model_type and transformer size name it.
+        local_cosmos3 = local_cosmos3_pipeline_family(repo_id)
+        if local_cosmos3:
+            fam = detect_video_family("", override = local_cosmos3)
     if fam is None and gguf_filename:
         # A renamed GGUF carries no family token, so resolve via general.architecture. No-backend archs still yield None
         # (a 400)
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
+    if fam is not None and fam.name in COSMOS3_FAMILIES and not gguf_filename:
+        # A local folder's own Cosmos3 configs outrank a path that names the other size.
+        by_configs = local_cosmos3_pipeline_family(repo_id)
+        if by_configs and by_configs != fam.name:
+            fam = detect_video_family("", override = by_configs) or fam
     if fam is not None and fam.name in LTX_FAMILIES:
         # Both LTX families share the "ltx" tokens, so the release decides: a local diffusers folder by its
         # model_index.json, else the picked file's own version token, else the display / repo id.
@@ -4084,6 +4097,11 @@ class VideoBackend:
         refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
         if refusal:
             raise ValueError(refusal)
+        if fam.name in COSMOS3_FAMILIES:
+            from .video_cosmos3 import load_request_refusal as cosmos3_load_request_refusal
+            refusal = cosmos3_load_request_refusal(fam.name, kind, text_encoder_quant)
+            if refusal:
+                raise ValueError(refusal)
         # ── modular-workflow refusals, before anything heavier. Deliberately the FIRST thing after the family resolves:
         # everything below reaches into diffusers (assert_pipeline_class_available, the transformer_class probe), so a
         # refusal placed after them would be unreachable on any install whose diffusers cannot even be imported -- and
@@ -4215,6 +4233,12 @@ class VideoBackend:
                 f"checkpoint; full pipelines and other weight formats load only from unsloth/* "
                 f"repos, the official family base repos, and local paths."
             )
+        # After the trust gate: an untrusted Cosmos3-named repo is refused as untrusted, not sent to install a package.
+        if fam.name in COSMOS3_FAMILIES and kind == "pipeline":
+            from .video_cosmos3 import guardrail_refusal
+            refusal = guardrail_refusal(repo_id)
+            if refusal:
+                raise ValueError(refusal)
         # Companions load with from_pretrained, so a base repo is held to the non-GGUF bar: a GGUF pick must not smuggle
         # in a remote base.
         if base_repo and (base_repo or "").strip() and not _is_trusted_video_repo(base_repo):
@@ -6624,9 +6648,14 @@ class VideoBackend:
 
         siblings = list(info.siblings or [])
         ltx25_pack = is_ltx25_pack(s.rfilename for s in siblings)
-        # The LTX-2.5 pack ships a modular_model_index.json beside its model_index.json; it is not H3's layout.
-        is_h3_modular = not ltx25_pack and any(
-            s.rfilename == "modular_model_index.json" for s in siblings
+        # The LTX-2.5 pack and Cosmos3 ship a modular_model_index.json beside their model_index.json; neither is H3's
+        # layout.
+        from .video_cosmos3 import is_cosmos3_listing
+
+        is_h3_modular = (
+            not ltx25_pack
+            and not is_cosmos3_listing(s.rfilename for s in siblings)
+            and any(s.rfilename == "modular_model_index.json" for s in siblings)
         )
         h3_is_references = is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
         h3_denoiser_prefix = "transformer_ref/" if h3_is_references else "transformer/"
@@ -8604,6 +8633,9 @@ class VideoBackend:
 
             # The encoder runs in the worker; the enhancer, processor and duration head are never used.
             pipe_kwargs.update({name: None for name in LTX25_NONE_COMPONENTS})
+        if kind == "pipeline" and fam.name in COSMOS3_FAMILIES:
+            from .video_cosmos3 import pipeline_kwargs as cosmos3_pipeline_kwargs
+            pipe_kwargs.update(cosmos3_pipeline_kwargs(str(repo_id)))
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
             pipe = pipeline_cls.from_pretrained(
@@ -9482,11 +9514,17 @@ class VideoBackend:
                         speed_optims += ("vae_wide_tiles",)
                 except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                     logger.warning("video.vae_wide_tiles: not installed: %s", exc)
-            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            # Cosmos3 conditions every step on the VAE-encoded first-frame clip, so that encode runs untiled.
+            if vae_tiling and fam.name in COSMOS3_FAMILIES:
+                from .video_cosmos3 import install_untiled_encode
+                install_untiled_encode(pipe, logger = logger)
+            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical,
+            # except for Cosmos3, which has no earlier output to keep: its stock 16x tiles leave a 4-latent edge tile at
+            # 480 / 832 px, and untiled is what the publisher's pipeline decodes.
             if (
                 offload_policy == "none"
                 and target.device == "cuda"
-                and effective_speed != SPEED_OFF
+                and (effective_speed != SPEED_OFF or fam.name in COSMOS3_FAMILIES)
             ):
                 from .video_vae_untiled import install_untiled_decode
                 if install_untiled_decode(pipe, fam.name, logger = logger):
@@ -9621,6 +9659,8 @@ class VideoBackend:
                         or (
                             "dense text encoder quantised in place"
                             if text_encoder_quant_engaged is not None
+                            else "not applicable (no separate text encoder)"
+                            if video_family_has_no_text_encoder(fam)
                             else "not engaged (dense bf16 text encoder loaded)"
                         ),
                         text_encoder_outcome.status,
@@ -9639,6 +9679,7 @@ class VideoBackend:
             autoopt.finalize(load_audit, speed_optims, resolved)
 
             apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
+            apply_scheduler_overrides(pipe, getattr(fam, "scheduler_overrides", ()), logger)
             if ltx25_client is not None:
                 # The worker loaded the Gemma 4 encoder while the DiT loaded; a failure there fails this load.
                 ltx25_client.wait_ready(self._cancel_event if _load_token is not None else None)
@@ -12002,6 +12043,12 @@ class VideoBackend:
                 # LTX-2 takes frame_rate (shapes audio length); others fix their rate, fps only at export
                 if "frame_rate" in call_params:
                     kwargs["frame_rate"] = float(out_fps)
+                # Cosmos3 takes fps: it modulates the temporal position encoding and fills the duration template.
+                if fam.name in COSMOS3_FAMILIES and "fps" in call_params:
+                    kwargs["fps"] = float(out_fps)
+                for key, value in getattr(fam, "call_kwargs", ()) or ():
+                    if key in call_params:
+                        kwargs[key] = value
                 # Dual-DiT MoE: pass the low-noise expert guidance only when the family declares it AND the signature
                 # accepts it (WanPipeline raises with boundary_ratio=None)
                 if fam.cfg2_kwarg and fam.cfg2_kwarg in call_params and guidance_2 is not None:
@@ -12360,6 +12407,12 @@ class VideoBackend:
                     audio = output.get("audio")
                     audio_track = audio[0] if audio is not None else None
                     audio_sample_rate = output.get("sampling_rate")
+                elif fam.name in COSMOS3_FAMILIES:
+                    from .video_cosmos3 import output_frames as cosmos3_output_frames
+
+                    video_frames = cosmos3_output_frames(output)
+                    audio_track = None
+                    audio_sample_rate = None
                 else:
                     video_frames = output.frames[0]
                     audio = getattr(output, "audio", None)
@@ -12513,8 +12566,11 @@ class VideoBackend:
                 width or default_w,
                 height or default_h,
             )
-        # Fit once so both engines condition on identical pixels.
-        if first is not None and i2v_pipeline:
+        # Fit once so both engines condition on identical pixels; a family whose pipeline fits the frame itself (Cosmos3:
+        # aspect-preserving resize, then centre crop) gets the source image and its own resampling.
+        if first is not None and not fam.i2v_fits_first_frame:
+            pass
+        elif first is not None and i2v_pipeline:
             first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_LAST)
         elif first is not None:
             first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_FIRST)

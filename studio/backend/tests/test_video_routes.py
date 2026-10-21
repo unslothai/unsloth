@@ -1211,6 +1211,40 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     assert seen["hf_token"] == "hf_secret"
 
 
+def test_video_download_plan_validates_with_the_encoder_precision(client, monkeypatch):
+    # validate_load_request refuses an explicit text_encoder_quant for a family with no separate text encoder
+    # (Cosmos3; test_video_cosmos3.py), so the plan must hand it the precision, or the UI stages and downloads the
+    # checkpoint that /video/load then refuses.
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _validate(model_path, **kwargs):
+        seen.update(kwargs)
+        raise ValueError("refused at validation")
+
+    monkeypatch.setattr(backend, "validate_load_request", _validate, raising = False)
+    planned: list = []
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: planned.append(k) or {"entries": []},
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "nvidia/Cosmos3-Edge",
+            "model_kind": "pipeline",
+            "text_encoder_quant": "fp8",
+        },
+    )
+
+    assert seen.get("text_encoder_quant") == "fp8"
+    assert 400 <= resp.status_code < 500, resp.text
+    assert planned == []
+
+
 def test_the_video_plan_refuses_an_impossible_precision_before_anything_is_staged(
     client, monkeypatch
 ):
