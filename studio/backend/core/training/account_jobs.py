@@ -512,6 +512,21 @@ def validate_recipe_access(recipe) -> None:
         seed_type = recipe.get("seed_type")
         if seed_type in {"hf", "github_repo"} and not str(recipe.get("token") or "").strip():
             raise HTTPException(status_code = 403, detail = "Supply your own seed-source token")
+        # A folder seed with no path falls back to host folders (the server's cwd, ~/.codex).
+        if (
+            seed_type in {"agent_rollout", "directory", "file_contents"}
+            and not str(recipe.get("path") or "").strip()
+        ):
+            raise HTTPException(status_code = 403, detail = "Choose a folder inside your workspace")
+        # The engine writes a processor's output under its name, so the name must not be a path.
+        if "processor_type" in recipe:
+            name = recipe.get("name")
+            if (
+                not isinstance(name, str)
+                or not name.strip(" .")
+                or any(char in '<>:"/\\|?*' or not char.isprintable() for char in name)
+            ):
+                raise HTTPException(status_code = 403, detail = "Processor names must be plain names")
         for key, value in recipe.items():
             if key in {"api_key_env", "token_env", "hf_token_env"} and value:
                 raise HTTPException(status_code = 403, detail = "Supply your own provider credential")
