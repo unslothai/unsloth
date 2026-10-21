@@ -1803,8 +1803,6 @@ export const ja = {
         showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
         showLoadedModels: "読み込み済みモデルのインジケーター",
         showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
-        showWhisperUpdates: "whisper.cpp のアップデート通知",
-        showWhisperUpdatesDescription: "音声認識モデル向けの新しい whisper.cpp ビルドが利用可能になったときに通知します。音声を文字起こししない場合はオフにしてください。",
         showAudioCppUpdates: "audio.cpp のアップデート通知",
         showAudioCppUpdatesDescription:
           "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
@@ -2744,6 +2742,22 @@ export const ja = {
         visibility: "思考",
         visibilityDescription:
           "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
+      },
+      memory: {
+        title: "メモリー",
+        description: "すべてのチャットが読み込むメモです。ローカルでもクラウドでも、どのモデルでも使われます。プロジェクト内のチャットは、そのプロジェクトの AGENTS.md も読み込みます。",
+        enable: "チャットでメモリーを使う",
+        enableDescription: "このメモをすべてのチャットに送信します。",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD により、このインストールでは無効になっています。",
+        editor: "メモリーのメモ",
+        placeholder: "例:\n- Python を書いていて uv を使っています。\n- 簡潔に答えてください。",
+        hint: "{path} に保存されます。このファイルは任意のテキストエディタでも編集できます。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "メモリーを保存しました",
+        loadError: "メモリーを読み込めませんでした。",
+        saveError: "メモリーを保存できませんでした。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md メモリー 記憶 覚える パーソナライズ プロフィール メモ",
       },
       currentDate: {
         label: "今日の日付をモデルに伝える",

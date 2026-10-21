@@ -2683,6 +2683,34 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
     assert calls == [("org/repo", None, "token", "/data/hf/hub")]
 
 
+def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
+    """krea2-arch GGUFs (molbal/krea2-gguf) are images, not chat RUN (#14474)."""
+    for hints in (
+        (),
+        ("custom/my-mix-Q4_K_M.gguf",),
+        ("molbal/krea2-gguf", "krea2_turbo-Q4_0.gguf"),
+    ):
+        assert models_route._arch_to_task("krea2", hints) == "text-to-image"
+        assert models_route._arch_to_task("KREA2", hints) == "text-to-image"
+
+    # The arch alone names the family, so an unbuildable host hides even an uninformative name.
+    import core.inference.diffusion_engine_router as router
+
+    seen = []
+
+    def buildable(fam, *, model_kind):
+        seen.append((fam.name, model_kind))
+        return fam.name != "krea-2"
+
+    monkeypatch.setattr(router, "family_buildable_here", buildable)
+    assert models_route._arch_to_task("krea2", ("custom/my-mix-Q4_K_M.gguf",)) == (
+        models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+    assert seen == [("krea-2", "gguf")]
+    assert models_route._arch_to_task("flux", ("custom/my-mix-Q4_K_M.gguf",)) == "text-to-image"
+    assert models_route._arch_to_task("qwen_image", ("org/Qwen-Image-GGUF",)) == "text-to-image"
+
+
 def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("flux") == "text-to-image"
     assert models_route._arch_to_task("z_image") == "text-to-image"

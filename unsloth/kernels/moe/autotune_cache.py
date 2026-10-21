@@ -267,17 +267,12 @@ def _run_moe_autotuning(
         _autotuner_for,
         grouped_gemm_forward,
         grouped_gemm_dX,
-        grouped_gemm_dW,
     )
     from .grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
-    from .grouped_gemm.kernels.backward import (
-        _autotuned_grouped_gemm_dX_kernel,
-        _autotuned_grouped_gemm_dW_kernel,
-    )
+    from .grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dX_kernel
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,
-        KernelConfigBackward_dW,
     )
 
     logger.info("Autotuning forward kernel (first GEMM)...")
@@ -334,6 +329,23 @@ def _run_moe_autotuning(
         use_tma_store = triton_config_bwd_dx.kwargs.get("USE_TMA_STORE", False),
     )
 
+    config_bwd_dw = _autotune_dw_config(
+        hidden_states, dummy_grad, m_sizes, gather_indices, top_k, num_experts
+    )
+
+    return config_fwd, config_bwd_dx, config_bwd_dw
+
+
+def _autotune_dw_config(hidden_states, dummy_grad, m_sizes, gather_indices, top_k, num_experts):
+    """Autotune the dW kernel the launcher dispatches to and read the config from that kernel's tuner."""
+    from .grouped_gemm.interface import _autotuner_for, _use_per_expert_dW_kernel, grouped_gemm_dW
+    from .grouped_gemm.kernels.backward import (
+        _autotuned_grouped_gemm_dW_kernel,
+        _autotuned_grouped_gemm_dW_per_expert_kernel,
+    )
+    from .grouped_gemm.kernels.tuning import KernelConfigBackward_dW
+
+    per_expert = _use_per_expert_dW_kernel()
     logger.info("Autotuning backward dW kernel...")
     _ = grouped_gemm_dW(
         X = hidden_states,
@@ -345,11 +357,16 @@ def _run_moe_autotuning(
         permute_y = False,
         autotune = True,
     )
-    triton_config_bwd_dw = _autotuner_for(
-        _autotuned_grouped_gemm_dW_kernel, hidden_states.device
-    ).best_config
+    if per_expert:
+        triton_config_bwd_dw = _autotuner_for(
+            _autotuned_grouped_gemm_dW_per_expert_kernel, hidden_states.device
+        ).best_config
+    else:
+        triton_config_bwd_dw = _autotuner_for(
+            _autotuned_grouped_gemm_dW_kernel, hidden_states.device
+        ).best_config
 
-    config_bwd_dw = KernelConfigBackward_dW(
+    return KernelConfigBackward_dW(
         BLOCK_SIZE_M = triton_config_bwd_dw.kwargs["BLOCK_SIZE_M"],
         BLOCK_SIZE_N = triton_config_bwd_dw.kwargs["BLOCK_SIZE_N"],
         BLOCK_SIZE_K = triton_config_bwd_dw.kwargs["BLOCK_SIZE_K"],
@@ -359,8 +376,6 @@ def _run_moe_autotuning(
         use_tma_load_x = triton_config_bwd_dw.kwargs.get("USE_TMA_LOAD_X", False),
         use_tma_store = triton_config_bwd_dw.kwargs.get("USE_TMA_STORE", False),
     )
-
-    return config_fwd, config_bwd_dx, config_bwd_dw
 
 
 _MIN_FALLBACK_BLOCK_SIZE = 16

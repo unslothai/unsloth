@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import __future__
 import ast
+import inspect
 import fnmatch
 import os
 import sys
@@ -24,6 +26,22 @@ def _mistral_format_names(tree):
         elif isinstance(node, ast.FunctionDef) and "mistral_format" in node.name:
             names.add(node.name)
     return names
+
+
+def _loader_utils_functions(tree, path, method):
+    """Real definitions of the .loader_utils functions loader.py imports and `method` calls."""
+    imported = {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "loader_utils"
+        for alias in node.names
+    }
+    used = {n.id for n in ast.walk(method) if isinstance(n, ast.Name)}
+    source = ast.parse((path.parent / "loader_utils.py").read_text(encoding = "utf-8"))
+    defs = {n.name: n for n in source.body if isinstance(n, ast.FunctionDef)}
+    return [
+        defs[imported[name]] for name in sorted(used & imported.keys()) if imported[name] in defs
+    ]
 
 
 @pytest.fixture
@@ -91,6 +109,12 @@ def loader():
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
+    # Real loader_utils helpers (e.g. the fp8 dequantize check from #14516) where no stub is given.
+    env.setdefault("inspect", inspect)
+    real = [n for n in _loader_utils_functions(tree, path, method) if n.name not in env]
+    flags = __future__.annotations.compiler_flag  # annotations such as Union stay unevaluated
+    source = str(path.parent / "loader_utils.py")
+    exec(compile(ast.Module(body = real, type_ignores = []), source, "exec", flags = flags), env)
     exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
 

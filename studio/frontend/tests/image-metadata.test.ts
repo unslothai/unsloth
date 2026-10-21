@@ -8,12 +8,14 @@ import {
   buildExif,
   copyPngTextChunks,
   importedRecipe,
+  importNotApplied,
   parseA1111Parameters,
   parseComfyPrompt,
   pngTextChunks,
   APPLIED_RECIPE_KEYS,
   INFO_RECIPE_KEYS,
   newerRecipeSchema,
+  PENDING_RECIPE_KEYS,
   readEmbeddedRecipe,
   recipeSettings,
   unknownRecipeKeys,
@@ -656,6 +658,7 @@ test("a newer recipe loads what this build knows and names what it does not", ()
   const future = {
     ...JSON.parse(RECIPE),
     schema_version: 2,
+    cfg_rescale: 0.7,
     freeu_b1: 1.1,
     tiling: false,
     empty_list: [],
@@ -666,12 +669,19 @@ test("a newer recipe loads what this build knows and names what it does not", ()
   const settings = recipeSettings(recipe, defaults);
   assert.equal(settings.seed, 6630007);
   assert.deepEqual(unknownRecipeKeys(recipe), ["freeu_b1", "tiling"]);
+  assert.equal(settings.cfg_rescale, 0.7);
+  // Without the control on the loaded model it is named by label, not by key; with it, it restores.
+  assert.deepEqual(importNotApplied(recipe), ["CFG rescale 0.7"]);
+  assert.deepEqual(
+    importNotApplied(recipe, "sdxl", false, { cfg_rescale: { min: 0, max: 1, default: 0 } }),
+    [],
+  );
   assert.equal(newerRecipeSchema(recipe), true);
   // Every key today's recipe writes is known, so a current image reports nothing.
   assert.deepEqual(unknownRecipeKeys(JSON.parse(RECIPE)), []);
   assert.equal(
-    new Set([...APPLIED_RECIPE_KEYS, ...INFO_RECIPE_KEYS]).size,
-    APPLIED_RECIPE_KEYS.length + INFO_RECIPE_KEYS.length,
+    new Set([...APPLIED_RECIPE_KEYS, ...INFO_RECIPE_KEYS, ...PENDING_RECIPE_KEYS]).size,
+    APPLIED_RECIPE_KEYS.length + INFO_RECIPE_KEYS.length + PENDING_RECIPE_KEYS.length,
   );
 });
 
@@ -693,7 +703,9 @@ test("an unmapped ComfyUI sampler is kept by name; prototype names map to nothin
 
 test("the import names a sampler or schedule the loaded model does not offer", () => {
   const page = readSrc("features/images/images-page.tsx");
-  const start = page.indexOf("const notApplied = unknownRecipeKeys(recipe);");
+  const start = page.indexOf(
+    "const notApplied = [\n        ...importNotApplied(\n          recipe,\n          status?.loaded ? status.family : null,",
+  );
   assert.ok(start > 0);
   const block = page.slice(start, page.indexOf("[restoreSettings,", start));
   assert.match(block, /notApplied\.unshift\(`sampler \$\{labelOf\(SAMPLER_LABELS, settings\.sampler\)\}`\)/);

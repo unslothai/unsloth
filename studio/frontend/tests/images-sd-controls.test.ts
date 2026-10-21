@@ -178,3 +178,42 @@ test("AUTOMATIC1111 parameters import the controls", async () => {
   assert.equal(clamped.variation_seed, undefined);
   assert.equal(clamped.variation_strength, 0);
 });
+
+test("pasted A1111 Clip skip, CFG Rescale and Variation seed restore into the SDXL controls", async () => {
+  const { parseA1111Parameters, importNotApplied, recipeSettings, variationApplies } = await import(
+    "../src/features/images/lib/image-metadata.ts"
+  );
+  const r = parseA1111Parameters(
+    "(a cat:1.2), \\(sign\\)\nSteps: 25, Sampler: Euler a, CFG scale: 5, Seed: 1, Size: 1024x1024, Clip skip: 3, CFG Rescale: 0.7, Variation seed: 99, Variation seed strength: 0.3",
+  );
+  assert.ok(r);
+  const settings = recipeSettings(r, { width: 1024, height: 1024, steps: 30, guidance: 5 });
+  assert.deepEqual(sdControlsFromRecipe(settings), {
+    promptWeighting: true,
+    clipSkip: 3,
+    cfgRescale: 0.7,
+    variationSeed: "99",
+    variationStrength: 0.3,
+  });
+  assert.equal(variationApplies(r, SDXL), true);
+  // SDXL's prompt weighting reads the emphasis and escapes, so nothing is reported.
+  assert.deepEqual(importNotApplied(r, "sdxl", false, SDXL), []);
+  // A model without the controls still names every one.
+  assert.deepEqual(importNotApplied(r, "flux", true, null), [
+    "Clip skip 3",
+    "CFG rescale 0.7",
+    "variation seed 99 (strength 0.3)",
+  ]);
+  // Past the model's CLIP skip range the restore clamps, and says so.
+  assert.deepEqual(
+    importNotApplied({ ...r, clip_skip: 14 }, "sdxl", false, { ...SDXL, clip_skip: { ...SDXL.clip_skip, max: 12 } }),
+    ["Clip skip 14 (clamped to 12)"],
+  );
+  // The backend refuses a variation seed for img2img / inpaint, so it is named and not restored.
+  const img2img = { ...r, workflow: "img2img" };
+  assert.equal(variationApplies(img2img, SDXL), false);
+  assert.deepEqual(importNotApplied(img2img, "sdxl", false, SDXL), ["variation seed 99 (strength 0.3)"]);
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(src, /if \(!variationApplies\(merged, sdCaps\)\)/);
+  assert.match(src, /isNativeEngineStatus\(status\)\),\n\s+sdCaps,/);
+});

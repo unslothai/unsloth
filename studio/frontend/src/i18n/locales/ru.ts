@@ -1820,9 +1820,6 @@ export const ru = {
         showLoadedModels: "Индикатор загруженных моделей",
         showLoadedModelsDescription:
           "Показывает в правом нижнем углу небольшую карточку со всеми моделями, находящимися сейчас в памяти (чат, речь, изображения, видео), и кнопку для выгрузки каждой из них.",
-        showWhisperUpdates: "Уведомления об обновлениях whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Уведомлять о доступности новой сборки whisper.cpp для моделей распознавания речи. Отключите, если вы не расшифровываете аудио.",
         showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
         showAudioCppUpdatesDescription:
           "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
@@ -2779,6 +2776,22 @@ export const ru = {
         visibility: "Размышления",
         visibilityDescription:
           "Как открываются размышления. Любой блок по-прежнему можно развернуть или свернуть вручную.",
+      },
+      memory: {
+        title: "Память",
+        description: "Заметки, которые читает каждый чат, для любой модели, локальной или облачной. Чаты в проекте также читают AGENTS.md этого проекта.",
+        enable: "Использовать память в чатах",
+        enableDescription: "Отправлять эти заметки в каждом чате.",
+        locked: "Отключено для этой установки через UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Заметки памяти",
+        placeholder: "Например:\n- Я пишу на Python и использую uv.\n- Отвечай кратко.",
+        hint: "Сохраняется в {path}. Этот файл можно редактировать и в любом текстовом редакторе.",
+        size: "{used} / {max} КБ",
+        save: "Сохранить",
+        saved: "Память сохранена",
+        loadError: "Не удалось загрузить память.",
+        saveError: "Не удалось сохранить память.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md память запомнить персонализация профиль заметки",
       },
       currentDate: {
         label: "Сообщать модели сегодняшнюю дату",

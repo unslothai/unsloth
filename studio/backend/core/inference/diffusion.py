@@ -110,6 +110,12 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinals,
 )
 from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
+from .diffusion_zimage_cfg_split import (
+    install_zimage_cfg_split,
+    uninstall_zimage_cfg_split,
+    zimage_cfg_split_status,
+)
+from .diffusion_zimage_cfg_split import render as zimage_cfg_split_render
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
@@ -198,6 +204,9 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     learned_peak_label,
+    CFG_OFF_PART,
+    cfg_off_peaks_enabled,
+    without_cfg_off,
     live_vae_saver_tag,
     planned_vae_saver_tag,
     stream_window_pad_mib,
@@ -328,6 +337,14 @@ from .diffusion_flow_shift import (
     install_sample_sigmas,
     pipe_sample_sigmas,
     sample_sigmas_for_steps,
+)
+from .diffusion_mask import (
+    ONLY_MASKED_UNSUPPORTED_MSG,
+    blur_mask,
+    inpaint_class_accepts_padding_mask_crop,
+    mask_is_empty,
+    overlay_with_mask,
+    resolve_padding,
 )
 from .diffusion_sampler import (
     DEFAULT_SAMPLER,
@@ -2503,7 +2520,7 @@ def _start_peak_probe(state: Any) -> Any:
             # cache (same count): a later peak above that start omits memory a fresh process allocates on its first
             # render
             return None
-        if _live_peak_identity(state) != tuple(identity):
+        if not _peak_identity_matches(state, identity):
             # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
             # saver the guard engaged for it, another attention backend): its peak belongs to no key
             return None
@@ -2557,14 +2574,26 @@ def _live_peak_identity(state: Any) -> tuple:
             speed = None  # a background compile is still pending: this render runs eager under a compiled tier
     except Exception:  # noqa: BLE001
         speed = None
-    # a family that can run classifier-free guidance records only renders that do (the doubled denoiser batch)
+    # Unknown guidance, or CFG on a family that never runs it, records nothing.
     family_obj = getattr(state, "family", None)
     expects_cfg = bool(getattr(family_obj, "uses_negative_prompt", False))
-    if bool(getattr(pipe, "_unsloth_peak_cfg", expects_cfg)) != expects_cfg:
+    cfg = getattr(pipe, "_unsloth_peak_cfg", expects_cfg)
+    if cfg is None:
         speed = None
+    elif bool(cfg) != expects_cfg:
+        if expects_cfg and cfg_off_peaks_enabled():
+            label = f"{label}|{CFG_OFF_PART}"
+        else:
+            speed = None
     if getattr(pipe, "_unsloth_loras", None):
         speed = None  # LoRA adapters add rank-dependent activations no key names
     return (family, label, speed)
+
+
+def _peak_identity_matches(state: Any, identity: Any) -> bool:
+    """The render runs the configuration the load's identity names (``cfg:off`` aside)."""
+    family, label, speed = _live_peak_identity(state)
+    return (family, without_cfg_off(label), speed) == tuple(identity)
 
 
 def _live_graph_mode(state: Any) -> str:
@@ -2626,15 +2655,41 @@ def _local_weights_digest(path: Any) -> Optional[str]:
 
 
 def _peak_model_identity(
-    repo_id: Any, gguf_filename: Optional[str], kind: Optional[str], base: Any
+    repo_id: Any,
+    gguf_filename: Optional[str],
+    kind: Optional[str],
+    base: Any,
+    fetch_base: Optional[str] = None,
 ) -> str:
     """The exact build for the learned-peak key: the denoiser source and its weights' revision / fingerprint, plus the
     companion base and its revision for a GGUF / single-file load. ``unknown`` (no learned peak used or recorded)
-    when a revision cannot be read."""
+    when a revision cannot be read. ``fetch_base``: the repo the load actually read ``base`` from."""
     from .diffusion_component_sizes import checkpoint_fingerprint
+    from .diffusion_families import mirror_repo
 
+    def _fingerprint(
+        repo: Any,
+        filename: Optional[str] = None,
+        fetched: Optional[str] = None,
+    ) -> tuple[Any, Any]:
+        if fetched and str(fetched) != str(repo):
+            return fetched, checkpoint_fingerprint(fetched, filename)
+        revision = checkpoint_fingerprint(repo, filename)
+        if revision or filename or fetched:
+            return repo, revision
+        # No load decision: a fresh install may hold only the unsloth/ mirror.
+        mirror = mirror_repo(str(repo)) if repo else None
+        if mirror and mirror != str(repo):
+            mirrored = checkpoint_fingerprint(mirror)
+            if mirrored:
+                return mirror, mirrored
+        return repo, revision
+
+    pipeline = (kind or "pipeline") == "pipeline"
+    repo_id, revision = _fingerprint(
+        repo_id, gguf_filename, fetch_base if pipeline and str(base) == str(repo_id) else None
+    )
     source = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
-    revision = checkpoint_fingerprint(repo_id, gguf_filename)
     if not revision:
         return "unknown"
     if str(revision).startswith("local:"):
@@ -2643,8 +2698,8 @@ def _peak_model_identity(
             return "unknown"
         revision = f"{revision}:{weights}"
     identity = f"{source}@{revision}"
-    if (kind or "pipeline") != "pipeline" and base and str(base) != str(repo_id):
-        base_revision = checkpoint_fingerprint(base)
+    if not pipeline and base and str(base) != str(repo_id):
+        base, base_revision = _fingerprint(base, None, fetch_base)
         if not base_revision:
             return "unknown"
         if str(base_revision).startswith("local:"):
@@ -2691,7 +2746,7 @@ def _record_peak_probe(
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
             return
-        if _live_peak_identity(state) != tuple(identity):
+        if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
             return
         if cuda_graph.failed_capture_count() != getattr(probe, "failed_captures", 0):
@@ -2706,7 +2761,9 @@ def _record_peak_probe(
             # the SDPA probe could not tell math from a fused kernel: a quadratic peak stored as linear would
             # under-size every larger request
             return
-        family, quant, speed_mode = identity
+        family, quant, speed_mode = _live_peak_identity(
+            state
+        )  # the key this render ran (``cfg:off`` included)
         pipe = state.pipe
         index = getattr(probe.device, "index", None)
         graphs = cuda_graph.live_graph_count(index)
@@ -9509,7 +9566,9 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
-                    peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)
+                    peak_model = _peak_model_identity(
+                        repo_id, gguf_filename, kind, base, fetch_base
+                    )
                     if getattr(pipe, "_unsloth_loras", None):
                         peak_model = (
                             "unknown"  # adapters baked in at load: a build the key cannot name
@@ -9517,6 +9576,10 @@ class DiffusionBackend:
                     try:
                         # the phase-table seed holds only where it was measured
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                        # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
+                        pipe._unsloth_peak_expects_cfg = bool(
+                            getattr(fam, "uses_negative_prompt", False)
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                     peak_vae = planned_vae_saver_tag(pipe, plan)
@@ -9576,6 +9639,8 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_learned_peak_mib"),
                                 plan.estimates.get("measured_learned_peak_pixels"),
                                 plan.estimates.get("measured_learned_peak_quadratic"),
+                                plan.estimates.get("measured_static_seed", True),
+                                plan.estimates.get("measured_learned_cfg_off", False),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
@@ -9847,6 +9912,8 @@ class DiffusionBackend:
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
                     # both branches through one offloaded forward; declines when CFG-parallel took the slot
                     install_cfg_batch(pipe, offload_policy = effective_policy, logger = logger)
+                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new
+                    install_zimage_cfg_split(pipe, offload_policy = effective_policy, logger = logger)
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -12067,6 +12134,10 @@ class DiffusionBackend:
         schedule_type: Optional[str] = None,
         # Prompt weighting / CLIP skip / CFG rescale / variation seed (SDXL); None = all off, today's call.
         sd_controls: Optional["sd_controls_mod.SdControls"] = None,
+        # Inpaint only: None / 0 / False keep the plain inpaint call.
+        mask_blur: Optional[int] = None,
+        inpaint_only_masked: Optional[bool] = None,
+        inpaint_padding: Optional[int] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -12395,6 +12466,26 @@ class DiffusionBackend:
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
                 sd_controls_mod.validate(sd_controls, fam, pipe, call_params, workflow)
+                mask_blur_applied = inpaint_padding_applied = None
+                soft_overlay = None
+                if workflow == "inpaint" and mask_pil is not None:
+                    inpaint_padding_applied = resolve_padding(inpaint_only_masked, inpaint_padding)
+                    if (
+                        inpaint_padding_applied is not None
+                        and "padding_mask_crop" not in call_params
+                    ):
+                        raise ValueError(ONLY_MASKED_UNSUPPORTED_MSG)
+                    if inpaint_padding_applied is not None and mask_is_empty(mask_pil):
+                        # diffusers' crop box needs a nonzero pixel; with none this is a plain inpaint.
+                        inpaint_padding_applied = None
+                    if mask_blur:
+                        # After the snap/resize above, so the radius is in source-image pixels.
+                        mask_pil = blur_mask(mask_pil, mask_blur)
+                        mask_blur_applied = int(mask_blur)
+                        # The pipeline binarizes the mask, so the blur only reaches the picture through this
+                        # overlay. padding_mask_crop already overlays with the blurred mask.
+                        if inpaint_padding_applied is None and init_pil is not None:
+                            soft_overlay = (init_pil, mask_pil)
 
                 kwargs: dict[str, Any] = {
                     # prompt / generator / num_images_per_prompt are set per chunk below, one torch.Generator PER
@@ -12448,6 +12539,8 @@ class DiffusionBackend:
                         kwargs["output_resolution"] = ref_resolution
                     if mask_pil is not None and "mask_image" in call_params:
                         kwargs["mask_image"] = mask_pil
+                    if inpaint_padding_applied is not None:
+                        kwargs["padding_mask_crop"] = inpaint_padding_applied
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
@@ -12534,12 +12627,17 @@ class DiffusionBackend:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
                         guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
                     # past what the measured placement reserved: stream resident groups again for this call
+                    try:
+                        guard_cfg = _negative_prompt_engaged(fam, guidance)
+                    except Exception:  # noqa: BLE001 - unknown: sized as a CFG request
+                        guard_cfg = None
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
                         condition_pixels = guard_condition_pixels,
+                        cfg = guard_cfg,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
@@ -12853,6 +12951,7 @@ class DiffusionBackend:
                                 ),
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
+                                zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
                             ):
@@ -12909,6 +13008,8 @@ class DiffusionBackend:
                                 images.extend(layers_out)
                                 per_image_seeds.extend(s for _ in layers_out)
                         else:
+                            if soft_overlay is not None:
+                                out = [overlay_with_mask(o, *soft_overlay) for o in out]
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
@@ -13035,6 +13136,10 @@ class DiffusionBackend:
                         weighting_used = weighting_used[0],
                         variation_seed_list = variation_seed_list,
                     ),
+                    # Recorded only when applied, so a plain inpaint recipe stays unchanged.
+                    "mask_blur": mask_blur_applied,
+                    "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
+                    "inpaint_padding": inpaint_padding_applied,
                 }
                 logger.info(
                     "diffusion.generated: %s",
@@ -13237,6 +13342,7 @@ class DiffusionBackend:
             prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         uninstall_cfg_parallel(state.pipe)
+        uninstall_zimage_cfg_split(state.pipe)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
@@ -13358,6 +13464,7 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "cfg_batch": cfg_batch_status(state.pipe),
+            "zimage_cfg_split": zimage_cfg_split_status(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
                 state.repo_id,
@@ -13369,6 +13476,9 @@ class DiffusionBackend:
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
+            "supports_inpaint_only_masked": inpaint_class_accepts_padding_mask_crop(
+                getattr(state.family, "inpaint_pipeline_class", None)
+            ),
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
             "supports_guidance": _guidance_supported(state),
             "supports_live_preview": _live_preview_available(state),
