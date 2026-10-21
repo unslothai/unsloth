@@ -1747,9 +1747,7 @@ def test_archive_embed_honors_cancel_between_batches(conn, monkeypatch):
         state["n"] += 1
         return state["n"] > 2
 
-    written = conversation_archive.archive_turns(
-        thread_id, evicted, cancel_check = cancel_check
-    )
+    written = conversation_archive.archive_turns(thread_id, evicted, cancel_check = cancel_check)
     assert 0 < written < 8
     assert len(calls) == 1
     # A later pass without cancel finishes the rest (idempotent by digest).
