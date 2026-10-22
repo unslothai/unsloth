@@ -688,6 +688,19 @@ def _nvfp4_matmul_bwd(
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
 
 
+_AUTOCAST_CASTS = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _autocast_operand(X):
+    # Dense torch.matmul runs in the autocast dtype, the fused GEMM (CUDA only) in X.dtype: cast X here, outside
+    # the opaque op, so both paths (and the fake impl) return the autocast dtype. Autocast state is a dynamo guard.
+    if X.is_cuda and X.dtype in _AUTOCAST_CASTS and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+        if dtype != X.dtype:
+            return X.to(dtype)
+    return X
+
+
 class NVFP4Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -698,7 +711,7 @@ class NVFP4Linear_matmul(torch.autograd.Function):
         global_scale,
         bias = None,
     ):
-        output = _nvfp4_matmul_fwd(X, packed, scale, global_scale)
+        output = _nvfp4_matmul_fwd(_autocast_operand(X), packed, scale, global_scale)
         if bias is not None:
             output = output + bias
             # A float32 bias promotes; cast back only then (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
