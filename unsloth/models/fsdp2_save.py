@@ -373,7 +373,8 @@ def install_dcp_bnb_state_dict():
     model. Inside adapter-only DCP calls (`_drops_frozen_weights`) Linear4bit reports just its weight
     and bias; the QuantState is unchanged in memory. A full DCP state dict of a sharded 4-bit model is
     built the same way and then gets bitsandbytes' entries back under their usual keys
-    (`_add_quant_state_entries`), which loading drops again. Other DCP calls are untouched."""
+    (`_add_quant_state_entries`); loading takes them out before DCP sees them and copies them into
+    the live QuantState afterwards (`_restore_quant_state_entries`). Other DCP calls are untouched."""
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
         from bitsandbytes.nn import Linear4bit
@@ -398,17 +399,23 @@ def install_dcp_bnb_state_dict():
         def wrapper(*args, **kwargs):
             adapter_only = _drops_frozen_weights(kwargs)
             full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
+            saved = None
             if not (adapter_only or full_4bit):
                 if name.startswith("set_") and _has_native_replicated_4bit(args, kwargs):
-                    args, kwargs = _without_quant_state_entries(name, args, kwargs)
+                    args, kwargs, saved = _without_quant_state_entries(name, args, kwargs)
+                    out = fn(*args, **kwargs)
+                    _restore_quant_state_entries(args, kwargs, saved)
+                    return out
                 return fn(*args, **kwargs)
             if full_4bit and name.startswith("set_"):
-                args, kwargs = _without_quant_state_entries(name, args, kwargs)
+                args, kwargs, saved = _without_quant_state_entries(name, args, kwargs)
             _DCP_DEPTH[0] += 1
             try:
                 out = fn(*args, **kwargs)
             finally:
                 _DCP_DEPTH[0] -= 1
+            if saved is not None:
+                _restore_quant_state_entries(args, kwargs, saved)
             if full_4bit and name in ("get_model_state_dict", "get_state_dict"):
                 model = args[0] if args else kwargs.get("model")
                 state_dict = out[0] if name == "get_state_dict" else out
@@ -460,23 +467,32 @@ def _add_quant_state_entries(model, state_dict, options):
 
 
 def _without_quant_state_entries(name, args, kwargs):
-    """Loading: drop the entries `_add_quant_state_entries` wrote (DCP would reject them as unexpected
-    keys); the QuantState is rebuilt identically when the 4-bit model is loaded again."""
+    """Loading: take out the entries `_add_quant_state_entries` wrote (DCP would reject them as
+    unexpected keys). Returns the new args / kwargs and those entries, `{prefix: {key: tensor}}`, for
+    `_restore_quant_state_entries` to copy into the live QuantStates once DCP has loaded the packed
+    bytes: the bytes come from the checkpoint, so their scales must too."""
     model = args[0] if args else kwargs.get("model")
     if not isinstance(model, torch.nn.Module):
-        return args, kwargs
-    drop = set()
+        return args, kwargs, None
+    keys = {}
     for prefix, module in _linear4bit_entries(model):
-        drop.update(
-            prefix + "weight." + key for key in module.weight.quant_state.as_dict(packed = True)
-        )
-    if not drop:
-        return args, kwargs
+        for key in module.weight.quant_state.as_dict(packed = True):
+            keys[prefix + "weight." + key] = (prefix, key)
+    if not keys:
+        return args, kwargs, None
+    saved = {}
 
     def strip(state_dict):
-        if not isinstance(state_dict, dict) or not drop.intersection(state_dict):
+        if not isinstance(state_dict, dict) or not any(k in keys for k in state_dict):
             return state_dict
-        return {k: v for k, v in state_dict.items() if k not in drop}
+        kept = {}
+        for k, v in state_dict.items():
+            if k in keys:
+                prefix, key = keys[k]
+                saved.setdefault(prefix, {})[key] = v
+            else:
+                kept[k] = v
+        return kept
 
     if name == "set_model_state_dict":
         if len(args) > 1:
@@ -485,7 +501,104 @@ def _without_quant_state_entries(name, args, kwargs):
             kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
     elif "model_state_dict" in kwargs:
         kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
-    return args, kwargs
+    return args, kwargs, saved
+
+
+def _quant_state_tensors(quant_state):
+    """The tensors a bitsandbytes QuantState dequantizes with, in a fixed order."""
+    tensors = [quant_state.absmax, quant_state.code]
+    if getattr(quant_state, "state2", None) is not None:
+        tensors += [quant_state.state2.absmax, quant_state.state2.code, quant_state.offset]
+    return tensors
+
+
+def _checkpoint_quant_state(prefix, live, entries):
+    """The checkpoint's QuantState for one Linear4bit, after checking it describes the same layout as
+    the live one (else the packed bytes DCP just loaded cannot be dequantized with either)."""
+    from bitsandbytes.functional import QuantState
+
+    saved = QuantState.from_dict(dict(entries), device = torch.device("cpu"))
+    same = (
+        saved.quant_type == live.quant_type
+        and saved.blocksize == live.blocksize
+        and tuple(saved.shape) == tuple(live.shape)
+        and (saved.state2 is None) == (getattr(live, "state2", None) is None)
+        and (saved.state2 is None or saved.state2.blocksize == live.state2.blocksize)
+    )
+    if same:
+        pairs = zip(_quant_state_tensors(saved), _quant_state_tensors(live))
+        same = all(a.numel() == b.numel() for a, b in pairs)
+    if not same:
+        raise ValueError(
+            f"Unsloth: the checkpoint's 4-bit quantization metadata for `{prefix}weight` "
+            f"({saved.quant_type}, blocksize {saved.blocksize}, nested {saved.state2 is not None}) "
+            f"does not match the loaded model ({live.quant_type}, blocksize {live.blocksize}, "
+            f"nested {getattr(live, 'state2', None) is not None}). Load the checkpoint into a model "
+            "quantized with the same bitsandbytes settings."
+        )
+    return saved
+
+
+def _restore_quant_state_entries(args, kwargs, saved):
+    """After a DCP load replaced the packed 4-bit bytes: copy the checkpoint's QuantState values into
+    the live QuantState of every Linear4bit, in place, so every reference to it (the sharded and the
+    unsharded parameter) dequantizes the loaded bytes with their own scales. With
+    `broadcast_from_rank0` only rank 0 holds the state dict, so it checks and sends the values."""
+    model = args[0] if args else kwargs.get("model")
+    if not isinstance(model, torch.nn.Module):
+        return
+    options = kwargs.get("options", None)
+    entries = _linear4bit_entries(model)
+    dist = _dist()
+    broadcast = (
+        bool(getattr(options, "broadcast_from_rank0", False))
+        and dist is not None
+        and dist.get_world_size() > 1
+    )
+    saved = saved or {}
+    error = None
+    states = {}
+    if not broadcast or dist.get_rank() == 0:
+        try:
+            for prefix, module in entries:
+                if saved.get(prefix):
+                    states[prefix] = _checkpoint_quant_state(
+                        prefix, module.weight.quant_state, saved[prefix]
+                    )
+        except ValueError as e:
+            error = e
+    if broadcast:
+        device = torch.device("cpu")
+        if "nccl" in str(dist.get_backend()).lower() and torch.cuda.is_available():
+            device = torch.device("cuda", torch.cuda.current_device())
+        # 0: nothing to restore, 1: restore, 2: the checkpoint does not fit (every rank raises).
+        status = torch.tensor([2 if error else (1 if states else 0)], device = device)
+        dist.broadcast(status, src = 0)
+        if status.item() == 2:
+            raise error or ValueError(
+                "Unsloth: the checkpoint's 4-bit quantization metadata does not match the loaded "
+                "model (reported on rank 0)."
+            )
+        if status.item() == 0:
+            return
+        flags = torch.tensor([prefix in states for prefix, _ in entries], device = device)
+        dist.broadcast(flags, src = 0)
+    elif error is not None:
+        raise error
+    with torch.no_grad():
+        for index, (prefix, module) in enumerate(entries):
+            live = _quant_state_tensors(module.weight.quant_state)
+            if broadcast:
+                if not flags[index].item():
+                    continue
+                source = _quant_state_tensors(states[prefix]) if prefix in states else live
+                for target, value in zip(live, source):
+                    buffer = value.to(device = device, dtype = target.dtype).reshape(target.shape)
+                    dist.broadcast(buffer, src = 0)
+                    target.copy_(buffer)
+            elif prefix in states:
+                for target, value in zip(live, _quant_state_tensors(states[prefix])):
+                    target.copy_(value.reshape(target.shape))
 
 
 def _in_backward():

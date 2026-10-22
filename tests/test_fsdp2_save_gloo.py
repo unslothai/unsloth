@@ -471,6 +471,104 @@ def _case_dcp_bnb(rank, world_size, m):
     return out
 
 
+def _case_dcp_restore(rank, world_size, m):
+    """A full DCP checkpoint loaded into a 4-bit model whose QuantState differs from the one it was
+    saved from: the packed bytes come from the checkpoint, so their scales must too."""
+    bnb = pytest.importorskip("bitsandbytes")
+    q = _load("fsdp2_qlora")
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    def model(scale, nested, blocksize = 64):
+        torch.manual_seed(0)
+        layer = bnb.nn.Linear4bit(
+            128,
+            64,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        layer.weight = bnb.nn.Params4bit(
+            torch.randn(64, 128) * scale,
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = blocksize,
+            compress_statistics = nested,
+            module = layer,
+        )
+        net = torch.nn.Sequential(layer.to("cpu"), torch.nn.Linear(64, 8))
+        reference = bnb.functional.dequantize_4bit(net[0].weight.data, net[0].weight.quant_state)
+        q.prepare_fsdp2_qlora(net)
+        fully_shard(net, mesh = init_device_mesh("cpu", (world_size,)))
+        return net, reference
+
+    def scales(quant_state):
+        tensors = [quant_state.absmax, quant_state.code]
+        if quant_state.state2 is not None:
+            tensors += [quant_state.state2.absmax, quant_state.state2.code, quant_state.offset]
+        return [t.detach().cpu().clone() for t in tensors]
+
+    def restored(net, reference):
+        out = {}
+        with m.fsdp2_gathered(net) as writer:
+            if writer:
+                weight = net[0].weight
+                actual = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
+                out["dequant_equal"] = torch.equal(actual, reference)
+        return out
+
+    m.install_dcp_bnb_state_dict()
+    out = {}
+    full = StateDictOptions(full_state_dict = True, cpu_offload = True)
+    for nested in (False, True):
+        src, reference = model(0.1, nested)
+        expected = scales(src[0].weight.quant_state)
+        sd = dcp.get_model_state_dict(src, options = full)
+        # Rank 0 holds the checkpoint and broadcasts it (accelerate's FULL_STATE_DICT load).
+        dst, _ = model(0.05, nested)
+        dcp.set_model_state_dict(
+            dst,
+            sd if rank == 0 else {},
+            options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True),
+        )
+        live = scales(dst[0].weight.quant_state)
+        out[f"broadcast_{nested}"] = dict(
+            restored(dst, reference),
+            scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
+        )
+        # A sharded checkpoint (accelerate's SHARDED_STATE_DICT): every rank loads its own shard.
+        sharded = dcp.get_model_state_dict(src)
+        dst, _ = model(0.05, nested)
+        dcp.set_model_state_dict(dst, sharded)
+        live = scales(dst[0].weight.quant_state)
+        out[f"sharded_{nested}"] = dict(
+            restored(dst, reference),
+            scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
+        )
+    # A checkpoint quantized with another block size cannot describe these bytes: every rank raises.
+    src, _ = model(0.1, False, blocksize = 128)
+    sd = dcp.get_model_state_dict(src, options = full)
+    dst, _ = model(0.05, False)
+    try:
+        dcp.set_model_state_dict(
+            dst,
+            sd if rank == 0 else {},
+            options = StateDictOptions(
+                full_state_dict = True, broadcast_from_rank0 = True, strict = False
+            ),
+        )
+        out["mismatch"] = "loaded"
+    except ValueError as error:
+        out["mismatch"] = "ValueError" if "quantization metadata" in str(error) else str(error)
+    except Exception as error:
+        out["mismatch"] = f"{type(error).__name__}: {error}"
+    return out
+
+
 def _case_fp16_reduce(rank, world_size, m):
     """An fp16 trainable parameter FSDP2 does not manage: its gradient mean must not overflow."""
 
@@ -526,6 +624,8 @@ def _worker(rank, world_size, port, case, queue):
             result = _case_merge_offload(rank, world_size, m)
         elif case == "gather_4bit":
             result = _case_gather_4bit(rank, world_size, m)
+        elif case == "dcp_restore":
+            result = _case_dcp_restore(rank, world_size, m)
         elif case.startswith("replicated"):
             result = _case_replicated(rank, world_size, m, hooked = case.endswith("hooked"))
         else:
@@ -637,6 +737,22 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
     assert r["adapter_keys"] == ["lora_A.default.weight", "lora_B.default.weight"], r[
         "adapter_keys"
     ]
+
+
+def test_full_dcp_load_restores_the_checkpoint_quant_state():
+    """The packed 4-bit bytes of a full DCP checkpoint load into the model, so their QuantState must
+    too: a model quantized from other values used to keep its own scales (`All keys matched`, every
+    dequantized weight wrong)."""
+    pytest.importorskip("bitsandbytes")
+    results = _run("dcp_restore")
+    for rank, r in results.items():
+        for nested in (False, True):
+            for mode in ("broadcast", "sharded"):
+                got = r[f"{mode}_{nested}"]
+                assert got["scales"], (rank, mode, nested, r)
+                if rank == 0:
+                    assert got["dequant_equal"], (mode, nested, r)
+        assert r["mismatch"] == "ValueError", (rank, r)
 
 
 def test_a_slow_writer_does_not_time_out_the_other_ranks():
