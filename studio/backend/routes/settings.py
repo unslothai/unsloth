@@ -4104,8 +4104,7 @@ class McpAccessResponse(BaseModel):
     forced_by_env: bool
     # Display only: where an agent should point. Agents connect to whatever address reaches this server.
     url: str
-    # Registration order; null when the owner's settings could not be read, so a client
-    # never saves a full list built from a view that only looks like "every tool off".
+    # Null when unreadable, so a client never saves a full list from a fake "every tool off" view.
     tools: Optional[list[McpToolSetting]]
 
 

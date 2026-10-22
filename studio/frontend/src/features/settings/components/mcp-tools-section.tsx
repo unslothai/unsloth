@@ -146,8 +146,7 @@ export function McpToolsSection(): ReactElement | null {
     setSaving(true);
     setError(null);
     try {
-      // The PUT replaces the whole list: rebuild it from a fresh read, so a tool turned off in
-      // another tab since this one loaded is not turned back on.
+      // The PUT replaces the whole list; a fresh read keeps another tab's changes.
       const latest = await loadMcpAccess();
       if (!latest.tools) {
         setSettings(latest);

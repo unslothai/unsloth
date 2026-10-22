@@ -20,7 +20,6 @@ export function UnslothStudioMcpRow(): ReactElement {
     let live = true;
     loadMcpAccess().then(
       (next) => live && setEnabled(next.enabled),
-      // The status stays blank; the button still works.
       (err) =>
         console.warn("Couldn't load the Unsloth Studio MCP status.", err),
     );

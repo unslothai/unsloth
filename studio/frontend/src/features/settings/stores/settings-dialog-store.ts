@@ -99,8 +99,7 @@ interface SettingsDialogState {
   audioApiRequested: AudioApiRequest | null;
   decisionTryRequested: string | null;
   mediaApiRequested: MediaApiRequest | null;
-  // A key just created on the API tab, so the MCP tab's setup snippet can use it. Memory
-  // only; cleared when the key card is dismissed or the dialog closes.
+  // A key just created on the API tab, for the MCP tab's snippet; memory only.
   newApiKey: string | null;
   setNewApiKey: (key: string | null) => void;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;

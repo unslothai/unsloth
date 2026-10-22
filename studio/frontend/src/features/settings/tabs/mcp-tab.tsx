@@ -6,7 +6,6 @@ import { McpAccessSection } from "../components/mcp-access-section";
 import { McpToolsSection } from "../components/mcp-tools-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Unsloth Studio's own MCP server: agent access and the tools it serves. */
 export function McpTab() {
   const t = useT();
   const newApiKey = useSettingsDialogStore((s) => s.newApiKey);

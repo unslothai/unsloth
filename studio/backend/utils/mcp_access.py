@@ -69,8 +69,7 @@ def _read_from_db() -> _Record:
 def _record() -> Optional[_Record]:
     """The cached owner record, or None when the read failed or kept racing writes."""
     global _cached
-    # A read that overlaps a write is retried rather than reported as off: the owner
-    # saving one switch must not hide every tool from agents for that moment.
+    # Retry a read that overlaps a write: one save must not briefly hide every tool from agents.
     for _ in range(_RACE_RETRIES):
         with _cache_lock:
             cached = _cached
