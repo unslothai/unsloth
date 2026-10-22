@@ -2094,6 +2094,14 @@ def mmproj_precision(mmproj_name: str) -> Optional[str]:
     return m.group(1).lower() if m else None
 
 
+def mmproj_weight_match(weight: Optional[str], mmproj_name: str) -> int:
+    """Shared name prefix of a weight and a projector, read past the ``mmproj-`` marker."""
+    if not weight:
+        return 0
+    stem = _re.sub(r"^mmproj[-_]", "", Path(mmproj_name).stem.lower())
+    return _shared_prefix_len(Path(weight).stem.lower(), stem)
+
+
 def mmproj_order_rank(mmproj_name: str, order: tuple) -> int:
     precision = mmproj_precision(mmproj_name)
     return -order.index(precision) if precision in order else -len(order)
@@ -2384,7 +2392,7 @@ def detect_mmproj_file(
 
     # Score first, then longest shared prefix, then shorter stem. The prefix is read past
     # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
-    order = mmproj_order(p.name)
+    order = mmproj_order(str(p))
     best = max(
         scored,
         key = lambda sc: (

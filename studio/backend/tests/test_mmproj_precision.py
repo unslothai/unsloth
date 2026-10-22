@@ -312,3 +312,21 @@ def test_estimate_and_loader_share_the_picker(device):
         _mmproj_picker("unsloth/MiMo-VL-7B-RL-GGUF", "w.gguf")(MIMO_LISTING) == "mmproj-BF16.gguf"
     )
     assert _mmproj_picker("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "w.gguf") is _pick_mmproj
+
+
+def test_remote_pick_pairs_the_checkpoint_before_precision(device):
+    from core.inference.llama_cpp import _mmproj_picker
+
+    device("bf16")
+    listing = ["ModelA-Q4_K_M.gguf", "mmproj-ModelA-F16.gguf", "mmproj-ModelB-BF16.gguf"]
+    assert (
+        _mmproj_picker("org/collection-GGUF", "/c/snap/ModelA-Q4_K_M.gguf")(listing)
+        == "mmproj-ModelA-F16.gguf"
+    )
+
+
+def test_local_folder_named_after_mimo_vl_with_a_generic_weight(device, tmp_path):
+    folder = tmp_path / "MiMo-VL-7B"
+    for n in ("model-Q4_K_M.gguf", "mmproj-F16.gguf", "mmproj-BF16.gguf"):
+        _touch(folder / n)
+    assert Path(detect_mmproj_file(str(folder / "model-Q4_K_M.gguf"))).name == "mmproj-BF16.gguf"
