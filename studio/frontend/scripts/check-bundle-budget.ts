@@ -365,13 +365,15 @@ export const BUDGET = {
   // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
   // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
-  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
-  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
-  // A chat going back to its model when it is still loaded (#14568) in the eager chat model notice and the
-  // adopt-only pick in the chat runtime: +1,141 B raw / +404 B transfer (6,886,646 -> 6,887,787 B raw,
-  // 2,075,433 -> 2,075,837 B transfer against 5f2700229, Node 24, 98 chunks). Raised by that.
-  transferBytes: 2_075_954,
-  rawBytes: 6_888_141,
+  // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
+  // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
+  // adopt-only pick in the chat runtime, +1,147 B raw / +438 B transfer (6,891,248 -> 6,892,395 B raw,
+  // 2,076,155 -> 2,076,593 B transfer against 458190c9b, Node 24, 98 chunks). Raised by that.
+  transferBytes: 2_076_631,
+  rawBytes: 6_892_471,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
