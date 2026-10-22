@@ -3,7 +3,7 @@
 
 """Recipe strings that become path segments stay inside their folder: column names become
 `<tmp>/<record id>_<column>.py` in the code validator (sanitized there, so any column name runs),
-processor names become `processors-files/<name>/`, and GitHub seed repo names become
+processor names become `processors-files/<name>/` (one folder, so no separators), and GitHub seed repo names become
 `<base>/<owner>__<name>` in the scraper."""
 
 import sys
@@ -39,8 +39,8 @@ def test_any_column_or_validator_target_name_passes(name):
     )
 
 
-@pytest.mark.parametrize("name", ["pros/cons", "a/b/c", "x/../y", "drop.v2"])
-def test_a_processor_name_inside_its_folder_passes(name):
+@pytest.mark.parametrize("name", ["drop", "drop.v2", "pros and cons"])
+def test_a_single_folder_processor_name_passes(name):
     service.validate_recipe_names(
         {"processors": [{"name": name, "processor_type": "schema_transform"}]}
     )
@@ -48,10 +48,25 @@ def test_a_processor_name_inside_its_folder_passes(name):
 
 @pytest.mark.parametrize(
     "name",
-    [".", "..", "../x", "a/../../x", ".." + _B + "x", "/etc/x", _B + "x", "C:x", "c:" + _B + "x"],
+    [
+        ".",
+        "..",
+        "../x",
+        "a/../../x",
+        ".." + _B + "x",
+        "/etc/x",
+        _B + "x",
+        "C:x",
+        "c:" + _B + "x",
+        "pros/cons",
+        "a/b/c",
+        "x/../y",
+        "a" + _B + "b",
+    ],
 )
-def test_a_processor_name_that_leaves_its_folder_is_refused(name):
-    # Data Designer writes processor batches under processors-files/<name>/.
+def test_a_processor_name_that_is_not_one_folder_is_refused(name):
+    # Data Designer writes processor batches under processors-files/<name>/ and previews to
+    # processors-files/<name>.parquet without creating a nested parent.
     recipe = {"processors": [{"name": name, "processor_type": "schema_transform"}]}
     with pytest.raises(ValueError):
         service.validate_recipe_names(recipe)

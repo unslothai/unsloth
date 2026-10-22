@@ -12,7 +12,6 @@ import json
 import logging
 import math
 import os
-import posixpath
 import re
 from pathlib import Path
 from typing import Any
@@ -683,27 +682,20 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
     }
 
 
-def _escapes_folder(name: str) -> bool:
-    # Windows resolves `..` lexically and takes either separator, so check both forms.
-    posix = name.replace("\\", "/")
-    normalized = posixpath.normpath(posix)
-    return (
-        posix.startswith("/")
-        or re.match(r"^[A-Za-z]:", posix) is not None
-        or normalized in (".", "..")
-        or normalized.startswith("../")
-    )
-
-
 def validate_recipe_names(recipe: dict[str, Any]) -> None:
-    """Refuse a processor name that leaves `processors-files/<name>/`. Column and validator target
-    names may hold any text: the code validator's temp file name is sanitized in
+    """Refuse a processor name that is not a single folder name: Data Designer stores it as
+    `processors-files/<name>`, and neither previews nor lists a nested one. Column and validator
+    target names may hold any text: the code validator's temp file name is sanitized in
     `_apply_data_designer_python_validator_path_patch`."""
     processors = recipe.get("processors")
     for item in processors if isinstance(processors, list) else []:
         name = item.get("name") if isinstance(item, dict) else None
-        if isinstance(name, str) and _escapes_folder(name):
-            raise ValueError(f"Processor names can't leave the processor output folder: {name!r}")
+        if isinstance(name, str) and (
+            "/" in name or "\\" in name or name in (".", "..") or re.match(r"^[A-Za-z]:", name)
+        ):
+            raise ValueError(
+                f"Processor names can't contain '/' or '\\', start with a drive letter, or be '.' / '..': {name!r}"
+            )
 
 
 def _safe_module_name(record_id: Any, column_name: str) -> str:
