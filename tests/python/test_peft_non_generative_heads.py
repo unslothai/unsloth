@@ -110,6 +110,7 @@ def test_ctc_and_classifier_heads_are_trained_and_saved():
     )
     classifier = transformers.ASTForAudioClassification(config)
     assert heads(classifier) == ["classifier"]
+    assert heads(transformers.ASTModel(config)) == []  # a bare encoder is its own backbone
 
     model = peft.get_peft_model(
         _tiny_ctc(),

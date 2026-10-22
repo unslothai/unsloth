@@ -2085,6 +2085,8 @@ def _trainable_head_modules(model):
     """Top-level heads beside the backbone (CTC lm_head, audio classifier / projector) that hold unquantized weights."""
     prefix = getattr(model, "base_model_prefix", None)
     backbone = getattr(model, prefix, None) if prefix else None
+    if backbone is None:  # a bare encoder (WavLMModel) is its own backbone: LoRA only
+        return []
     heads = []
     for name, child in model.named_children():
         if child is backbone or next(child.parameters(), None) is None:
@@ -4513,7 +4515,10 @@ class FastBaseModel:
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
                 # Re-attach as a processor wrapper if the original was a processor (audio ones included).
-                if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "feature_extractor"):
+                if any(
+                    hasattr(tokenizer, k)
+                    for k in ("image_processor", "feature_extractor", "audio_processor")
+                ):
                     tokenizer.tokenizer = _fallback_tok
                 else:
                     tokenizer = _fallback_tok

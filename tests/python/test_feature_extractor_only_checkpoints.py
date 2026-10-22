@@ -70,7 +70,49 @@ def test_audio_configs_get_their_processor():
 
 def test_tokenizer_fallback_keeps_audio_processors():
     source = VISION_PATH.read_text(encoding = "utf-8")
-    assert (
-        'if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "feature_extractor"):'
-        in source
-    )
+    # Granite Speech names its audio frontend audio_processor.
+    assert '("image_processor", "feature_extractor", "audio_processor")' in source
+
+
+LOADER_PATH = VISION_PATH.with_name("loader.py")
+
+
+def _resolve_audio_auto_model():
+    transformers = pytest.importorskip("transformers")
+    tree = ast.parse(LOADER_PATH.read_text(encoding = "utf-8"))
+    wanted = {"_AUDIO_HEAD_AUTO_CLASS_NAMES", "_resolve_audio_auto_model"}
+    nodes = [
+        n
+        for n in tree.body
+        if (isinstance(n, ast.FunctionDef) and n.name in wanted)
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in wanted for t in n.targets))
+    ]
+
+    def resolve_model_class(auto_model, config, **kwargs):
+        try:
+            return auto_model._model_mapping[type(config)]
+        except KeyError:
+            return None
+
+    ns = {"resolve_model_class": resolve_model_class}
+    exec(compile(ast.Module(nodes, []), str(LOADER_PATH), "exec"), ns)
+    return ns["_resolve_audio_auto_model"], transformers
+
+
+def test_default_auto_model_loads_the_checkpoints_own_audio_head():
+    resolve, transformers = _resolve_audio_auto_model()
+    cases = [
+        (transformers.Wav2Vec2Config(architectures = ["Wav2Vec2ForCTC"]), "AutoModelForCTC"),
+        (
+            transformers.ASTConfig(architectures = ["ASTForAudioClassification"]),
+            "AutoModelForAudioClassification",
+        ),
+        (transformers.WavLMConfig(architectures = ["WavLMModel"]), "AutoModel"),
+        (transformers.WavLMConfig(architectures = ["WavLMForXVector"]), "AutoModelForAudioXVector"),
+    ]
+    for config, expected in cases:
+        assert resolve(config).__name__ == expected, config.architectures
+    assert resolve(transformers.LlamaConfig(architectures = ["LlamaForCausalLM"])) is None
+    assert resolve(transformers.Wav2Vec2Config()) is None  # no architectures: keep today's route
+    source = LOADER_PATH.read_text(encoding = "utf-8")
+    assert "_resolve_audio_auto_model(model_config, **_probe_hub_kwargs) or auto_model" in source
