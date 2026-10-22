@@ -135,7 +135,7 @@ def test_amd_smi_metric_stays_live_for_fit_and_after_failures(amd):
 
 
 def test_cpu_percent_is_sampled_at_most_once_per_window(monkeypatch):
-    import psutil
+    psutil = pytest.importorskip("psutil")
 
     import main
 
@@ -160,6 +160,7 @@ def test_cpu_percent_is_sampled_at_most_once_per_window(monkeypatch):
 
 
 def test_cpu_percent_is_primed_at_import():
+    pytest.importorskip("psutil")
     import main
     assert main._cpu_percent_reading is not None
 
@@ -168,7 +169,7 @@ def test_cpu_percent_is_primed_at_import():
 
 
 def test_process_tree_memory_adds_children_and_skips_vanished_ones():
-    import psutil
+    psutil = pytest.importorskip("psutil")
 
     import main
 
