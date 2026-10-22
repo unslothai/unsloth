@@ -33,13 +33,9 @@ from .parsers import Page
 
 logger = logging.getLogger(__name__)
 
-# Match ingestion: cooperative cancel between batches (#14519). One giant
-# SentenceTransformer.encode of every pending chunk blocked Chat Stop and held
-# the generation worker for minutes on long tool-heavy threads.
+# One encode of every pending chunk held the reply for minutes and ignored Chat Stop (#14519).
 _ARCHIVE_EMBED_BATCH = 64
-# Soft cap per archive_turns call so a first compaction cannot monopolise the
-# pre-inference path; leftover groups stay unindexed and are picked up next time
-# (archive_turns is idempotent by content hash). Override with RAG_ARCHIVE_EMBED_MAX_CHUNKS.
+# Per call; the rest is archived by later requests, which re-evict the same turns.
 _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
 
 # Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
@@ -404,8 +400,7 @@ def _embed_pending_chunks(
         except Exception as exc:
             if not vectors:
                 raise
-            # Keep the batches already embedded: discarding them made the next request redo
-            # every one, and a timeout late in a long pass then repeated on every compaction.
+            # Keep finished batches, or a late timeout makes every request redo the whole pass.
             return vectors, identity, False, exc
         if identity is None:
             identity = batch_identity
@@ -531,8 +526,6 @@ def archive_turns(
             )
             return 0
 
-        # Bound first-compaction work on the generation path (#14519). Deferred groups stay
-        # unindexed and are archived on a later request (idempotent by digest).
         max_chunks = _archive_embed_max_chunks()
         chunk_total = sum(len(entry[3]) for entry in pending)
         if chunk_total > max_chunks:
@@ -542,8 +535,7 @@ def archive_turns(
                 if used and used + need > max_chunks:
                     break
                 if need > max_chunks and not kept:
-                    # A single oversized turn: still archive it (one encode), never stall forever
-                    # on dozens of siblings behind it.
+                    # An oversized first turn still goes, or it would block the backlog forever.
                     kept.append(entry)
                     used += need
                     break
@@ -588,8 +580,7 @@ def archive_turns(
         if not vectors:
             return 0
 
-        # Only write groups whose chunks were fully embedded; a mid-group cancel leaves that
-        # turn for the next compaction instead of storing a truncated vector set.
+        # Only fully embedded groups; a partial one is left for the next request.
         complete: list = []
         offset = 0
         for entry in pending:
