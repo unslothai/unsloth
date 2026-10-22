@@ -33833,6 +33833,7 @@ class LlamaCppBackend:
                         # split moves) in a per-device --fit-target list; unknown cards (named
                         # by --device) get none.
                         _spawn_shares: Optional[list[float]] = [1.0]
+                        _spawn_output_dev: Optional[int] = None
                         if _spawn_device_count > 1 and not _split_mode_confines_to_one_device(
                             run_cmd, env
                         ):
@@ -33890,6 +33891,11 @@ class LlamaCppBackend:
                                             _dev = bisect.bisect_right(_cum, _il / (_layers + 1))
                                             _counts[min(_dev, len(_weights) - 1)] += 1
                                         _spawn_shares = [c / _layers for c in _counts]
+                                        # The output layer is index n_layer of the same split.
+                                        _spawn_output_dev = min(
+                                            bisect.bisect_right(_cum, _layers / (_layers + 1)),
+                                            len(_weights) - 1,
+                                        )
                                     else:
                                         _spawn_shares = [w / sum(_weights) for w in _weights]
                         if (
@@ -33913,7 +33919,15 @@ class LlamaCppBackend:
                                 max(0, _spawn_total - _sidecar_compute_mib),
                             )
                             _spawn_body = max(0, _spawn_total - _sidecar_compute_mib - _spawn_graph)
-                            _last = len(_spawn_shares) - 1
+                            # The output card: where the split puts layer n_layer, else
+                            # the last card the split gives anything.
+                            _last = (
+                                _spawn_output_dev
+                                if _spawn_output_dev is not None
+                                else max(i for i, f in enumerate(_spawn_shares) if f > 0)
+                                if any(f > 0 for f in _spawn_shares)
+                                else len(_spawn_shares) - 1
+                            )
                             _spawn_per_device = [
                                 math.ceil(_spawn_body * f)
                                 + (_sidecar_compute_mib if f > 0 or i == _last else 0)

@@ -411,3 +411,22 @@ def test_the_output_card_keeps_the_whole_vocabulary_graph(tmp_path, _discrete):
     floor = math.ceil(_lc.LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024))
     _big, small = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
     assert small >= 1024 + floor + 3 * 1024
+
+
+def test_a_split_that_leaves_the_last_card_out_keeps_the_graph_on_the_used_one(tmp_path, _discrete):
+    """--tensor-split 1,0 puts every block and the output layer on card 0, so the graph and
+    the compute floor are reserved there, not on the idle card 1."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    backend._mtp_draft_compute_bytes = lambda *a, **k: 3 * _GIB
+    read = backend._draft_backend_for
+
+    def three_blocks(path):
+        db = read(path)
+        db._n_layers = 3
+        return db
+
+    backend._draft_backend_for = three_blocks
+    used, idle = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "1,0"]))
+    assert used >= 1024 + 3 * 1024
+    assert idle < 2048
