@@ -1114,7 +1114,8 @@ def _first_verified(
     """The first candidate address where the paired worker itself answers over mutual TLS, with its status."""
     for host, port in candidates:
         try:
-            relays.ensure(node_id, host, port)
+            with _LINKS_LOCK:  # status reads re-ensure under it: see _link_nodes
+                relays.ensure(node_id, host, port)
             answer = relays.status(node_id, timeout = 2.0)
         except Exception:
             continue
@@ -1133,7 +1134,14 @@ def _local_tls_client() -> bool:
             return False
         from core.inference import spark_serving as ss
 
-        return native.binary_supports_tls(ss.rpc_server_binary())
+        launched, rpc = ss.llama_server_binary(), ss.rpc_server_binary()
+        # rpc_server_binary() falls back to the managed bundle or PATH: another build, whose TLS says
+        # nothing about the llama-server that dials (a custom LLAMA_SERVER_PATH, say).
+        if not launched or not rpc:
+            return False
+        if os.path.dirname(os.path.abspath(rpc)) != os.path.dirname(os.path.abspath(launched)):
+            return False
+        return native.binary_supports_tls(rpc)
     except Exception:
         return False
 
@@ -1280,13 +1288,16 @@ def _link_nodes(verify: bool = True) -> List[Node]:
             else:
                 _UNVERIFIED.discard(peer.node_id)
         host, port = (verified[0], verified[1]) if verified else candidates[0]
-        if not verify:
-            # Status reads verify nothing: keep the verified destination, or a LAN spoofer could re-point it.
-            current = relays.destination(peer.node_id)
-            if current is not None:
-                host, port = current
         try:
-            endpoint = relays.ensure(peer.node_id, host, port)
+            # Read and re-ensure under the lock a load's ensure takes: a status read that saw an older
+            # destination must not re-point the relay after a load verified the worker elsewhere.
+            with _LINKS_LOCK:
+                if not verify:
+                    # Status reads verify nothing: keep the verified destination, or a LAN spoofer could re-point it.
+                    current = relays.destination(peer.node_id)
+                    if current is not None:
+                        host, port = current
+                endpoint = relays.ensure(peer.node_id, host, port)
         except Exception as exc:
             LINK_DROPPED[label] = f"relay did not start: {exc}"
             continue

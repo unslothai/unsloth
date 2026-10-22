@@ -664,10 +664,34 @@ def test_the_local_tls_probe_reads_the_bundled_rpc_server(monkeypatch, tmp_path)
         )
         fake.chmod(0o755)
         monkeypatch.setattr(ss, "rpc_server_binary", lambda f = fake: str(f))
+        monkeypatch.setattr(ss, "llama_server_binary", lambda: str(tmp_path / "llama-server"))
         monkeypatch.delenv(native.DISABLE_ENV, raising = False)
         assert cs._local_tls_client() is tls_build
         monkeypatch.setenv(native.DISABLE_ENV, "0")
         assert cs._local_tls_client() is False
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason = "the fake rpc-server is a shell script")
+def test_the_local_tls_probe_ignores_an_rpc_server_from_another_build(monkeypatch, tmp_path):
+    # LLAMA_SERVER_PATH names a custom llama-server with no rpc-server beside it: the fallback
+    # (managed bundle or PATH) supporting TLS says nothing about the llama-server that dials.
+    from studio.cluster_link import native
+
+    monkeypatch.undo()
+    other = tmp_path / "bundle"
+    other.mkdir()
+    fake = other / "ggml-rpc-server"
+    fake.write_text("#!/bin/sh\necho 'usage: ggml-rpc-server --tls-cert F'\n")
+    fake.chmod(0o755)
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: str(fake))
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(custom / "llama-server"))
+    monkeypatch.delenv(native.DISABLE_ENV, raising = False)
+    assert native.binary_supports_tls(str(fake)) is True
+    assert cs._local_tls_client() is False
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: None)
+    assert cs._local_tls_client() is False
 
 
 def test_every_status_read_sees_workers_paired_or_removed_since(monkeypatch, relays):
@@ -696,6 +720,42 @@ def test_a_status_read_never_repoints_a_verified_relay_at_a_spoofed_sighting(mon
     spoof = SimpleNamespace(host = "10.6.6.6", agent_port = 50070, fp = FP_A, seen_at = 2.0)
     sightings["node-a"] = [spoof, honest]
     st.status()
+    assert relays.destination("node-a") == real
+
+
+def test_a_status_read_racing_a_load_never_repoints_the_relay_it_verified(monkeypatch, relays):
+    # /status reads the relay's destination while a load is still trying a stale candidate; the load
+    # then verifies the real address. The status read's ensure must not land after that and undo it.
+    import threading
+
+    real = ("192.168.1.20", 50070)
+    spoof = SimpleNamespace(host = "10.6.6.6", agent_port = 50070, fp = FP_A, seen_at = 2.0)
+    monkeypatch.setattr(
+        cs, "_sighting_candidates", lambda node_id: [spoof] if node_id == "node-a" else []
+    )
+    relays.ensure("node-a", spoof.host, spoof.agent_port)  # where the load's first try pointed it
+    status = relays.status
+    relays.status = lambda node_id, timeout = 3.0: (
+        {"reachable": False, "error": "refused"}
+        if relays.dest.get(node_id) != real and node_id == "node-a"
+        else status(node_id, timeout)
+    )
+    destination, load = relays.destination, []
+
+    def racing_destination(node_id):
+        seen = destination(node_id)
+        if node_id == "node-a" and not load:
+            load.append(threading.Thread(target = cs._link_nodes, kwargs = {"verify": True}))
+            load[0].start()
+            load[0].join(
+                0.5
+            )  # the load finishes in this window unless the status read holds it off
+        return seen
+
+    relays.destination = racing_destination
+    cs._link_nodes(verify = False)
+    load[0].join(10.0)
+    assert not load[0].is_alive()
     assert relays.destination("node-a") == real
 
 

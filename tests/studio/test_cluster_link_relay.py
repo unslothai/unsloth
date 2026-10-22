@@ -1477,6 +1477,29 @@ def test_native_close_and_a_relay_session_both_return_to_loopback(make_link, tmp
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+@pytest.mark.parametrize("mode", ["threaded", "async"])
+def test_a_relay_open_is_busy_while_a_native_session_is_live(
+    make_link, tmp_path, monkeypatch, mode
+):
+    # Native sessions bypass _active: an open_rpc must not restart rpc-server under one.
+    if mode == "async":
+        monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", "1")
+    link = _native_link(make_link, tmp_path)
+    assert link.relay.native("w1")["type"] == "native_ok"
+    pid_native = link.agent.rpc_pid
+    monkeypatch.setattr(link.agent, "_native_client", lambda: True)
+    sock = link.connect()
+    sock.sendall(b"x")
+    assert _closed(sock, 10.0)
+    sock.close()
+    assert link.agent.mode == "native"
+    assert link.agent.rpc_pid == pid_native
+    assert "--tls-cert" in _argv_log(link.fake)[-1]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_a_removed_worker_still_takes_a_native_close(make_link, tmp_path):
     # Closing a just-removed worker's native session: no longer authorized, but closing is allowed.
     link = _native_link(make_link, tmp_path, relay_authorize = lambda pid: False)

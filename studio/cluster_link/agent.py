@@ -854,6 +854,10 @@ class Agent:
                     sock, self._control_native_threaded(kind, tls.peer_identity(sock))
                 )
             elif kind == "open_rpc":
+                # A live native session is not counted in _active: switching back would cut it.
+                if self._native_client():
+                    framing.send_frame(sock, {"type": "busy"})
+                    return
                 # The relay needs the loopback rpc-server back (an older master, or native turned off).
                 self._leave_native_threaded()
                 self._open_rpc_threaded(sock)
@@ -969,6 +973,10 @@ class Agent:
                 pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
                 await framing.write_frame(writer, await self._control_native(kind, pid))
             elif kind == "open_rpc":
+                # A live native session is not counted in _active: switching back would cut it.
+                if self._native_client():
+                    await framing.write_frame(writer, {"type": "busy"})
+                    return
                 await self._leave_native()
                 await self._open_rpc(reader, writer)
             else:
