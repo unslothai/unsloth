@@ -675,6 +675,7 @@ def decode_rope_inplace(Q, K, cos, sin, position_ids):
         or sin2.dtype != Q.dtype
         or K.dtype != Q.dtype
         or cos2.device != Q.device
+        or sin2.device != Q.device
         or cos2.stride(-1) != 1
         or sin2.stride(-1) != 1
     ):
@@ -683,6 +684,7 @@ def decode_rope_inplace(Q, K, cos, sin, position_ids):
     rope_ptr = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
     with torch_gpu_device(Q.device):
         _rope_qk(Q, K, Q, K, cos2, sin2, rope_ptr, True, False, _eager_kernel)
+    _sync_if_split(Q)
     return True
 
 

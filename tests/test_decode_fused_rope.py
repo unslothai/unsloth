@@ -199,3 +199,32 @@ def test_decode_strided_int32_positions():
     assert torch.allclose(out[0].float(), Qu.float(), atol = 0.05) and torch.allclose(
         out[1].float(), Ku.float(), atol = 0.05
     )
+
+
+def test_decode_split_sync_and_mixed_devices(monkeypatch):
+    # Split models move each layer's output to the next GPU: like the other eager RoPE entry
+    # points, both helpers drain the source stream (a no-op on one device).
+    cos, sin = _table(64, 128, torch.bfloat16)
+    q = torch.randn(2, 4, 1, 128, device = "cuda", dtype = torch.bfloat16)
+    k = torch.randn(2, 2, 1, 128, device = "cuda", dtype = torch.bfloat16)
+    p = torch.zeros(2, 1, dtype = torch.long, device = "cuda")
+    n = _Norm(128, torch.bfloat16)
+    calls = []
+    monkeypatch.setattr(RE, "_sync_if_split", lambda X: calls.append(X.device))
+    monkeypatch.setattr(QK, "_sync_if_split", lambda X: calls.append(X.device))
+    assert RE.decode_rope_inplace(q, k, cos, sin, p)
+    assert (
+        QK.decode_qk_norm_rope(n, n, q.transpose(1, 2), k.transpose(1, 2), cos, sin, p) is not None
+    )
+    assert len(calls) == 2
+    # any operand off Q's device keeps the unfused path, with nothing written
+    before_q, before_k = q.clone(), k.clone()
+    assert not RE.decode_rope_inplace(q, k, cos, sin.cpu(), p)
+    assert torch.equal(q, before_q) and torch.equal(k, before_k)
+    nc = _Norm(128, torch.bfloat16)
+    nc.weight.data = nc.weight.data.cpu()
+    qs, ks = q.transpose(1, 2), k.transpose(1, 2)
+    assert QK.decode_qk_norm_rope(n, nc, qs, ks, cos, sin, p) is None
+    assert QK.decode_qk_norm_rope(n, n, qs, ks.cpu(), cos, sin, p) is None
+    assert QK.decode_qk_norm_rope(n, n, qs, ks, cos, sin.cpu(), p) is None
+    assert len(calls) == 2

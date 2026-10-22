@@ -494,8 +494,7 @@ def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
         # The unfused path rounds the norm to Q's dtype, multiplies by the weight and rotates in
         # Q's dtype: the kernel does the same only when everything shares it.
         or not (Q.dtype == K.dtype == Wq.dtype == Wk.dtype == cos2.dtype == sin2.dtype)
-        or Wq.device != Q.device
-        or cos2.device != Q.device
+        or not (Q.device == K.device == Wq.device == Wk.device == cos2.device == sin2.device)
     ):
         return None
     # The kernel indexes positions densely; an int32 last-column slice keeps its row stride.
@@ -505,4 +504,5 @@ def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
             Q, K, Wq.contiguous(), Wk.contiguous(), cos2, sin2, rope_indices,
             float(_eps(q_norm)), float(_eps(k_norm)), True, _eager_kernel,
         )  # fmt: skip
+    _sync_if_split(Q)
     return Qo.transpose(1, 2), Ko.transpose(1, 2)
