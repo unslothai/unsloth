@@ -581,7 +581,7 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
     choice, i.e. today's behaviour."""
     if not binary or ordinal is None:
         return None
-    text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = sd_cpp_device_listing(binary)
     if text is not None:
         for line in text.splitlines():
             name = line.split("\t", 1)[0].strip()
@@ -610,8 +610,22 @@ _CUDA_DEVICE_CC_RE = re.compile(
 )
 
 
-# Last --list-devices answer per binary + (size, mtime_ns); only the capability read reuses it, never the verdict.
+# Last --list-devices answer per binary, keyed by (size, mtime_ns) and the device-selection env. The accelerator
+# verdict always probes afresh and refreshes it (a load re-vets the listing on purpose); every other reader reuses it.
 _LAST_DEVICE_LISTING: dict = {}
+# What ggml reads to pick or hide devices: a change means a different listing from the same file.
+_DEVICE_LISTING_ENV_VARS: tuple[str, ...] = (
+    "GGML_VK_VISIBLE_DEVICES",
+    "VK_ICD_FILENAMES",
+    "VK_DRIVER_FILES",
+    "VK_ADD_DRIVER_FILES",
+    "VK_LOADER_DRIVERS_SELECT",
+    "VK_LOADER_DRIVERS_DISABLE",
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+)
 
 
 def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
@@ -622,13 +636,39 @@ def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
     return (st.st_size, st.st_mtime_ns)
 
 
+def _device_listing_identity(binary: str) -> tuple:
+    return (_binary_stat_identity(binary), tuple(os.environ.get(name) for name in _DEVICE_LISTING_ENV_VARS))
+
+
 def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None:
     if not binary:
         return
     if text is None:
-        # Keep the last good listing; readers check (size, mtime_ns), so a changed binary's listing is never served.
+        # Keep the last good listing (an unreadable probe or a timeout is never cached); readers check the identity,
+        # so a changed binary's or environment's listing is never served.
         return
-    _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
+    _LAST_DEVICE_LISTING[binary] = (_device_listing_identity(binary), text)
+
+
+def _cached_device_listing(binary: str, *, require_file: bool = False) -> Optional[str]:
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is None:
+        return None
+    identity = _device_listing_identity(binary)
+    if require_file and identity[0] is None:
+        return None
+    return seen[1] if seen[0] == identity else None
+
+
+def sd_cpp_device_listing(binary: str) -> Optional[str]:
+    """``binary --list-devices``, reusing the listing already taken of this file under this environment."""
+    text = _cached_device_listing(binary, require_file = True)
+    if text is None:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+        # A path that is not a file has no identity to tell two listings apart: never reused.
+        if _binary_stat_identity(binary) is not None:
+            _remember_device_listing(binary, text)
+    return text
 
 
 def sd_cpp_cuda_compute_capability(
@@ -642,12 +682,9 @@ def sd_cpp_cuda_compute_capability(
     only reads the listing the last accelerator verdict took of this file."""
     if not binary:
         return None
-    text = None
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    if seen is not None and seen[0] == _binary_stat_identity(binary):
-        text = seen[1]
-    elif probe:
-        text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = _cached_device_listing(binary)
+    if text is None and probe:
+        text = sd_cpp_device_listing(binary)
     if text is None or not _CUDA_INIT_RE.search(text):
         return None
     caps = {
@@ -667,8 +704,7 @@ def sd_cpp_cuda_compute_capability(
 def sd_cpp_device_listing_known(binary: Optional[str]) -> bool:
     if not binary:
         return False
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    return seen is not None and seen[0] == _binary_stat_identity(binary)
+    return _cached_device_listing(binary) is not None
 
 
 # Runs when --list-devices timed out (possibly a stalled driver); CUDA calls have no deadline, so bound the wait.
@@ -727,12 +763,9 @@ def sd_cpp_vulkan_device_is_uma(
     memory for such a device sums every heap, the GTT the pinned weights come from included. None when unsure."""
     if not binary:
         return None
-    text = None
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    if seen is not None and seen[0] == _binary_stat_identity(binary):
-        text = seen[1]
-    elif probe:
-        text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = _cached_device_listing(binary)
+    if text is None and probe:
+        text = sd_cpp_device_listing(binary)
     if text is None:
         return None
     uma = {int(m.group(1)): m.group(2) == "1" for m in _VULKAN_DEVICE_UMA_RE.finditer(text)}
@@ -952,7 +985,7 @@ def sd_cpp_device_named(
     wanted = _normalized_card_name(card_name)
     if not wanted:
         return None
-    text = listing if listing is not None else _sd_cpp_probe_output(binary, "--list-devices")
+    text = listing if listing is not None else sd_cpp_device_listing(binary)
     if text is None:
         return None
     # Both readings: containment cannot tell `RX 7600` from `RX 7600 XT`, equality cannot see through a driver tag.
@@ -1206,6 +1239,17 @@ def _note_failed_upgrade(accelerator: str) -> None:
 _ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu"}
 
 
+def _vulkan_cpu_rung_applies() -> bool:
+    """Whether ambiguous failures can move the Vulkan build to CPU: only on the CPU-torch host routed to Vulkan. An XPU
+    host (always Vulkan) and a ROCm host on its Vulkan rung leave the GPU only on decisive evidence. Unknown: as before."""
+    try:
+        from utils.hardware.hardware import DeviceType, get_device
+
+        return get_device() == DeviceType.CPU
+    except Exception:  # noqa: BLE001
+        return True
+
+
 # The sonames the upstream ROCm archive imports and does not ship.
 _ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
     "libamdhip64.so.7",
@@ -1316,12 +1360,9 @@ def sd_cpp_listed_device(
     file (no subprocess)."""
     if not binary:
         return None, None
-    text = None
-    seen = _LAST_DEVICE_LISTING.get(binary)
-    if seen is not None and seen[0] == _binary_stat_identity(binary):
-        text = seen[1]
-    elif probe:
-        text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = _cached_device_listing(binary)
+    if text is None and probe:
+        text = sd_cpp_device_listing(binary)
     if text is None:
         return None, None
     for line in text.splitlines():
@@ -1372,6 +1413,46 @@ _accelerator_runtime_failures: dict[str, dict] = {}
 
 # AMBIGUOUS failures needed to divert a host (a decisive one is enough alone).
 _AMBIGUOUS_FAILURE_STRIKES = 2
+# Bumped when what counts as a strike narrows. Rule 2 stopped counting Vulkan device-lost errors, so a Vulkan
+# record written before it keeps only its decisive evidence.
+_FAILURE_RULE = 2
+
+
+def _record_under_current_rule(klass: str, record: Optional[dict]) -> Optional[dict]:
+    if not isinstance(record, dict) or klass != "vulkan":
+        return record
+    if int(record.get("rule", 1) or 1) >= _FAILURE_RULE:
+        return record
+    return _decisive_evidence_only(record)
+
+
+def _decisive_evidence_only(record: Optional[dict]) -> Optional[dict]:
+    """*record* with its ambiguous strikes dropped, or None when nothing decisive is left."""
+    if not isinstance(record, dict):
+        return record
+    proven_cards = {
+        name: {"strikes": 0, "proven": True}
+        for name, entry in (record.get("per_card") or {}).items()
+        if isinstance(entry, dict) and entry.get("proven")
+    }
+    unscoped = _unscoped_evidence(record)
+    if record.get("proven") and not isinstance(record.get("per_card"), dict):
+        # Cards named without tallies: the proof cannot be told apart, so it stays whole.
+        unscoped = {"strikes": 0, "proven": True}
+    if not (proven_cards or unscoped["proven"]):
+        return None
+    kept = {
+        "strikes": 0,
+        "proven": True,
+        "fingerprint": record.get("fingerprint") or {},
+        "rule": _FAILURE_RULE,
+    }
+    if record.get("cards"):
+        kept["cards"] = list(record["cards"])
+    if proven_cards:
+        kept["per_card"] = proven_cards
+    kept["unscoped"] = {"strikes": 0, "proven": unscoped["proven"]}
+    return kept
 
 
 def _accelerator_class_of(accelerator: Optional[str]) -> str:
@@ -1542,10 +1623,15 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
     except (TypeError, ValueError):
         strikes = 0
     fingerprint = value.get("fingerprint")
+    try:
+        rule = int(value.get("rule", 1) or 1)
+    except (TypeError, ValueError):
+        rule = 1
     record = {
         "strikes": max(strikes, 0),
         "proven": bool(value.get("proven", False)),
         "fingerprint": fingerprint if isinstance(fingerprint, dict) else {},
+        "rule": rule,
     }
     cards = [str(card).strip() for card in (value.get("cards") or []) if str(card).strip()]
     if cards:
@@ -1658,7 +1744,7 @@ def note_accelerator_runtime_failure(
     fingerprint = dict(fingerprint) if isinstance(fingerprint, dict) else _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update({k: v for k, v in _accelerator_runtime_failures.items() if k not in records})
-    previous = records.get(klass)
+    previous = _record_under_current_rule(klass, records.get(klass))
     if previous is not None and not _fingerprint_still_applies(
         previous.get("fingerprint"), fingerprint
     ):
@@ -1696,6 +1782,7 @@ def note_accelerator_runtime_failure(
         # The union, for a caller that names no card and for the settings report.
         "proven": bool(proven) or bool((previous or {}).get("proven", False)),
         "fingerprint": fingerprint,
+        "rule": _FAILURE_RULE,
     }
     if cards:
         record["cards"] = cards
@@ -1757,9 +1844,17 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
     if not klass:
         return False
     fingerprint = _accelerator_fingerprint()
-    if _record_diverts(_accelerator_runtime_failures.get(klass), fingerprint, card):
+    decisive_only = klass == "vulkan" and not _vulkan_cpu_rung_applies()
+
+    def _applicable(record: Optional[dict]) -> Optional[dict]:
+        record = _record_under_current_rule(klass, record)
+        return _decisive_evidence_only(record) if decisive_only else record
+
+    if _record_diverts(_applicable(_accelerator_runtime_failures.get(klass)), fingerprint, card):
         return True
-    return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint, card)
+    return _record_diverts(
+        _applicable(_stored_accelerator_runtime_failures().get(klass)), fingerprint, card
+    )
 
 
 def off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> Optional[str]:
@@ -1871,8 +1966,8 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "rocm error",
     "rocblas error",
     "memory access fault by gpu node",
-    "errordevicelost",
-    "vk_error_device_lost",
+    # Not VK_ERROR_DEVICE_LOST: the spec makes it recoverable by recreating the device (a TDR or a
+    # scheduler timeout), so it says nothing about whether this build runs here.
     "errorinitializationfailed",
     "vk_error_initialization_failed",
 )

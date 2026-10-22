@@ -77,8 +77,8 @@ def _pinned_host(monkeypatch):
     [
         ((_VEGA,), "vulkan"),
         ((_ARC_LINUX,), "vulkan"),
-        # Unpinned sd.cpp could take the UHD iGPU first.
-        ((_UHD_LINUX, _VEGA), "auto"),
+        # Unpinned ggml-vulkan lists only dedicated GPUs when there are any: the card renders, not the UHD iGPU.
+        ((_UHD_LINUX, _VEGA), "vulkan"),
         ((_ARC_LINUX, _VEGA), "vulkan"),
         ((_UHD_LINUX,), "auto"),
         ((), "auto"),
@@ -143,9 +143,9 @@ def test_an_unmounted_uhd_node_does_not_block_the_amd_card(monkeypatch):
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
     monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: {"amd"} & set(vendors))
     assert r.image_install_accelerator("cpu") == "vulkan"
-    # Both nodes mounted: the UHD iGPU could be taken first.
+    # Both nodes mounted: the dedicated card is still the one sd.cpp takes.
     monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: set(vendors))
-    assert r.image_install_accelerator("cpu") == "auto"
+    assert r.image_install_accelerator("cpu") == "vulkan"
 
 
 @pytest.mark.parametrize("value", ["", "default"])
@@ -164,13 +164,18 @@ def test_a_malformed_ggml_vulkan_mask_keeps_cpu(monkeypatch, value):
 @pytest.mark.parametrize(
     "output",
     [
-        "vk::Queue::submit: ErrorDeviceLost",
-        "VK_ERROR_DEVICE_LOST",
         "vk::createInstance: ErrorIncompatibleDriver",
+        "vk::createInstance: ErrorInitializationFailed",
     ],
 )
 def test_vulkan_failures_are_recognised(output):
     assert sd_cpp_backend.output_shows_accelerator_failure(output)
+
+
+@pytest.mark.parametrize("output", ["vk::Queue::submit: ErrorDeviceLost", "VK_ERROR_DEVICE_LOST"])
+def test_a_lost_vulkan_device_is_not_a_build_failure(output):
+    # Recoverable by recreating the device (a TDR, a scheduler timeout): no evidence about the build.
+    assert not sd_cpp_backend.output_shows_accelerator_failure(output)
 
 
 def test_an_incompatible_vulkan_driver_is_decisive():
@@ -433,3 +438,92 @@ def test_windows_nvidia_without_nvidia_smi_is_found_in_the_adapter_registry(
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: live)
     assert r._nvidia_adapter_present() is expected
     assert seen == [0x10DE]
+
+
+def _empty_failure_records(monkeypatch, stored = None):
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", {})
+    monkeypatch.setattr(sd_cpp_backend, "_stored_accelerator_runtime_failures", lambda: dict(stored or {}))
+    monkeypatch.setattr(sd_cpp_backend, "_persist_accelerator_runtime_failures", lambda _r: None)
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_fingerprint", lambda *_a: {"bundle": "t"})
+
+
+@pytest.mark.parametrize("cpu_torch", [True, False])
+def test_two_lost_vulkan_devices_keep_the_vulkan_build(monkeypatch, cpu_torch):
+    """An Arc / ROCm-on-Vulkan host (and a CPU-torch one) that lost the device twice stays on the GPU build."""
+    _empty_failure_records(monkeypatch)
+    monkeypatch.setattr(sd_cpp_backend, "_vulkan_cpu_rung_applies", lambda: cpu_torch)
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "vulkan")
+    for _ in range(2):
+        sd_cpp_backend.note_accelerator_failure_from_output(
+            "/x/sd-cli", "vk::Queue::submit: ErrorDeviceLost"
+        )
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "vulkan"
+
+
+def test_ambiguous_vulkan_strikes_move_only_a_cpu_torch_host(monkeypatch):
+    """Two ambiguous failures: the CPU-torch route falls to CPU sd.cpp, an XPU / ROCm host keeps Vulkan."""
+    _empty_failure_records(monkeypatch)
+    for _ in range(2):
+        sd_cpp_backend.note_accelerator_runtime_failure("vulkan", proven = False)
+    monkeypatch.setattr(sd_cpp_backend, "_vulkan_cpu_rung_applies", lambda: True)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "cpu"
+    monkeypatch.setattr(sd_cpp_backend, "_vulkan_cpu_rung_applies", lambda: False)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "vulkan"
+    # Decisive evidence still moves every host: a build that cannot run must not leave it with nothing.
+    sd_cpp_backend.note_accelerator_runtime_failure("vulkan", proven = True)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "cpu"
+
+
+def test_a_vulkan_record_from_before_device_lost_stopped_counting_is_ignored(monkeypatch):
+    """Two ambiguous strikes persisted under the old rule may be two lost devices: they no longer divert."""
+    monkeypatch.setattr(sd_cpp_backend, "_vulkan_cpu_rung_applies", lambda: True)
+    old = {"vulkan": {"strikes": 2, "proven": False, "fingerprint": {"bundle": "t"}}}
+    _empty_failure_records(monkeypatch, stored = old)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "vulkan"
+    # A decisive one written then still holds.
+    proven = {"vulkan": {"strikes": 1, "proven": True, "fingerprint": {"bundle": "t"}}}
+    _empty_failure_records(monkeypatch, stored = proven)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "cpu"
+
+
+@pytest.mark.parametrize("value", ["0 1", "0, 1", "1 "])
+def test_a_space_separated_ggml_vulkan_mask_is_a_mask(monkeypatch, value):
+    # ggml reads commas as spaces.
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", value)
+    assert r.image_install_accelerator("cpu") == "vulkan"
+
+
+_LISTING = (
+    "CPU\tAMD Ryzen 9\nVulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\nROCm0\tAMD Radeon RX 7800 XT\n"
+)
+
+
+def test_device_listing_readers_share_one_probe(monkeypatch, tmp_path):
+    binary = tmp_path / "sd-cli"
+    binary.write_bytes(b"x")
+    calls: list = []
+
+    def _probe(_binary, *args):
+        calls.append(args)
+        return _LISTING
+
+    monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+    assert sd_cpp_backend.sd_cpp_device_name_for_ordinal(str(binary), 0) == "ROCm0"
+    sd_cpp_backend.sd_cpp_device_named(str(binary), "AMD Radeon RX 7800 XT")
+    assert sd_cpp_backend.sd_cpp_listed_device(str(binary))[0] == "vulkan"
+    assert calls == [("--list-devices",)]
+    # A different device selection is a different listing.
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "0")
+    sd_cpp_backend.sd_cpp_listed_device(str(binary))
+    assert len(calls) == 2
+
+
+def test_an_unreadable_listing_is_not_cached(monkeypatch, tmp_path):
+    binary = tmp_path / "sd-cli"
+    binary.write_bytes(b"x")
+    answers = [None, _LISTING]
+    monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: answers.pop(0))
+    assert sd_cpp_backend.sd_cpp_device_name_for_ordinal(str(binary), 0) is None
+    assert sd_cpp_backend.sd_cpp_device_name_for_ordinal(str(binary), 0) == "ROCm0"

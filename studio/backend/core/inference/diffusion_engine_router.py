@@ -248,7 +248,8 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
     # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
     vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
-    if vk_mask is not None and not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
+    # ggml turns commas into spaces and reads whitespace-separated ordinals.
+    if vk_mask is not None and not re.fullmatch(r"\s*\d+(?:[\s,]+\d+)*[\s,]*", vk_mask):
         return False
     inventory = _physical_inventory()
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
@@ -275,11 +276,16 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         reachable = _accessible_render_vendors({d.get("vendor") for d in gpus})
         gpus = [d for d in gpus if d.get("vendor") in reachable]
     masked = _masked_vendors()
-    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
     if not gpus or any(d.get("vendor") in masked for d in gpus):
         return False
     if not all(_renders(d) for d in gpus):
-        return False
+        # A UHD iGPU beside an AMD card or an Arc: unpinned ggml-vulkan enumerates only dedicated GPUs when there
+        # are any, and sd.cpp takes a GPU before an iGPU, so the card renders. Alone, or under a GGML_VK_VISIBLE_DEVICES
+        # list (whose ordinals may name the iGPU), the iGPU would.
+        if vk_mask is not None or not any(_renders(d) for d in gpus):
+            return False
+        if any(d.get("vendor") != "intel" for d in gpus if not _renders(d)):
+            return False
     return _hardware_vulkan_driver({d.get("vendor") for d in gpus}) and _vulkan_loader_loads()
 
 
