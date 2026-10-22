@@ -15,6 +15,7 @@ import {
   hiresVisible,
   matchHiresUpscaler,
   resolveRestoredHires,
+  upscaleModelRequest,
   type HiresCapability,
 } from "../src/features/images/lib/hires-choice.ts";
 import {
@@ -189,4 +190,34 @@ test("a Studio recipe's Hires fields and upscale model pass the import type chec
   assert.equal(settings.hires_upscaler, "lanczos");
   assert.equal(settings.upscale_model, "realesrgan_x4plus");
   assert.deepEqual(hiresBaseSize(settings), { width: 832, height: 1216 });
+});
+
+test("the native capability drops Hires CFG and upscale-only from the request", () => {
+  const NATIVE: HiresCapability = { ...FLUX, supports_guidance: false, min_denoise: 0.01 };
+  const choice = { ...HIRES_OFF, enabled: true, denoise: 0, guidance: 4 };
+  assert.deepEqual(hiresRequest(choice, NATIVE, "create"), {
+    scale: 1.5,
+    denoise: 0.01,
+    steps: null,
+    upscaler: "lanczos",
+    guidance: null,
+  });
+  assert.deepEqual(hiresNotApplied(choice, NATIVE), [
+    "Hires CFG Scale 4 (not available on this engine; using the base guidance)",
+    "Hires denoise 0 (this engine needs at least 0.01)",
+  ]);
+  // The diffusers capability keeps both, and a typed value snaps to the 0.01 grid.
+  assert.equal(hiresRequest(choice, FLUX, "create")?.guidance, 4);
+  assert.equal(hiresRequest(choice, FLUX, "create")?.denoise, 0);
+  assert.equal(hiresRequest({ ...choice, denoise: 0.004 }, FLUX, "create")?.denoise, 0);
+  assert.equal(hiresRequest({ ...choice, denoise: 0.356 }, FLUX, "create")?.denoise, 0.36);
+});
+
+test("a model upscaler is sent only while the status still lists it", () => {
+  const models = [{ id: "realesrgan_x4plus", label: "R-ESRGAN 4x+", scale: 4 }];
+  assert.equal(upscaleModelRequest("realesrgan_x4plus", models), "realesrgan_x4plus");
+  assert.equal(upscaleModelRequest("local:gone", models), undefined);
+  assert.equal(upscaleModelRequest("realesrgan_x4plus", []), undefined);
+  assert.equal(upscaleModelRequest("realesrgan_x4plus", undefined), undefined);
+  assert.equal(upscaleModelRequest(null, models), undefined);
 });

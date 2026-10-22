@@ -196,6 +196,12 @@ def _verified_file(path: Path, entry: CatalogUpscaler) -> bool:
     return True
 
 
+def _raise_cancelled() -> None:
+    """Stop raises the canonical message, which the generate route maps to its 409 cancellation."""
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+
+
 def _download(
     entry: CatalogUpscaler,
     dest: Path,
@@ -213,7 +219,7 @@ def _download(
         ):
             while True:
                 if cancel is not None and cancel.is_set():
-                    raise RuntimeError("Upscaler download cancelled.")
+                    _raise_cancelled()
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"Timed out downloading the {entry.label} upscaler.")
                 chunk = response.read(1 << 20)
@@ -325,7 +331,7 @@ def tiled_apply(
     ramp = overlap * scale
     for x0, y0, x1, y1 in boxes:
         if cancel is not None and cancel.is_set():
-            raise RuntimeError("cancelled")
+            _raise_cancelled()
         piece = fn(image[:, :, y0:y1, x0:x1]).float()
         if out is None:
             out = torch.zeros(

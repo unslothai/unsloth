@@ -14,6 +14,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   effectiveUpscaler,
+  hiresGuidanceSupported,
+  hiresMinDenoise,
   hiresTargetSize,
   type HiresCapability,
   type HiresChoice,
@@ -85,6 +87,7 @@ export function HiresControls({
 }) {
   const target = hiresTargetSize(width, height, choice.scale, capability.max_side);
   const upscaler = effectiveUpscaler(choice, capability);
+  const minDenoise = hiresMinDenoise(capability);
   return (
     <div className="flex flex-col gap-2 pt-2">
       <div className="flex items-center justify-between">
@@ -125,12 +128,16 @@ export function HiresControls({
           <div className="flex items-center justify-between gap-2">
             <Label
               label="Denoise"
-              hint="How much the second pass redraws. 0.5 is ComfyUI's two-pass default; the latent upscaler needs about 0.5 or more. 0 only upscales."
+              hint={
+                minDenoise > 0
+                  ? "How much the second pass redraws. 0.5 is ComfyUI's two-pass default; the latent upscaler needs about 0.5 or more."
+                  : "How much the second pass redraws. 0.5 is ComfyUI's two-pass default; the latent upscaler needs about 0.5 or more. 0 only upscales."
+              }
             />
             <NumberInput
               ariaLabel="Hires denoise"
               value={choice.denoise}
-              min={0}
+              min={minDenoise}
               max={1}
               step={0.05}
               onChange={(v) => onChange({ ...choice, denoise: v ?? capability.defaults.denoise })}
@@ -167,18 +174,20 @@ export function HiresControls({
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <Label label="Hires CFG" hint="Guidance for the second pass. Empty uses the base guidance." />
-            <NumberInput
-              ariaLabel="Hires CFG"
-              value={choice.guidance}
-              placeholder="Same"
-              min={0}
-              max={20}
-              step={0.5}
-              onChange={(guidance) => onChange({ ...choice, guidance })}
-            />
-          </div>
+          {hiresGuidanceSupported(capability) && (
+            <div className="flex items-center justify-between gap-2">
+              <Label label="Hires CFG" hint="Guidance for the second pass. Empty uses the base guidance." />
+              <NumberInput
+                ariaLabel="Hires CFG"
+                value={choice.guidance}
+                placeholder="Same"
+                min={0}
+                max={20}
+                step={0.5}
+                onChange={(guidance) => onChange({ ...choice, guidance })}
+              />
+            </div>
+          )}
           <p className="text-xs text-muted-foreground" aria-label="Hires output size">
             {width}x{height} {"->"} {target.width}x{target.height}
           </p>

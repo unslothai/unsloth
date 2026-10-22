@@ -26,6 +26,9 @@ logger = get_logger(__name__)
 
 DEFAULT_SCALE = 1.5
 DEFAULT_DENOISE = 0.5
+# The smallest non-zero denoise: the 0.01 step of A1111's "Denoising strength" slider and ComfyUI's KSampler denoise.
+# Below it ``steps / denoise`` grows without bound.
+MIN_DENOISE = 0.01
 MIN_SCALE = 1.0
 MAX_SCALE = 4.0
 MAX_SIDE = 2048
@@ -77,6 +80,10 @@ def resolve_params(hires: HiresParams, family_name: Optional[str]) -> HiresParam
         raise ValueError(f"Hires upscale must be between {MIN_SCALE:g} and {MAX_SCALE:g}.")
     if not (0.0 <= float(hires.denoise) <= 1.0):
         raise ValueError("Hires denoising strength must be between 0 and 1.")
+    if 0.0 < float(hires.denoise) < MIN_DENOISE:
+        raise ValueError(
+            f"Hires denoising strength must be 0 (upscale only) or at least {MIN_DENOISE:g}."
+        )
     if upscaler == upscalers.LATENT and float(hires.denoise) <= 0.0:
         raise ValueError(
             "The latent upscaler needs a refine pass: set a denoising strength above 0."
@@ -132,7 +139,13 @@ def refine_inference_steps(steps: int, denoise: float, rule: str) -> int:
         if n >= steps and steps_run(n, denoise, rule) == steps:
             return n
     n = steps
-    while steps_run(n, denoise, rule) < steps and n < 100000:
+    # denoise >= MIN_DENOISE bounds this at about steps / MIN_DENOISE.
+    limit = int(math.ceil(steps / max(denoise, MIN_DENOISE))) + 4
+    while steps_run(n, denoise, rule) < steps:
+        if n >= limit:
+            raise ValueError(
+                f"Hires fix cannot schedule {steps} refine steps at denoise {denoise:g}."
+            )
         n += 1
     return n
 
@@ -173,6 +186,7 @@ def capability(
     *,
     model_rows: Optional[list[dict]] = None,
     max_side: int = MAX_SIDE,
+    native: bool = False,
 ) -> Optional[dict]:
     """Status ``hires`` block for a family with an img2img path; None hides the control."""
     if family is None or getattr(family, "edit", False) or getattr(family, "layer_count", 0):
@@ -186,6 +200,9 @@ def capability(
         "default_upscaler": default_upscaler(name),
         "defaults": {"scale": DEFAULT_SCALE, "denoise": DEFAULT_DENOISE},
         "max_side": side,
+        # sd.cpp takes no separate refine CFG and no upscale-only pass (plan_sd_cpp refuses both).
+        "supports_guidance": not native,
+        "min_denoise": MIN_DENOISE if native else 0.0,
     }
 
 
@@ -270,7 +287,7 @@ def sd_cpp_supports_hires(binary: Optional[str]) -> bool:
 def sd_cpp_capability(
     family: Any, *, mode: Optional[str], binary: Optional[str]
 ) -> tuple[Optional[dict], Optional[str]]:
-    base = capability(family, model_rows = upscalers.native_model_upscalers())
+    base = capability(family, model_rows = upscalers.native_model_upscalers(), native = True)
     if base is None:
         return None, None
     if mode != "server":
@@ -507,34 +524,42 @@ def run_hires(
     from PIL import Image
 
     _check_request(kwargs)
-    state = getattr(backend, "_state", None)
-    if state is None:
-        raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-    fam = state.family
-    if capability(fam) is None:
-        raise ValueError(
-            unavailable_reason(fam)
-            or f"Hires fix is not supported for the '{fam.name}' model family."
-        )
-    params = resolve_params(hires, fam.name)
     width = int(kwargs.get("width") or 1024)
     height = int(kwargs.get("height") or 1024)
     base_steps = int(kwargs.get("steps") or 9)
-    refine_steps = int(params.steps or base_steps)
-    target = hires_target_size(
-        width,
-        height,
-        params.scale,
-        multiple = int(getattr(fam, "dimension_multiple", 16) or 16),
-        max_side = min(MAX_SIDE, int(getattr(fam, "max_output_side", MAX_SIDE) or MAX_SIDE)),
-        max_pixels = int(getattr(fam, "max_output_pixels", 0) or 0) or None,
-    )
-    check_output_size(fam, *target)
-    if upscalers.is_model_upscaler(params.upscaler) and not upscalers.spandrel_available():
-        raise ValueError(
-            "Model upscalers need the spandrel package, which is not installed. Pick Lanczos instead."
+    # Filled from the loaded family once the generation slot is held (a load cannot swap the model under the plan).
+    params = hires
+    refine_steps = 0
+    target = (width, height)
+    refine = False
+
+    def _plan() -> None:
+        nonlocal params, refine_steps, target, refine
+        state = getattr(backend, "_state", None)
+        if state is None:
+            raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+        fam = state.family
+        if capability(fam) is None:
+            raise ValueError(
+                unavailable_reason(fam)
+                or f"Hires fix is not supported for the '{fam.name}' model family."
+            )
+        params = resolve_params(hires, fam.name)
+        refine_steps = int(params.steps or base_steps)
+        target = hires_target_size(
+            width,
+            height,
+            params.scale,
+            multiple = int(getattr(fam, "dimension_multiple", 16) or 16),
+            max_side = min(MAX_SIDE, int(getattr(fam, "max_output_side", MAX_SIDE) or MAX_SIDE)),
+            max_pixels = int(getattr(fam, "max_output_pixels", 0) or 0) or None,
         )
-    refine = float(params.denoise) > 0.0
+        check_output_size(fam, *target)
+        if upscalers.is_model_upscaler(params.upscaler) and not upscalers.spandrel_available():
+            raise ValueError(
+                "Model upscalers need the spandrel package, which is not installed. Pick Lanczos instead."
+            )
+        refine = float(params.denoise) > 0.0
 
     def _preflight(guard_kwargs: dict) -> None:
         if not refine:
@@ -561,6 +586,7 @@ def run_hires(
     bind_generation_cancel(cancel)
     t0 = time.perf_counter()
     with backend._generation_slot(cancel), _progress_cleared_on_exit(backend):
+        _plan()
         ctx = HiresPass(cancel = cancel, preflight = _preflight, defer_bg_kick = refine)
         base = generate(backend, **kwargs, _hires_pass = ctx)
         t_base = time.perf_counter() - t0
@@ -571,6 +597,7 @@ def run_hires(
         upscale_s = 0.0
         refine_s = 0.0
         upscale_info: dict = {}
+        refine_negative: Optional[str] = None
         state = getattr(backend, "_state", None)
         keep_resident = state is not None and getattr(state, "offload_policy", "none") in (
             None,
@@ -630,7 +657,14 @@ def run_hires(
                 pass_kwargs["sd_controls"] = replace(
                     controls, variation_seed = None, variation_strength = None
                 )
-            pass_ctx = HiresPass(cancel = cancel, source = source, latent_from = latent_from, refine = True)
+            pass_ctx = HiresPass(
+                cancel = cancel,
+                source = source,
+                latent_from = latent_from,
+                # Kick a deferred background compile only after the LAST refine (else the next image waits on it).
+                defer_bg_kick = index < len(images) - 1,
+                refine = True,
+            )
             pass_ctx.stats["refine_steps"] = refine_steps
             pass_kwargs["steps"] = refine_steps  # converted to num_inference_steps inside the call
             try:
@@ -643,8 +677,13 @@ def run_hires(
                 ) from exc
             refined.extend(out["images"])
             refine_s += time.perf_counter() - t_ref
+            if out.get("negative_prompt") and not refine_negative:
+                refine_negative = out["negative_prompt"]
     result = dict(base)
     result["images"] = refined
+    if refine_negative and not result.get("negative_prompt"):
+        # Hires CFG engaged a negative the base pass's guidance left off; the recipe must still carry it.
+        result["negative_prompt"] = refine_negative
     result["workflow"] = "txt2img"
     result["hires"] = {
         "scale": float(params.scale),

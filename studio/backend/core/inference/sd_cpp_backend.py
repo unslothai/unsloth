@@ -4699,27 +4699,34 @@ class SdCppDiffusionBackend:
         # ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
         hires_payload: Optional[dict] = None
-        hires_staged: Optional[Path] = None
-        try:
-            if hires_plan is not None:
-                from core.inference import diffusion_hires, diffusion_upscalers
+        hires_staged: list[Path] = []
 
-                upscaler_id = hires_plan.params.upscaler
-                staged_name = None
-                if diffusion_upscalers.is_model_upscaler(upscaler_id):
-                    if not state.server.lora_dir:
-                        raise ValueError(
-                            "The native server has no upscaler directory for a model upscaler."
-                        )
-                    staged_name, hires_staged = diffusion_hires.stage_sd_cpp_upscaler(
-                        upscaler_id, state.server.lora_dir, cancel = cancel
+        def _stage_hires(server: Any) -> Optional[dict]:
+            """The ``hires`` block, with a model upscaler staged into THIS server's upscaler dir."""
+            if hires_plan is None:
+                return None
+            from core.inference import diffusion_hires, diffusion_upscalers
+
+            upscaler_id = hires_plan.params.upscaler
+            staged_name = None
+            if diffusion_upscalers.is_model_upscaler(upscaler_id):
+                if not server.lora_dir:
+                    raise ValueError(
+                        "The native server has no upscaler directory for a model upscaler."
                     )
-                hires_payload = diffusion_hires.sd_cpp_payload(
-                    hires_plan.params,
-                    int(steps),
-                    hires_plan.target,
-                    diffusion_hires.sd_cpp_upscaler_name(upscaler_id, staged_name),
+                staged_name, staged = diffusion_hires.stage_sd_cpp_upscaler(
+                    upscaler_id, server.lora_dir, cancel = cancel
                 )
+                hires_staged.append(staged)
+            return diffusion_hires.sd_cpp_payload(
+                hires_plan.params,
+                int(steps),
+                hires_plan.target,
+                diffusion_hires.sd_cpp_upscaler_name(upscaler_id, staged_name),
+            )
+
+        try:
+            hires_payload = _stage_hires(state.server)
             for offset in range(0, total, _MAX_SERVER_BATCH):
                 if cancel.is_set():
                     raise SdCppCancelled("sd-server generation was cancelled.")
@@ -4767,6 +4774,10 @@ class SdCppDiffusionBackend:
                     with self._lock:
                         if self._state is not None and self._state.server is not None:
                             self._state = state
+                    if hires_plan is not None:
+                        # The replacement server has its own scratch dir: stage the upscaler there again.
+                        hires_payload = _stage_hires(server)
+                        payload["hires"] = dict(hires_payload)
                     blobs = server.img_gen(
                         payload,
                         on_step = self._on_log,
@@ -4791,9 +4802,9 @@ class SdCppDiffusionBackend:
         finally:
             if lora_stage is not None:
                 shutil.rmtree(lora_stage, ignore_errors = True)
-            if hires_staged is not None:
+            for staged in hires_staged:
                 try:
-                    hires_staged.unlink()
+                    staged.unlink()
                 except OSError:
                     pass
         return images, seeds

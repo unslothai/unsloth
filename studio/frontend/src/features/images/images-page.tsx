@@ -378,6 +378,7 @@ import {
   hiresSummary,
   hiresVisible,
   resolveRestoredHires,
+  upscaleModelRequest,
   type HiresChoice,
 } from "./lib/hires-choice";
 import {
@@ -2274,6 +2275,9 @@ export function ImagesPage({
     [samplerChoice, samplerModelKey, samplerOptions],
   );
   const shiftControl = !external && status?.loaded ? (status.shift_control ?? null) : null;
+  // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
+  const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
+  const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
   const [shiftState, setShiftState] = useState<{ key: string; value: ShiftValue }>({
     key: "",
     value: EMPTY_SHIFT,
@@ -5393,8 +5397,8 @@ export function ImagesPage({
             strength: condStrength,
             ...condInpaint,
             upscale: condUpscale,
-            upscale_model: isUpscale && upscaleModel ? upscaleModel : undefined,
-            hires: hiresRequest(hires, status?.hires, workflow),
+            upscale_model: isUpscale ? upscaleModelRequest(upscaleModel, upscaleModels) : undefined,
+            hires: hiresRequest(hires, hiresCapability, workflow),
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
@@ -5506,7 +5510,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, hires, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -6385,7 +6389,7 @@ export function ImagesPage({
                   step={0.05}
                   onChange={setUpscaleStrength}
                 />
-                <UpscaleModelField models={status?.upscale_models} value={upscaleModel} onChange={setUpscaleModel} />
+                <UpscaleModelField models={upscaleModels} value={upscaleModel} onChange={setUpscaleModel} />
               </>
             )}
 
@@ -6955,9 +6959,9 @@ export function ImagesPage({
               </Field>
             )}
             <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
-            {hiresVisible(status?.hires, workflow) ? (
-              <HiresControls capability={status.hires} choice={hires} onChange={setHires} width={width} height={height} />
-            ) : workflow === "create" && status?.hires_unavailable_reason ? (
+            {hiresVisible(hiresCapability, workflow) ? (
+              <HiresControls capability={hiresCapability} choice={hires} onChange={setHires} width={width} height={height} />
+            ) : !external && workflow === "create" && status?.hires_unavailable_reason ? (
               <p className="pt-2 text-xs text-muted-foreground">{status.hires_unavailable_reason}</p>
             ) : null}
             <EmbeddingsField

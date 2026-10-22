@@ -114,6 +114,33 @@ def test_refine_runs_exactly_the_requested_steps(rule, steps, denoise):
     assert hires.steps_run(n, denoise, rule) == steps
 
 
+def test_denoise_below_the_a1111_comfyui_step_is_refused():
+    # A1111 "Denoising strength" and ComfyUI KSampler denoise step by 0.01; below it steps / denoise is unbounded.
+    for bad in (0.00001, 1e-300, 0.009):
+        with pytest.raises(ValueError, match = "at least 0.01"):
+            hires.resolve_params(hires.HiresParams(denoise = bad, upscaler = "lanczos"), "flux.1")
+    assert hires.resolve_params(hires.HiresParams(denoise = 0.0, upscaler = "lanczos"), "flux.1")
+    for rule in (hires.RULE_FLOOR, hires.RULE_FLOW):
+        n = hires.refine_inference_steps(100, hires.MIN_DENOISE, rule)
+        assert n <= 10004 and hires.steps_run(n, hires.MIN_DENOISE, rule) == 100
+
+
+def test_upscaler_stop_raises_the_canonical_cancellation():
+    import threading
+
+    import torch
+
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(RuntimeError) as exc:
+        ups.tiled_apply(
+            torch.zeros(1, 3, 64, 64), lambda x: x, 1, tile = 32, overlap = 8, cancel = cancel
+        )
+    assert str(exc.value) == DIFFUSION_CANCELLED_MSG
+
+
 def test_comfyui_example_numbers():
     # hiresfix_latent_workflow.png: 768 -> 1152, KSampler 14 steps at denoise 0.5 (28-step schedule, last 14).
     assert hires.hires_target_size(768, 768, 1.5) == (1152, 1152)
@@ -228,6 +255,16 @@ def test_catalog_download_is_verified(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match = "integrity check"):
         ups.resolve_model_path(entry.id)
     assert not any(tmp_path.iterdir())  # no partial file is left behind
+    import threading
+
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(RuntimeError) as exc:
+        ups.resolve_model_path(entry.id, cancel = stop)
+    assert str(exc.value) == DIFFUSION_CANCELLED_MSG
+    assert not any(tmp_path.iterdir())
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     with pytest.raises(ValueError, match = "offline"):
         ups.resolve_model_path(entry.id)
@@ -427,6 +464,10 @@ def test_native_capability_needs_the_server_and_a_build_with_hires(monkeypatch):
     monkeypatch.setattr(hires, "sd_cpp_supports_hires", lambda binary: binary == "new")
     cap, reason = hires.sd_cpp_capability(_fam("sdxl"), mode = "server", binary = "new")
     assert cap is not None and reason is None
+    # The control hides Hires CFG and upscale-only, which plan_sd_cpp refuses.
+    assert cap["supports_guidance"] is False and cap["min_denoise"] == hires.MIN_DENOISE
+    diffusers_cap = hires.capability(_fam("sdxl"))
+    assert diffusers_cap["supports_guidance"] is True and diffusers_cap["min_denoise"] == 0.0
     assert hires.sd_cpp_capability(_fam("sdxl"), mode = "oneshot", binary = "new")[0] is None
     cap, reason = hires.sd_cpp_capability(_fam("sdxl"), mode = "server", binary = "old")
     assert cap is None and "no Hires fix support" in reason
@@ -667,9 +708,15 @@ def test_run_hires_pass_kwargs_without_a_model(monkeypatch):
                 "seed": 5,
                 "seeds": [5, 6],
                 "workflow": "txt2img",
+                "negative_prompt": None,  # base guidance 0 leaves the negative off
             }
         assert ctx.source.size == (384, 384)
-        return {"images": [ctx.source], "seed": kw["seed"], "seeds": [kw["seed"]]}
+        return {
+            "images": [ctx.source],
+            "seed": kw["seed"],
+            "seeds": [kw["seed"]],
+            "negative_prompt": kw.get("negative_prompt"),
+        }
 
     b = _Backend()
     out = hires.run_hires(
@@ -685,11 +732,15 @@ def test_run_hires_pass_kwargs_without_a_model(monkeypatch):
             "guidance": 0.0,
             "seed": 5,
             "batch_size": 1,
+            "negative_prompt": "blurry",
             "sd_controls": SdControls(variation_seed = 9, variation_strength = 0.3, clip_skip = 2),
         },
     )
     assert [c[0] for c in calls] == [False, True, True]
     assert calls[0][1] is True  # the base pass defers a pending background compile
+    # ...and so does every refine but the last, or image two waits on the compile image one kicked.
+    assert [c[1] for c in calls[1:]] == [True, False]
+    assert out["negative_prompt"] == "blurry"  # Hires CFG engaged it, so the recipe records it
     assert calls[1][2] and calls[2][2]  # Stop is registered again for each refine pass
     refine = [c[3] for c in calls[1:]]
     assert [k["prompt"] for k in refine] == ["a", "b"] and [k["seed"] for k in refine] == [5, 6]
@@ -703,3 +754,132 @@ def test_run_hires_pass_kwargs_without_a_model(monkeypatch):
     assert out["hires"]["refine_steps"] == 6 and out["hires"]["upscaler"] == "lanczos"
     assert [im.size for im in out["images"]] == [(384, 384)] * 2
     assert b._gen is None
+
+
+def test_run_hires_plans_against_the_model_loaded_when_the_slot_is_held():
+    """A load that wins the slot first swaps the family; the plan must follow it (FLUX -> SDXL: latent default)."""
+    import contextlib
+    import threading
+
+    from PIL import Image
+
+    seen = []
+
+    class _Backend:
+        def __init__(self):
+            self._state = types.SimpleNamespace(
+                family = _fam("flux.1"), offload_policy = "none", device = "cpu"
+            )
+            self._lock = threading.Lock()
+            self._generation_cancel_lock = threading.Lock()
+            self._gen = None
+            self._active_generate_cancel = None
+            self._active_generate_account = None
+
+        @contextlib.contextmanager
+        def _generation_slot(self, cancel):
+            self._state = types.SimpleNamespace(
+                family = _fam("sdxl"), offload_policy = "none", device = "cpu"
+            )
+            yield
+
+    def fake_generate(backend, **kw):
+        ctx = kw.pop("_hires_pass")
+        seen.append(ctx)
+        if not ctx.refine:
+            return {"images": [Image.new("RGB", (256, 256))], "seed": 1, "seeds": [1]}
+        return {"images": [Image.new("RGB", ctx.source.size)], "seed": 1, "seeds": [1]}
+
+    out = hires.run_hires(
+        _Backend(),
+        fake_generate,
+        hires.HiresParams(),
+        {"prompt": "p", "width": 256, "height": 256, "steps": 8, "seed": 1, "batch_size": 1},
+    )
+    assert out["hires"]["upscaler"] == "latent"
+    assert seen[1].latent_from is not None
+
+
+def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
+    import dataclasses
+    import io
+    import threading
+
+    from PIL import Image
+
+    import core.inference.sd_cpp_backend as scb
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+    png = buf.getvalue()
+    payloads = []
+
+    class _Server:
+        def __init__(self, lora_dir, fail):
+            self.lora_dir, self.fail = str(lora_dir), fail
+
+        def img_gen(self, payload, **kw):
+            payloads.append((self.lora_dir, dict(payload["hires"])))
+            if self.fail:
+                raise RuntimeError("ggml unsupported op abort")
+            return [png]
+
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    staged_paths = []
+
+    def fake_stage(
+        upscaler_id,
+        scratch_dir,
+        *,
+        cancel = None,
+    ):
+        dest = tmp_path / scratch_dir / "hires_x.pth"
+        dest.write_bytes(b"w")
+        staged_paths.append(dest)
+        return "hires_x", dest
+
+    monkeypatch.setattr(hires, "stage_sd_cpp_upscaler", fake_stage)
+
+    @dataclasses.dataclass(frozen = True)
+    class _State:
+        family: object
+        server: object
+        sampling_method: object = None
+        flow_shift: object = None
+        sample_sigmas: object = None
+
+    b = scb.SdCppDiffusionBackend()
+    new_server = _Server(new_dir, fail = False)
+    monkeypatch.setattr(b, "_restart_server_on_cpu_backend", lambda state, text, cancel: new_server)
+    plan = hires.SdCppHiresPlan(
+        params = hires.HiresParams(upscaler = "realesrgan_x4plus"),
+        base_width = 64,
+        base_height = 64,
+        target = (96, 96),
+        refine_steps = 4,
+    )
+    images, _ = b._generate_server(
+        _State(family = _fam("sdxl"), server = _Server(old_dir, fail = True)),
+        prompt = "p",
+        negative_prompt = None,
+        width = 64,
+        height = 64,
+        steps = 4,
+        seed = 1,
+        batch_size = 1,
+        cfg_scale = None,
+        flux_guidance = None,
+        lora_resolved = [],
+        cancel = threading.Event(),
+        hires_plan = plan,
+    )
+    assert len(images) == 1
+    assert [d for d, _ in payloads] == [str(old_dir), str(new_dir)]
+    assert all(h["upscaler"] == "hires_x" for _, h in payloads)
+    assert [p.parent for p in staged_paths] == [
+        old_dir,
+        new_dir,
+    ]  # staged again in the new server's dir
+    assert not any(p.exists() for p in staged_paths)  # both removed after

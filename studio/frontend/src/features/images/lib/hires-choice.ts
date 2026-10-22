@@ -14,6 +14,21 @@ export interface HiresCapability {
   default_upscaler: string;
   defaults: { scale: number; denoise: number };
   max_side: number;
+  /** false = no separate Hires CFG (native engine); absent = supported. */
+  supports_guidance?: boolean;
+  /** The smallest denoise the engine takes (native: no upscale-only 0); absent = 0. */
+  min_denoise?: number;
+}
+
+/** A1111's Denoising strength slider and ComfyUI's KSampler denoise both step by 0.01. */
+export const HIRES_DENOISE_STEP = 0.01;
+
+export function hiresMinDenoise(cap: HiresCapability): number {
+  return finite(cap.min_denoise) ?? 0;
+}
+
+export function hiresGuidanceSupported(cap: HiresCapability): boolean {
+  return cap.supports_guidance !== false;
 }
 
 export interface HiresRequest {
@@ -81,13 +96,23 @@ export function hiresRequest(
   workflow: string,
 ): HiresRequest | undefined {
   if (!choice.enabled || !hiresVisible(cap, workflow)) return undefined;
+  // Snap to the 0.01 grid (a typed 0.004 would otherwise be refused), never below the engine's minimum.
+  const denoise = clamp(Math.round(choice.denoise / HIRES_DENOISE_STEP) * HIRES_DENOISE_STEP, hiresMinDenoise(cap), 1);
   return {
     scale: choice.scale,
-    denoise: choice.denoise,
+    denoise: Number(denoise.toFixed(2)),
     steps: choice.steps && choice.steps > 0 ? choice.steps : null,
     upscaler: effectiveUpscaler(choice, cap),
-    guidance: choice.guidance,
+    guidance: hiresGuidanceSupported(cap) ? choice.guidance : null,
   };
+}
+
+/** The Upscale workflow's `upscale_model`: only an id the status still lists (the selector shows Lanczos otherwise). */
+export function upscaleModelRequest(
+  id: string | null | undefined,
+  models: Array<{ id: string }> | null | undefined,
+): string | undefined {
+  return id && models?.some((m) => m.id === id) ? id : undefined;
 }
 
 export interface HiresRecord {
@@ -144,9 +169,14 @@ export function matchHiresUpscaler(name: string, cap: HiresCapability): string |
 export function hiresNotApplied(choice: HiresChoice, cap: HiresCapability | null | undefined): string[] {
   if (!choice.enabled) return [];
   if (!cap) return [`Hires fix (${hiresSummary(choice)})`];
+  const notes: string[] = [];
   if (choice.upscaler && matchHiresUpscaler(choice.upscaler, cap) === null)
-    return [`Hires upscaler ${choice.upscaler} (not available; using ${labelOf(cap.default_upscaler, cap)})`];
-  return [];
+    notes.push(`Hires upscaler ${choice.upscaler} (not available; using ${labelOf(cap.default_upscaler, cap)})`);
+  if (choice.guidance !== null && !hiresGuidanceSupported(cap))
+    notes.push(`Hires CFG Scale ${choice.guidance} (not available on this engine; using the base guidance)`);
+  if (choice.denoise < hiresMinDenoise(cap))
+    notes.push(`Hires denoise ${choice.denoise} (this engine needs at least ${hiresMinDenoise(cap)})`);
+  return notes;
 }
 
 export function resolveRestoredHires(choice: HiresChoice, cap: HiresCapability | null | undefined): HiresChoice {
