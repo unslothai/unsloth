@@ -380,14 +380,16 @@ def plan_layer_split(
             return dataclasses.replace(split, reason = reason), reason
         available = (
             sum(card_limits[o] - reserve[o] for o in cards)
-            - max(denoise, decode)
+            - max(denoise, decode, encode if te_mib else 0)
             - (k - 1) * working
         )
-        shortfall = need_total - available
+        # the text encoders can always stream from host memory, so they do not count against the cards
+        shortfall = need_total - te_mib - available
         best_shortfall = shortfall if best_shortfall is None else min(best_shortfall, shortfall)
     return None, (
-        f"layer split does not fit the selected cards ({need_total} MiB of weights, "
-        f"short by about {max(0, best_shortfall or 0)} MiB after the per-card reserves)"
+        f"layer split does not fit the selected cards ({need_total - te_mib} MiB of denoiser and VAE weights with "
+        f"the text encoders streamed, short by about {max(0, best_shortfall or 0)} MiB after the per-card reserves "
+        f"and {max(denoise, decode)} MiB of activations on cuda:{primary})"
     )
 
 
