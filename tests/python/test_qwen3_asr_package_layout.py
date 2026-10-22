@@ -145,8 +145,20 @@ def test_native_and_other_configs_pass_through():
     other = Other()
     assert convert(other) == (other, None)
 
+    class Aligner:  # Qwen/Qwen3-ForcedAligner-0.6B: same layout, classifier head
+        model_type = "qwen3_asr"
+        thinker_config = {
+            "model_type": "qwen3_forced_aligner",
+            "audio_config": {},
+            "text_config": {},
+        }
+
+    aligner = Aligner()
+    assert convert(aligner) == (aligner, None)
+
 
 def test_fast_model_applies_and_drops_the_mapping():
     source = LOADER_PATH.read_text(encoding = "utf-8")
     assert "_convert_qwen3_asr_package_config(model_config)" in source
+    assert "if user_config is None and not fast_inference:" in source
     assert "_drop_text_only_key_mapping(model, _qwen3_asr_key_mapping)" in source

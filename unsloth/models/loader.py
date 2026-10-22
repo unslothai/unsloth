@@ -2924,7 +2924,8 @@ class FastModel(FastBaseModel):
         )
 
         _qwen3_asr_key_mapping = None
-        if user_config is None:
+        # vLLM reads the package layout (thinker_config) itself, so fast_inference keeps the repo config.
+        if user_config is None and not fast_inference:
             model_config, _qwen3_asr_key_mapping = _convert_qwen3_asr_package_config(model_config)
             if _qwen3_asr_key_mapping:
                 _merge_key_mapping(kwargs, _qwen3_asr_key_mapping)

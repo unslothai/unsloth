@@ -2079,6 +2079,9 @@ def _convert_qwen3_asr_package_config(config):
     thinker = getattr(config, "thinker_config", None)
     if not isinstance(thinker, dict) or not {"audio_config", "text_config"} <= set(thinker):
         return config, None
+    # Qwen3-ForcedAligner shares the layout but is a classifier (thinker model_type qwen3_forced_aligner).
+    if thinker.get("model_type", "qwen3_asr") != "qwen3_asr":
+        return config, None
     native = type(config)
 
     def sub(d):
