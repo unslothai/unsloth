@@ -77,10 +77,12 @@ def is_audio_cpp_repo_id(value: str | None) -> bool:
 
 
 def decision_api_repo_ids() -> set[str]:
-    from core.systemone.catalog import CHECKPOINTS, GGUF_COMPANIONS
-    return {c.source.lower() for c in CHECKPOINTS.values()} | {
-        c.repo.lower() for c in GGUF_COMPANIONS.values()
-    }
+    from core.systemone.catalog import CHECKPOINTS, GGUF_COMPANIONS, MLX_COMPANIONS
+    return (
+        {c.source.lower() for c in CHECKPOINTS.values()}
+        | {c.repo.lower() for c in GGUF_COMPANIONS.values()}
+        | {c.repo.lower() for c in MLX_COMPANIONS.values()}
+    )
 
 
 def is_decision_api_model(*values: str | None) -> bool:

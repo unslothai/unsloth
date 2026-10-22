@@ -51,6 +51,8 @@ def _file(name, size_on_disk):
         "ggml-org/Kev-0.8B-GGUF",
         "Cloudflare/clef-flash",
         "convaiinnovations/laya",
+        "jaredpalmer/kev-0.8b",
+        "openjev/openjev-MLX",
         CLEF_SNAPSHOT_FILE,
     ],
 )
@@ -62,6 +64,7 @@ def test_chat_models_with_similar_names_stay_visible():
     assert is_hidden_model("unsloth/Qwen3-0.6B-GGUF") is False
     assert is_hidden_model("user/Clef-Flash-GGUF") is False
     assert is_hidden_model("ggml-org/Clef-Flash-GGUF-finetune") is False
+    assert is_hidden_model("Qwen/Qwen3.5-0.8B-Base") is False
 
 
 def test_cached_gguf_list_drops_a_decision_api_download(monkeypatch, tmp_path):
