@@ -56,3 +56,36 @@ test("ReactPreview passes frame registration through to ArtifactHtmlFrame", () =
   assert.equal(frame.type, ArtifactHtmlFrame);
   assert.equal(frame.props.onFrameReady, onFrameReady);
 });
+
+test("artifact frame availability follows registration and cleanup", () => {
+  const source = read("features/browser/page-frame.tsx");
+  const fragment = source.slice(source.indexOf("const frames ="), source.indexOf("const snapshotRequests =")).replace(/^export /gm, "");
+  const observed: boolean[] = [];
+  const registry = component(`function () { ${fragment} return { registerArtifactFrame, useFrameAvailable }; }`, {
+    window: { addEventListener: () => {}, removeEventListener: () => {} },
+    useSyncExternalStore: (subscribe: (notify: () => void) => void, snapshot: () => boolean) => {
+      subscribe(() => observed.push(snapshot()));
+      observed.push(snapshot());
+      return snapshot();
+    },
+  })();
+  assert.equal(registry.useFrameAvailable("tab1"), false);
+  const cleanup = registry.registerArtifactFrame("tab1", {});
+  cleanup();
+  assert.deepEqual(observed, [false, true, false]);
+});
+
+test("an unavailable React preview uses DOM annotation instead of an absent frame", () => {
+  const source = read("features/browser/browser-panel.tsx");
+  const start = source.indexOf("  const htmlAnnotating =");
+  const declaration = source.slice(start, source.indexOf(";", start) + 1);
+  for (const available of [false, true]) {
+    const htmlAnnotating = vm.runInNewContext(`(() => { ${declaration} return htmlAnnotating; })()`, {
+      frameAvailable: available,
+      activeEntry: { kind: "file", name: "Demo.tsx", contentType: "application/x-unsloth-react-preview" },
+      fileBarKind: () => "html",
+      fileMode: "preview",
+    });
+    assert.equal(htmlAnnotating, available);
+  }
+});

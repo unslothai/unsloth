@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage, userActionGate } from "./frame-message";
 import { pageRequests } from "./page-requests";
@@ -20,6 +20,15 @@ export type { FrameMessage };
 let loadCounter = 0;
 
 const frames = new Map<string, HTMLIFrameElement>();
+const frameListeners = new Set<() => void>();
+const subscribeFrames = (listener: () => void) => {
+  frameListeners.add(listener);
+  return () => { frameListeners.delete(listener); };
+};
+
+export function useFrameAvailable(tabId: string | null): boolean {
+  return useSyncExternalStore(subscribeFrames, () => !!tabId && frames.has(tabId), () => false);
+}
 
 export type FrameCommand =
   | { command: "find"; query: string }
@@ -83,6 +92,7 @@ export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) 
 /** Register an artifact's opaque-origin frame for annotation commands only. */
 export function registerArtifactFrame(tabId: string, frame: HTMLIFrameElement): () => void {
   frames.set(tabId, frame);
+  for (const notify of frameListeners) notify();
   const listener = (event: MessageEvent) => {
     if (event.source !== frame.contentWindow || event.origin !== "null") return;
     const message = parseFrameMessage(event.data);
@@ -91,7 +101,10 @@ export function registerArtifactFrame(tabId: string, frame: HTMLIFrameElement): 
   window.addEventListener("message", listener);
   return () => {
     window.removeEventListener("message", listener);
-    if (frames.get(tabId) === frame) frames.delete(tabId);
+    if (frames.get(tabId) === frame) {
+      frames.delete(tabId);
+      for (const notify of frameListeners) notify();
+    }
   };
 }
 
@@ -282,8 +295,12 @@ export function PageFrame({
     const frame = frameRef.current;
     if (!frame) return;
     frames.set(tabId, frame);
+    for (const notify of frameListeners) notify();
     return () => {
-      if (frames.get(tabId) === frame) frames.delete(tabId);
+      if (frames.get(tabId) === frame) {
+        frames.delete(tabId);
+        for (const notify of frameListeners) notify();
+      }
     };
   }, [tabId]);
 

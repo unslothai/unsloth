@@ -170,7 +170,7 @@ import {
   pageDownload,
   useBrowserStore,
 } from "./store";
-import { sendFrameCommand } from "./page-frame";
+import { sendFrameCommand, useFrameAvailable } from "./page-frame";
 import { TabView } from "./tab-view";
 import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
 import { useShallow } from "zustand/shallow";
@@ -2486,7 +2486,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
     device !== "off" && activeEntry?.kind === "web"
       ? DEVICE_WIDTHS[device]
       : null;
-  const htmlAnnotating = activeEntry?.kind === "file" &&
+  const frameAvailable = useFrameAvailable(activeTabId);
+  const htmlAnnotating = frameAvailable && activeEntry?.kind === "file" &&
     fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
 
