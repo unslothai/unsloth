@@ -360,7 +360,6 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
         if normalized == "webm":
             _transcode_webm(path, dest)
         else:
-            # GIF is bounded by _GIF_MAX_FRAMES / _GIF_MAX_EDGE, so it is built in memory and written out.
             dest.write_bytes(_transcode_gif(path))
     except BaseException:
         dest.unlink(missing_ok = True)
@@ -454,27 +453,18 @@ def _transcode_webm(path: Path, dest: Path) -> None:
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
 
 
-# Ceilings for a GIF export. 720 px and 300 frames (25s at the 12 fps target) bound the work and the output for the
-# widest clip a generate request allows.
 _GIF_MAX_EDGE = 720
 _GIF_MAX_FRAMES = 300
-# The palette path follows the usual ffmpeg GIF recipe: one palettegen over the whole clip (stats_mode=full, its default,
-# one transparent slot reserved) and paletteuse with sierra2_4a error diffusion (ffmpeg's own default dither).
 _GIF_PALETTEGEN_ARGS = "reserve_transparent=on:transparency_color=ffffff"
 _GIF_PALETTEUSE_ARGS = "dither=sierra2_4a"
-# palettegen needs every kept frame before paletteuse can map the first one. Hold the scaled RGB frames when they fit
-# this budget (the old path held ~1 byte/px paletted frames, about 150 MB at the caps); past it, decode the clip twice
-# instead so memory stays flat no matter the clip size.
+# palettegen needs every frame before paletteuse; above this budget decode twice instead of holding frames.
 _GIF_HOLD_BYTES = 160 * 1024 * 1024
 
 
 def _gif_plan(in_v) -> tuple[Fraction, int, int, int]:
     """(source fps, frame step, output width, output height) for a GIF of ``in_v``."""
     rate = Fraction(in_v.average_rate or 24)
-    # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
     step = max(1, round(float(rate) / 12))
-    # Bound both axes: downscale past _GIF_MAX_EDGE and widen the step to at most _GIF_MAX_FRAMES (the generate
-    # request allows 2048x2048 for 1024 frames). MP4 keeps the full clip.
     total = in_v.frames or 0
     kept = (total + step - 1) // step if total else 0
     if kept > _GIF_MAX_FRAMES:
@@ -529,8 +519,7 @@ def _drain_sink(sink) -> list[Any]:
 def _transcode_gif_palette(
     path: Path, rate: Fraction, step: int, width: int, height: int, kept: int
 ) -> bytes:
-    """GIF via one clip-wide palette: palettegen over every kept frame, then paletteuse + PyAV's GIF encoder. Quantizing
-    each frame separately (median cut in Pillow) was ~85% of the export time and lets colours shift frame to frame."""
+    """GIF via one clip-wide palette (palettegen + paletteuse); per-frame quantizing was slow and flickered."""
     import io
 
     import av
@@ -579,9 +568,7 @@ def _transcode_gif_palette(
     palette_in.push(palette)
     palette_in.push(None)
 
-    # The encoder runs on the kept-frame clock (rate / step, exactly 12 fps for a 24 fps clip): frame k at pts k, one tick
-    # each. The muxer turns those into centisecond delays from the pts gaps (8 / 9 cs alternating, no drift), and the
-    # last frame's from its duration.
+    # Frame k at pts k on the rate/step clock; the muxer derives centisecond delays from pts gaps (no drift).
     out_rate = rate / step
     buf = io.BytesIO()
     with av.open(buf, "w", format = "gif", options = {"loop": "0"}) as dst:

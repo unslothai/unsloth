@@ -666,7 +666,6 @@ def _gif_blocks(data: bytes) -> dict:
 
 
 def _gradient_mp4_bytes(frames: int, size: tuple[int, int], rate: int) -> bytes:
-    # moving colour gradient, so every frame needs many colours and a per-frame palette would differ frame to frame
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
     import io
@@ -707,9 +706,7 @@ def _count_calls(monkeypatch, module, name: str) -> dict:
 
 @pytest.mark.parametrize("hold", [True, False], ids = ["held_frames", "two_decode_passes"])
 def test_gif_export_uses_one_clip_wide_palette(monkeypatch, hold):
-    """The export quantizes with one palette for the whole clip (palettegen + paletteuse) instead of a median cut per
-    frame: no frame after the first carries a local colour table, the GIF loops forever and keeps the 12 fps clock.
-    Both memory strategies (hold the scaled frames, or decode twice past the budget) give the same GIF."""
+    """One clip-wide palette (no local colour tables), infinite loop, 12 fps, for both memory strategies."""
     from core.inference import video_gallery as vg
 
     pytest.importorskip("PIL.Image")
@@ -729,10 +726,10 @@ def test_gif_export_uses_one_clip_wide_palette(monkeypatch, hold):
     info = _gif_blocks(gif)
     assert info["size"] == (96, 64)
     assert info["global_palette"] and not any(info["local"][1:]), info["local"]
-    assert len(info["local"]) == 12  # 24 frames at 24 fps, every 2nd kept
+    assert len(info["local"]) == 12
     assert info["loop"] == 0  # NETSCAPE loop 0 = forever
     assert all(d in (8, 9) for d in info["delays"]), info["delays"]
-    assert sum(info["delays"]) in (99, 100, 101)  # 12 frames at 12 fps = 1 s, no drift
+    assert sum(info["delays"]) in (99, 100, 101)
 
 
 def test_gif_export_palette_path_caps_frames_and_edge(monkeypatch):
