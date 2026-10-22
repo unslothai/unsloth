@@ -117,7 +117,7 @@ def test_non_plain_arguments_bypass():
 
 
 def test_lru_is_bounded_by_bytes(monkeypatch):
-    # Entry = 1024 B float32 embeds + 256 B bool mask = 1280 B.
+    # entry = 1024 B float32 embeds + 256 B bool mask = 1280 B
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE_MB", str(3000 / 1024 / 1024))
     pipe = _EncodePipe(width = 256)
     prompt_cache.install(pipe)
@@ -125,7 +125,7 @@ def test_lru_is_bounded_by_bytes(monkeypatch):
     pipe.encode_prompt("a")
     pipe.encode_prompt("b")
     assert len(cache) == 2 and cache.bytes == 2560
-    pipe.encode_prompt("a")  # refresh a, so b is the eviction victim
+    pipe.encode_prompt("a")
     pipe.encode_prompt("c")
     assert len(cache) == 2 and cache.bytes <= cache.budget
     assert cache.describe()["evictions"] == 1
@@ -224,7 +224,7 @@ def test_composes_with_the_disk_cache(tmp_path, monkeypatch):
     pipe.encode_prompt("a cat")
     assert pipe.calls == 1
     assert pipe._unsloth_cond_cache_stats["misses"] == 1
-    assert pipe._unsloth_cond_cache_stats["hits"] == 0  # the memory hit never reached the disk
+    assert pipe._unsloth_cond_cache_stats["hits"] == 0
     fresh = _EncodePipe()
     cond_cache.install(fresh, family = "fam", repo_id = "r", dtype = torch.float32)
     prompt_cache.install(fresh)
@@ -337,7 +337,7 @@ def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp
 
 
 def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
-    # Entries count against memory.max, so the budget is RAM/64 of the 2 GiB limit, not the host.
+    # entries count against memory.max, so the budget is RAM/64 of the 2 GiB limit
     from core.inference import diffusion_memory
 
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB, raising = False)
@@ -345,7 +345,7 @@ def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
     assert prompt_cache.budget_bytes() == 32 * 1024 * 1024
     monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "100")
     assert prompt_cache.budget_bytes() == 100 * 1024 * 1024
-    monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "lots")  # malformed: default, still capped
+    monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "lots")
     assert prompt_cache.budget_bytes() == 32 * 1024 * 1024
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB)
     monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)

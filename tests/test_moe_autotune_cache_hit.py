@@ -44,6 +44,8 @@ def ac(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_MOE_DISABLE_AUTOTUNE", raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
     module = importlib.import_module("unsloth.kernels.moe.autotune_cache")
+    # Ample SMEM so the load-time refit keeps tuned tiles as saved.
+    monkeypatch.setattr(module, "_device_smem_per_block", lambda: 1 << 20)
     module.clear_cache()
     yield module
     module.clear_cache()

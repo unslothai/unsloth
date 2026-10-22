@@ -35,7 +35,6 @@ function deferred<T>() {
 }
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/** Drive renders of the shipped hook with controlled network responses. */
 function harness(
   options: {
     filename?: string;
@@ -407,7 +406,6 @@ test("an upload begun without a scope stops at the chat the user left", async ()
     const materialized = deferred<RagDocumentScope>();
     const pending = hook.upload([report()], async () => materialized.promise);
     await flush();
-    // The user picks an existing chat while the new one is still materializing.
     app.setScope({ type: "thread", threadId: "other" });
     hook = app.render();
     await flush();
@@ -453,8 +451,7 @@ test("a new chat's id committed after its upload finished keeps tracking the job
     app.setScope(null);
     let hook = app.render();
     await flush();
-    // The chat materializes, and React is late to commit its id: the POST has
-    // returned and tracking started before the scope change reaches the hook.
+    // React commits the id late: the POST has returned before the scope change reaches the hook.
     await hook.upload([report()], async () => ({
       type: "thread",
       threadId: "thread",
@@ -505,7 +502,6 @@ test("leaving a new chat for another one after its upload finished drops the job
     }));
     await flush();
     assert.equal(signal?.aborted, false, "the job was never tracked");
-    // Before the new chat's id commits, the user opens a different chat.
     app.setScope({ type: "thread", threadId: "other" });
     hook = app.render();
     await flush();
@@ -544,8 +540,7 @@ test("a scope passed to an unscoped hook keeps its job when that scope commits l
     app.setScope(null);
     let hook = app.render();
     await flush();
-    // The composer hands its scope over directly, since the hook's own is still null on the
-    // render that starts the upload.
+    // The hook's own scope is still null on the render that starts the upload.
     await hook.upload([report()], { type: "thread", threadId: "thread" });
     await flush();
     assert.equal(signal?.aborted, false, "the job was never tracked");

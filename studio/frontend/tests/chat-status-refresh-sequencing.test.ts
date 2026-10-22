@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A media load announces itself twice: once before its POST, so the row appears
-// with the toast, and once after, which is the instant the GPU arbiter has
-// committed the eviction. Chat re-reads its status on both, so two refreshes
-// are in flight within the POST's own duration -- measured at 1.8s against a
-// live backend, which is far wider than the gap between the two reads.
-//
-// They read the status at different moments and answer in whatever order the
-// network gives, so the older one landing last would re-pin the model the newer
-// one had just seen released: chat would claim a model that 400s on send, until
-// the load finally settled hours later. Last issued has to win.
+// A media load announces itself twice, so two status refreshes race; the last issued must win,
+// or an older answer re-pins a model that was just released.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -24,7 +16,6 @@ const SYNC = SOURCE.slice(
   SOURCE.indexOf("/**\n * Reconcile the UI after the SERVER unloaded"),
 );
 
-/** The lora slot of that function's Promise.all, both handlers included. */
 const LORA_REQUEST = SYNC.slice(
   SYNC.indexOf("listLoras().then("),
   SYNC.indexOf("options?.preserveIdleUnloaded"),
@@ -49,7 +40,6 @@ test("a superseded refresh writes no stale model or status state", () => {
 test("a superseded refresh does not report its failure either", () => {
   const catchBlock = SYNC.slice(SYNC.indexOf("} catch (error) {"));
   assert.match(catchBlock, /if \(signal\?\.aborted \|\| superseded\(\)\) return;/);
-  // Otherwise a read nobody would have applied still raises a toast.
   assert.ok(
     catchBlock.indexOf("superseded()") < catchBlock.indexOf("toast.error"),
     "the guard must precede the error toast",
@@ -61,9 +51,7 @@ test("the lora inventory settles from its own request, not from a sibling's", ()
     SYNC,
     /const loraGeneration = includeLoras \? \+\+loraSyncGeneration : null;/,
   );
-  // Both outcomes hang off listLoras() itself. Read out of the shared Promise.all, a
-  // sibling rejection discarded a good list and still marked the inventory settled,
-  // which classified a resident LoRA as a base model and pinned a new pair generalized.
+  // Both outcomes hang off listLoras() itself so a sibling rejection cannot discard a good list.
   assert.match(LORA_REQUEST, /setLoras\(lorasRes\.loras\.map\(toLoraSummary\)\)/);
   assert.match(LORA_REQUEST, /loraInventorySettled: true/);
   assert.match(LORA_REQUEST, /!loraSuperseded\(\)/);
@@ -72,8 +60,6 @@ test("the lora inventory settles from its own request, not from a sibling's", ()
 });
 
 test("the eviction branch is behind the same guard", () => {
-  // This is the branch that clears residency and drops the pick, so a stale
-  // answer reaching it is the expensive case.
   const evictionAt = SYNC.indexOf("residentCheckpoint: null,");
   const guardAt = SYNC.indexOf("superseded()");
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
@@ -85,10 +71,7 @@ test("residency is deferred only while a settlement wait is outstanding", () => 
     /if \(statusLoading\) return;/,
     "the lifecycle bus owns settlement itself; generic hydration must still publish residency",
   );
-  // Shared with the send-path poll, so both get it. Behaviour is pinned in
-  // tests/studio/test_chat_mount_cli_load_adoption.py.
   assert.match(SYNC, /if \(statusLoading && serverModelWaitOutstanding\(\)\) return;/);
-  // Up before the sync is issued: a refresh issued later can answer first.
   const handoff = SOURCE.slice(
     SOURCE.indexOf("async function refreshAndWaitForServerModel("),
     SOURCE.indexOf("* Reconcile the UI after the SERVER unloaded"),
@@ -133,8 +116,6 @@ test("the mount observer adopts only a settled model", () => {
     wait,
     /!useChatRuntimeStore\.getState\(\)\.params\.checkpoint &&\s*!useChatRuntimeStore\.getState\(\)\.modelLoading/,
   );
-  // Into the request, and capped: a stalled read would otherwise outlive both the unmount
-  // that aborted it and the two caps below.
   assert.match(wait, /const poll = statusPollSignal\(signal\);/);
   assert.match(wait, /await getInferenceStatus\(poll\.signal\)/);
   assert.match(wait, /\} finally \{\s*poll\.dispose\(\);\s*\}/);
