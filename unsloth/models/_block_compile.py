@@ -687,15 +687,20 @@ def _wrap(cls, compile_options):
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
 
+    def mlp_output_unused_for(self):
+        if self.__dict__.get("_unsloth_no_mlp_skip", False):
+            return None
+        return getattr(original, "_unsloth_mlp_output_unused", None) or getattr(
+            type(self), "_unsloth_mlp_output_unused", None
+        )
+
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
         try:
             # Decided here, outside the graph: inside a compiled block the forward cannot see the recompute.
-            mlp_output_unused = getattr(original, "_unsloth_mlp_output_unused", None) or getattr(
-                type(self), "_unsloth_mlp_output_unused", None
-            )
+            mlp_output_unused = mlp_output_unused_for(self)
             with mlp_output_unused(self) if mlp_output_unused else contextlib.nullcontext():
                 return compiled(self, hidden_states, *args, **kwargs)
         finally:
@@ -733,6 +738,20 @@ def _wrap(cls, compile_options):
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             with torch.random.fork_rng(devices = devices), torch.enable_grad():
                 forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                trial = getattr(mlp_output_unused_for(self), "trial", None)
+                if (
+                    trial is not None
+                    and getattr(self, "gradient_checkpointing", False)
+                    and self.__dict__["_unsloth_block_mode"] != _OFF
+                ):
+                    # The recompute graph too: compiled lazily in a recompute, it kept that input and its grad.
+                    try:
+                        with trial():
+                            forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                    except torch.OutOfMemoryError:
+                        raise
+                    except Exception:
+                        self.__dict__["_unsloth_no_mlp_skip"] = True
             mode = self.__dict__["_unsloth_block_mode"]
             if mode == _OFF:
                 return original(self, hidden_states, *args, **kwargs)

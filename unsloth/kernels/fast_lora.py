@@ -74,6 +74,20 @@ def mlp_output_unused(layer):
         _MLP_OUTPUT_UNUSED[0] = previous
 
 
+@contextmanager
+def _mlp_output_unused_trial():
+    # The block wrapper's trial forward compiles the recompute graph ahead (models/_block_compile.py).
+    previous = _MLP_OUTPUT_UNUSED[0]
+    _MLP_OUTPUT_UNUSED[0] = True
+    try:
+        yield
+    finally:
+        _MLP_OUTPUT_UNUSED[0] = previous
+
+
+mlp_output_unused.trial = _mlp_output_unused_trial
+
+
 # Decoder layers whose MLP output only reaches the residual add, trained through PEFT LoRA.
 _MLP_OUTPUT_ONLY_TO_RESIDUAL = ("Qwen3_5DecoderLayer",)
 
