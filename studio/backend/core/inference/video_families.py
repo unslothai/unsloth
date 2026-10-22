@@ -437,6 +437,12 @@ _HUNYUAN15_INT8_EXCLUDES = (
     "to_add_out",
     "ff_context",
 )
+# Measured failing the NVFP4 accuracy gate (LPIPS mean vs bf16 <= 0.25), so nvfp4 is denied outright, as the image
+# families deny an ungated base. HunyuanVideo-1.5: hosted 480p / 720p 0.62 / 0.59 (Studio main, 20 steps); the 50-step
+# campaign put GPTQ NVFP4 at 0.44 and fp8 itself at 0.35 to 0.37, so no NVFP4 rebuild clears the bar.
+# Wan2.2-TI2V-5B: hosted 0.29; weight-only 4-bit (bf16 activations) is already 0.29 at the default grid, and the
+# layer keep-sets that come near 0.25 save about 10% of fp8's bytes, where fp8 (0.17) already passes.
+_NVFP4_GATE_FAILED = frozenset({"nvfp4"})
 # nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 # LTX-2 is audiovisual: every block carries an audio-side stream (audio_attn1 / audio_attn2 / audio_ff, fed by
@@ -704,6 +710,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         trainable = True,
         label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
+            scheme_deny = _NVFP4_GATE_FAILED,
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
             auto_static_skip = (
@@ -760,9 +767,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         profile = FamilyProfile(
+            # gated: auto leads with nvfp4 only once a passing accuracy-gate record exists for this base and
+            # backend, the rule the image families follow. None exists yet (no bf16 reference was measured; the
+            # hosted NVFP4 experts were only compared with the FP8 build), so auto takes the ladder (int8) here and
+            # nvfp4 stays an explicit pick.
             auto_prefer = AutoPrefer(
                 floor = (10, 0),
                 schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
+                gated = True,
                 backend = "flashinfer",
             ),
             untiled_vae = _WAN21_VAE_UNTILED,
@@ -877,6 +889,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "hunyuanvideo-1.5",
         profile = FamilyProfile(
+            scheme_deny = _NVFP4_GATE_FAILED,
             int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
             nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
             preview_factors = "hv15",
@@ -929,6 +942,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
         profile = FamilyProfile(
+            scheme_deny = _NVFP4_GATE_FAILED,
             int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
             nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
             preview_factors = "hv15",
@@ -1262,7 +1276,9 @@ def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) 
             schemes.append(entry[1])
     if task:
         schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
-    return without_nvfp4(schemes)
+    denied = getattr(getattr(fam, "profile", None), "scheme_deny", None) or frozenset()
+    # A family-denied scheme (a measured gate failure) is never offered, even though its build is hosted.
+    return without_nvfp4([s for s in schemes if s not in denied])
 
 
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:
