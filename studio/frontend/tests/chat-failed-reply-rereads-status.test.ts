@@ -21,7 +21,7 @@ const SYNC_FAILURE = RUNTIME.slice(
 test("a failed local reply quietly re-reads what the server still holds", () => {
   assert.match(
     FAILURE,
-    /if \(!isExternalRequest\) \{\s*void syncInferenceStatusToStore\(\{[^}]*quiet: true/,
+    /if \(!isExternalRequest\) \{\s*void syncInferenceStatusToStore\(\{[^}]*preserveIdleUnloaded: true,[^}]*quiet: true/,
   );
   const catchBlock = SYNC_FAILURE.slice(SYNC_FAILURE.lastIndexOf("} catch (error) {"));
   assert.match(catchBlock, /if \(options\?\.quiet\) return;[\s\S]*setModelsError\(message\)/);
