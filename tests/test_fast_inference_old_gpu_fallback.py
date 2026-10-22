@@ -33,24 +33,24 @@ def _helper(monkeypatch, device_type, capability):
 
 @pytest.mark.parametrize("model_type", GEMMA4_TYPES)
 def test_gemma4_falls_back_below_sm80(monkeypatch, model_type):
-    f = _helper(monkeypatch, "cuda", lambda: (7, 5))
+    f = _helper(monkeypatch, "cuda", lambda device = None: (7, 5))
     assert f([model_type]) == model_type
 
 
 @pytest.mark.parametrize("capability", [(8, 0), (8, 9), (9, 0), (12, 0)])
 def test_gemma4_keeps_vllm_on_sm80_and_newer(monkeypatch, capability):
-    f = _helper(monkeypatch, "cuda", lambda: capability)
+    f = _helper(monkeypatch, "cuda", lambda device = None: capability)
     assert f(GEMMA4_TYPES) is None
 
 
 def test_other_models_keep_vllm_on_t4(monkeypatch):
-    f = _helper(monkeypatch, "cuda", lambda: (7, 5))
+    f = _helper(monkeypatch, "cuda", lambda device = None: (7, 5))
     for model_types in (["qwen3"], ["llama"], ["gemma3", "gemma3_text"], ["qwen3_5"]):
         assert f(model_types) is None
 
 
 def test_non_cuda_devices_untouched(monkeypatch):
-    def boom():
+    def boom(device = None):
         raise AssertionError("capability must not be probed off CUDA")
 
     for device_type in ("hip", "xpu", "mps", "cpu"):
@@ -59,11 +59,32 @@ def test_non_cuda_devices_untouched(monkeypatch):
 
 
 def test_failed_probe_keeps_vllm(monkeypatch):
-    def broken():
+    def broken(device = None):
         raise RuntimeError("no device")
 
     f = _helper(monkeypatch, "cuda", broken)
     assert f(["gemma4"]) is None
+
+
+@pytest.mark.parametrize("model_type", GEMMA4_TYPES)
+@pytest.mark.parametrize(
+    "capabilities", [((8, 0), (7, 5)), ((7, 5), (8, 0))], ids = ["gpu0_sm80", "gpu0_sm75"]
+)
+def test_gemma4_probes_vllm_device_not_current_device(monkeypatch, model_type, capabilities):
+    # Mixed host with cuda:1 current: load_vllm still puts the engine on logical GPU 0.
+    current = 1
+    probed = []
+
+    def capability(device = None):
+        index = current if device is None else getattr(device, "index", device)
+        probed.append(index)
+        return capabilities[index]
+
+    f = _helper(monkeypatch, "cuda", capability)
+    sys.modules["torch"].cuda.current_device = lambda: current
+    expected = model_type if capabilities[0][0] < 8 else None
+    assert f([model_type]) == expected
+    assert probed == [0]
 
 
 def test_fallback_drops_max_num_batched_tokens(capsys):
