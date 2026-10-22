@@ -23,9 +23,12 @@ def test_compiled_grads_match_the_fp64_reference(vocab, fullgraph):
     labels[0, 1] = -100
     reference = logits.double().requires_grad_(True)
     n_items = (labels != -100).sum()
-    expected = torch.nn.functional.cross_entropy(
-        reference.flatten(0, 1), labels.flatten(), reduction = "sum"
-    ) / n_items
+    expected = (
+        torch.nn.functional.cross_entropy(
+            reference.flatten(0, 1), labels.flatten(), reduction = "sum"
+        )
+        / n_items
+    )
     expected.backward()
     x = logits.clone().requires_grad_(True)
     loss = torch.compile(ce_mod.fast_cross_entropy_loss, fullgraph = fullgraph)(x, labels)
