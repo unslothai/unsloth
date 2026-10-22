@@ -206,6 +206,19 @@ class TestTheLegacyProjections:
         )
         assert out["gpu_bytes"] is None
 
+    def test_the_mlx_offload_the_breakdown_priced_is_reported(self):
+        mlx = {"ple_offload": None, "expert_offload": 0.6, "offloadable": ("experts",)}
+        offloaded = SimpleNamespace(**{**_BREAKDOWN.__dict__, **mlx})
+        panel = project_estimate_memory_response(
+            build_memory_estimate(offloaded, quant_file_bytes = 0)
+        )
+        assert panel["mlx_offload"].model_dump() == {
+            "ple": None,
+            "experts": 0.6,
+            "offloadable": ["experts"],
+        }
+        assert build_memory_estimate(_BREAKDOWN, quant_file_bytes = 0).mlx_offload is None
+
     def test_the_kv_projection_does_not_borrow_the_planners_kv(self, estimate):
         assert project_kv_cache_estimate(estimate)["kv_bytes"] is None
 

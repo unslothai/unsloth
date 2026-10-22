@@ -307,7 +307,7 @@ test("every list that judges a row against the device asks the same helper", () 
 test("GGUF rows keep the inference backend's budget", () => {
   assert.match(
     declarationText("recommendedMeta"),
-    /ggufRowFit\(sizeBytes, rowInferenceGpu\)/,
+    /ggufRowFit\(sizeBytes, rowInferenceGpu, r\.id\)/,
   );
   // Use the inventory of the runtime that places the row, not its file format.
   assert.match(

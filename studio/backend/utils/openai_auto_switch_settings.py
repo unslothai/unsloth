@@ -550,6 +550,13 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_int8_prefill")):
         entry["mlx_int8_prefill"] = True
 
+    for key in ("mlx_ple_offload", "mlx_expert_offload"):
+        value = payload.get(key)
+        if value == "off" or (
+            isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1
+        ):
+            entry[key] = value if value == "off" else float(value)
+
     # Stored only when off: absent is the 4-bit default, so an untouched model follows it.
     if payload.get("load_in_4bit") is False:
         entry["load_in_4bit"] = False
@@ -699,6 +706,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
         ("mlx_int8_prefill", "mlx_int8_prefill"),
+        ("mlx_ple_offload", "mlx_ple_offload"),
+        ("mlx_expert_offload", "mlx_expert_offload"),
     ):
         if override.get(source) is not None and source not in gguf_drops:
             kwargs[target] = override[source]
