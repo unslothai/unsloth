@@ -333,6 +333,7 @@ import {
   subscribeForkCounts,
   useForkInFlight,
   showForkCreatedToast,
+  showForkFailedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -1929,6 +1930,21 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   }, [threadId, anchor]);
 };
 
+// One read per source chat for the divider's label; a failed read is dropped so a later mount retries.
+const forkSourceTitles = new Map<string, Promise<string | null>>();
+
+function forkSourceTitle(sourceThreadId: string): Promise<string | null> {
+  let title = forkSourceTitles.get(sourceThreadId);
+  if (!title) {
+    title = readBackendChatThread(sourceThreadId).then((source) => {
+      if (source === undefined) forkSourceTitles.delete(sourceThreadId);
+      return source?.title?.trim() || null;
+    });
+    forkSourceTitles.set(sourceThreadId, title);
+  }
+  return title;
+}
+
 // Closes the history a fork inherited. Rendered by the message it follows, since the row slot
 // is propless and the boundary arrives through the store.
 const ForkContinuationRule: FC = () => {
@@ -1945,11 +1961,28 @@ const ForkContinuationRule: FC = () => {
       : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
   );
   const navigate = useNavigate();
+  const isAnchor = anchor !== undefined && anchor === messageId;
+  const [source, setSource] = useState<{ id: string; title: string | null } | null>(null);
+  useEffect(() => {
+    if (!isAnchor || !sourceThreadId) return;
+    let live = true;
+    void forkSourceTitle(sourceThreadId).then((title) => {
+      if (live) setSource({ id: sourceThreadId, title });
+    });
+    return () => {
+      live = false;
+    };
+  }, [isAnchor, sourceThreadId]);
   if (anchor === undefined || anchor !== messageId) return null;
+  const sourceTitle = source?.id === sourceThreadId ? source.title : null;
   const label = (
     <>
       <HugeiconsIcon icon={WorkflowCircle05Icon} strokeWidth={1.75} className="size-3.5" />
-      Continued from chat
+      {sourceTitle ? (
+        <span className="max-w-80 truncate">Forked from {sourceTitle}</span>
+      ) : (
+        "Continued from chat"
+      )}
     </>
   );
   const labelClass =
@@ -8589,12 +8622,10 @@ const useForkMessageAction = () => {
         search: { thread: result.thread.id },
         replace: false,
       });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
       console.error("Failed to fork", error);
-      toast.error("Failed to fork", {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      showForkFailedToast(error);
     } finally {
       setPending(false);
     }
@@ -8642,7 +8673,7 @@ const ForkMessageButton: FC = () => {
 
   return (
     <TooltipIconButton
-      tooltip="Fork in new chat"
+      tooltip="Fork from here"
       disabled={forkDisabled}
       onClick={forkMessage}
     >
