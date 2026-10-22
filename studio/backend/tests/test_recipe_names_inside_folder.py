@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Recipe strings that become path segments stay inside their folder: column names become
-`<tmp>/<record id>_<column>.py` in the code validator (sanitized there, so any column name runs),
-processor names become `processors-files/<name>/` (one folder, so no separators), and GitHub seed repo names become
-`<base>/<owner>__<name>` in the scraper."""
+"""Recipe strings that become path segments stay inside their folder: column names
+(`<tmp>/<record id>_<column>.py`, sanitized), processor names (`processors-files/<name>/`) and
+GitHub seed repo names (`<base>/<owner>__<name>`)."""
 
 import sys
 import types
@@ -111,7 +110,6 @@ def test_code_validator_file_stays_in_its_temp_folder(tmp_path, python_validator
     module = validator_cls._get_module_name("rid", name)
     assert written[0].name == module + ".py"
     assert written[0].read_text() == "x = 1\n"
-    # Same name, same module: the result lookup after linting finds the file it wrote.
     assert validator_cls._get_module_name("rid", name) == module
     if name == "code":
         assert module == "rid_code"

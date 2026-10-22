@@ -683,10 +683,8 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
 
 
 def validate_recipe_names(recipe: dict[str, Any]) -> None:
-    """Refuse a processor name that is not a single folder name: Data Designer stores it as
-    `processors-files/<name>`, and neither previews nor lists a nested one. Column and validator
-    target names may hold any text: the code validator's temp file name is sanitized in
-    `_apply_data_designer_python_validator_path_patch`."""
+    """Processor names must be one folder: Data Designer stores them as `processors-files/<name>`
+    and neither previews nor lists a nested one. Column names are sanitized by the validator patch."""
     processors = recipe.get("processors")
     for item in processors if isinstance(processors, list) else []:
         name = item.get("name") if isinstance(item, dict) else None
