@@ -1344,7 +1344,11 @@ _ANNOTATE_JS = r"""
             overlay = document.createElement("unsloth-annotate");
             overlay.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
             root = overlay.attachShadow({ mode: "closed" });
-            root.innerHTML = `<div class="hover"></div><div class="area"></div>`;
+            for (const name of ["hover", "area"]) {
+              const element = document.createElement("div");
+              element.className = name;
+              root.appendChild(element);
+            }
             addStyle(root, `
               :host { --c: ${color}; }
               div { position: fixed; box-sizing: border-box; border-radius: 6px; display: none; }

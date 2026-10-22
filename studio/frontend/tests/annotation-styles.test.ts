@@ -41,3 +41,22 @@ test("older webviews retain their inline-style path", () => {
   remove();
   assert.equal(removed, true);
 });
+
+
+test("annotation controls can be built when Trusted Types rejects HTML sinks", () => {
+  const children: Array<{ className: string }> = [];
+  const root = {
+    set innerHTML(_value: string) { throw new TypeError("TrustedHTML required"); },
+    appendChild: (element: { className: string }) => children.push(element),
+    querySelector: (selector: string) => children.find((element) => `.${element.className}` === selector),
+  };
+  const overlay = { style: {}, attachShadow: () => root };
+  const buildSource = annotation.slice(annotation.indexOf("const build ="), annotation.indexOf("const pinBox ="));
+  const build = vm.runInNewContext(`${buildSource}; build`, {
+    root: null, overlay: null, outline: null, area: null,
+    document: { createElement: (tag: string) => tag === "unsloth-annotate" ? overlay : { className: "" } },
+    color: "#123456", PIN: 28, addStyle: () => {},
+  });
+  build();
+  assert.deepEqual(children.map((element) => element.className), ["hover", "area"]);
+});
