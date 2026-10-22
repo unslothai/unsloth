@@ -24,7 +24,9 @@ test("a project row opens its chats in place", () => {
     /listStoredChatThreads\(\{ projectId, includeArchived: false \}\)/,
   );
   assert.match(PAGE, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, refresh\);/);
-  assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
+  // Debounced, since streaming fires the event per chunk, and open rows reload in place.
+  // A chunk save waits for a longer lull than a structural change.
+  assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, isCoalescedHistoryEvent\(event\)\n\s*\? PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS\n\s*: PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
   assert.match(PAGE, /if \(!silent\) \{\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "loading" \}\)\);/);
   assert.match(PAGE, /for \(const \[id, seq\] of loadSeqRef\.current\) \{\n\s*if \(!open\.has\(id\)\) loadSeqRef\.current\.set\(id, seq \+ 1\);/);
   assert.match(PAGE, /if \(loadSeqRef\.current\.get\(projectId\) !== seq\) return;\n\s*setStale\(projectId, false\);\n\s*setProjectChats/);
@@ -114,7 +116,7 @@ test("the Updated column names the list's order and turns it around", () => {
   assert.match(PAGE, /sortDir === "asc" && "rotate-180",/);
   assert.match(
     PAGE,
-    /sortDir === "asc" \? a\.updatedAt - b\.updatedAt : b\.updatedAt - a\.updatedAt,/,
+    /sortDir === "asc"\n\s*\? projectActivityAt\(a\) - projectActivityAt\(b\)\n\s*: projectActivityAt\(b\) - projectActivityAt\(a\),/,
   );
   assert.ok(!PAGE.includes("Sort by"), "the sort control is still in the header");
   assert.ok(!PAGE.includes("sortMode"), "the sort mode outlived its control");

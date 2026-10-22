@@ -41,6 +41,13 @@ const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
 const KEYBOARD_SHORTCUTS_TAB = readSrc("features/settings/tabs/keyboard-shortcuts-tab.tsx");
 const EN = readSrc("i18n/locales/en.ts");
 
+function sidebarShortcut(id: string): string {
+  const at = APP_SIDEBAR.indexOf(`useShortcut(\n    "${id}",`);
+  return at === -1
+    ? ""
+    : APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  );", at));
+}
+
 function keyEvent(
   code: string,
   mods: Partial<{
@@ -358,9 +365,12 @@ test("the workspace chords land where the guard lets them", async () => {
   }
 });
 
-// Safari's Develop-menu chords are opt-in, so they are not treated as browser-reserved.
+// A chord behind a hidden developer menu is not one the browser took from the
+// user, and these sets drive a warning the user reads. Safari has ⌥⌘E (and
+// ⌥⌘R, which Firefox's Reader View flags anyway) only once the Develop menu is
+// switched on, so reserving it would tell every macOS user something untrue.
 test("an opt-in developer chord is not treated as taken", () => {
-  for (const value of ["Mod+Alt+KeyE", "Mod+Alt+KeyR"]) {
+  for (const value of ["Mod+Alt+KeyE"]) {
     for (const mac of [true, false]) {
       assert.equal(
         isBrowserReservedBinding(value, mac),
@@ -410,7 +420,6 @@ test("the browsers' own run on macOS is reserved there and only there", () => {
     "Mod+Alt+KeyO",
     "Mod+Alt+KeyS",
     "Mod+Alt+KeyA",
-    "Mod+Alt+KeyR",
     "Mod+Alt+Digit1",
   ]) {
     assert.equal(isBrowserReservedBinding(value, true), false, value);
@@ -471,6 +480,7 @@ test("no default takes a chord the browser owns without a reason", () => {
     // Find in page replaces the browser's own find, so it takes that chord on the web too.
     "Mod+KeyF",
     "Mod+KeyP",
+    "Mod+Alt+KeyR",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -1005,8 +1015,12 @@ test("the chords that need one target do not fire where there are two", async ()
     chatPage,
     /const headerPickersShown = active && view\.mode !== "compare";/,
   );
-  assert.match(chatPage, /enabled: headerPickersShown[,\s]*\}/);
-  // Both panes mount the last message; the first registered listener would win.
+  assert.match(
+    chatPage,
+    /enabled: headerPickersShown,\n\s*claims: chatUncovered,\n\s*\}/,
+  );
+  // Both panes mount the last message, and the chord would go to whichever
+  // registered its listener first. `If last` carries the other half.
   assert.match(thread, /enabled: chatActive && !inComparePane && !forkDisabled/);
   assert.match(
     toolCard,
@@ -1025,7 +1039,10 @@ test("a chord's surface does not come back open on the next visit", async () => 
     chatPage,
     /const projectSwitcherShown = headerPickersShown && Boolean\(currentProjectId\);/,
   );
-  assert.match(chatPage, /useShortcut\(\n\s*"openProjectPicker",[\s\S]*?enabled: projectSwitcherShown/);
+  assert.match(
+    chatPage,
+    /useShortcut\("openProjectPicker",[\s\S]*?enabled: projectSwitcherShown/,
+  );
   assert.match(
     chatPage,
     /if \(!projectSwitcherShown && projectPickerOpen\) \{\n\s*setProjectPickerOpen\(false\);/,
@@ -1147,7 +1164,10 @@ test("the model picker chord opens without the tour's pin", async () => {
     CHAT_PAGE,
     /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open\);/,
   );
-  assert.match(CHAT_PAGE, /useShortcut\(\n\s*"openModelPicker",[\s\S]*?toggleModelSelector\(\);/);
+  assert.match(
+    CHAT_PAGE,
+    /useShortcut\("openModelPicker", toggleModelSelector, \{/,
+  );
 
   // Three mentions, all the tour's: declaration, step builder argument, memo dependency.
   assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
@@ -1157,7 +1177,7 @@ test("the model picker chord opens without the tour's pin", async () => {
 test("every sidebar chat rename opens the dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item\)\);/,
+    /useShortcut\(\n\s*"renameChat",\n\s*\(\) => withActiveChat\(\(item\) => openRenameChat\(item\)\),/,
   );
   assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
   assert.match(
@@ -1635,10 +1655,10 @@ test("a selection does not outlive the rows it was made on", async () => {
     "togglePinChat",
     "deleteSelectedChats",
   ]) {
-    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}"`);
-    assert.ok(at !== -1, `${id} lost its call site`);
+    const body = sidebarShortcut(id);
+    assert.ok(body, `${id} lost its call site`);
     assert.match(
-      APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at)),
+      body,
       /selectionCount > 0/,
       `${id} no longer prefers the selection`,
     );
@@ -1653,11 +1673,10 @@ test("a selection does not outlive the rows it was made on", async () => {
 test("a selection chord does not fall through to the open chat", async () => {
   assert.match(APP_SIDEBAR, /const SELECTION_ACTION_GRACE_MS = \d+;/);
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
-    const body = APP_SIDEBAR.slice(
-      APP_SIDEBAR.indexOf(`useShortcut("${id}"`),
-      APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf(`useShortcut("${id}"`)),
-    );
-    // Per-action latches: a shared one would block Archive after Pin took the selection.
+    const body = sidebarShortcut(id);
+    // Both halves name the action. A shared latch would hold back Archive
+    // after Pin took the selection, and that is a different command the user
+    // chose, not the repeat this guard exists for.
     assert.match(
       body,
       new RegExp(`actOnSelection\\("${id}",`),
@@ -1671,22 +1690,27 @@ test("a selection chord does not fall through to the open chat", async () => {
       `${id} reaches the open chat without checking its own latch`,
     );
   }
-  const del = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf('useShortcut("deleteSelectedChats"'),
-    APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf('useShortcut("deleteSelectedChats"')),
-  );
+  // deleteSelectedChats needs none of this: it has no open-chat branch.
+  const del = sidebarShortcut("deleteSelectedChats");
+  assert.ok(del);
   assert.doesNotMatch(del, /withActiveChat\(/);
 });
 
 test("clearing every unread says what it cleared", async () => {
-  const body = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf('useShortcut("clearAllUnreads"'),
-    APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf('useShortcut("clearAllUnreads"')),
-  );
-  // Counted before the wipe; rows, not threads, since a Compare row is backed by two.
+  const body = sidebarShortcut("clearAllUnreads");
+  // Counted before the wipe, or the toast reports zero every time. Rows, not
+  // threads: a Compare row is backed by two and would be cleared as two chats.
   assert.match(body, /const cleared = countUnreadRows\(state\);[\s\S]*state\.clearAllUnreads\(\)/);
   assert.match(body, /if \(state\.unreadThreadIds\.size === 0\) \{\n\s*toast\.info\(/);
   assert.match(body, /toast\.success\(/);
+  assert.match(
+    body,
+    /const threadIds = \[\.\.\.state\.unreadThreadIds\];\n\s*const rowIds = \{ \.\.\.state\.unreadRowIds \};\n\s*state\.clearAllUnreads\(\);/,
+  );
+  assert.match(
+    body,
+    /label: t\("shell\.sections\.undo"\),\n\s*onClick: \(\) =>\n\s*useChatNavigationStore\n\s*\.getState\(\)\n\s*\.markThreadsUnread\(threadIds, rowIds\),/,
+  );
 });
 
 // The backend reuses "call_0" per response, so it cannot be the store key.
@@ -1763,9 +1787,8 @@ test("the sidebar item lists are built once per change, not per render", async (
 // Ctrl/Cmd-clicking a project selects no chat; that must not read as "no selection".
 test("the chat-only chords stand aside for a project selection", async () => {
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
-    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
-    assert.notEqual(at, -1, `${id} is gone`);
-    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at));
+    const body = sidebarShortcut(id);
+    assert.ok(body, `${id} is gone`);
     const stand = body.indexOf("projectsOnlySelected()");
     assert.notEqual(stand, -1, `${id} acts on the open chat under a project selection`);
     assert.ok(
