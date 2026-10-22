@@ -187,4 +187,3 @@ def test_an_offline_audio_preflight_does_not_queue_behind_stalled_hub_listings(m
     assert seen["access"][0].startswith("gguf-disk-listing")
     assert seen["access"][1] == {"offline": True}
     assert seen["network"] is False
-
