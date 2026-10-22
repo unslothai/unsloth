@@ -412,9 +412,11 @@ def test_video_wan5b_on_two_t4s(monkeypatch):
     assert d.plan.offload_policy == dm.OFFLOAD_NONE
 
 
-# A U-Net family (SDXL): the loaded-size reader calls ``unet`` 'other'; the refinement must still treat it as the
-# denoiser so the text encoders can move off a card the U-Net fills.
-def test_unet_family_moves_its_text_encoders(monkeypatch):
+# A U-Net family (SDXL): the loaded-size reader tags ``unet`` 'other', so the post-load refinement finds no denoiser
+# to keep on the primary and leaves the one-card plan. Kept that way on purpose: with the U-Net counted as the
+# denoiser, the pre-compile layer split preview of an SDXL load predicts a split that the whole-compiled U-Net then
+# refuses, and the compile is set up for a resident denoiser under model offload (Kaggle 2x T4 run).
+def test_unet_family_keeps_todays_refinement(monkeypatch):
     card = dict(total_mib = 12288, used_mib = 300, cap = (8, 6), name = "RTX 3060")
     host = Host([Card(0, **card), Card(1, **card)])
     sdxl = {
@@ -423,12 +425,9 @@ def test_unet_family_moves_its_text_encoders(monkeypatch):
         "text_encoder_2": (1324, "text_encoder"),
         "vae": (160, "other"),
     }
-    # post-load refinement alone (the route had no pre-load component sizes)
     d = decide(monkeypatch, host, sdxl, headroom = 1200, preload_split = False)
-    assert d.one_card.offload_policy != dm.OFFLOAD_NONE
-    assert d.plan.secondary_ordinal == 1 and d.plan.offload_policy == dm.OFFLOAD_NONE
-    assert "unet" not in d.plan.secondary_components
-    assert {"text_encoder", "text_encoder_2"} <= set(d.plan.secondary_components)
+    assert d.plan is d.one_card
+    assert d.plan.secondary_ordinal is None and d.plan.layer_split is None
 
 
 def test_video_umt5_text_encoder_moves_to_a_second_t4(monkeypatch):

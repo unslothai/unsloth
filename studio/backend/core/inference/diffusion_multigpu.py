@@ -713,7 +713,7 @@ def refine_plan_for_multigpu(
         return one_card_plan(f"free memory of cuda:{primary} is unknown")
     from .diffusion_memory import _loaded_component_mib
 
-    sizes = _with_denoiser_roles(_loaded_component_mib(pipe))
+    sizes = _loaded_component_mib(pipe)
     if not sizes:
         return one_card_plan("component sizes are unreadable")
     secondary = best_secondary(selection)
@@ -853,19 +853,6 @@ def refine_plan_for_multigpu(
         secondary_components = tuple(moved),
         fallback_plan = plan,
     )
-
-
-def _with_denoiser_roles(
-    sizes: Optional[dict[str, tuple[int, str]]],
-) -> Optional[dict[str, tuple[int, str]]]:
-    """The loaded sizes with every denoiser attribute (an SDXL ``unet`` included) in the 'dit' role, so it stays on the
-    primary and its text encoders can move. Only this refinement reads the remap; the one-card readers keep theirs."""
-    if not sizes:
-        return sizes
-    return {
-        name: (mib, "dit" if name in DENOISER_ATTRS else role)
-        for name, (mib, role) in sizes.items()
-    }
 
 
 def _cards(ordinals: Sequence[int]) -> str:
