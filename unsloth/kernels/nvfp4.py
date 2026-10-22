@@ -710,12 +710,14 @@ class NVFP4Linear_matmul(torch.autograd.Function):
         global_scale,
         bias = None,
     ):
-        output = _nvfp4_matmul_fwd(_autocast_operand(X), packed, scale, global_scale)
+        X_mm = _autocast_operand(X)
+        output = _nvfp4_matmul_fwd(X_mm, packed, scale, global_scale)
         if bias is not None:
             output = output + bias
-            # A float32 bias promotes; cast back only then (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
-            if output.dtype != X.dtype:
-                output = output.to(X.dtype)
+            # Keep the compute dtype (X.dtype, or the autocast dtype): a fp16 X under bf16 autocast would overflow.
+            # A float32 bias promotes; cast only then (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
+            if output.dtype != X_mm.dtype:
+                output = output.to(X_mm.dtype)
         ctx.save_for_backward(packed, scale, global_scale)
         ctx.bias_grad = bias is not None and bias.requires_grad
         ctx.dtype = X.dtype

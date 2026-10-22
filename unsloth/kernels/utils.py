@@ -1682,6 +1682,10 @@ def fast_linear_forward(
     elif type(W_quant) is NVFP4QuantState:
         # Bias is added once below.
         out = nvfp4_linear(X, W, W_quant.scale, W_quant.global_scale)
+        # Under autocast nvfp4_linear returns the autocast dtype, but the LoRA update below and the
+        # decode buffers are X.dtype, and in-place / out= ops do not autocast.
+        if out.dtype != X.dtype:
+            out = out.to(X.dtype)
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     elif W.dtype == torch.float8_e4m3fn:
