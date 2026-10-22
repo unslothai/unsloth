@@ -509,6 +509,22 @@ def test_a_vulkan_record_from_before_device_lost_stopped_counting_is_ignored(mon
     assert sd_cpp_backend.preferred_accelerator("vulkan") == "cpu"
 
 
+def test_an_old_rule_record_keeps_only_the_proven_cards_known():
+    """Card A proven, card B ambiguous only, no unscoped proof: B must not divert on A's failure."""
+    old = {
+        "strikes": 2,
+        "proven": True,
+        "fingerprint": {"bundle": "t"},
+        "cards": ["Card A", "Card B"],
+        "per_card": {"Card A": {"strikes": 1, "proven": True}, "Card B": {"strikes": 1, "proven": False}},
+    }
+    kept = sd_cpp_backend._decisive_evidence_only(old)
+    assert kept["cards"] == ["Card A"]
+    fp = {"bundle": "t"}
+    assert sd_cpp_backend._record_diverts(kept, fp, card = "Card A") is True
+    assert sd_cpp_backend._record_diverts(kept, fp, card = "Card B") is False
+
+
 def test_the_fallback_status_counts_the_same_evidence_as_the_runtime(monkeypatch):
     """Settings must not report a diversion the runtime decision no longer makes."""
     monkeypatch.setattr(sd_cpp_backend, "sd_cpp_vulkan_fallback_enabled", lambda: True)

@@ -1461,7 +1461,11 @@ def _decisive_evidence_only(record: Optional[dict]) -> Optional[dict]:
         "rule": _FAILURE_RULE,
     }
     if record.get("cards"):
-        kept["cards"] = list(record["cards"])
+        # Without unscoped proof only the proven cards stay known: a card left in ``cards`` without its own
+        # entry would fall through to the record-wide proof and divert on another card's failure.
+        kept["cards"] = [
+            c for c in record["cards"] if unscoped["proven"] or c in proven_cards
+        ]
     if proven_cards:
         kept["per_card"] = proven_cards
     kept["unscoped"] = {"strikes": 0, "proven": unscoped["proven"]}
@@ -4856,8 +4860,9 @@ class SdCppDiffusionBackend:
                         device_respawned = server is not None
                     if server is None:
                         raise
+                    old_server = state.server
                     state = replace(state, server = server)
-                    self._hand_over_replacement(state, server)
+                    self._hand_over_replacement(state, server, old_server)
                     # The old server's stop removed its scratch dir, and the staged adapters with it.
                     if lora_payload is not None:
                         if lora_stage is not None:
@@ -4904,15 +4909,17 @@ class SdCppDiffusionBackend:
             if self._replacing_server is old_server:
                 self._replacing_server = None
 
-    def _hand_over_replacement(self, state: _SdState, server: SdCppServer) -> None:
+    def _hand_over_replacement(self, state: _SdState, server: SdCppServer, old_server: Any) -> None:
         """Publish a restarted sd-server into ``_state`` in the same locked step that drops it from
-        ``_pending_server``, so an unload always sees it in one of the two. When the unload already
-        cleared the state, stop the replacement and cancel instead of generating on an untracked process."""
+        ``_pending_server``, so an unload always sees it in one of the two. Only while ``_state`` still holds the
+        server being replaced: when an unload cleared it or a superseding load replaced it, stop the replacement
+        and cancel instead of generating on an untracked process or overwriting the newer load."""
         with self._lock:
             if self._pending_server is server:
                 self._pending_server = None
-            self._replacing_server = None
-            published = self._state is not None and self._state.server is not None
+            if self._replacing_server is old_server:
+                self._replacing_server = None
+            published = self._state is not None and self._state.server is old_server
             if published:
                 self._state = state
             else:

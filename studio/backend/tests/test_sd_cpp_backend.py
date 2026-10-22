@@ -3262,8 +3262,43 @@ def test_a_status_poll_during_the_cpu_backend_restart_keeps_the_load(monkeypatch
         threading.Event(),
     )
     assert server is not None and polls == [True] and b._state is state
-    b._hand_over_replacement(dataclasses.replace(state, server = server), server)
+    b._hand_over_replacement(dataclasses.replace(state, server = server), server, state.server)
     assert b._state.server is server and not server.stopped
+
+
+def test_a_superseding_load_during_the_respawn_is_not_overwritten(monkeypatch, tmp_path):
+    # A newer load that commits while the replacement starts owns _state: the handover must not publish the old
+    # model's replacement over it, and the replacement must not be left running untracked.
+    import dataclasses
+
+    holder: dict = {}
+
+    def _supersede_mid_start(server):
+        b = holder["backend"]
+        newer = _FakeNewer("/bin/sd-server-newer")
+        holder["newer"] = newer
+        with b._lock:
+            b._state = dataclasses.replace(b._state, server = newer)
+
+    class _FakeNewer:
+        def __init__(self, binary):
+            self.binary = binary
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+        def is_alive(self):
+            return not self.stopped
+
+    b, servers, payloads = _device_loss_backend(monkeypatch, tmp_path, on_start = _supersede_mid_start)
+    holder["backend"] = b
+    monkeypatch.setattr(b, "status", lambda: {})
+    with pytest.raises(SdCppCancelled):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert len(servers) == 2 and servers[1].stopped  # the stale replacement is stopped
+    assert b._state.server is holder["newer"] and not holder["newer"].stopped
+    assert len(payloads) == 1 and b._pending_server is None
 
 
 def test_a_cancel_during_the_respawn_stops_the_replacement_start(monkeypatch, tmp_path):
