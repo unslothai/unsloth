@@ -4903,7 +4903,8 @@ def _request_selects_stateful_sampler(
     if not stateful:
         return False
     temperature = body.get("temperature")
-    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+    # nlohmann reads a JSON boolean as 0 / 1 for the float field too.
+    if isinstance(temperature, (int, float)):
         return temperature > 0
     return True
 
