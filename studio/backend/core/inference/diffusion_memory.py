@@ -1636,11 +1636,24 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
     )
 
 
+def _holds_fp8_stored(module: Any) -> bool:
+    """Whether ``module`` holds fp8-STORED Linears; codes and scales are buffers, so a parameter scan reads it dense."""
+    if module is None:
+        return False
+    try:
+        from .diffusion_comfy_quant import fp8_stored_layers
+        return fp8_stored_layers(module) > 0
+    except Exception:  # noqa: BLE001 - unreadable: today's parameter verdict stands
+        return False
+
+
 def _pipe_denoisers_hold_packed(pipe: Any) -> bool:
-    """GGUF / int8 weights dequantize a whole Linear per forward: unmeasured by the dense eager table."""
+    """GGUF / int8 / fp8-stored weights dequantize a whole Linear per forward: unmeasured by the dense eager table."""
     try:
         import torch
         for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
+            if _holds_fp8_stored(getattr(pipe, name, None)):
+                return True
             params = getattr(getattr(pipe, name, None), "parameters", None)
             if callable(params) and any(
                 type(p).__name__ == "GGUFParameter" or p.dtype in (torch.int8, torch.uint8)
@@ -2893,7 +2906,8 @@ def vae_saver_tag(tiling: Any, slicing: Any) -> str:
 
 def denoiser_quant_label(pipe: Any) -> str:
     """Stable label of the denoiser weights' format for the learned-peak key: torchao subclasses, GGUF, int8 / uint8
-    packed, or the dense dtype."""
+    packed, fp8-stored (codes in buffers, widened per layer: ``fp8_stored:<float dtypes>#<variant>``), or the dense
+    dtype."""
     try:
         import torch
 
@@ -2920,6 +2934,9 @@ def denoiser_quant_label(pipe: Any) -> str:
                     dtypes.add(str(param.dtype).replace("torch.", ""))
         if "int8" in dtypes:
             return "packed:int8" + _quant_variant_tag(dits)
+        if any(_holds_fp8_stored(dit) for dit in dits):
+            # Never the dense key: same model file, same float dtype, but a per-layer widen the dense run lacks.
+            return "fp8_stored:" + "+".join(sorted(dtypes)) + _quant_variant_tag(dits)
         return "dense:" + "+".join(sorted(dtypes)) if dtypes else "unknown"
     except Exception:  # noqa: BLE001
         return "unknown"
@@ -3081,7 +3098,7 @@ def refine_plan_from_loaded_weights(
 
     Keeps the flat plan's offload hooks and makes whole groups resident (denoiser first, then encoders) within the
     safe budget left after the measured peak x margin and the base overhead. No-op for explicit modes, non-CUDA / unified memory, unmeasured families (dense denoisers: the eager-tier table)
-    or speed tiers and ``model`` plans. A bf16 or GGUF / int8 packed dense denoiser (no static table measured it)
+    or speed tiers and ``model`` plans. A bf16, GGUF / int8 packed or fp8-stored denoiser (no static table measured it)
     places only from a learned peak recorded for its exact build."""
     try:
         if getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO:
@@ -3106,9 +3123,17 @@ def refine_plan_from_loaded_weights(
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
-        # The dense table covers fp16 / fp32 unpacked weights only: bf16 and packed denoisers use a learned peak alone.
+        # The dense table covers fp16 / fp32 unpacked weights only; everything else uses a learned peak alone.
+        # Stored fp8 layers widen per forward, which no static table priced, even beside torchao layers.
         static_seed = not (
-            dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
+            any(
+                _holds_fp8_stored(getattr(pipe, name, None))
+                for name in ("transformer", "transformer_2", "unconditional_transformer", "unet")
+            )
+            or (
+                dense_mib is not None
+                and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
+            )
         )
         quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
         try:
