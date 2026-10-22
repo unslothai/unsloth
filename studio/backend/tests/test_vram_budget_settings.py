@@ -876,6 +876,8 @@ class TestPerDeviceFitTarget:
         import core.inference.llama_cpp as lc
 
         B = lc.LlamaCppBackend
+        # The eligibility check declines on macOS, so pin the host OS the case means.
+        monkeypatch.setattr(lc.sys, "platform", attrs.get("platform", "linux"))
         monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", attrs.get("pci", True))
         monkeypatch.setattr(B, "_SMI_MIG_INDICES", attrs.get("mig", frozenset()))
         monkeypatch.setattr(
