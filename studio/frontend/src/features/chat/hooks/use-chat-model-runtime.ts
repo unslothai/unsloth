@@ -2117,6 +2117,12 @@ export function useChatModelRuntime() {
           const previousMlxInt8Prefill = rollbackConfig
             ? (rollbackConfig.mlxInt8Prefill ?? false)
             : useChatRuntimeStore.getState().mlxInt8Prefill;
+          const previousMlxPleOffload = rollbackConfig
+            ? (rollbackConfig.mlxPleOffload ?? null)
+            : useChatRuntimeStore.getState().mlxPleOffload;
+          const previousMlxExpertOffload = rollbackConfig
+            ? (rollbackConfig.mlxExpertOffload ?? null)
+            : useChatRuntimeStore.getState().mlxExpertOffload;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do: the Hub rejects an invalid
             // Authorization header with 401 even for a public repo, so sending the raw stored token here would
@@ -2219,6 +2225,12 @@ export function useChatModelRuntime() {
           let loadMlxInt8Prefill = pendingLoadConfig
             ? (pendingLoadConfig.mlxInt8Prefill ?? false)
             : stateBeforeUnload.mlxInt8Prefill;
+          let loadMlxPleOffload = pendingLoadConfig
+            ? (pendingLoadConfig.mlxPleOffload ?? null)
+            : stateBeforeUnload.mlxPleOffload;
+          let loadMlxExpertOffload = pendingLoadConfig
+            ? (pendingLoadConfig.mlxExpertOffload ?? null)
+            : stateBeforeUnload.mlxExpertOffload;
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
           // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
@@ -2727,6 +2739,8 @@ export function useChatModelRuntime() {
               };
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
+              loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
+              loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
@@ -2831,6 +2845,8 @@ export function useChatModelRuntime() {
               cache_type_kv: loadKvCacheDtype,
               mlx_kv_quant: loadMlxKvQuant ?? null,
               mlx_int8_prefill: loadMlxInt8Prefill,
+              mlx_ple_offload: loadMlxPleOffload,
+              mlx_expert_offload: loadMlxExpertOffload,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               ...(targetIsMlx ? { spec_draft_model: loadSpecDraftModel } : {}),
@@ -3228,6 +3244,8 @@ export function useChatModelRuntime() {
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
                   mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   mlx_int8_prefill: rollbackState.loadedMlxInt8PrefillRequested,
+                  mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
+                  mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -3337,6 +3355,8 @@ export function useChatModelRuntime() {
                   // nParallel above.
                   mlxKvQuant: previousMlxKvQuant,
                   mlxInt8Prefill: previousMlxInt8Prefill,
+                  mlxPleOffload: previousMlxPleOffload,
+                  mlxExpertOffload: previousMlxExpertOffload,
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),

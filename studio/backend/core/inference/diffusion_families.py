@@ -377,6 +377,8 @@ _FLUX3_SD_CPP_TEXT_ENCODERS = (
 # FLUX.3 landed upstream in master-968 (leejet/stable-diffusion.cpp#2143), after builds were in the wild. The model
 # version name is in every sd-cli / sd-server that can run it and in none before.
 _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
+# Krea 2 support: sd.cpp master-721 (leejet/stable-diffusion.cpp#1705).
+_KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
@@ -530,8 +532,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae_format = "flux2",
         # Klein 4B's text encoder IS Qwen3-4B (byte-identical shards to unsloth/Qwen3-4B; the BF16 GGUF matches it
         # tensor for tensor and renders pixel-identical to the old single-file encoder), so sd-cli reads unsloth's
-        # own GGUF of it. Q8_0, not Q4_K_M: on klein 4B the Q4 encoder moved renders by LPIPS 0.15, Q8 by 0.06.
-        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
+        # own GGUF of it. BF16, the precision the bf16 encoder had and ComfyUI's klein template loads: Q8_0 moved
+        # renders by LPIPS 0.06 and Q4_K_M by 0.15 against an A/A of exactly 0. UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT
+        # trades it down.
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-BF16.gguf", "llm"),),
     ),
     # FLUX.3 Image Klein: a 5.6B flow-map DiT with a Qwen3-VL-4B encoder (layers 4..32 stacked) and the FLUX.2 VAE.
     # Diffusers ships it only as modular blocks, so diffusion_flux3 assembles it per component behind a classic
@@ -677,11 +681,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
         # FLUX.2-dev's text encoder is Mistral-Small-3.2-24B-Instruct-2506 (byte-identical shards to the unsloth
-        # copy; the BF16 GGUF matches every text tensor), so sd-cli reads unsloth's GGUF of it.
+        # copy; the BF16 GGUF matches every text tensor), so sd-cli reads unsloth's GGUF of it. Q8_0, not Q4_K_M: at
+        # least as precise as ComfyUI's fp8 template (its default is a 36 GB bf16 file) and the int8 the diffusers route
+        # takes, at 25 GB. The GGUF's q/k rows are in llama.cpp's interleaved RoPE order, which is the order sd.cpp's
+        # GGML_ROPE_TYPE_NORMAL Mistral path expects; the HF-order bf16 safetensors this replaced did not match it.
         sd_cpp_text_encoders = (
             (
                 "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
-                "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+                "Mistral-Small-3.2-24B-Instruct-2506-Q8_0.gguf",
                 "llm",
             ),
         ),
@@ -1122,9 +1129,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
-        # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same Q8_0 file
+        # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same BF16 file
         # klein 4B reads, so one download serves both.
-        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-BF16.gguf", "llm"),),
     ),
     DiffusionFamily(
         name = "krea-2",
@@ -1153,6 +1160,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Adapters trained on Raw run on Turbo; deploy previews them there (same bf16 precision).
         deploy_base_repo = "krea/Krea-2-Turbo",
         fp16_incompatible = True,
+        # VAE is byte-identical in Raw and Turbo; the text encoder is stock Qwen3-VL-4B, shared with FLUX.3.
+        sd_cpp_vae = ("unsloth/Krea-2-Turbo", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _KREA2_SD_CPP_ARCH_MARKER,
     ),
     # Lumina Image 2.0: a 2.6B single-stream DiT with a Gemma2-2B encoder and a standard AutoencoderKL, so the generic
     # from_pretrained path loads it. NOT aliased to bare "lumina": Lumina-Next checkpoints are a different arch.
@@ -1519,9 +1531,32 @@ def detect_family_for_pick(
         fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    if fam is None and not override:
+        fam = _family_from_hub_evidence(repo_id, gguf_filename)
     if not override:
         fam = _family_from_content(fam, repo_id, gguf_filename)
     return fam
+
+
+def _family_from_hub_evidence(
+    repo_id: str, gguf_filename: Optional[str]
+) -> Optional[DiffusionFamily]:
+    """A Hub single-file pick named for no family (``Laxhar/noobai-XL-Vpred-1.0``): the family its
+    checkpoint header declares. Never overrides a name that said no or an excluded repo, and never
+    answers for a repo or file named for a variant (``edit`` / ``inpaint`` / ...): the header cannot
+    tell an SDXL inpaint checkpoint from a plain one, and the base pipeline would load it. No network."""
+    needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
+    if any(_best_family_match(model_identity(n).lower()) is not None for n in needles):
+        return None
+    segments = [seg for n in needles for seg in re.split(r"[/\\]+", n.lower()) if seg]
+    if any(_token_in_needle(kw, seg) for kw in _EDIT_KEYWORDS for seg in segments):
+        return None
+    if excluded_model_reason(repo_id):
+        return None
+    from .diffusion_hub_evidence import cached_family
+
+    name = cached_family(repo_id, gguf_filename)
+    return detect_family("", override = name) if name else None
 
 
 def _family_from_content(
@@ -2012,6 +2047,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.1-krea", 20, 3.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
+    # The same Raw checkpoint as GGUFs name it (realrebelai/KREA-2_GGUFs BASE/Krea-2-Base-*, krea2_raw-*).
+    ("krea-2-base", 52, 3.5),
+    ("krea2-raw", 52, 3.5),
+    ("krea2-base", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
     ("flux1-krea", 20, 3.5),  # before Krea-2's generic row
     ("krea", 8, 0.0),
@@ -2151,14 +2190,37 @@ def transformer_variant_differs_from_base(
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
-def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
-    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+def _generation_defaults_row(*identifiers: Optional[str]) -> Optional[tuple[str, int, float]]:
     for identifier in identifiers:
         needle = model_identity(identifier).lower()
-        for key, steps, guidance in _GENERATION_DEFAULTS:
-            if name_key_in(key, needle):
-                return steps, guidance
+        for row in _GENERATION_DEFAULTS:
+            if name_key_in(row[0], needle):
+                return row
     return None
+
+
+def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
+    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+    row = _generation_defaults_row(*identifiers)
+    return (row[1], row[2]) if row is not None else None
+
+
+_KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})
+
+
+def krea2_raw_checkpoint(*identifiers: Optional[str]) -> bool:
+    """Whether the identifiers name Krea 2 Raw, with the same precedence as the generation defaults."""
+    row = _generation_defaults_row(*identifiers)
+    return row is not None and row[0] in _KREA2_RAW_KEYS
+
+
+def krea2_sd_cpp_flow_shift(width: int, height: int) -> float:
+    """sd.cpp ``--flow-shift`` matching diffusers' Krea 2 Raw schedule. Raw computes mu from the packed latent tokens
+    (calculate_shift: 0.5 at 256 tokens, 1.15 at 6400); Turbo fixes mu = 1.15, sd.cpp's Krea2 default. sd.cpp's FLUX
+    flow denoiser takes the shift as mu itself."""
+    tokens = (int(height) // 16) * (int(width) // 16)
+    slope = (1.15 - 0.5) / (6400 - 256)
+    return tokens * slope + (0.5 - slope * 256)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
@@ -2958,8 +3020,42 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in
-# sd-cli), so pick per variant. Klein 9B's text encoder is byte-identical to unsloth/Qwen3-8B.
-_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf", "llm"),)
+# sd-cli), so pick per variant. Klein 9B's text encoder is byte-identical to unsloth/Qwen3-8B; BF16 is the precision
+# the released bf16 encoder had (and renders pixel-identical to it).
+_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-BF16.gguf", "llm"),)
+
+# Opt-in lower-precision sd.cpp text encoder for hosts short on RAM / VRAM: bf16, q8_0 or q4_k_m. Unset keeps each
+# family's table entry. Only the unsloth LLM GGUF encoders follow it (every one of those repos ships all three files);
+# official safetensors encoders (CLIP / T5 / vision projectors) are left alone.
+SD_CPP_TEXT_ENCODER_QUANT_ENV = "UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT"
+_SD_CPP_TEXT_ENCODER_QUANTS = {"bf16": "BF16", "q8_0": "Q8_0", "q4_k_m": "Q4_K_M"}
+_SD_CPP_LLM_GGUF_QUANT_RE = re.compile(r"-(BF16|F16|Q8_0|Q4_K_M)\.gguf$")
+_SD_CPP_REQUANTABLE_TE_REPOS = frozenset(
+    {
+        "unsloth/qwen3-4b-gguf",
+        "unsloth/qwen3-8b-gguf",
+        "unsloth/mistral-small-3.2-24b-instruct-2506-gguf",
+    }
+)
+
+
+def sd_cpp_text_encoder_quant() -> Optional[str]:
+    """The ``UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT`` file tag (``BF16`` / ``Q8_0`` / ``Q4_K_M``), else None."""
+    raw = (os.environ.get(SD_CPP_TEXT_ENCODER_QUANT_ENV) or "").strip().lower()
+    return _SD_CPP_TEXT_ENCODER_QUANTS.get(raw)
+
+
+def _with_text_encoder_quant(
+    encoders: tuple[tuple[str, str, str], ...], tag: Optional[str]
+) -> tuple[tuple[str, str, str], ...]:
+    if not tag:
+        return encoders
+    out = []
+    for repo, filename, kind in encoders:
+        if kind == "llm" and repo.lower() in _SD_CPP_REQUANTABLE_TE_REPOS:
+            filename = _SD_CPP_LLM_GGUF_QUANT_RE.sub(f"-{tag}.gguf", filename)
+        out.append((repo, filename, kind))
+    return tuple(out)
 
 
 # sd-cli companion repos released Studio builds fetched and this one no longer reads: the unsloth copies of the
@@ -3028,6 +3124,9 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # A full mirror of a loadable base stays loadable even when used as a VAE source (unsloth/Krea-2-Turbo).
+    loadable_lower = {r.strip().lower() for r in loadable if r}
+    loadable.update(m for u, m in _ALL_MIRROR_PAIRS if u.strip().lower() in loadable_lower)
     return (
         frozenset(r.strip().lower() for r in companions - loadable if r)
         | _RETIRED_SD_CPP_COMPANION_REPOS
@@ -3098,6 +3197,12 @@ def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str
     sets = [fam.sd_cpp_text_encoders]
     if fam.name == "flux.2-klein":
         sets.append(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # Every precision UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT can pick: a load made under another setting fetched that file.
+    sets = [
+        _with_text_encoder_quant(group or (), tag)
+        for group in sets
+        for tag in (None, *_SD_CPP_TEXT_ENCODER_QUANTS.values())
+    ]
     return tuple(dict.fromkeys(entry for group in sets for entry in group or ()))
 
 
@@ -3117,16 +3222,17 @@ def sd_cpp_text_encoders_for(
     if fam.name == "flux.2-klein":
         # A dim this family does not have (a FLUX.2-dev file, a misread) falls through to the strings rather than
         # guessing, exactly as the base-size guard fails open on one.
+        tag = sd_cpp_text_encoder_quant()
         if inner_dim == _FLUX2_KLEIN_9B_INNER_DIM:
-            return _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
+            return _with_text_encoder_quant(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS, tag)
         if inner_dim == _FLUX2_KLEIN_4B_INNER_DIM:
-            return fam.sd_cpp_text_encoders
+            return _with_text_encoder_quant(fam.sd_cpp_text_encoders, tag)
         identity = f"{repo_id or ''}/{gguf_filename or ''}".lower()
         # Match the size token on its own: klein-BASE-9B is 9B too, and matching "klein-9b" literally handed it the 4B
         # text encoder.
         if _token_in_needle("9b", identity) or "klein9b" in identity:
-            return _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
-    return fam.sd_cpp_text_encoders
+            return _with_text_encoder_quant(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS, tag)
+    return _with_text_encoder_quant(fam.sd_cpp_text_encoders, sd_cpp_text_encoder_quant())
 
 
 # FLUX.2 sizes the adaLN modulation projection as (6 * inner_dim, inner_dim), and inner_dim is the only thing that
