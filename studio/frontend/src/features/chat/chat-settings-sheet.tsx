@@ -1742,19 +1742,6 @@ export function ChatSettingsPanel({
                 />
               </div>
             ) : null}
-            {!isExternalModel && currentCheckpoint ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="self-start"
-                onClick={() => {
-                  saveSamplingForCurrentModel().catch(() => undefined);
-                }}
-              >
-                Save for this model
-              </Button>
-            ) : null}
           </div>
         </CollapsibleSection>
 
@@ -1785,6 +1772,22 @@ export function ChatSettingsPanel({
             <RetrievalSettingsSection />
           </CollapsibleSection>
             )}
+
+            {!isExternalModel && currentCheckpoint ? (
+          <div className="border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] py-5 dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => {
+                saveSamplingForCurrentModel().catch(() => undefined);
+              }}
+            >
+              Save for this model
+            </Button>
+          </div>
+            ) : null}
       </div>
       </div>
       </div>

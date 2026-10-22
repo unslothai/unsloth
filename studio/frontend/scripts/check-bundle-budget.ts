@@ -369,11 +369,11 @@ export const BUDGET = {
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
-  // Per-model sampling defaults (#14515): the run settings row, its API helper and Chat's "Save for this model"
-  // button are eager; the editor is lazy. +3,193 B raw / +1,050 B transfer merged with main at 458190c9b6
-  // (6,891,262 -> 6,894,455 B raw, 2,076,131 -> 2,077,181 B transfer, 98 chunks). Raised by that.
-  transferBytes: 2_077_243,
-  rawBytes: 6_894_517,
+  // Chat's "Save for this model" button (#14515) in the eager chat chunk; the save itself is lazy. +1,079 B raw /
+  // +298 B transfer against 458190c9b6 (6,891,262 -> 6,892,341 B raw, 2,076,131 -> 2,076,429 B transfer, 98 chunks).
+  // Raised by that.
+  transferBytes: 2_076_491,
+  rawBytes: 6_892_403,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

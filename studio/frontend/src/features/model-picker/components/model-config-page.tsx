@@ -116,7 +116,6 @@ import {
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
-import { SamplingDefaultsRow } from "./sampling-defaults-row";
 import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
@@ -3968,18 +3967,6 @@ export function ModelConfigPage({
               </>
             )}
           </>
-        )}
-        {!resolvedIsDiffusion &&
-          !audioRuntimeGguf &&
-          !targetIsNpu &&
-          !target.meta.audioType && (
-          <SamplingDefaultsRow
-            modelId={configId}
-            chatModelId={target.id}
-            displayName={target.displayName}
-            rowClassName={ROW_CLASS}
-            labelClassName={LABEL_CLASS_WRAP}
-          />
         )}
       </div>
 
