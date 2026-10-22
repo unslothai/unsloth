@@ -1013,16 +1013,20 @@ def test_the_layout_reader_totals_every_tensor_from_a_real_gguf(tmp_path):
     assert layout.token_embd_bytes == 4 * (1024 + 4096)
 
 
-def test_reading_the_layout_does_not_walk_the_vocabulary(tmp_path, monkeypatch):
+@pytest.mark.parametrize("endianess", ["LITTLE", "BIG"])
+def test_reading_the_layout_does_not_walk_the_vocabulary(tmp_path, monkeypatch, endianess):
     import numpy as np
-    from gguf import GGUFReader, GGUFWriter
+    from gguf import GGUFEndian, GGUFReader, GGUFWriter
 
     vocab = 50_000
     path = tmp_path / "vocab.gguf"
-    writer = GGUFWriter(str(path), "llama")
-    for key, value in _shard_fields().items():
-        if key.startswith("llama.") and isinstance(value, int):
-            writer.add_uint32(key, 1 if key == "llama.block_count" else value)
+    writer = GGUFWriter(str(path), "nemotron_h", endianess = GGUFEndian[endianess])
+    writer.add_block_count(3)
+    writer.add_head_count(8)
+    writer.add_key_length(128)
+    writer.add_value_length(128)
+    # A per-layer array, so the numeric-array path must keep every element.
+    writer.add_array("nemotron_h.attention.head_count_kv", [0, 4, 2])
     writer.add_token_list([f"tok{i}" for i in range(vocab)])
     writer.add_token_scores([0.0] * vocab)
     writer.add_token_types([1] * vocab)
@@ -1045,6 +1049,8 @@ def test_reading_the_layout_does_not_walk_the_vocabulary(tmp_path, monkeypatch):
     layout = layout_from_gguf(str(path))
     assert layout.complete
     assert layout.token_embd_bytes == 4 * 1024
+    assert layout.n_attention_layers == 2
+    assert layout.kv_bytes_per_token_f16 == (4 + 2) * (128 + 128) * 2
     assert reads < 1000
 
 
