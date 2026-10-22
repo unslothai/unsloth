@@ -623,6 +623,8 @@ export const es = {
       "Este chat no aparecerá en tu historial ni se guardará. Desaparece cuando salgas.",
   },
   picker: {
+    unifiedTightFit: "Ajuste justo",
+    unifiedTightFitHint: "Puede cargarse con un contexto más corto o ir más lento en este Mac.",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",

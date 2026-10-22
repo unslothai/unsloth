@@ -143,6 +143,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -603,6 +604,28 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
   null,
 );
 
+/** `GpuInfo.unifiedLoadBudgetGb` of the inventory GGUF chat loads into: non-null only on an Apple
+ *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
+const UnifiedLoadBudget = createContext<number | null>(null);
+
+function PickerScopes({
+  capabilityScope,
+  unifiedLoadBudgetGb,
+  children,
+}: {
+  capabilityScope: readonly (keyof ModelCapabilities)[] | null;
+  unifiedLoadBudgetGb: number | null;
+  children: ReactNode;
+}) {
+  return (
+    <CapabilityScope.Provider value={capabilityScope}>
+      <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
+        {children}
+      </UnifiedLoadBudget.Provider>
+    </CapabilityScope.Provider>
+  );
+}
+
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every column after it lined up.
 const MAX_CAPABILITY_BADGES = 3;
 
@@ -847,7 +870,18 @@ function VramBadge({
   status?: GgufFitClass | VramFitStatus | null;
   revealOnHover?: boolean;
 }) {
-  const verdict = status ? VRAM_VERDICT[status] : null;
+  const t = useT();
+  const unifiedLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const verdict =
+    status === "marginal" && unifiedLoadBudgetGb !== null
+      ? {
+          label: t("picker.unifiedTightFit"),
+          tone: AMBER,
+          hint: t("picker.unifiedTightFitHint"),
+        }
+      : status
+        ? VRAM_VERDICT[status]
+        : null;
   if (!verdict) return null;
   return (
     <Tooltip delayDuration={0}>
@@ -1960,6 +1994,7 @@ function GgufVariantExpander({
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   const capabilityScope = useContext(CapabilityScope);
+  const unifiedLoadBudgetGb = useContext(UnifiedLoadBudget);
   const visionInScope =
     capabilityScope === null || capabilityScope.includes("vision");
   const showVision = hasVision === true && visionInScope;
@@ -2128,6 +2163,7 @@ function GgufVariantExpander({
         systemRamGb: systemRamGb ?? 0,
         budgetFraction,
         gpuCount,
+        unifiedLoadBudgetGb,
       });
     },
     [
@@ -2136,6 +2172,7 @@ function GgufVariantExpander({
       gpuGb,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
       diffusionLoad,
       hostPooledMemory,
       gpuCount,
@@ -4232,6 +4269,7 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
+            unifiedLoadBudgetGb: budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
@@ -7323,7 +7361,10 @@ export function HubModelPicker({
     (!showHfSection || npuBrowseRows.length > 0);
 
   return (
-    <CapabilityScope.Provider value={capabilityScope}>
+    <PickerScopes
+      capabilityScope={capabilityScope}
+      unifiedLoadBudgetGb={inferenceGpu.unifiedLoadBudgetGb ?? null}
+    >
       <div className="relative space-y-2">
         {/* A small right inset shortens the search bar so Search Hub lands on the last dropdown's right edge. */}
         <div
@@ -8961,7 +9002,7 @@ export function HubModelPicker({
           reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
-    </CapabilityScope.Provider>
+    </PickerScopes>
   );
 }
 

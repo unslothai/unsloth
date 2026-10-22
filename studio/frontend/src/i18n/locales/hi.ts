@@ -623,6 +623,8 @@ export const hi = {
       "यह चैट आपके इतिहास में नहीं दिखेगी और सेव नहीं होती। आपके जाने पर यह गायब हो जाती है।",
   },
   picker: {
+    unifiedTightFit: "तंग फ़िट",
+    unifiedTightFitHint: "इस Mac पर छोटे कॉन्टेक्स्ट के साथ लोड हो सकता है या धीमा चल सकता है।",
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
     retry: "पुनः प्रयास करें",

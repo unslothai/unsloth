@@ -708,6 +708,8 @@ export const he = {
     temporaryChatDescription: "הצ'אט הזה לא יופיע בהיסטוריה שלך ולא נשמר. הוא נעלם כשתעזוב.",
   },
   picker: {
+    unifiedTightFit: "התאמה צפופה",
+    unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",

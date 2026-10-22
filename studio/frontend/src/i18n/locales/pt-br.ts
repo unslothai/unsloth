@@ -623,6 +623,8 @@ export const ptBR = {
       "Este chat não aparecerá no seu histórico e não será salvo. Ele desaparece quando você sair.",
   },
   picker: {
+    unifiedTightFit: "Ajuste apertado",
+    unifiedTightFitHint: "Pode carregar com um contexto menor ou rodar mais devagar neste Mac.",
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
     retry: "Tentar novamente",

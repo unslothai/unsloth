@@ -24,6 +24,7 @@ import {
   systemRamAvailableOutsideSharedPoolGb,
 } from "./gpu-vram";
 import {
+  type GpuDevice,
   type SystemInfoResponse,
   fetchSystemInfo,
   getCachedSystemInfo,
@@ -93,6 +94,36 @@ export interface GpuInfo {
   /** Whether host available memory was reported, including a real zero. */
   systemRamAvailableKnown?: boolean;
   systemRamTotalGb: number;
+  /** Apple MLX only: what llama.cpp and MLX admit right now, `min(working set, free) * 0.85`
+   *  (`_apple_metal_memory_budget_bytes`). Null on every other host and on older backends. */
+  unifiedLoadBudgetGb?: number | null;
+}
+
+/** `_APPLE_UNIFIED_MEMORY_FRACTION` in llama_cpp.py and mlx_inference.py. */
+const APPLE_UNIFIED_MEMORY_FRACTION = 0.85;
+
+function finitePositive(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+/** The loader's budget on an Apple host pool, or null where it does not apply or is unknown. */
+function appleUnifiedLoadBudgetGb(
+  data: SystemInfoResponse | null,
+  devices: readonly GpuDevice[],
+): number | null {
+  if (data?.device_backend !== "mlx" || devices.length !== 1) return null;
+  const device = devices[0];
+  const workingSetGb = finitePositive(device.metal_working_set_gb);
+  if (device.shared_memory !== true || workingSetGb === null) return null;
+  const freeGb =
+    finitePositive(device.vram_free_gb) ??
+    finitePositive(data.memory?.available_gb);
+  return (
+    Math.min(workingSetGb, freeGb ?? workingSetGb) *
+    APPLE_UNIFIED_MEMORY_FRACTION
+  );
 }
 
 const DEFAULT_GPU: GpuInfo = {
@@ -121,6 +152,7 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamAvailableHostGb: 0,
   systemRamAvailableKnown: false,
   systemRamTotalGb: 0,
+  unifiedLoadBudgetGb: null,
 };
 
 function toGpuInfo(
@@ -190,6 +222,7 @@ function toGpuInfo(
       unifiedMemory: loadDevice?.unified_memory === true,
     }),
     deviceCount: devices.length,
+    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(data, devices),
   };
 }
 
