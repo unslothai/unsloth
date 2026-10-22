@@ -319,7 +319,8 @@ class TestGfx211AllowlistParity:
 
     def test_install_sh_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8").lower()
-        m = re.search(r"^\s*(rocm7\.2\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
+        # rocm7.2 has its own wider arm (2.11-2.14, #9932); the 2.11 floor arm lists only gfx leaves.
+        m = re.search(r"^\s*(gfx120x-all\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh gfx-2.11 allowlist case not found / changed"
         assert self._leaves(m.group(1)) == self.EXPECTED, (
             f"install.sh gfx-2.11 allowlist is {sorted(self._leaves(m.group(1)))}, "
@@ -420,13 +421,16 @@ class TestKnown211SetParity:
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # Same set as TestGfx211AllowlistParity.EXPECTED, so the rocm half cannot drift.
-        m = re.search(r"^\s*(rocm7\.2\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
-        assert m, "install.sh 2.11 floor case (rocm7.2|gfx...) not found / changed"
+        # rocm7.2 has its own arm (2.11 floor, wider ceiling, #9932); the gfx arm is the allowlist.
+        assert re.search(
+            r'^\s*rocm7\.2\)\s*\n\s*TORCH_CONSTRAINT="torch>=2\.11\.0,', text, re.MULTILINE
+        ), "install.sh rocm7.2 arm with the 2.11 floor not found / changed"
+        m = re.search(r"^\s*(gfx120x-all\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
+        assert m, "install.sh 2.11 floor case (gfx...) not found / changed"
         alternatives = set(m.group(1).lower().split("|"))
-        assert alternatives == {"rocm7.2"} | TestGfx211AllowlistParity.EXPECTED, (
+        assert alternatives == TestGfx211AllowlistParity.EXPECTED, (
             f"install.sh 2.11 floor is {sorted(alternatives)}, expected "
-            f"{sorted({'rocm7.2'} | TestGfx211AllowlistParity.EXPECTED)}"
+            f"{sorted(TestGfx211AllowlistParity.EXPECTED)}"
         )
         assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 

@@ -680,8 +680,8 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
     ), "install_python_stack.py must define a Windows per-arch ROCm companion pin map"
     for gfx in ("gfx1201", "gfx1200", "gfx1151", "gfx1150"):
         assert re.search(
-            r'"' + gfx + r'":\s*_ROCM_TORCH_PKG_SPECS\["rocm7\.2"\]', text
-        ), f"{gfx} must pin to the rocm7.2 trio like install.ps1/setup.ps1"
+            r'"' + gfx + r'":\s*_ROCM_TORCH211_PKG_SPEC\b', text
+        ), f"{gfx} must pin to the 2.11 trio like install.ps1/setup.ps1"
     i = text.find("f\"ROCm torch (Windows, {gfx_arch or 'pinned'})\"")
     assert i != -1, "Windows ROCm repair pip call not found"
     j = text.rfind("pip_install_try(", 0, i)

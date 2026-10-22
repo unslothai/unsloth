@@ -1410,9 +1410,11 @@ GPU: 2
         assert f(f"{base}/rocm7.2", "2.11.0+rocm7.2") is False
         assert f(f"{base}/rocm7.2", "2.10.0+rocm6.4") is True
         assert f(f"{base}/rocm6.4", "2.10.0+rocm6.4") is False
-        # A +rocm7.2 wheel whose release drifted off 2.11 shares the tag but violates the spec.
-        assert f(f"{base}/rocm7.2", "2.12.0+rocm7.2") is True
-        assert f(f"{base}/rocm7.2", "2.13.0+rocm7.2") is True
+        # A +rocm7.2 wheel whose release left the 2.11-2.14 window shares the tag but violates the spec.
+        assert f(f"{base}/rocm7.2", "2.10.0+rocm7.2") is True
+        assert f(f"{base}/rocm7.2", "2.15.0+rocm7.2") is True
+        assert f(f"{base}/rocm7.2", "2.12.0+rocm7.2") is False
+        assert f(f"{base}/rocm7.2", "2.14.1+rocm7.2") is False
         assert f(f"{base}/rocm7.2", "2.11.5+rocm7.2") is False  # patch on 2.11 is in-spec
         # An unknown newer rocm is not floored to 2.11.
         assert f(f"{base}/rocm8.0", "2.12.0+rocm8.0") is False
@@ -1470,7 +1472,7 @@ GPU: 2
                     _ensure_rocm_torch()
         torch_call = str(mock_pip.call_args_list[0])
         assert "rocm7.2" in torch_call
-        assert "torch>=2.11.0,<2.12.0" in torch_call
+        assert "torch>=2.11.0,<2.15.0" in torch_call
 
     @patch.object(stack_mod, "IS_MACOS", False)
     @patch("platform.machine", return_value = "x86_64")
@@ -6800,12 +6802,11 @@ class TestStrixRocm71Override:
         is ignored."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         # Switch on $_torch_index_leaf; only _grouped_mm-bug families get 2.11; gfx90a/908 stay bare.
-        assert (
-            'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)'
-            in source
-        ), (
+        idx = source.index('case "$_torch_index_leaf" in\n    rocm7.2)\n')
+        block = source[idx : source.index("\nesac\n", idx)]
+        assert "\n    gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)\n" in block, (
             "the torch>=2.11 constraint must match the specific gfx leaves that need "
-            "it (rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all), not a bare gfx* or the URL"
+            "it (gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all), not a bare gfx* or the URL"
         )
 
     def test_amd_rocm_mirror_env_var_respected(self):

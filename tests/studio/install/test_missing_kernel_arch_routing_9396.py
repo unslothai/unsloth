@@ -195,10 +195,10 @@ def test_the_companion_pins_carry_the_211_floor_on_a_grouped_mm_leaf():
     access-violates in _grouped_mm), so the reroute installs the floored trio; every companion
     stays bounded above, so none can drift to a different torch major."""
     calls = _run_install(gfx_devices = ("gfx1103",))
-    for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]:
+    for spec in stack_mod._ROCM_TORCH211_PKG_SPEC:
         assert spec in calls, (spec, calls)
     assert "torch>=2.11.0" in calls, calls
-    assert all("<" in spec for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"])
+    assert all("<" in spec for spec in stack_mod._ROCM_TORCH211_PKG_SPEC)
     # The bounded-but-unfloored spec is still what a leaf outside the allowlist would get.
     assert all("<" in spec for spec in stack_mod._ROCM_ARCH_INDEX_TORCH_PKG_SPEC)
 

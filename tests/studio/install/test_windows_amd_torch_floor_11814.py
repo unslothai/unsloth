@@ -33,7 +33,7 @@ _FLOORED_FAMILIES = {"gfx103X-all", "gfx110X-all", "gfx1150", "gfx1151", "gfx115
 _RDNA_WINDOWS_ARCHES = sorted(
     gfx for gfx, fam in stack_mod._GFX_TO_AMD_INDEX_ARCH.items() if fam in _FLOORED_FAMILIES
 )
-_TRIO = stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]
+_TRIO = stack_mod._ROCM_TORCH211_PKG_SPEC
 
 
 def _ps_map(path, name):

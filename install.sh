@@ -7096,8 +7096,15 @@ else
 fi
 
 # rocm7.2 and per-gfx indexes ship torch 2.11.0: raise the floor, matching the FINAL leaf only.
+# rocm7.2 also serves 2.12-2.14 (#9932); per-gfx indexes stop at 2.11; torchaudio 2.11 is its last release.
+# An existing install keeps its release: _PRESERVE_TORCH_CONSTRAINT is this window and rocm7.2 still has 2.11.0.
 case "$_torch_index_leaf" in
-    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)
+    rocm7.2)
+        TORCH_CONSTRAINT="torch>=2.11.0,<2.15.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.30.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+        ;;
+    gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"

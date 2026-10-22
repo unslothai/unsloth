@@ -294,12 +294,21 @@ _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
 # rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm.
 _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
 
+# AMD per-arch leaves and Windows pins: those indexes stop at 2.11. Matches install.sh's gfx* case.
+_ROCM_TORCH211_PKG_SPEC: tuple[str, str, str] = (
+    "torch>=2.11.0,<2.12.0",
+    "torchvision>=0.26.0,<0.27.0",
+    "torchaudio>=2.11.0,<2.12.0",
+)
+# Kept in step with install.sh's rocm7.2 case.
+_ROCM72_TORCH_CEILING: tuple[int, int] = (2, 15)
+
 # Per-tag repair specs; must land on the same wheels a fresh install.sh run does.
 _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
-    # Floored at 2.11 (the _grouped_mm bug), matching install.sh's rocm7.2|gfx* case.
+    # 2.11 floor (the _grouped_mm bug), 2.12-2.14 too (#9932); torchaudio 2.11 is its last release.
     "rocm7.2": (
-        "torch>=2.11.0,<2.12.0",
-        "torchvision>=0.26.0,<0.27.0",
+        "torch>=2.11.0,<2.15.0",
+        "torchvision>=0.26.0,<0.30.0",
         "torchaudio>=2.11.0,<2.12.0",
     ),
     # rocm7.1 also serves 2.11, so a <2.11 cap would force-reinstall 2.10 over it.
@@ -317,22 +326,22 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
 }
 # Windows AMD per-arch pins for repo.amd.com, stopping an ABI-mismatched companion.
 _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
-    "gfx1201": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1200": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1030": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1031": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1032": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1033": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1034": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1035": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1036": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1100": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1101": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1102": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1201": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1200": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1151": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1150": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1152": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1030": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1031": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1032": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1033": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1034": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1035": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1036": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1100": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1101": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1102": _ROCM_TORCH211_PKG_SPEC,
+    "gfx1103": _ROCM_TORCH211_PKG_SPEC,
 }
 # Windows RDNA arches install from AMD's multi-arch index (#11815, #11614): one URL, card picked by the
 # torch[device-gfxNNNN] extra, pinned to one exact tag inside <2.12.0 so nothing is kept (#11814).
@@ -4553,10 +4562,13 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         # mismatch, reinstall the pinned wheel).
         if _pin_ver != _inst_ver:
             return True
-        # Same family: a KNOWN-2.11 pin whose release drifted off 2.11 (2.12+rocm7.2)
-        # violates the spec -> reinstall to floor (exact compare, not >=2.11).
+        # Same family: a release outside the rocm7.2 window violates the spec -> reinstall into it.
         if _pin_is_211 and _inst_rel is not None:
-            if (int(_inst_rel.group(1)), int(_inst_rel.group(2))) != (2, 11):
+            if not (
+                (2, 11)
+                <= (int(_inst_rel.group(1)), int(_inst_rel.group(2)))
+                < _ROCM72_TORCH_CEILING
+            ):
                 return True
         return False
     # rocm pin, unreadable installed version: compare on the 2.11 line, but an untagged
@@ -6898,7 +6910,7 @@ def _ensure_rocm_torch() -> "bool | None":
                     # gfx1152 reaches this branch rather than the Strix one when an unreadable
                     # ROCm version reads as 0.0, below the Strix floor.
                     _arch_index_pkgs = (
-                        _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+                        _ROCM_TORCH211_PKG_SPEC
                         if _leaf.lower() in _ROCM_GFX_TORCH211_LEAVES
                         else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
                     )
@@ -6967,7 +6979,7 @@ def _ensure_rocm_torch() -> "bool | None":
                         _arch_index_url = _amd_arch_index_url(_runtime_gfx)
                         if _arch_index_url is not None:
                             _arch_index_pkgs = (
-                                _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+                                _ROCM_TORCH211_PKG_SPEC
                                 if _want in _ROCM_GFX_TORCH211_LEAVES
                                 else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
                             )
@@ -7145,7 +7157,7 @@ def _ensure_rocm_torch() -> "bool | None":
             # Only the _grouped_mm-bug gfx arches need the 2.11 spec; other gfx indexes ship
             # <2.11 and stay on the default range (matches install.ps1 / setup.ps1).
             if tag in _ROCM_GFX_TORCH211_LEAVES:
-                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH211_PKG_SPEC
             elif tag.startswith("gfx"):
                 _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["_default"]
             else:
