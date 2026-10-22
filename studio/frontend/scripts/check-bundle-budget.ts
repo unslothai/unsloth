@@ -383,6 +383,10 @@ export const BUDGET = {
   // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
   // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
+  // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -399,8 +403,9 @@ export const BUDGET = {
   // raised by that.
   // Merged with main at f76dd22958, whose limits rose by +1,892 B raw / +702 B transfer since c0c0759bb9: raised by that.
   // Merged with main at 3569dfa8a5, whose limits rose by +16,304 B raw / +4,589 B transfer since f76dd22958: raised by that.
-  transferBytes: 2_083_143,
-  rawBytes: 6_912_530,
+  // Merged with main at 9880bc0af9, whose limits rose by +11,301 B raw / +3,212 B transfer since 3569dfa8a5: raised by that.
+  transferBytes: 2_086_355,
+  rawBytes: 6_923_831,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

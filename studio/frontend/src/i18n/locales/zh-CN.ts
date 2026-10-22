@@ -1961,6 +1961,18 @@ export const zhCN = {
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
       },
+      fullInstall: {
+        label: "安装类型",
+        description:
+          "仅聊天 (GGUF)。完整安装会添加训练、导出、视频、safetensors 模型和更多图像生成功能。",
+        action: "升级到完整安装",
+        confirmTitle: "要升级到完整安装吗？",
+        confirmDescription:
+          "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
+        confirmAction: "升级",
+        keywords:
+          "full install upgrade 安装类型 完整安装 升级 仅聊天 chat only gguf add training 训练 微调 train fine-tune pytorch torch 导出 视频 图像生成 safetensors",
+      },
       repairInstall: {
         label: "修复安装",
         description:
@@ -1969,6 +1981,8 @@ export const zhCN = {
         confirmTitle: "要修复此安装吗？",
         confirmDescription:
           "停止服务器并重新运行安装程序，为本机 GPU 重新安装 PyTorch。聊天记录和设置会保留。这可能需要几分钟。",
+        confirmDescriptionChatOnly:
+          "停止服务器并重新运行安装程序。这是仅聊天安装，因此安装程序还会将其升级为包含 PyTorch 的完整安装（共几 GB）。聊天记录和设置会保留。这可能需要几分钟。",
         confirmAction: "立即修复",
       },
       resetPreferences: {
