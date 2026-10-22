@@ -104,6 +104,41 @@ export function chatModelLoadedTarget(
   return null;
 }
 
+export type ChatModelAutoSwitch = { threadId?: string; settled: boolean };
+
+/** One step of the switch made on opening a chat. Settled once this open of the chat is on its
+ *  model, by itself or by the switch, so a pick made inside the open chat is never undone; a new
+ *  thread id starts over, so coming back to a chat switches again. */
+export function stepChatModelAutoSwitch(
+  previous: ChatModelAutoSwitch,
+  input: {
+    threadId: string | undefined;
+    active: boolean;
+    resident: boolean;
+    loadedTarget: ChatModelSwitchTarget | null;
+    modelLoading: boolean;
+  },
+): { state: ChatModelAutoSwitch; switchTo: ChatModelSwitchTarget | null } {
+  const state =
+    previous.threadId === input.threadId
+      ? previous
+      : { threadId: input.threadId, settled: false };
+  if (!(input.active && input.threadId) || state.settled) {
+    return { state, switchTo: null };
+  }
+  if (input.resident) {
+    return { state: { ...state, settled: true }, switchTo: null };
+  }
+  if (!input.loadedTarget) {
+    return { state, switchTo: null };
+  }
+  return {
+    state: { ...state, settled: true },
+    // A load already running is a newer pick than the one this chat saved.
+    switchTo: input.modelLoading ? null : input.loadedTarget,
+  };
+}
+
 /** The live picker id Switch Back loads: the exact id, else a row of the same HF cache repo. */
 export function chatModelSelectableId(
   modelId: string,

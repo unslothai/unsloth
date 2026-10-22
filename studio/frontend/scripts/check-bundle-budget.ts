@@ -367,8 +367,11 @@ export const BUDGET = {
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
   // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
   // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_075_550,
-  rawBytes: 6_887_000,
+  // A chat going back to its model when it is still loaded (#14568) in the eager chat model notice: +869 B raw /
+  // +263 B transfer (6,886,646 -> 6,887,515 B raw, 2,075,433 -> 2,075,696 B transfer against 5f2700229, Node 24,
+  // 98 chunks). Raised by that.
+  transferBytes: 2_075_813,
+  rawBytes: 6_887_869,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -26,6 +26,7 @@ const {
   chatModelSwitchMeta,
   createChatModelHistoryReader,
   resolveChatModelSwitchTarget,
+  stepChatModelAutoSwitch,
 } = await import("../src/features/chat/components/chat-model-notice-switch.ts");
 const { modelDisplayName } = await import(
   "../src/features/hub/lib/model-identity.ts"
@@ -95,7 +96,7 @@ test("the notice never loads a model on its own", () => {
   // The one automatic switch is to a slot that is already loaded.
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
   assert.match(body, /chatModelLoadedTarget\(createdModel, loadedModels\)/);
-  assert.match(body, /onSwitch\(loadedTarget\)/);
+  assert.match(body, /if \(switchTo\) onSwitch\(switchTo\);/);
 });
 
 test("a chat goes back to its model when that model is still loaded", () => {
@@ -150,19 +151,56 @@ test("a chat is not switched to a loaded slot that would need another load", () 
 });
 
 test("the automatic switch runs once per chat open", () => {
+  const modelA = { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" };
+  const open = (threadId: string | undefined) => ({
+    threadId,
+    active: true,
+    resident: false,
+    loadedTarget: modelA as typeof modelA | null,
+    modelLoading: false,
+  });
+  // Opening chat A while Model B is selected switches to A's loaded slot, once.
+  let step = stepChatModelAutoSwitch({ settled: false }, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.equal(step.switchTo, null);
+  // Going to chat B and back to A switches again.
+  step = stepChatModelAutoSwitch(step.state, { ...open("b"), loadedTarget: null });
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+
+  // Opened already on its model: a pick made afterwards inside the chat is not undone.
+  step = stepChatModelAutoSwitch({ settled: false }, {
+    ...open("a"),
+    resident: true,
+    loadedTarget: null,
+  });
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.equal(step.switchTo, null);
+
+  // Waits for the saved model and the loaded slots to be known, then switches.
+  step = stepChatModelAutoSwitch({ settled: false }, { ...open("a"), loadedTarget: null });
+  assert.equal(step.state.settled, false);
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+
+  // A load already in flight wins, and is not undone when it lands.
+  step = stepChatModelAutoSwitch({ settled: false }, { ...open("a"), modelLoading: true });
+  assert.equal(step.switchTo, null);
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.equal(step.switchTo, null);
+
+  // Off the chat route, or on an unsent New Chat, nothing happens.
+  assert.equal(
+    stepChatModelAutoSwitch({ settled: false }, { ...open("a"), active: false }).switchTo,
+    null,
+  );
+  assert.equal(stepChatModelAutoSwitch({ settled: false }, open(undefined)).switchTo, null);
+
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  // Started over on every chat change, so going back to a chat switches again...
-  assert.match(
-    body,
-    /if \(autoSwitchRef\.current\.threadId !== threadId\) \{\s*autoSwitchRef\.current = \{ threadId, switched: false \};/,
-  );
-  // ...but a model the user picks inside the open chat is not undone.
-  assert.match(
-    body,
-    /if \(autoSwitchRef\.current\.switched\) \{\s*return;\s*\}\s*autoSwitchRef\.current\.switched = true;\s*onSwitch\(loadedTarget\);/,
-  );
-  // Only while the chat route is on screen.
-  assert.match(body, /if \(!\(active && threadId && loadedTarget\)\) \{/);
+  assert.match(body, /if \(switchTo\) onSwitch\(switchTo\);/);
+  // With Keep models loaded off, picking another model unloads the selected one.
+  assert.match(body, /createdModel && !resident && keepModelsLoaded\s*\?/);
   assert.match(
     page,
     /loadedModels=\{loadedModels\}\s*onSwitch=\{handleSwitchBackToChatModel\}/,
@@ -172,7 +210,7 @@ test("the automatic switch runs once per chat open", () => {
 test("the notice stays quiet when it has nothing to offer", () => {
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
   // no stamp, already on the pick (including snapshot vs repo id), or a model that has since gone away
-  assert.match(body, /if \(!createdModel\) return null;/);
+  assert.match(body, /if \(!createdModel \|\| resident\) return null;/);
   assert.match(
     body,
     /chatModelIsResident\(createdModel, checkpoint, activeGgufVariant\)/,

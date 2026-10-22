@@ -23,14 +23,17 @@ import {
   type ChatHistoryUpdatedDetail,
 } from "../api/chat-api";
 import { externalModelLabel } from "../lib/external-model-label";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
+  type ChatModelAutoSwitch,
   type ChatModelSwitchTarget,
   type LoadedChatModelSlot,
   chatModelIsResident,
   chatModelLoadedTarget,
   chatModelSelectableId,
   createChatModelHistoryReader,
+  stepChatModelAutoSwitch,
 } from "./chat-model-notice-switch";
 
 /** reads the saved chat's last used model and waits for queued initialization. */
@@ -83,8 +86,8 @@ type ChatModelNoticeProps = {
 };
 
 /** Puts a chat back on the model it last used. When that model is still loaded alongside the
- *  selected one, the switch costs no load, so it happens on opening the chat, once per open, and a
- *  later pick in the same chat is left alone. Otherwise it stays an offer: for a local model that
+ *  selected one (Keep models loaded on), the switch costs no load, so it happens on opening the
+ *  chat, once per open, and a later pick in the same chat is left alone. Otherwise it stays an offer: for a local model that
  *  is not loaded, switching would evict whatever is resident and spend a multi-gigabyte load on
  *  opening a chat. */
 export function ChatModelNotice({
@@ -97,38 +100,33 @@ export function ChatModelNotice({
   onSwitch,
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
+  // With Keep models loaded off, picking another model unloads the selected one: not a free switch.
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const resident =
+    createdModel != null &&
+    chatModelIsResident(createdModel, checkpoint, activeGgufVariant);
   const loadedTarget = useMemo(
     () =>
-      createdModel &&
-      !chatModelIsResident(createdModel, checkpoint, activeGgufVariant)
+      createdModel && !resident && keepModelsLoaded
         ? chatModelLoadedTarget(createdModel, loadedModels)
         : null,
-    [createdModel, checkpoint, activeGgufVariant, loadedModels],
+    [createdModel, resident, keepModelsLoaded, loadedModels],
   );
-  // Whether this open of the chat already switched. Started over on every chat change, so coming
-  // back to a chat switches again, but a pick made inside the open chat is never undone.
-  const autoSwitchRef = useRef<{ threadId?: string; switched: boolean }>({
-    switched: false,
-  });
+  const autoSwitchRef = useRef<ChatModelAutoSwitch>({ settled: false });
   useEffect(() => {
-    if (autoSwitchRef.current.threadId !== threadId) {
-      autoSwitchRef.current = { threadId, switched: false };
-    }
-    if (!(active && threadId && loadedTarget)) {
-      return;
-    }
-    if (autoSwitchRef.current.switched) {
-      return;
-    }
-    autoSwitchRef.current.switched = true;
-    onSwitch(loadedTarget);
-  }, [active, threadId, loadedTarget, onSwitch]);
+    const { state, switchTo } = stepChatModelAutoSwitch(autoSwitchRef.current, {
+      threadId,
+      active,
+      resident,
+      loadedTarget,
+      modelLoading: useChatRuntimeStore.getState().modelLoading,
+    });
+    autoSwitchRef.current = state;
+    if (switchTo) onSwitch(switchTo);
+  }, [active, threadId, resident, loadedTarget, onSwitch]);
   // Drop the portaled UI off-route, retaining the successful read and history subscription.
   if (!active) return null;
-  if (!createdModel) return null;
-  if (chatModelIsResident(createdModel, checkpoint, activeGgufVariant)) {
-    return null;
-  }
+  if (!createdModel || resident) return null;
   // A model that has since been deleted, or a connection that is gone: the switch could not be
   // honoured, and saying so on every open is just noise. A gone snapshot loads its repo's live row.
   const selectableId = chatModelSelectableId(
