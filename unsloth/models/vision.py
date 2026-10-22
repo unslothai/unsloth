@@ -2606,6 +2606,17 @@ def _architecture_skip_modules(model_types):
     # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
     if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
         skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
+    # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
+    # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
+    if any(mt.startswith("gemma3n") for mt in model_types):
+        skip.extend(
+            (
+                "correction_coefs",
+                "prediction_coefs",
+                "altup_projections",
+                "altup_unembed_projections",
+            )
+        )
     return skip
 
 
