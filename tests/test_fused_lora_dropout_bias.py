@@ -363,3 +363,42 @@ def test_plain_lora_shortcut_matches_general_routing(monkeypatch, state):
     general = fast_lora._lora_dropout_and_bias(projs, X)
     assert fast == general
     assert all(plain) == (state in ("train", "eval", "list_adapter"))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dropout", [0.0, 0.3])
+@pytest.mark.parametrize("state", ["disabled", "merged", "one_merged"])
+@pytest.mark.parametrize("path", list(PATHS))
+def test_backward_through_disabled_or_merged_adapters(monkeypatch, device, dropout, state, path):
+    # A disabled or merged projection gives the fused Functions no LoRA weights, and their backward
+    # read them unconditionally (AttributeError: 'NoneType' object has no attribute 'to'). PEFT runs
+    # the base layer alone; a pass that backpropagates must match it, with or without dropout.
+    model, block = _peft_block(device, torch.float32, dropout)
+    if state == "disabled":
+        model.base_model.disable_adapter_layers()
+    else:
+        for name in TARGETS if state == "merged" else ("q_proj", "gate_proj", "o_proj"):
+            block.get_submodule(name).merge()
+    model.eval()  # dropout off, so the fused and PEFT passes are deterministic
+    X0 = torch.randn(2, 5, H, device = device)
+    fused = _run(PATHS[path][0](block), model, X0, 0, device)
+    ref = _run(PATHS[path][1](block), model, X0, 0, device)
+    for a, b in zip(fused[0], ref[0]):
+        torch.testing.assert_close(a, b, rtol = 1e-4, atol = 1e-4)
+    torch.testing.assert_close(fused[1], ref[1], rtol = 1e-4, atol = 1e-4)
+    assert fused[2].keys() == ref[2].keys()
+    for name in ref[2]:
+        torch.testing.assert_close(fused[2][name], ref[2][name], rtol = 1e-4, atol = 1e-4)
+
+
+@pytest.mark.parametrize("dropout", [0.0, 0.3])
+def test_disabled_adapters_without_grad_keep_the_fused_route(dropout):
+    # A reference pass (DPO / GRPO under no_grad) through disabled adapters still takes the fused
+    # base-only route; only a pass that will backpropagate goes to PEFT.
+    model, block = _peft_block("cpu", torch.float32, dropout)
+    model.base_model.disable_adapter_layers()
+    projs = (block.q_proj, block.k_proj, block.v_proj)
+    X = torch.randn(2, 5, H)
+    with torch.no_grad():
+        assert fast_lora._lora_dropout_and_bias(projs, X) == (None, (None, None, None))
+    assert fast_lora._lora_dropout_and_bias(projs, X.requires_grad_()) is None
