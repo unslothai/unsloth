@@ -1095,3 +1095,87 @@ def test_upscale_only_with_a_model_upscaler_defers_the_compile_until_it_ran(monk
     assert (
         seen[-1] is False and order == []
     )  # a CPU Lanczos upscale lets the base pass kick as before
+
+
+def test_stop_during_an_upscale_only_resize_returns_no_image(monkeypatch):
+    import contextlib
+    import threading
+
+    from PIL import Image
+
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    class _Backend:
+        def __init__(self):
+            self._state = types.SimpleNamespace(
+                family = _fam("flux.1"), offload_policy = "none", device = "cpu"
+            )
+            self._lock = threading.Lock()
+            self._generation_cancel_lock = threading.Lock()
+            self._gen = None
+            self._active_generate_cancel = None
+            self._active_generate_account = None
+
+        @contextlib.contextmanager
+        def _generation_slot(self, cancel):
+            yield
+
+    def stopped_upscale(image, upscaler_id, target, **kw):
+        kw["cancel"].set()  # Stop accepted while the model's output is resized
+        return ups.UpscaleOutcome(Image.new("RGB", target), 4, 1, "float32", 0.0, True)
+
+    monkeypatch.setattr(ups, "spandrel_available", lambda: True)
+    monkeypatch.setattr(ups, "upscale_with_model", stopped_upscale)
+
+    def fake_generate(backend, **kw):
+        kw.pop("_hires_pass")
+        return {"images": [Image.new("RGB", (256, 256))], "seed": 1, "seeds": [1]}
+
+    with pytest.raises(RuntimeError) as exc:
+        hires.run_hires(
+            _Backend(),
+            fake_generate,
+            hires.HiresParams(denoise = 0.0, upscaler = "realesrgan_x4plus"),
+            {"prompt": "p", "width": 256, "height": 256, "steps": 4, "seed": 1, "batch_size": 1},
+        )
+    assert str(exc.value) == DIFFUSION_CANCELLED_MSG
+
+
+def test_a_resident_drop_in_reloads_when_its_file_is_replaced(tmp_path, monkeypatch):
+    import os
+
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("spandrel")
+    import numpy as np
+    from PIL import Image
+    from spandrel.architectures.ESRGAN import ESRGAN
+
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    path = tmp_path / "tiny_esrgan.pth"
+    img = Image.fromarray((torch.rand(32, 32, 3) * 255).to(torch.uint8).numpy())
+
+    def write(seed):
+        torch.manual_seed(seed)
+        torch.save(
+            ESRGAN(in_nc = 3, out_nc = 3, num_filters = 8, num_blocks = 1, scale = 4).state_dict(), path
+        )
+
+    def run(keep):
+        out = ups.upscale_with_model(
+            img, "local:tiny_esrgan", (128, 128), device = "cpu", keep_resident = keep
+        )
+        return np.asarray(out.image)
+
+    try:
+        write(0)
+        first = run(True)
+        st = path.stat()
+        write(1)
+        os.utime(
+            path, ns = (st.st_atime_ns, st.st_mtime_ns + 1_000_000_000)
+        )  # a distinct mtime on any fs
+        replaced = run(True)
+        assert not np.array_equal(first, replaced)
+        assert np.array_equal(replaced, run(False))  # the resident copy is the new file's weights
+    finally:
+        ups.release_models()

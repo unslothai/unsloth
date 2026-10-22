@@ -362,7 +362,7 @@ def tiled_apply(
 
 
 _model_lock = threading.Lock()
-_resident: dict[tuple[str, str, str], Any] = {}
+_resident: dict[tuple, Any] = {}
 
 
 def release_models() -> int:
@@ -442,7 +442,9 @@ def upscale_with_model(
     t0 = time.perf_counter()
     path = resolve_model_path(upscaler_id, cancel = cancel)
     dev = torch.device(device) if not isinstance(device, torch.device) else device
-    key = (str(path), str(dev), "auto")
+    st = path.stat()
+    # The file's size and mtime too: a drop-in overwritten in place loads again (A1111 reloads on every upscale).
+    key = (str(path), int(st.st_size), int(st.st_mtime_ns), str(dev), "auto")
     with _model_lock:
         cached = _resident.get(key)
         if cached is None:

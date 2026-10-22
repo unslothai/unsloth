@@ -700,6 +700,9 @@ def run_hires(
                 }
             upscale_s += time.perf_counter() - t_up
             if not refine:
+                # Stop may land during the resize itself; an accepted cancel never returns an image.
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 refined.append(source)
                 continue
             t_ref = time.perf_counter()
