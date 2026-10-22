@@ -549,11 +549,11 @@ def test_a_child_exiting_at_the_deadline_is_a_crash_not_a_stall(monkeypatch):
 
 
 @pytest.mark.parametrize("reason", ["vulkan_no_device", "vulkan_startup_stall"])
-@pytest.mark.parametrize("probe_rows, stays_cpu", [([], True), ([{"name": "Intel Arc"}], False)])
-def test_a_reload_after_a_zero_device_probe_asks_again(
-    monkeypatch, tmp_path, probe_rows, stays_cpu, reason
+def test_a_reload_after_a_vulkan_cpu_route_leaves_the_decision_to_its_own_probe(
+    monkeypatch, tmp_path, reason
 ):
-    """A GPU made visible since the zero-device load runs on it; still none keeps CPU."""
+    """No probe here: the load's single memoised probe decides, so a hung driver costs one
+    timeout and a device that appeared since is seen."""
     from core.inference.llama_cpp import GgufLoadIntent
 
     gguf = tmp_path / "model.gguf"
@@ -564,22 +564,27 @@ def test_a_reload_after_a_zero_device_probe_asks_again(
     backend._model_identifier = "owner/model"
     backend._gguf_path = str(gguf)
     backend._cpu_fallback_reason = reason
+    probes = []
     monkeypatch.setattr(LlamaCppBackend, "matches_load_source", lambda self, intent: True)
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/fake/llama-server")
     )
     monkeypatch.setattr(
-        LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary: list(probe_rows))
+        LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary: probes.append(binary) or [])
     )
     monkeypatch.setattr(
         LlamaCppBackend,
         "_vulkan_probe_outcome",
-        staticmethod(lambda _binary = None: "devices" if probe_rows else "none"),
+        staticmethod(lambda _binary = None: probes.append(_binary) or "none"),
     )
     intent = GgufLoadIntent(
         model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096, gpu_memory_mode = "auto"
     )
-    assert backend._preserve_cpu_fallback_intent(intent).cpu_fallback is stays_cpu
+    assert backend._preserve_cpu_fallback_intent(intent).cpu_fallback is False
+    assert probes == []
+    # A crash recovery is still sticky for the same source.
+    backend._cpu_fallback_reason = "vulkan_startup_crash"
+    assert backend._preserve_cpu_fallback_intent(intent).cpu_fallback is True
 
 
 def test_a_stalled_text_only_retry_after_a_timed_out_probe_replays_on_cpu(monkeypatch, tmp_path):
@@ -615,37 +620,36 @@ def test_a_stalled_text_only_retry_after_a_listed_device_fails_with_advice(monke
 
 
 @pytest.mark.parametrize(
-    "outcome, stays_cpu",
+    "outcome, cpu_route",
     [("none", True), ("timeout", False), ("crashed", False), ("error", False), ("devices", False)],
 )
-def test_a_stall_reload_launches_vulkan_unless_the_probe_says_none(
-    monkeypatch, tmp_path, outcome, stays_cpu
+def test_a_reload_after_a_stall_is_routed_by_the_loads_one_probe(
+    monkeypatch, tmp_path, outcome, cpu_route
 ):
-    """A timed-out or faulted reprobe is suspect evidence, not a reason to stay on CPU."""
-    from core.inference.llama_cpp import GgufLoadIntent
-
-    gguf = tmp_path / "model.gguf"
-    gguf.write_bytes(b"GGUF")
-    backend = LlamaCppBackend()
-    backend._process = SimpleNamespace(poll = lambda: None)
-    backend._healthy = True
-    backend._model_identifier = "owner/model"
-    backend._gguf_path = str(gguf)
-    backend._cpu_fallback_reason = "vulkan_startup_stall"
+    """Same-source reload after a stall replay: one probe, and only a conclusive none goes to CPU."""
+    _route_env(monkeypatch, outcome)
+    calls = []
+    real = LlamaCppBackend._vulkan_probe_outcome
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_vulkan_probe_outcome",
+        staticmethod(lambda _binary = None: calls.append(_binary) or real(_binary)),
+    )
     monkeypatch.setattr(LlamaCppBackend, "matches_load_source", lambda self, intent: True)
-    monkeypatch.setattr(
-        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/fake/llama-server")
+    real_init = LlamaCppBackend.__init__
+
+    def _init_after_a_stall(self, *a, **k):
+        real_init(self, *a, **k)
+        self._cpu_fallback_reason = "vulkan_startup_stall"
+
+    monkeypatch.setattr(LlamaCppBackend, "__init__", _init_after_a_stall)
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch, tmp_path, returncodes = [None]
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(lambda _binary = None: outcome)
-    )
-    monkeypatch.setattr(LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary: []))
-    intent = GgufLoadIntent(
-        model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096, gpu_memory_mode = "auto"
-    )
-    assert backend._preserve_cpu_fallback_intent(intent).cpu_fallback is stays_cpu
-    # Probing for the reload never leaves this thread's load memo armed.
-    assert llama_cpp._load_probe_memo_armed() is False
+    assert loaded is True
+    assert len(calls) == 1
+    assert (launches[0][0][0] == "/staged/llama-server") is cpu_route
+    assert (len(fallback_sources) == 1) is cpu_route
 
 
 def test_one_vulkan_probe_per_load(monkeypatch, tmp_path):

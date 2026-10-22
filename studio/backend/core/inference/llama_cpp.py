@@ -8143,17 +8143,6 @@ def _arm_load_probe_memo() -> None:
     _LOAD_PROBE_STATE.rows = {}
 
 
-def _vulkan_probe_outcome_unmemoised(binary: str) -> str:
-    """The Vulkan probe's outcome on its own, before this load's memo is armed. The memo
-    is left as found, so rows taken before a download never price the later fit."""
-    armed, rows = _load_probe_memo_armed(), getattr(_LOAD_PROBE_STATE, "rows", None)
-    _LOAD_PROBE_STATE.armed, _LOAD_PROBE_STATE.rows = True, {}
-    try:
-        return LlamaCppBackend._vulkan_probe_outcome(binary)
-    finally:
-        _LOAD_PROBE_STATE.armed, _LOAD_PROBE_STATE.rows = armed, rows
-
-
 @contextlib.contextmanager
 def _load_probe_memo_scope():
     """Guarantee the memo cannot outlive a load however it exits. Arming is the
@@ -24949,16 +24938,14 @@ class LlamaCppBackend:
             return intent
         if not source_matches and not self.matches_load_source(intent):
             return intent
-        # A reload after a zero-device probe or a stall replay asks again. Only a conclusive
-        # zero-device answer keeps the CPU route; devices, a timeout or a fault launch Vulkan
-        # again, where a timed-out probe is suspect evidence the stall rule then judges.
+        # A reload after a zero-device probe or a stall replay is decided by that load's own
+        # (single, memoised) probe: only a conclusive zero-device answer takes the CPU route,
+        # and devices, a timeout or a fault launch Vulkan, where the stall rule judges a hang.
         if not source_matches and self._cpu_fallback_reason in (
             "vulkan_no_device",
             "vulkan_startup_stall",
         ):
-            binary = self._find_llama_server_binary()
-            if binary and _vulkan_probe_outcome_unmemoised(binary) != "none":
-                return intent
+            return intent
         extras = list(intent.extra_args) if intent.extra_args is not None else None
         # Judge the env the replay runs with, not this process's: _cpu_isolated_replay
         # pops every main-model placement var first. Using os.environ would drop the
