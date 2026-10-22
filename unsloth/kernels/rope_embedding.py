@@ -11,6 +11,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import functools
+import os
 import weakref
 import triton
 import triton.language as tl
@@ -633,6 +634,44 @@ def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
 
 
 _fast_rope_embedding_untraced = torch.compiler.disable(_fast_rope_embedding_eager)
+
+
+# Single-token decode: one launch rotates Q and K in place at their positions, instead of the
+# cos / sin gathers, rotate_half copies, neg, mul and addcmul (12 launches per layer per token).
+# UNSLOTH_DECODE_FUSED_ROPE=0 restores the unfused path.
+DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def decode_rope_inplace(Q, K, cos, sin, position_ids):
+    """Rotate Q [bsz, n_heads_Q, 1, head_dim] and K [bsz, n_heads_K, 1, head_dim] in place at
+    position_ids ([bsz, 1] or [bsz]), with cos / sin the [positions, head_dim] tables. Returns
+    False, having written nothing, where the fused kernel does not apply."""
+    if not DECODE_FUSED_ROPE or torch.compiler.is_compiling():
+        return False
+    if Q.device.type != "cuda" or K.device != Q.device or Q.dim() != 4 or K.dim() != 4:
+        return False
+    batch, _, seq_len, head_dim = Q.shape
+    if seq_len != 1 or K.shape[0] != batch or K.shape[2] != 1 or K.shape[3] != head_dim or head_dim % 2:
+        return False
+    if position_ids is None or position_ids.numel() != batch:
+        return False
+    cos2, sin2 = cos.squeeze(), sin.squeeze()
+    if (
+        cos2.dim() != 2
+        or cos2.shape != sin2.shape
+        or cos2.shape[-1] != head_dim
+        or cos2.dtype != Q.dtype  # the unfused path multiplies in Q's dtype
+        or sin2.dtype != Q.dtype
+        or K.dtype != Q.dtype
+        or cos2.device != Q.device
+        or cos2.stride(-1) != 1
+        or sin2.stride(-1) != 1
+    ):
+        return False
+    rope_ptr = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device)
+    with torch_gpu_device(Q.device):
+        _rope_qk(Q, K, Q, K, cos2, sin2, rope_ptr, True, False, _eager_kernel)
+    return True
 
 
 def fast_rope_embedding(
