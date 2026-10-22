@@ -458,8 +458,10 @@ def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):
 
     def counting_allreduce(state, bucket):
         allreduces.append(1)
-        return dist.all_reduce(bucket.buffer(), async_op = True).get_future().then(
-            lambda fut: fut.value()[0].div_(world)
+        return (
+            dist.all_reduce(bucket.buffer(), async_op = True)
+            .get_future()
+            .then(lambda fut: fut.value()[0].div_(world))
         )
 
     ddp.register_comm_hook(None, counting_allreduce)
