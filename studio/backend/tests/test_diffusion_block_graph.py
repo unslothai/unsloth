@@ -172,6 +172,56 @@ def test_a_host_tensor_input_is_never_recorded():
     handle.free()
 
 
+def test_a_block_graph_keys_on_the_roots_branch_flag():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(masked = False)
+    root._unsloth_graph_key_extra = lambda: root.masked
+
+    def compute(x):
+        y = block.lin(x)
+        return y * 0.5 if root.masked else y
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        root.masked = True
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 2
+
+
+def test_a_block_graph_runs_eager_while_a_step_cache_is_on():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(_unsloth_step_cache = None)
+
+    def compute(x):
+        y = block.lin(x)
+        return (
+            y * 0.5 if root._unsloth_step_cache else y
+        )  # what the cache hooks change inside the forward
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        replays = graph.stats["replays"]
+        root._unsloth_step_cache = "fbcache@0.12"
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1 and graph.stats["replays"] == replays
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None
@@ -264,6 +314,112 @@ def test_compile_moves_below_the_offload_hook_and_the_kill_switch_keeps_it_trace
         assert b._unsloth_below_hook_ref.forward is g
     handle.free()
     assert not any(isinstance(b._unsloth_below_hook_ref.forward, bg.BlockGraph) for b in net.blocks)
+
+
+def _shifted_forward(
+    self,
+    x,
+    temb = None,
+    layer_cache = None,
+    kv_cache_mode = None,
+):
+    return _ORIGINAL_BLOCK_FORWARD(self, x, temb = temb) + 1.0
+
+
+_ORIGINAL_BLOCK_FORWARD = Block.forward
+
+
+def test_compile_below_the_hook_engages_after_a_class_patch_lands_on_the_hooked_forward(
+    monkeypatch,
+):
+    # The deferred profile installs its per-arch block fusions on render 3, after group offload hooked every block at
+    # load: each hook still holds the definition-time forward. The compile must still go below the hook, and run the
+    # patched forward exactly as when the patch came first.
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    marker = lambda *a, **k: None  # noqa: E731
+    for b in net.blocks:
+        b._compiled_call_impl = marker
+    monkeypatch.setattr(Block, "forward", _shifted_forward)
+    x = torch.randn(3, 16)
+    with torch.no_grad():
+        want = net.proj_in(x)
+        for b in net.blocks:
+            want = _shifted_forward(b, want)
+        want = net.proj_out(want)
+    assert bg.compile_below_offload_hooks(net) == 2
+    for b in net.blocks:
+        assert b._compiled_call_impl is None
+        assert b._unsloth_below_hook_ref is not None
+    torch._dynamo.reset()
+    with torch.no_grad():
+        got = net(x)
+    torch._dynamo.reset()
+    assert torch.allclose(got, want, atol = 1e-6)
+
+
+def test_a_compile_failure_below_the_hook_keeps_the_class_patch(monkeypatch):
+    # A handled compile failure restores each hook's forward: it must be the patched live forward, not the
+    # definition-time one the hook captured, or later blocks silently drop the per-arch fusion.
+    from core.inference.diffusion_speed import _CompileGuard
+
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    net._unsloth_compile_guard = _CompileGuard(None)
+    marker = lambda *a, **k: None  # noqa: E731
+    for b in net.blocks:
+        b._compiled_call_impl = marker
+    monkeypatch.setattr(Block, "forward", _shifted_forward)
+    assert bg.compile_below_offload_hooks(net) == 2
+    net._unsloth_compile_guard.fail(RuntimeError("compile failed"), net)
+    for b in net.blocks:
+        assert getattr(b._unsloth_below_hook_ref.forward, "__func__", None) is _shifted_forward
+
+
+def test_compile_below_the_hook_reapplies_a_family_adapter():
+    # LTX-2's STG adapter sits on _compiled_call_impl; moving the compile below the hook must keep it around the move.
+    import torch as _t
+
+    from core.inference import video_ltx2
+
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    seen = []
+
+    def marker(*a, **k):
+        return None
+
+    for b in net.blocks:
+        b._compiled_call_impl = video_ltx2._stg_adapted(marker, None, net, _t)
+    assert bg.compile_below_offload_hooks(net) == 2
+    for b in net.blocks:
+        moved = b._unsloth_below_hook_ref.forward
+        assert getattr(moved, "_unsloth_stg_adapter", False)
+        inner = lambda *a, **k: seen.append(k.get("all_perturbed"))  # noqa: E731
+        moved._unsloth_rewrap(inner)(all_perturbed = _t.tensor(True))
+    assert seen == [True, True] and all(type(v) is bool for v in seen)
+
+
+def test_block_graphs_find_the_compute_below_a_hook_that_predates_a_class_patch(monkeypatch):
+    net = _hooked_net(blocks = 2)
+    monkeypatch.setattr(Block, "forward", _shifted_forward)
+    refs = [r for b in net.blocks for r in b._diffusers_hook._fn_refs]
+    before = [r.forward for r in refs]
+    handle, reason = bg.install_block_graphs(net, slots = False)
+    assert reason == "armed" and handle is not None and len(handle.graphs) == 2
+    for g in handle.graphs:
+        assert getattr(g.compute, "__func__", None) is _shifted_forward
+    handle.free()
+    assert [r.forward for r in refs] == before
+
+
+def test_own_forward_refuses_a_foreign_bound_method():
+    block = Block()
+    other = Block()
+    assert bg._own_forward(block.forward, block) is not None
+    assert bg._own_forward(other.forward, block) is None
+    assert bg._own_forward(types.MethodType(lambda self, x: x, block), block) is None
+    assert bg._own_forward(None, block) is None
 
 
 def test_compile_below_the_hook_keeps_the_block_restride():
@@ -876,3 +1032,36 @@ def test_torchao_int8_weights_stream_through_the_slot_ring_with_graphs():
     assert handle.stats["replays"] > 0 and handle.stats["fallbacks"] == 0
     assert pf.stats["slot_fills"] > 0
     handle.free()
+
+
+def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
+    """Per-block graphs key on the block inputs, which carry the text stream: a denoiser whose text length follows
+    the prompt would record every block again for each new prompt length, so it runs compiled ungraphed."""
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    net = type("QwenImageTransformer2DModel", (Net,), {})(blocks = 3)
+    pipe = _pipe_with(net)
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = False)
+    assert handles == () and not applied["cuda_graph"]
+    assert cg.status_reason(pipe, False).startswith(cg.PROMPT_LENGTH_REASON)
+    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
+
+
+def test_a_model_offloaded_denoiser_reason_names_both_opt_ins(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe.transformer._hf_hook = types.SimpleNamespace()
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    reason = pipe._unsloth_cuda_graph_reason
+    assert handles == () and applied["cuda_graph"] is False
+    assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV in reason and bg.BLOCK_GRAPHS_ENV in reason
+
+
+def test_a_model_offloaded_denoiser_keeps_a_specific_whole_step_refusal(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe.transformer._hf_hook = types.SimpleNamespace()
+    pipe._unsloth_cuda_graph_reason = "forward is not capture-safe: its rewrite is disabled"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    reason = pipe._unsloth_cuda_graph_reason
+    assert handles == () and reason.startswith("forward is not capture-safe")
+    assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV not in reason and bg.BLOCK_GRAPHS_ENV in reason

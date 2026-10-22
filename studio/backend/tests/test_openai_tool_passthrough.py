@@ -11943,11 +11943,11 @@ def test_mlx_completion_refusals_are_client_errors_as_in_chat(monkeypatch, stop,
 _LLAMA_SERVED = (
     "stream stream_options n_predict max_tokens max_completion_tokens top_k top_p min_p "
     "temperature repeat_last_n repeat_penalty frequency_penalty presence_penalty seed "
-    "logit_bias stop echo n n_cmpl grammar json_schema response_format"
+    "logit_bias stop echo n n_cmpl grammar json_schema response_format logprobs n_probs"
 )
 _LLAMA_IGNORED = (
     "cache_prompt sse_ping_interval n_keep n_discard n_cache_reuse backend_sampling "
-    "post_sampling_probs grammar_triggers chat_format "
+    "grammar_triggers chat_format "
     "reasoning_format generation_prompt parse_tool_calls chat_parser continue_final_message "
     "reasoning_control reasoning_budget_start_tag reasoning_budget_end_tags "
     "reasoning_budget_end_tag reasoning_budget_message"
@@ -11955,7 +11955,7 @@ _LLAMA_IGNORED = (
 # The rest change the text or the shape with no MLX equivalent: a value MLX refuses, and the one
 # that turns the field off.
 _LLAMA_UNSERVED = json.loads(
-    '{"logprobs": [2, 0], "n_probs": [1, 0], "best_of": [2, 1], "suffix": ["x", ""],'
+    '{"best_of": [2, 1], "suffix": ["x", ""],'
     ' "timings_per_token": [true, false], "return_tokens": [true, false],'
     ' "return_progress": [true, false], "verbose": [true, false], "response_fields": [["id"], []], "lora":'
     ' [[{"id": 0, "scale": 1}], []], "n_indent": [2, 0], "t_max_predict_ms": [100, -1], "ignore_eos":'
@@ -11969,7 +11969,8 @@ _LLAMA_DEPENDENT = json.loads(
     '{"xtc_threshold": "xtc_probability", "dynatemp_exponent": "dynatemp_range", "mirostat_tau":'
     ' "mirostat", "mirostat_eta": "mirostat", "dry_base": "dry_multiplier", "dry_allowed_length":'
     ' "dry_multiplier", "dry_penalty_last_n": "dry_multiplier", "dry_sequence_breakers":'
-    ' "dry_multiplier", "adaptive_decay": "adaptive_target", "grammar_lazy": "grammar"}'
+    ' "dry_multiplier", "adaptive_decay": "adaptive_target", "grammar_lazy": "grammar",'
+    ' "post_sampling_probs": "n_probs"}'
 )
 
 
@@ -12016,6 +12017,11 @@ def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
     assert refusal({"prompt": "p", "xtc_probability": 0.5, "xtc_threshold": 0.6}) is None
     assert refusal({"prompt": "p", "dry_multiplier": 0.8, "dry_penalty_last_n": 0}) is None
     assert refusal({"prompt": "p", "n_cmpl": 1, "n": 2, "n_probs": 0, "logprobs": 5}) is None
+    # llama-server reads post_sampling_probs only with n_probs, and then renames the fields.
+    assert refusal({"prompt": "p", "post_sampling_probs": True}) is None
+    assert "'post_sampling_probs'" in refusal(
+        {"prompt": "p", "logprobs": 2, "post_sampling_probs": True}
+    )
     assert refusal({"prompt": "p", "n": 2, "best_of": 2}) is None
     assert refusal({"prompt": "p", "grammar": None, "json_schema": {}}) is None
     for prompt in ([1, "a"], ["a", 1], [[1, 2]], {"prompt_string": [1, "a"]}):
@@ -12035,5 +12041,42 @@ def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
         {"prompt": "p", "repeat_last_n": -1},
         {"prompt": "p", "logit_bias": {"hi": 1}},
         {"prompt": "p", "grammar": "root ::= nowhere"},
+        {"prompt": "p", "logprobs": 2, "stream": True},
+        {"prompt": "p", "logprobs": 2, "echo": True},
+        {"prompt": "p", "logprobs": 2, "n": 2},
+        {"prompt": ["a", "b"], "n_probs": 1},
+        {"prompt": "p", "n_probs": -1},
+        {"prompt": "p", "logprobs": True},
     ):
         assert refusal(bad), bad
+
+
+def test_mlx_completion_reports_logprobs_in_llama_server_shape(monkeypatch):
+    entry = {
+        "id": 7,
+        "token": " a",
+        "bytes": [32, 97],
+        "logprob": -2.5,
+        "top_logprobs": [
+            {"id": 3, "token": " b", "bytes": [32, 98], "logprob": -0.1},
+            {"id": 7, "token": " a", "bytes": [32, 97], "logprob": -2.5},
+        ],
+    }
+    real = _MLXCompletionBackend.generate_completion
+
+    def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
+        yield from real(self, prompt_ids, cancel_event, stats_holder, **kw)
+        if kw.get("n_probs"):
+            stats_holder["stats"]["token_logprobs"] = [entry]
+
+    monkeypatch.setattr(_MLXCompletionBackend, "generate_completion", generate_completion)
+    body = {"prompt": [1, 2], "max_tokens": 1, "temperature": 0, "logprobs": 2}
+    backend, out = _run_mlx_completion(monkeypatch, {**body, "logit_bias": [[7, 100]]})
+    assert backend.call[1]["n_probs"] == 2 and backend.call[1]["logit_bias"] == {7: 100.0}
+    assert out["choices"][0]["logprobs"] == {"content": [entry]}
+    # n_probs is llama-server's own name and wins over the alias.
+    backend, _ = _run_mlx_completion(monkeypatch, {**body, "n_probs": 4})
+    assert backend.call[1]["n_probs"] == 4
+    for off in ({}, {"logprobs": 0}, {"logprobs": False}):
+        plain, out = _run_mlx_completion(monkeypatch, {"prompt": [1, 2], **off})
+        assert "n_probs" not in plain.call[1] and out["choices"][0]["logprobs"] is None

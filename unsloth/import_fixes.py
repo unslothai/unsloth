@@ -1909,6 +1909,61 @@ def fix_transformers_chat_template_path_traversal():
                 logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
+_TOKENIZER_VOCAB_PATH_PATCH_FLAG = "_unsloth_patched_tokenizer_config_vocab_paths"
+# Resolved files _from_pretrained reads itself; every other one it hands to the tokenizer class.
+_TOKENIZER_FILES_READ_BY_LOADER = (
+    "tokenizer_config_file",
+    "added_tokens_file",
+    "special_tokens_map_file",
+)
+
+
+def fix_transformers_tokenizer_config_vocab_file_override():
+    """Back-port of the 5.17.0 vocab file precedence: below it `_from_pretrained` keeps a
+    `vocab_file` / `merges_file` / `tokenizer_file` from tokenizer_config.json over the file it
+    resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
+    save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
+    which apply after the config, so only an explicit caller path overrides them."""
+    try:
+        import transformers
+
+        if TrueVersion(transformers.__version__) >= TrueVersion("5.17.0"):
+            return
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+        current = PreTrainedTokenizerBase.__dict__["_from_pretrained"]
+        if not isinstance(current, classmethod):
+            return
+        original = current.__func__
+        if getattr(original, _TOKENIZER_VOCAB_PATH_PATCH_FLAG, False):
+            return
+        # The wrapper reads the resolved files from the first argument after cls.
+        params = list(inspect.signature(original).parameters)
+        if params[1:2] != ["resolved_vocab_files"]:
+            logger.info("Unsloth: Skipping the tokenizer vocab path fix (unknown signature)")
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the tokenizer vocab path fix ({e})")
+        return
+
+    @functools.wraps(original)
+    def _from_pretrained(cls, resolved_vocab_files, *args, **kwargs):
+        for args_name, file_path in dict(resolved_vocab_files or {}).items():
+            # chat_template_file and chat_template_<name> are read by the loader as well.
+            read_by_loader = args_name in _TOKENIZER_FILES_READ_BY_LOADER
+            if read_by_loader or args_name.startswith("chat_template"):
+                continue
+            if kwargs.get(args_name) is None:
+                kwargs[args_name] = file_path
+        return original(cls, resolved_vocab_files, *args, **kwargs)
+
+    setattr(_from_pretrained, _TOKENIZER_VOCAB_PATH_PATCH_FLAG, True)
+    try:
+        PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PreTrainedTokenizerBase._from_pretrained ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
@@ -6953,35 +7008,77 @@ def fix_openenv_no_vllm():
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
 
 
-# Fix Exeuctorch needing get_mapped_key
-def fix_executorch():
-    spec = importlib.util.find_spec("executorch")
-    if spec is None:
-        return
-    executorch_location = spec.origin
-    if executorch_location is None:
-        executorch_location = spec.submodule_search_locations[0]
-    else:
-        executorch_location = os.path.split(executorch_location)[0]
-    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
-    if not executorch.exists():
-        return
+# Verbatim block older Unsloth wrote into executorch; it hid a real torchtune, so we repair it.
+_LEGACY_EXECUTORCH_TORCHTUNE_SHIM = textwrap.dedent(
+    r"""
+    import sys
+    import types
+    import re
+    from typing import Any, Optional
+    def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+        try:
+            # Checks if there is a layer # in the key
+            if any(k.isdigit() for k in key.split(".")):
+                # Replace layer number with "{}" to create key for lookup
+                abstract_key = re.sub(r"(\.\d+)", ".{}", key)
+                layer_num = re.search(r"\d+", key).group(0)
+                new_key = mapping_dict[abstract_key]
+                new_key = new_key.format(layer_num)
+            else:
+                new_key = mapping_dict[key]
+        except KeyError as e:
+            raise Exception(
+                f'Error converting the state dict. Found unexpected key: "{key}". '
+                "Please make sure you're loading a checkpoint with the right format. "
+            ) from e
 
-    try:
-        what = r"""
+        return new_key
+
+    torchtune = types.ModuleType("torchtune")
+    torchtune.__path__ = []
+    models = types.ModuleType("torchtune.models")
+    models.__path__ = []
+    convert_weights = types.ModuleType("torchtune.models.convert_weights")
+    convert_weights.get_mapped_key = get_mapped_key
+    torchtune.models = models
+    models.convert_weights = convert_weights
+    sys.modules["torchtune"] = torchtune
+    sys.modules["torchtune.models"] = models
+    sys.modules["torchtune.models.convert_weights"] = convert_weights
+    """
+)
+
+_EXECUTORCH_TORCHTUNE_SHIM_MARKER = "# Unsloth: torchtune get_mapped_key shim v2"
+
+# Stub only when torchtune is not installed or imported.
+_EXECUTORCH_TORCHTUNE_SHIM = _EXECUTORCH_TORCHTUNE_SHIM_MARKER + textwrap.dedent(
+    r"""
+    def _unsloth_torchtune_shim():
+        import importlib.machinery
+        import importlib.util
+        import re
         import sys
         import types
-        import re
-        from typing import Any, Optional
-        def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+
+        if "torchtune" in sys.modules:
+            return
+        try:
+            if importlib.util.find_spec("torchtune") is not None:
+                return
+        except (ImportError, ValueError):
+            return
+
+        def get_mapped_key(key, mapping_dict):
             try:
-                # Checks if there is a layer # in the key
                 if any(k.isdigit() for k in key.split(".")):
-                    # Replace layer number with "{}" to create key for lookup
                     abstract_key = re.sub(r"(\.\d+)", ".{}", key)
-                    layer_num = re.search(r"\d+", key).group(0)
-                    new_key = mapping_dict[abstract_key]
-                    new_key = new_key.format(layer_num)
+                    match = re.search(r"\.(\d+)", key)
+                    if match is None:
+                        raise Exception(
+                            f'Error converting the state dict. Could not find layer number in key: "{key}". '
+                            "Please make sure you're loading a checkpoint with the right format. "
+                        )
+                    new_key = mapping_dict[abstract_key].format(match.group(1))
                 else:
                     new_key = mapping_dict[key]
             except KeyError as e:
@@ -6989,32 +7086,109 @@ def fix_executorch():
                     f'Error converting the state dict. Found unexpected key: "{key}". '
                     "Please make sure you're loading a checkpoint with the right format. "
                 ) from e
-
             return new_key
 
-        torchtune = types.ModuleType("torchtune")
-        torchtune.__path__ = []
-        models = types.ModuleType("torchtune.models")
-        models.__path__ = []
-        convert_weights = types.ModuleType("torchtune.models.convert_weights")
-        convert_weights.get_mapped_key = get_mapped_key
-        torchtune.models = models
-        models.convert_weights = convert_weights
-        sys.modules["torchtune"] = torchtune
-        sys.modules["torchtune.models"] = models
-        sys.modules["torchtune.models.convert_weights"] = convert_weights
-        """
-        what = textwrap.dedent(what)
+        def _missing(name):
+            raise AttributeError(
+                f"torchtune.models.convert_weights.{name} is unavailable: torchtune is not "
+                "installed (only a get_mapped_key stub is provided). Install torchtune."
+            )
 
-        with open(executorch, "r+", encoding = "utf-8") as f:
-            text = f.read()
-            bad = "from enum import Enum\n"
-            if bad in text and what not in text:
-                text = text.replace(bad + "\n", bad + "\n" + what)
-                f.seek(0)
+        names = ("torchtune", "torchtune.models", "torchtune.models.convert_weights")
+        mods = []
+        for i, name in enumerate(names):
+            mod = types.ModuleType(name)
+            is_pkg = i < 2
+            mod.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package = is_pkg)
+            if is_pkg:
+                mod.__path__ = []
+            mods.append(mod)
+        mods[2].get_mapped_key = get_mapped_key
+        mods[2].__getattr__ = _missing
+        mods[0].models = mods[1]
+        mods[1].convert_weights = mods[2]
+        for name, mod in zip(names, mods):
+            sys.modules.setdefault(name, mod)
+
+    _unsloth_torchtune_shim()
+    del _unsloth_torchtune_shim
+    """
+)
+
+
+def _executorch_needs_torchtune_get_mapped_key(models_dir):
+    # Newer ExecuTorch ships its own get_mapped_key; only old imports need the stub.
+    needle = "from torchtune.models.convert_weights import get_mapped_key"
+    try:
+        for path in Path(models_dir).glob("*/*.py"):
+            try:
+                if needle in path.read_text(encoding = "utf-8", errors = "ignore"):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
+# Fix Executorch needing torchtune's get_mapped_key when torchtune is absent
+def _drop_loaded_legacy_torchtune_stub():
+    # An old patched executorch imported before Unsloth already put the legacy stub in sys.modules; it has no
+    # file and no hf_to_tune. Drop it when a real torchtune is installed so the next import finds the package.
+    stub = sys.modules.get("torchtune")
+    if (
+        stub is None
+        or getattr(stub, "__file__", None) is not None
+        or getattr(stub, "__spec__", None) is not None
+    ):
+        return
+    convert_weights = sys.modules.get("torchtune.models.convert_weights")
+    if convert_weights is None or not hasattr(convert_weights, "get_mapped_key"):
+        return
+    if hasattr(convert_weights, "hf_to_tune"):
+        return
+    names = ("torchtune.models.convert_weights", "torchtune.models", "torchtune")
+    saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+    try:
+        # Full import machinery, so editable (meta path finder) installs are seen too.
+        found = importlib.util.find_spec("torchtune") is not None
+    except (ImportError, ValueError):
+        found = False
+    if not found:
+        sys.modules.update(saved)
+
+
+def fix_executorch():
+    spec = importlib.util.find_spec("executorch")
+    if spec is None:
+        return
+    executorch_location = spec.origin
+    if executorch_location is None:
+        if not spec.submodule_search_locations:
+            return
+        executorch_location = list(spec.submodule_search_locations)[0]
+    else:
+        executorch_location = os.path.split(executorch_location)[0]
+    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
+    if not executorch.exists():
+        return
+
+    try:
+        with open(executorch, "r", encoding = "utf-8") as f:
+            original = f.read()
+        text = original
+        needs_shim = _executorch_needs_torchtune_get_mapped_key(executorch.parent)
+        legacy = _LEGACY_EXECUTORCH_TORCHTUNE_SHIM
+        if legacy in text:
+            text = text.replace(legacy, _EXECUTORCH_TORCHTUNE_SHIM if needs_shim else "")
+        anchor = "from enum import Enum\n\n"
+        if needs_shim and _EXECUTORCH_TORCHTUNE_SHIM_MARKER not in text and anchor in text:
+            text = text.replace(anchor, anchor + _EXECUTORCH_TORCHTUNE_SHIM, 1)
+        if text != original:
+            with open(executorch, "w", encoding = "utf-8") as f:
                 f.write(text)
-                f.truncate()
-                logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
+            logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
+        _drop_loaded_legacy_torchtune_stub()
     except Exception as e:
         logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
 
@@ -9081,6 +9255,7 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_next": "qwen2_moe",
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
+    "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
@@ -9089,13 +9264,17 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
 # _convert_peft_config_moe finds no mapping entry and returns without a rewrite. The substring
-# hint below raised for all three on the name alone. Checked before the hint, never instead of
+# hint below raised for these on the name alone. Checked before the hint, never instead of
 # the snapshot above.
 _PEFT_MOE_NAMED_NOT_FUSED = frozenset(
     (
         "granitemoehybrid",
         "granitemoeshared",
         "qwen3_5_moe_text",
+        # Keyed by class name: transformers (main, October 2026) aliases the Qwen3-Omni MoE
+        # thinker classes to the dense Qwen2.5-Omni thinker, which peft does not rewrite.
+        "Qwen3OmniMoeThinkerForConditionalGeneration",
+        "Qwen3OmniMoeThinkerModel",
     )
 )
 
@@ -9189,7 +9368,9 @@ class _UnavailableConversionPatternMap(dict):
         # Both spellings: model types are lowercase, the class-name aliases are not.
         if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
-        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+        if key in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_FUSED:
+            return False
+        if name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
         return any(hint in name for hint in self._MOE_HINTS)
 
@@ -11330,6 +11511,45 @@ def fix_torchao_torch_symbol_skew():
             torch_version,
         )
     return bool(patched)
+
+
+def fix_torchao_pytree_register_constant():
+    """Let `import unsloth` survive torchao 0.17+ on torch 2.6.
+
+    torchao 0.17+ calls `torch.utils._pytree.register_constant` on its config enums at import
+    time (0.16 only in its MX prototype), and that function arrived in torch 2.7, so on
+    torch 2.6 importing transformers (which imports torchao) raises AttributeError. A
+    pass-through is the exact torch 2.6 behaviour: there are no pytree constants, so the
+    enums stay plain leaves for dynamo, and nothing is computed differently.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        torchao_version = importlib_version("torchao")
+        if Version(torchao_version) < Version("0.17.0"):
+            return False
+        import torch
+        import torch.utils._pytree as pytree
+    except Exception:
+        return False
+    if hasattr(pytree, "register_constant"):
+        return False
+
+    def register_constant(cls):
+        return None
+
+    register_constant.__unsloth_placeholder__ = True
+    try:
+        pytree.register_constant = register_constant
+    except Exception:
+        return False
+    logger.info(
+        "Unsloth: torchao %s needs torch.utils._pytree.register_constant, which torch %s "
+        "does not have (it arrived in torch 2.7). Adding a pass-through so the import succeeds.",
+        torchao_version,
+        torch.__version__,
+    )
+    return True
 
 
 # vLLM inspects architectures in a separate process that imports torchao itself, never sees a

@@ -17,6 +17,8 @@ export interface MonitorStats {
   /** Slowest finished request, for spotting a pathological call. */
   maxDurationMs: number | null;
   totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
   /** Share of finished requests that failed, 0-1. Null when nothing finished. */
   errorRate: number | null;
   /** Mean completion tokens per second over requests that reported both. */
@@ -51,6 +53,8 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let errors = 0;
   let cancelled = 0;
   let totalTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
   let durationSum = 0;
   let durationCount = 0;
   let maxDurationMs: number | null = null;
@@ -68,6 +72,8 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
     }
     requests += 1;
     totalTokens += entryTokens(entry);
+    inputTokens += entry.prompt_tokens ?? 0;
+    outputTokens += completionTokens(entry) ?? 0;
     if (entry.status === "running") {
       active += 1;
     } else if (entry.status === "error") {
@@ -104,6 +110,8 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
     avgDurationMs: durationCount > 0 ? durationSum / durationCount : null,
     maxDurationMs,
     totalTokens,
+    inputTokens,
+    outputTokens,
     errorRate: finished > 0 ? errors / finished : null,
     tokensPerSecond:
       generatedDurationMs > 0

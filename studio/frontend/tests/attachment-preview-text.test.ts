@@ -40,6 +40,7 @@ const {
   writeDocxListNumbers,
   writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
+const { writeDocxSymbols } = await import("../src/features/chat/docx-reader.ts");
 const { definePDFJSModule } = await import("unpdf");
 const { readRtfAttachmentContent } =
   await import("../src/features/chat/rtf.ts");
@@ -1280,6 +1281,71 @@ test("linearizeDocxMath keeps equations in the body, tables and notes", async ()
       "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.[1]\n\nF=ma\np=mv\n\nError\n\n(a+b)\\sqrt{n}\n\n\n\n" +
         "Footnotes\n[1] Where \\overline{x} is the mean.",
     );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("writeDocxSymbols keeps Insert > Symbol characters in the body, equations and notes as the backend does", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const sym = (font: string, char: string) => `<w:sym w:font="${font}" w:char="${char}"/>`;
+  const archive = repackDocxAttachmentArchive(
+    "form.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${ns}><w:body>` +
+          `<w:p>${run("Smoker: ")}<w:r>${sym("Wingdings", "F0FE")}</w:r>${run(" Yes")}<w:r><w:footnoteReference w:id="1"/></w:r></w:p>` +
+          `<w:p>${run("Limit ")}<w:r>${sym("Symbol", "221E")}${sym("Arial", "2713")}${sym("Symbol", "F0B1")}</w:r></w:p>` +
+          `<w:p><m:oMath><m:r><m:t>x</m:t></m:r><m:r>${sym("Symbol", "F0B3")}</m:r><m:r><m:t>1</m:t></m:r>` +
+          `<w:r>${sym("Symbol", "F0B1")}</w:r><m:r><m:t>e</m:t></m:r></m:oMath></w:p>` +
+          `</w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${ns}><w:footnote w:id="1"><w:p>${run("Above ")}<w:r>` +
+          sym("Symbol", "F0B3") + sym("symbol", "b0") + sym("Symbol", "221E") + sym("Wingdings 2", "F054") +
+          sym("Arial", "2713") + sym("Unknown", "F041") + sym("Symbol", "zz") +
+          `</w:r>${run(" C")}</w:p></w:footnote></w:footnotes>`,
+      ),
+    }),
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(archive, 10 * 1024 * 1024)));
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
+    assert.equal(marked.label(value), "Smoker: 🗹 Yes[1]\n\nLimit ∞✓±\n\nx≥1±e\n\nFootnotes\n[1] Above ≥°∞☒✓ C");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("writeDocxSymbols follows a main document target without an .xml name, as mammoth does", async () => {
+  const archive = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/body.bin"]]),
+    "word/body.bin": strToU8(
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>' +
+        '<w:r><w:t xml:space="preserve">Limit </w:t><w:sym w:font="Symbol" w:char="221E"/><w:sym w:font="Arial" w:char="2713"/></w:r>' +
+        "</w:p></w:body></w:document>",
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxSymbols(archive, 10 * 1024 * 1024)) });
+    assert.equal(value.trim(), "Limit ∞✓");
   } finally {
     Object.assign(globals, original);
   }

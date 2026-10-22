@@ -406,6 +406,7 @@ def test_every_owner_setting_rejects_managed_accounts(client, method, path):
         ("/personalization", {"profile": {"displayName": "Alice"}}),
         ("/chat-preferences", {"show_model_disclaimer": True}),
         ("/current-date-prompt", {"enabled": False}),
+        ("/chat-memory", {"enabled": False}),
     ],
 )
 def test_personal_settings_do_not_change_owner_rows(client, path, body):
@@ -754,3 +755,20 @@ def test_research_cleanup_reaches_the_account_keyed_supervisor():
     bob_event = run_as(BOB, supervisor._cancel_event, "same")
     run_as(ALICE, chat_history._cancel_research_runs, request, ["same"])
     assert alice_event.is_set() and not bob_event.is_set()
+
+
+def test_chat_memory_is_per_account(client):
+    from utils.paths import studio_root
+
+    saved = client.put("/settings/chat-memory", json = {"text": "Alice uses uv.", "enabled": False})
+    assert saved.status_code == 200, saved.text
+    assert (studio_root() / "accounts" / ALICE.account_id / "AGENTS.md").read_text(
+        encoding = "utf-8"
+    ) == "Alice uses uv.\n"
+    assert not (studio_root() / "AGENTS.md").exists()
+    owner = client.get("/settings/chat-memory", headers = {"x-test-account": OWNER.username}).json()
+    assert owner["text"] == "" and owner["enabled"] is True
+    bob = client.get("/settings/chat-memory", headers = {"x-test-account": "bob"}).json()
+    assert bob["text"] == "" and bob["enabled"] is True
+    alice = client.get("/settings/chat-memory").json()
+    assert alice["text"] == "Alice uses uv.\n" and alice["enabled"] is False

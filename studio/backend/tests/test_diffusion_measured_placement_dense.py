@@ -209,3 +209,116 @@ def test_small_host_int8_denoiser_keeps_the_flat_plan(klein_pipe):
     klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
     plan = _flat_plan(12758)
     assert _refine(klein_pipe, plan) is plan
+
+
+# ------------------------------------------------------------------- learned-only placement (bf16 / packed denoisers)
+# The dense eager table was measured on fp16 / fp32 unpacked weights, so a bf16 denoiser (every Ampere+ card) and a
+# GGUF / int8 packed one used to return before the learned-peak lookup: their renders recorded peaks no load ever read.
+# They now place from the learned peak alone (no static seed); without one the flat plan stands.
+
+
+@pytest.fixture
+def learned_store(tmp_path, monkeypatch):
+    import core.inference.diffusion_measured_peaks as mp
+
+    monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(tmp_path / "peaks.json"))
+    monkeypatch.delenv(mp.LEARNED_PEAKS_ENV, raising = False)
+    mp._cache.update(path = None, mtime = None, data = None)
+    monkeypatch.setattr(mp, "current_device_name", lambda: "NVIDIA L4", raising = False)
+    return mp
+
+
+def _gguf_dit():
+    import torch
+
+    class GGUFParameter(torch.nn.Parameter):
+        pass
+
+    dit = torch.nn.Linear(4, 4)
+    dit.weight = GGUFParameter(dit.weight.data, requires_grad = False)
+    return dit
+
+
+@pytest.mark.parametrize("build", ["bf16", "gguf"])
+def test_unseeded_dense_denoiser_places_from_its_learned_peak(
+    klein_pipe, learned_store, monkeypatch, build
+):
+    import torch
+
+    label = "dense:bfloat16" if build == "bf16" else "gguf"
+    monkeypatch.setattr(dm, "denoiser_quant_label", lambda pipe: label)
+    if build == "bf16":
+        klein_pipe.transformer = types.SimpleNamespace(dtype = torch.bfloat16)
+    else:
+        klein_pipe.transformer = types.SimpleNamespace(
+            dtype = torch.float16, parameters = _gguf_dit().parameters
+        )
+    plan = _flat_plan(12758)
+    # nothing learned yet: the flat plan (no fp16 table seed for a build it never measured)
+    assert _refine(klein_pipe, plan) is plan
+    learned_store.record(
+        family = "flux.2-klein", quant = label, speed_mode = "off", width = 1024, height = 1024, peak_mib = 2000
+    )
+    new = _refine(klein_pipe, plan)
+    assert new is not plan
+    # 2000 x 1.15 = 2300 -> 2304 (the learned peak alone, not the 3072 fp16 table seed)
+    assert new.estimates["measured_runtime_headroom_mib"] == 2304
+    assert new.estimates["measured_static_seed"] is False
+    assert new.resident_transformer_mib and new.resident_transformer_mib > 0
+    # every kill switch still restores the flat plan
+    for env in ("UNSLOTH_DIFFUSION_LEARNED_PEAKS", *ENVS):
+        monkeypatch.setenv(env, "0")
+        assert _refine(klein_pipe, plan) is plan, env
+        monkeypatch.delenv(env)
+
+
+def test_fp16_dense_keeps_its_static_seed_over_a_lower_learned_peak(
+    klein_pipe, learned_store, monkeypatch
+):
+    monkeypatch.setattr(dm, "denoiser_quant_label", lambda pipe: "dense:float16")
+    learned_store.record(
+        family = "flux.2-klein",
+        quant = "dense:float16",
+        speed_mode = "off",
+        width = 1024,
+        height = 1024,
+        peak_mib = 1000,
+    )
+    new = _refine(klein_pipe, _flat_plan(12758))
+    # learned only raises a seed: the fp16 table's 3072 stands
+    assert new.estimates["measured_runtime_headroom_mib"] == KLEIN_HEADROOM
+    assert new.estimates["measured_static_seed"] is True
+
+
+def test_request_guard_of_a_learned_only_load_never_reads_the_fp16_table(learned_store):
+    # a bf16 klein load placed from a 1000 MiB learned peak (1000 x 1.15 -> 1280 reserved)
+    pipe = types.SimpleNamespace(
+        _unsloth_peak_identity = ("flux.2-klein", "dense:bfloat16", "off"),
+        _unsloth_measured_reserve = (
+            1280,
+            "flux.2-klein",
+            "off",
+            7393,
+            None,
+            1000,
+            1024 * 1024,
+            False,
+            False,
+        ),
+    )
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    # 4 MP: the learned peak scales linearly (4 x 1000 x 1.15 = 4600 -> 4608)
+    assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) == 4608 - 1280
+    # an older 8-field reserve keeps reading the static table as before
+    old = types.SimpleNamespace(
+        _unsloth_peak_identity = ("flux.2-klein", "dense:float16", "off"),
+        _unsloth_measured_reserve = (KLEIN_HEADROOM, "flux.2-klein", "off", 7393, 2),
+    )
+    assert dm.measured_request_extra_mib(old, width = 1024, height = 1024) == 0
+
+
+def test_load_stores_the_static_seed_flag_in_the_reserve():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert 'plan.estimates.get("measured_static_seed", True),' in src

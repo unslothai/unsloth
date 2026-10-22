@@ -221,6 +221,7 @@ import {
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
+import type { ModelConfigFocus } from "../model-config/model-config-handoff";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import {
   NumericValueInput,
@@ -545,7 +546,6 @@ function MaxSeqLengthSetting({
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
         {...sliderProps}
-        className="panel-slider"
         aria-label={label}
       />
     </div>
@@ -616,7 +616,6 @@ function GgufContextLengthSetting({
               max={max}
               step={128}
               {...sliderProps}
-              className="panel-slider"
               aria-label="Context Length"
               thumbValueText={(v) =>
                 v !== 0
@@ -697,7 +696,6 @@ function AdvancedGpuSlider({
         max={max}
         step={step}
         {...sliderProps}
-        className="panel-slider"
         aria-label={label}
         disabled={disabled}
       />
@@ -1265,11 +1263,25 @@ function ParallelSlotsRow({
   config,
   update,
   hint,
+  focusOnMount = false,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   hint: string;
+  focusOnMount?: boolean;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!focusOnMount) {
+      return;
+    }
+    // Next frame: the popover moves focus to itself after its children mount.
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.scrollIntoView({ block: "center" });
+      inputRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusOnMount]);
   return (
     <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
@@ -1277,6 +1289,7 @@ function ParallelSlotsRow({
         <InfoHint>{hint}</InfoHint>
       </div>
       <input
+        ref={inputRef}
         type="number"
         min={N_PARALLEL_MIN}
         max={N_PARALLEL_MAX}
@@ -1663,6 +1676,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef,
   onExtraArgsLoadableChange,
   draftKey,
+  focusParallelSlots,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1679,6 +1693,7 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
+  focusParallelSlots: boolean;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1858,7 +1873,12 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      <ParallelSlotsRow config={config} update={update} hint={GGUF_PARALLEL_HINT} />
+      <ParallelSlotsRow
+        config={config}
+        update={update}
+        hint={GGUF_PARALLEL_HINT}
+        focusOnMount={focusParallelSlots}
+      />
 
       {!isDiffusion && (
         <div className="space-y-1">
@@ -2347,6 +2367,7 @@ interface ModelConfigPageProps {
   /** Page variant only: render the built-in "Run settings" title block. A host that already shows
    *  the model name as its page heading turns this off. */
   showHeader?: boolean;
+  focusField?: ModelConfigFocus;
 }
 
 export function ModelConfigPage({
@@ -2359,6 +2380,7 @@ export function ModelConfigPage({
   isDiffusion = false,
   variant = "page",
   showHeader = true,
+  focusField,
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
@@ -2573,10 +2595,16 @@ export function ModelConfigPage({
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  // Opened to change one field: show its section for this visit, leaving the saved switch alone.
+  const [revealForFocus, setRevealForFocus] = useState(focusField != null);
   const showAdvanced =
-    advancedPreference ??
-    (autoOpenAdvanced || autoOpenForMlxKvQuant || autoOpenForMlxInt8Prefill);
-  const toggleAdvanced = saveAdvancedSettingsOpen;
+    revealForFocus ||
+    (advancedPreference ??
+      (autoOpenAdvanced || autoOpenForMlxKvQuant || autoOpenForMlxInt8Prefill));
+  const toggleAdvanced = (open: boolean) => {
+    setRevealForFocus(false);
+    saveAdvancedSettingsOpen(open);
+  };
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -3779,7 +3807,7 @@ export function ModelConfigPage({
                   <p className="text-ui-11 text-amber-500">
                     {isAppleUnifiedMemory ? (
                       <>
-                        Above Studio&apos;s free-memory estimate (
+                        Above Unsloth&apos;s free-memory estimate (
                         {loadedMaxContextLength.toLocaleString()} tokens). It
                         may still load, but macOS may have to compress or swap
                         other apps and generation may slow down.
@@ -3818,6 +3846,7 @@ export function ModelConfigPage({
                 moeLayersInputRef={moeLayersInputRef}
                 draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
+                focusParallelSlots={focusField === "parallelSlots"}
               />
             )}
           </>
@@ -3880,7 +3909,7 @@ export function ModelConfigPage({
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
-      <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
+      <div className="mt-5 flex flex-col gap-3.5 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}

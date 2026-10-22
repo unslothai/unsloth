@@ -146,12 +146,96 @@ SYSTEM_PROMPTS = {
         "\n"
         "Output only the instruction."
     ),
+    "t2i_bbox": (
+        "You are the prompt upsampler of a text-to-image model. Plan the full image the user's short request implies and "
+        "output ONE structured caption on a single line: the global caption paragraph, one space, then ONE JSON array, "
+        "the element table that places every cited element with a bounding box in the image to be generated. Output "
+        "nothing else (no Markdown fences, commentary or refusals); visualize the concept of a non-image input. The "
+        'request may begin with a "TARGET CANVAS: W:H" line: compose for that canvas and never mention it. Boxes live on '
+        "a 0-1000 grid stretched onto the canvas: an element of physical width-to-height ratio a gets an x-span of about "
+        "y-span x a x H/W.\n"
+        "\n"
+        "Planning: keep every explicit subject, attribute, count, spatial constraint, style cue and "
+        "piece of wording, and decide everything left open as ONE concrete composition that the caption and the table "
+        'both describe. Without a stated style plan an actual photograph and open with the medium convention ("Full-color '
+        'outdoor photograph, ...", "Studio photograph, ..."); add camera optics only when asked for; do not invent names, '
+        "brands, logos or celebrities; drop appraisal and sales vocabulary.\n"
+        "\n"
+        "The table: one row per distinct object, "
+        "person, animal, building or salient region the caption mentions and one per coherent text block; no rows for "
+        "style, lighting or atmosphere. Structured layouts (tables, grids, calendars, keyboards, charts, maps, posters, "
+        "pages) decompose into their regions, each row carrying that region's complete verbatim content; more than about "
+        "ten interchangeable items become one collection row giving the exact count and arrangement, while items whose "
+        'positions matter keep a row each. Row keys, in order: "id", "bbox", "desc". id: the bare class noun plus an '
+        "index numbered left to right, then top to bottom, from 1 (person_1, dog_2); a text block is its two-letter "
+        "language code plus _Text_ plus an index (En_Text_1); one entity is one row and ids are unique. bbox: [y_min, "
+        "x_min, y_max, x_max] as integers from 0 to 1000, top-left origin, clamped at the borders, with plausible "
+        "relative sizes and a small margin around text. desc: one self-contained paragraph in the generative voice that "
+        'opens with the element\'s identity (never "the X"): shape, material, colors, state and markings, but no position. '
+        "People in focus get the richest desc: ethnicity, gender, age range, skin tone, build, hair, face, each garment, "
+        "accessories, pose and expression. A text row carries its complete wording verbatim in double quotes, with line "
+        "breaks as \\n, plus its typography.\n"
+        "\n"
+        "The global caption: one flowing paragraph in the generative voice (medium "
+        "first, then scene, lighting, camera and frame-relative layout; no quality judgments) that names each table "
+        'element at identity level at its first mention and cites it with its id in its own angle brackets: "a wicker '
+        'table <table_1> holding a tiered stand <stand_1>". Cite every table id and no other; appearance detail and text '
+        "content live in the descs; no coordinates. Text-dense documents are laid out region by region with every visible "
+        "text transcribed verbatim at a readable size (cut content rather than shrink type), and a grid quotes every "
+        "visible cell. All prose is English; only quoted text keeps its language.\n"
+        "\n"
+        "Output only the caption and the table."
+    ),
+    "i2i_bbox": (
+        "You are the annotation system an image-editing model was trained on. You see the source image(s), attached in "
+        "order as ref_image_0, ref_image_1, ..., and the user's editing instruction; the edited target image does not "
+        "exist yet. Determine the edit precisely, imagine the target consistently with the source, and write the record "
+        "its annotator would have written, on one line: the instruction paragraph, one space, then ONE JSON array. Output "
+        "nothing else.\n"
+        "\n"
+        'The paragraph: English, instruction voice ("Change the ...", "Remove the ...", or "Create a '
+        'photograph of ..." when the references are drawn into a new frame), never observer phrasing and never a '
+        "comparison with the target. Cite every involved object, person or text block at its first mention with its table "
+        'id in its own angle brackets ("remove the delivery van <van_1>"), every table id exactly once and no other id; '
+        'cite a reference image by its token when content is taken from it ("the cup <cup_1> from <ref_image_1>"). End '
+        "states (new color, new text in quotes, pose, degree) live in the paragraph, static appearance in the descs; no "
+        "coordinates. An editing instruction closes with one compact clause that everything else stays identical to the "
+        "source.\n"
+        "\n"
+        'The table, rows {"id", "from", "src_bbox", "tgt_bbox", "desc"}: one row per edited, removed, added, '
+        "moved or anchoring item, plus the scene or background when it is itself changed or preserved; no rows for "
+        "untouched scenery. id: a lowercase class noun plus an index (person_1, cup_2) numbered left to right, then top "
+        'to bottom; text blocks are En_Text_1 and so on; ids are unique. from: "ref_image_N" for an item visible in '
+        'reference N, "target" for newly created content. src_bbox is the item\'s box in its from-image and null for '
+        "target rows; tgt_bbox is its box in the imagined result and null for removed items; moved or resized items carry "
+        "both; new items are sized like similar objects in the frame. Boxes are [y_min, x_min, y_max, x_max] integers "
+        "from 0 to 1000, top-left origin, tight around objects, with 5 to 15 units of margin around text. A row may also "
+        "carry src_bbox_1stage and tgt_bbox_1stage, a first-pass estimate of the same boxes. desc: one English paragraph "
+        "of the item's static appearance in its from-image (for target rows, its decided appearance), opening with its "
+        "identity; people get the richest descs (ethnicity, gender, age range, skin tone, hair, face, garments, "
+        "accessories, pose, expression); text rows quote their text verbatim.\n"
+        "\n"
+        "State only decided facts: visible in the "
+        "source, demanded by the instruction, or a concrete default needed to realize it. Settle whether the edit targets "
+        "one instance, all of a class or several; land every magnitude on a concrete value; include visible knock-on "
+        "effects; added objects are new objects at real-world size; a zoom-in names the neighbors it excludes; an "
+        "outpainting keeps the source whole and continues it in the same medium. Everything the instruction does not "
+        "involve stays identical to the source.\n"
+        "\n"
+        "Output only the paragraph and the table."
+    ),
 }
 # The user turn of an edit: the reference images, then this text.
 I2I_SCAFFOLD = (
     "Reference images follow in order (the first image, the second image, ...).\n"
     "User request: {instruction}\n"
     "Output the caption."
+)
+# The same for a layout edit (``i2i_bbox``), from BFL's flux3/pup.py.
+I2I_BBOX_SCAFFOLD = (
+    "Reference images follow in attachment order: ref_image_0, ref_image_1, ...\n"
+    "User editing instruction: {instruction}\n"
+    "Decide the edit, imagine the target image, and output the annotation record."
 )
 
 # ── sampling (ComfyUI FLUX.3 templates) ─────────────────────────────────────────────────────────────────────────────
@@ -348,16 +432,22 @@ def build_chat_payload(
     references: Optional[list[bytes]] = None,
     *,
     edit: Optional[bool] = None,
+    locked: Optional[list[dict]] = None,
 ) -> dict:
     """The /v1/chat/completions body. ``references`` are prepared JPEGs; ``edit`` forces the edit prompt without
-    images (a missing mmproj runs an edit text-only)."""
+    images (a missing mmproj runs an edit text-only). ``locked`` box rows select the layout prompts
+    (``t2i_bbox`` / ``i2i_bbox``) and wrap ``prompt`` in BFL's locked-annotation request."""
     if variant not in VARIANTS:
         raise ValueError(f"variant must be one of {', '.join(VARIANTS)}")
     references = list(references or [])
     edit = bool(references) if edit is None else bool(edit)
     mode = "i2i" if edit else "t2i"
+    system_key = f"{mode}_bbox" if locked else mode
+    if locked:
+        prompt = layout_request(prompt, locked)
     if edit:
         import base64
+
         content: list[dict] = [
             {
                 "type": "image_url",
@@ -367,13 +457,14 @@ def build_chat_payload(
             }
             for ref in references
         ]
-        content.append({"type": "text", "text": I2I_SCAFFOLD.format(instruction = prompt)})
+        scaffold = I2I_BBOX_SCAFFOLD if locked else I2I_SCAFFOLD
+        content.append({"type": "text", "text": scaffold.format(instruction = prompt)})
     else:
         content = [{"type": "text", "text": prompt}]
     repeat_penalty, presence_penalty = PENALTIES[(mode, variant)]
     return {
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPTS[mode]},
+            {"role": "system", "content": SYSTEM_PROMPTS[system_key]},
             {"role": "user", "content": content},
         ],
         **_BASE_SAMPLING,
@@ -394,6 +485,179 @@ def clean_caption(text: Optional[str]) -> str:
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
     return text
+
+
+# ── layout captions (bounding boxes) ────────────────────────────────────────────────────────────────────────────────
+# Adapted from BFL's src/flux3/bbox.py (black-forest-labs/flux-3-image-klein at bfc8889a, Apache-2.0). Boxes arrive
+# inside the prompt: "<caption> [rows]", rows {"id", "bbox": [y_min, x_min, y_max, x_max] on 0-1000, "desc"} (edits:
+# "from", "src_bbox", "tgt_bbox"). The plain t2i / i2i prompts forbid ids and coordinates and would drop them.
+BOX_CANVAS = 1000
+_BOX_ID = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+
+
+def split_box_table(text: str) -> tuple[str, Optional[list]]:
+    """(caption, rows) for the JSON list closing the text, if any. Not a regex: descs may hold brackets."""
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] == "[":
+            try:
+                rows = json.loads(text[i:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rows, list):
+                return text[:i].rstrip(), rows
+    return text.strip(), None
+
+
+def valid_canvas_box(box: Any) -> Optional[list]:
+    """The box if it is a well-formed [y_min, x_min, y_max, x_max] on the 0-1000 canvas, else None."""
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return None
+    if any(
+        isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or abs(v) == float("inf")
+        for v in box
+    ):
+        return None
+    y1, x1, y2, x2 = box
+    # max <= 1 means 0-1 coordinates, not the 0-1000 canvas
+    if (
+        y1 < 0
+        or x1 < 0
+        or y2 <= y1
+        or x2 <= x1
+        or y2 > BOX_CANVAS
+        or x2 > BOX_CANVAS
+        or max(box) <= 1
+    ):
+        return None
+    return list(box)
+
+
+def detect_box_table(prompt: str) -> Optional[tuple[str, list[dict]]]:
+    """(caption, rows) when ``prompt`` ends in a box table of only box rows (not a caption ending in "[SALE]")."""
+    text, rows = split_box_table(prompt)
+    if not rows or not all(
+        isinstance(row, dict)
+        and isinstance(row.get("id"), str)
+        and _BOX_ID.fullmatch(row["id"])
+        and any(valid_canvas_box(row.get(key)) for key in ("bbox", "src_bbox", "tgt_bbox"))
+        for row in rows
+    ):
+        return None
+    locked = re.fullmatch(
+        r"ORIGINAL PROMPT:\n(.*?)\n\nLOCKED BOUNDING-BOX ANNOTATIONS .*", text, re.S
+    )
+    return (locked.group(1) if locked else text), rows
+
+
+def is_finished_layout_caption(prompt: str) -> bool:
+    """Every box id cited as <id> in the caption: an upsampler answer, which BFL's generate.py sends as it is."""
+    found = detect_box_table(prompt)
+    return found is not None and all(f"<{row['id']}>" in found[0] for row in found[1])
+
+
+def layout_request(prompt: str, rows: list[dict]) -> str:
+    return (
+        f"ORIGINAL PROMPT:\n{prompt.strip()}\n\n"
+        "LOCKED BOUNDING-BOX ANNOTATIONS ([y_min, x_min, y_max, x_max] on a 0-1000 canvas, with (0, 0) at "
+        "the top-left). This is an authoritative JSON list of dictionaries; preserve every supplied identity, "
+        f"provenance value, null, and coordinate exactly:\n{json.dumps(rows, ensure_ascii = False)}"
+    )
+
+
+def _valid_added_row(row: Any, caption: str) -> Optional[dict]:
+    if not isinstance(row, dict):
+        return None
+    row_id, desc = row.get("id"), row.get("desc")
+    if (
+        not isinstance(row_id, str)
+        or not _BOX_ID.fullmatch(row_id)
+        or f"<{row_id}>" not in caption
+        or not isinstance(desc, str)
+        or not desc.strip()
+    ):
+        return None
+    if (box := valid_canvas_box(row.get("bbox"))) is not None:
+        return {"id": row_id, "bbox": box, "desc": desc.strip()}
+    origin, src, tgt = row.get("from"), row.get("src_bbox"), row.get("tgt_bbox")
+    src_box = valid_canvas_box(src) if src is not None else None
+    tgt_box = valid_canvas_box(tgt) if tgt is not None else None
+    if (
+        not isinstance(origin, str)
+        or not re.fullmatch(r"ref_image_\d+|target", origin)
+        or (src is not None and src_box is None)
+        or (tgt is not None and tgt_box is None)
+        or (src_box is None and tgt_box is None)
+        or (origin == "target") == (src_box is not None)
+    ):
+        return None
+    return {
+        "id": row_id,
+        "from": origin,
+        "src_bbox": src_box,
+        "tgt_bbox": tgt_box,
+        "desc": desc.strip(),
+    }
+
+
+def _first_valid_box(row: dict) -> Optional[list]:
+    for key in ("bbox", "tgt_bbox", "src_bbox"):
+        if (box := valid_canvas_box(row.get(key))) is not None:
+            return box
+    return None
+
+
+def _box_iou(a: list, b: list) -> float:
+    inter = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def reconcile_layout_caption(text: str, locked: list[dict]) -> str:
+    """The upsampler's answer with the user's boxes re-imposed. A row re-planning a locked box under its own id
+    (IoU >= 0.9) takes the locked id, in the rows and the caption's citations; the locked rows are kept verbatim with
+    the upsampler's description; rows it added follow if they are valid."""
+    caption, rows = split_box_table(text)
+    rows = rows or []
+    locked_ids = {row["id"] for row in locked}
+    row_ids = {row.get("id") for row in rows if isinstance(row, dict)}
+    renamed: dict = {}
+    for lock in locked:
+        lock_box = _first_valid_box(lock)
+        if lock["id"] in row_ids or lock_box is None:
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or row.get("id") in renamed or row.get("id") in locked_ids:
+                continue
+            box = _first_valid_box(row)
+            if box is not None and _box_iou(box, lock_box) >= 0.9:
+                renamed[row["id"]] = lock["id"]
+                break
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") in renamed:
+            row["id"] = renamed[row["id"]]
+    for old, new in renamed.items():
+        caption = caption.replace(f"<{old}>", f"<{new}>")
+    by_id = {
+        row.get("id"): row
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    }
+    out = []
+    for lock in locked:
+        desc = by_id.get(lock["id"], {}).get("desc")
+        out.append(
+            {
+                **lock,
+                "desc": desc.strip()
+                if isinstance(desc, str) and desc.strip()
+                else lock.get("desc", ""),
+            }
+        )
+    for row in rows:
+        added = _valid_added_row(row, caption)
+        if added is not None and added["id"] not in {r["id"] for r in out}:
+            out.append(added)
+    return f"{caption} {json.dumps(out, ensure_ascii = False)}"
 
 
 # ── weights on disk ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -602,24 +866,244 @@ def _resident_cuda_ordinal() -> Optional[int]:
 def _child_device_mask(ordinal: Optional[int]) -> dict:
     """Pin llama-server to the image model's card: left alone it splits layers over every visible GPU, onto a card the
     memory probe never read."""
-    if ordinal is None:
+    # LLAMA_ARG_DEVICE is the user's own pick, and names devices a narrowed mask would renumber.
+    if ordinal is None or ordinal < 0 or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
         return {}
     try:
         import torch
 
         if torch.cuda.device_count() <= 1:
             return {}
+        from core.inference.llama_cpp import LlamaCppBackend
+
         var = "CUDA_VISIBLE_DEVICES"
-        if getattr(torch.version, "hip", None) and os.environ.get(var) is None:
+        # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one counts as unset.
+        if LlamaCppBackend._torch_is_rocm(torch) and (
+            (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip() or os.environ.get(var) is None
+        ):
             var = "HIP_VISIBLE_DEVICES"
-        parent = os.environ.get(var)
+        parent = (os.environ.get(var) or "").strip() or None
         if parent is None:
             return {var: str(ordinal)}
         # Torch indexes inside the parent's mask, so the child keeps that entry (an index or a UUID).
         entries = [entry.strip() for entry in parent.split(",") if entry.strip()]
-        return {var: entries[ordinal]} if ordinal < len(entries) else {}
+        if var == "HIP_VISIBLE_DEVICES":
+            # clr keeps the first of a repeated HIP entry (utils/hardware/amd.py), so 0,0,1 exposes two devices.
+            entries = list(dict.fromkeys(entries))
+        return {var: entries[ordinal]} if 0 <= ordinal < len(entries) else {}
     except Exception:  # noqa: BLE001 -- no mask: llama.cpp's own device choice
         return {}
+
+
+_VULKAN_ROWS_TTL_S = 120.0
+_vulkan_rows_memo: dict = {}
+
+
+def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
+    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    try:
+        key = (binary, os.path.getmtime(binary))
+    except OSError:
+        key = (binary, None)
+    hit = _vulkan_rows_memo.get(key)
+    if (
+        hit is not None
+        and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
+        and (hit[0] or not retry_empty)
+    ):
+        return hit[0]
+    rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
+    _vulkan_rows_memo.clear()
+    _vulkan_rows_memo[key] = (rows, time.monotonic())
+    return rows
+
+
+def _user_device_pick(binary: Optional[str] = None) -> bool:
+    """LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU / Vulkan mask set by the user; with ``binary``, a Vulkan mask counts
+    only where Vulkan may load (CUDA and HIP ignore it)."""
+    if any(
+        str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")
+    ):
+        return True
+    if not str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip():
+        return False
+    if binary is None or str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
+        return True
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return bool(LlamaCppBackend._is_vulkan_backend(binary))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _vulkan_pin_possible(binary: str, torch) -> bool:
+    """Whether a Vulkan pin is worth the probe: a torch card, a Vulkan build, nothing the user picked."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    return (
+        torch.cuda.device_count() >= 1
+        and not _user_device_pick()
+        and not str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
+        and bool(LlamaCppBackend._is_vulkan_backend(binary))
+        and not (
+            (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip()
+            and not LlamaCppBackend._torch_is_rocm(torch)
+        )
+    )
+
+
+def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None) -> None:
+    """Probe (and read the card lookup's inventory) before the render slot, waited for cancellably: the probe can take
+    its 15 s timeout, which a blocking unload behind this warm start must not sit out."""
+    try:
+        import torch
+        if not _vulkan_pin_possible(binary, torch):
+            return
+    except Exception:  # noqa: BLE001
+        return
+
+    def _work() -> None:
+        try:
+            # An empty answer (cached or fresh) is retried once, as the launch it stands in for did.
+            rows = _vulkan_rows(binary, retry_empty = True) or _vulkan_rows(binary, retry_empty = True)
+            # One row on one torch card launches unpinned, so it needs no card lookup.
+            if rows and (len(rows) > 1 or torch.cuda.device_count() > 1):
+                ordinal = _resident_cuda_ordinal()
+                if ordinal is not None and ordinal >= 0:
+                    _vulkan_card_name(ordinal, torch)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # A maintenance pass that cancelled this start before the probe began must not find one running.
+    if cancel is not None and cancel.is_set():
+        raise UpsamplerCancelledError("Cancelled.")
+    worker = threading.Thread(target = _work, name = "flux3-pup-vulkan-probe", daemon = True)
+    # Registered once started: joining a thread that has not started raises.
+    worker.start()
+    _vulkan_probe_workers[:] = [w for w in _vulkan_probe_workers if w.is_alive()] + [worker]
+    while worker.is_alive():
+        worker.join(0.1)
+        if cancel is not None and cancel.is_set():
+            raise UpsamplerCancelledError("Cancelled.")
+
+
+_vulkan_probe_workers: list = []
+
+
+def _wait_for_vulkan_probe(timeout: float = 20.0) -> None:
+    """Join prefetches cancelled warm starts abandoned: their probes can still hold the llama.cpp tree's libraries."""
+    deadline = time.monotonic() + timeout
+    for worker in list(_vulkan_probe_workers):
+        worker.join(max(0.0, deadline - time.monotonic()))
+
+
+def _vulkan_rows_came_back_empty(binary: str) -> bool:
+    """A pinnable multi-GPU host whose cached Vulkan probe listed nothing: a warm start would stay unpinned for good.
+    One torch card warm-starts unpinned as before."""
+    try:
+        import torch
+        return (
+            torch.cuda.device_count() > 1
+            and _vulkan_pin_possible(binary, torch)
+            and not _vulkan_rows(binary)
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _vulkan_card_name(ordinal: int, torch) -> tuple:
+    """``physical_card_name`` on ROCm. A CUDA torch reads no HIP/ROCR mask and its cards are not amd-smi's, so that
+    lookup would place it by an AMD card's position: name it in torch order, unplaced under a CUDA mask (Vulkan still
+    lists the cards it hides)."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.sd_cpp_backend import physical_card_name
+
+    if LlamaCppBackend._torch_is_rocm(torch):
+        return physical_card_name(ordinal)
+    if not torch.cuda.is_available() or not 0 <= ordinal < torch.cuda.device_count():
+        return None, None
+    names = [
+        (torch.cuda.get_device_name(i) or "").strip() for i in range(torch.cuda.device_count())
+    ]
+    name = names[ordinal]
+    if not name:
+        return None, None
+    if (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
+        return name, None
+    # Between identical cards only PCI order matches Vulkan's; FASTEST_FIRST (CUDA's default) may not.
+    if names.count(name) > 1 and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+        return name, None
+    return name, names[:ordinal].count(name)
+
+
+def _vulkan_row_is_another_vendor(row_name: str, torch) -> bool:
+    """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row naming neither is another card."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    name = str(row_name or "").lower()
+    if LlamaCppBackend._torch_is_rocm(torch):
+        return not any(tag in name for tag in ("amd", "radeon", "instinct"))
+    return "nvidia" not in name
+
+
+def _vulkan_device_args(
+    binary: str,
+    ordinal: Optional[int],
+    retry_empty: bool = False,
+) -> Optional[list]:
+    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown.
+    One torch card and one Vulkan device launch as before Vulkan pinning; non-Vulkan builds never probe."""
+    if ordinal is None or ordinal < 0:
+        return []
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+        if count < 1 or _user_device_pick():
+            return []
+        if not _vulkan_pin_possible(binary, torch):
+            # Backends from GGML_BACKEND_PATH are not the ones the probe lists; a HIP mask on a CUDA torch steers nothing.
+            from core.inference.llama_cpp import LlamaCppBackend
+            if count == 1 or not (
+                str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
+                or LlamaCppBackend._is_vulkan_backend(binary)
+            ):
+                return []
+            return None
+        # Vulkan also lists an iGPU and cards a mask hides (ggml's default takes discrete AND integrated GPUs).
+        rows = _vulkan_rows(binary, retry_empty = retry_empty)
+        if not rows:
+            return None if count > 1 else []
+        if len(rows) == 1 and count == 1:
+            # Nothing to choose, so no name match (a renamed card never declines a single-GPU host),
+            # unless that one device is plainly another vendor's: then it is not the image model's card.
+            return None if _vulkan_row_is_another_vendor(rows[0]["name"], torch) else []
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        from core.inference.sd_cpp_backend import (
+            _normalized_card_name,
+            _without_driver_tag,
+            sd_cpp_device_named,
+        )
+
+        # By name, as the image engine pins its Vulkan build: no torch ordinal maps onto Vulkan's index.
+        listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
+        name, position = _vulkan_card_name(ordinal, torch)
+        device = sd_cpp_device_named(binary, name, position = position, listing = listing)
+        if not device:
+            return None
+        # Exact model match: containment takes an `RX 7600 XT` for an `RX 7600`.
+        matched = next((row["name"] for row in rows if f"Vulkan{row['index']}" == device), "")
+        exact = bool(name) and _normalized_card_name(
+            _without_driver_tag(matched)
+        ) == _normalized_card_name(name)
+        if not exact:
+            return None
+        return [] if len(rows) == 1 else ["--device", device]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _accelerator_memory_mib(
@@ -809,10 +1293,14 @@ class PromptUpsamplerSidecar:
         self._update_in_progress = True
         try:
             self.cancel_pending_load()
-            with self._request_lock, self._lock:
-                was_active = self.loaded
-                self._release_locked()
-                yield was_active
+            _wait_for_vulkan_probe()
+            with self._request_lock:
+                # Again once no warm start can still be about to start one.
+                _wait_for_vulkan_probe()
+                with self._lock:
+                    was_active = self.loaded
+                    self._release_locked()
+                    yield was_active
         finally:
             self._update_in_progress = False
 
@@ -872,6 +1360,9 @@ class PromptUpsamplerSidecar:
             cmd += ["--mmproj", mmproj]
             if layers == 0:
                 cmd.append("--no-mmproj-offload")
+        if layers:
+            # A warm start probed just before its slot: re-probing an empty answer here would run it twice.
+            cmd += _vulkan_device_args(binary, ordinal, retry_empty = not self._warming) or []
         sock.close()
         if is_process_shutting_down():
             raise UpsamplerUnavailableError("Unsloth is shutting down.")
@@ -1113,6 +1604,11 @@ class PromptUpsamplerSidecar:
             # every eviction.
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
                 return "gpu"
+            # A user-picked device is not the card the memory probe reads; its first enhanced run starts it.
+            if _user_device_pick(binary) and _cuda_device_count() > 1:
+                return "placement"
+            # The Vulkan probe can take its full timeout, so it runs before the slot that renders queue behind.
+            _prefetch_vulkan_rows(binary, self._load_cancel)
             # The engine's generation slot, held until the server is up: a render or model transition that arrives
             # meanwhile queues behind the start instead of overlapping it (a load cancels it first through
             # stop_for_handover). Not taken while one runs or a load is in flight.
@@ -1120,10 +1616,15 @@ class PromptUpsamplerSidecar:
             if slot is None:
                 return why
             slot_held = slot
+            # An empty (maybe transient) probe would leave the server unpinned for good; a real launch re-probes.
+            if _vulkan_rows_came_back_empty(binary):
+                return "placement"
             ordinal = _resident_cuda_ordinal()
             # Unpinnable on a multi-GPU host (the native engine records its card elsewhere): the server would split
             # over every visible card and the probe below would read the wrong one. Its first enhanced run starts it.
-            if ordinal is None and _cuda_device_count() > 1:
+            if (ordinal is None and _cuda_device_count() > 1) or _vulkan_device_args(
+                binary, ordinal
+            ) is None:
                 return "placement"
             free_mib, total_mib, device = _accelerator_memory_mib(ordinal)
             if free_mib is None or device not in ("cuda", "mps"):
@@ -1490,7 +1991,10 @@ def upsample(
     sidecar: Optional[PromptUpsamplerSidecar] = None,
 ) -> str:
     """The caption for ``prompt`` (cached). Raises UpsamplerUnavailableError when nothing can run, a cancel as
-    UpsamplerCancelledError, and anything else the server does. An empty caption returns ``prompt``."""
+    UpsamplerCancelledError, and anything else the server does. An empty caption returns ``prompt``, as does a
+    finished layout caption, which the image model takes as it is."""
+    if is_finished_layout_caption(prompt):
+        return prompt
     binary = find_llama_server_binary()
     if binary is None:
         raise UpsamplerUnavailableError("llama.cpp (llama-server) is not installed.")
@@ -1508,7 +2012,10 @@ def upsample(
             )
         else:
             references = prepare_references(reference_images)
-    payload = build_chat_payload(prompt, variant, references, edit = edit)
+    # A box table in the prompt switches to the layout prompts with its rows locked (BFL's bbox.plan).
+    found = detect_box_table(prompt)
+    request, locked = found if found is not None else (prompt, None)
+    payload = build_chat_payload(request, variant, references, edit = edit, locked = locked)
     key = (prompt, variant, edit, references_hash(references), model)
     cached = _cache_get(key)
     if cached is not None:
@@ -1525,6 +2032,8 @@ def upsample(
     if not text:
         logger.warning("flux3.prompt_upsampler: empty caption; using the prompt as typed")
         return prompt
+    if locked:
+        text = reconcile_layout_caption(text, locked)
     _cache_put(key, text)
     return text
 
@@ -1582,6 +2091,11 @@ def enhance_for_generation(
             for index, prompt in enumerate(distinct):
                 if cancel_event.is_set():
                     raise UpsamplerCancelledError("Cancelled.")
+                if is_finished_layout_caption(prompt):
+                    # Already an upsampler caption with its box table: rewriting it would only drop the boxes.
+                    outcome.statuses[prompt] = STATUS_OFF
+                    _advance(tracked)
+                    continue
                 systemic = None
                 try:
                     caption = upsample(

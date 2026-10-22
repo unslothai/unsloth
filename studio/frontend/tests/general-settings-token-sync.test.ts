@@ -135,6 +135,7 @@ function generalTab(initialToken: string) {
       emitTrainingRunsChanged: noop,
       TRAINING_UI_PREFERENCE_KEYS: [],
     },
+    "@/hooks/floating-panel-position": { FLOATING_PANEL_POSITION_KEYS: {} },
     "@/hooks/use-notification-frequency": notificationPrefStub,
     "@/hooks": {
       useHfTokenValidation: () => ({
