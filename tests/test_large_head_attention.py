@@ -658,7 +658,12 @@ def test_router_uses_the_kernel_for_masks_made_under_inference_mode():
 class _FakeCudaOperand:
     """A meta tensor that reports CUDA, so `_shapes_qualify` can be checked without a GPU."""
 
-    def __init__(self, shape, stride, dtype = torch.float16):
+    def __init__(
+        self,
+        shape,
+        stride,
+        dtype = torch.float16,
+    ):
         self._t = torch.empty_strided(shape, stride, device = "meta", dtype = dtype)
         self.shape, self.dtype, self.is_cuda, self.device = self._t.shape, dtype, True, "cuda:0"
 
