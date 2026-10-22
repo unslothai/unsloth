@@ -348,7 +348,7 @@ def test_custom_provider_test_endpoint_probes_models_before_chat(monkeypatch):
             providers_route.ProviderTestRequest(
                 provider_type = "custom",
                 base_url = "http://custom.example/v1",
-                model_id = "Qwen/Qwen3-0.6B",
+                model_id = "kokoro",
             ),
             _current_subject = "unsloth",
             via_api_key = False,

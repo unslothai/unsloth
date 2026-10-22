@@ -323,6 +323,26 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
+# Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
+# Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
+SMALL_DIT_BF16_WHEN_RESIDENT = (
+    "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
+    "0.103 on Z-Image-Turbo)"
+)
+# Bases of a small-DiT family that are not small: FLUX.2 klein 9B / base 9B (18.2 GB bf16 transformer, unmeasured)
+# keep the quantized auto default. Upstream ids; mirrors fold back through ``canonical_base``.
+_SMALL_DIT_LARGE_BASES = frozenset(
+    {
+        "black-forest-labs/flux.2-klein-9b",
+        "black-forest-labs/flux.2-klein-base-9b",
+    }
+)
+
+
+def small_dit_rule_excludes(base_repo: Optional[str]) -> bool:
+    """True when ``base_repo`` (vendor id or mirror) is a large variant the small-DiT bf16 rule must not cover."""
+    return canonical_base(base_repo).lower() in _SMALL_DIT_LARGE_BASES
+
 
 # FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
 # sharded T5 through its index (the shards sit beside it in the snapshot). The shards are listed so every fetch,
@@ -438,6 +458,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -523,6 +544,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -578,6 +600,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -1053,6 +1076,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 default_on = True,
             ),
             auto_prefer = _GATED_AUTO_PREFER,
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "zimage",
         ),
         # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.
