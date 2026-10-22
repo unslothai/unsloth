@@ -378,9 +378,9 @@ export const BUDGET = {
   // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer. Raised by that plus about
-  // 200 B (the CI build measured 6,738.9 KB raw / 2,030.0 KB transfer before #14500, Node 24, 98 chunks).
+  // 500 B raw (the CI build measured 6,738.9 KB raw / 2,030.0 KB transfer before #14500, about 100 B over a local build).
   transferBytes: 2_079_588,
-  rawBytes: 6_902_364,
+  rawBytes: 6_902_664,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
