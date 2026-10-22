@@ -2586,12 +2586,15 @@ def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-def _dense_seed_mib(family: str, speed_mode: str, dense_mib: int, widen: int) -> Optional[int]:
+def _dense_seed_mib(
+    family: str, speed_mode: str, dense_mib: int, widen: int, tier_seeds: bool
+) -> Optional[int]:
     """Seed MiB for a dense fp16 / fp32 denoiser (``widen`` = its element size), or None. Eager: the dense table. Default
     / max: the larger of the dense table and the tier's worst phase (encoder, denoise, untiled decode), only for a
     family the dense table measured at this DiT size. Families it lacks keep the flat estimate: on a T4, Z-Image's 11.5
     GiB DiT would then be kept partly resident, which ran slower per step than streaming it whole (3.8-4.4 vs 3.2-3.6
-    s/step)."""
+    s/step). ``tier_seeds``: the target is where the phase table was measured (NVIDIA with a sub-quadratic attention
+    kernel, ``diffusion._measured_target``); elsewhere (math-only attention, ROCm) the tiers keep the flat estimate."""
     entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(family)
     if entry is None or not 0 < dense_mib <= entry[1] * widen // 2:
         return None
@@ -2601,6 +2604,7 @@ def _dense_seed_mib(family: str, speed_mode: str, dense_mib: int, widen: int) ->
     phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(family)
     if (
         speed_mode not in _MEASURED_PEAK_SPEED_MODES
+        or not tier_seeds
         or phases is None
         or _env_off(MEASURED_ACTIVATION_DENSE_TIERS_ENV)
     ):
@@ -2620,6 +2624,7 @@ def measured_image_runtime_mib(
     quant: Optional[str] = None,
     phase_seeds: bool = False,
     static_seed: bool = True,
+    dense_tier_seeds: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
@@ -2630,7 +2635,8 @@ def measured_image_runtime_mib(
     peak this machine recorded for (family, quant, speed tier, resolution bucket) at an earlier render
     (diffusion_measured_peaks): it raises a seed and stands in for a missing one, never lowers a seed.
     ``static_seed=False`` (a denoiser no static table was measured on: bf16 or GGUF / int8 packed dense weights)
-    answers from the learned peak alone."""
+    answers from the learned peak alone. ``dense_tier_seeds`` enables the dense default / max tier seeds (``_dense_seed_mib``)
+    on the target the phase table was measured on."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
     seed: Optional[int] = None
@@ -2642,6 +2648,7 @@ def measured_image_runtime_mib(
             str(speed_mode or ""),
             int(dense_transformer_mib),
             max(2, int(compute_bytes or 2)),
+            dense_tier_seeds,
         )
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
@@ -3148,6 +3155,7 @@ def refine_plan_from_loaded_weights(
             compute_bytes = compute_bytes or 2,
             quant = read_quant,
             phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
+            dense_tier_seeds = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False)),
             static_seed = static_seed,
         )
         if headroom is None:
@@ -3897,6 +3905,7 @@ def measured_request_extra_mib(
     # after the load only places the NEXT load, it must not stream resident groups for a request the same size as one
     # that just completed. An unseeded family was placed from its learned peak, which is all there is to check against.
     sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
+    sized["dense_tier_seeds"] = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False))
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None

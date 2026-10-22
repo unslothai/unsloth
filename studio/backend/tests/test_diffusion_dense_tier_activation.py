@@ -64,6 +64,7 @@ def _pipe(
     loaded: dict,
     dtype_name: str = "float16",
     phase_seeds: bool = False,
+    tier_seeds: bool = True,
 ):
     import torch
 
@@ -74,6 +75,8 @@ def _pipe(
     return types.SimpleNamespace(
         transformer = types.SimpleNamespace(dtype = getattr(torch, dtype_name)),
         _unsloth_phase_seeds = phase_seeds,
+        # NVIDIA with a sub-quadratic SDPA kernel (diffusion._measured_target), as on the T4
+        _unsloth_dense_tier_seeds = tier_seeds,
     )
 
 
@@ -119,15 +122,24 @@ def test_seed_never_below_a_measured_phase_or_the_eager_seed():
     for family, (eager_peak, max_dit) in dm._MEASURED_DENSE_EAGER_PEAK_MIB.items():
         phases = dm._MEASURED_IMAGE_ACTIVATION_MIB.get(family)
         for speed, column in (("default", 0), ("max", 1)):
-            seed = m(family, speed, dense_transformer_mib = max_dit)
+            seed = m(family, speed, dense_transformer_mib = max_dit, dense_tier_seeds = True)
             if phases is None:
                 assert seed is None, family
                 continue
             assert seed >= max(phases[column][:3]) * dm._MEASURED_PEAK_MARGIN, (family, speed)
             assert seed >= m(family, "off", dense_transformer_mib = max_dit), (family, speed)
+            # off the measured target (math-only attention, ROCm) the tiers keep the flat estimate
+            assert m(family, speed, dense_transformer_mib = max_dit) is None, (family, speed)
             # fp32 compute doubles it, never shrinks it
             assert (
-                m(family, speed, dense_transformer_mib = max_dit, compute_bytes = 4) >= 2 * seed - 256
+                m(
+                    family,
+                    speed,
+                    dense_transformer_mib = max_dit,
+                    compute_bytes = 4,
+                    dense_tier_seeds = True,
+                )
+                >= 2 * seed - 256
             )
 
 
@@ -161,9 +173,40 @@ def test_guard_charges_bigger_requests_past_the_default_tier_reserve(monkeypatch
     for name in ENVS:
         monkeypatch.delenv(name, raising = False)
     pipe = types.SimpleNamespace(
-        _unsloth_measured_reserve = (3072, "flux.2-klein", "default", 7393, 2)
+        _unsloth_measured_reserve = (3072, "flux.2-klein", "default", 7393, 2),
+        _unsloth_dense_tier_seeds = True,
     )
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
     # 2048 x 2048 is four megapixels: the seed scales with the pixels, so resident groups stream again
     assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) == 12288 - 3072
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, batch_size = 2) > 0
+
+
+@pytest.mark.parametrize("speed", ["default", "max"])
+def test_unmeasured_target_keeps_the_flat_plan(monkeypatch, speed):
+    """Math-only attention or ROCm: the phase table was not measured there, so a dense fp16 load keeps the flat
+    reserve on the compiled tiers (the eager dense table is unchanged)."""
+    pipe = _pipe(monkeypatch, KLEIN_LOADED, tier_seeds = False)
+    plan = _flat_plan(KLEIN_FLAT, "flux.2-klein")
+    assert _refine(pipe, plan, "flux.2-klein", speed) is plan
+    assert _refine(pipe, plan, "flux.2-klein", "off") is not plan
+
+
+def test_measured_target_needs_nvidia_and_a_subquadratic_kernel(monkeypatch):
+    import core.inference.diffusion as diffusion
+
+    nvidia = types.SimpleNamespace(backend = "cuda", vendor = "nvidia")
+    rocm = types.SimpleNamespace(backend = "cuda", vendor = "amd")
+    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", lambda target: True)
+    assert diffusion._measured_target(nvidia) is True
+    assert diffusion._measured_target(rocm) is False
+    assert diffusion._measured_target(types.SimpleNamespace(backend = "mps", vendor = "apple")) is False
+    # math-only attention (no fused kernel ran) and a probe that raised are not the measured target
+    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", lambda target: False)
+    assert diffusion._measured_target(nvidia) is False
+
+    def boom(target):
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", boom)
+    assert diffusion._measured_target(nvidia) is False
