@@ -5281,7 +5281,14 @@ class VideoBackend:
                 local = root
             elif root.is_dir():
                 from .diffusion_families import resolve_local_gguf_child
-                local = resolve_local_gguf_child(root, wanted)
+                from .video_minimax_h3 import h3_pre_move_bundle_file
+                try:
+                    local = resolve_local_gguf_child(root, wanted)
+                except FileNotFoundError:
+                    # The request builder routed here on a pre-move name of the right size; the bytes must match too.
+                    local = h3_pre_move_bundle_file(root, wanted)
+                    if local is None:
+                        raise
             else:
                 try:
                     local = Path(
@@ -5296,7 +5303,19 @@ class VideoBackend:
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
-                    raise h3_download_error(repo, wanted, exc) from exc
+                    from .video_minimax_h3 import (
+                        h3_cache_miss,
+                        h3_offline_miss_error,
+                        h3_pre_move_cached_copy,
+                    )
+
+                    if not h3_cache_miss(exc):
+                        raise h3_download_error(repo, wanted, exc) from exc
+                    # Not cached and the Hub cannot be asked: an install staged before the move holds the same bytes
+                    # under the old name (hash-checked), which is a cache read, not a download.
+                    local = h3_pre_move_cached_copy(wanted)
+                    if local is None:
+                        raise h3_offline_miss_error(repo, wanted) from exc
             resolved.append(local)
 
         engine = SdCppEngine(binary)
@@ -6283,15 +6302,19 @@ class VideoBackend:
 
         repo = h3_te_quant_source(scheme)
         try:
-            hf_hub_download_with_xet_fallback(
-                repo,
-                filename,
-                hf_token,
-                cancel_event = cancel,
-                cache_dir = hub_cache_dir(),
-                reuse_other_cache_root = True,
-                local_files_only = local_files_only,
-            )
+            try:
+                hf_hub_download_with_xet_fallback(
+                    repo,
+                    filename,
+                    hf_token,
+                    cancel_event = cancel,
+                    cache_dir = hub_cache_dir(),
+                    reuse_other_cache_root = True,
+                    local_files_only = local_files_only,
+                )
+            except Exception as miss:  # noqa: BLE001 -- a cache-only miss may have a pre-move copy
+                from .video_minimax_h3_te import h3_te_quant_pre_move_copy
+                h3_te_quant_pre_move_copy(filename, miss)
         except Exception as exc:  # noqa: BLE001 -- no artifact just means the dense encoder
             if cancel.is_set():
                 raise
@@ -7241,7 +7264,11 @@ class VideoBackend:
             try:
                 resolve_local_gguf_child(root, filename)
             except Exception:  # noqa: BLE001 -- not in the local clone, so the Hub copy it is
-                return hub_repo
+                from .video_minimax_h3 import h3_pre_move_bundle_file
+
+                # A bundle cloned before the official-provenance move holds the same bytes under the old name.
+                if h3_pre_move_bundle_file(root, filename, verify = False) is None:
+                    return hub_repo
             return repo_id
         return hub_repo
 
