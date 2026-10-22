@@ -451,9 +451,11 @@ class ModuleArena:
         self.arena = VmmArena(max(offset, _ALIGN), self.device.index)
 
     def _stale(self, entries: list) -> bool:
-        """Whether a placeable host weight has no slot of its shape, stride and dtype in the layout."""
+        """Whether a placeable host weight has no slot of its shape, stride and dtype in the layout, or a slot outlived
+        its weight (an unloaded adapter): a removed piece must not keep its share of the range mapped."""
         assert self.layout is not None
-        for name, _regs, _kind, whole in entries:
+        seen: set = set()
+        for name, regs, _kind, whole in entries:
             if whole.device.type != "cpu" or not _placeable(whole):
                 continue
             for key, t in _pieces(name, whole):
@@ -464,7 +466,9 @@ class ModuleArena:
                     slot[3],
                 ):
                     return True
-        return False
+                suffix = key[len(name) :]
+                seen.update(qual + suffix for _owner, _leaf, qual in regs)
+        return not seen.issuperset(self.layout)
 
     def _referenced(self, module: Any) -> bool:
         if self.arena is None or not self.arena.mapped:

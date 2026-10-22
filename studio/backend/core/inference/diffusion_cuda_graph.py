@@ -1023,7 +1023,13 @@ class GraphedForward:
             "traceback": traceback.format_exc()[-6000:],
         }
         self.poisoned = True
-        _retire_stable_placement(self.placement)
+        if (
+            getattr(self, "fallback", None) is None
+            and getattr(self, "fallback_handle", None) is None
+        ):
+            # A pending or armed per-block fallback still keys its graphs on the resident groups' addresses: the
+            # stable re-pin stays until it is known to be gone (``_engage_fallback`` / ``free``).
+            _retire_stable_placement(self.placement)
         # ``__call__`` short-circuits to eager on ``poisoned`` before it reads the cache, so every
         # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
         # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
@@ -1235,6 +1241,8 @@ class GraphedForward:
         except Exception as exc:  # noqa: BLE001
             _warn(self.logger, "per-block fallback", exc)
             self.fallback_handle = None
+        if self.fallback_handle is None and self.poisoned:
+            _retire_stable_placement(self.placement)  # nothing left that records over the placement
         if self.fallback_handle is not None and self.logger is not None:
             self.logger.info(
                 "diffusion.cuda_graph: %s records per block for the steps its whole-step graph leaves eager",

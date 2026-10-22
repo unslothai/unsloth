@@ -589,6 +589,26 @@ def test_freed_block_offload_graphs_stop_the_stable_repin():
     assert not sa.stable_repin_wanted(net)
 
 
+def test_a_poisoned_block_offload_step_keeps_the_stable_repin_for_its_block_fallback():
+    """The per-block fallback a poisoned step arms keys its graphs on the resident groups' addresses: the stable re-pin
+    stays while it can still record, and stops once no fallback is left."""
+    _cuda()
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    step = handles[0]
+    assert sa.stable_repin_wanted(net)
+    step.fallback = lambda: object()
+    step.poison(RuntimeError("capture failed"))
+    assert sa.stable_repin_wanted(net)
+    step._engage_fallback()
+    assert step.fallback_handle is not None and sa.stable_repin_wanted(net)
+    step.fallback_handle = None
+    step.fallback = lambda: None  # the fallback could not arm: nothing records over the placement
+    step._engage_fallback()
+    assert not sa.stable_repin_wanted(net)
+    cg.uninstall_all(handles)
+
+
 def test_model_offload_stable_range_is_rebuilt_when_a_weight_changes_on_the_host():
     """A weight added or reshaped on the host after the range was laid out (a new adapter) lands in a rebuilt range,
     not beside a fully mapped stale one at a new address every onload."""
@@ -610,6 +630,28 @@ def test_model_offload_stable_range_is_rebuilt_when_a_weight_changes_on_the_host
         hook.offload()
         assert not arena.arena.mapped
     assert arena.stats["rebuilds"] == 1
+    arena.detach()
+
+
+def test_model_offload_stable_range_is_rebuilt_when_a_weight_is_removed():
+    """An adapter unloaded after the range was laid out frees its slots: the next onload maps a rebuilt, smaller range
+    instead of the old full-size one."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    ref, net, hook = _model_offloaded()
+    net.extra = torch.nn.Parameter(
+        torch.randn(2048, 2048)
+    )  # 16 MiB: well past the mapping granularity
+    arena, why = sa.attach(net)
+    assert arena is not None, why
+    _run(net, [0])
+    full = arena.arena.size
+    hook.offload()
+    del net.extra
+    for a, b in zip(_run(net, [1]), _run(ref, [1])):
+        assert torch.equal(a, b)
+    assert arena.stats["rebuilds"] == 1 and arena.arena.size < full
+    hook.offload()
     arena.detach()
 
 
