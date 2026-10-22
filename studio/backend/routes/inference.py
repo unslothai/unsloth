@@ -9352,8 +9352,26 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return slot.llama if slot is not None else _llama_cpp_backend
 
 
+def _worker_exited(slot: Optional[_ExtraSlot]) -> bool:
+    proc = getattr(model_slots.in_slot(slot, _peek_inference_backend), "_proc", None)
+    return proc is not None and not proc.is_alive()
+
+
+def _reap_dead_workers(slots: list) -> None:
+    for slot in slots:
+        model_slots.in_slot(slot, lambda: reap_dead_worker(_peek_inference_backend()))
+
+
+async def _reap_exited_workers() -> None:
+    # A killed worker stays named until reaped; is_alive() is a non-blocking waitpid.
+    exited = [slot for slot in (None, *model_slots.slots) if _worker_exited(slot)]
+    if exited:
+        await asyncio.to_thread(_reap_dead_workers, exited)
+
+
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
     """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
+    await _reap_exited_workers()
     return await model_slots.route(requested, _loaded_satisfies)
 
 
@@ -12836,6 +12854,16 @@ def reap_dead_managed_engine(backend) -> None:
         account_access.clear_resident("chat")
 
 
+def reap_dead_worker(backend) -> None:
+    """Cleared, never respawned: every routed request runs this, so an OOM respawn would loop."""
+    from core.inference.gpu_arbiter import CHAT, holds
+
+    if getattr(backend, "_proc", None) is None:
+        return
+    if backend.reap_dead_worker() and (release_chat_after_kept_models() or not holds(CHAT)):
+        account_access.clear_resident("chat")
+
+
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
@@ -12909,6 +12937,8 @@ async def load_model_for_preview(
                         detail = "A transformers installation is in progress. Retry when it completes.",
                         headers = {"Retry-After": "10"},
                     )
+                # Else a dead worker's name refuses every preview as Studio-owned.
+                await _reap_exited_workers()
                 loaded = _loaded_slot_ident()
                 # Borrow the resident model when it already serves this checkpoint, matching
                 # an equivalent spelling (relative vs the resolved absolute path) via realpath
@@ -19483,6 +19513,8 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
 
+    # Before the early return: the NPU and managed-engine guards read the primary's name.
+    await _reap_exited_workers()
     # The NPU backend is one per process and replaces the primary, so it never takes a slot. vLLM
     # and SGLang reserve a fixed share of the GPU up front, so neither shares it with a kept model.
     if is_npu_model_path(request.model_path) or request.engine != "auto":
@@ -20163,6 +20195,7 @@ async def _load_model_impl(
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
+            await asyncio.to_thread(reap_dead_worker, backend)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
@@ -25553,6 +25586,8 @@ def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
 async def _dispatch_audio_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
+    if body.provider_id:
+        return await _speak_on_connection(body, request)
     if body.workflow == "separate":
         return await _run_separation(body, request, current_subject)
     if body.workflow == "convert":
@@ -26044,6 +26079,64 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     return Response(content = audio_bytes, media_type = media_type)
+
+
+async def _speak_on_connection(body: AudioRunRequest, request: Request) -> AudioRunResponse:
+    import wave
+
+    if (
+        body.workflow != "speak"
+        or body.inputs != AudioRunInputs()
+        or body.language
+        or body.options
+        or body.seed is not None
+        or body.max_tokens is not None
+        or any(
+            name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+            for name in _MUSIC_ONLY_FIELDS
+        )
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A saved connection only speaks text, in a voice, with instructions and speed.",
+        )
+    speech = await _external_tts_speech(
+        AudioSpeechRequest(
+            input = body.text,
+            model = body.model,
+            voice = body.voice,
+            speed = body.speed,
+            instructions = body.instructions,
+            provider_id = body.provider_id,
+        ),
+        request,
+    )
+    try:
+        with wave.open(io.BytesIO(speech.body)) as wav:
+            params = wav.getparams()
+            frames = wav.readframes(wav.getnframes())
+    except (wave.Error, EOFError):
+        raise HTTPException(
+            status_code = 502, detail = "The TTS endpoint did not return WAV audio."
+        ) from None
+    # OpenAI streams WAV with 0xFFFFFFFF sizes; rewrite the header from the frames received.
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setparams(params._replace(nframes = 0))
+        wav.writeframes(frames)
+    wav_bytes, sample_rate = out.getvalue(), params.framerate
+    settings = {"voice": body.voice, "instructions": body.instructions, "speed": body.speed}
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        body.model,
+        "connection",
+        {"settings": settings},
+        "speak",
+    )
+    return _audio_run_response(record, wav_bytes, sample_rate, body.model)
 
 
 # openai-compatible speech api: the router's dual mount also answers /v1/audio/speech

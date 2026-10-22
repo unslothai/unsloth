@@ -14,7 +14,7 @@ test("Audio exposes the shared picker eject action only while idle", () => {
   // The selector keeps showing the last Transcribe model once it is unloaded; Eject there did nothing.
   assert.match(
     source,
-    /onEject=\{\s*audioEjectAvailable\(\{\s*mode,\s*busy,\s*hasValue: Boolean\(selectorValue\),\s*showLastPageModel,\s*sttReady,\s*\}\)\s*\? handleEject\s*: undefined\s*\}/,
+    /onEject=\{\s*!connection &&\s*audioEjectAvailable\(\{\s*mode,\s*busy,\s*hasValue: Boolean\(selectorValue\),\s*showLastPageModel,\s*sttReady,\s*\}\)\s*\? handleEject\s*: undefined\s*\}/,
   );
   assert.match(source, /const handleEject = useCallback\(\(\) => \{\s*if \(busy !== null\) \{/);
   assert.match(
@@ -283,5 +283,20 @@ test("leaving Audio during the residency read skips the transcription load", () 
   assert.match(
     source,
     /await readSttResidency\(engine\)[\s\S]{0,400}?\|\| !activeRef\.current\) return null;[\s\S]*?await ensureSttLoaded\(repo, model, engine\)/,
+  );
+});
+
+test("Use via API is hidden while Speak runs through a connection", () => {
+  assert.match(source, /\{connection \? null : \(\s*<UseViaApiButton\s+workflow=\{pageWorkflow\}/);
+});
+
+test("picking a connection retires a local Speak pick still downloading or planning", () => {
+  assert.match(
+    source,
+    /if \(meta\.source === "external"\) \{\s*if \(busyRef\.current === null\) \{\s*invalidatePendingTtsSelection\(\);\s*setSpeakConnectionId\(id\);/,
+  );
+  assert.match(
+    source,
+    /const invalidatePendingTtsSelection = useCallback\(\(\) => \{\s*ttsPickGeneration\.current \+= 1;\s*pendingRoutedTtsPick\.current = null;\s*invalidatePendingStagedTts\(\);/,
   );
 });

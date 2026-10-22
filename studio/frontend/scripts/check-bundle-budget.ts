@@ -374,10 +374,13 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer. Raised by that plus about
-  // 200 B (the CI build measured 6,738.9 KB raw / 2,030.0 KB transfer, Node 24, 98 chunks).
-  transferBytes: 2_079_170,
-  rawBytes: 6_900_850,
+  // 200 B (the CI build measured 6,738.9 KB raw / 2,030.0 KB transfer before #14500, Node 24, 98 chunks).
+  transferBytes: 2_079_588,
+  rawBytes: 6_902_364,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
