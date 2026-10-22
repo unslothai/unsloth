@@ -37,7 +37,6 @@ def _chat() -> list[dict]:
 
 def _persist(thread_id: str, messages: list[dict]) -> None:
     from storage import studio_db
-
     studio_db.upsert_chat_thread(
         {
             "id": thread_id,
@@ -158,9 +157,7 @@ def test_an_external_tool_chat_with_an_archive_is_told_about_compaction(monkeypa
     )
 
     names = {tool["function"]["name"] for tool in sent["tools"]}
-    system = " ".join(
-        str(m.get("content")) for m in sent["messages"] if m.get("role") == "system"
-    )
+    system = " ".join(str(m.get("content")) for m in sent["messages"] if m.get("role") == "system")
     assert "search_conversation" in names
     assert "call search_conversation before answering" in system
 
@@ -181,7 +178,5 @@ def test_an_external_tool_chat_without_an_archive_gets_no_compaction_nudge(monke
         permission_mode = "off",
     )
 
-    system = " ".join(
-        str(m.get("content")) for m in sent["messages"] if m.get("role") == "system"
-    )
+    system = " ".join(str(m.get("content")) for m in sent["messages"] if m.get("role") == "system")
     assert "search_conversation" not in system

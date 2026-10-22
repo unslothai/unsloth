@@ -30513,9 +30513,7 @@ def _archive_external_eviction(thread_id, before: list[dict], fitted: list[dict]
 
         gone = evicted_messages(before, fitted)
         if gone:
-            conversation_archive.archive_turns(
-                str(thread_id), gone, live = fitted, branch = before
-            )
+            conversation_archive.archive_turns(str(thread_id), gone, live = fitted, branch = before)
     except Exception as exc:  # noqa: BLE001 -- archiving is best-effort
         logger.warning("Could not archive turns evicted for an external provider: %s", exc)
 
