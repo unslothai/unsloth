@@ -107,6 +107,7 @@ class RawTextDataLoader:
         if chunks and isinstance(chunks[0], dict):
             input_ids = [chunk["input_ids"] for chunk in chunks]
             attention_mask = [chunk["attention_mask"] for chunk in chunks]
+            # Labels == input_ids for causal LM
             labels = [list(ids) for ids in input_ids]
             return Dataset.from_dict(
                 {
@@ -148,13 +149,16 @@ class RawTextDataLoader:
         if not text or not text.strip():
             return []
 
+        # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
 
+        # Normalise tokenizer return formats
         if hasattr(tokens, "__len__") and len(tokens) > 0:
             if hasattr(tokens[0], "__len__"):
                 tokens = tokens[0]
         elif isinstance(tokens, int):
+            # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
@@ -165,6 +169,7 @@ class RawTextDataLoader:
         num_tokens = len(tokens) + int(reserve_eos)
 
         if num_tokens <= chunk_size:
+            # Fits in a single chunk
             if return_tokenized:
                 tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 if eos_token_id is not None:
@@ -184,7 +189,7 @@ class RawTextDataLoader:
                 break
             start_idx += chunk_size - stride
 
-        # Stride 0 + exact multiple leaves a lone-EOS chunk; end a full window at the EOS instead.
+        # Stride 0 with an exact multiple leaves a lone-EOS chunk; end a full window at EOS so EOS keeps context and no token loses its label.
         if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
             bounds[-1][0] = num_tokens - chunk_size
 
@@ -221,6 +226,7 @@ class RawTextDataLoader:
                 return f.read()
             elif file_format == "json_lines":
                 if Path(file_path).suffix.lower() == ".json":
+                    # A .json file is one JSON document, not JSON lines, so per-line parsing would drop the whole file.
                     try:
                         parsed = json.load(f)
                         records = parsed if isinstance(parsed, list) else [parsed]
@@ -363,6 +369,7 @@ class TextPreprocessor:
         """Extract specific sections (e.g., code blocks, quotes)"""
         sections = []
         for pattern in patterns:
+            # Patterns are user-provided, so just use re.findall with compiled flags rather than a compile cache.
             matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
             sections.extend(matches)
         return sections
@@ -409,6 +416,7 @@ class TextPreprocessor:
                     "Dataset has 'input_ids' but no 'text' column; "
                     "pass `tokenizer=` to validate_dataset() to decode it for validation."
                 )
+            # Generator, not a list: decoded text is consumed once by the loop below.
             texts = (
                 tokenizer.decode(ids, skip_special_tokens = True)
                 for ids in _iter_column(dataset, "input_ids")
@@ -444,6 +452,7 @@ class TextPreprocessor:
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
 
+        # min_length keeps its float("inf") seed when no sample had content; report 0 like max_length and avg_length.
         if stats["min_length"] == float("inf"):
             stats["min_length"] = 0
 
@@ -456,6 +465,7 @@ class TextPreprocessor:
         if stats["encoding_issues"] > 0:
             stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
+        # Guard on text_lengths, not min_length: with nothing measured min_length is 0, which must not warn as very short.
         if text_lengths and stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")
 

@@ -85,6 +85,7 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         ds = load_dataset("HuggingFaceH4/ultrachat_200k", split = f"train_sft[:{num_samples}]")
         ds = ds.shuffle(seed = 42)
     elif kind == "hfid":
+        # Not every dataset has a "train" split (e.g. train_sft only); fall back to the first one.
         try:
             ds = load_dataset(value, split = f"train[:{num_samples}]")
         except (ValueError, KeyError):
@@ -94,6 +95,7 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
                 split = get_dataset_split_names(value)[0]
                 ds = load_dataset(value, split = f"{split}[:{num_samples}]")
             except Exception:
+                # Last resort: materialize, then subselect (preserves the original behavior).
                 ds = load_dataset(value)
                 if isinstance(ds, DatasetDict):
                     ds = ds[next(iter(ds.keys()))]
@@ -124,7 +126,7 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
                 "pass a non-empty calibration_dataset."
             )
     except TypeError:
-        pass  # no len() on iterable datasets
+        pass  # streaming / iterable datasets have no len(); let llm-compressor handle them
 
     cols = set(ds.column_names)
     if "input_ids" in cols:
@@ -139,6 +141,7 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         has_chat_template = bool(getattr(_tok, "chat_template", None))
 
         def _content_to_text(content):
+            # content may be a str, None, or a multimodal list of parts (str or {"text": ...}).
             if content is None:
                 return ""
             if isinstance(content, str):
@@ -182,6 +185,8 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
 
 def _from_pretrained(auto_model, model_path, trust_remote_code):
     import torch
+
+    # transformers renamed torch_dtype -> dtype; support both.
     try:
         return auto_model.from_pretrained(
             model_path,
@@ -239,8 +244,9 @@ def main():
 
     model = _from_pretrained(auto_model, args.model, args.trust_remote_code)
     model.eval()
+    # A tokenizer may be absent if the caller saved it separately; only calibration needs one.
     try:
-        # The processor has its own trust flag: consent for one component must not cover the other.
+        # The tokenizer/processor has its own trust flag: consent for one component must not let the other's custom code run.
         tokenizer = auto_proc.from_pretrained(
             args.model, trust_remote_code = args.trust_remote_code_tokenizer
         )
@@ -252,6 +258,7 @@ def main():
             )
         tokenizer = None
 
+    # MoE models keep the router/gate unquantized and calibrate every expert, even ones the samples never route to.
     config = getattr(model, "config", None)
     is_moe = _is_moe(config)
     ignore = compressed_ignore_patterns(config)

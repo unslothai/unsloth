@@ -408,7 +408,7 @@ def _cached_gguf_load_id(row: dict) -> str:
     resolved = _preferred_complete_gguf(load_id)
     if resolved:
         return resolved
-    # The bare repo id is not a path; resolve through the row's snapshot.
+    # The bare repo id is not a path, so resolve through the snapshot the row was built from.
     cache_path = row.get("cache_path")
     if cache_path:
         try:
@@ -521,6 +521,7 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     except OSError:
         return True
     if not is_dir:
+        # A scan row can name the .gguf file itself; anything else still fails open.
         return _gguf_file_is_loadable(path) if path.suffix.lower() == ".gguf" else True
     from hub.services.models.common import (
         _is_diffusers_pipeline_dir,
@@ -614,9 +615,10 @@ def local_folder_entries() -> List[ModelEntry]:
         ) or model.partial:
             continue
         is_gguf = model.model_format == "gguf" or model.path.lower().endswith(".gguf")
-        # No format gate: _dir_model_format reports only "gguf" or None.
+        # No format gate: _dir_model_format yields only gguf or None, so a safetensors literal would drop every non-GGUF model.
         if _local_model_task(model) in NON_CHAT_TASKS:
             continue
+        # No format gate, so embedding and CLIP exports get through; only this stops them.
         if _local_model_can_chat(model) is False:
             continue
         if not _local_dir_holds_a_payload(Path(model.path)):
@@ -649,10 +651,10 @@ def _safe(fn) -> List[ModelEntry]:
     try:
         return fn()
     except Exception as error:
-        # Same truthy set as utils.utils and utils.transformers_version.
+        # Same truthy set the rest of the tree uses (utils.utils, utils.transformers_version).
         if os.environ.get("UNSLOTH_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
             raise
-        # Not at module scope (test_catalog_inventory_works_without_fastapi_or_routes).
+        # Not at module scope: this module must pull in nothing beyond the inventory layer (test_catalog_inventory_works_without_fastapi_or_routes).
         import typer
 
         typer.echo(

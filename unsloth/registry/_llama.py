@@ -19,6 +19,7 @@ class LlamaVisionModelInfo(ModelInfo):
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
+# Llama 3.1
 LlamaMeta_3_1 = ModelMeta(
     org = "meta-llama",
     base_name = "Llama",
@@ -30,6 +31,7 @@ LlamaMeta_3_1 = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
+# Llama 3.2 Base Models
 LlamaMeta_3_2_Base = ModelMeta(
     org = "meta-llama",
     base_name = "Llama",
@@ -41,6 +43,7 @@ LlamaMeta_3_2_Base = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
+# Llama 3.2 Instruction Tuned Models
 LlamaMeta_3_2_Instruct = ModelMeta(
     org = "meta-llama",
     base_name = "Llama",
@@ -52,6 +55,7 @@ LlamaMeta_3_2_Instruct = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
+# Llama 3.2 Vision
 LlamaMeta_3_2_Vision = ModelMeta(
     org = "meta-llama",
     base_name = "Llama",

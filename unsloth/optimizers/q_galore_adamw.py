@@ -32,6 +32,7 @@ try:
     _HAS_BNB = True
 except ImportError:
     _HAS_BNB = False
+    # Fallback base so the module can still be imported.
     Optimizer2State = torch.optim.Optimizer
 
 
@@ -195,7 +196,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             queue_size = group.get("queue_size", 5),
                         )
 
-                    # Weight decay for GaLore params is applied manually after project-back.
+                    # Temporarily disable weight decay for GaLore params; it is applied manually after project-back.
                     if "weight_decay" in group and group["weight_decay"] > 0:
                         group["_wd_saved"] = group["weight_decay"]
                         group["weight_decay"] = 0
@@ -250,7 +251,10 @@ class QGaLoreAdamW8bit(Optimizer2State):
     @staticmethod
     def _has_weight_quant(p: torch.Tensor, group: dict) -> bool:
         """Check if this parameter uses INT8 weight quantization."""
-        return group.get("weight_quant", False) and hasattr(p, "_q_scales")
+        return (
+            group.get("weight_quant", False)
+            and hasattr(p, "_q_scales")  # tag set by init_weight_quantization()
+        )
 
     @staticmethod
     def init_weight_quantization(
@@ -350,6 +354,7 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     return handles
 
 
+# Default linear layer names in transformer blocks that should use GaLore.
 _DEFAULT_GALORE_TARGETS = {
     "q_proj",
     "k_proj",

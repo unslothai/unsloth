@@ -82,7 +82,7 @@ def tol_ok() -> float:
     return _TOL_OK
 
 
-# At or above TOL_KILL the structure is unsafe forever; between tol_ok and TOL_KILL fall back per shape.
+# TOL_KILL or above means broken mask or isolation: unsafe forever. Between tol_ok and TOL_KILL, fall back for this shape only.
 TOL_KILL = 1.5
 
 
@@ -91,7 +91,7 @@ class GroupLayout:
     """Everything the GRPO forward needs to run + extract the shared-prefix path."""
 
     flat_ids: torch.Tensor  # [1, T]  (T == seg.T)
-    position_ids: torch.Tensor
+    position_ids: torch.Tensor  # [1, T]
     prefix_seg_info: PrefixSegInfo
     # Per completion target token, aligned 1:1.
     tgt_rows: torch.Tensor  # [N] original row index
@@ -119,8 +119,8 @@ class GroupLayout:
         Returns [total_rows, W] float32, byte-compatible with the packed path result."""
         # In a sharded model hidden may live on the lm-head device.
         device = hidden.device
-        pred_h = hidden[0, self.tgt_pred.to(device), :].unsqueeze(0)
-        tgt_ids = self.flat_ids[0, self.tgt_flat].to(device).unsqueeze(0)
+        pred_h = hidden[0, self.tgt_pred.to(device), :].unsqueeze(0)  # [1, N, Hdim]
+        tgt_ids = self.flat_ids[0, self.tgt_flat].to(device).unsqueeze(0)  # [1, N]
         sel = chunked_fn(
             pred_h,
             lm_head,
@@ -130,7 +130,7 @@ class GroupLayout:
             logit_scale_divide,
             logit_softcapping,
             temperature,
-        )[0]
+        )[0]  # [N] logprobs
         dest = self.tgt_rows.to(device) * self.L + self.tgt_cols.to(device)
         result = (
             torch.zeros(self.total_rows * self.L, dtype = torch.float32, device = device)
@@ -158,9 +158,9 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
     groups = []
     for g0 in range(0, total_rows, G):
         rows = list(range(g0, g0 + G))
-        prompt_cols_per_row = []
+        prompt_cols_per_row = []  # real cols < cstart
         prompt_toks_per_row = []
-        comp_cols_per_row = []
+        comp_cols_per_row = []  # real cols >= cstart  (the completion region packed scatters)
         for r in rows:
             cs = cstart_cpu[r]
             rc = real_cols_cpu[r]
@@ -171,7 +171,7 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
             comp_cols_per_row.append(c_cols)
         if any(len(p) == 0 for p in prompt_toks_per_row):
             return None
-        # Shared-prefix precondition: byte-identical prompts across the group.
+        # Require BYTE-IDENTICAL prompts across the group, the shared-prefix precondition.
         P = len(prompt_toks_per_row[0])
         if any(len(prompt_toks_per_row[k]) != P for k in range(1, G)):
             return None
@@ -187,10 +187,10 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
             dict(
                 rows = rows,
                 P = P,
-                prefix_cols = prompt_cols_per_row[0],
+                prefix_cols = prompt_cols_per_row[0],  # shared prompt real columns (row0)
                 prefix_row = rows[0],
                 R_list = R_list,
-                suf_cols = comp_cols_per_row,
+                suf_cols = comp_cols_per_row,  # per-row completion-region real columns
             )
         )
     return groups
@@ -202,8 +202,8 @@ def _tok_r(groups) -> float:
     for gm in groups:
         P = gm["P"]
         Rs = gm["R_list"]
-        tok_full += sum(P + r for r in Rs)
-        tok_sp += P + sum(Rs)
+        tok_full += sum(P + r for r in Rs)  # G*P + sumR
+        tok_sp += P + sum(Rs)  # P + sumR
     return (tok_full / tok_sp) if tok_sp else 1.0
 
 
@@ -249,7 +249,7 @@ def build_group_layout(
     if groups is None:
         return None
 
-    # A group's PG span is P + max(R); fall back if it exceeds the sliding window.
+    # Sliding-window guard: a group's PG span is P + max(R), so fall back if it exceeds the window.
     if max_segment_cap is not None:
         for gm in groups:
             if gm["P"] + max(gm["R_list"]) > max_segment_cap:
@@ -257,8 +257,9 @@ def build_group_layout(
 
     tok_r = _tok_r(groups)
     if apply_tokr_gate and tok_r < tokr_threshold():
-        return None
+        return None  # low reuse -> not worth it; use the full-row packed path
 
+    # Build flat stream by gathering original (row, col) coordinates.
     group_specs = [(gm["P"], gm["R_list"]) for gm in groups]
     seg, group_meta = build_seg_info_multigroup(group_specs, device)
 
@@ -274,16 +275,17 @@ def build_group_layout(
         rows = gm["rows"]
         P = gm["P"]
         r0 = gm["prefix_row"]
-        prefix_cols = gm["prefix_cols"]
-        plast = meta["prefix_last_index"]
+        prefix_cols = gm["prefix_cols"]  # ORIGINAL real prompt columns (len P) of row0
+        plast = meta["prefix_last_index"]  # base + P - 1
+        # Gather the shared prefix once, from row0.
         flat_src_rows.extend([r0] * P)
         flat_src_cols.extend(prefix_cols)
         pos_list.extend(range(P))
-        # completion_mask hides prompt-tail positions among the suffix targets.
+        # Every suffix token is a completion-region target, scattered like the packed path; completion_mask hides prompt-tail positions.
         for i, r in enumerate(rows):
             cols = gm["suf_cols"][i]
             r_i = len(cols)
-            s, e = meta["suffix_slices"][i]
+            s, e = meta["suffix_slices"][i]  # flat offsets [s, e)
             flat_src_rows.extend([r] * r_i)
             flat_src_cols.extend(cols)
             pos_list.extend(range(P, P + r_i))
@@ -291,15 +293,15 @@ def build_group_layout(
                 # Position 0 is predicted from the prefix's last token; j >= 1 from the previous suffix token.
                 pred = plast if j == 0 else (s + j - 1)
                 tgt_rows.append(r)
-                tgt_cols.append(cols[j])
+                tgt_cols.append(cols[j])  # ORIGINAL padded column in row r
                 tgt_pred.append(pred)
-                tgt_flat.append(s + j)
+                tgt_flat.append(s + j)  # flat index of the target token itself
 
     T = len(flat_src_rows)
     assert T == seg.T, f"flat stream len {T} != seg.T {seg.T}"
     fr = torch.tensor(flat_src_rows, device = device, dtype = torch.long)
     fc = torch.tensor(flat_src_cols, device = device, dtype = torch.long)
-    flat_ids = input_ids[fr, fc].unsqueeze(0)
+    flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
     position_ids = torch.tensor(pos_list, device = device, dtype = torch.long).unsqueeze(0)
 
     max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0

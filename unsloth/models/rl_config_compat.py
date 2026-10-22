@@ -43,15 +43,20 @@ __all__ = [
 
 # Straight renames only: anything needing a different value goes in the advice table.
 TRL_CONFIG_RENAMES = {
+    # Deprecated in TRL 0.26.0 (DPO) / 0.27.0 (GRPO), removed in 0.28.0.
     "use_liger_loss": "use_liger_kernel",
+    # Deprecated in TRL 0.27.0, removed in 0.28.0.
     "vllm_guided_decoding_regex": "vllm_structured_outputs_regex",
+    # Deprecated in TRL 0.26.0, removed in 0.27.0.
     "wandb_log_unique_prompts": "log_unique_prompts",
 }
 
 
 # Only consulted for arguments the installed config rejects.
 TRL_REMOVED_FIELD_ADVICE = {
+    # GRPOConfig, removed in TRL 0.28.0.
     "max_prompt_length": ("filter overlong prompts out of your dataset before training instead"),
+    # DPOConfig, removed in TRL 0.29.0.
     "max_completion_length": "use `max_length` to cap total sample length instead",
     "base_model_attribute_name": "the base model is now retrieved via `get_decoder`",
     "force_use_ref_model": "no longer needed, pass `ref_model` and it is used automatically",
@@ -77,6 +82,7 @@ TRANSFORMERS_CONFIG_RENAMES = {
 }
 
 
+# transformers 5 removals whose value cannot be carried across.
 TRANSFORMERS_REMOVED_FIELD_ADVICE = {
     # Not a rename: a migrated bool False would read as truthy (normalised only in __post_init__).
     "include_tokens_per_second": ('set `include_num_input_tokens_seen = "all"` instead'),
@@ -109,6 +115,7 @@ TRANSFORMERS_REMOVED_FIELD_ADVICE = {
 }
 
 
+# Memoised on the class object, which is module level and outlives the process.
 _ACCEPTED_CACHE = {}
 
 
@@ -120,7 +127,7 @@ def _accepted_parameters(config_class):
     """
     try:
         cached = _ACCEPTED_CACHE.get(config_class)
-    except TypeError:
+    except TypeError:  # unhashable, so uncacheable; fall through and recompute
         cached = None
     if cached is not None:
         return cached
@@ -141,14 +148,16 @@ def _accepted_parameters(config_class):
             elif parameter.kind is not inspect.Parameter.VAR_POSITIONAL:
                 names.add(name)
     elif dataclasses.is_dataclass(config_class):
+        # Unreadable `__init__`: the field list is the next best description.
         names = {f.name for f in dataclasses.fields(config_class) if f.init}
     else:
+        # Nothing to go on. Forward everything rather than guess.
         takes_var_keyword = True
 
     result = (frozenset(names), takes_var_keyword)
     try:
         _ACCEPTED_CACHE[config_class] = result
-    except TypeError:
+    except TypeError:  # unhashable class, vanishingly rare but not fatal
         pass
     return result
 

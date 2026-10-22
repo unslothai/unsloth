@@ -76,7 +76,7 @@ def _opaque_under_compile(name, fake):
             RuntimeError,
             TypeError,
             ValueError,
-        ):
+        ):  # Already registered by an earlier import of this module.
             pass
         return fn
 
@@ -192,12 +192,15 @@ def weight_dequant(
     # Transposed views keep scales in storage order; square weights can't be told apart by shape.
     if _is_transposed_view(x):
         return weight_dequant(x.t(), s, dtype).t()
+    # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
         return x.to(dtype) * s.view(1, 1).to(dtype)
+    # Row quantized weight: scale shape is (m, 1) or (n, 1)
     elif s.ndim == 2 and s.shape[1] == 1:
         if x.shape[0] == s.shape[0]:
             y = x.to(dtype) * s.to(dtype)
         elif x.shape[1] == s.shape[0]:
+            # Sometimes called with the transpose of the weight.
             y = x.t().to(dtype) * s.to(dtype)
             y = y.t()
         else:
@@ -270,6 +273,7 @@ def _w8a8_block_fp8_matmul(
     M,
     N,
     K,
+    # Block size for block-wise quantization
     group_n,
     group_k,
     stride_am,
@@ -454,7 +458,7 @@ def torchao_block_matmul(
     return out.to(output_dtype)
 
 
-# fbgemm <= 1.3.0 corrupts some blockwise shapes; prefer fbgemm>=1.4 > torchao > triton.
+# fbgemm <= 1.3.0 silently corrupts blockwise outputs for some shapes, so never use it for block FP8; prefer fbgemm>=1.4.0 > torchao > triton.
 fp8_block_matmul = (
     torchao_block_matmul if torchao_blockwise_gemm is not None else w8a8_block_fp8_matmul_triton
 )
@@ -738,6 +742,7 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
     m, n = weight.shape
     if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
         weight_scale = weight_scale.to(torch.float32)  # e.g. float8_e8m0fnu scales break triton
+    # Per-tensor quant: expand scalar to (ceil(m/128), ceil(n/128)) block shape
     if weight_scale.numel() == 1:
         # Per-tensor scale: the normal forward stashes the un-expanded scalar, which repeat_interleave
         # cannot grow to (m, n).
@@ -778,10 +783,11 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             # Upcast (e.g. e8m0) returns a fresh tensor and drops any Python attribute, so carry block_size
             # across the cast.
             _scale_block_size = getattr(weight_scale, "block_size", None)
-            weight_scale = weight_scale.to(torch.float32)
+            weight_scale = weight_scale.to(torch.float32)  # e8m0 scales break triton dtype mapping
             if _scale_block_size is not None:
                 weight_scale.block_size = _scale_block_size
 
+        # Original scale, saved for backward before any transformation
         original_weight_scale = weight_scale
 
         if weight_scale.numel() == 1:
@@ -790,6 +796,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             num_blocks_n = triton.cdiv(n, block_size[1])
             weight_scale = weight_scale.expand(num_blocks_m, num_blocks_n).contiguous()
         else:
+            # Block quantization path
             p, q = weight_scale.shape
             block_size = getattr(weight, "block_size", None) or getattr(
                 weight_scale, "block_size", [128, 128]
@@ -808,7 +815,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             weight = weight.contiguous()
 
         if X.shape[-1] % block_size[1] != 0 or _fp8_kernel_unsupported(weight, torch.float8_e4m3fn):
-            # Odd hidden dim or pre-sm89 fp8: dequant + matmul with the un-expanded scale.
+            # Odd hidden dim or pre-sm89 fp8 skips act_quant and gemm: dequant plus matmul, keeping the un-expanded scale
             W_deq = _blockwise_weight_dequant_any_shape(
                 weight, original_weight_scale, block_size, X.dtype
             )
@@ -918,6 +925,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             # The kernel needs weight dims divisible by 8 (else "cutlass cannot implement"), and padding plus
             # f8f8bf16 is slower than dequant plus bf16 matmul.
 
+            # quantize_fp8_per_row squashes leading dims; save the shape first.
             output_shape = (*x.shape[:-1], -1)
             # x_quantized/x_scale may land on a different device than x (FBGEMM quantize.cu#L1237); moving them
             # here produces gibberish, so move the output instead.
@@ -936,6 +944,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
                 x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum = True
             )
             output = output + bias if bias is not None else output
+            # Move output back to x's device (the move-input path produced gibberish)
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
@@ -1022,7 +1031,7 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         bs_m = bs_n
 
         if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            weight_scale = weight_scale.to(torch.float32)
+            weight_scale = weight_scale.to(torch.float32)  # e8m0 scales break triton
 
         m, n = weight.shape
         p, q = weight_scale.shape if weight_scale.ndim == 2 else (0, 0)
@@ -1122,6 +1131,7 @@ def test_has_fbgemm():
         del out
     except Exception as e:
         error_str = str(e).lower()
+        # Disable FBGEMM on any CUTLASS/CUDA error (MMA, arch mismatch, launch, etc.)
         cutlass_cuda_errors = (
             "cutlass",
             "cuda error",
@@ -1137,6 +1147,7 @@ def test_has_fbgemm():
 
         if is_cutlass_cuda_error:
             print("Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels")
+        # Row/channel FP8: 2D scale shaped (n, 1)
         else:
             print(
                 f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to Triton kernels"
@@ -1171,6 +1182,7 @@ except:
     pass
 
 
+# Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
 def fp8_linear(
     X,
     weight,
@@ -1190,8 +1202,10 @@ def fp8_linear(
     ):
         out = torch.matmul(X, weight_dequant(weight, weight_scale, X.dtype).t())
         return out if bias is None else out + bias
+    # Per-tensor (scalar scale) or block FP8 (2D scale, multiple columns).
     if weight_scale.numel() == 1 or (weight_scale.ndim == 2 and weight_scale.shape[1] > 1):
         out = fp8_block_quant_linear(X, weight, weight_scale)
+    # Row/channel FP8: 2D scale shaped (n, 1).
     else:
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
     return out
@@ -1231,6 +1245,7 @@ def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     return patched_forward
 
 
+# Patch the forward functions of the layers (for compiled models)
 if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:

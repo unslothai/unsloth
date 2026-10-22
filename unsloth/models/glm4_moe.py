@@ -84,6 +84,7 @@ try:
 except ImportError:
     HAS_GLM4_MOE = False
 
+    # Dummy classes for type checking.
     class Glm4MoeLiteAttention:
         pass
 
@@ -129,9 +130,9 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
 
     hidden_states = hidden_states.view(-1, hidden_dim)
 
-    router_logits = self.gate(hidden_states)
+    router_logits = self.gate(hidden_states)  # [num_tokens, n_routed_experts]
     topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
-    # The sigmoid router returns fp32.
+    # The sigmoid router returns fp32; cast weights to the hidden_states dtype.
     topk_weights = topk_weights.to(hidden_states.dtype)
 
     with torch.no_grad():
@@ -143,6 +144,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
         # Under autocast hidden_states may be fp32 while weights are bf16.
         hidden_states = hidden_states.to(self.experts.gate_up_proj.dtype)
 
+        # gate_up_proj: [num_tokens, hidden_dim] -> [total_tokens, 2*intermediate_dim]
         intermediate = grouped_gemm(
             X = hidden_states,
             W = self.experts.gate_up_proj,
@@ -155,9 +157,11 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
             is_first_gemm = True,
         )
 
+        # SiLU(gate) * up.
         gate, up = intermediate.chunk(2, dim = -1)
         intermediate = torch_nn_functional_silu(gate) * up
 
+        # down_proj: [total_tokens, intermediate_dim] -> [total_tokens, hidden_dim]
         expert_output = grouped_gemm(
             X = intermediate,
             W = self.experts.down_proj,
@@ -170,12 +174,14 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
             is_first_gemm = False,
         )
 
+        # Merge topk weights: [num_tokens, top_k, hidden_dim] -> [num_tokens, hidden_dim].
         hidden_states = (
             expert_output.view(num_tokens, self.top_k, hidden_dim) * topk_weights.unsqueeze(-1)
         ).sum(dim = 1)
     else:
         hidden_states = self.experts(hidden_states, topk_indices, topk_weights)
 
+    # Add shared expert output
     hidden_states = hidden_states + self.shared_experts(residuals.view(-1, hidden_dim))
 
     return hidden_states.view(*orig_shape)
@@ -246,6 +252,7 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
         is_first_gemm = True,
     )
 
+    # Activation: SiLU(gate) * up
     gate, up = intermediate.chunk(2, dim = -1)
     intermediate = self.act_fn(gate) * up
 
@@ -261,6 +268,7 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
         is_first_gemm = False,
     )
 
+    # Merge topk weights
     final_hidden_states = (
         expert_output.view(num_tokens, top_k, hidden_dim) * top_k_weights.unsqueeze(-1)
     ).sum(dim = 1)
@@ -285,6 +293,7 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
     is_inference = use_cache and hasattr(self, "_flag_for_generation")
 
     if is_inference:
+        # Self-attention with fast inference path
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, _ = self.self_attn(
@@ -353,6 +362,7 @@ class FastGLM47Model(FastLlamaModel):
                 "Please upgrade with: pip install --upgrade transformers"
             )
 
+        # Patch MoE forward with grouped GEMM; TMA compat is handled by grouped_gemm/__init__.py.
         if HAS_GROUPED_GEMM:
             Glm4MoeLiteNaiveMoe.forward = Glm4MoeLiteNaiveMoe_fast_forward
             Glm4MoeLiteMoE.forward = Glm4MoeLiteMoE_fast_forward
@@ -376,6 +386,7 @@ class FastGLM47Model(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
+        # Used by the loader, not passed to the model.
         kwargs.pop("unsloth_force_compile", None)
 
         return FastLlamaModel.from_pretrained(

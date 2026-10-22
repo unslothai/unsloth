@@ -452,6 +452,7 @@ class LoRA_MLP(torch.autograd.Function):
         d_upA = torch.empty_like(upA)
         d_upB = torch.empty_like(upB)
 
+        # d_downA = h.t() @ (dY @ downB.t()), d_downB = (downA.t() @ h.t()) @ dY, both scaled by downS.
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
@@ -745,6 +746,7 @@ class LoRA_QKV(torch.autograd.Function):
             del Xd
             masks = (Q_mask, K_mask, V_mask)
 
+        # Restore original shape after matmul
         if len(orig_shape) == 3:
             Q = Q.view(orig_shape[0], orig_shape[1], -1)
             K = K.view(orig_shape[0], orig_shape[1], -1)
@@ -813,6 +815,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         QA, QB, KA, KB, VA, VB = QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
 
+        # Weight projection LoRA derivatives; see the Unsloth blogpost.
         d_QA = torch.empty_like(QA)
         d_QB = torch.empty_like(QB)
         d_KA = torch.empty_like(KA)
@@ -1065,6 +1068,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
     elif self.merged:
         result = self.base_layer(x, *args, **kwargs)
     else:
+        # Fastpath
         if len(self.active_adapters) == 1:
             active_adapter = self.active_adapters[0]
             if active_adapter not in self.lora_A.keys():

@@ -208,6 +208,7 @@ def _gemv_config(N: int, K: int, blocksize: int, capability, words_ok: bool, for
             # T4 / L4: 3% to 9% faster on 8B MLP shapes; slower on A100 and B200.
             return False, (-(-N // 4),), 4, max(blocksize, 1024), 2
         return False, (-(-N // 4),), 4, block_k, 4
+    # Forced byte kernel (tests): the pre-3.7 byte config.
     block_k = max(blocksize, min(1024, triton.next_power_of_2(K)))
     block_n, num_warps = (2, 4) if N <= 2048 else (4, 2)
     return False, (-(-N // block_n),), block_n, block_k, num_warps

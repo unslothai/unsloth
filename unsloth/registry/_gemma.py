@@ -14,7 +14,7 @@ class GemmaModelInfo(ModelInfo):
 GemmaMeta3Base = ModelMeta(
     org = "google",
     base_name = "gemma",
-    instruct_tags = ["pt"],
+    instruct_tags = ["pt"],  # pt = base
     model_version = "3",
     model_sizes = ["1", "4", "12", "27"],
     model_info_cls = GemmaModelInfo,
@@ -25,7 +25,7 @@ GemmaMeta3Base = ModelMeta(
 GemmaMeta3Instruct = ModelMeta(
     org = "google",
     base_name = "gemma",
-    instruct_tags = ["it"],
+    instruct_tags = ["it"],  # it = instruction tuned
     model_version = "3",
     model_sizes = ["1", "4", "12", "27"],
     model_info_cls = GemmaModelInfo,

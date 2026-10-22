@@ -32,6 +32,7 @@ from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
+# torch.cuda.amp.custom_fwd is deprecated from 2.4.
 import torch
 
 torch_Tensor = torch.Tensor
@@ -76,6 +77,7 @@ if Version(triton.__version__) >= Version("3.0.0"):
 else:
     triton_tanh = tl.math.tanh
 
+    # No casting in old Triton versions.
     @triton.jit
     def triton_cast(x, dtype):
         return x.to(dtype)
@@ -87,7 +89,7 @@ def is_cdna():
         "gfx940",
         "gfx941",
         "gfx942",
-        "gfx950",
+        "gfx950",  # CDNA4 (MI350/MI355X)
     )
 
 
@@ -95,6 +97,7 @@ def is_cdna():
 def is_rdna():
     """Detect ROCm-supported RDNA consumer/workstation GPUs (RDNA2, RDNA3, RDNA3.5, RDNA4)."""
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
+        # RDNA2 (Navi 21-24)
         "gfx1030",
         "gfx1031",
         "gfx1032",
@@ -102,13 +105,16 @@ def is_rdna():
         "gfx1034",
         "gfx1035",
         "gfx1036",
+        # RDNA3 (Navi 31-33)
         "gfx1100",
         "gfx1101",
         "gfx1102",
         "gfx1103",
+        # RDNA3.5 (Strix Point / Strix Halo)
         "gfx1150",
         "gfx1151",
         "gfx1152",
+        # RDNA4 (Navi 48-44)
         "gfx1200",
         "gfx1201",
     )
@@ -160,6 +166,7 @@ def _bnb_required(*args, **kwargs):
 
 
 if bnb is not None:
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
     HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
     get_ptr = bnb_functional.get_ptr
 else:
@@ -210,6 +217,7 @@ global XPU_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
+# DEVICE_COUNT == 0 means no visible accelerator (CPU-only CI runner).
 if DEVICE_TYPE == "xpu":
     if DEVICE_COUNT > 0:
         _XPU_STREAMS = {
@@ -274,6 +282,7 @@ else:
     cdequantize_blockwise_fp32_nf4 = bnb_functional.lib.cdequantize_blockwise_fp32_nf4
 
     if DEVICE_TYPE == "xpu":
+        # xpu inference gemv, per bitsandbytes backends/xpu/ops.py#L115.
         cgemm_4bit_inference_naive_fp16 = bnb_functional.lib.cgemv_4bit_inference_fp16
         cgemm_4bit_inference_naive_bf16 = bnb_functional.lib.cgemv_4bit_inference_bf16
     else:
@@ -357,6 +366,7 @@ _FP8_WEIGHT_DTYPES = tuple(
 
 
 def _has_multiple_active_adapters(proj):
+    # Adapter activation can change after the single-adapter fast paths are installed.
     adapters = getattr(proj, "active_adapters", None)
     if adapters is None:
         adapters = getattr(proj, "active_adapter", ())
@@ -435,10 +445,12 @@ def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
     """
+    # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
     W = base_layer.weight if packed is None else packed[0]
 
+    # Optionally apply fake quantization to base layer weights for QAT.
     if hasattr(base_layer, "weight_fake_quantizer"):
         weight_fake_quantizer = getattr(base_layer, "weight_fake_quantizer", None)
         if weight_fake_quantizer is not None:
@@ -476,6 +488,7 @@ def get_lora_parameters(proj):
             raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
         adapter = adapter[0]
 
+    # Optionally apply fake quantization to lora weights for QAT.
     lora_A_linear = proj.lora_A[adapter]
     lora_B_linear = proj.lora_B[adapter]
     A = lora_A_linear.weight
@@ -499,6 +512,7 @@ def get_lora_parameters(proj):
 
 
 def get_lora_parameters_bias(proj):
+    # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
     W = base_layer.weight if packed is None else packed[0]
@@ -549,6 +563,7 @@ def _unpack_quant_state(quant_state):
     4bit quant state, class or legacy list form. The nested fields are None (and blocksize2 0)
     when the absmax is not double quantized."""
     if type(quant_state) is not list:
+        # New quant_state as a class, per TimDettmers/bitsandbytes#763.
         absmax = quant_state.absmax
         shape = quant_state.shape
         dtype = quant_state.dtype
@@ -557,6 +572,7 @@ def _unpack_quant_state(quant_state):
         offset = quant_state.offset
         state2 = quant_state.state2
     else:
+        # Old quant_state as a list of lists
         absmax, shape, dtype, blocksize, compressed_stats, _, code = quant_state
         offset, state2 = compressed_stats if compressed_stats is not None else (None, None)
     if state2 is None:
@@ -634,6 +650,7 @@ if (
         )
 
         _USE_NF4_KERNELS = True
+        # Eager decode uses the Triton GEMV where it is faster; compiled code always does.
         _TRITON_GEMV_EAGER = triton_gemv_eager()
     except Exception:
         pass
@@ -690,6 +707,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 W, quant_state.scale, quant_state.global_scale, quant_state.dtype
             )
         if type(quant_state) is not list:
+            # New quant_state as a class, per TimDettmers/bitsandbytes#763.
             absmax = quant_state.absmax
             shape = quant_state.shape
             dtype = quant_state.dtype
@@ -700,6 +718,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             code2 = state2.code
             blocksize2 = state2.blocksize
         else:
+            # Old quant_state as a list of lists
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
@@ -710,6 +729,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
         n_elements_absmax = absmax.numel()
         if use_global_buffer:
+            # Use same buffers for faster inference
             size = shape[0] * shape[1]
             global WEIGHT_BUFFERS
             global ABSMAX_BUFFERS
@@ -776,6 +796,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 ctypes_c_int(out.numel()),
                 XPU_STREAM,
             )
+        # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
@@ -787,6 +808,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         out = None,
         use_global_buffer = False,
     ):
+        # bitsandbytes ctypes kernels, used when the NF4 kernels are unavailable or disabled.
         absmax, shape, dtype, blocksize, _, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
         )
@@ -840,6 +862,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 ctypes_c_int(out.numel()),
                 CUDA_STREAM,
             )
+        # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
@@ -944,6 +967,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             if not _nf4_kernels_failed(error):
                 raise
             return _fast_dequantize_ctypes(W, quant_state, out, use_global_buffer)
+        # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
@@ -968,6 +992,7 @@ else:
                 W, quant_state.scale, quant_state.global_scale, quant_state.dtype
             )
         if type(quant_state) is not list:
+            # New quant_state as a class, per https://github.com/TimDettmers/bitsandbytes/pull/763
             absmax = quant_state.absmax
             shape = quant_state.shape
             dtype = quant_state.dtype
@@ -1022,6 +1047,7 @@ else:
             ctypes_c_int(out.numel()),
         )
 
+        # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
@@ -1038,6 +1064,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     ):
         if quant_state is None:
             return torch_matmul(X, W, out = out)
+        # Fast X @ W where seq_len == 1, from bitsandbytes functional.py#L1469 and TimDettmers/bitsandbytes#763.
         _, q_len, hd = X.shape
 
         if type(quant_state) is not list:
@@ -1137,6 +1164,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         quant_state,
         out = None,
     ):
+        # Fast X @ W where seq_len == 1, from bitsandbytes functional.py#L1469 and TimDettmers/bitsandbytes#763.
         _, q_len, hd = X.shape
         absmax, shape, dtype, blocksize, stats, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
@@ -1266,6 +1294,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             ):
                 if out is None:
                     out = torch_empty((1, 1, int(shape[0])), dtype = X.dtype, device = X.device)
+                # Launches once.
                 rerun = gemv_nf4_planned(
                     X, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out
                 )
@@ -1303,6 +1332,7 @@ else:
     ):
         if quant_state is None:
             return torch_matmul(X, W, out = out)
+        # Fast X @ W where seq_len == 1, from bitsandbytes functional.py#L1469 and TimDettmers/bitsandbytes#763.
         _, q_len, hd = X.shape
 
         if type(quant_state) is not list:
@@ -1762,6 +1792,7 @@ def matmul_lora(
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
+        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
         out = _int4_matmul(X, W, W_quant, out = out)
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)

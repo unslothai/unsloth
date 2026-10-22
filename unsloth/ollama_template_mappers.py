@@ -18,6 +18,8 @@ __all__ = [
 OLLAMA_TEMPLATES = {}
 
 
+# =========================================== Unsloth
+
 unsloth_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
@@ -32,6 +34,8 @@ SYSTEM """You are a helpful assistant to the user"""
 
 OLLAMA_TEMPLATES["unsloth"] = unsloth_ollama
 
+
+# =========================================== Zephyr
 
 zephyr_ollama = '''
 FROM {__FILE_LOCATION__}
@@ -49,6 +53,7 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["zephyr"] = zephyr_ollama
 
+# =========================================== ChatML
 chatml_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|im_start|>system
@@ -453,6 +458,7 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["vicuna"] = vicuna_ollama
 
+# =========================================== Vicuna Old
 vicuna_old_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
@@ -468,6 +474,7 @@ SYSTEM """A chat between a curious human and an artificial intelligence assistan
 OLLAMA_TEMPLATES["vicuna_old"] = vicuna_old_ollama
 OLLAMA_TEMPLATES["vicuna old"] = OLLAMA_TEMPLATES["vicuna_old"]
 
+# =========================================== Alpaca multi turn
 alpaca_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
@@ -505,6 +512,7 @@ PARAMETER min_p 0.1
 
 OLLAMA_TEMPLATES["gemma"] = gemma_ollama
 
+# =========================================== Gemma with ChatML instead
 gemma_chatml_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|im_start|>system
@@ -528,6 +536,7 @@ OLLAMA_TEMPLATES["gemma_chatml"] = gemma_chatml_ollama
 gemma2_ollama = gemma_ollama + "PARAMETER num_ctx 4096\n"
 OLLAMA_TEMPLATES["gemma2"] = gemma2_ollama
 
+# =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
 OLLAMA_TEMPLATES["gemma2_chatml"] = gemma2_chatml_ollama
 
@@ -955,6 +964,7 @@ OLLAMA_TEMPLATES["qwen-25-vl"] = qwen_25_vl_ollama
 OLLAMA_TEMPLATES["openthinker"] = openthinker_ollama
 OLLAMA_TEMPLATES["qwen-2"] = qwen25_ollama
 
+# =========================================== Phi-4
 _phi4_ollama_template = (
     "{{ if .System }}<|im_start|><|system|><|im_sep|>{{ .System }}<|im_end|>{{ end }}"
     "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"
@@ -1170,6 +1180,7 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 OLLAMA_TEMPLATES["gemma-3n"] = gemma3n_ollama
 OLLAMA_TEMPLATES["gemma3n"] = gemma3n_ollama
 
+# =========================================== Gemma-4
 gemma4_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}

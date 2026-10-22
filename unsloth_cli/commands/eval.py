@@ -264,7 +264,7 @@ _TaskYamlLoader.add_multi_constructor(
 
 
 def _doc_column(key: str) -> str:
-    # Jinja cannot parse non-identifier keys; lm-eval reads a bare column name raw
+    # Jinja stringifies the value but cannot parse non-identifier keys; lm-eval reads a bare column name raw
     import keyword
     if key.isidentifier() and not keyword.iskeyword(key) and key not in ("true", "false", "none"):
         return "{{" + key + "}}"
@@ -286,7 +286,7 @@ def make_dataset_task(
         "doc_to_text": _doc_column(input_key),
         "doc_to_target": _doc_column(target_key),
         "generation_kwargs": {"until": ["\n"]},
-        # strip so " 2" matches gold "2"
+        # strip so " 2" matches gold "2"; with one capture group re.findall yields the group text
         "filter_list": [
             {
                 "name": "strip",
@@ -362,7 +362,7 @@ def resolve_tasks(
         elif suffix in _DATASET_SUFFIXES:
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
-            # an include-path task overrides a registered one of the same name
+            # An include-path task overrides a registered one of the same name, so avoid names requested alongside (gsm8k,./gsm8k.jsonl).
             name, counter = path.stem, 2
             while name in names or name in plain:
                 name, counter = f"{path.stem}_{counter}", counter + 1
@@ -401,7 +401,7 @@ def _expand_tasks(task_manager, names: List[str]) -> List[str]:
 
 
 def _metric_number(value):
-    # numpy scalars are not int/float subclasses
+    # numpy float32/int64 are not int/float subclasses: unwrap scalars via item()
     if not isinstance(value, (int, float)) and callable(getattr(value, "item", None)):
         try:
             value = value.item()
@@ -688,6 +688,7 @@ def evaluate(
             )
             with _silence():
                 if effective_base and not base_model:
+                    # Unsloth's own adapter path applies its PEFT hooks (grouped-linear LoRA, Gemma 4)
                     if adapter_vocab and adapter_vocab > _base_vocab_size(effective_base):
                         load_kwargs["resize_model_vocab"] = adapter_vocab
                     lmodel, tokenizer = FastLanguageModel.from_pretrained(

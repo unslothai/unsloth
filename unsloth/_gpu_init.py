@@ -16,6 +16,7 @@ import numpy as np
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Modules that need patching but may already be imported
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
@@ -78,7 +79,8 @@ except Exception:
 fix_broken_hf_xet_wheel()
 # Must precede the first `import torch`: it sets AMDGPU_ASIC_ID_TABLE_PATH, read when libdrm loads.
 configure_amdgpu_asic_id_table_path()
-# Before every fix below and `import unsloth_zoo`, which import transformers; this imports torch.
+# Must precede the fixes below and `import unsloth_zoo`: they import transformers, which raises bare AttributeError if newer than torch.
+# It imports torch, which is why the ROCm table above comes first.
 patch_torch_missing_attribute_error()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
@@ -95,9 +97,11 @@ disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
 fix_torch_check_is_size()
-# vLLM's architecture inspector is a subprocess that imports torchao itself.
+# The fixes above cover only this process; vLLM's architecture inspector is a subprocess that imports torchao and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
+# Warn, do not raise: this only adds the correct remedy just before transformers prints its misleading one.
 check_transformers_dependency_versions()
+# Same reason: nothing has failed yet, and a run that launches no Triton kernel never will.
 check_triton_py_ssize_t_clean()
 # Before triton's driver first compiles and caches cuda_utils (#2760).
 fix_triton_module_cache_python_key()
@@ -129,6 +133,7 @@ del fix_broken_hf_xet_wheel
 
 # If imported before Unsloth, the unpatched versions run, risking OOM or slower training.
 if already_imported:
+    # stacklevel=2 points the warning at the user's import line
     warnings.warn(
         f"WARNING: Unsloth should be imported before [{', '.join(already_imported)}] "
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
@@ -144,11 +149,13 @@ from .import_fixes import maybe_set_windows_rocm_bnb_version
 maybe_set_windows_rocm_bnb_version()
 del maybe_set_windows_rocm_bnb_version
 
-# Unsloth patches these libraries at import time; import it first or they run unoptimized.
+# Multi-GPU is not yet supported (beta available on request).
+
+# Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
-# docker --gpus sets NVIDIA_VISIBLE_DEVICES but not CUDA_VISIBLE_DEVICES, so Inductor's
-# compile workers cannot see the GPU. Opt out with UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0.
+# docker --gpus sets NVIDIA_VISIBLE_DEVICES but not CUDA_VISIBLE_DEVICES, so Inductor compile workers miss the pinned GPU.
+# Only for pinned ids, not all/none/void/empty. Opt out with UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0.
 _nvd = os.environ.get("NVIDIA_VISIBLE_DEVICES", "").strip().lower()
 _cgroup_pinned = _nvd not in ("", "all", "none", "void")
 if (
@@ -156,6 +163,7 @@ if (
     and _cgroup_pinned
     and "CUDA_VISIBLE_DEVICES" not in os.environ
 ):
+    # honour an existing thread count, but always plant the sentinel
     if os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") in (None, "", "1"):
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
@@ -194,7 +202,7 @@ def _reraise_device_type_error_with_gpu_hint(exception):
         raise exception
     try:
         import torch as _torch
-        torch_build = _torch.__version__
+        torch_build = _torch.__version__  # local tag names the build: +cpu, +cu128, +rocm6.4, +xpu
     except Exception:
         torch_build = "unknown"
     mask_note = "" if mask is None else f", CUDA_VISIBLE_DEVICES={mask!r}"
@@ -206,6 +214,7 @@ def _reraise_device_type_error_with_gpu_hint(exception):
     ) from exception
 
 
+# Try importing PyTorch and check version
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
     if Version(unsloth_zoo_version) < Version("2026.8.15"):
@@ -379,7 +388,7 @@ from .import_fixes import (
 fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
-# Probe-gated; before any model import so plain transformers.generate is covered too.
+# Probe-gated: no-op unless SDPA gets a query row that attends to nothing; runs before model imports so plain generate is covered.
 fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
@@ -403,7 +412,7 @@ fix_transformers_bnb_prequantized_save()
 # A run that loads no pre-quantized multimodal checkpoint never fails either way.
 check_transformers_prequantized_vlm_quant_state()
 del check_transformers_prequantized_vlm_quant_state
-# Probe-gated; before any config is built so llama.py's rope delegation retry keeps the RoPE base.
+# Probe-gated: no-op unless assigning config.rope_scaling drops the RoPE base; must run before configs exist so llama.py retry keeps it.
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_fp8_modulelist_experts()
 fix_transformers_fp8_unscaled_checkpoint_linears()
@@ -427,7 +436,7 @@ fix_vllm_lora_tokenizer_module()
 fix_torchao_nf4tensor_move()
 fix_compressed_tensors_activation_quant_gradient()
 fix_torchao_safe_int_mm_repr_probe()
-# Before importing vLLM.
+# Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
@@ -524,6 +533,7 @@ del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply
 
+# Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE "cuda" with no device; get_device_capability() would raise.
     SUPPORTS_BFLOAT16 = False
@@ -589,6 +599,7 @@ elif DEVICE_TYPE == "xpu":
         xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else torch.xpu.is_bf16_supported()
     )
 elif DEVICE_TYPE == "npu":
+    # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 # gfx101x: Triton buffer-op kernels silently write nothing; must be set before the first compile.
@@ -596,7 +607,7 @@ if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visi
     apply_gfx101x_triton_workaround()
 
 # For Gradio HF Spaces?
-# `triton` is optional: PyPI ships no Windows wheel, and a CPU-only install must still import.
+# triton is optional (no PyPI Windows wheel); code below treats triton None as no Triton kernels, and CPU-only installs must import.
 try:
     import triton
 except Exception as _triton_import_exception:
@@ -608,6 +619,7 @@ else:
 
 if TRITON_IMPORT_ERROR is not None:
     if DEVICE_TYPE in ("cuda", "hip") and torch.cuda.is_available():
+        # A real accelerator with no Triton: the fused kernels are gone, so say so loudly.
         warnings.warn(
             f"Unsloth: `triton` could not be imported ({TRITON_IMPORT_ERROR}), so the fused Triton "
             "kernels are unavailable and training will be slower or may fail.\n"
@@ -615,6 +627,7 @@ if TRITON_IMPORT_ERROR is not None:
             stacklevel = 2,
         )
     else:
+        # No usable accelerator anyway (CPU only install, or UNSLOTH_ALLOW_CPU=1): expected state.
         print(
             f"Unsloth: `triton` is not available ({TRITON_IMPORT_ERROR}) - continuing without the "
             "fused Triton kernels, which a CPU only install does not use.\n"
@@ -626,6 +639,7 @@ if DEVICE_TYPE == "cuda":
     if triton is None:
         pass
     elif Version(triton.__version__) >= Version("3.0.0"):
+        # Try loading bitsandbytes and triton
         try:
             from triton.backends.nvidia.driver import libcuda_dirs
         except:
@@ -636,7 +650,7 @@ if DEVICE_TYPE == "cuda":
     try:
         import bitsandbytes as bnb
 
-        # Bind the submodule by name: a half-imported bitsandbytes lacks `functional`, which would be misreported.
+        # Bind the submodule by name: a half-imported bitsandbytes lacks functional, which would otherwise be misreported as a CUDA linking failure.
         import bitsandbytes.functional as bnb_functional
     except:
         print(
@@ -657,7 +671,7 @@ if DEVICE_TYPE == "cuda":
             if os.path.exists("/usr/lib64-nvidia"):
                 os.system("ldconfig /usr/lib64-nvidia")
             elif os.path.exists("/usr/local"):
-                # bitsandbytes sometimes fails to link CUDA (e.g. Runpod).
+                # Sometimes bitsandbytes cannot be linked properly in Runpod for example
                 possible_cudas = (
                     subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
                 )
@@ -665,6 +679,7 @@ if DEVICE_TYPE == "cuda":
                 possible_cudas = [find_cuda.search(x) for x in possible_cudas]
                 possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
 
+                # Try linking cuda folder, or everything in local
                 if len(possible_cudas) == 0:
                     os.system("ldconfig /usr/local/")
                 else:
@@ -690,7 +705,7 @@ if DEVICE_TYPE == "cuda":
                     try:
                         from triton.backends.nvidia.driver import libcuda_dirs
                     except:
-                        # TODO: check triton for Intel is installed properly.
+                        # TODO: check triton for intel installed properly.
                         pass
                 else:
                     from triton.common.build import libcuda_dirs
@@ -714,9 +729,10 @@ if DEVICE_TYPE == "cuda":
             )
     del libcuda_dirs
 elif DEVICE_TYPE == "hip":
+    # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
-    # No bnb means no 4bit, not a failed `import unsloth`.
+    # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.
     try:
         import bitsandbytes as bnb
     except Exception:
@@ -747,6 +763,7 @@ from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
 
+# Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
 from unsloth_zoo.rl_environments import (
     check_python_modules,

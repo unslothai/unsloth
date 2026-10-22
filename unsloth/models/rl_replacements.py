@@ -53,14 +53,14 @@ from ..device_type import (
 import textwrap
 from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
 
-# Mirrored into the generated trainer cache via RL_PRE_ITEMS.
+# One-time GRPO sequence-packing gates; mirrored into the generated trainer cache via RL_PRE_ITEMS.
 UNSLOTH_GRPO_SEQ_PACKING_ON = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
     "0",
     "false",
     "no",
     "off",
 )
-# Packing needs zoo#840's masked-column guard in grpo_compute_loss.
+# Packing needs zoo#840's masked-column guard in grpo_compute_loss (the installed zoo is fixed per-process).
 try:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = "torch.where(_keep, new" in inspect.getsource(
         RL_REPLACEMENTS["grpo_compute_loss"]
@@ -124,7 +124,7 @@ _DPO_VISION_KEYS = (
 
 torch_compile_options = {
     "epilogue_fusion": True,
-    "max_autotune": False,
+    "max_autotune": False,  # I saw speedups, but not sure if this has issues in collab
     "shape_padding": True,
     "trace.enabled": False,
     "triton.cudagraphs": False,
@@ -156,7 +156,7 @@ def sft_trainer_fix_untrained_tokens(call_args, extra_args):
 RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
 
-# GRPOConfig.top_k defaults to 0 (trl#4695) but vLLM's include-all is -1; 0 errors.
+# huggingface/trl#4695 added top_k to GRPOConfig defaulting to 0, but vLLM's include-all top_k is -1 and 0 errors on SamplingParams creation.
 def grpo_config_fix_vllm_top_k(old_RLTrainer_source, old_RLConfig_source):
     return "if use_vllm and (top_k is None or top_k == 0): top_k = -1\n"
 
@@ -695,13 +695,13 @@ def _require_replace(
     return function
 
 
-# The line every zoo sft_prepare_dataset ends its worker count on; stable since #257, hence fallback.
+# The one line every unsloth_zoo sft_prepare_dataset ends its worker count on, as a regex so a renamed right-hand side still matches and the indentation carries over. Unchanged since Aug 2025 (#257) while the block around it was rewritten repeatedly, hence a fallback anchor.
 _ZOO_MAP_NUM_PROC_ASSIGNMENT = re.compile(
     r"^(?P<indent>[ \t]*)map_kwargs\[\"num_proc\"\][ \t]*=[ \t]*[^\n]+$",
     flags = re.MULTILINE,
 )
 
-# rl.py hands TRL >= 1.0.0 a None max_length; normalise it or nothing truncates.
+# The Zoo seeds its truncation length from args.max_length and falls through to args.max_seq_length only when that is 0; rl.py hands TRL >= 1.0.0 a None, so normalise it or nothing truncates.
 _ZOO_MAX_LENGTH_SEED = re.compile(
     r"^(?P<indent>[ \t]*)max_seq_length[ \t]*=[ \t]*getattr\(args,[ \t]*[\"']max_length[\"'],[ \t]*0\)[ \t]*$",
     flags = re.MULTILINE,
@@ -730,8 +730,7 @@ def _replace_or_fallback(
 
     So: try the wide anchor, then a narrow one that survives more drift, and warn only when both miss. `fallback_new` is an `re.sub` template, so it can carry the matched indentation over with `\\g<indent>`. `required = True` keeps the two-anchor tolerance but raises rather than warns when BOTH miss; `consequence` says what that absence does, since the warning below speaks only about the worker count.
     """
-    # Checked first: a zoo that already has the replacement is fine, and `old` is a prefix of `new`
-    # for the max_length seed.
+    # Already done upstream, and checked FIRST: an edit is missing only if its RESULT is, and a Zoo that adopts the replacement is the forward case. Order matters: `old` is a prefix of `new` for the max_length seed, so the wide anchor matched the normalized line and appended a second `or 0`.
     if _same_source(new) in _same_source(function):
         return function
     if old in function:
@@ -775,7 +774,7 @@ def sft_trainer_prepare_dataset(function_name, function):
         )
         if matched:
             function = inspect.getsource(fast_sft_prepare_dataset)
-            # Anchor on the function signature, not the zoo license comment, which a newer zoo may move.
+            # Anchor the wrapped-packing setup on the function signature, which always exists, not the unsloth_zoo license comment, which a newer Zoo may move: anchoring there let the setup silently no-op while later edits used its variables, NameError-ing every SFT dataset prep.
             function, _n_setup = re.subn(
                 r"(def sft_prepare_dataset\s*\(.*?\)\s*(?:->[^:\n]*)?:[ \t]*\n)",
                 lambda match: match.group(1) + _WRAPPED_PACKING_SETUP,
@@ -795,12 +794,12 @@ def sft_trainer_prepare_dataset(function_name, function):
                 fallback_pattern = _ZOO_MAX_LENGTH_SEED,
                 fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
                 where = "sft_prepare_dataset max_length seed",
-                # Required: the generated trainer clears max_length, so an unrewritten seed reads None, not 0.
+                # Not optional, unlike the worker count this helper was written for: the generated trainer clears args.max_length for padding-free, so an unrewritten seed reads None instead of the 0 that falls through to max_seq_length. Both anchors missing means the neighbouring _require_replace edits have gone too.
                 required = True,
                 consequence = ", so `max_length` would not be enforced for raw "
                 "datasets under padding-free batching",
             )
-            # _require_replace fails loudly on a drifted anchor.
+            # Route each edit through _require_replace so a drifted anchor fails loudly instead of leaving a dangling reference to the setup variables.
             function = _require_replace(
                 function,
                 "truncation = do_truncation,",
@@ -813,7 +812,7 @@ def sft_trainer_prepare_dataset(function_name, function):
                 "if do_truncation and not _unsloth_wrapped_packing and max_seq_length > 0:",
                 where = "sft_prepare_dataset truncation guard",
             )
-            # Reuse the guarded _unsloth_pack_has_strategy: pack_dataset may not be introspectable.
+            # Reuse the guarded _unsloth_pack_has_strategy from the setup rather than re-calling _inspect.signature(pack_dataset): the setup wraps that in try/except, so a non-introspectable pack_dataset must not crash here.
             function = _require_replace(
                 function,
                 """dataset = pack_dataset(
@@ -832,7 +831,7 @@ def sft_trainer_prepare_dataset(function_name, function):
         )""",
                 where = "sft_prepare_dataset pack_dataset call",
             )
-            # The map() call site makes the worker count safe (Pool(1) on datasets >= 4.1).
+            # The map() call site, not the config, is where the worker count is made safe: the Zoo copy asks stdlib multiprocessing for a start method datasets takes from multiprocess, and its low-memory branch yields 1, still a Pool(1) on datasets >= 4.1. Imported from the Zoo so generated source never imports back into its generator.
             function = _replace_or_fallback(
                 function,
                 """if not isinstance(dataset, IterableDataset):
@@ -858,7 +857,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             map_kwargs["num_proc"] = _unsloth_get_dataset_num_proc(
                 getattr(args, "dataset_num_proc", None)
             )""",
-                # Must not be skipped: an un-rewritten zoo hands serial 1 to Dataset.map. Fallback anchor is stable.
+                # The likeliest anchor here to drift, but its absence is not harmless: the config layer encodes serial as 1 for this site to turn back into None, and an un-rewritten Zoo hands that 1 to Dataset.map. The fallback keys on the block's closing assignment, unchanged since Aug 2025; hard-failing instead would break every install on a newer Zoo.
                 fallback_pattern = _ZOO_MAP_NUM_PROC_ASSIGNMENT,
                 fallback_new = r"""\g<indent>try:
 \g<indent>    from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
@@ -869,7 +868,7 @@ def sft_trainer_prepare_dataset(function_name, function):
 \g<indent>)""",
                 where = "sft_prepare_dataset dataset_num_proc selection",
             )
-            # datasets flattens worker deaths into one message; wrap map() to report count, start method, memory.
+            # datasets never reads the child's exit status, so every worker death flattens into "One of the subprocesses has abruptly died during map operation". Wrap both tokenizing map() calls so the user gets the worker count, start method and implied memory.
             function = _require_replace(
                 function,
                 """            with _w.catch_warnings():
@@ -882,7 +881,7 @@ def sft_trainer_prepare_dataset(function_name, function):
                 _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
                 count = 2,
                 where = "sft_prepare_dataset tokenizing map() calls",
-                # Diagnostic only, so not required; test_zoo_sft_prepare_dataset_anchor_has_not_drifted watches it.
+                # required = False, like the selection above: this only improves a dead worker's message, and a diagnostic must not fail a run because a Zoo release moved its anchor. test_zoo_sft_prepare_dataset_anchor_has_not_drifted notices in CI instead.
                 required = False,
             )
             function = function.split("\n")
@@ -945,7 +944,7 @@ def sft_trainer_prepare_dataset(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
 
 
-# mean_token_accuracy needs logits; it is overridden with our version.
+# Ignore mean_token_accuracy since it needs logits; it is overridden with our version.
 def sft_trainer_compute_loss(function_name, function):
     if function_name != "compute_loss" or "_unsloth_trl_compute_loss" in function:
         return function
@@ -972,7 +971,7 @@ def sft_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
-# Route ORPO/CPO tokenization through the text tokenizer of a multimodal processor (#4952).
+# Route ORPO/CPO row tokenization through the underlying text tokenizer when the processing class is a multimodal processor; CPO reuses this code (#4952).
 def orpo_trainer_text_tokenizer(function_name, function):
     if function_name == "build_tokenized_answer":
         function = re.sub(
@@ -1018,8 +1017,7 @@ RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
 RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_text_tokenizer)
 
 
-# TRL 0.29+ ORPO/CPO can exceed max_length (prompt never truncated), crashing the log-prob gather.
-# Cap each row like TRL <= 0.25 did; rows that fit are untouched.
+# TRL 0.29+ ORPO/CPO tokenize_row never truncates the prompt and cuts answers to `max_length - longer_response_length`, so prompt + answer can exceed max_length. The fast forward cuts input_ids to max_seq_length while labels keep the full row, which crashes the log-prob gather. Hold each row to max_length the way TRL <= 0.25 did with max_prompt_length (keep a prompt budget, then cut the answer); rows that fit are untouched.
 _ORPO_ROW_CAP = (
     "_unsloth_ul = max(len(chosen_tokens['input_ids']), len(rejected_tokens['input_ids']))\n"
     "_unsloth_pl = max(len(chosen_tokens['prompt_input_ids']), len(rejected_tokens['prompt_input_ids']))\n"
@@ -1062,7 +1060,7 @@ RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_row_cap)
 RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_row_cap)
 
 
-# Processors lack pad_token_id; resolve it through the inner tokenizer.
+# Resolve processing_class.pad_token_id through the inner tokenizer when a multimodal processor is supplied: processors lack pad_token_id, so ORPO/CPOTrainer.__init__ raises AttributeError in the collator and padding_value.
 _PAD_FALLBACK = (
     "(getattr(processing_class, 'pad_token_id', None) "
     "if getattr(processing_class, 'pad_token_id', None) is not None "
@@ -1073,7 +1071,7 @@ _PAD_FALLBACK = (
 def orpo_trainer_processor_pad_token(function_name, function):
     if function_name != "__init__":
         return function
-    # Multimodal processors keep pad/eos on .tokenizer; TRL 1.x CPO/ORPO __init__ defaults pad from eos.
+    # Multimodal processors expose pad_token / eos_token on .tokenizer, not on themselves, and TRL 1.x CPO/ORPO __init__ defaults pad_token from eos_token before tokenizing. Older TRL lacks this block, so the sub is a no-op there.
     function = re.sub(
         r"(?m)^([ \t]*)if processing_class\.pad_token is None:\n"
         r"\1[ \t]+processing_class\.pad_token\s*=\s*processing_class\.eos_token\n",
@@ -1092,7 +1090,7 @@ RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_processor_pad_token)
 RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_processor_pad_token)
 
 
-# transformers 5.0+ to_dict() drops push_to_hub_token, so a bare pop KeyErrors.
+# Fix the bare pop("push_to_hub_token") in the compiled SFT/IterativeSFT __init__: on transformers 5.0+ to_dict() no longer includes it, so a bare pop KeyErrors.
 def sft_trainer_push_to_hub_token(function_name, function):
     if function_name != "__init__":
         return function
@@ -1170,18 +1168,18 @@ def _unsloth_grpo_autocast(self):
         use_bf16 = getattr(args, "bf16", None)
         use_fp16 = getattr(args, "fp16", None)
         if not isinstance(precision, str):
-            # transformers < 5 has no args.mixed_precision.
+            # transformers < 5 has no args.mixed_precision, but rl.py sets the fp16 / bf16 flags on this same args for every branch it takes.
             if isinstance(use_bf16, bool) and isinstance(use_fp16, bool):
                 precision = "bf16" if use_bf16 else ("fp16" if use_fp16 else "no")
             else:
                 precision = os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16")
         self._autocast_dtype = torch.float16 if precision == "fp16" else torch.bfloat16
-        # "no" is a real value; reading it as bfloat16 raises on a T4 or V100.
+        # "no" is a real value: full finetuning and an explicit float32 load both set it, and reading it as bfloat16 raises on a T4 or V100.
         self._autocast_enabled = precision != "no"
         self._autocast_force_float32 = False
         forced = _unsloth_grpo_autocast_forced_float32(self)
         if forced and precision != "bf16":
-            # Forced-float32 models still want float16 autocast; a trainer already on bf16 keeps it.
+            # Gemma3 / gpt-oss set "no" but still want float16 autocast; a trainer already on bf16 keeps it, since float16 is what the forced list avoids.
             self._autocast_dtype = torch.float16
             self._autocast_enabled = True
             self._autocast_force_float32 = True
@@ -1215,7 +1213,7 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
     if not getattr(self, "_autocast_force_float32", False) and torch.is_autocast_enabled(
         device_type
     ):
-        # Inside an autocast: omit the dtype key to inherit it.
+        # Already inside an autocast: inherit its dtype by omitting the key, since autocast passes whatever it gets to set_autocast_dtype.
         return {"enabled": enabled}
     return {"enabled": enabled, "dtype": dtype}
 
@@ -1392,6 +1390,7 @@ def _unsloth_grpo_split_vision_by_sample(batch):
         return split
 
     if image_grid_thw is not None:
+        # An unsplit grid batch: TRL owns this layout in every version that persists it.
         return batch
     if not num_images:
         return batch
@@ -1419,9 +1418,10 @@ def _unsloth_grpo_split_vision_by_sample(batch):
                 split[_tile_key] = list(torch.split(_tiled, num_tiles, dim = 0))
         return split
     if rows != sum(num_images):
+        # One padded row per sample already (Idefics, SmolVLM): TRL leaves this alone.
         return batch
     if rows == len(num_images) and any(_count != 1 for _count in num_images):
-        # Ambiguous between padded-sample and flat-image axes: keep TRL's layout (all-ones excluded).
+        # Padded-sample and flat-image axes are ambiguous: keep TRL layout, else [2, 0] misassigns images
         return batch
     split["pixel_values"] = list(torch.split(pixel_values, num_images, dim = 0))
     _image_sizes = batch.get("image_sizes", None)
@@ -1637,6 +1637,7 @@ def _unsloth_grpo_unsplit_vision(batch):
         if not isinstance(value, list) or len(value) == 0:
             continue
         if not hasattr(value[0], "shape"):
+            # num_images and num_tiles are plain counts, not tensors to merge.
             continue
         if merged is None:
             merged = dict(batch)
@@ -1690,7 +1691,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
         return function
 
-    # Latched on the trainer, so a second trainer's __init__ cannot change this one's autocast.
+    # Latched on the trainer, so a second trainer's __init__ cannot change this trainer's autocast mid run.
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
@@ -1732,7 +1733,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
-# Skip reload/sync when fast inference LoRA shares weights with vLLM.
+# Guard reload_weights and sync_weights: skip when fast inference LoRA shares weights with vLLM (huggingface/trl commit 7856d3b).
 def _guard_vllm_sync_reload_for_shared_weights(function):
     reload_weights_pattern = re.compile(
         r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
@@ -1772,8 +1773,7 @@ def grpo_trainer__generate_single_turn(function_name, function):
 
     function = _guard_vllm_sync_reload_for_shared_weights(function)
 
-    # TRL 0.24.0-0.25.1 passed max_length/truncation to the tokenizer (protects no vision tokens);
-    # dropping them matches 0.26.2+. A no-op elsewhere.
+    # TRL 0.24.0-0.25.1 truncation regression: 0.22.2-0.23.1 used truncate_with_protected_tokens (tokenize, keep the RIGHTMOST tokens, protect vision tokens), 0.24.0-0.25.1 passed max_length/truncation to the tokenizer, which protects nothing, and 0.26.2+ removed those kwargs. Dropping them makes 0.24.0-0.25.1 behave like 0.26.2+; a no-op elsewhere.
     for pattern in [
         r'["\']?max_length["\']?\s*[:=]\s*self\.max_prompt_length\s*,\s*\n?',
         r'["\']?truncation["\']?\s*[:=]\s*True\s*,\s*\n?',
@@ -1812,7 +1812,7 @@ def grpo_trainer__generate(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
-# TRL 0.19.0 passed skip_special_tokens = True where it should be False.
+# Older TRL mishandles special tokens: 0.19.0 passed skip_special_tokens = True where it should be False.
 def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
@@ -1917,7 +1917,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(line_to_replace, replacement_lines)
 
-    # TRL 0.22.x-0.23.x passes four processor tensors and no counts to the no-grad logprob pass.
+    # TRL 0.22.x-0.23.x passes four tensors and no counts, so the chunker cannot split images per sample
     _legacy_vision_call = re.compile(
         r"(^[ \t]+)pixel_values=prompt_inputs\.get\(\"pixel_values\"\),\n"
         r"[ \t]+image_grid_thw=prompt_inputs\.get\(\"image_grid_thw\"\),\n"
@@ -1944,11 +1944,14 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # or treats None as per_token_logps.detach(), so forcing it on for vLLM is a wasted forward.
 
     pattern_to_find = re.compile(
-        r"(^\s*)all_logprobs = \[.*?for output in outputs\.outputs\s*\]",
+        r"(^\s*)all_logprobs = \["  # Capture indentation (group 1)
+        r".*?"  # Match everything inside non-greedily
+        r"for output in outputs\.outputs\s*"
+        r"\]",
         re.DOTALL | re.MULTILINE,
     )
 
-    # sanitize_logprob is injected at module level by the RLTrainer_replacement template in rl.py.
+    # sanitize_logprob is injected as a module-level function by the RLTrainer_replacement template in rl.py, so reference it directly.
     replacement_text = (
         r"\1all_logprobs = [\n"
         r"\1    [sanitize_logprob(next(iter(logprob.values()))) for logprob in output.logprobs]\n"
@@ -2004,7 +2007,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
 
-    # TRL's IS correction is disabled: the LLM path moves left padding right, so Unsloth adjusts it.
+    # TRL's importance sampling is disabled because the LLM path moves left padding to the right, so Unsloth adjusts the vLLM sampling_logprob tensor itself.
     string_to_find = "if self.use_vllm and self.vllm_importance_sampling_correction:"
 
     replacement_string = "if False and self.use_vllm and self.vllm_importance_sampling_correction:"
@@ -2033,7 +2036,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(string_to_find, replacement_string)
 
-    # TRL 0.24.0+ drops per-sample metadata (reasoning_effort); keep chat_template_kwargs on self.
+    # TRL 0.24.0+ extracts prompts = [x["prompt"] for x in inputs], losing metadata like reasoning_effort, so inject code storing per-sample chat_template_kwargs on self.
     _metadata_extraction = (
         "\n"
         "        # Unsloth: Extract per-sample chat_template_kwargs before metadata is lost\n"
@@ -2237,6 +2240,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if _old_cell in function:
             function = function.replace(_old_cell, _new_cell)
             _image_cell_normalised = True
+            # The legacy spelling is the only one whose placeholders are sized elsewhere.
             _legacy_image_cell = _index == 1
 
     # TRL 0.22.x-0.23.x hardcodes one image placeholder per example.
@@ -2245,8 +2249,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
         "                    prepare_multimodal_messages(prompt, num_images=1)"
     )
-    # An empty cell takes zero placeholders. An all-empty column is demoted to text, as TRL 0.24.0+
-    # does; a `None` cell still fails as upstream.
+    # Empty cells take zero placeholders; all-empty column becomes text (TRL 0.24.0+), else IndexError
     _placeholder_new = (
         '            if kwargs.get("images") and all(\n'
         '                _unsloth_cell == [] for _unsloth_cell in kwargs["images"]\n'
@@ -2509,13 +2512,14 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             dtype = self._autocast_dtype,
             enabled = getattr(self, "_autocast_enabled", True),
         ):
-            # +1 because the last logit of the sequence is excluded later.
+            # logits_to_keep gets 1 added because the last logit of the sequence is excluded later.
             logits = model(
                 input_ids = input_ids,
                 attention_mask = attention_mask,
                 logits_to_keep = logits_to_keep + 1,
             ).logits
             return logits
+            # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see huggingface/trl#2770.
 
     function = inspect.getsource(_get_per_token_logps)
     return function
@@ -2685,7 +2689,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 )
                 self._unsloth_truncated_support_scored = True
 
-            # Size on the dtype the forward actually runs in.
+            # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
                 self._autocast_dtype if getattr(self, "_autocast_enabled", True) else lm_head.dtype
             )
@@ -2739,6 +2743,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             # One chunker shared with the gradient pass, so the two cannot disagree.
             if _grpo_vision_chunks is None:
+                # Image-indexed keys already raised above, so only per-sample ones are left.
                 vision_chunks = []
                 for _start in range(0, total_samples, batch_size):
                     _end = min(_start + batch_size, total_samples)
@@ -2755,7 +2760,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
             if detect_logit_transforms is not None:
-                # model_config, not model: a DDP/Accelerate wrapper does not forward .config.
+                # model_config, not model: under DDP/Accelerate `model` is a wrapper that does not forward .config, so the helper would report zeros.
                 _transforms = detect_logit_transforms(model_config)
                 logit_softcapping = _transforms["logit_softcapping"]
                 logit_scale_multiply = _transforms["logit_scale_multiply"]
@@ -2773,18 +2778,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
-            # Sequence packing (UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen forward replaces the padded
-            # loop and fixes left-pad RoPE; self-verified, falls back if a backend ignores packed_seq_lengths.
+            # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen [1, sum L] forward replaces the padded [B, Lmax] loop and fixes the left-pad RoPE error. Self-verified against the per-row forward, re-checked as T grows, and falls back if a backend ignores packed_seq_lengths.
             logprobs = None
 
-            # PrefixGrouper: G completions share one stored prompt behind a FlexAttention shared-prefix mask.
-            # Gated by UNSLOTH_GRPO_PREFIX_GROUPER, an auto-gate and a first-use self-verify.
+            # PrefixGrouper (GRPO shared-prompt dedup, default ON): G completions share the prompt, so storing it once behind a FlexAttention shared-prefix mask cuts the trunk forward from G*(P+R) to P+G*R tokens. Gated by UNSLOTH_GRPO_PREFIX_GROUPER, a tok_r auto-gate and a first-use self-verify, so a mask/isolation regression cannot ship silently.
             _pg_result = None
             _pg_use = False
-            _pg_skip_pk = False
-            _pg_forward_fn = None
+            _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
+            _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
-            # Skip PG under vLLM: rollout dominates, so its self-verify is net overhead.
+            # Env gate hoisted to module level (mirrored via RL_PRE_ITEMS). Skip PG under vLLM: the rollout dominates the step, so PG saves little and its self-verify is net overhead.
             _pg_engage = (
                 UNSLOTH_GRPO_PREFIX_GROUPER_ON
                 and not getattr(self, "use_vllm", False)
@@ -2792,7 +2795,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
             if _pg_engage:
                 try:
-                    # Skip softcap models (flex never softcaps) and hybrid SSM / MoE (suffixes leak across completions).
+                    # Skip softcap models (the flex kernel never applies attn_logit_softcapping) and hybrid SSM / MoE models: only the threaded attention forwards get shared-prefix isolation, so a decoder that does not forward prefix_seg_info leaks suffixes across completions. PG also rides on sequence packing, so it needs the same zoo masked-column guard.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
                         _pg_enabled_fn()
@@ -2803,7 +2806,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and _pg_num_gen is not None
                         and _pg_num_gen >= 2
                         and not getattr(_pg_cfg, "attn_logit_softcapping", None)
-                        # The flex path ignores attention_dropout, so skip PG when it is set.
+                        # Normal backends apply config.attention_dropout in training; the flex path is deterministic, so skip PG when it is set.
                         and not getattr(_pg_cfg, "attention_dropout", 0)
                         and not any(
                             getattr(_pg_cfg, _pg_a, None) is not None
@@ -2823,7 +2826,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             if _pg_engage:
                 try:
                     _pg_pad = self.processing_class.pad_token_id
-                    # Cap the PG span at the sliding window, like the packed _pk_sw guard.
+                    # Cap the PG span (P+max(R)) at the sliding window, like the packed _pk_sw guard.
                     _pg_sw = getattr(
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
@@ -2874,14 +2877,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         logit_softcapping,
                                         temperature,
                                     )
-                                    _pg_hidden = None
+                                    _pg_hidden = None  # release before any verify forward
                             device_synchronize()
+                            # Clip to the loss window [B, logits_to_keep+max_left_pad].
                             _pg_w = logits_to_keep + max_left_pad
                             if _pg_r.shape[1] > _pg_w:
                                 _pg_r = _pg_r[:, -_pg_w:]
                             return _pg_r
 
-                        # Re-verify when T or the longest segment grows past the verified envelope.
+                        # Trust only within the verified envelope: re-verify when T or the longest segment grows, like the packed path.
                         _pg_T = int(_pg_layout.flat_ids.shape[1])
                         _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
                         _pg_env = (
@@ -2890,18 +2894,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if (not _pg_verify_on()) or (
                             _pg_env is not None and _pg_T <= _pg_env[0] and _pg_maxseg <= _pg_env[1]
                         ):
+                            # Trusted shape: run PG now and skip the full-row forward below.
                             _pg_result = _pg_run_forward()
                             _pg_use = True
                             _pg_skip_pk = True
                         else:
-                            # Defer until the packed reference exists, so a declined packed path wastes no PG forward.
+                            # Unverified shape: defer the forward until the packed reference exists, so a declined packed path never wastes a whole-batch PG forward.
                             _pg_forward_fn = _pg_run_forward
                 except Exception as _pg_err:
                     _pg_result = None
                     _pg_use = False
                     _pg_skip_pk = False
                     _pg_forward_fn = None
-                    # A compile failure or OOM here is GPU-wide, so disable PG persistently.
+                    # A FlexAttention/Triton compile failure or OOM here is GPU-wide, not layout-specific, so retrying every step just re-pays it. Disable PG persistently; the packed/padded path below still gives the exact result.
                     unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
                     if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
@@ -2912,13 +2917,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             flush = True,
                         )
 
+            # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen block-diagonal forward replaces the padded loop exactly and fixes its left-pad RoPE error. Self-verified, re-checked as T grows, falls back if a backend ignores packed_seq_lengths, and lm_head runs on completion positions only.
             _pk_result = None
             _pk_use = False
             _pk_T = None
             # True only while the packed forward and its scatter run, so an OOM elsewhere (setup, per-row verifier) is not read as a length limit.
             _pk_in_packed = False
             _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
-            # Without zoo#840's masked-column guard, zeroed columns turn NaN in exp().
+            # Without zoo#840's masked-column guard, zeroed prompt/pad columns turn NaN in exp().
             _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
             _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
             if (
@@ -2933,7 +2939,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
                     _pk_len = _pk_keep.sum(dim = 1)
-                    _pk_len_cpu = _pk_len.tolist()
+                    _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
                     _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
                     _pk_T = sum(_pk_nz_cpu)
                     _pk_L = input_ids.shape[1]
@@ -2948,7 +2954,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_unsafe = getattr(
                         unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                     )
-                    # Cap the flattened forward at one padded mini-batch's token budget.
+                    # Cap the flattened forward at one padded [batch_size, seq_len] mini-batch's token budget; anything larger uses the chunked padded loop.
                     _pk_cap = batch_size * seq_len
                     # Decided from the host lengths alone, so a capped batch skips the flatten and the active-row sync below.
                     _pk_fits = (
@@ -2968,9 +2974,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
-                        _pk_nz_idx = _pk_keep.nonzero(as_tuple = False)
-                        _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]
-                        _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt
+                        _pk_nz_idx = _pk_keep.nonzero(
+                            as_tuple = False
+                        )  # [T, 2] = (row, col), row-major
+                        _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
+                        # Per-row completion start after left-packing, matching create_completion_attention_mask.
+                        _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         _pk_in_packed = True
                         with _get_inference_mode_context_manager(model):
@@ -2990,6 +2999,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 ).logits
                                 _pk_out = _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0)
                                 _pk_ids = _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0)
+                                # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
                                 if _unsloth_grpo_returns_hidden_states(
                                     unwrapped_model, _pk_out, lm_head
                                 ):
@@ -3004,6 +3014,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         temperature,
                                     )[0]
                                 else:
+                                    # Model returned logits directly: scaling/softcapping already applied by the model forward.
                                     _pk_sel = chunked_selective_log_softmax(
                                         _pk_out,
                                         _pk_ids,
@@ -3012,6 +3023,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     )[0]
                         # GPT-OSS offload race guard, matching the padded loop.
                         device_synchronize()
+                        # Scatter each logprob back to its (row, col) so [:, -_pk_W:] matches the padded path.
                         _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
                         _pk_result = (
                             torch.zeros(
@@ -3030,9 +3042,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_vS = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
                         )
+                        # Debug: hand-edit this condition to force re-verify every step.
                         if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
-                            _pk_use = True
+                            _pk_use = True  # already verified for this shape
                         else:
+                            # verify against the per-row forward (ground truth)
                             _pk_ref = torch.zeros_like(_pk_result)
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
@@ -3055,6 +3069,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             use_cache = False,
                                         ).logits
                                         _pk_rout = _pk_rh[:, :-1, :]
+                                        # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
                                         if _unsloth_grpo_returns_hidden_states(
                                             unwrapped_model, _pk_rout, lm_head
                                         ):
@@ -3069,6 +3084,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                                 temperature,
                                             )[0]
                                         else:
+                                            # Model returned logits directly: scaling/softcapping already applied by the model forward.
                                             _pk_rsel = chunked_selective_log_softmax(
                                                 _pk_rout,
                                                 _pk_real[:, 1:],
@@ -3083,6 +3099,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             _pk_rkeep
                                         ].to(torch.float32)
                             device_synchronize()
+                            # Compare over the loss-mask region only.
                             _pk_cm = _pk_cmask.float()
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if UNSLOTH_ENABLE_LOGGING:
@@ -3093,7 +3110,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
                             if _pk_diff < 7e-1:
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
-                                # A single completion row does not exercise cross-sample packing.
+                                # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
                                 if _pk_active >= 2:
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
                                         _pk_vT, _pk_T
@@ -3153,6 +3170,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             if _pg_forward_fn is not None and not _pg_use:
                 if _pk_use and _pk_result is not None:
                     try:
+                        # Deferred PG forward, run only now that the packed reference exists.
                         _pg_result = _pg_forward_fn()
                         _pg_W2 = logits_to_keep + max_left_pad
                         _pg_cm = create_completion_attention_mask(
@@ -3206,13 +3224,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 f"[Unsloth] GRPO PrefixGrouper (no-grad) verify failed (fell back to packed): {_pg_err3!r}",
                                 flush = True,
                             )
-                # No packed reference means PG cannot be verified, so fall back.
+                # No packed reference (packing off or failed) means this cannot be verified, so fall back.
 
             if _pg_use and _pg_result is not None:
-                logprobs = _pg_result
+                logprobs = _pg_result  # PrefixGrouper verified/trusted -> skip the loop
                 zipped_inputs = []
             elif _pk_use and _pk_result is not None:
-                logprobs = _pk_result
+                logprobs = _pk_result  # verified -> skip the loop
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
@@ -3248,6 +3266,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 :, -(logits_to_keep + max_left_pad + 1) :, :
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
+                            # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
                             if _unsloth_grpo_returns_hidden_states(
                                 unwrapped_model, logits_chunk, lm_head
                             ):
@@ -3262,6 +3281,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     temperature = temperature,
                                 )
                             else:
+                                # Model returned logits directly: scaling/softcapping already applied by the model forward.
                                 logprobs_chunk = chunked_selective_log_softmax(
                                     logits_chunk,
                                     completion_input_ids_chunk,
@@ -3269,7 +3289,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     input_ids_chunk.shape[0] * multiplier,
                                 )
                         else:
-                            # VLMs do not take the optimized path, so they never hit the Flash Attn left-padding issue.
+                            # VLMs do not take the optimized path in models/, so they never hit the Flash Attn left-padding issue.
                             outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
@@ -3282,6 +3302,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
+                            # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
                             if _unsloth_grpo_returns_hidden_states(
                                 unwrapped_model, logits_chunk, lm_head
                             ):
@@ -3301,22 +3322,23 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     completion_input_ids_chunk,
                                     temperature,
                                 )
-                    # Avoids a race with GPT OSS offload_embbed=True.
+                    # Avoids a race with GPT OSS offload_embbed=True; it does not appear to slow models down.
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)
-                if logprobs is None:
+                if logprobs is None:  # padded fallback when packing was not used
                     logprobs = torch.cat(all_logprobs_list, dim = 0)
 
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-            # Always None (aux loss is off and opt-in is rejected); kept for TRL >= 1.7.0's 3-tuple.
+            # aux loss is unused: off by default (router_aux_loss_coef = 0 in models/rl.py) and explicit opt-in is rejected at trainer init, so it is always None. Kept for TRL >= 1.7.0's 3-tuple.
             aux_loss = None
-            return logprobs.detach(), entropies, aux_loss
+            return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
+            # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see huggingface/trl#2770.
 
     function = inspect.getsource(_get_per_token_logps_and_entropies)
     if trl_version < Version("1.7.0"):
-        # TRL < 1.7.0 unpacks a 2-tuple; fail loud rather than ship a 3-tuple.
+        # TRL < 1.7.0 unpacks (logps, entropies) while TRL >= 1.7.0 unpacks (logps, entropies, aux_loss), so drop the third element to match. The regex tolerates comment/whitespace drift and fails loud rather than ship a 3-tuple to older TRL.
         new_function, n = re.subn(
             r"return (logprobs\.detach\(\), entropies), aux_loss[^\n]*",
             r"return \1  # logps, entropies",
@@ -3412,9 +3434,9 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
     The width comparison stays as the fallback, for an ``unsloth_zoo`` old enough that it never writes the marker. It is decisive whenever ``vocab_size != hidden_size``, and the signal may only overrule it when it is not, which is the one case the shape cannot answer.
     """
     if tensor.shape[-1] != lm_head.shape[1]:
-        return False
+        return False  # vocab-wide: real logits, whatever any signal claims
     if lm_head.shape[0] != lm_head.shape[1]:
-        return True
+        return True  # hidden-wide and vocab_size != hidden_size: hidden states
     return _unsloth_grpo_hidden_states_signal(model) is not False
 
 
@@ -3446,6 +3468,7 @@ def _unsloth_grpo_hidden_states_signal(model):
         getattr(candidate, "_unsloth_grpo_hidden_states_forward_wrapped", False)
         for candidate in candidates
     ):
+        # The wrapper honours the flag unless it recorded that this call could not.
         if any(
             hasattr(candidate, "_unsloth_grpo_hidden_states_degraded") for candidate in candidates
         ):
@@ -3453,7 +3476,7 @@ def _unsloth_grpo_hidden_states_signal(model):
                 getattr(candidate, "_unsloth_grpo_hidden_states_degraded", False)
                 for candidate in candidates
             )
-        # An older rl.py set only the warn-once flag.
+        # An unsloth/models/rl.py predating the per-call attribute set only the warn-once flag; it is the best signal such a wrapper offers.
         return not any(
             getattr(candidate, "_unsloth_grpo_hidden_states_warning_issued", False)
             for candidate in candidates
@@ -3468,7 +3491,7 @@ _GRPO_HIDDEN_STATES_WIDTH_DISPATCH = re.compile(
     flags = re.MULTILINE,
 )
 
-# Deliberately loose: counts what the strict pattern should rewrite, so partial respelling is rejected.
+# Deliberately loose: any branch header deciding something off an lm_head dimension. Used only to count how many the strict pattern should have rewritten, so a zoo respelling SOME of them is rejected rather than half-patched.
 _GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE = re.compile(
     r"^[ \t]*(?:el)?if[ \t]+[^\n]*\blm_head\.shape\[[^\]\n]+\][^\n]*:[ \t]*$",
     flags = re.MULTILINE,
@@ -3776,7 +3799,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
-# getsource inlines bodies but not module imports, so redefine their constants in the cache.
+# inspect.getsource inlines function bodies but not module imports, so constants the inlined grpo functions use (UNSLOTH_ENABLE_LOGGING) must be redefined in the generated cache.
 RL_PRE_ITEMS["grpo_trainer"].append(
     "import os as _unsloth_os\n"
     "UNSLOTH_ENABLE_LOGGING = _unsloth_os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') in ('1', 'True', 'true')\n"
@@ -3809,7 +3832,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
     "    except Exception:\n"
     "        UNSLOTH_GRPO_PREFIX_GROUPER_ON = False\n"
 )
-# Guarded import in the generated cache, or detect_logit_transforms is a NameError.
+# getsource inlines the grpo bodies but not this file's imports, so the generated cache needs its own guarded import or detect_logit_transforms is a NameError.
 RL_PRE_ITEMS["grpo_trainer"].append(
     "try:\n"
     "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
@@ -3875,7 +3898,9 @@ def grpo_trainer_compute_loss(function_name, function):
             _vision_inputs["mm_token_type_ids"] = mm_token_type_ids
         # Only the keys the processor produced: an older zoo must not see unknown kwargs.
         _vision_inputs = {k: v for k, v in _vision_inputs.items() if v is not None}
-        logits_to_keep = completion_ids.size(1)
+        logits_to_keep = completion_ids.size(
+            1
+        )  # we only need to compute the logits for the completion tokens
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
 
@@ -3901,20 +3926,21 @@ def grpo_trainer_compute_loss(function_name, function):
                     compute_efficient,
                 )[0]
             )
-        )
+        )  # logps
 
         per_token_logps = get_logps_func(
             model, input_ids, attention_mask, logits_to_keep, compute_efficient = True
         )
-        # _prepare_inputs no longer returns reference log probs.
+        # KL divergence between model and reference: _prepare_inputs no longer returns reference log probs. See trl grpo_trainer.py#L1328.
         ref_logps = inputs.get("ref_per_token_logps", None)
+        # x - x.detach() preserves gradients from x.
         advantages = inputs["advantages"]
         old_logps = inputs.get("old_per_token_logps", None)
 
         input_ids = input_ids[:, -logits_to_keep:]
 
         model_config = _unsloth_get_model_config(model)
-        # The no-grad and gradient logps must read the transforms alike, or the ratio compares two policies.
+        # The old and reference logps come from _get_per_token_logps_and_entropies and the gradient logps from here, so both must read the transforms alike or the importance ratio compares two different policies.
         if detect_logit_transforms is not None:
             # model_config, not model: see _get_per_token_logps_and_entropies.
             _transforms = detect_logit_transforms(model_config)
@@ -3922,7 +3948,7 @@ def grpo_trainer_compute_loss(function_name, function):
             logit_scale_multiply = _transforms["logit_scale_multiply"]
             logit_scale_divide = _transforms["logit_scale_divide"]
         else:
-            logit_softcapping = _unsloth_get_final_logit_softcapping(model)
+            logit_softcapping = _unsloth_get_final_logit_softcapping(model)  # Gemma
             logit_scale_multiply, logit_scale_divide = _unsloth_resolve_logit_scales(model_config)
 
         max_left_pad = inputs.get("max_left_pad", 0)
@@ -4242,7 +4268,7 @@ def grpo_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
 
 
-# The Unsloth forward truncates input_ids but not labels, and TRL 0.27.2+ truncates completions only.
+# KTO shape mismatch: the Unsloth forward truncates input_ids while labels are untouched, and TRL 0.27.2+ _process_tokens truncates only completions, so an over-length prompt makes the model emit shorter logits than the labels expect.
 def kto_trainer_get_batch_logps(function_name, function):
     if function_name != "get_batch_logps":
         return function
@@ -4261,7 +4287,7 @@ def kto_trainer_get_batch_logps(function_name, function):
 RL_FUNCTIONS["kto_trainer"].append(kto_trainer_get_batch_logps)
 
 
-# TRL 1.x moved the math to _compute_logps & co.; same truncation hazard, so clamp to the shorter.
+# TRL 1.x dropped KTOTrainer.get_batch_logps and moved the math into _compute_logps / compute_ref_log_probs / _compute_kl_logps, which call selective_log_softmax on completion-only tokens. Same truncation hazard, so clamp logits/ids/mask to the shorter length (a no-op when equal).
 _KTO_COMPLETION_RE = re.compile(
     r"(?P<ws>[ \t]*)shift_logits = completion_logits\[:, :-1, :\]\.contiguous\(\)\n"
     r"(?P=ws)per_token_logps = selective_log_softmax\(\s*shift_logits,\s*"
@@ -4315,7 +4341,7 @@ def kto_trainer_align_completion_logps(function_name, function):
 RL_FUNCTIONS["kto_trainer"].append(kto_trainer_align_completion_logps)
 
 
-# TRL warns if batch size is not a multiple of num_generations.
+# TRL warns if batch size is not a multiple of num_generations; see trl grpo_trainer.py#L356.
 def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
     if "divisible by the number of generations" not in RLTrainer_source:
         return ""
@@ -4367,8 +4393,7 @@ RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
 
 
 def openenv_vllm_reload_weights():
-    # Guard reload_weights when sharing weights, and wake_up() untagged: TRL's tagged wake_up leaves
-    # is_sleeping=True, so Unsloth wakes again and double-maps handles.
+    # Patch trl's openenv generate_rollout_completions to guard reload_weights when sharing weights with vLLM, and to call wake_up() untagged: TRL's wake_up(tags=["kv_cache"]) leaves is_sleeping=True at the executor, so Unsloth's generate wakes again and double create_and_maps mapped handles. Unsloth's CuMemAllocator.wake_up skips weights anyway.
     if importlib.util.find_spec("trl") is None:
         return
     if Version(importlib_version("trl")) < Version("0.26.0"):
@@ -4383,14 +4408,16 @@ def openenv_vllm_reload_weights():
         )
         return
 
+    # trl 0.28 changed the function name again.
     patch_target_name = "_generate_rollout_completions_colocate"
     if hasattr(openenv_utils, patch_target_name):
         patch_target = getattr(openenv_utils, patch_target_name)
     else:
+        # Older TRL versions may keep sleep/wake logic in the public dispatcher.
         patch_target_name = "generate_rollout_completions"
         patch_target = getattr(openenv_utils, patch_target_name)
 
-    # TRL 0.29.1+ ships some openenv helpers without source; skip the rewrite rather than crash.
+    # TRL 0.29.1+ ships some openenv helpers as bytecode with no source, so inspect.getsource raises OSError; skip the rewrite rather than crash. The unmodified path keeps the duplicate reload_weights and the tagged wake_up, so openenv GRPO users may see redundant reloads.
     try:
         src = inspect.getsource(patch_target)
     except OSError as e:
@@ -4421,6 +4448,7 @@ def openenv_vllm_reload_weights():
 
     src = reload_weights_pattern.sub(replace_reload_weights, src)
 
+    # wake_up() with no tags wakes everything and sets is_sleeping=False, preventing a double wake_up; Unsloth's allocator skips weights anyway.
     src = re.sub(r"\.wake_up\(tags=\[.*?\]\)", ".wake_up()", src)
 
     if original_src == src:
@@ -4431,6 +4459,7 @@ def openenv_vllm_reload_weights():
     exec(compile(src, "<unsloth>", "exec"), openenv_utils.__dict__, local_ns)
     patched_func = local_ns[patch_target_name]
 
+    # Patch the target function in utils; if the dispatcher was patched, also update the parent module alias.
     setattr(openenv_utils, patch_target_name, patched_func)
     if patch_target_name == "generate_rollout_completions":
         openenv.generate_rollout_completions = patched_func
@@ -4484,7 +4513,7 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
 
 
 def vllm_generation_init_patch():
-    # vllm_generation.py (TRL 0.28.0+) must not build a second vLLM instance when fast_inference has one.
+    # trl moved vllm code to trl/generation/vllm_generation.py (commit 0eb66d8, 0.28.0+), which must be patched so it does not build a second vLLM instance when fast_inference has one.
 
     if importlib.util.find_spec("trl") is None:
         return
@@ -4554,6 +4583,7 @@ def vllm_generation_init_patch():
             )
         return patched_src
 
+    # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.
     def patch_sync_weights(src):
         pattern = re.compile(
             r"^(?P<def_line>def sync_weights\(self\):\n)(?P<body>(?:.*\n)*)",
@@ -4562,7 +4592,7 @@ def vllm_generation_init_patch():
 
         def replace_sync_weights(match):
             body = match.group("body")
-            # Chain getattr: in server mode self.llm is unset.
+            # Chain getattr so server mode, where self.llm is unset, does not raise AttributeError before the default kicks in.
             guard = (
                 "    if getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
                 "getattr(self, 'unsloth_fast_inference_lora', False):\n"
@@ -4604,11 +4634,10 @@ def vllm_generation_init_patch():
             vllm_generation._unsloth_vllm_sync_colocate = _unsloth_vllm_sync_colocate
         return patched_src
 
-    # `generate` is NOT source-patched: its anchors drifted (silently giving base-model rollouts) and the
-    # regex is not paren-balanced. Intercept the vLLM engine's public API for one call instead.
+    # `generate` is deliberately NOT source-patched: its two anchors drifted (TRL >= 1.x deleted the collective_rpc("reload_weights") call for self.sync_weights(), so the anchor matched 0 times, raised, and took the lora injection with it, making GRPO rollouts come from the BASE model), and the generate regex is not paren-balanced and mis-edits multi-line calls. Intercept on the vLLM engine instead of TRL's method body: self.llm is the vLLM LLM object in colocate mode in every release with VLLMGeneration, and generate / chat / collective_rpc are public stable APIs checked across vLLM 0.11.0-0.27.1. The override is scoped to one VLLMGeneration.generate call and undone in a finally.
     _UNSLOTH_GENERATE_WRAPPED = "_unsloth_vllm_generation_lora_wrapped"
 
-    # Per-device naming as in rl.py so two ranks on one node do not race on the adapter directory.
+    # Mirror the per-device naming in rl.py so two ranks on one node do not race on the same adapter directory.
     lora_name = "vllm_gen_lora"
     if "CUDA_VISIBLE_DEVICES" in os.environ:
         lora_name += "_" + os.environ.get("CUDA_VISIBLE_DEVICES", "0").replace(",", "")
@@ -4627,6 +4656,7 @@ def vllm_generation_init_patch():
                 self, "unsloth_fast_inference_lora", False
             )
             if llm is None or not sharing:
+                # Server mode, or a vLLM engine TRL created itself: keep upstream behaviour.
                 return original_generate(self, *args, **kwargs)
 
             load_lora = getattr(self, "_unsloth_load_lora", None)
@@ -4650,13 +4680,13 @@ def vllm_generation_init_patch():
                 try:
                     positional = inspect.signature(bound).bind_partial(*args).arguments
                 except (TypeError, ValueError):
-                    # Unintrospectable callable: injecting is the safe default.
+                    # Unintrospectable callable (C extension, odd wrapper): the keyword check above is all we have, and injecting is the safe default.
                     return False
                 return "lora_request" in positional
 
             def wrap_generation_call(bound):
                 def unsloth_generation_call(*args, **kwargs):
-                    # The shared engine holds BASE weights and sync_weights is a no-op, so pass the adapter explicitly.
+                    # vLLM needs the adapter handed to it explicitly: the shared engine holds the BASE weights, and sync_weights is a no-op when sharing.
                     if load_lora is not None and not caller_already_bound_lora(bound, args, kwargs):
                         kwargs["lora_request"] = load_lora(lora_name, load_tensors = True)
                     return bound(*args, **kwargs)
@@ -4665,7 +4695,7 @@ def vllm_generation_init_patch():
 
             def wrap_collective_rpc(bound):
                 def unsloth_collective_rpc(method, *args, **kwargs):
-                    # The engine shares live weights; reload_weights would pull the original checkpoint back.
+                    # The engine already shares the live training weights, so reload_weights would pull the ORIGINAL checkpoint back off disk.
                     if method == "reload_weights":
                         return None
                     return bound(method, *args, **kwargs)
@@ -4675,7 +4705,7 @@ def vllm_generation_init_patch():
             override("generate", wrap_generation_call)
             override("chat", wrap_generation_call)
             override("collective_rpc", wrap_collective_rpc)
-            # TRL >= 0.28 builds SamplingParams(**generation_kwargs) inside this call.
+            # TRL >= 0.28 builds `SamplingParams(**generation_kwargs)` inside this call, the one site the older-TRL source replacement in rl.py targets; route it through the same helper for this call only.
             user_sampling_params = getattr(self, "_unsloth_vllm_sampling_params", None)
             original_sampling_params = vllm_generation.__dict__.get("SamplingParams", None)
             if user_sampling_params is not None and original_sampling_params is not None:
@@ -4711,13 +4741,13 @@ def vllm_generation_init_patch():
             original_generate, "__qualname__", "VLLMGeneration.generate"
         )
         generate.__doc__ = getattr(original_generate, "__doc__", None)
-        # getsource / signature unwrap this, so source-reading patches still see TRL's generate.
+        # inspect.getsource / inspect.signature unwrap this, so drift detectors and other source-reading patches still see TRL's own generate.
         generate.__wrapped__ = original_generate
         setattr(generate, _UNSLOTH_GENERATE_WRAPPED, True)
         vllm_generation.VLLMGeneration.generate = generate
         return True
 
-    # Half-patched is worse than none (base-model rollouts, no error): restore all three on failure.
+    # Snapshot before patching: a HALF-patched VLLMGeneration is worse than none, since _init_vllm plus sync_weights without the generate-side adapter injection means no weight sync AND no LoRA, i.e. base-model rollouts with no error. If one of the three fails, restore all three.
     method_names = ("_init_vllm", "sync_weights", "generate")
     originals = {name: getattr(vllm_generation.VLLMGeneration, name, None) for name in method_names}
     try:
@@ -4752,7 +4782,7 @@ def vllm_generation_init_patch():
 RL_ADDITIONAL_FUNCTIONS["vllm_generation"].append(vllm_generation_init_patch)
 
 
-# GKD chunked JSD: anything not reproduced exactly returns None and TRL's compute_loss runs.
+# GKD chunked JSD (#11554): anything not reproduced exactly returns None and TRL's own compute_loss runs.
 try:
     from unsloth_zoo.rl_replacements import distillation_chunked_jsd
 except Exception:
@@ -4836,7 +4866,7 @@ def _unsloth_gkd_dense_head(model):
         return None
     if type(head) is not torch.nn.Linear:
         return None
-    # An lm_head that is not the output embeddings runs before them (ModernBERT, RoBERTa-style heads).
+    # An lm_head that is not the output embeddings runs before them (ModernBERT decoder, RoBERTa-style heads).
     lm_head = getattr(model, "lm_head", None)
     if isinstance(lm_head, torch.nn.Module) and lm_head is not head:
         return None
@@ -4939,6 +4969,7 @@ def _unsloth_gkd_jsd_supported(trainer_class):
         ok = (
             all(line in known for line in lines)
             and all(line in lines for line in required)
+            # a num_items_in_batch parameter must come with its reduction, and vice versa
             and (
                 ("num_items_in_batch=None" in signature)
                 == ("return jsd_sum / num_items_in_batch" in lines)
@@ -5054,14 +5085,14 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
-    # MiniCPM3 divides hidden states by logits_scaling before lm_head.
+    # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
     for unwrapped in (unwrapped_student, unwrapped_teacher):
         for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
             if getattr(config, "model_type", None) == "minicpm3":
                 return _unsloth_gkd_note_fallback(
                     self, "minicpm3 scales hidden states before the head"
                 )
-    # DDP(find_unused_parameters=True) marks a skipped head unused, then its grad hook fires twice.
+    # DDP(find_unused_parameters=True) marks a head skipped in forward as unused, then its grad hook fires twice.
     if getattr(model, "find_unused_parameters", False) and any(
         p is not None and p.requires_grad for p in (student_head.weight, student_head.bias)
     ):
@@ -5119,6 +5150,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
                     teacher_states, teacher_head, teacher_scale, teacher_softcap
                 )
         _unsloth_gkd_note_fallback(self, "a forward returned logits, not hidden states")
+        # TRL's dense path gets both logits on the input device (accelerate's top-level hook), beside the labels.
         student_states = student_states.to(shifted_labels.device)
         teacher_states = teacher_states.to(shifted_labels.device)
         extra = {}
@@ -5132,7 +5164,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             **extra,
         )
 
-    # A dispatched model can return hidden states off its head's device.
+    # A dispatched model can return hidden states off its head's device; the zoo's accumulators follow the states.
     student_states = student_states.to(student_head.weight.device)
     teacher_states = teacher_states.to(teacher_head.weight.device)
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
@@ -5150,7 +5182,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         teacher_logit_scale = teacher_scale,
         student_final_logit_softcapping = student_softcap,
         teacher_final_logit_softcapping = teacher_softcap,
-        # No TRL release passes a temperature here (GKDConfig.temperature is for sampling).
+        # No TRL release passes a temperature to generalized_jsd_loss (GKDConfig.temperature is for sampling).
         temperature = 1.0,
         **jsd_kwargs,
     )

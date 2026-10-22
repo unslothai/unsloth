@@ -22,6 +22,7 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2ForCausalLM,
 )
 
+# For Pytorch 2.1.1
 try:
     from transformers.models.qwen2.modeling_qwen2 import (
         Qwen2SdpaAttention,

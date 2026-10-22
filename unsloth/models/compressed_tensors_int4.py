@@ -137,6 +137,7 @@ class Int4PackedLinear(nn.Linear):
 
     @property
     def weight(self):
+        # The packed int32 words with `.quant_state`: the bitsandbytes contract Unsloth's kernels read.
         packed = self._parameters["weight_packed"]
         if packed.__dict__.get("quant_state") is None:
             self.quant_state
@@ -148,10 +149,11 @@ class Int4PackedLinear(nn.Linear):
             x.requires_grad or (bias is not None and bias.requires_grad)
         ):
             return _Int4LinearFunction.apply(x, self._parameters["weight_packed"], self, bias)
-        # autograd.Function.apply alone costs ~20 us per call; inference is launch bound.
+        # Nothing to differentiate: autograd.Function.apply alone costs ~20 us per call (inference is launch bound).
         from ..kernels.int4_packed import int4_matmul
 
         qs = self.quant_state
+        # Train mode (incl. GC's no-grad first pass): exact dequant + matmul, same math as the recompute.
         out = int4_matmul(
             x.to(qs.dtype), self._parameters["weight_packed"], qs, fast = not self.training
         )
@@ -162,6 +164,7 @@ class Int4PackedLinear(nn.Linear):
         if qs is not None:
             qs.training = bool(mode)
             if mode:
+                # Free the fused kernel's per-layer scale cache (1/8 of the packed weight); training never uses it.
                 qs._fast = None
         return super().train(mode)
 
@@ -175,7 +178,7 @@ class Int4PackedLinear(nn.Linear):
 
     def _save_to_state_dict(self, destination, prefix, keep_vars):
         super()._save_to_state_dict(destination, prefix, keep_vars)
-        # Adapter saves drop base weights, so skip the repack copy.
+        # A repacked weight is saved in the checkpoint's own layout; adapter saves drop base weights, so skip the copy.
         if (
             self.__dict__.get("_int4_layout")
             and not _ADAPTER_ONLY_SAVES[0]
@@ -188,13 +191,14 @@ class Int4PackedLinear(nn.Linear):
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+        # Incoming words are in the checkpoint layout.
         if prefix + "weight_packed" in state_dict:
             self.__dict__.pop("_int4_layout", None)
             self.__dict__.pop("_int4_quant_state", None)
             self._parameters["weight_packed"].__dict__.pop("quant_state", None)
 
     def _apply(self, fn, *args, **kwargs):
-        # Casts skip packed words, scales and zero points; moves still apply.
+        # Casts skip packed words, scales and zero points (fp32 scale stays exact); moves still apply.
         try:
             probe = fn(torch.empty(0, dtype = torch.bfloat16))
             dtype, device = probe.dtype, probe.device
@@ -294,6 +298,7 @@ def save_packed_with_checkpoint_config(model, quantization_config) -> None:
 
     @functools.wraps(original)
     def save_pretrained(*args, **kwargs):
+        # Layers a LoRA merge densified are written as plain weights: compressed-tensors skips `ignore` entries.
         dense = [name for name, m in packed if not isinstance(m, Int4PackedLinear)]
         saved = dict(quantization_config)
         if dense:
@@ -345,7 +350,7 @@ def adapter_only_state_dict():
         _ADAPTER_ONLY_SAVES[0] -= 1
 
 
-# A PEFT merge on a packed base would write into a throwaway view.
+# PEFT merge on a packed base would write into a throwaway view: densify first, restore after.
 _PACKED_STATE = "_unsloth_int4_packed_state"
 
 
@@ -421,7 +426,7 @@ def patch_peft_merge_for_int4_packed_linears() -> bool:
     @functools.wraps(original_unload)
     def _unload_and_optionally_merge(self, *args, **kwargs):
         model = original_unload(self, *args, **kwargs)
-        # Once unloaded, the unmerge stash would pin the packed weights.
+        # Unloaded, a merge is permanent: the stash kept only for unmerge would pin the packed weights.
         for module in model.modules():
             module.__dict__.pop(_PACKED_STATE, None)
         return model
@@ -435,6 +440,7 @@ def patch_peft_merge_for_int4_packed_linears() -> bool:
 
     @functools.wraps(original_save)
     def save_pretrained(self, *args, **kwargs):
+        # PEFT builds the adapter from model.state_dict() and keeps only adapter tensors.
         with adapter_only_state_dict():
             return original_save(self, *args, **kwargs)
 

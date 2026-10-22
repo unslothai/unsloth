@@ -23,8 +23,7 @@ from ..device_type import clean_gpu_cache
 
 
 def _hf_transfer_importable() -> bool:
-    # huggingface_hub < 1.0 raises on every download if the flag is on and hf_transfer is missing.
-    # find_spec raises ValueError for a sys.modules stub whose __spec__ is None.
+    # find_spec, never import: huggingface_hub <1.0 raises on each download if the flag is on and hf_transfer is missing; stubs raise ValueError.
     try:
         return _importlib_util.find_spec("hf_transfer") is not None
     except (ImportError, ValueError):
@@ -32,7 +31,7 @@ def _hf_transfer_importable() -> bool:
 
 
 _OFFLINE_VALS = {"1", "true", "yes", "on"}
-# An explicit value is the caller's (Studio sets "0" for its Xet fallback).
+# An explicit value is the caller's (Studio sets "0" for its Xet fallback), as in unsloth_zoo.
 if (
     "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
     and not (
@@ -294,6 +293,7 @@ class SyntheticDataKit:
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
                 engine_args["dtype"] = dtype_val.split(".")[-1]
+            # Only allow valid vLLM choices
             valid_dtypes = {"auto", "bfloat16", "float", "float16", "float32", "half"}
             if engine_args["dtype"] not in valid_dtypes:
                 engine_args["dtype"] = "auto"
@@ -322,6 +322,7 @@ class SyntheticDataKit:
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
+                # Ignore --enforce-eager True
                 subprocess_commands += [
                     "--" + flag,
                 ]
@@ -361,6 +362,7 @@ class SyntheticDataKit:
             ready_regex = ready_re,
             text = False,
         )
+        # stderr is not printed to console, but self.stderr_capture.tail(200) prints the last 200 lines.
 
         self._await_vllm_server(timeout = timeout)
         print("vLLM Server Ready Detected")
@@ -416,6 +418,7 @@ class SyntheticDataKit:
                 self._fail_vllm_server(f"exited with code {returncode} before it was ready")
             if self.stdout_capture.has_closed():
                 self._fail_vllm_server("closed its stdout before it was ready")
+            # Expiry is checked at the top, so a dead or closed child keeps its own message rather than being reported as a timeout.
 
     def _fail_vllm_server(self, what_happened):
         """Terminate the server and raise, quoting what it managed to say.
@@ -469,6 +472,7 @@ class SyntheticDataKit:
             response = requests.get(f"http://{host}:{port}/metrics", timeout = 5)
             return response.status_code == 200
         except requests.exceptions.RequestException:
+            # ConnectionError alone let a read timeout escape as a stray traceback out of the readiness loop.
             return False
 
     def cleanup(self):
@@ -513,6 +517,7 @@ class SyntheticDataKit:
         self.cleanup()
 
     def chunk_data(self, filename = None):
+        # Chunks data by max tokens and generation length
         assert filename is not None
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
@@ -530,6 +535,7 @@ class SyntheticDataKit:
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
         if max_tokens <= self.overlap:
+            # Stride max_tokens - overlap must be positive, or the n_chunks computation below divides by zero or goes negative.
             raise RuntimeError(
                 f"The chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
                 f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
@@ -537,6 +543,7 @@ class SyntheticDataKit:
             )
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
+        # Get left and right boundaries
         length = len(input_ids)
         if length <= max_tokens:
             # Fits one window: the multi-chunk path would drop it or slice wrong tokens when shorter than overlap.
@@ -544,7 +551,7 @@ class SyntheticDataKit:
         else:
             # Overlapping chunks need ceil((length - overlap) / stride), not ceil(length / stride).
             n_chunks = int(np.ceil((length - self.overlap) / (max_tokens - self.overlap)))
-            # n_chunks + 1 points yield n_chunks ranges after the [:-1]/[1:] pairing.
+            # Needs n_chunks + 1 boundary points: with n_chunks the [:-1]/[1:] pairing drops a range and leaves one oversized chunk over max_tokens.
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks + 1)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()

@@ -17,6 +17,7 @@ __all__ = [
     "tag_compile_cache",
 ]
 
+# CPU-only torch builds have no CUDA stream binding.
 _raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None)
 _ENABLED = (
     _raw_stream is not None

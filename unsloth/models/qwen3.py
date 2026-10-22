@@ -44,7 +44,7 @@ try:
     )
 except:
     transformers_version = Version(transformers_version)
-    if not transformers_version >= Version("4.50.3"):
+    if not transformers_version >= Version("4.50.3"):  # TODO: Update when transformers is updated
         raise ImportError(
             f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3 and Qwen3Moe.\n"
             f"The minimum required version is 4.50.3.\n"
@@ -55,6 +55,7 @@ from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 
+# For Pytorch 2.1.1
 try:
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3SdpaAttention,
@@ -106,6 +107,7 @@ def Qwen3Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
     if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
@@ -145,7 +147,7 @@ def Qwen3Attention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs; None means the default path.
+    # PrefixGrouper seg table rides in **kwargs; misuse (KV cache or padding mask) raises; None is default
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -217,6 +219,7 @@ def Qwen3Attention_fast_forward_inference(
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
 
+        # Mistral Nemo 12b has weird dimensions.
         if attention_size != hidden_size:
             self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
@@ -295,6 +298,7 @@ def Qwen3Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
+    # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -305,6 +309,7 @@ def Qwen3Attention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
+    # When qlen == vlen and attn_mask is None, causal attention is the right choice.
     Q_len = Qn.shape[-2]
     K_len = Knn.shape[-2]
     if attention_mask is not None and attention_mask.dim() == 2:
@@ -396,7 +401,7 @@ class FastQwen3Model(FastLlamaModel):
         return
 
     @staticmethod
-    def from_pretrained(
+    def from_pretrained(  # TODO: Change after release
         model_name = "Qwen/Qwen3-7B",
         max_seq_length = 4096,
         dtype = None,

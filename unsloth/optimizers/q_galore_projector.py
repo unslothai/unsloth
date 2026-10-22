@@ -86,10 +86,12 @@ class GaLoreProjector:
         self.scale = scale
         self.proj_type = proj_type
 
+        # Quantization settings for the projection matrix
         self.quant = quant
         self.quant_group_size = group_size
         self.quant_n_bit = n_bit
 
+        # Adaptive update scheduling state
         self.cos_threshold = cos_threshold
         self.gamma_proj = gamma_proj
         self.queue_size = queue_size
@@ -98,6 +100,7 @@ class GaLoreProjector:
         self.svd_count = 0
         self._ortho_float_cache = None
 
+        # Projection matrix state
         self.ortho_matrix = None
         self.ortho_matrix_scales = None
         self.ortho_matrix_zeros = None
@@ -316,6 +319,7 @@ def _dequantize(
     w: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor, original_shape: tuple
 ) -> torch.Tensor:
     """Dequantize from uint8 back to float."""
+    # Infer the group size: scales has shape (n_groups, 1), so n_groups = scales.shape[0].
     total = w.numel()
     n_groups = scales.shape[0] if scales.dim() > 1 else scales.numel()
     group_size = total // n_groups if n_groups > 0 else total

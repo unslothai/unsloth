@@ -194,6 +194,7 @@ def _venv_site_packages(root: Path) -> List[Path]:
         if versioned.is_dir():
             return [versioned]
 
+    # Fixtures and incomplete venvs may lack a runnable interpreter, so accept the site-packages dir only when exactly one exists.
     candidates = sorted(root.glob("lib/python*/site-packages"))
     return candidates if len(candidates) == 1 else []
 
@@ -235,7 +236,7 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
             if name:
                 canonical = _canonical(name)
                 version = dist.version or ""
-                # pip renames the outgoing record to a `~` sibling mid-install; pip calls that invalid.
+                # pip renames the old record to a ~ sibling mid-install; a kill can leave only that backup, which reads as healthy but is invalid to pip.
                 if not version or canonical in found or stem.startswith("~"):
                     conflicts.add(canonical)
                 if canonical not in found:
@@ -255,7 +256,7 @@ def _requirements_root_in(root: Path) -> Optional[Path]:
         reqs = path / "studio" / "backend" / "requirements"
         if reqs.is_dir():
             return reqs
-    # An editable install can keep studio/ only in its source checkout; ask the interpreter.
+    # An editable install may keep studio/ only in its checkout: ask the interpreter to follow its .pth or finder, not call it incomplete.
     probe = (
         "import json, pathlib, studio; "
         "print(json.dumps(str(pathlib.Path(studio.__file__).resolve().parent / "
@@ -309,6 +310,7 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
             "missing": [],
             "reason": "studio_install_manifest_missing",
         }
+    # The requested managed venv is the subject, even though the helper above came from this CLI's own tree.
     root = _managed_root(extra_roots) or _venv_root_for_module(module)
     foreign = root is not None and _resolved(root) != _resolved(Path(sys.prefix))
     foreign_distributions = _distributions_in(root) if foreign else None
@@ -336,7 +338,7 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
                 kwargs["installed_conflicts"] = installed_conflicts
             if deep and _verify_install_supports(module, "deep"):
                 kwargs["deep"] = True
-                # Guarded separately: a module new enough for `deep` may predate `scan_paths`.
+                # Without the venv's site-packages the scan covers this interpreter's tree, so pass scan_paths; guard it separately (deep may predate it).
                 if _verify_install_supports(module, "scan_paths"):
                     paths = [str(path) for path in _venv_site_packages(root)]
                     if paths:
@@ -346,7 +348,7 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
         deep_kwargs = {"deep": True} if (deep and _verify_install_supports(module, "deep")) else {}
         state = module.verify_install(root = root, **deep_kwargs)
         if foreign and not state["deps_ok"]:
-            # The dependency walk ran here, so it says nothing about that venv.
+            # The manifest came from another venv but the dependency walk ran here, so it says nothing about that venv.
             state = dict(state, deps_ok = True, missing = [])
             state["ok"] = state["manifest_ok"]
             state["reason"] = None if state["ok"] else state["reason"]
@@ -469,6 +471,7 @@ def _installed_distribution_groups():
                 version = None
             groups.setdefault(_canonical(name), []).append((dist, name, bool(version)))
             continue
+        # Wheel metadata directory names escape name separators as underscores, so splitting off the final version is unambiguous.
         path = getattr(dist, "_path", None)
         stem = os.path.basename(os.fspath(path)) if path is not None else ""
         path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
@@ -563,6 +566,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     entries: List[tuple] = []
     owners: Dict[str, int] = {}
     for records in _installed_distribution_groups().values():
+        # An unreadable record cannot be trusted to describe the package tree any more than a duplicated one can.
         ambiguous = len(records) > 1 or not all(readable for _dist, _name, readable in records)
         for dist, name, _readable in records:
             try:
@@ -574,6 +578,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
                 continue
             for row in csv.reader(io.StringIO(record)):
                 rel = row[0] if row else ""
+                # A trailing slash is a directory entry, which has nothing to check.
                 if not rel or rel.endswith("/"):
                     continue
                 # Installer-owned metadata drifts from its recorded size; .pyc is regenerated.

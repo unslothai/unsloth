@@ -65,6 +65,7 @@ else:
         try:
             bound = _ZOO_RESPONSES_ONLY_SIGNATURE.bind_partial(*args, **kwargs)
         except TypeError:
+            # Signature drift, or a bad call: let the zoo raise its own error.
             return _zoo_train_on_responses_only(*args, **kwargs)
 
         # The zoo returns the masking closure before reading num_proc.
@@ -85,6 +86,7 @@ DEFAULT_SYSTEM_MESSAGE = {}
 def _ollama_template(name: str):
     return OLLAMA_TEMPLATES[name]
 
+# =========================================== Unsloth
 unsloth_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -179,13 +181,14 @@ mistral_template = \
         "{% endif %}"\
     "{% endfor %}"
 
+# Ollama from https://www.ollama.com/library/mistral
 mistral_ollama = _ollama_template("mistral")
 
 mistral_eos_token = "eos_token"
 CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False, mistral_ollama,)
 DEFAULT_SYSTEM_MESSAGE["mistral"] = None
 
-# Adds BOS to every turn.
+# Adds BOS to every conversation, and uses weird <<SYS>> system messages.
 llama_template = \
     "{% if messages[0]['role'] == 'system' %}"\
         "{% if messages[1]['role'] == 'user' %}"\
@@ -208,12 +211,14 @@ llama_template = \
         "{% endif %}"\
     "{% endfor %}"
 
+# Ollama from https://www.ollama.com/library/llama3
 llama_ollama = _ollama_template("llama")
 
 llama_eos_token = "eos_token"
 CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False, llama_ollama,)
 DEFAULT_SYSTEM_MESSAGE["llama"] = None
 
+# Vicuna: https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
 vicuna_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -236,12 +241,14 @@ vicuna_template = \
         "{{ 'ASSISTANT:' }}"\
     "{% endif %}"
 
+# Ollama from https://www.ollama.com/library/vicuna
 vicuna_ollama = _ollama_template("vicuna")
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
 DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
 
+# Vicuna Old: https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
 vicuna_old_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -273,6 +280,7 @@ DEFAULT_SYSTEM_MESSAGE["vicuna_old"] = "A chat between a curious human and an ar
 CHAT_TEMPLATES["vicuna old"] = CHAT_TEMPLATES["vicuna_old"]
 DEFAULT_SYSTEM_MESSAGE["vicuna old"] = DEFAULT_SYSTEM_MESSAGE["vicuna_old"]
 
+# Alpaca multi turn: https://github.com/tatsu-lab/stanford_alpaca, changed for multi-turn convos
 alpaca_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -301,7 +309,7 @@ alpaca_eos_token = "eos_token"
 CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token, False, alpaca_ollama,)
 DEFAULT_SYSTEM_MESSAGE["alpaca"] = "Below are some instructions that describe some tasks. Write responses that appropriately complete each request."
 
-# |trim is required for lstrip/rstrip.
+# |trim is required for lstrip/rstrip; start_of_turn is token 106, end_of_turn is 107, and user and model are plain one-word tokens.
 gemma_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
@@ -321,12 +329,14 @@ gemma_template = \
         "{{ '<start_of_turn>model\n' }}"\
     "{% endif %}"
 
+# Ollama from https://www.ollama.com/library/gemma
 gemma_ollama = _ollama_template("gemma")
 
 gemma_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True, gemma_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma"] = None
 
+# Gemma with ChatML instead; <eos> is still more appropriate here than a ChatML end token.
 gemma_chatml_template = "{{ bos_token }}" + chatml_template
 
 gemma_chatml_ollama = _ollama_template("gemma_chatml")
@@ -338,12 +348,14 @@ gemma_chatml_eos_token = (
 CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True, gemma_chatml_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma_chatml"] = None
 
+# Gemma 2: same as Gemma 1, but with sliding window attention. https://ollama.com/library/gemma2/blobs/6522ca797f47
 gemma2_template = gemma_template
 gemma2_ollama = _ollama_template("gemma2")
 gemma2_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma2"] = (gemma2_template, gemma2_eos_token, True, gemma2_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma2"] = None
 
+# =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_template = gemma_chatml_template
 gemma2_chatml_ollama = _ollama_template("gemma2_chatml")
 gemma2_chatml_eos_token = gemma_chatml_eos_token
@@ -366,6 +378,7 @@ llama3_template = \
         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
     "{% endif %}"
 
+# Ollama from https://www.ollama.com/library/llama3
 llama3_ollama = _ollama_template("llama-3")
 
 llama3_template_eos_token = "eos_token"
@@ -377,6 +390,7 @@ CHAT_TEMPLATES["llama3"] = (llama3_template, llama3_template_eos_token, False, l
 DEFAULT_SYSTEM_MESSAGE["llama3"] = None
 
 
+# Phi-3: no {{ bos_token }} prefix (Phi-3.5 removes BOS?)
 phi3_template = \
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
@@ -391,6 +405,7 @@ phi3_template = \
         "{{ '<|assistant|>\n' }}"\
     "{% endif %}"
 
+# Ollama from https://www.ollama.com/library/phi3
 phi3_ollama = _ollama_template("phi-3")
 
 phi3_template_eos_token = "<|end|>"
@@ -531,6 +546,7 @@ llama31_template = \
 {%- endif %}
 """
 
+# Ollama from https://ollama.com/library/llama3.1 (needs updating!)
 llama31_ollama = _ollama_template("llama-3.1")
 
 llama31_template_eos_token = "eos_token"
@@ -545,6 +561,7 @@ for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
     DEFAULT_SYSTEM_MESSAGE[version] = ""
 
 
+# =========================================== Qwen 2.5
 qwen25_template = \
 """{%- if tools %}
     {{- \'<|im_start|>system\\n\' }}
@@ -597,6 +614,7 @@ qwen25_template = \
 """
 
 
+# Ollama from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
 qwen25_ollama = _ollama_template("qwen-2.5")
 
 qwen25_template_eos_token = "eos_token"
@@ -626,6 +644,7 @@ DEFAULT_SYSTEM_MESSAGE["qwen2.5-coder"] = qwen25_default_system_message
 CHAT_TEMPLATES["qwen25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen25-coder"] = qwen25_default_system_message
 
+# Phi-4: no {{ bos_token }} prefix (Phi-4 removes BOS?)
 phi4_template = \
     "{% for message in messages %}"\
         "{% if (message['role'] == 'system') %}"\
@@ -645,6 +664,7 @@ _phi4_ollama_template = \
     "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"\
     "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
 
+# Ollama from https://www.ollama.com/library/phi4 is different
 phi4_ollama = _ollama_template("phi-4")
 
 phi4_template_eos_token = "<|im_end|>"
@@ -652,6 +672,7 @@ CHAT_TEMPLATES["phi-4"] = (phi4_template, phi4_template_eos_token, False, phi4_o
 DEFAULT_SYSTEM_MESSAGE["phi-4"] = None
 
 
+# Gemma-3, obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
 gemma3_template = \
 """{{ bos_token }}
 {%- if messages[0]['role'] == 'system' -%}
@@ -695,6 +716,7 @@ gemma3_template = \
 {%- endif -%}
 """
 
+# Ollama from https://ollama.com/library/gemma3/blobs/e0a42594d802
 gemma3_ollama = _ollama_template("gemma-3")
 
 gemma3_template_eos_token = "<end_of_turn>"
@@ -704,6 +726,7 @@ DEFAULT_SYSTEM_MESSAGE["gemma-3"] = None
 CHAT_TEMPLATES["gemma3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma3"] = None
 
+# Qwen-3: official chat template (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
 qwen3_template = \
 """
 {%- if tools %}
@@ -814,6 +837,7 @@ DEFAULT_SYSTEM_MESSAGE["qwen-3"] = None
 CHAT_TEMPLATES["qwen3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen3"] = None
 
+# Gemma-3n, obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
 gemma3n_template = \
 """{{ bos_token }}
 {%- if messages[0]['role'] == 'system' -%}
@@ -859,6 +883,7 @@ gemma3n_template = \
 {%- endif -%}
 """
 
+# Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
 gemma3n_ollama = _ollama_template("gemma-3n")
 gemma3n_template_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma-3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
@@ -867,6 +892,7 @@ DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None
 CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None
 
+# Gemma-4 uses <|turn>role\n...<turn|>\n format
 gemma4_template = \
 """{%- macro format_parameters(properties, required, filter_keys=false) -%}
     {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
@@ -1200,6 +1226,7 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4"] = None
 CHAT_TEMPLATES["gemma4"] = (gemma4_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4"] = None
 
+# Gemma-4 thinking template
 gemma4_thinking_template = \
 """{%- macro format_parameters(properties, required, filter_keys=false) -%}
     {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
@@ -1938,6 +1965,7 @@ gptoss_template = \
 <|start|>assistant
 {%- endif -%}"""
 
+# Ollama from https://ollama.com/library/gpt-oss
 gptoss_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -2126,6 +2154,7 @@ DEFAULT_SYSTEM_MESSAGE["gpt-oss"] = None
 CHAT_TEMPLATES["gptoss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gptoss"] = None
 
+# =========================================== Qwen3-Instruct
 qwen3_instruct_template = \
 '''{%- if tools %}
     {{- '<|im_start|>system\\n' }}
@@ -2219,6 +2248,7 @@ CHAT_TEMPLATES["qwen3-instruct"] = (qwen3_instruct_template, qwen3_template_eos_
 DEFAULT_SYSTEM_MESSAGE["qwen3-instruct"] = None
 
 
+# =========================================== Qwen3-Thinking
 qwen3_thinking_template = \
 '''{%- if tools %}
     {{- '<|im_start|>system\\n' }}
@@ -2316,6 +2346,7 @@ CHAT_TEMPLATES["qwen3-thinking"] = (
 DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 
+# =========================================== Liquid-LFM2
 liquid_lfm2_template = \
 '''{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
@@ -2330,6 +2361,8 @@ DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
 
 
+# =========================================== Starling-LM
+
 starling_template = \
 """{{ bos_token }}
 {%- for message in messages %}
@@ -2339,6 +2372,7 @@ starling_template = \
     {{- 'GPT4 Correct Assistant:' }}
 {%- endif %}"""
 
+# Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
 starling_ollama = _ollama_template("starling")
 
 starling_template_eos_token = "<|end_of_turn|>"
@@ -2347,12 +2381,15 @@ DEFAULT_SYSTEM_MESSAGE["starling"] = None
 
 
 
+# =========================================== Yi-chat
+
 yi_chat_template = \
 """{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
 ' }}{% endif %}"""
 
+# Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
 yi_chat_ollama = _ollama_template("yi-chat")
 
 yi_chat_template_eos_token = "<|endoftext|>"
@@ -2365,7 +2402,8 @@ def _escape_jinja_literal(text):
     return text.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"').replace("\r", "\\r")
 
 
-def _change_system_message(template: str, type_chat_template: str, system_message: str = None,):
+def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
+    # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
 
     # Custom templates may carry {system_message}; fill it before the no-default return.
@@ -2384,6 +2422,7 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
             )
         return template, system_message
 
+    # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
     # Predefined templates hold {system_message} inside a Jinja literal, so escape it; custom ones are
     # filled verbatim, since their placeholder may sit in raw text.
@@ -2431,6 +2470,7 @@ def get_chat_template(
         IS_GEMMA = True
 
 
+    # We first check if the tokenizer is a fast one. If not, we cannot convert this!
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
     old_padding_side = tokenizer.padding_side
 
@@ -2438,6 +2478,7 @@ def get_chat_template(
     type_chat_template = None
 
     if type(chat_template) in (list, tuple,):
+        # For changing system message later Since it's not supported yet, we will raise an error first!
         type_chat_template = chat_template[0].lower()
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
@@ -2445,6 +2486,7 @@ def get_chat_template(
         ollama_modelfile = None
 
     elif type(chat_template) is str:
+        # For changing system message later
         type_chat_template = chat_template.lower()
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
@@ -2504,6 +2546,7 @@ def get_chat_template(
             pass
 
             if map_eos_token and (not stop_word in token_mapping.values()):
+                # Do not map 107 = <|im_end|> and 1 = <|im_end|>. This will reduce the vocab size by 1
                 logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
                 string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
             pass
@@ -2511,6 +2554,7 @@ def get_chat_template(
             if skipped != len(token_mapping):
                 new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
 
+                # Careful on pad_token
                 old_pad_token = tokenizer.pad_token
                 if old_pad_token == tokenizer.eos_token:
                     old_pad_token = stop_word
@@ -2530,7 +2574,7 @@ def get_chat_template(
                     )
                 pass
 
-                # Fix the sentencepiece tokenizer since there is no tokenizer.model file.
+                # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
                 from .tokenizer_utils import fix_sentencepiece_tokenizer
                 tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, applied_mapping,)
             else:
@@ -2547,6 +2591,7 @@ def get_chat_template(
             old_unk_token = getattr(tokenizer, "unk_token", None)
 
             string_vocab = tokenizer._tokenizer.to_str()
+            # First check if new stop_word is in the tokenizer
             if stop_word in string_vocab:
                 temporary_stop_token = "<|:__TEMP//STOP//TOKEN__:|>"
                 string_vocab = string_vocab.replace(old_eos_token, temporary_stop_token)
@@ -2560,6 +2605,7 @@ def get_chat_template(
             pass
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
 
+            # Careful on pad_token
             if old_pad_token == old_eos_token:
                 old_pad_token = stop_word
                 same_padding_token = True
@@ -2573,6 +2619,7 @@ def get_chat_template(
                 pad_token = old_pad_token,
             )
 
+            # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
             from .tokenizer_utils import fix_sentencepiece_tokenizer
             tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, sentencepiece_mapping,)
         pass
@@ -2583,7 +2630,7 @@ def get_chat_template(
             f"{CHAT_TEMPLATES.keys()}"
         )
 
-    # Gemma needs bos_token or losses become too high.
+    # bos_token is a must on Gemma or losses become too high.
     if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
         chat_template = "{{ bos_token }}" + chat_template
 
@@ -2595,6 +2642,7 @@ def get_chat_template(
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.padding_side = old_padding_side
 
+    # If not normal HF, we add a check to make old templates work
     if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:
         role, content, user, assistant = (
             "'" + _escape_jinja_literal(mapping[key]) + "'"
@@ -2617,6 +2665,7 @@ def get_chat_template(
 
     tokenizer.chat_template = chat_template
 
+    # Also fix up other tokens
     old_pad_token = getattr(old_tokenizer, "pad_token", None)
     old_bos_token = getattr(old_tokenizer, "bos_token", None)
     old_unk_token = getattr(old_tokenizer, "unk_token", None)
@@ -2632,6 +2681,7 @@ def get_chat_template(
     # Return the processor: it renders templates from its own attribute, and models/vision.py mirrors
     # these onto it, so refresh them after the vocab edits.
     if _processor is not None:
+        # GGUF export unwraps the processor before it builds the Ollama Modelfile.
         tokenizer._ollama_modelfile = ollama_modelfile
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
@@ -2648,6 +2698,7 @@ def get_chat_template(
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
 
+    # Re-wrap so the trainer gets the same TokenizerWrapper type back.
     if _mlx_tokenizer_wrapper is not None:
         _mlx_tokenizer_wrapper._tokenizer = tokenizer
         eos_token_id = getattr(tokenizer, "eos_token_id", None)
@@ -2662,6 +2713,7 @@ def get_chat_template(
 
 
 def remove_special_tokens(tokenizer, prompt):
+    # Removes double BOS token
     bos_token = getattr(tokenizer, "bos_token", None)
     if bos_token is not None and prompt.startswith(bos_token):
         prompt = prompt[len(bos_token):]
@@ -2748,6 +2800,7 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
         texts = []
         for row_idx in range(n_rows):
+            # Coerce missing (None) columns to "" so they do not render as the literal string "None".
             row_values = {
                 column: ("" if (value := examples[column][row_idx]) is None else value)
                 for column in columns
@@ -2819,6 +2872,7 @@ def to_sharegpt(
                 "Unsloth: Input and output columns must have matching batch lengths. "
                 f"Got {len(users)} {merged_column_name} rows and {len(assistants)} {output_column_name} rows."
             )
+        # Null cells are absent values, not the string None; the output column skips _create_formatter's coalescing, so check None inline.
         texts = [
             [
                 {"from" : "human", "value" : "" if user      is None else str(user)     },
@@ -2881,6 +2935,7 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
         reverse = True,
     )
 
+    # Remove BOS
     if getattr(tokenizer, "bos_token", None) is not None:
         added_tokens_decoder = [x for x in added_tokens_decoder if x != tokenizer.bos_token]
 
@@ -2889,10 +2944,12 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     for token in added_tokens_decoder:
         n = len(token)
         repeated_counts = joined_text.count(token[:n//2])
+        # Longer than half the token, for e.g. <|reserved_special_token_0|> vs <|reserved_special_token_1|>.
         if repeated_counts > 2:
             for j in range(n//2+1, n):
                 if joined_text.count(token[:j]) < repeated_counts:
                     j -= 1
+                    # Remove repeated tokens to reduce search space
                     joined_text = joined_text.replace(token[:j], "")
                     repeated_tokens.append(token[:j])
                     break
@@ -2969,6 +3026,7 @@ extra_eos_tokens = None,
         "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"\
         "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"
 
+    # Check for EOS after {OUTPUT}
     if tokenizer.eos_token is not None:
         extra_eos_tokens.insert(0, tokenizer.eos_token)
     if len(extra_eos_tokens) == 0:
@@ -2996,6 +3054,7 @@ extra_eos_tokens = None,
     final_combined_check = False
 
     try:
+        # O(N^2) search for 2 repeated pieces of text.
         j = len(chat_template)-1
         at_least_one = False
         while j > 0:
@@ -3008,6 +3067,7 @@ extra_eos_tokens = None,
 
         if not at_least_one: raise RuntimeError(error_msg)
 
+        # Must be equivalent to left
         final_combined_check = True
 
         instruction_response = chat_template[j:]
@@ -3049,7 +3109,7 @@ extra_eos_tokens = None,
                 f"{left_changed}"
             )
     except:
-        # Trailing whitespace can desync the two-example detection, so retry once without it.
+        # Trailing whitespace can desync two-example detection, so retry once without it on failure; templates that parse as-is are never altered.
         rstripped_chat_template = chat_template.rstrip()
         if rstripped_chat_template != chat_template:
             try:
@@ -3142,7 +3202,7 @@ extra_eos_tokens = None,
     'TEMPLATE ' + part + system_modelfile + input_modelfile + output_modelfile + \
         part + '\n\n' + ollama_eos
 
-    def process(part, which, content = "message['content']",):
+    def process(part, which, content = "message['content']"):
         # Escape the literal pieces only; the placeholder becomes Jinja syntax below.
         part = which.join(_escape_jinja_literal(piece) for piece in part.split(which))
         if part.endswith(which):
@@ -3211,13 +3271,15 @@ extra_eos_tokens = None,
         if has_bos_token:
             jinja_template = "{{ bos_token }}" + jinja_template
 
+    # Fix missing loop_messages
     if "{% set loop_messages = messages %}" not in jinja_template:
         jinja_template = jinja_template.replace(
             "{% for message in loop_messages %}",
             "{% for message in messages %}",
-            1, # only the first
+            1, # Only replace the first one
         )
 
+    # Check if system part is the same!
     jinja_template = re.sub(
         r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.*?)' \}\}"\
         r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
@@ -3227,10 +3289,12 @@ extra_eos_tokens = None,
         jinja_template, flags = re.MULTILINE | re.DOTALL,
     )
 
+    # Check jinja template for bos
     if always_bos_token:
         if not jinja_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
             jinja_template = "{{ bos_token }}" + jinja_template
 
+    # Get instruction and output parts for train_on_inputs = False
     input_idx  = input_part .find("{INPUT}")
     output_idx = output_part.find("{OUTPUT}")
     if input_idx == -1:
@@ -3358,7 +3422,7 @@ def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
     class StoppingCriteriaSub(StoppingCriteria):
         __slots__ = "stop_token", "single_match", "length",
 
-        def __init__(self, stops = "eos_token", encounters = 1,):
+        def __init__(self, stops = "eos_token", encounters = 1):
             super().__init__()
             if stops == "eos_token":
                 self.stop_token = torch.tensor(tokenizer.eos_token_id)
@@ -3506,7 +3570,7 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
     {}""".format(
         "Describe the city given eloquently.",
         "The lost city of Atlantis.",
-        "", # blank for generation
+        "", # output - leave this blank for generation!
     )
     prompts = [ prompt, ]
 
@@ -3533,6 +3597,7 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
                 datas.append(line.decode("utf-8", errors = "replace"))
         gguf_tokens = "".join(datas)
 
+        # Now extract GGUF tokenization attempt
         gguf_tokenized = re.findall(r"([\d]{1,}) \-\> \'([^\']{1,})\'", gguf_tokens, flags = re.MULTILINE)
         gguf_tokenized = [(int(x[0]), x[1],) for x in gguf_tokenized]
         input_ids = tokenizer(prompt).input_ids
@@ -3540,6 +3605,7 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         tokens = tokenizer.batch_decode(input_ids)
         hf_tokenized = list(zip(input_ids, tokens))
 
+        # Compare to Huggingface
         for j, (hf_token, gguf_token) in enumerate(zip(hf_tokenized, gguf_tokenized)):
             if (hf_token[0] != gguf_token[0]):
                 print("Failed GGUF != HF at", j)

@@ -22,7 +22,7 @@ def _should_use_mlx_backend_for_cli() -> bool:
 
 
 def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
-    # Before any transformers import: adapter model-type detection imports utils.models.
+    # Activate before any transformers import: adapter model-type detection imports utils.models.
     ensure_studio_backend_path()
     from filelock import FileLock
     from utils.paths.storage_roots import studio_root
@@ -42,7 +42,7 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
 def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
-        # MLX is torch-free: use the lightweight adapter, not trainer.py.
+        # MLX is torch-free: use the lightweight adapter, not trainer.py (imports torch/unsloth/trl at load).
         ensure_studio_backend_path()
         with studio_backend_imports("unsloth train"):
             from studio.backend.core.training.training import create_mlx_trainer_adapter
@@ -337,7 +337,7 @@ def train(
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 
-    # Guard against an unresolved typer.Option.
+    # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo
 
     if isinstance(hf_token, OptionInfo):

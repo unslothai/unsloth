@@ -712,11 +712,13 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, cos, sin, position_ids):
         if position_ids is not None:
+            # The first two dimensions of cos and sin are always 1, so squeeze them.
             cos = cos.squeeze(1).squeeze(0)
             sin = sin.squeeze(1).squeeze(0)
             cos = cos[position_ids].unsqueeze(2)
             sin = sin[position_ids].unsqueeze(2)
 
+        # Q * cos + rotate_half(Q) * sin, with the transposed rotate_half in the backward.
         half = Q.shape[-1] // 2
         RH_Q = torch.cat((-Q[..., half:], Q[..., :half]), dim = -1)
         Q *= cos
@@ -727,6 +729,7 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dY):
         cos, sin = ctx.saved_tensors
+        # Q * cos + rotate_half.T(Q) * sin
         half = dY.shape[-1] // 2
         RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
         dY = dY.clone()

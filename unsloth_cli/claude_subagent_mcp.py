@@ -38,7 +38,7 @@ from unsloth_cli.commands.start import (
 _MAX_RESULT_CHARACTERS = 100_000
 _CANCEL_POLL_SECONDS = 0.1
 _CANCEL_GRACE_SECONDS = 2.0
-# A server that never answers would block both processes; 0 restores the unbounded wait.
+# A server that accepts and never answers would block the child and the parent forever; 0 restores the unbounded wait.
 _DEFAULT_TIMEOUT_SECONDS = 1800.0
 
 

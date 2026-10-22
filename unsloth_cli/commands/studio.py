@@ -86,7 +86,7 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser().resolve(), True
         except (OSError, ValueError):
             return Path(override).expanduser(), True
-    # Same root as storage_roots.py; see test_unsloth_home_root_agreement.py.
+    # Keeps the CLI on the same root as storage_roots.py; see test_unsloth_home_root_agreement.py.
     master = (os.environ.get("UNSLOTH_HOME") or "").strip()
     if master:
         try:
@@ -148,8 +148,7 @@ def _recorded_master_root() -> Optional[Path]:
         here = STUDIO_HOME.resolve()
         if not (master.is_dir() and (here == master or master in here.parents)):
             return None
-        # A legacy-rooted note is declined, like storage_roots._is_legacy_studio_tree
-        # (test_unsloth_home_root_agreement.py).
+        # Decline a legacy-rooted note, keyed on the tree so a note naming $HOME or an ancestor goes too, like storage_roots._is_legacy_studio_tree.
         try:
             if here == (Path.home() / ".unsloth" / "studio").resolve():
                 return None
@@ -213,7 +212,7 @@ def _ensure_studio_env_exported() -> None:
 
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
-# The full name carries a digest: ".cli_api_key_cli_<digest>".
+# Cached raw CLI API key; the full name carries a digest: ".cli_api_key_cli_<digest>".
 CLI_API_KEY_FILE_PREFIX = ".cli_api_key_"
 DEFAULT_ADMIN_USERNAME = "unsloth"
 DESKTOP_SECRET_PREFIX = "desktop-"
@@ -222,7 +221,7 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
-# A marked child still outside the venv must stop, not loop.
+# Marks run()'s re-exec'd child; a marked child still outside the venv must stop, not loop.
 _STUDIO_REEXEC_ENV = "_UNSLOTH_STUDIO_REEXEC"
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
@@ -276,20 +275,19 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
     return kwargs
 
 
-# Application Control denies the unsigned unsloth.exe (#8490). Byte-identical to process.rs and install.ps1.
+# Application Control denies the unsigned unsloth.exe, so managed invocations go through the interpreter (#8490). Byte-identical to process.rs and install.ps1.
 _WINDOWS_CLI_ENTRYPOINT = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 )
 
-# The trampoline's exact import (find_spec passes for an empty unsloth_cli); a parity test
-# literal_evals it.
+# The trampoline's exact import (find_spec passes for an empty unsloth_cli), with the sys.path[0] scrub a parity test literal_evals.
 _MANAGED_CLI_IMPORT_PROBE = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
     "from unsloth_cli import app; sys.exit(0)"
 )
 
-# A timeout means "no verdict", not failure.
+# Generous: cold interpreter start plus package import. A timeout means "no verdict", not failure.
 _MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
 
 # Policy refusals: AppLocker 1260, App Control / Smart App Control 4551. Not 577: a bad hash can be a damaged file.
@@ -528,10 +526,10 @@ def _managed_cli_package_present(python: Path) -> bool:
             **_windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
-        # Timeout is not failure: fall back to the on-disk layout.
+        # Timeout is not failure: the untimed re-exec would still come up, so fall back to the on-disk layout.
         return _managed_cli_site_packages_layout(python)
     except (OSError, subprocess.SubprocessError):
-        # Fail closed: the caller strips .bootstrap_password first.
+        # The re-exec runs that same interpreter. Fail closed: the caller strips .bootstrap_password first.
         return False
     return probe.returncode == 0
 
@@ -541,11 +539,11 @@ def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
     with _hsa_override_gfx_arch in studio/install_python_stack.py and install.sh."""
     if not value:
         return None
-    # [0-9] rather than isdigit()/\d, both of which accept non-ASCII digits.
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
         return None
     major, minor, step = (int(p) for p in value.strip().split("."))
-    # Steppings are a single hex nibble.
+    # Steppings are a single hex nibble; anything wider is not a real target.
     if not (0 <= step <= 15) or major <= 0 or minor > 9:
         return None
     return f"gfx{major}{minor}{step:x}"
@@ -569,7 +567,7 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
                 for line in text.splitlines():
                     if not line.lower().startswith("requires-dist:"):
                         continue
-                    # `rocm-sdk-core` is a component, not the arbiter.
+                    # Plain `rocm` and `rocm[libraries,devel]` both count; `rocm-sdk-core` is a component, not the arbiter.
                     if re.search(r"requires-dist:\s*rocm(?![-_a-z0-9])", line, re.IGNORECASE):
                         return True
                 return False
@@ -585,7 +583,7 @@ def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None. Read from the
     `rocm` meta-package: globbing for rocm_sdk_libraries_gfx* would read an ORPHAN. None also
     covers a MULTI-arch family such as gfx120x-all, which contradicts no override."""
-    # Only a live install torch resolves through: pytorch.org wheels orphan `rocm`.
+    # Only a LIVE install while torch resolves through it: the generic pytorch.org wheels orphan `rocm`, which would then name the OLD family.
     if not _torch_requires_rocm_metapackage(venv_dir):
         return None
     _metadata: Optional[Path] = None
@@ -736,7 +734,7 @@ def _find_setup_script(repo_root: Optional[Path] = None) -> Optional[Path]:
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_RUN = 4
-# At 1 every extra chat queues behind the generating one.
+# At 1 every extra chat queues behind the generating one. _slots_that_fit_on_gpu() may cut it back.
 _PARALLEL_DEFAULT_PLAIN = 4
 
 
@@ -769,7 +767,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
                     src = finder.read_text(encoding = "utf-8")
                 except (OSError, UnicodeDecodeError):
                     continue
-                # [^}]* rejects nested dicts, which the setuptools template never emits.
+                # [^}]* still rejects nested dicts, which the setuptools template never emits.
                 m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
                 if not m:
                     continue
@@ -777,7 +775,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
                     mapping = ast.literal_eval(m.group(1))
                 except (SyntaxError, ValueError):
                     continue
-                # literal_eval can return a set / list / None.
+                # literal_eval can return a set / list / None: the regex only captures `{...}`.
                 if not isinstance(mapping, dict):
                     continue
                 studio_pkg = mapping.get("studio")
@@ -951,7 +949,7 @@ def _write_auth_secret(path: Path, secret: str) -> None:
             os.chmod(tmp_path, 0o600)
         except OSError:
             pass
-        # newline pins LF: `$(cat ...)` would leave the CR on the credential.
+        # newline pins LF: text mode writes CRLF and `$(cat ...)` leaves the CR on the credential.
         with os.fdopen(fd, "w", encoding = "utf-8", newline = "\n") as f:
             fd = -1
             f.write(secret + "\n")
@@ -971,9 +969,9 @@ def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
     auth_dir.mkdir(parents = True, exist_ok = True)
     conn = sqlite3.connect(auth_dir / "auth.db")
-    # A live server writes this DB; the default lock wait is zero.
+    # A live server writes this DB while the CLI runs; the default lock wait is zero.
     conn.execute("PRAGMA busy_timeout=5000")
-    # sqlite3.connect makes a new DB 0644 under a 022 umask.
+    # sqlite3.connect makes a new DB 0644 under a 022 umask; keep auth/ and auth.db private.
     for _path, _mode in ((auth_dir, 0o700), (auth_dir / "auth.db", 0o600)):
         try:
             os.chmod(_path, _mode)
@@ -1163,7 +1161,7 @@ def _should_prompt_password_change(
     from unsloth_cli._tool_policy import is_external_host, is_wildcard_host
 
     if cloudflare is True and is_wildcard_host(host):
-        # A tunnel prompts regardless of the terminal.
+        # A tunnel prompts regardless of the terminal; headless is handled downstream.
         return True
     return is_external_host(host) and _prompt_streams_interactive() and _prompt_owns_the_terminal()
 
@@ -1175,7 +1173,7 @@ def _prompt_streams_interactive() -> bool:
         return False
 
 
-# First keystroke only. 30s stays inside a default Docker HEALTHCHECK start period.
+# Wait for the FIRST keystroke only. 30s stays inside a default Docker HEALTHCHECK start period.
 _UNATTENDED_PROMPT_SECONDS = 30.0
 
 
@@ -1241,7 +1239,7 @@ def _cli_update_password(
     cleanup runs after commit, so it cannot roll back."""
     password_salt, password_hash = _hash_password(new_password)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
-    # Managed credentials live in the account_* columns; the owner's row keeps the legacy columns.
+    # Managed credentials live in the account_* columns behind the downgrade fence; the owner's row keeps the legacy columns.
     managed = False
     if "account_jwt_secret" in columns:
         row = conn.execute("SELECT role FROM auth_user WHERE username = ?", (username,)).fetchone()
@@ -1296,7 +1294,7 @@ def _cli_update_password(
         try:
             stale_path.unlink(missing_ok = True)
         except OSError as exc:
-            # The hash is committed: never roll back, but truncate a locked file or its plaintext re-validates.
+            # The hash is committed, so a failed unlink must not roll back, but a locked-yet-writable file must be truncated or its plaintext re-validates the credential.
             try:
                 stale_path.write_text("", encoding = "utf-8")
                 cleared = True
@@ -1367,7 +1365,7 @@ def _apply_supplied_password_before_launch(supplied_password: "str | None") -> N
         _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, supplied_password)
         typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
     except (OSError, sqlite3.Error) as exc:
-        # Fail closed on any DB failure.
+        # Fail closed on any DB failure (typer.Exit from the branches above propagates).
         typer.echo(
             f"Error: --password could not update the Unsloth auth database ({exc}); not starting.",
             err = True,
@@ -1462,7 +1460,7 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
     tunnel_py = backend_dir / "cloudflare_tunnel.py"
     if not tunnel_py.is_file():
         return False
-    # Without studio/backend on sys.path ensure_cloudflared() falsely reports "unavailable".
+    # ensure_cloudflared() imports utils.paths lazily; without studio/backend on sys.path it returns a false "unavailable" that wrongly refuses --secure.
     added_backend_path = False
     try:
         if str(backend_dir) not in sys.path:
@@ -1512,24 +1510,25 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
-    # The real predicate: a non-secure tunnel only starts for a wildcard host.
+    # Use the real predicate, not `cloudflare is True`: a non-secure tunnel only starts for a wildcard host.
     tunnel_will_start = _launch_publishes_tunnel(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     )
     if not tunnel_will_start and os.environ.get(_UNATTENDED_PROMPT_DONE_ENV):
-        # Outer CLI already waited; peeked, never popped; never skip for a tunnel, which fails closed.
+        # The outer CLI already waited out this terminal. Peeked, never popped (run.py consumes it); never for a tunnel, which fails closed.
         return
     if tunnel_will_start:
         exposure = "on a public Cloudflare URL"
     elif _bind_is_wildcard(host):
         exposure = "on every network interface"
     else:
-        # A concrete bind listens on that address only.
+        # A concrete bind listens on that address only, so "every network interface" is untrue.
         exposure = f"at {host}, which other machines on the network can reach"
-    # Before public exposure PROVE the password is not the seeded default; unprovable fails closed.
+    # Before public exposure we must PROVE the password is not the seeded default; an old child could regenerate one. Unprovable fails closed.
     try:
         conn = _connect_auth_db()
     except (OSError, sqlite3.Error) as exc:
+        # Cannot confirm a committed admin exists; a transient lock clears on retry.
         typer.echo(
             f"Error: refusing to expose Unsloth {exposure}: could "
             f"not open the Unsloth auth database ({exc}) to confirm the admin "
@@ -1542,9 +1541,10 @@ def _enforce_password_change_before_exposure(
     try:
         try:
             _ensure_cli_default_admin(conn)
-            # Commit before any re-exec, or an OLD child would regenerate its own admin.
+            # Persist a freshly seeded admin before any re-exec: uncommitted it rolls back on close and an OLD child would regenerate its own.
             conn.commit()
         except (OSError, sqlite3.Error) as exc:
+            # Best-effort remove any half-written seed file; the launch is refused regardless.
             try:
                 (STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE).unlink(missing_ok = True)
             except OSError:
@@ -1569,6 +1569,7 @@ def _enforce_password_change_before_exposure(
             if child_self_suppresses:
                 # The child suppresses the injection, so nothing serves the seeded credential.
                 return
+            # The admin is committed, so an old child will not regenerate; strip anyway and fail closed.
             typer.echo(
                 f"Warning: could not read the Unsloth admin state back ({exc}); "
                 "removing the seeded bootstrap password before public exposure.",
@@ -1579,7 +1580,7 @@ def _enforce_password_change_before_exposure(
         if not row or not row[2]:
             return
         if not _prompt_streams_interactive():
-            # Headless only if the bootstrap deadline protects the launch (not api-only, not TIMEOUT=0).
+            # Only proceed headless if the bootstrap deadline protects the launch: it never arms for api-only, and TIMEOUT=0 disables it.
             if api_only or not _bootstrap_deadline_active():
                 typer.echo(
                     "Error: refusing to publish Unsloth on a public Cloudflare "
@@ -1593,7 +1594,7 @@ def _enforce_password_change_before_exposure(
                 )
                 raise typer.Exit(1)
             if child_self_suppresses:
-                # Our own backend never serves the seeded credential publicly; keep the file for local recovery.
+                # The child is this install's own backend and never serves the seeded credential publicly, so skip the strip and keep the file for LOCAL recovery.
                 typer.echo(
                     "Warning: Unsloth is being exposed publicly while the admin "
                     "account still uses its auto-generated bootstrap password. The "
@@ -1605,7 +1606,7 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 return
-            # On --secure with no cloudflared, stripping the only recovery credential would lock the user out.
+            # On --secure the bind is loopback, so with cloudflared provably unavailable stripping the only recovery credential would just lock the user out.
             if secure and _tunnel_binary_confirmed_unavailable():
                 typer.echo(
                     "Error: refusing to expose Unsloth: the Cloudflare tunnel binary "
@@ -1617,7 +1618,7 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
-            # An OLD studio-venv child would serve the seeded credential from disk, so delete it here.
+            # An OLD studio-venv child would serve the seeded credential from disk, so delete it here in the parent; must_change_password stays set.
             _strip_seeded_bootstrap_password_or_exit(context = "no terminal to change it")
             typer.echo(
                 "Warning: Unsloth is being exposed publicly while the admin account "
@@ -1644,7 +1645,7 @@ def _enforce_password_change_before_exposure(
         try:
             new_password = _password_prompt.prompt_new_password(
                 _is_current_password,
-                # A detached pty passes isatty yet nobody types: a raw bind must not block. A tunnel fails closed.
+                # A raw bind must never block a launch that used to start: a detached pty passes every isatty test yet nobody types. A tunnel fails closed.
                 first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
             )
         except _password_prompt.PromptUnattended:
@@ -1655,10 +1656,11 @@ def _enforce_password_change_before_exposure(
                 "with `unsloth studio reset-password`.",
                 err = True,
             )
-            # Tell the child the terminal was already tried, or it waits its own deadline on the same pty.
+            # Tell the child the terminal has been tried, or it waits its own deadline on the same pty and can trip a startup watchdog.
             os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
+            # An abort needs the non-interactive hatch more than the old warn did.
             typer.echo(
                 "\nError: password change aborted; refusing to expose Unsloth "
                 "with the default admin password. Re-run and set a password, or "
@@ -1770,7 +1772,7 @@ def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
 
     from core.inference import engine_install
 
-    # status() answers "still checking" while the GPU probe runs; this caller can wait.
+    # status() answers "still checking" while the GPU probe runs; this caller can wait for it.
     reason = engine_install.support_reason(engine)
     if reason:
         raise RuntimeError(reason)
@@ -1968,6 +1970,7 @@ def studio_default(
     ),
 ):
     """Launch the Unsloth Studio server."""
+    # --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     _ensure_studio_env_exported()
     _export_models_dirs(models_dir)
@@ -2063,6 +2066,7 @@ def studio_default(
     runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
 
+    # --secure requires the tunnel; force a loopback bind.
     if secure:
         if cloudflare is False:
             typer.echo(
@@ -2083,6 +2087,7 @@ def studio_default(
     host = _normalize_wildcard_bind_host(host)
     _require_unambiguous_ephemeral_bind(host, port)
 
+    # --verbose restores the per-request access logs suppressed by default.
     if verbose:
         _enable_verbose_access_logs()
     if disable_dns_pinning:
@@ -2090,10 +2095,10 @@ def studio_default(
     else:
         os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
-    # Resolve the child launcher BEFORE the gate strips the seeded password.
+    # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = _running_in_studio_venv(studio_venv_dir)
-    # An override contradicting single-arch wheels fails every kernel launch (#7331).
+    # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
     resolved_frontend = frontend
@@ -2103,7 +2108,7 @@ def studio_default(
         if not (studio_python and run_py):
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
-        # A public UI launch needs a servable login page before the gate strips the password.
+        # A public UI launch needs a servable login page before the gate strips the seeded password.
         resolved_frontend = _require_servable_frontend_or_exit(
             frontend = resolved_frontend,
             api_only = api_only,
@@ -2111,10 +2116,11 @@ def studio_default(
             host = host,
             secure = secure,
         )
+        # Non-public / api-only launches still forward a resolved dist, for the same silent 404.
         if resolved_frontend is None and not api_only:
             resolved_frontend = _find_frontend_dist()
     else:
-        # No re-exec in the studio venv: validate before the headless gate strips the password.
+        # In the studio venv there is no re-exec: validate frontend and backend BEFORE the headless gate strips the seeded password.
         resolved_frontend = _require_servable_frontend_or_exit(
             frontend = resolved_frontend,
             api_only = api_only,
@@ -2159,7 +2165,7 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
-            # Explicit polarity: an older run.py defaults --cloudflare on.
+            # Explicit polarity: an older run.py defaults --cloudflare on, so an unset default must not re-enable the tunnel on a mixed install.
             if cloudflare is True:
                 args.append("--cloudflare")
             elif not secure:
@@ -2177,7 +2183,7 @@ def studio_default(
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                # Without our std handles, CREATE_NO_WINDOW hides the backend's output from redirection.
+                # Without our std handles, CREATE_NO_WINDOW gives the backend a hidden console and `unsloth studio > log` captures nothing.
                 with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
                     proc = _sp.Popen(
                         args,
@@ -2261,6 +2267,7 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
         return s, None
     if s.startswith(("/", "./", "../", "~")) or s == ".":
         return s, None
+    # Windows drive letter: the colon is a path separator.
     if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
         return s, None
     if ":" not in s:
@@ -2268,7 +2275,7 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
     repo, _, variant = s.rpartition(":")
     if not repo or not variant:
         return s, None
-    # Quant labels never contain a slash.
+    # Quant labels never contain a slash; `foo:bar/baz` is not repo:variant.
     if "/" in variant:
         return s, None
     return repo, variant
@@ -2666,18 +2673,18 @@ def run(
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
         unsloth studio run --model unsloth/Qwen3-8B --engine vllm --engine-parallelism data
     """
-    # Via env, so an older re-exec target ignores it instead of passing it to llama-server.
+    # Passed via env, so an older re-exec target ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
-    # The group callback skips its own clear once a subcommand is named (#7331).
+    # The group callback returns before its own clear once a subcommand is named, so this path must clear the override itself (#7331).
     _clear_hsa_override_before_launch(silent = bool(silent))
 
     secure = _resolve_secure(secure, not_secure)
     _preserve_cloudflare_intent(cloudflare, secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
-    # Read from the env at backend import, so resolve before any re-exec.
+    # Read from the env at backend import, so resolve before any re-exec; an omitted flag keeps a value the parent forwarded.
     _healing_disabled = (
         os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING") == "1"
         if tool_call_healing is None
@@ -2689,7 +2696,7 @@ def run(
     elif "UNSLOTH_TOOL_CALL_NUDGE" not in os.environ:
         os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
 
-    # UNSLOTH_SAMPLING_* hard-pins a field, so only write flags set explicitly.
+    # UNSLOTH_SAMPLING_* hard-pins a field over client and per-model recommendation, so only write flags set explicitly.
     for _sampling_env, _sampling_value in (
         ("UNSLOTH_SAMPLING_TEMPERATURE", temperature),
         ("UNSLOTH_SAMPLING_TOP_P", top_p),
@@ -2715,6 +2722,7 @@ def run(
     else:
         os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
+    # Promote legacy exact `-m`/`-hfr`/`-f` back into typer params; clusters stay in extras.
     model, extra_llama_args = _consume_legacy_short_aliases(
         extra_llama_args,
         ("-m", "-hfr"),
@@ -2786,7 +2794,7 @@ def run(
 
     _require_bind_host(host)
 
-    # --secure forces a loopback bind so the raw port is never public.
+    # --secure requires the tunnel; force a loopback bind so the raw port is never public.
     if secure:
         if cloudflare is False:
             typer.echo(
@@ -2807,7 +2815,7 @@ def run(
     host = _normalize_wildcard_bind_host(host)
     _require_unambiguous_ephemeral_bind(host, port)
 
-    # None applies the default without becoming an override, so enable_tools: false is honored.
+    # Tool policy does not depend on the bind. None applies the default without becoming an override, so a request's enable_tools: false is honored.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -2835,7 +2843,7 @@ def run(
         if not studio_python:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
-        # On Windows quarantine deletes the stub from a working venv, so the package answers for it.
+        # Re-exec via the studio venv's console script. On Windows quarantine deletes the stub from a working venv, so the package answers for it.
         studio_bin = studio_python.parent / (
             "unsloth.exe" if platform.system() == "Windows" else "unsloth"
         )
@@ -2864,7 +2872,7 @@ def run(
     _apply_supplied_password_before_launch(_password_prompt.resolve_supplied_password(password))
     os.environ.pop(_password_prompt.SUPPLIED_PASSWORD_ENV, None)
 
-    # A possibly-OLD console script is not provably self-suppressing.
+    # Before any re-exec or server exists. This re-exec runs a possibly-OLD console script, so it is NOT provably self-suppressing.
     _enforce_password_change_before_exposure(
         cloudflare = cloudflare,
         host = host,
@@ -2876,11 +2884,11 @@ def run(
     )
 
     if not in_studio_venv:
-        # Application Control blocks the generated unsloth.exe but not the signed python.exe.
+        # Application Control blocks the generated unsloth.exe on some machines but not the signed python.exe beside it.
         if sys.platform == "win32":
             launch_head = _managed_cli_argv(studio_python)
         elif _resolved_or_self(studio_venv_dir) != studio_venv_dir:
-            # Older child CLIs loop via the console script's resolved shebang.
+            # Older child CLIs loop via the console script's resolved shebang; python keeps the link.
             launch_head = [str(studio_python), "-c", _WINDOWS_CLI_ENTRYPOINT]
         else:
             launch_head = [str(studio_bin)]
@@ -2909,7 +2917,7 @@ def run(
             args.extend(["--spec-draft-n-max", str(spec_draft_n_max)])
         # Explicit polarity: a future default flip on one layer must not invert the other.
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
-        # The parent may have found a build the shadowed child cannot (lockout).
+        # Not just a user-supplied dist: the parent may have found a build the shadowed child cannot, and the child would abort (lockout).
         if resolved_frontend is not None:
             args.extend(["--frontend", str(resolved_frontend)])
         if api_only:
@@ -2922,9 +2930,9 @@ def run(
             args.append("--disable-tools")
         if yes:
             args.append("--yes")
-        # Typer claims --parallel outside ctx.args.
+        # Typer claims --parallel outside ctx.args; without this the child reverts to its default.
         args.extend(["--parallel", str(parallel)])
-        # Explicit polarity: an old studio venv defaulted cloudflare on.
+        # Explicit polarity: a mixed-version studio venv whose old default was cloudflare-on must not re-enable the tunnel.
         if cloudflare is True:
             args.append("--cloudflare")
         elif not secure:
@@ -2968,7 +2976,7 @@ def run(
         run_mod = _load_run_module()
     run_server = run_mod.run_server
 
-    # Match the route handlers' import path and set it before uvicorn binds.
+    # Match the route handlers' import path and set it before uvicorn binds; run_server() applies the same pair, idempotently.
     from state.tool_policy import set_tool_policy, set_tool_policy_default
 
     set_tool_policy_default(True)
@@ -3217,7 +3225,7 @@ def _parse_pid_record(text: str) -> "tuple[int, RecordedStart, str | None] | Non
         pid = int(lines[0].strip())
     except ValueError:
         return None
-    # kill(0) signals our whole process group; kill(1) is init.
+    # kill(0) signals our whole process group; kill(1) is init. Never either.
     if pid < 2:
         return None
     created = recorded_start(lines)
@@ -3299,7 +3307,7 @@ def _graceful_shutdown_on_sigterm() -> None:
     import signal as _signal
 
     def _handler(signum, frame):
-        # A second signal force-quits if the shutdown stalls.
+        # Restore the default so a second signal force-quits if the shutdown stalls.
         _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
         raise KeyboardInterrupt
 
@@ -3334,7 +3342,7 @@ def stop():
     entries = _pid_file_entries(unreadable)
     if not entries:
         if unreadable:
-            # The servers behind the unreadable records are still serving.
+            # Reporting success would be a lie: the servers behind the unreadable records are still serving.
             _report_unreadable(unreadable)
             raise typer.Exit(1)
         typer.echo("No running Unsloth server found (no PID file).")
@@ -3413,6 +3421,7 @@ def _wait_for_windows_setup_process(process) -> int:
                 **_windows_hidden_subprocess_kwargs(),
             )
         except BaseException:
+            # taskkill interrupted or unavailable: hold the gate until setup exits naturally.
             pass
         while process.poll() is None:
             try:
@@ -3422,28 +3431,28 @@ def _wait_for_windows_setup_process(process) -> int:
         raise
 
 
-# -NoProfile drops $PSDefaultParameterValues, which may hold the only corporate proxy.
+# -NoProfile drops $PSDefaultParameterValues, which may hold the only proxy out of a corporate host; a standalone update has no installer to hand it over.
 _PROXY_PROBE_BEGIN = "<<UNSLOTH_PROXY_DEFAULTS>>"
 _PROXY_PROBE_END = "<</UNSLOTH_PROXY_DEFAULTS>>"
 
 _PS_PROXY_PROBE = (
     "$ErrorActionPreference = 'SilentlyContinue'; "
-    # PowerShell 5.1 writes redirected output in the console code page.
+    # PowerShell 5.1 writes redirected output in the console code page, so a non-ASCII proxy value came back mangled but still parsed as JSON.
     "try { [Console]::OutputEncoding = "
     "New-Object System.Text.UTF8Encoding $false } catch { }; "
     "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
     "$PSModuleAutoLoadingPreference = 'All'; "
-    # Dot-sourced by name, or this process loads the CONSOLEHOST profile.
+    # Dot-sourced by name, or this process loads the CONSOLEHOST profile. $PROFILE is populated under -NoProfile.
     "$__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
-    # All-users first, PowerShell's own startup order.
+    # All-users first, PowerShell's own startup order, so a user profile overrides it by running last.
     "try { $__unslothProfiles = @($PROFILE.AllUsersAllHosts); "
-    # ONLY the caller's host profile: others can print, clobber the table, or exit.
+    # ONLY the caller's host profile: other hosts' profiles can print, clobber the table, or exit.
     "if ($__unslothHostProfileName) { "
     "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.AllUsersCurrentHost) "
     "$__unslothHostProfileName) }; "
     "$__unslothProfiles += $PROFILE.AllUsersCurrentHost; "
     "$__unslothProfiles += $PROFILE.CurrentUserAllHosts; "
-    # ADDED, never substituted: every VS Code terminal sets TERM_PROGRAM=vscode.
+    # ADDED, never substituted: TERM_PROGRAM=vscode is set by every VS Code terminal, so substitution missed a plain pwsh terminal's proxy.
     "if ($__unslothHostProfileName) { "
     "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.CurrentUserCurrentHost) "
     "$__unslothHostProfileName) }; "
@@ -3451,7 +3460,7 @@ _PS_PROXY_PROBE = (
     "foreach ($__unslothProfile in ($__unslothProfiles | Select-Object -Unique)) { "
     "if ($__unslothProfile -and (Test-Path -LiteralPath $__unslothProfile -PathType Leaf)) { "
     "try { . $__unslothProfile } catch { } } } } catch { }; "
-    # Re-pinned: a profile may set [Console]::OutputEncoding.
+    # Re-pinned: a profile may set [Console]::OutputEncoding, and the parent decodes UTF-8.
     "try { [Console]::OutputEncoding = "
     "New-Object System.Text.UTF8Encoding $false } catch { }; "
     "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
@@ -3462,13 +3471,13 @@ _PS_PROXY_PROBE = (
     "$v = $PSDefaultParameterValues[$k]; "
     "if ($v -is [uri]) { $out[$k] = $v.AbsoluteUri } "
     "elseif ($v -is [string] -or $v -is [bool]) { $out[$k] = $v } "
-    # Serialize a script block's RESULT: executable code must not cross the handoff.
+    # A script block is the supported DYNAMIC default; serialize the RESULT, since executable code must not cross the handoff.
     "elseif ($v -is [scriptblock]) { try { $r = & $v; "
     "if ($r -is [uri]) { $out[$k] = $r.AbsoluteUri } "
     "elseif ($r -is [string] -or $r -is [bool]) { $out[$k] = $r } } catch { } } } }; "
-    # $out holds copies, and -AsArray would make this record an array.
+    # $out holds copies, and ConvertTo-Json:AsArray = $true would make this record an array.
     "$PSDefaultParameterValues = @{}; "
-    # Framed and module-qualified: a profile banner or alias could break the parse.
+    # FRAMED and module-qualified: a profile banner made the parse throw, and an alias could reshape the frame.
     f"if ($out.Count -gt 0) {{ "
     f"Microsoft.PowerShell.Utility\\Write-Output '{_PROXY_PROBE_BEGIN}'; "
     f"$out | Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress; "
@@ -3476,7 +3485,7 @@ _PS_PROXY_PROBE = (
 )
 
 
-# What the caller's host names its own profile; an unidentifiable host gets none.
+# What the CALLER's host names its own profile; an unidentifiable host gets none.
 _HOST_PROFILE_BY_TERM_PROGRAM = {"vscode": "Microsoft.VSCode_profile.ps1"}
 
 
@@ -3519,7 +3528,7 @@ def _profile_probe_env(host: str = "") -> dict:
     if platform.system() == "Windows" and _fold_module_entry(host).rsplit("\\", 1)[-1] in (
         _WINDOWS_PS_HOSTS
     ):
-        # os.environ upper-cases keys on Windows, so match PSMODULEPATH case-insensitively.
+        # os.environ upper-cases keys on Windows, so read PSMODULEPATH or a second, case-differing entry appears.
         key = next((k for k in env if k.upper() == "PSMODULEPATH"), "PSModulePath")
         reordered = _windows_powershell_module_path(env.get(key, ""))
         if reordered:
@@ -3550,7 +3559,7 @@ def _profile_probe_hosts() -> list[str]:
     return [host for host in hosts if shutil.which(host)]
 
 
-# Quoted annotations: Python 3.9 evaluates `str | list[str]` at def time.
+# Quoted annotations: Python 3.9 evaluates `str | list[str]` at def time and raises TypeError.
 
 _PROFILE_PROBE_TIMEOUT_SECONDS = 20.0
 
@@ -3559,7 +3568,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     """The caller's profile proxy defaults as JSON, or None. Several hosts MERGE, earlier hosts
     winning per key. Best effort: a broken profile costs one timeout."""
     hosts = [powershell] if isinstance(powershell, str) else list(powershell)
-    # ONE budget for the whole probe.
+    # ONE budget for the whole probe: two hung profiles must not double the stated cost.
     deadline = time.monotonic() + _PROFILE_PROBE_TIMEOUT_SECONDS
     merged: dict = {}
     claimed: dict = {}
@@ -3582,7 +3591,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
                 env = _profile_probe_env(host),
                 capture_output = True,
                 text = True,
-                # text=True decodes strictly, and UnicodeDecodeError is neither OSError nor SubprocessError.
+                # text=True decodes with the locale codec and STRICT errors, and that UnicodeDecodeError is neither OSError nor SubprocessError.
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = remaining,
@@ -3599,7 +3608,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
             continue
         if not isinstance(parsed, dict) or not parsed:
             continue
-        # Per cmdlet: mixing hosts' Proxy and ProxyUseDefaultCredentials would leak Windows credentials.
+        # Per CMDLET, not per key: pairing one host's Proxy with another's ProxyUseDefaultCredentials would offer Windows credentials to a proxy that never asked.
         for key, value in parsed.items():
             if not isinstance(key, str):
                 continue
@@ -3637,6 +3646,7 @@ def _patterns_can_overlap(left: str, right: str) -> bool:
 
     @functools.lru_cache(maxsize = None)
     def walk(i: int, j: int) -> bool:
+        # Both patterns are consumed in step, except at '*', which may absorb one more character or none.
         if i == len(left):
             return all(char == "*" for char in right[j:])
         if j == len(right):
@@ -3655,7 +3665,7 @@ def _patterns_can_overlap(left: str, right: str) -> bool:
 
 _PS_PROXY_DEFAULTS_PRELUDE = (
     "$__unslothProxyDefaults = $env:_UNSLOTH_PS_PROXY_DEFAULTS; "
-    # Read once, then gone: a proxy can carry credentials every native process would inherit.
+    # Read once, then GONE: a profile proxy can carry credentials every native process would inherit.
     "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue; "
     "if ($__unslothProxyDefaults) { try { "
     "(ConvertFrom-Json $__unslothProxyDefaults).PSObject.Properties | ForEach-Object { "
@@ -3778,12 +3788,12 @@ def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
     except Exception:
         return _uv_platform_cache_dir()
     if result.returncode != 0:
-        # A malformed uv.toml beside the caller fails this, though setup.sh runs uv elsewhere.
+        # A malformed uv.toml beside the CALLER fails this, though setup.sh runs uv elsewhere.
         return _uv_platform_cache_dir()
     lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
     if not lines:
         return _uv_platform_cache_dir()
-    # uv resolves a relative cache-dir against its cwd. No expanduser: uv makes a literal "~" dir.
+    # uv answers a relative cache-dir against its own working directory. No expanduser: uv makes a literal "~" directory.
     probe_cwd = str(cwd) if cwd is not None else os.getcwd()
     working = os.environ.get("UV_WORKING_DIR")
     base = os.path.join(probe_cwd, working) if working else probe_cwd
@@ -3799,7 +3809,7 @@ def _recorded_install_uv_cache() -> Optional[Path]:
         )
     except OSError:
         return None
-    # Splitting on lines would break a path containing a newline.
+    # One record, one trailing delimiter, path before it: splitting on lines would break a path containing a newline.
     if recorded.endswith("\n"):
         recorded = recorded[:-1]
     if recorded.endswith("\r"):
@@ -3824,14 +3834,14 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         return
     stage_root = (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip()
     if stage_root:
-        # An 805-807 desktop shell runs this setup inside its stage, so park the choice for stage().
+        # A 805-807 desktop shell ran the OLD CLI with --stage and it is running this setup inside its stage, so park the choice for its stage() to promote.
         marker = Path(stage_root) / _studio_stage.UV_CACHE_MARKER
     else:
         marker = STUDIO_HOME / "cache" / "uv-cache-dir"
     try:
         marker.parent.mkdir(parents = True, exist_ok = True)
         marker.unlink(missing_ok = True)
-        # fsencode: an undecodable path raises UnicodeEncodeError, not OSError.
+        # fsencode: an undecodable path arrives as surrogates and raises UnicodeEncodeError, not OSError.
         marker.write_bytes(os.fsencode(f"{chosen}\n"))
     except (OSError, ValueError):
         pass
@@ -3908,6 +3918,7 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
         if target == cache_dir:
             names = (".lock",)
         elif target.name.lower().startswith("sdists-"):
+            # The one store measured to abort on a read-only .git; rejecting a cache uv accepts loses the warm cache this path exists to find.
             names = (".git",)
         else:
             continue
@@ -3938,9 +3949,9 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
         and _uv_cache_has_packages(recorded)
         and _uv_cache_is_writable(recorded)
     ):
-        # Only while non-empty and writable: setup treats this value as the caller's choice.
+        # Only while non-empty and writable: setup treats this as the caller's choice, so a read-only one would abort every uv command.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
-    # uv's default first, a warm Studio cache as fallback; the installers use the same order.
+    # Order by location, not content: one wheel warms the Studio cache even in shared mode, so uv's default goes first, then a warm Studio cache.
     default_cache = _uv_default_cache_dir(cwd)
     if (
         default_cache is not None
@@ -3948,8 +3959,7 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
         and _uv_cache_is_writable(default_cache)
     ):
         return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
-    # setup.sh skips its write probe for an inherited UV_CACHE_DIR, so probe here. Never create the
-    # root: setup.sh fails fast on a missing STUDIO_HOME override by design.
+    # setup.sh skips its probe for inherited UV_CACHE_DIR, so probe here; never create the root, or setup's fail-fast on a typo is defeated.
     if STUDIO_HOME.is_dir():
         try:
             studio_cache.mkdir(parents = True, exist_ok = True)
@@ -4003,7 +4013,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
-    # setup.sh cds into its own directory, setup.ps1 keeps this cwd.
+    # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
     env = _with_studio_uv(env)
@@ -4014,20 +4024,20 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
-        # Resolved: PATH is not trusted here (#9440).
+        # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.
         powershell = _studio_runtime_gate.resolve_windows_powershell()
         powershell_args = [powershell]
-        # PRESENCE, not truthiness: install.ps1 sets "{}" when it found no proxy.
+        # PRESENCE, not truthiness: install.ps1 sets this to "{}" when it found no proxy, and reloading the profiles it discarded would undo that.
         if os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None:
             probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or [powershell])
             if probed:
                 env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
-        # A profile aliasing uv or python would break setup.ps1.
+        # -NoProfile unconditionally: install.ps1 hands off from a tty console, and a profile aliasing uv or python would break setup.ps1.
         powershell_args.append("-NoProfile")
         if _should_hide_windows_subprocesses():
-            # Match install.rs: avoid the Hidden/Bypass detection pair; CREATE_NO_WINDOW hides the console.
+            # Match install.rs: avoid the Hidden/Bypass detection pair; CREATE_NO_WINDOW below already hides the console.
             powershell_args.extend(["-NoLogo", "-NonInteractive"])
-        # -Command + `*>&1`: -File drops Write-Host output when stdout is a pipe.
+        # -Command + `*>&1` (not -File) so setup.ps1's Write-Host output merges into stdout; -File drops it when stdout is a pipe. Single quotes are doubled for paths with apostrophes.
         script_pwsh_literal = str(script).replace("'", "''")
         powershell_args.extend(
             [
@@ -4037,7 +4047,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
                 f"{_PS_PROXY_DEFAULTS_PRELUDE}& '{script_pwsh_literal}' *>&1",
             ]
         )
-        # close_fds=True with CREATE_NO_WINDOW leaves no console, so Write-Host writes to nothing.
+        # Popen defaults to close_fds=True on Windows, so with CREATE_NO_WINDOW the child has no console and Write-Host writes to nothing.
         process = subprocess.Popen(
             powershell_args,
             env = env,
@@ -4056,13 +4066,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     _backfill_uv_cache_marker(env)
 
 
-# Fetched, so a launcher fix reaches users without waiting for a release.
+# Fetched rather than shipped, so a launcher fix reaches users without waiting for a release.
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
 _INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
 _INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
 _INSTALLER_FETCH_TIMEOUT = 30
 _INSTALLER_MAX_BYTES = 8 * 1024 * 1024
-# Match the flag this code passes: a false negative skips every refresh.
+# The flag this code passes: internal names would be tighter but can be renamed, and a false negative skips every refresh.
 _INSTALLER_MARKERS = {
     "install.sh": (b"--shortcuts-only",),
     "install.ps1": (b"--shortcuts-only",),
@@ -4114,12 +4124,12 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
         request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})
         with opener.open(request, timeout = _INSTALLER_FETCH_TIMEOUT) as response:
             body = response.read(_INSTALLER_MAX_BYTES + 1)
-            # read(amt) does not check Content-Length; only a further read() detects truncation.
+            # read(amt) does not check Content-Length; only a further read() raises IncompleteRead on a truncated transfer.
             if len(body) <= _INSTALLER_MAX_BYTES:
                 body += response.read()
     except (
         urllib.error.URLError,
-        # HTTP framing errors are neither URLError nor OSError.
+        # Raised at the HTTP framing layer, which is neither URLError nor OSError.
         http.client.HTTPException,
         TimeoutError,
         OSError,
@@ -4146,6 +4156,7 @@ def _installer_script_candidates(installer_name: str) -> List[Path]:
     local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
     if local_repo:
         candidates.append(Path(local_repo).expanduser() / installer_name)
+    # Clone or editable install: _PACKAGE_ROOT is the repo root.
     root = _PACKAGE_ROOT / installer_name
     if root not in candidates:
         candidates.append(root)
@@ -4182,13 +4193,13 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     if is_windows:
         ps_argv: List[str] = [_studio_runtime_gate.resolve_windows_powershell()]
-        # The visible console path loads a profile.
+        # -NoProfile unconditionally, as in _run_setup_script: the visible console path loads a profile.
         ps_argv.append("-NoProfile")
         if _should_hide_windows_subprocesses():
             # Avoid the Hidden/Bypass detection pair, as in setup above.
             ps_argv.extend(["-NoLogo", "-NonInteractive"])
 
-        # Only an unlaunchable candidate moves on to the next.
+        # Stops at the first candidate that launched; only an unlaunchable one moves on.
         if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):
             return
         fetched = _fetch_installer(installer_name, verbose = verbose)
@@ -4290,7 +4301,7 @@ def setup(
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
         _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        # Duplicate-metadata repair can reinstall unsloth even under SKIP_STUDIO_BASE.
+        # Duplicate-metadata repair can reinstall unsloth even under SKIP_STUDIO_BASE, so free the running Windows launcher.
         with _WindowsLauncherUpdateTransaction() as launcher_update:
             _run_setup_script(verbose = verbose)
             launcher_update.validate_launcher()
@@ -4301,7 +4312,7 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     metadata as satisfied, so the update exits 0 and the backend dies at boot."""
     managed_venv = _studio_stage.runtime_root(STUDIO_HOME) / "unsloth_studio"
     if _studio_deps.running_outside_managed_venv((managed_venv,)):
-        # This CLI is not in the venv the update wrote.
+        # This CLI is not in the venv the update wrote, so its file list describes the wrong tree.
         return
     managed_names = (package_name, "unsloth-zoo")
     managed_conflicts = _studio_deps.installed_metadata_conflicts(names = managed_names)
@@ -4344,7 +4355,7 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     typer.echo("An update cannot repair these. pip sees intact package metadata and", err = True)
     typer.echo("reinstalls nothing, so Unsloth will keep failing to start. Reinstall", err = True)
     typer.echo("over the top:", err = True)
-    # Carry the custom root and install mode, or the reinstall pulls the whole PyTorch stack.
+    # Carry the custom root and the recorded install mode, or the reinstall builds a fresh ~/.unsloth/studio and pulls the whole PyTorch stack. No root argument: recorded_no_torch reads the VENV.
     no_torch = False
     try:
         _manifest = _studio_deps.load_install_manifest_module()
@@ -4359,7 +4370,7 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
             prefix += "$env:UNSLOTH_NO_TORCH = '1'; "
         typer.echo(f"  {prefix}irm https://unsloth.ai/install.ps1 | iex", err = True)
     else:
-        # The assignments go before `sh`, as install.sh documents.
+        # The assignments go before `sh`, not before `curl`: that is the form install.sh documents.
         env = ""
         if _STUDIO_HOME_IS_CUSTOM:
             env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
@@ -4367,9 +4378,10 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
             env += "UNSLOTH_NO_TORCH=1 "
         typer.echo(f"  curl -fsSL https://unsloth.ai/install.sh | {env}sh", err = True)
     typer.echo("", err = True)
+    # The installer installs only the current requirement sets, so a leftover package is not repaired by the command above.
     typer.echo("If a package above is still listed after that, the installer does not", err = True)
     typer.echo("manage it. Repair it directly, or remove it if nothing needs it:", err = True)
-    # --no-deps, or --force-reinstall could swap the torch build; pin ==version, or it upgrades the orphan.
+    # --no-deps, or --force-reinstall could swap the installed CUDA/ROCm torch build; <package>==<version>, or it upgrades the orphan its consumers pinned.
     _spec = "<package>==<installed version>"
     if platform.system() == "Windows":
         _py = str(Path(sys.executable)).replace("'", "''")
@@ -4407,18 +4419,20 @@ def update(
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
+    # Re-export UNSLOTH_STUDIO_HOME so the refresh subprocess resolves the same install root.
     _ensure_studio_env_exported()
-    # `is True`: an in-process caller that omits it gets a truthy OptionInfo sentinel.
+    # `is True`, not truthiness: an in-process caller that omits it gets a truthy OptionInfo sentinel.
     if stage is True:
         _refuse_staged_update()
         return
     staging = _studio_stage.is_staging()
+    # Do not inherit SKIP_STUDIO_BASE from a parent install.ps1 session.
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
     repo_root: Optional[Path] = None
     if local:
         os.environ["STUDIO_LOCAL_INSTALL"] = "1"
-        # Once installed non-editably parents[2] IS site-packages, which uv rejects.
+        # Explicit repo root: __file__ holds only from a checkout, and once unsloth is installed non-editably parents[2] IS site-packages, which uv rejects.
         _explicit = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
         repo_root = (
             Path(_explicit).expanduser().resolve()
@@ -4432,7 +4446,7 @@ def update(
             typer.echo("", err = True)
             typer.echo("  Point at a checkout:", err = True)
             if platform.system() == "Windows":
-                # PowerShell has no `VAR=value command` prefix form.
+                # PowerShell has no `VAR=value command` prefix form, and this guard fires on the Windows path.
                 typer.echo(
                     "    $env:STUDIO_LOCAL_REPO='C:\\path\\to\\unsloth'; "
                     "unsloth studio update --local",
@@ -4450,7 +4464,7 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    # The gate keeps a second Unsloth process off the venv; the transaction keeps the launcher recoverable.
+    # The gate keeps a second Unsloth process off the venv; the transaction keeps the launcher recoverable across setup.
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff or staging):
         if not staging:
@@ -4458,14 +4472,15 @@ def update(
         # Constructed after the idle scan (pinned by test_studio_runtime_gate).
         launcher_transaction = _WindowsLauncherUpdateTransaction()
         if staging:
+            # A staged run writes no launcher.
             launcher_transaction.enabled = False
         with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
-            # Runs even with --no-verify.
+            # Runs even with --no-verify: a successful update must leave its own launcher usable.
             launcher_update.validate_launcher()
             if verify:
                 _fail_if_install_damaged(package)
-    # Tauri desktop owns its own bundle entries.
+    # Tauri desktop owns its own bundle entries; refreshing here would duplicate shortcuts.
     if staging or os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
         if verbose:
             typer.echo("  refresh-launcher  skipped (Tauri update)")
@@ -4516,8 +4531,9 @@ def _refuse_staged_update() -> None:
         temporary.write_text(payload, encoding = "utf-8")
         os.replace(temporary, marker)
     except OSError:
+        # A refusal the desktop can act on matters more than the marker.
         pass
-    # stdout: update.rs promotes a [TAURI:ERROR] line off the child's stdout.
+    # stdout, not stderr: update.rs promotes a [TAURI:ERROR] line off the child's stdout.
     typer.echo("[TAURI:ERROR] background staging is no longer supported; run the standard update")
     raise typer.Exit(1)
 
@@ -4526,9 +4542,9 @@ class _WindowsLauncherUpdateTransaction:
     """Keep the managed Windows launcher recoverable during a Python update."""
 
     _VERSION_TIMEOUT_SECONDS = 10
-    # Sentinel: _launcher_health_error matches on identity.
+    # Sentinel rather than a message: _launcher_health_error matches on identity, and it never reaches a user.
     _POLICY_BLOCKED = "an Application Control policy blocked the launcher"
-    # Absence is not corruption: quarantine leaves a healthy environment.
+    # Absence is not corruption: quarantine leaves a healthy environment, so keep it apart from the PE-shape failure.
     _LAUNCHER_ABSENT = "the updated launcher is not on disk"
     _RESTORE_ATTEMPTS = 3
 
@@ -4630,7 +4646,7 @@ class _WindowsLauncherUpdateTransaction:
                 try:
                     self._atomic_copy(recovery, self.launcher)
                 except OSError as exc:
-                    # The header check and the copy open the file separately; antivirus may take one candidate.
+                    # Try the next copy: the header check and the copy open the file separately, so one candidate lost to antivirus must not fail the install.
                     last_error = (recovery, exc)
                     continue
                 return
@@ -4668,7 +4684,7 @@ class _WindowsLauncherUpdateTransaction:
         try:
             os.replace(self.launcher, self.stale)
         except OSError as exc:
-            # The pip fallback drops --upgrade-package, leaving unsloth at its old version.
+            # Not fatal, but say what it costs: the pip fallback drops --upgrade-package, leaving unsloth at its old version.
             typer.echo(f"Warning: could not move the Unsloth launcher aside: {exc}", err = True)
             typer.echo(
                 "  unsloth itself may not be upgraded. Close anything holding "
@@ -4695,7 +4711,7 @@ class _WindowsLauncherUpdateTransaction:
 
     def _restore_from(self, source: Path) -> bool:
         assert self.launcher is not None
-        # Do not replace a running Windows file with a byte-identical source.
+        # The common setup-failure case leaves the original in place; do not replace a running Windows file with a byte-identical source.
         if self._is_valid_pe(self.launcher) and self._files_match(self.launcher, source):
             return True
         last_error: Optional[OSError] = None
@@ -4724,9 +4740,10 @@ class _WindowsLauncherUpdateTransaction:
         for source in candidates:
             if self._restore_from(source) and self._launcher_health_error() is None:
                 return None
+        # Nothing ran; leave the best candidate rather than whichever was tried last.
         if candidates:
             self._restore_from(candidates[0])
-        # Gone, or denied by policy, is still not a broken CLI.
+        # Gone, or denied by policy, is still not a broken CLI. Asked only after every candidate.
         return self._recovered_cli_health_error()
 
     def _launcher_runs_error(self) -> Optional[str]:
@@ -4789,6 +4806,7 @@ class _WindowsLauncherUpdateTransaction:
                 _managed_cli_argv(python, "--version", isolated = True),
                 check = False,
                 capture_output = True,
+                # The import probe's ceiling, not the launcher's: this is an interpreter start plus the whole CLI import.
                 timeout = _MANAGED_CLI_IMPORT_PROBE_TIMEOUT,
                 **_windows_hidden_subprocess_kwargs(),
             )
@@ -4828,16 +4846,16 @@ class _WindowsLauncherUpdateTransaction:
         self.launcher = scripts / "unsloth.exe"
         self.backup = scripts / "unsloth.exe.update-backup"
         self.legacy_backup = scripts / "unsloth.exe.deleteme"
-        # Not in the venv: setup.ps1 removes $VenvDir, which Windows refuses while a handle is open.
+        # Under the Unsloth home, not the venv: setup.ps1 removes the whole $VenvDir, which Windows refuses while a handle inside is open.
         self.lock_path = STUDIO_HOME / "unsloth.exe.update-lock"
-        # install.ps1 hardlinks this to the launcher, so it is a valid recovery source.
+        # install.ps1 hardlinks this to the launcher, so it survives the old updater and is a valid recovery source.
         self.shim = STUDIO_HOME / "bin" / "unsloth.exe"
         self.stale = scripts / "unsloth.exe.update-stale"
         self._acquire_lock()
         try:
             self._recover_missing_launcher()
             if not self._is_valid_pe(self.launcher):
-                # Warn, do not exit: refusing would strand users the previous updater left without a launcher.
+                # Warn, do not exit: the previous updater could leave no launcher and no .deleteme, and refusing would strand those users.
                 typer.echo(
                     f"Warning: the managed Unsloth launcher is missing or invalid: {self.launcher}",
                     err = True,
@@ -4846,10 +4864,11 @@ class _WindowsLauncherUpdateTransaction:
                 if self._retained_backup() is None:
                     self.backup = None
             elif self._retained_backup() is None:
-                # Only when there is no usable backup.
+                # Only when there is no usable backup: a surviving one holds the last launcher known to run.
                 try:
                     self._atomic_copy(self.launcher, self.backup)
                 except OSError as exc:
+                    # A backup is a safety net, not a precondition.
                     typer.echo(f"Warning: could not back up the Unsloth launcher: {exc}", err = True)
                     self.backup = None
             self._move_launcher_aside()
@@ -4861,15 +4880,15 @@ class _WindowsLauncherUpdateTransaction:
     def validate_launcher(self) -> None:
         if not self.enabled:
             return
-        # Sampled before any restore: whether setup published anything decides how a bad result reads.
+        # Sampled before any restore, since whether setup published anything decides how a bad result reads.
         published = self.launcher.exists()
         error = self._launcher_health_error()
         if error is not None:
             reason = self._restore_failure_reason()
             restored = reason is None
-            # Setup publishing nothing is the case this exists for; a published launcher that cannot run fails.
+            # Setup publishing nothing is the case this exists for, so restoring is success; a launcher setup DID write that cannot run is a failure.
             if published or not restored:
-                # Absence names no cause (#9804).
+                # Absence names no cause (#9804); any other error is the published launcher's own and must win over the restored copy's.
                 cause = reason if error is self._LAUNCHER_ABSENT else None
                 typer.echo(
                     f"Error: Unsloth Studio update failed because {cause or error}.",
@@ -4881,7 +4900,7 @@ class _WindowsLauncherUpdateTransaction:
                     typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
                 raise typer.Exit(1)
         self._validated = True
-        # Only once the launcher is back: a quarantined stub can look healthy while every restore failed.
+        # Only once the launcher is back: a quarantined stub can be judged healthy while every restore failed, and the copies are the only recovery material.
         if not self._is_valid_pe(self.launcher):
             return
         for orphan in (self.stale, self.backup, self.legacy_backup):
@@ -4937,7 +4956,7 @@ def _llama_runtime_to_grade() -> Optional[Path]:
             stops_the_finder = False
         if stops_the_finder:
             return None
-    # llama_cpp_path_settings imports storage.studio_db top-level and swallows the failure.
+    # Put studio/backend first on sys.path: else llama_cpp_path_settings swallows a failed storage.studio_db import and selection reads absent.
     backend_dir = _PACKAGE_ROOT / "studio" / "backend"
     if backend_dir.is_dir() and str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
@@ -4949,14 +4968,15 @@ def _llama_runtime_to_grade() -> Optional[Path]:
         )
         from studio.install_llama_prebuilt import default_managed_llama_dir
     except Exception:
+        # Without a settings module there is no stored selection and no way to check for a server, so use the managed root.
         from studio.install_llama_prebuilt import default_managed_llama_dir
         return default_managed_llama_dir()
     # UNSLOTH_LLAMA_CPP_PATH outranks the stored folder, unless the desktop set it (managed marker).
     override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
-    # Classified, not read off the marker: backend main.py marks any override equal to the managed tree.
+    # Classify the override rather than trust the marker: a custom STUDIO_HOME export equals the managed tree yet sets no marker.
     managed_override = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
     if override and not managed_override:
-        # Compare against STUDIO_ROOT/llama.cpp with the override out of the way, as the backend does.
+        # Compare against STUDIO_ROOT/llama.cpp, never default_managed_llama_dir(), which reads the override first and would call every pin managed.
         managed_override = _same_runtime_tree(
             expanded_user_path(override), _managed_llama_dir_ignoring_the_override()
         )
@@ -5064,6 +5084,7 @@ def desktop_capabilities(
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,
         "supports_desktop_backend_ownership": True,
+        # Did the install finish and are the backend boot deps still there.
         "studio_install_ok": bool(state["ok"]),
         "studio_install_reason": state["reason"],
         # Null when nothing is installed yet. Older desktops ignore both keys.

@@ -62,6 +62,7 @@ _CANONICAL_DTYPE_NAMES = {
 
 _ENV_KEY = "UNSLOTH_FORCE_CUSTOM_DTYPE"
 
+# Values this process set. Not cleared: a model can be loaded more than once.
 _REGISTERED = set()
 
 
@@ -99,6 +100,7 @@ def neutralize_inherited_custom_dtype():
     checker, dtype, bnb_compute_dtype, _custom_datatype, _execute_code = value.split(";", 4)
 
     def named(field):
+        # Empty is what an unset field already looks like to both readers.
         key = field.strip()
         if key == "":
             return ""
@@ -106,6 +108,7 @@ def neutralize_inherited_custom_dtype():
             return "None"
         return _CANONICAL_DTYPE_NAMES.get(DTYPE_ALIASES[key], "None")
 
+    # Emptied rather than removed, for the same reason.
     sanitized = ";".join([checker, named(dtype), named(bnb_compute_dtype), "", ""])
     os.environ[_ENV_KEY] = sanitized
     return sanitized

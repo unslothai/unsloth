@@ -166,6 +166,7 @@ def get_or_autotune_moe_kernels(
         weight_dtype,
     )
 
+    # Env override to disable autotuning
     if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
@@ -268,8 +269,10 @@ def _run_moe_autotuning(
         dtype = dtype if weight_dtype is None else weight_dtype,
     )
 
+    # Dummy routing data
     m_sizes = torch.randint(1, total_tokens // num_experts + 1, (num_experts,), device = device)
     m_sizes = m_sizes * (total_tokens // m_sizes.sum().item())
+    # Adjust to exact total
     diff = total_tokens - m_sizes.sum().item()
     if diff != 0:
         m_sizes[0] += diff
@@ -277,6 +280,7 @@ def _run_moe_autotuning(
     gather_indices = torch.arange(total_tokens, device = device)
     torch.randperm(total_tokens, out = gather_indices)
 
+    # Autotune via the interface function with autotune=True (lets triton tune)
     from .grouped_gemm.interface import (
         _autotuner_for,
         grouped_gemm_forward,
@@ -331,6 +335,7 @@ def _run_moe_autotuning(
         _autotuned_grouped_gemm_dX_kernel, dummy_grad.device
     ).best_config
 
+    # Safe Backward Configs: 64x64x256
     config_bwd_dx = KernelConfigBackward_dX(
         BLOCK_SIZE_M = triton_config_bwd_dx.kwargs["BLOCK_SIZE_M"],
         BLOCK_SIZE_N = triton_config_bwd_dx.kwargs["BLOCK_SIZE_N"],
@@ -565,7 +570,7 @@ def _get_heuristic_configs(
         permute_x = True,
         permute_y = True,
         use_tma_load_x = False,
-        use_tma_load_w = False,
+        use_tma_load_w = False,  # TMA loads might need alignment checks, safer to disable for heuristic
         use_tma_store = False,
     )
 

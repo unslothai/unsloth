@@ -65,11 +65,11 @@ torch._dynamo.config.accumulated_recompile_limit = max(
 )
 
 
-# dynamic=True: T changes almost every batch and dynamic=False recompiles per T (~14s each).
+# dynamic=True is required: T changes almost every GRPO batch, and dynamic=False recompiles per T (~14s each).
 _flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
-# fp32 needs 32/32 blocks for a ~1e-6 floor; bf16 passes parity at 128/64 (128/128 OOMs on B200).
+# fp32 needs 32/32 for a ~1e-6 floor (two disjoint key runs stress online softmax); bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
 _FP32_BLOCK_M = int(os.environ.get("PG_FLEX_BLOCK_M", "32"))
 _FP32_BLOCK_N = int(os.environ.get("PG_FLEX_BLOCK_N", "32"))
 _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
@@ -153,7 +153,7 @@ def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) ->
     T = int(layout.flat_ids.shape[1])
     P = int(layout.P)
 
-    group_of_kv = torch.zeros(T, dtype = torch.long, device = device)
+    group_of_kv = torch.zeros(T, dtype = torch.long, device = device)  # single group -> 0
     is_prefix = torch.zeros(T, dtype = torch.bool, device = device)
     is_prefix[:P] = True
     suffix_of_kv = torch.full((T,), -1, dtype = torch.long, device = device)
@@ -199,6 +199,7 @@ def build_seg_info_multigroup(
     suffix_counter = 0
     sig_parts = []
     for gid, (P, R_list) in enumerate(group_specs):
+        # Prefix.
         group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
         is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
         suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
@@ -307,7 +308,7 @@ def get_block_mask(
             KV_LEN = seg.T_pad,
             device = device,
         )
-    # FIFO bound: GRPO lengths change nearly every step.
+    # FIFO bound: GRPO lengths change nearly every step, so evict the oldest to cap GPU pins.
     if len(_BLOCK_MASK_CACHE) >= 8:
         _BLOCK_MASK_CACHE.pop(next(iter(_BLOCK_MASK_CACHE)))
     _BLOCK_MASK_CACHE[key] = bm
@@ -380,8 +381,9 @@ def flex_shared_prefix_attention(
     """
     assert Q.dim() == 4 and Q.shape[0] == 1, f"expected [1,T,H,D], got {tuple(Q.shape)}"
     device = Q.device
-    q = Q.transpose(1, 2)
-    k = K.transpose(1, 2)
+    # FlexAttention wants [B, H, T, D].
+    q = Q.transpose(1, 2)  # [1, n_heads, T, D]
+    k = K.transpose(1, 2)  # [1, n_kv_heads, T, D]
     v = V.transpose(1, 2)
 
     n_heads = q.shape[1]
@@ -395,6 +397,7 @@ def flex_shared_prefix_attention(
         block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
 
     out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
+    # Back to [1, T, n_heads, D].
     return out.transpose(1, 2).contiguous()
 
 

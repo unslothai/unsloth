@@ -4,7 +4,7 @@
 import os as _os
 import sys as _sys
 
-# Entry-point-only behaviour must not reach a host that imports us.
+# Entry-point-only behaviour (stream guard, -np<N> rewrite): must not reach a host that imports us.
 _entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
 _is_entry_point = _entry_base in {"unsloth", "unsloth.exe"}
 _windows_studio_mutation_entry = (
@@ -65,13 +65,13 @@ if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.arg
     from unsloth_cli._install_kernels import main as _install_kernels_main
     from unsloth_cli._ssl_keylog import drop_unwritable_ssl_keylog_file
 
+    # The availability probe and the installers open HTTPS clients.
     drop_unwritable_ssl_keylog_file()
     _sys.exit(_install_kernels_main(_sys.argv[2:]))
 
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
-# Move out of System32 before the command imports: commands.studio resolves STUDIO_HOME at import
-# time (issue #8510).
+# Move out of System32 before command imports: STUDIO_HOME resolves at import, and a relative UNSLOTH_STUDIO_HOME would hit System32.
 _startup_guard = (
     _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
 )
@@ -80,7 +80,7 @@ from unsloth_cli._ssl_keylog import (
     drop_unwritable_ssl_keylog_file as _drop_unwritable_ssl_keylog_file,
 )
 
-# After the move, so a relative path is judged where ssl opens it; before any HTTPS client.
+# After the move, so a relative path is judged where ssl opens it; before any HTTPS client, since backend workers inherit it.
 if _is_entry_point:
     _drop_unwritable_ssl_keylog_file()
 
@@ -127,11 +127,11 @@ def _prepare_entry_point():
     _reconfigure_entry_point_streams()
     _drop_unwritable_ssl_keylog_file()
     _expand_attached_np_short()
-    # Set last, so a raise leaves the work retryable.
+    # Set last, so a raise leaves the work retryable rather than silently skipped.
     _entry_point_prepared = True
 
 
-# Canonicalise -np<N> only under the console-script; imports keep their argv intact.
+# Canonicalise `-np<N>` only under the console-script; imports keep their argv intact.
 if _is_entry_point:
     _prepare_entry_point()
 del _entry_base, _is_entry_point, _orig_argv, _runs_unsloth_cli
@@ -253,7 +253,7 @@ if not _windows_studio_mutation_entry:
         help = "Deprecated alias for `unsloth start`.",
     )
 
-    # Same context so unknown flags pass through to llama-server.
+    # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
     app.command(
         "run",
         cls = _LlamaPassthroughCommand,

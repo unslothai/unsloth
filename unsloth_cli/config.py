@@ -17,7 +17,7 @@ class DataConfig(BaseModel):
 
     dataset: Optional[str] = None
     local_dataset: Optional[List[str]] = None
-    # raw = continued pretraining.
+    # raw and conversational are handled by format_and_template_dataset (raw = continued pretraining).
     format_type: Literal["auto", "alpaca", "chatml", "sharegpt", "conversational", "raw"] = "auto"
 
     _normalize_format_type = field_validator("format_type", mode = "before")(_lower_str)
@@ -122,6 +122,7 @@ class Config(BaseModel):
     def model_kwargs(self, use_lora: bool, is_vision: bool) -> dict:
         """Return kwargs for trainer.prepare_model_for_training()."""
         if use_lora and is_vision:
+            # Vision models expect a string (e.g. "all-linear"); None uses trainer defaults
             target_modules = "all-linear" if self.lora.vision_all_linear else None
         else:
             parsed = [
@@ -229,7 +230,7 @@ def load_config(path: Optional[Path]) -> Config:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    # utf-8-sig drops a Notepad BOM.
+    # utf-8-sig: drops a Notepad BOM, identical to utf-8 when there is none.
     try:
         text = path.read_text(encoding = "utf-8-sig")
     except UnicodeDecodeError as error:

@@ -60,6 +60,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         self.verbose = verbose
         self.debug = debug
 
+        # Permute in-place expert weights
         E, K, N = self.num_experts, self.hidden_dim, self.experts.expert_dim
         assert self.experts.gate_up_proj.shape == torch.Size(
             [E, K, 2 * N]
@@ -127,6 +128,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         return self.experts.act_fn(gate_proj) * up_proj
 
     def run_router(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # router_logits: (batch * sequence_length, n_experts)
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
         routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim = -1)
@@ -153,6 +155,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         if self.overlap_router_shared:
+            # Marker for all prior ops on the default stream.
             self.default_event.record()
 
         router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
@@ -168,10 +171,12 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
                 self.default_event.wait()
 
                 shared_expert_out = self.shared_expert(hidden_states)
+                # Ensure hidden states remains valid on this stream
                 hidden_states.record_stream(self.shared_expert_stream)
 
                 self.shared_expert_end_event.record()
 
+            # Ensure shared expert still valid on default stream
             shared_expert_out.record_stream(torch.cuda.current_stream())
             self.shared_expert_end_event.wait()
         else:
@@ -185,10 +190,12 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states_after_weight_merge = hidden_states.view(-1, hidden_dim)
 
+        # Token counts per expert and gather indices are auxiliary structs, kept out of the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
+        # Permute tokens into expert order
         hidden_states = permute(hidden_states_after_weight_merge, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
@@ -200,6 +207,7 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         intermediate = self.act_and_mul(first_gemm)
         assert intermediate.shape == (total_tokens, self.experts.expert_dim)
 
+        # See comment above
         second_gemm = torch_grouped_gemm(
             X = intermediate, W = self.experts.down_proj, m_sizes = token_counts_by_expert
         )
@@ -293,6 +301,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         return self.experts.act_fn(gate_proj) * up_proj
 
     def run_router(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # router_logits: (batch * sequence_length, n_experts)
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
         routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim = -1)
@@ -319,6 +328,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         if self.overlap_router_shared:
+            # Marker for all prior ops on the default stream.
             self.default_event.record()
 
         router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
@@ -334,10 +344,12 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
                 self.default_event.wait()
 
                 shared_expert_out = self.shared_expert(hidden_states)
+                # Ensure hidden states remains valid on this stream
                 hidden_states.record_stream(self.shared_expert_stream)
 
                 self.shared_expert_end_event.record()
 
+            # Ensure shared expert still valid on default stream
             shared_expert_out.record_stream(torch.cuda.current_stream())
             self.shared_expert_end_event.wait()
         else:
@@ -351,10 +363,12 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states = hidden_states.view(-1, hidden_dim)
 
+        # Token counts per expert and gather indices are auxiliary structs, kept out of the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
+        # Permute tokens into expert order
         hidden_states = permute(hidden_states, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
@@ -392,6 +406,7 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             dX_only = self.dX_only,
         )
 
+        # Unpermute from expert order back to token order
         if not self.permute_y:
             hidden_states = unpermute(hidden_states, gather_indices)
         hidden_states += shared_expert_out

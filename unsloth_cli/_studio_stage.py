@@ -76,7 +76,7 @@ def _relocatable_script(body: bytes, original: int) -> bytes:
     deficit = original - len(shebang) - len(body)
     if deficit <= 0:
         return shebang + body
-    # `# ` plus the newline is 3 bytes. Only shorter than the original reads as damage.
+    # `# ` plus the newline is 3 bytes. Longer than the original is fine; only shorter reads as damage.
     return shebang + b"# " + b"#" * max(deficit - 3, 0) + b"\n" + body
 
 

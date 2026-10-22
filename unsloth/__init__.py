@@ -40,10 +40,10 @@ try:
 except Exception:
     pass
 
-# Transformers 4.x imports TF/Flax if installed and reads these vars once at import, so set them first.
+# Transformers 4.x imports TF/Flax if installed and reads these vars once at import, so set them first; explicit opt-ins still win.
 if "transformers" not in sys.modules:
     _TRUE = {"1", "ON", "YES", "TRUE"}
-    # Overwrite, not setdefault (unset means AUTO); an already-imported backend is skipped (from_tf).
+    # Overwrite, not setdefault (unset means AUTO); skip backends already imported, since opting one out breaks from_tf loads.
     for _var, _modules, _opt_ins in (
         ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
         ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
@@ -55,7 +55,7 @@ if "transformers" not in sys.modules:
         os.environ[_var] = "0"
     del _TRUE, _var, _modules, _opt_ins
 else:
-    # Transformers derives _tf/_flax_available from find_spec alone, so clear cached flags AND set vars.
+    # Transformers derives flags from find_spec: clear cached flags AND set the vars unconditionally, since waiting for the body deadlocks.
     _TRUE = {"1", "ON", "YES", "TRUE"}
     _import_utils = sys.modules.get("transformers.utils.import_utils")
     for _var, _flag, _const, _modules, _opt_ins, _cached in (
@@ -80,7 +80,7 @@ else:
             continue
         if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
             continue
-        # Read the snapshot Transformers used; env USE_FLAX lands in the constant USE_JAX.
+        # An opt-in can be consumed then restored, so read the snapshot Transformers used; env USE_FLAX lands in the constant USE_JAX.
         if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE for _v in _cached):
             continue
         os.environ[_var] = "0"
@@ -149,11 +149,12 @@ def _is_mlx_available():
     return is_mlx_available()
 
 
-# Detect Apple Silicon + MLX before any torch/numpy imports.
+# Detect Apple Silicon + MLX before any torch/numpy imports
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
-    # This branch imports transformers and never reaches _gpu_init.py, so install the old-torch fix here.
+    # Run this first: it turns the bare AttributeError into a diagnosis, and _gpu_init.py never runs on this path.
+    # The triton shim check is deliberately not mirrored: it is a CUDA/ROCm/XPU driver shim and Apple Silicon has no triton.
     try:
         from .import_fixes import patch_torch_missing_attribute_error as _patch_torch_attr
         _patch_torch_attr()
@@ -194,6 +195,7 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # This branch imports transformers itself, so a --no-deps floor miss surfaces here with the same wrong remedy.
         from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
         _check_tf_deps()
         del _check_tf_deps
@@ -224,6 +226,7 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
@@ -1606,7 +1609,7 @@ if _IS_MLX:
         _trl.SFTConfig = _MLXSFTConfig
         # Names come from trl's __all__, never a getattr probe: that triggers trl's lazy import and pulls torch.
         _trl_exports = set(getattr(_trl, "__all__", ()) or ())
-        # Stub every non-SFT trainer trl exposes, so newer trainers also fail with a clear MLX message.
+        # Stub every non-SFT trl trainer so newer ones fail clearly too; take names from __all__ and never resolve them, since that pulls torch.
         _unsupported = set(_MLX_UNSUPPORTED_TRL_TRAINERS) | {
             _n for _n in _trl_exports if _n.endswith("Trainer") and _n != "SFTTrainer"
         }
@@ -1636,6 +1639,7 @@ if _IS_MLX:
     _install_mlx_unsloth_trainer_shim()
 
 else:
+    # GPU path: load everything from _gpu_init
     from ._gpu_init import *
     from ._gpu_init import __version__
 
@@ -1667,7 +1671,7 @@ else:
                 peak = torch.cuda.max_memory_reserved()
                 total = getattr(props, "total_memory", 0)
                 return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
-            # Last, so no existing device changes branch.
+            # Last, so no existing device changes branch. npu fell through to a fake 1 GiB.
             if hasattr(torch, "npu") and torch.npu.is_available():
                 props = torch.npu.get_device_properties(0)
                 peak = (

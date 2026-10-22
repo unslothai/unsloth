@@ -22,6 +22,7 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
+# Flex Attention supported from torch 2.5 onwards only
 try:
     from torch.nn.attention.flex_attention import (
         flex_attention as _flex_attention,
@@ -34,7 +35,7 @@ except:
 
 
 if not HAS_FLEX_ATTENTION:
-
+    # Logit softcapping
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
     def _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len):
         n_heads = self.config.num_attention_heads
@@ -43,6 +44,7 @@ if not HAS_FLEX_ATTENTION:
         n_groups = self.num_key_value_groups
         actual_q_len = Q.shape[-2]
 
+        # Grouped query attention
         K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
         V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
         K = K.reshape(bsz, n_heads, kv_len, head_dim)
@@ -200,6 +202,7 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len
     Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
     A = torch_matmul(Q, K.transpose(2, 3))
 
+    # Logit softcapping
     A /= t
     torch_tanh(A, out = A)
     A *= t

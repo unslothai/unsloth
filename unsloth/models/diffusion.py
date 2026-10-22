@@ -48,6 +48,7 @@ __all__ = [
     "is_diffusion_model_type",
 ]
 
+# transformers model_type strings routed to this slow path.
 DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
 
 # The fused 3D MoE experts are not nn.Linear, so PEFT LoRA cannot target them.
@@ -61,7 +62,7 @@ DIFFUSION_LORA_TARGETS = [
     "down_proj",
 ]
 
-# The vision tower's custom Linear shares suffix names.
+# The vision tower uses a custom Linear with the same suffix names; exclude it so only the text path is wrapped.
 DIFFUSION_LORA_EXCLUDE = r".*(vision_tower|embed_vision).*"
 
 
@@ -142,6 +143,7 @@ def _resolve_diffusion_model_class(config):
         cls = getattr(transformers, arch, None)
         if cls is not None:
             return cls
+    # Fallbacks across naming revisions.
     for name in (
         "DiffusionGemmaForBlockDiffusion",
         "DiffusionGemma4ModelForBlockDiffusion",
@@ -212,7 +214,7 @@ class FastDiffusionModel:
     @staticmethod
     def from_pretrained(
         model_name = "google/diffusiongemma-26B-A4B-it",
-        max_seq_length = None,
+        max_seq_length = None,  # API-compat; diffusion uses canvas_length
         dtype = None,
         load_in_4bit = False,
         load_in_8bit = False,
@@ -220,6 +222,7 @@ class FastDiffusionModel:
         full_finetuning = False,
         token = None,
         device_map = "auto",
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
         device_map_planner_kwargs = None,
         trust_remote_code = False,
         attn_implementation = None,  # family default: eager for DiffusionGemma (reference golden logits)
@@ -236,6 +239,7 @@ class FastDiffusionModel:
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
+        # Honor an explicit local_files_only; else fall back to the offline env vars.
         local_files_only = kwargs.pop("local_files_only", None)
         if local_files_only is None:
             local_files_only = (
@@ -303,7 +307,7 @@ class FastDiffusionModel:
         else:
             model_cls = _resolve_diffusion_model_class(config)
 
-        # No subfolder: the pipeline loads every component subfolder.
+        # No subfolder: the pipeline loads every component; narrowing would leave unet, vae and text_encoder to Xet
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -313,6 +317,7 @@ class FastDiffusionModel:
             fast_inference = False,
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
+            # Forward the variant (e.g. "fp16") so the warm keeps variant weights.
             variant = kwargs.get("variant"),
         )
 
@@ -354,6 +359,7 @@ class FastDiffusionModel:
                 device_map_planner_kwargs,
                 kwargs,
             ),
+            # local_files_only was popped from kwargs above, so planner_hub_kwargs gets the resolved value, not the raw mapping.
             **planner_hub_kwargs(
                 {
                     "cache_dir": cache_dir,
@@ -365,6 +371,7 @@ class FastDiffusionModel:
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
+            # The dtype the load below uses, which overrides the checkpoint's own.
             **add_dtype_kwargs(dtype),
             **planner_quantization_kwargs(
                 load_in_4bit = load_in_4bit,
@@ -383,11 +390,14 @@ class FastDiffusionModel:
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
+        # Match the load's weight format to the warm (None/auto already matches).
         if kwargs.get("use_safetensors") is not None:
             load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
+        # Forward the variant to the real load so it reads the warmed variant weights.
         if kwargs.get("variant") is not None:
             load_kwargs["variant"] = kwargs["variant"]
 
+        # The same config the plan above was sized against.
         if qcfg is not None:
             load_kwargs["quantization_config"] = qcfg
 
@@ -579,7 +589,7 @@ class FastDiffusionModel:
                 else LoraConfig(**lora_kwargs)
             )
         except TypeError:
-            # Older PEFT lacks exclude_modules: scope the target by regex.
+            # Older PEFT without exclude_modules: scope the target to the text decoder by regex.
             lora_kwargs["target_modules"] = (
                 r".*model\.decoder\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)"
             )

@@ -333,8 +333,8 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if int(process.get("ProcessId") or -1) > 0
     }
 
-    # Exempt verified launcher ancestors only. venv Scripts\python.exe is a redirector (bpo-34977),
-    # so exempt that one hop.
+    # Exempt verified launcher ancestors only: a managed backend child starting an update must still block replacement
+    # venv python.exe in Scripts is a redirector (bpo-34977), so exempt that one hop.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
     self_executable = (process_by_pid.get(os.getpid()) or {}).get("ExecutablePath")

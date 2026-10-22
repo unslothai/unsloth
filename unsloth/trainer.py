@@ -132,7 +132,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if formatting_func is None:
             return super().__call__(examples)
 
-        # The base __call__ would reapply formatting_func.
+        # The base __call__ would reapply formatting_func, which was applied above.
         view = copy.copy(self)
         view.formatting_func = None
         return super(UnslothVisionDataCollator, view).__call__(examples)
@@ -195,8 +195,8 @@ _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 PADDING_FREE_BLOCKLIST = {
-    "gemma2",  # slow_attention_softcapping has torch.compile issues
-    "gpt_oss",  # Flex Attention does not handle padding_free correctly
+    "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
+    "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
 }
 # Hybrid linear-attention / SSM models leak recurrent and conv1d state across packed sequences;
 # detected structurally by _is_hybrid_linear_attention_model.
@@ -299,7 +299,7 @@ def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
     try:
         from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
     except Exception:
-        return True
+        return True  # nothing to check against; do not invent a failure
     packing = bool(getattr(config, "packing", False))
     # TRL's own default: eval_packing = None means "whatever packing is".
     eval_packing = getattr(config, "eval_packing", None)
@@ -374,7 +374,7 @@ def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
     column_names = getattr(dataset, "column_names", None)
     if column_names is not None:
         return not _VISION_DATASET_KEYS.isdisjoint(column_names)
-    # Unknown-schema streams cannot be probed without dropping a sample.
+    # Unknown-schema streams cannot be safely probed without potentially dropping a sample.
     return unknown_is_vision
 
 
@@ -622,7 +622,7 @@ def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
         if inner is not None:
             target = inner
             continue
-        # `PeftMixedModel` has no `get_base_model`.
+        # PeftMixedModel lacks get_base_model, so the unwrap below would stop on a delegating forward
         mixed = next(
             (
                 held
@@ -636,7 +636,7 @@ def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
         if mixed is not None:
             target = mixed
             continue
-        # PEFT's own unwrap only: `PreTrainedModel.base_model` returns the inner decoder.
+        # PEFT own unwrap only: base_model is the inner decoder, which may take kwargs and misanswer
         unwrap = getattr(target, "get_base_model", None)
         if not callable(unwrap):
             break
@@ -689,6 +689,7 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
         if isinstance(resolved, type):
             return resolved
 
+    # Then the auto mappings keyed by config class: lazy, and in-tree only.
     try:
         from transformers.models.auto import modeling_auto
     except Exception:
@@ -770,6 +771,7 @@ def _is_hybrid_linear_attention_model(model) -> bool:
     if model is None:
         return False
 
+    # Config-level: explicit hybrid layer schedule or linear-attn markers.
     for config in (
         getattr(model, "config", None),
         getattr(getattr(model, "config", None), "text_config", None),
@@ -836,7 +838,7 @@ def _resolve_string_model_config(model_name, config_arg):
             )
             if key in init_kwargs
         }
-        # TRL merges top-level trust_remote_code via setdefault; model_init_kwargs wins.
+        # Honour top-level trust_remote_code as TRL setdefault does, or a remote hybrid skips the guard
         top_level_trust_remote_code = getattr(config_arg, "trust_remote_code", None)
         if top_level_trust_remote_code is not None:
             forward.setdefault("trust_remote_code", top_level_trust_remote_code)
@@ -854,12 +856,13 @@ def _chunked_loss_bypasses_forward(config) -> bool:
     except Exception:
         return False
     if not hasattr(_sft_trainer, "_patch_chunked_ce_lm_head"):
-        return False
+        return False  # TRL has no chunked-CE path -> forward is not bypassed
     if getattr(config, "use_liger_kernel", False):
-        return False
+        return False  # liger forces loss_type="nll" -> normal forward
     return getattr(config, "loss_type", None) in (None, "chunked_nll")
 
 
+# Unsloth gradient accumulation fix.
 from transformers import __version__ as transformers_version, ProcessorMixin
 
 if Version(transformers_version) > Version("4.45.2"):
@@ -1362,7 +1365,7 @@ def _super_create_optimizer_takes_model():
 
 class UnslothTrainer(SFTTrainer):
     def create_optimizer(self, model = None):
-        # The prepared model's parameters are the ones to own under FSDP.
+        # The prepared model's parameters, not self.model's, are the ones to own under FSDP.
         target_model = model if model is not None else self.model
 
         q_galore_config = getattr(self.args, "q_galore_config", None)
@@ -1459,14 +1462,17 @@ class UnslothTrainer(SFTTrainer):
             )
 
         if embedding_lr is not None:
+            # Fast param -> name lookup, O(N) instead of O(N*M).
             param_to_name = {id(p): name for name, p in model.named_parameters()}
             embedding_ids = _embedding_weight_ids(model)
 
             new_groups = []
             for group in param_groups:
                 if "rank" in group:
+                    # GaLore group: keep as-is, since no embeddings are here.
                     new_groups.append(group)
                     continue
+                # Non-GaLore group: split out embedding params.
                 embed_params = []
                 other_params = []
                 for p in group["params"]:
@@ -1509,7 +1515,7 @@ class UnslothTrainer(SFTTrainer):
                 group_size = config.weight_group_size,
                 stochastic = config.stochastic_round,
             )
-            # Pre-hooks dequantize INT8 weights before each forward.
+            # Pre-hooks dequantize INT8 before each forward, so the optimizer frees float memory between steps
             install_weight_quant_hooks(model)
 
         n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
@@ -1523,7 +1529,7 @@ class UnslothTrainer(SFTTrainer):
         return self.optimizer
 
 
-# trl >= 0.13.0 passes several params differently.
+# From trl >= 0.13.0 several params are passed to the trainer differently; patch to make the transition smooth.
 def _resolve_trainer_params(trainer_class, init_fn):
     """Resolve the real named parameters for a trainer __init__.
 
@@ -1540,6 +1546,7 @@ def _resolve_trainer_params(trainer_class, init_fn):
     if named:
         return set(params.keys())
 
+    # Thin wrapper detected: walk the MRO for the real signature.
     for cls in trainer_class.__mro__[1:]:
         if cls is object:
             continue
@@ -1597,13 +1604,13 @@ def _ensure_warnings_issued(model):
         if existing is None:
             model.warnings_issued = {}
         else:
-            # trl only ever writes one boolean key; keep a non-dict value.
+            # Preserve a non-dict value rather than discard it; trl only ever writes one boolean key.
             try:
                 model.warnings_issued = dict(existing)
             except Exception:
                 model.warnings_issued = {}
     except Exception:
-        # A model refusing the assignment is trl's to report.
+        # A model refusing the assignment is trl's to report, not ours to turn into a different traceback.
         pass
 
 
@@ -1699,6 +1706,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
     @wraps(original_init)
     def new_init(self, *args, **kwargs):
+        # tokenizer is now processing_class.
         trainer_params = _resolve_trainer_params(trainer_class, original_init)
 
         if "processing_class" in trainer_params and "tokenizer" in kwargs:
@@ -1711,6 +1719,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             trainer_params.discard("self")
             trainer_params.discard("args")
 
+            # Fields that should be passed to Config init.
             config_fields = {
                 field.name: field for field in dataclasses.fields(config_class) if field.init
             }
@@ -1721,12 +1730,14 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 if hasattr(training_args, name)
             }
 
+            # Params in Config but not in TrainingArguments.
             from transformers import TrainingArguments
 
             moved_params = set(inspect.signature(config_class).parameters.keys()) - set(
                 inspect.signature(TrainingArguments).parameters.keys()
             )
 
+            # Separate kwargs into trainer kwargs and config kwargs.
             trainer_kwargs = {}
             additional_config_kwargs = {}
             unknown_kwargs = {}
@@ -1763,9 +1774,11 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 # Every trl config subclasses TrainingArguments: set moved values on the caller's config.
                 config = training_args
                 for key, value in additional_config_kwargs.items():
+                    # `migrated` keys are already known to be accepted here.
                     if key in config_fields or key in moved_params or key in migrated:
                         setattr(config, key, value)
 
+            # Reconstruct kwargs for Trainer.
             kwargs = trainer_kwargs
             kwargs["args"] = config
         _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
@@ -1854,6 +1867,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
         )
 
+        # Disable padding-free for VLMs / custom collators / blocklisted models
         forward_rejects_packing = not _forward_accepts_packing_kwargs(model)
         _packing_gate_deferred = model is None or isinstance(model, str)
         # Resolve the class a string names so it is a silent block like the rest; after __init__ only refuse.
@@ -1935,7 +1949,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             packing_active = True
             logger.info("Unsloth: Sample packing enabled for SFTTrainer instance.")
 
-        # None (default) means auto-enable unless env-disabled or packing.
+        # Resolve padding_free: None (default) means auto-enable unless env-disabled or packing.
         auto_padding_free_active = False
         padding_free_requested = getattr(config_arg, "padding_free", None) is True
         if not blocked:
@@ -2008,6 +2022,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         trainer_padding_free = bool(trainer_args and getattr(trainer_args, "padding_free", False))
 
         if blocked and trainer_args is not None:
+            # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
 

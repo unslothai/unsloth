@@ -97,7 +97,7 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    # After xpu: a host exposing both keeps selecting xpu.
+    # After xpu: a host exposing both keeps selecting xpu, as it did before NPU.
     elif npu_is_available():
         return "npu"
     accelerator = None
@@ -121,7 +121,7 @@ def get_device_type():
 
 
 DEVICE_TYPE: str = get_device_type()
-# HIP fails for autocast and other torch functions, so use cuda.
+# HIP fails for autocast and other torch functions. Use CUDA instead
 DEVICE_TYPE_TORCH = DEVICE_TYPE
 if DEVICE_TYPE_TORCH == "hip":
     DEVICE_TYPE_TORCH = "cuda"
@@ -146,9 +146,10 @@ DEVICE_COUNT: int = get_device_count()
 # 4-bit needs blocksize 64; Instinct warp size is 64. bnb 0.49.2+ supports blocksize 64 on CDNA too.
 
 ALLOW_PREQUANTIZED_MODELS: bool = True
-# HSA_STATUS_ERROR_EXCEPTION: bnb sometimes fails on AMD.
+# HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
-# Guarded import, not find_spec: from bnb 0.46 a dead native library only raises when called.
+# Unusable bnb on any backend, not just hip: clear the flags the loader reads before it picks 4bit.
+# Guarded import, not find_spec: a dead bnb 0.46+ native library only raises when called.
 try:
     import bitsandbytes as _bnb_probe
 except Exception:
@@ -349,6 +350,7 @@ if DEVICE_TYPE == "hip":
             pass
         elif Version(bitsandbytes.__version__) >= Version("0.49.0"):
             try:
+                # Pre-quantized bitsandbytes models use blocksize 64.
                 from bitsandbytes.cextension import ROCM_WARP_SIZE_64
                 ALLOW_PREQUANTIZED_MODELS = not ROCM_WARP_SIZE_64
             except Exception as e:
@@ -479,6 +481,7 @@ def get_device_stats() -> tuple[str, str, float]:
     elif DEVICE_TYPE == "npu":
         # torch.npu / torch_npu are Ascend's, so an unnamed device is an Ascend NPU.
         name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
+        # Report the toolkit like the cuda/xpu arms, not the name already in `name`.
         try:
             import torch_npu
             snippet = f"Ascend NPU. torch_npu: {torch_npu.__version__}."

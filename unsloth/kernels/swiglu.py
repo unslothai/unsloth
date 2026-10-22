@@ -34,8 +34,10 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)
 
+    # f = e * sigmoid(e), h = f * g.
     f_row = e_row * tl.sigmoid(e_row)
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
+    # h = f * g
     h_row = f_row * g_row
 
     tl.store(h + offsets, h_row, mask = mask)
@@ -84,11 +86,16 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDE
 
     # se = sigmoid(e), f = se * e, df = DW * f, dg = DW * g, de = dg * se * (1 + e * (1 - se)).
     se_row = tl.sigmoid(e_row)
+    # f = (se * e).to(dtype)
     f_row = se_row * e_row
     f_row = f_row.to(DW_row.dtype)
+    # h = f * g
     h_row = f_row * g_row
+    # df = DW * f
     df_row = DW_row * f_row
+    # dg = DW * g
     dg_row = DW_row * g_row
+    # de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
     de_row = dg_row.to(tl.float32) * se_row * (1.0 + e_row * (1.0 - se_row))
     de_row = de_row.to(DW_row.dtype)
 
@@ -112,7 +119,7 @@ def _DWf_DW_dfg_traced(DW, e, g):
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
     if torch.compiler.is_compiling():
         return _DWf_DW_dfg_traced(DW, e, g)
-    batch_seq_len, hd = e.shape
+    batch_seq_len, hd = e.shape  # Flattened to 2D, so 1st dim is bsz * seq_len
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(e.device):

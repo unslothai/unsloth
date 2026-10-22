@@ -60,11 +60,13 @@ from transformers.utils import (
     is_torchdynamo_compiling,
 )
 
+# For Pytorch 2.1.1
 try:
     from transformers.models.falcon_h1.modeling_falcon_h1 import (
         FalconH1Attention,
     )
 except ModuleNotFoundError:
+    # FalconH1Attention unavailable or renamed (old transformers).
     raise ImportError(
         "Unsloth: Could not import FalconH1Attention from transformers.models.falcon_h1.modeling_falcon_h1."
     )
@@ -107,6 +109,7 @@ def FalconH1Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
+    # Falcon H1 multiplies key states by a multiplier.
     K = K * self.config.key_multiplier
 
     Q = Q.transpose(1, 2)
@@ -116,6 +119,7 @@ def FalconH1Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
     if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
@@ -124,6 +128,7 @@ def FalconH1Attention_fast_forward(
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
+    # Useful for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
@@ -244,6 +249,7 @@ def FalconH1Attention_fast_forward_inference(
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
 
+        # Mistral Nemo 12b has weird dimensions.
         if attention_size != hidden_size:
             self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
@@ -316,6 +322,7 @@ def FalconH1Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
+    # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -356,6 +363,7 @@ def FalconH1Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+# Ported from transformers models/falcon_h1/modeling_falcon_h1.py
 def FalconH1DecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -446,6 +454,7 @@ def FalconH1DecoderLayer_fast_forward(
 
         hidden_states = mamba_hidden_states + attention_hidden_states
 
+        # Residual connection after attention + Mamba.
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -465,6 +474,7 @@ def _FalconH1_fast_forward_inference(
     attention_fast_forward_inference = FalconH1Attention_fast_forward_inference,
     mlp_fast_forward_inference = fast_swiglu_inference,
 ):
+    # Makes attention and MLP customisable (qwen3/cohere custom attention).
     def FalconH1Model_fast_forward_inference_custom(
         self,
         input_ids,
@@ -486,6 +496,7 @@ def _FalconH1_fast_forward_inference(
         X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert q_len == 1
+        # Get saved buffers to reduce memory movement
         residual = torch.empty(
             (bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
         )
@@ -602,23 +613,31 @@ def _fast_prepare_inputs_for_generation(
     use_cache = True,
     **kwargs,
 ):
+    # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
     empty_past_kv = past_key_values is None
 
     # Slice input_ids to unprocessed tokens, except with input_embeds or synced-GPU overflow.
     if not empty_past_kv:
-        if inputs_embeds is not None or (
-            is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1]
+        if (
+            inputs_embeds is not None  # Exception 1
+            or (
+                is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1]
+            )  # Exception 3
         ):
             input_ids = input_ids[:, -cache_position.shape[0] :]
-        elif input_ids.shape[1] != cache_position.shape[0]:
+        elif (
+            input_ids.shape[1] != cache_position.shape[0]
+        ):  # Default case (the "else", a no op, is Exception 2)
             input_ids = input_ids[:, cache_position]
 
     if attention_mask is not None and position_ids is None:
+        # create position_ids on the fly for batch generation
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
         if not empty_past_kv:
             position_ids = position_ids[:, -input_ids.shape[1] :]
 
+    # inputs_embeds are only used in the 1st generation step.
     if inputs_embeds is not None and empty_past_kv:
         model_inputs = {"inputs_embeds": inputs_embeds}
     else:
@@ -640,6 +659,7 @@ def _fast_prepare_inputs_for_generation(
 
 
 def fix_prepare_inputs_for_generation(module):
+    # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
 
@@ -683,7 +703,7 @@ class FastFalconH1Model(FastLlamaModel):
         transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RotaryEmbedding = (
             LlamaRotaryEmbedding
         )
-        # Avoids the float64 RMSNorm compile kernel that fails on Intel Arc DG2.
+        # Avoids the float64 RMSNorm compile kernel that fails on Intel Arc DG2 (#6555).
         patch_falcon_h1_rms_layernorm()
         return
 

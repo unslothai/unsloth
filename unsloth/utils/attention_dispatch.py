@@ -568,7 +568,7 @@ def _sdpa_packed_segments(
     return torch.cat(outs, dim = 0).unsqueeze(0)
 
 
-# Resolved once when the env gate is on, so PG-off users never load flex_attention.
+# PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load torch flex_attention.
 _flex_shared_prefix_attention = None
 if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "false", "no", "off"):
     try:
@@ -688,7 +688,7 @@ class AttentionContext:
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
     sliding_window: Optional[int] = None
-    # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel.
+    # PrefixGrouper: non-None routes Q/K/V via the FlexAttention shared-prefix kernel; None is unchanged
     prefix_seg_info: Optional[Any] = None
     is_causal: bool = True
 
@@ -829,7 +829,7 @@ def _run_attention(
             context.prefix_seg_info,
             scale = scale,
         )
-        return A
+        return A  # [1, T, n_heads, head_dim]
 
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
@@ -920,7 +920,7 @@ def _run_attention(
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
     xformers_kwargs = config.xformers_kwargs or {}
-    # Mask builders only see is_causal when False, so causal callers are unchanged.
+    # Mask builders only see is_causal when False, so causal callers and their patches are unchanged.
     direction = {}
     if not context.is_causal:
         flash_dense_kwargs = {**flash_dense_kwargs, "causal": False}
@@ -955,6 +955,7 @@ def _run_attention(
         K.dtype,
         V.dtype,
     ):
+        # Prefer the autocast dtype, else a non-fp32 input's dtype, then clamp.
         if torch.is_autocast_enabled():
             try:
                 downcast_dtype = torch.get_autocast_dtype("cuda")
@@ -992,7 +993,7 @@ def _run_attention(
         )
     elif backend == XFORMERS:
         base_mask = context.causal_mask
-        # Only CausalLM_fast_forward supplies the mask; a direct decoder call would attend bidirectionally.
+        # Only CausalLM_fast_forward supplies the mask; a direct decoder call (Liger, TRL's get_decoder paths) would attend bidirectionally.
         if (
             base_mask is None
             and context.is_causal
@@ -1129,9 +1130,10 @@ def _run_attention(
                     if local_mask.dtype == torch.bool:
                         key_keep = local_mask
                     else:
+                        # tokenizer attention_mask is typically int 0/1
                         key_keep = local_mask != 0
 
-                    past_len = k_len_local - q_len_local
+                    past_len = k_len_local - q_len_local  # works for prefill (0) and decode
                     q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
@@ -1145,20 +1147,23 @@ def _run_attention(
                     if sliding_window is not None:
                         causal_keep &= k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1))
 
+                    # (bsz, 1, q_len, k_len) boolean keep mask.
                     local_mask = causal_keep[None, None, :, :] & key_keep[:, None, None, :]
 
                 elif local_mask.dim() == 3:
+                    # (bsz, q_len, k_len) -> (bsz, 1, q_len, k_len)
                     local_mask = local_mask[:, None, :, :]
 
                 elif local_mask.dim() == 4:
                     if local_mask.dtype != torch.bool:
+                        # Use boolean keep masks for better SDPA stability.
                         local_mask = local_mask.eq(0)
                 else:
                     raise ValueError(f"Unsupported SDPA attention_mask rank: {local_mask.dim()}")
 
                 # Avoid NaNs from fully-masked rows, common with left padding.
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)
+                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
 
             if local_mask is None and sliding_window is not None and k_len_local > sliding_window:

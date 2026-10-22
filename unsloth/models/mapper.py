@@ -245,14 +245,14 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-2-27b-it",
         "google/gemma-2-27b-it",
     ),
-    "unsloth/Phi-3-mini-4k-instruct-v0-bnb-4bit" : (
+    "unsloth/Phi-3-mini-4k-instruct-v0-bnb-4bit" : ( # Old Phi pre July
         "unsloth/Phi-3-mini-4k-instruct-v0",
     ),
-    "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit" : (
+    "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit" : ( # New 12b Mistral models
         "unsloth/Mistral-Nemo-Instruct-2407",
         "mistralai/Mistral-Nemo-Instruct-2407",
     ),
-    "unsloth/Mistral-Nemo-Base-2407-bnb-4bit" : (
+    "unsloth/Mistral-Nemo-Base-2407-bnb-4bit" : ( # New 12b Mistral models
         "unsloth/Mistral-Nemo-Base-2407",
         "mistralai/Mistral-Nemo-Base-2407",
     ),
@@ -1416,6 +1416,7 @@ def build_mappers(__INT_TO_FLOAT_MAPPER):
         if type(values) is dict:
             assert "16" in values
             float16_values = values["16"]
+            # Float8 and other quantized types.
             if "8" in values:
                 float8_values = values["8"]
                 assert len(float8_values) == 3
@@ -1444,12 +1445,14 @@ def build_mappers(__INT_TO_FLOAT_MAPPER):
         for value in values:
             FLOAT_TO_INT_MAPPER[value] = key
 
+        # Map to the Unsloth version for 16bit.
         if len(values) == 2:
             if values[0].startswith("unsloth"):
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
         elif len(values) == 3:
+            # Dynamic Unsloth quantization.
             if values[0].startswith("unsloth"):
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, values[2], values[0])
@@ -1457,7 +1460,7 @@ def build_mappers(__INT_TO_FLOAT_MAPPER):
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
             pass
 
-        # Lowercased keys, exact-case values: mirrors and case-sensitive caches reject lowercased ids (#2506).
+        # Lowercased keys, exact-case values: HF_ENDPOINT mirrors and case-sensitive caches reject a lowercased repo id (#2506).
         INT_TO_FLOAT_MAPPER[key.lower()] = values[0]
 
         for value in values:

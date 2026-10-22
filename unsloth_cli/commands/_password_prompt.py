@@ -17,7 +17,7 @@ import os
 import sys
 from typing import Callable, TextIO
 
-# Keep in sync with studio/backend/models/auth.py ChangePasswordRequest and auth/storage.py.
+# Keep in sync with ChangePasswordRequest new_password min_length (studio/backend/models/auth.py) and auth/storage.py.
 MIN_PASSWORD_LENGTH = 8
 
 # Mirror of studio/backend/auth/terminal_prompt.py; keep the name in sync.
@@ -132,7 +132,7 @@ def _read_masked_posix(
             # First keystroke only: a detached pty would block forever and the socket never binds.
             if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
                 raise PromptUnattended
-            # os.read + errors="replace": text-mode read(1) can raise or yield a lone surrogate.
+            # os.read with incremental decoder, errors=replace: text-mode read(1) can raise or yield a lone surrogate that crashes pbkdf2.
             decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             submitted = False
             while not submitted:

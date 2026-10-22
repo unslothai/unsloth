@@ -50,6 +50,7 @@ from transformers.models.mistral.modeling_mistral import (
     MistralForCausalLM,
 )
 
+# For Pytorch 2.1.1
 try:
     from transformers.models.mistral.modeling_mistral import (
         MistralSdpaAttention,
@@ -102,10 +103,12 @@ def MistralAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
     self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
+    # Useful for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
@@ -139,7 +142,7 @@ def MistralAttention_fast_forward(
             "window_size": window_size,
         },
     )
-    # PrefixGrouper seg table rides in **kwargs; None means the default path.
+    # PrefixGrouper seg table rides in **kwargs; misuse (KV cache or padding mask) raises; None is default
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -195,6 +198,7 @@ def MistralForCausalLM_fast_forward(
         sliding_window = getattr(self.config, "sliding_window", None)
 
         if HAS_XFORMERS:
+            # Always create a causal mask for xformers.
             if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
                 causal_mask = xformers.attn_bias.LowerTriangularMask()
             elif q_len <= sliding_window:
@@ -219,11 +223,13 @@ def MistralForCausalLM_fast_forward(
                 or sliding_window <= 0
                 or q_len <= sliding_window
             ):
+                # Fully causal mask.
                 causal_mask_values = torch.triu(
                     torch.full((q_len, q_len), -torch.inf, device = input_ids.device),
                     diagonal = 1,
                 )
             else:
+                # Sliding window attention.
                 q_indices = torch.arange(q_len, device = input_ids.device).view(-1, 1)
                 k_indices = torch.arange(q_len, device = input_ids.device).view(1, -1)
 
@@ -234,10 +240,12 @@ def MistralForCausalLM_fast_forward(
                     causal_bool_mask & window_bool_mask, 0.0, -torch.inf
                 )
 
+            # Combine with existing attention_mask if present
             if attention_mask is None:
                 attention_mask = causal_mask_values[None, None, :, :].expand(bsz, 1, q_len, q_len)
             else:
                 if attention_mask.dim() == 2:
+                    # Convert the 0/1 padding mask to additive form: 1 -> 0 (keep), 0 -> -inf (mask).
                     padding_mask = torch.where(
                         attention_mask[:, None, None, :].bool(),
                         0.0,
@@ -297,16 +305,18 @@ def MistralForCausalLM_fast_forward(
     lm_head = self.lm_head.weight
     lm_head_device = lm_head.device
 
+    # Move items to same device as lm_head
     hidden_states = hidden_states.to(lm_head_device)
     if labels is not None:
         labels = labels.to(lm_head_device)
 
-    # Merge spellings before branching; skip int max() if either is a tensor (HF selective decode).
+    # Merge spellings first so the decode last-token slice hits the normal path; no int max() on tensors
     if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
         num_logits_to_keep = 0
     else:
         num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
+    # In GRPO mode, return raw hidden states.
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
@@ -329,17 +339,19 @@ def MistralForCausalLM_fast_forward(
         )
         # Below 1024 normal Unsloth uses less VRAM.
         if bsz * q_len <= 1024 and not RETURN_LOGITS:
+            # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
             RETURN_LOGITS = False
 
         if not RETURN_LOGITS and labels is not None:
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
+            # Same source as llama.py's fused branch.
             logit_softcapping, logit_scale_multiply, logit_scale_divide = resolve_logit_transforms(
                 self.config
             )
 
-            # Packed-boundary guard, see llama.py: this branch returns before the later mask call.
+            # This branch returns early, so mask_packed_sequence_boundaries() below is never reached
             labels = mask_packed_boundary_labels(
                 labels,
                 kwargs.get("packed_seq_lengths"),
@@ -365,6 +377,7 @@ def MistralForCausalLM_fast_forward(
                 logit_scale_divide = logit_scale_divide,
             )
             if not return_dict:
+                # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
                 output = (EMPTY_LOGITS,) + outputs[1:]
                 return (loss,) + output if loss is not None else output
 
@@ -381,6 +394,7 @@ def MistralForCausalLM_fast_forward(
     logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
     loss = None
+    # Same answer the fused branch above reads, so the two branches cannot drift apart.
     logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
 
     if labels is not None:
@@ -418,7 +432,7 @@ def MistralForCausalLM_fast_forward(
     )
 
 
-# Mistral Nemo 12b's attention is (5120, 4096): head_dim is not hidden_size // num_heads.
+# Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
 def patch_mistral_nemo_attention(function):
     function = function.replace(
         "(self.head_dim * self.config.num_attention_heads) != self.config.hidden_size",
@@ -444,6 +458,7 @@ class FastMistralModel(FastLlamaModel):
             scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
             attention_module = MistralAttention,
         )
+        # Just for Mistral Nemo models.
         if function is not None and init_name is not None:
             function = patch_mistral_nemo_attention(function)
             exec(function, globals())

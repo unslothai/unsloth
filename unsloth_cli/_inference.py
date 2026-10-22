@@ -71,7 +71,7 @@ def urlopen_local(request, timeout):
     return _opener(True, True).open(request, timeout = timeout)
 
 
-# load/unload commit a 200 early and pad; a late failure travels only in-band under this key.
+# load and unload pad the body and commit 200 early, so a late failure rides only in-band under this key; a bare 200 reads as success.
 _DEFERRED_ERROR_KEY = "_deferred_error"
 
 
@@ -185,7 +185,7 @@ def configure_quiet_logging() -> None:
     level = getattr(logging, level_name, logging.WARNING)
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
-    # Quieting logs must not fail a command before the import that needs structlog reports itself.
+    # Quieting logs must not fail a command before the import that really needs structlog gets to report itself.
     try:
         import structlog
     except ModuleNotFoundError:
@@ -308,6 +308,7 @@ def visible_text(
     if open_idx != -1:
         text = text[:open_idx]
     if final:
+        # Ended stream: a trailing "<" or "<th" can no longer become <think>.
         return text
     max_prefix = min(len(text), len(_THINK_OPEN) - 1)
     for size in range(max_prefix, 0, -1):
@@ -365,7 +366,7 @@ def collect_stream(stream, show_thinking: bool) -> str:
 
 
 def raise_on_streamed_error(stream):
-    # Match backend errors by type, not the "Error:" text prefix.
+    # Match backend errors by GenStreamError type, not the Error: text prefix, so completion text opening with Error: is not misread.
     try:
         ensure_studio_backend_path()
         from core.inference.orchestrator import GenStreamError
@@ -410,7 +411,7 @@ class ChatBackend:
     """Uniform stream()/close() over the llama-server and Unsloth backends."""
 
     def __init__(self, kind: str, backend) -> None:
-        self._kind = kind
+        self._kind = kind  # "gguf" | "unsloth"
         self._backend = backend
         self.reply_hit_token_limit = False
 
@@ -477,6 +478,7 @@ class ChatBackend:
             thinking = thinking,
         )
         if self._kind == "gguf":
+            # llama-server takes the system prompt as the first message.
             msgs = list(messages)
             if system_prompt:
                 msgs = [{"role": "system", "content": system_prompt}, *msgs]
@@ -852,7 +854,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     parsed = urlparse(base)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    # Bind the proof to one concrete (address, port): localhost may resolve to a squatter on ::1.
+    # Resolve once and talk to that concrete address, binding the proof to (address, port): localhost may hit a squatter on ::1.
     try:
         ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
     except Exception:
@@ -934,7 +936,7 @@ class HttpChatBackend:
             },
             method = method,
         )
-        # No redirects: this carries a bearer token.
+        # No redirects: this carries a bearer token (see urlopen_no_redirect).
         return urlopen_no_redirect(request, timeout = timeout)
 
     def ensure_loaded(
@@ -969,7 +971,7 @@ class HttpChatBackend:
             payload["gguf_variant"] = resident_variant
         self.gguf_variant = resident_variant
         try:
-            # Read the whole body: a slow load commits its 200 early and reports a late failure in-band.
+            # Read the whole body, not just headers: closing early discards the only in-band report of a late load failure.
             read_json_checking_deferred_error(
                 self._base + "/api/inference/load",
                 self._request("POST", "/api/inference/load", payload),
@@ -999,7 +1001,7 @@ class HttpChatBackend:
             # Mirrors the server's _same_loaded_identifier.
             same = os.path.normcase(model) == os.path.normcase(loaded)
         else:
-            # The server loads an ownerless id as unsloth/<id>.
+            # The server loads an ownerless id as unsloth/<id> (ModelConfig.from_identifier).
             requested = model if "/" in model else f"unsloth/{model}"
             same = requested.casefold() == loaded.casefold()
         return status.get("gguf_variant") if same else None
@@ -1042,7 +1044,7 @@ class HttpChatBackend:
         self.reply_hit_token_limit = False
 
         def cumulative():
-            # Reasoning arrives in delta.reasoning_content: re-wrap it in <think>.
+            # Accumulate SSE deltas into the full-text-so-far form; re-wrap delta.reasoning_content in think tags for visible_text.
             text = ""
             thinking = False
             with resp:
@@ -1065,7 +1067,7 @@ class HttpChatBackend:
                         choice = parsed["choices"][0]
                     except (KeyError, IndexError):
                         continue
-                    # The finish-reason chunk may carry no content.
+                    # Read before the delta: the finish-reason chunk may carry no content.
                     if choice.get("finish_reason") is not None:
                         self.reply_hit_token_limit = choice["finish_reason"] == "length"
                     try:

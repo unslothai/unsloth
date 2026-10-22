@@ -62,6 +62,7 @@ from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 
+# For Pytorch 2.1.1
 try:
     from transformers.models.gemma2.modeling_gemma2 import (
         Gemma2SdpaAttention,
@@ -74,7 +75,7 @@ except:
 if HAS_FLASH_ATTENTION_SOFTCAPPING:
     from flash_attn import flash_attn_func
 
-# softcap, window_size and cache_leftpad all exist from flash-attn 2.6.3, the softcapping floor.
+# softcap, window_size and cache_leftpad all exist from flash-attn 2.6.3, the HAS_FLASH_ATTENTION_SOFTCAPPING floor.
 _FLASH_DECODE = (
     HAS_FLASH_ATTENTION_SOFTCAPPING
     and DEVICE_TYPE == "cuda"
@@ -98,7 +99,7 @@ def _gemma2_flash_decode(Q, K_cache, V_cache, kv_seq_len, leftpad, scale, softca
         cache_leftpad = leftpad,
         softmax_scale = scale,
         softcap = softcap,
-        # Keeps window - 1 earlier keys plus the current one, as HF does.
+        # Keeps window - 1 earlier keys plus the current one, as HF and the manual path do.
         window_size = (window - 1, 0) if window is not None else (-1, -1),
     )
 
@@ -113,7 +114,7 @@ def _flash_decode_usable(config, hidden_states, attention_mask):
         return False
     key = (hidden_states.device, hidden_states.dtype)
     if key not in _FLASH_DECODE_PROBED:
-        # A wheel built without this GPU's arch fails at launch, so probe first.
+        # A wheel built without this GPU's arch fails at launch; find out before any layer relies on it.
         try:
             q = torch.zeros(
                 1, 1, 1, head_dim, device = hidden_states.device, dtype = hidden_states.dtype
@@ -131,6 +132,7 @@ def _flash_decode_usable(config, hidden_states, attention_mask):
     return _FLASH_DECODE_PROBED[key]
 
 
+# Logit softcapping.
 def Gemma2Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -177,6 +179,7 @@ def Gemma2Attention_fast_forward(
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if rope_position_ids is not None:
+        # Useful for LongRoPE.
         cos_var, sin_var = self.rotary_emb.get_cached(kv_seq_len, device_index)
         Q, K = fast_rope_embedding(Q, K, cos_var, sin_var, rope_position_ids)
     else:
@@ -189,6 +192,7 @@ def Gemma2Attention_fast_forward(
     had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
+    # Only enable if the attention_mask is True.
     use_sliding_window = kwargs.get("use_sliding_window")
     has_sliding_window = (
         use_sliding_window
@@ -229,7 +233,7 @@ def Gemma2Attention_fast_forward(
             },
         )
 
-        # PrefixGrouper seg table rides in **kwargs; None means the default path.
+        # PrefixGrouper seg table rides in kwargs; None is the default path, and KV cache or padding mask misuse raises
         _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
         context = AttentionContext(
             bsz = bsz,
@@ -258,6 +262,7 @@ def Gemma2Attention_fast_forward(
     return A, None, past_key_value
 
 
+# Ported from transformers models/llama/modeling_llama.py#L590
 def Gemma2DecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -392,6 +397,7 @@ def Gemma2Attention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
+        # Only for Gemma2.
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
@@ -473,6 +479,7 @@ def Gemma2Attention_fast_forward_inference(
         A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
         return A, (Kn, Vn)
 
+    # Handle sliding windows
     sliding_window = self.config.sliding_window
     if use_sliding_window and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -495,6 +502,7 @@ def Gemma2Attention_fast_forward_inference(
     A *= self.t
 
     if attention_mask is not None and isinstance(attention_mask, torch.Tensor):
+        # Slice mask to match K/V when sliding window is active.
         if attention_mask.shape[-1] != A.shape[-1]:
             attention_mask = attention_mask[:, :, :, -A.shape[-1] :]
         A += attention_mask
@@ -507,6 +515,7 @@ def Gemma2Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
+# Ported from transformers models/llama/modeling_llama.py#L825
 def Gemma2Model_fast_forward_inference(
     self,
     input_ids,
@@ -523,7 +532,7 @@ def Gemma2Model_fast_forward_inference(
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
-    # sqrt(hidden) is rounded to the activation dtype like the reference (bf16 55.5 vs fp32 55.4256).
+    # 3072**0.5 is 55.5000 in bfloat16 against 55.4256 in float32, and 2048**0.5 is 45.2500 against 45.2548.
     if not embedding_applies_scale(self.model.embed_tokens):
         hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
@@ -534,12 +543,13 @@ def Gemma2Model_fast_forward_inference(
     masked_keys = False
     if flash_decode and attention_mask is not None:
         leftpad = (attention_mask.cumsum(-1) == 0).sum(-1, dtype = torch.int32)
-        # cache_leftpad only skips leading zeros; other masked keys need the manual masks.
+        # cache_leftpad only skips leading zeros; any other masked key needs the manual masks.
         if not bool(((attention_mask != 0).sum(-1) + leftpad == attention_mask.shape[-1]).all()):
             flash_decode = False
             leftpad = None
             masked_keys = True
     if flash_decode:
+        # The kernel applies the window itself and skips each row's left padding.
         SWA = None
         GA = None
     elif bsz != 1 or masked_keys:
@@ -557,7 +567,7 @@ def Gemma2Model_fast_forward_inference(
             seq_len,
         )
     else:
-        # The raw 2D mask cannot be sliced to the sliding window.
+        # One row has no padding; the raw 2D mask cannot be sliced to the sliding window.
         SWA = None
         GA = None
     # Once per step for every layer, never per layer (one host sync at most).
@@ -571,6 +581,7 @@ def Gemma2Model_fast_forward_inference(
     for idx, decoder_layer in enumerate(self.model.layers):
         if block_swap is not None:
             block_swap.enter(idx)
+        # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
         if SWA is not None:
@@ -672,10 +683,10 @@ class FastGemma2Model(FastLlamaModel):
             model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
-        # Gemma returns output * (1 + self.weight).
+        # Gemma returns output * (1 + self.weight); see transformers models/gemma/modeling_gemma.py#L89.
         from transformers.models.gemma2.modeling_gemma2 import Gemma2RMSNorm
 
-        # Freeze non-LoRA params first: += 1 fails on params requiring grad.
+        # Freeze all parameters except LoRA first, since += 1 does not agree with requires_grad = True.
         for name, param in model.named_parameters():
             if ".lora_A." in name or ".lora_B." in name:
                 param.requires_grad_(True)
@@ -686,7 +697,7 @@ class FastGemma2Model(FastLlamaModel):
             if isinstance(module, Gemma2RMSNorm):
                 # Must be float32; the Triton kernel applies the +1 itself.
                 if not hasattr(module, "variance_epsilon"):
-                    module.variance_epsilon = module.eps
+                    module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 
         import gc
 
