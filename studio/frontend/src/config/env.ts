@@ -53,7 +53,6 @@ interface PlatformState {
   secure: boolean;
   lanUrls: string[];
   fetched: boolean;
-  // The backend that measured the verdict was replaced and the new one has not measured yet.
   verdictStale: boolean;
   // torch-warm kill switch defers detection to first use; the sidebar polls.
   detectionDeferred: boolean;
@@ -115,8 +114,7 @@ const HARDWARE_DETECT_POLL_MS = 200;
 // The bounded wait above is spent at most once per page load: see fetchDeviceType.
 let hardwareWaitSpent = false;
 
-/** A provisional reply keeps the stored verdict, so a backend replaced by a repair or restart must
- * not have its predecessor's verdict read as measured. Platform fields describe the host and stay. */
+/** A repair or restart replaced the backend: its predecessor's verdict is no longer measured. Platform fields stay. */
 export function forgetMeasuredVerdict(): void {
   hardwareWaitSpent = false;
   usePlatformStore.setState({ verdictStale: true });
@@ -231,8 +229,7 @@ export async function fetchDeviceType(options?: {
           : keepPlatform
             ? previous.fileManager
             : undefined;
-      // A still-provisional reply keeps the stored verdict (see resolveVerdict), but a deferred one
-      // settles it and must not inherit a replaced backend's reason.
+      // Provisional keeps the stored verdict (resolveVerdict); deferred settles it without a replaced backend's reason.
       const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } = resolveVerdict(
         data,
         previous.verdictStale && isDetectionDeferred(data)
