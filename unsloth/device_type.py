@@ -32,6 +32,7 @@ import importlib.util
 import inspect
 import os
 import re
+import sys
 from unsloth_zoo.utils import Version
 from .bnb_availability import native_kernels_ready
 
@@ -251,15 +252,22 @@ def xpu_supports_native_bf16():
         count = torch.xpu.device_count()
     except Exception:
         return True
+    # A zoo from before per-device judging (#1894, no XPU_KEEPS_EXPLICIT_BF16) pools the aspects of
+    # every device and does not defer here: pool them too, so loading and its vLLM agree on dtype.
+    per_device = _zoo_judges_xpu_bf16_per_device()
+    any_lacks = any_probe_works = False
     for index in range(count):
         try:
             props = torch.xpu.get_device_properties(index)
         except Exception:
             continue
         lacks_bf16 = getattr(props, "has_bfloat16_conversions", True) is False
-        if lacks_bf16 and any(getattr(props, name, False) is True for name in aspects):
+        probe_works = any(getattr(props, name, False) is True for name in aspects)
+        if per_device and lacks_bf16 and probe_works:
             return False
-    return True
+        any_lacks |= lacks_bf16
+        any_probe_works |= probe_works
+    return per_device or not (any_lacks and any_probe_works)
 
 
 def xpu_vllm_refuses_bf16():
@@ -288,6 +296,20 @@ def xpu_keeps_explicit_bf16():
     except Exception:
         return False
     return bool(getattr(zoo_device_type, "XPU_KEEPS_EXPLICIT_BF16", False))
+
+
+def _zoo_judges_xpu_bf16_per_device():
+    """True unless the loaded unsloth_zoo is the #1894 one: it has _xpu_bf16_supported but pools
+    aspects across devices. Per-device judging arrived with XPU_KEEPS_EXPLICIT_BF16 (#1929)."""
+    zoo_device_type = sys.modules.get("unsloth_zoo.device_type")
+    if zoo_device_type is None:
+        try:
+            import unsloth_zoo.device_type as zoo_device_type
+        except Exception:
+            return True
+    if not hasattr(zoo_device_type, "_xpu_bf16_supported"):
+        return True
+    return hasattr(zoo_device_type, "XPU_KEEPS_EXPLICIT_BF16")
 
 
 def zoo_shares_xpu_bf16():

@@ -97,6 +97,8 @@ def _run(
     zoo_shares = True,
 ):
     monkeypatch.setattr(dt, "torch", fake)
+    # CASES are the per-device rule of a zoo with XPU_KEEPS_EXPLICIT_BF16, whatever zoo is installed.
+    monkeypatch.setattr(dt, "_zoo_judges_xpu_bf16_per_device", lambda: True, raising = False)
     namespace = dict(vars(module))
     namespace.update(torch = fake, DEVICE_TYPE = "xpu", zoo_shares_xpu_bf16 = lambda: zoo_shares)
     exec(compile(_xpu_arm(path), str(path), "exec"), namespace)
@@ -159,3 +161,57 @@ def test_zoo_shares_xpu_bf16_tracks_the_helper(monkeypatch):
     assert dt.zoo_shares_xpu_bf16() is True
     monkeypatch.delattr(zoo_dt, "_xpu_bf16_supported")
     assert dt.zoo_shares_xpu_bf16() is False
+
+
+# Device pairs where per-device judging and #1894's pooled aspects disagree.
+POOL_DISAGREES = [
+    pytest.param([NATIVE, NO_OCLOC], True, False, id = "native+no-libocloc"),
+    pytest.param([NO_OCLOC, NATIVE], True, False, id = "no-libocloc+native"),
+    pytest.param([EMULATED, NATIVE], False, False, id = "emulated+native"),
+    pytest.param([NATIVE, NATIVE], True, True, id = "native+native"),
+]
+
+
+@pytest.mark.parametrize("devices,per_device,pooled", POOL_DISAGREES)
+def test_xpu_bf16_pools_aspects_beside_the_1894_zoo(monkeypatch, devices, per_device, pooled):
+    """The #1894 zoo has _xpu_bf16_supported but pools aspects across devices and never defers to
+    unsloth, so unsloth pools too: otherwise the load is bf16 and vLLM fp16 (dense weight copy)."""
+    zoo_dt = pytest.importorskip("unsloth_zoo.device_type")
+    monkeypatch.setattr(dt, "torch", _fake_torch(devices))
+    monkeypatch.setattr(zoo_dt, "_xpu_bf16_supported", lambda: True, raising = False)
+    monkeypatch.setattr(zoo_dt, "XPU_KEEPS_EXPLICIT_BF16", True, raising = False)
+    assert dt.xpu_supports_native_bf16() is per_device
+    monkeypatch.delattr(zoo_dt, "XPU_KEEPS_EXPLICIT_BF16")
+    assert dt.xpu_supports_native_bf16() is pooled
+
+
+def test_xpu_bf16_pooled_answer_matches_the_1894_zoo_source(monkeypatch):
+    """Pin the pooled rule to #1894's own function (unsloth-zoo 1d0228ba), run on the same fakes."""
+    zoo_dt = pytest.importorskip("unsloth_zoo.device_type")
+    source = (
+        "def _xpu_bf16_supported():\n"
+        "    aspects = ('has_bfloat16_conversions', 'has_subgroup_matrix_multiply_accumulate',\n"
+        "               'has_subgroup_matrix_multiply_accumulate_tensor_float32', 'has_subgroup_2d_block_io')\n"
+        "    try:\n"
+        "        count = torch.xpu.device_count()\n"
+        "    except Exception:\n"
+        "        return True\n"
+        "    lacks_bf16 = probe_works = False\n"
+        "    for index in range(count):\n"
+        "        try:\n"
+        "            props = torch.xpu.get_device_properties(index)\n"
+        "        except Exception:\n"
+        "            continue\n"
+        "        lacks_bf16 |= getattr(props, 'has_bfloat16_conversions', True) is False\n"
+        "        probe_works |= any(getattr(props, name, False) is True for name in aspects)\n"
+        "    return not (lacks_bf16 and probe_works)\n"
+    )
+    monkeypatch.setattr(zoo_dt, "_xpu_bf16_supported", lambda: True, raising = False)
+    monkeypatch.delattr(zoo_dt, "XPU_KEEPS_EXPLICIT_BF16", raising = False)
+    for case in CASES:
+        devices, current, _ = case.values
+        fake = _fake_torch(devices, current)
+        scope = {"torch": fake}
+        exec(source, scope)
+        monkeypatch.setattr(dt, "torch", fake)
+        assert dt.xpu_supports_native_bf16() is scope["_xpu_bf16_supported"](), case.id
