@@ -446,7 +446,8 @@ def test_adamw_flash_rejects_fp16_params_with_unquantized_moments(stub_flashopti
         optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
             _flash_kwargs_args(optim_args = optim_args)
         )
-        with pytest.raises(ValueError, match = "float16"):
+        # bf16 is the suggested dtype because its variance is widened to fp32.
+        with pytest.raises(ValueError, match = r"bfloat16 \(its variance is kept in float32\)"):
             optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)
         # bf16 / fp32 keep working with unquantized moments.
         optimizer_cls([{"params": [fp32, bf16]}], **optimizer_kwargs)
@@ -528,37 +529,45 @@ def _real_flash_adamw(monkeypatch):
     return flash_adamw._get_flash_adamw_class()
 
 
-def _train_through_a_gradient_drop(cls, device, steps = 2000, drop_at = 500, **kwargs):
+def _scaled_noise(step, drop_at):
     # The gradient scale falls 10x at drop_at, as when a finetune moves past its early large
     # gradients. An fp32 EMA follows it down; a variance that cannot decay stays at its peak.
+    return torch.randn(1024) * (1.0 if step < drop_at else 0.1)
+
+
+def _steady(step, drop_at):
+    # A steady gradient: the fp32 EMA rises to grad**2, a bf16 one stalls near a third of it.
+    return torch.full((1024,), 0.01)
+
+
+def _train(cls, device, gradient = _scaled_noise, steps = 2000, drop_at = 500, **kwargs):
     torch.manual_seed(0)
     p = torch.nn.Parameter(torch.zeros(1024, dtype = torch.bfloat16, device = device))
     opt = cls([p], lr = 1e-4, weight_decay = 0.0, quantize = False, **kwargs)
     ema = torch.zeros(1024, device = device)
     for step in range(steps):
-        grad = (torch.randn(1024, device = device) * (1.0 if step < drop_at else 0.1)).to(torch.bfloat16)
+        grad = gradient(step, drop_at).to(device = device, dtype = torch.bfloat16)
         ema.mul_(0.999).addcmul_(grad.float(), grad.float(), value = 0.001)
         p.grad = grad
         opt.step()
     return opt, p, ema
 
 
-def test_adamw_flash_bf16_variance_decays_after_a_gradient_drop(monkeypatch):
-    # bf16 storage with round-to-nearest froze it near 0.39 here: at beta2 = 0.999 each step
-    # moves the variance by at most 0.1%, under half a bf16 ulp. The fp32 EMA ends near 0.096.
+@pytest.mark.parametrize("gradient", [_scaled_noise, _steady])
+def test_adamw_flash_bf16_variance_follows_fp32(monkeypatch, gradient):
+    # With bf16 storage and round-to-nearest the variance froze near 0.39 after the drop
+    # (fp32: 0.096) and stalled at 0.31x of grad**2 under the steady gradient: at beta2 =
+    # 0.999 a step moves it by at most 0.1% of the gap, under half a bf16 ulp.
     cls = _real_flash_adamw(monkeypatch)
-    opt, p, ema = _train_through_a_gradient_drop(cls, "cpu", master_weight_bits = None, fused = False)
+    opt, p, ema = _train(cls, "cpu", gradient, master_weight_bits = None, fused = False)
     var = opt.state[p]["exp_avg_sq"].materialize()
     assert var.dtype == torch.float32
-    torch.testing.assert_close(var, ema, rtol = 1e-5, atol = 1e-8)
-    assert var.mean().item() < 0.15
+    torch.testing.assert_close(var, ema, rtol = 1e-5, atol = 1e-12)
 
 
 def test_adamw_flash_bf16_variance_survives_a_state_dict_round_trip(monkeypatch):
     cls = _real_flash_adamw(monkeypatch)
-    opt, p, _ = _train_through_a_gradient_drop(
-        cls, "cpu", steps = 50, drop_at = 25, master_weight_bits = None, fused = False
-    )
+    opt, p, _ = _train(cls, "cpu", steps = 50, drop_at = 25, master_weight_bits = None, fused = False)
     saved = opt.state[p]["exp_avg_sq"].materialize().clone()
     fresh = cls([p], lr = 1e-4, weight_decay = 0.0, quantize = False, master_weight_bits = None, fused = False)
     fresh.load_state_dict(opt.state_dict())
@@ -569,14 +578,13 @@ def test_adamw_flash_bf16_variance_survives_a_state_dict_round_trip(monkeypatch)
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_cuda(), reason = "flashoptim's fused Triton step needs CUDA")
-def test_adamw_flash_fused_bf16_variance_tracks_fp32(monkeypatch):
+@pytest.mark.parametrize("gradient", [_scaled_noise, _steady])
+def test_adamw_flash_fused_bf16_variance_follows_fp32(monkeypatch, gradient):
     # The fused kernel stores its variance update rounded to the param dtype; the fp32 copy
     # computed beside it is what is kept.
     cls = _real_flash_adamw(monkeypatch)
-    opt, p, ema = _train_through_a_gradient_drop(cls, "cuda", master_weight_bits = 32)
+    opt, p, ema = _train(cls, "cuda", gradient, master_weight_bits = 32)
     var = opt.state[p]["exp_avg_sq"].materialize()
     assert var.dtype == torch.float32
-    # fp32 rounding differs between the kernel and the torch EMA (about 2e-5 after 2000 steps);
-    # the bf16 store was 4x off here.
-    torch.testing.assert_close(var, ema, rtol = 1e-4, atol = 1e-8)
-    assert var.mean().item() < 0.15
+    # fp32 rounding differs between the kernel and the torch EMA (about 2e-5 after 2000 steps).
+    torch.testing.assert_close(var, ema, rtol = 1e-4, atol = 1e-12)

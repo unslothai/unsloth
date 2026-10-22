@@ -151,7 +151,8 @@ def _get_flash_adamw_class():
 
         # flashoptim stores unquantized moments in the param dtype, so an fp16 variance
         # (grad**2 * (1 - beta2)) underflows to 0 for small grads and the update becomes
-        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
+        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales; a bf16
+        # variance is widened to fp32 below instead.
         # Checked per group after flashoptim fills its defaults (so positional and per-group
         # quantize both count), for groups added at construction and by add_param_group later.
         def _group_quantizes(self, group):
@@ -172,8 +173,10 @@ def _get_flash_adamw_class():
 
         # flashoptim keeps unquantized moments in the param dtype and its kernel stores the
         # variance with round-to-nearest. At beta2 = 0.999 a step moves the variance by at most
-        # 0.1%, under half a bf16 ulp, so a bf16 variance can never decrease: it only ratchets up
-        # and the effective step size shrinks. The unquantized bf16 variance is kept in fp32.
+        # 0.1% of the gap to grad**2, under half a bf16 ulp unless grad**2 is several times
+        # the stored value. So a bf16 variance never decays after large gradients (steps too
+        # small) and stalls near a third of grad**2 under steady ones (steps too large). The
+        # unquantized bf16 variance is kept in fp32.
         def _ensure_state_initialized(self, p, hparams):
             super()._ensure_state_initialized(p, hparams)
             _widen_variance(self.state[p].get("exp_avg_sq"))
@@ -277,10 +280,10 @@ def _widen_variance(state):
 
 def _refuse_unquantized_fp16():
     raise ValueError(
-        "Unsloth: optim = 'adamw_flash' with quantize=False stores the Adam moments in "
-        "the parameter dtype, and float16 moments underflow (wrong updates). Found "
-        "trainable float16 parameters: cast them to float32 or bfloat16, or set "
-        "optim_args = 'quantize=True'."
+        "Unsloth: optim = 'adamw_flash' with quantize=False stores float16 Adam moments in "
+        "float16, where the variance underflows (wrong updates). Found trainable float16 "
+        "parameters: cast them to bfloat16 (its variance is kept in float32) or float32, or "
+        "set optim_args = 'quantize=True'."
     )
 
 
