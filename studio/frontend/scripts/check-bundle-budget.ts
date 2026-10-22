@@ -353,8 +353,11 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  transferBytes: 2_072_012,
-  rawBytes: 6_879_589,
+  // Chat fork affordances (the sidebar fork mark, the "Forked from" divider and the shared fork toasts) in the
+  // eager chat chunk: +1_460 B raw / +361 B transfer against 77e742c8e2 (6_879_345 -> 6_880_805 raw,
+  // 2_071_823 -> 2_072_184 transfer, 97 chunks). Raised by that growth.
+  transferBytes: 2_072_373,
+  rawBytes: 6_881_049,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
