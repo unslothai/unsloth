@@ -1729,7 +1729,7 @@ def check_mixed_gpu_placement(model, dtype = None):
     ):
         print(
             f"Unsloth: the model has layers on {', '.join(map(_name, no_compile))}, which cannot run "
-            "torch.compile - training without it."
+            "torch.compile, so training runs without it."
         )
     if no_bf16 and dtype == torch.bfloat16:
         print(
