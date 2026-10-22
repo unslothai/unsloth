@@ -1491,3 +1491,59 @@ def test_hidream_table_share_leaves_out_the_separately_priced_te4(monkeypatch):
     )
     # TE4 once, on its own dense size; the table share is T5's alone.
     assert mib == max(1, expected // (1024 * 1024))
+
+
+# ── an automatic pick replaces only the official encoder ──────────────────────
+
+
+def _same_named_custom_bases(fam, tmp_path):
+    name = fam.base_repo.split("/")[-1]
+    return (
+        str(
+            tmp_path / "my-finetunes" / name
+        ),  # a local fine-tune in a folder named like the official repo
+        f"someone/{name}",  # a Hub fine-tune under another owner
+    )
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_an_automatic_pick_never_swaps_the_official_encoder_into_a_same_named_custom_base(
+    name, tmp_path
+):
+    fam = _fam(name)
+    mode, auto = resolve_te_quant_request(None, fam.te_quant_auto)
+    assert auto
+    for base in _same_named_custom_bases(fam, tmp_path):
+        assert (
+            tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = mode, target = CUDA_BF16) == {}
+        )
+    # The official id and its HF cache snapshot still take the hosted file.
+    component = EXPECTED[name][1]
+    snapshot = (
+        tmp_path / "hub" / ("models--" + fam.base_repo.replace("/", "--")) / "snapshots" / "0123abc"
+    )
+    assert tpq.te_base_is_official(fam.base_repo, str(snapshot))
+    assert component in tpq.te_prequant_sources_for_base(
+        fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16
+    )
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_an_explicit_scheme_on_a_same_named_local_copy_still_takes_the_hosted_file(name, tmp_path):
+    # A user who TYPED the scheme opted in, and a local copy of the official repo is the common case for it.
+    fam = _fam(name)
+    scheme, component = EXPECTED[name][0], EXPECTED[name][1]
+    base = _same_named_custom_bases(fam, tmp_path)[0]
+    assert component in tpq.te_prequant_sources_for_base(
+        fam, base, te_quant_mode = scheme, target = CUDA_BF16
+    )
+
+
+def test_an_automatic_pick_inside_a_load_is_strict_for_a_plain_mode_string(tmp_path):
+    fam = _fam("qwen-image")
+    base = _same_named_custom_bases(fam, tmp_path)[0]
+    with tpq.auto_te_request(True):
+        assert (
+            tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "int8", target = CUDA_BF16)
+            == {}
+        )

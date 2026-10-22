@@ -373,17 +373,8 @@ def video_te_quant_request(
 def _te_base_is_official(fam: Any, base: str) -> bool:
     """The load's base is the family's registered base (or a verified equivalent), by exact id after mirror and HF
     cache canonicalization: no final-folder-name match."""
-    from .diffusion_families import canonical_base
-    from .diffusion_te_prequant import _TE_EQUIVALENT_BASES
-    from .model_ids import hf_cache_repo_id
-
-    registered = canonical_base(str(getattr(fam, "base_repo", "") or "")).lower()
-    loading = canonical_base(hf_cache_repo_id(str(base)) or str(base)).lower()
-    if not registered or not loading:
-        return False
-    return loading == registered or any(
-        loading in group and registered in group for group in _TE_EQUIVALENT_BASES
-    )
+    from .diffusion_te_prequant import te_base_is_official
+    return te_base_is_official(str(getattr(fam, "base_repo", "") or ""), str(base))
 
 
 def assert_video_precision_available(

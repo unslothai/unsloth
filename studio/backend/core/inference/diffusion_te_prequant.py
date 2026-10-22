@@ -657,6 +657,22 @@ def te_base_equivalent(ckpt_base: str, base: str) -> bool:
     return any(a in group and b in group for group in _TE_EQUIVALENT_BASES)
 
 
+def te_base_is_official(registered: str, base: str) -> bool:
+    """True only when ``base`` IS ``registered`` (or a verified equivalent), by exact id after mirror and HF cache
+    canonicalization. Unlike ``te_base_equivalent`` there is no final-folder-name match: ``/models/Qwen-Image`` or
+    ``someone/Qwen-Image`` may be a fine-tune, and an automatic pick must never swap the official encoder into it."""
+    from .diffusion_families import canonical_base
+    from .model_ids import hf_cache_repo_id
+
+    official = canonical_base(str(registered or "")).lower()
+    loading = canonical_base(hf_cache_repo_id(str(base or "")) or str(base or "")).lower()
+    if not official or not loading:
+        return False
+    return loading == official or any(
+        loading in group and official in group for group in _TE_EQUIVALENT_BASES
+    )
+
+
 @dataclass(frozen = True)
 class TePrequantSource:
     """Where a pre-cast text-encoder checkpoint lives. ``kind`` is "path" (a local file) or
@@ -985,12 +1001,25 @@ def te_prequant_sources_for_base(
     )
     registered_base = str(getattr(fam, "base_repo", "") or "")
     standalone = standalone_component_bases or {}
+    # Nobody asked for an automatic pick, so it only replaces the encoder of an exactly identified official base. The
+    # tolerant name match below stays for an explicit scheme (a user's own copy of the official repo).
+    strict = _picked_automatically(te_quant_mode)
     compatible: dict[str, TePrequantSource] = {}
     for component, source in sources.items():
         checkpoint_base = standalone.get(component) or registered_base
         selected_base = standalone.get(component) or base
-        if checkpoint_base and selected_base and te_base_equivalent(checkpoint_base, selected_base):
-            compatible[component] = source
+        if not (
+            checkpoint_base and selected_base and te_base_equivalent(checkpoint_base, selected_base)
+        ):
+            continue
+        # A standalone component comes from the repo Studio pins, not the selected base.
+        if (
+            strict
+            and component not in standalone
+            and not te_base_is_official(checkpoint_base, selected_base)
+        ):
+            continue
+        compatible[component] = source
     return compatible
 
 
