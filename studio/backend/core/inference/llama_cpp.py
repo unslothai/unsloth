@@ -4809,11 +4809,11 @@ def _request_selects_stateful_sampler(body: Mapping) -> bool:
     ``samplers`` an array of names or a string of sequence chars; a missing ``temperature``
     counts as positive."""
     mirostat = body.get("mirostat")
+    # An int is compared as is: JSON integers are unbounded and float() of a long one raises.
     stateful = (
-        isinstance(mirostat, (int, float))
-        and not isinstance(mirostat, bool)
-        and math.isfinite(mirostat)
-        and int(mirostat) != 0
+        mirostat != 0
+        if isinstance(mirostat, int) and not isinstance(mirostat, bool)
+        else isinstance(mirostat, float) and math.isfinite(mirostat) and int(mirostat) != 0
     )
     samplers = body.get("samplers")
     probe = [False, False, False, False]

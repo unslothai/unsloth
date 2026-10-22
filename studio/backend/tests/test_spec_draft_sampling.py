@@ -672,6 +672,8 @@ def test_header_reader_stops_strings_at_the_first_nul(tmp_path):
         ({"mirostat": 1.0, "temperature": 0.7}, True),
         ({"mirostat": 0}, False),
         ({"mirostat": True}, False),
+        ({"mirostat": 10**1000}, True),
+        ({"mirostat": float("inf")}, False),
         ({"samplers": ["top_k", "Adaptive-P"]}, True),
         ({"samplers": ["top_k", "adaptivep"]}, True),
         ({"samplers": "kpa"}, True),
