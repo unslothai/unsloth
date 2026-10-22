@@ -10,7 +10,10 @@ Wrap them in ``bool()`` or compare with ``is not None``."""
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
+
+import pytest
 
 _TESTS = Path(__file__).resolve().parent
 _VERSION_STRINGS = {"torch.version.hip", "torch.version.cuda"}
@@ -33,6 +36,23 @@ def test_nested_boolean_operands_are_inspected():
     assert _string_operands(ast.parse("bool(torch.version.hip)", mode = "eval").body) == []
 
 
+def test_every_condition_argument_is_inspected(tmp_path, monkeypatch):
+    bad = tmp_path / "test_bad.py"
+    bad.write_text(
+        "import pytest, torch\n"
+        "@pytest.mark.skipif(False, torch.version.hip, reason = 'x')\n"
+        "def test_a(): pass\n"
+        "@pytest.mark.xfail(condition = torch.version.cuda, reason = 'x')\n"
+        "def test_b(): pass\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_TESTS", tmp_path)
+    with pytest.raises(AssertionError) as info:
+        test_no_skip_condition_can_evaluate_to_a_version_string()
+    assert "test_bad.py:2: torch.version.hip" in str(info.value)
+    assert "test_bad.py:4: torch.version.cuda" in str(info.value)
+
+
 def test_no_skip_condition_can_evaluate_to_a_version_string():
     offenders = []
     for path in sorted(_TESTS.rglob("*.py")):
@@ -48,8 +68,8 @@ def test_no_skip_condition_can_evaluate_to_a_version_string():
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr in ("skipif", "xfail")
-                and node.args
             ):
-                for operand in _string_operands(node.args[0]):
+                conditions = [*node.args, *(k.value for k in node.keywords if k.arg == "condition")]
+                for operand in (found for c in conditions for found in _string_operands(c)):
                     offenders.append(f"{path.relative_to(_TESTS)}:{node.lineno}: {operand}")
     assert not offenders, offenders
