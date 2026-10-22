@@ -527,11 +527,13 @@ def _restore_quant_state(model, state_dict, options):
     if broadcast:
         # An object broadcast, not a tensor one: a CPU tensor cannot go through an NCCL group, and
         # broadcast_object_list stages on whatever device the group's backend needs.
-        has = [any(
-            k == prefix + "weight" or k.startswith(prefix + "weight.")
-            for prefix, _ in entries
-            for k in state_dict
-        )]
+        has = [
+            any(
+                k == prefix + "weight" or k.startswith(prefix + "weight.")
+                for prefix, _ in entries
+                for k in state_dict
+            )
+        ]
         dist.broadcast_object_list(has, src = 0)
         if not has[0]:
             return
