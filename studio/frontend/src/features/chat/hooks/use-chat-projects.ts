@@ -26,6 +26,10 @@ let projectsRefreshPending = false;
 let lastProjectsUpdateEvent: Event | null = null;
 const projectSubscribers = new Set<() => void>();
 const ACTIVITY_REFRESH_DEBOUNCE_MS = 2000;
+// A mount reconciles with the server only past this age: a gallery mounts a project menu per
+// tile, and each batch scrolled in would otherwise refetch the list.
+const MOUNT_REVALIDATE_AFTER_MS = 5000;
+let projectsLoadedAt = 0;
 let activityRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onChatActivity(): void {
@@ -46,6 +50,7 @@ function getProjectsSnapshot(): ProjectRecord[] {
 }
 
 function publishProjects(projects: ProjectRecord[]): void {
+  projectsLoadedAt = Date.now();
   if (projectsLoaded && JSON.stringify(projects) === JSON.stringify(cachedProjects)) return;
   cachedProjects = projects;
   projectsLoaded = true;
@@ -136,7 +141,9 @@ export function useChatProjects(): {
     // browser tab or API client.
     // one function per consumer: a shared reference is one DOM listener the first unmount would remove
     const onActivity = () => onChatActivity();
-    void refresh(projectsLoaded);
+    void refresh(
+      projectsLoaded && Date.now() - projectsLoadedAt > MOUNT_REVALIDATE_AFTER_MS,
+    );
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onActivity);
     return () => {
@@ -147,6 +154,17 @@ export function useChatProjects(): {
   }, []);
 
   return { projects, isLoading, hasLoaded };
+}
+
+/** When a project was last used: its newest chat, or its own last edit. `updatedAt` alone only
+ *  moves on a rename or an instructions change. */
+export function projectActivityAt(project: ProjectRecord): number {
+  return Math.max(project.lastActivityAt ?? 0, project.updatedAt);
+}
+
+/** Most recently used first, the order the sidebar shows. */
+export function sortProjectsByActivity(projects: readonly ProjectRecord[]): ProjectRecord[] {
+  return [...projects].sort((a, b) => projectActivityAt(b) - projectActivityAt(a));
 }
 
 export async function createChatProject(

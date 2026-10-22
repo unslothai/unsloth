@@ -1279,11 +1279,17 @@ def delete_attachment(
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
+    # Only a project without a recorded root is backfilled here. The rest are ensured where their
+    # files are used (open, tools), not with several connections and mkdirs per row on every list.
     return ChatProjectListResponse(
         projects = [
             ChatProject(
                 **{
-                    **(ensure_chat_project_workspace(project["id"]) or project),
+                    **(
+                        project
+                        if project.get("rootPath")
+                        else (ensure_chat_project_workspace(project["id"]) or project)
+                    ),
                     "lastActivityAt": project["lastActivityAt"],
                 }
             )
