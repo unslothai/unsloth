@@ -7,7 +7,6 @@ import test from "node:test";
 const store = new Map<string, string>();
 let failWrites = false;
 
-// The draft helpers read window at call time, so a stub is enough here.
 (globalThis as { window?: unknown }).window = {
   localStorage: {
     getItem: (key: string) => store.get(key) ?? null,
@@ -116,7 +115,6 @@ test("an unsent paste survives a reload", () => {
   writePasteDraft(key, [paste]);
   assert.deepEqual(readPasteDraft(key), [paste]);
 
-  // Several pastes keep their order, and clearing removes the slot.
   writePasteDraft(key, [paste, "second"]);
   assert.deepEqual(readPasteDraft(key), [paste, "second"]);
   writePasteDraft(key, []);
@@ -161,7 +159,6 @@ test("a corrupt paste slot reads as empty rather than throwing", () => {
     store.set(key, raw);
     assert.deepEqual(readPasteDraft(key), []);
   }
-  // Non-string entries are dropped, the rest survive.
   store.set(key, JSON.stringify(["keep", 5, null, "also"]));
   assert.deepEqual(readPasteDraft(key), ["keep", "also"]);
 });

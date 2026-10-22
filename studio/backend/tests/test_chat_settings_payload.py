@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The mirrored chat toggles PUT /api/chat/settings accepts.
-
-The payload is extra="forbid" and one bad field 400s the whole save, so these pin
-the contract the client sanitises against before sending.
-"""
+"""PUT /api/chat/settings forbids extra fields, so one bad toggle 400s the whole save."""
 
 import sys
 from pathlib import Path
@@ -84,11 +80,7 @@ def test_research_mcp_sources_round_trip_and_clear():
 
 
 def test_rag_source_replaces_rather_than_merges():
-    """A thread pick over a stored kb pick must not keep kbId.
-
-    The union's thread variant forbids extra fields, so a merged
-    {"type": "thread", "kbId": ...} is out of contract the moment it is read back.
-    """
+    """A thread ragSource replaces a kb pick rather than merging, since the thread variant forbids kbId."""
     merged = _deep_merge_settings(
         {"ragSource": {"type": "kb", "kbId": "notes"}},
         {"ragSource": {"type": "thread"}},
@@ -107,12 +99,7 @@ def _corrupt_stored_setting(key: str) -> None:
 
 
 def test_a_valid_rag_source_repairs_a_corrupt_row():
-    """An atomic key carries its whole value, so it can replace a quarantined row.
-
-    The corrupt-key guard exists because a partial patch would merge onto a base
-    that is no longer there. Applying it to ragSource would 409 the user's pick and
-    leave the selection unsaved.
-    """
+    """Atomic keys carry their whole value, so a valid write can repair a quarantined row."""
     upsert_chat_settings_merge({"ragSource": {"type": "kb", "kbId": "notes"}})
     _corrupt_stored_setting("ragSource")
 
@@ -155,7 +142,6 @@ def test_max_tool_calls_off_survives_the_payload():
 @pytest.mark.parametrize(
     "payload",
     [
-        # Full access disables the sandbox, so it is re-accepted each session.
         {"permissionMode": "full"},
         {"sandboxLevel": "medium"},
         {"ragTopK": 0},
@@ -186,13 +172,7 @@ def test_out_of_contract_values_are_rejected(payload):
         ChatSettingsPayload.model_validate(payload)
 
 
-# ---------------------------------------------------------------------------
-# Non-finite numbers
-# ---------------------------------------------------------------------------
-#
-# json.loads accepts bare NaN and Infinity, so both reach the payload from any
-# client that is not a browser (JSON.stringify emits null for them). Two things
-# then went wrong, and each needs its own guard.
+# json.loads accepts bare NaN/Infinity, so non-browser clients can send them.
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
@@ -205,23 +185,13 @@ def test_out_of_contract_values_are_rejected(payload):
     ],
 )
 def test_non_finite_numbers_are_refused_rather_than_stored(payload_for, value):
-    """A stored NaN is written to value_json as a bare `NaN` token.
-
-    Python reads it back, so the row is never quarantined, and the response model
-    renders it as null: the value is silently lost and the row on disk is not
-    valid JSON for any reader that is not Python.
-    """
+    """Non-finite numbers are refused, since a bare NaN token is invalid JSON for non-Python readers."""
     with pytest.raises(ValidationError):
         ChatSettingsPayload.model_validate(payload_for(value))
 
 
 def test_the_rejection_detail_can_be_rendered_as_json():
-    """The 400 must be renderable, or the caller gets a 500 instead.
-
-    Starlette's JSONResponse dumps with allow_nan = False, so echoing the
-    offending input back inside `detail` turned a correctly refused request into
-    an unhandled ValueError in the response renderer.
-    """
+    """The 400 detail must not echo NaN input, since JSONResponse with allow_nan=False would 500 on it."""
     import json
 
     from fastapi import HTTPException

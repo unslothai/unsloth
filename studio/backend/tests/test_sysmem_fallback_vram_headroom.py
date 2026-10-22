@@ -141,10 +141,10 @@ class TestRiskClassifier:
     @pytest.mark.parametrize(
         "backends",
         [
-            frozenset({"hip", "base"}),  # ROCm: different vendor, different mechanism
-            frozenset({"vulkan", "base"}),  # Vulkan does not allocate through CUDA
-            frozenset({"cpu", "base"}),  # no GPU backend at all
-            frozenset(),  # unreadable lib dir
+            frozenset({"hip", "base"}),
+            frozenset({"vulkan", "base"}),
+            frozenset({"cpu", "base"}),
+            frozenset(),
         ],
     )
     def test_false_on_windows_without_cuda(self, monkeypatch, backends):

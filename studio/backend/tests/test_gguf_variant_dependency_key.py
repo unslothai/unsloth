@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The per-variant dependency key a GGUF listing carries.
-
-The companion download footprint (text encoders, VAE, tokenizer, configs) is not a
-property of the repo, so a client that resolves it once per repo advertises a
-GB-wrong "Full required size" on every row that is not the one it sampled. The key
-exists so the client can group rows correctly, which means it has to move whenever
-the companion set moves and stay put when it does not.
-"""
+"""The dependency key must move whenever the companion set moves, and stay put when it does not."""
 
 from hub.services.models.gguf_variants import _variant_dependency_key
 

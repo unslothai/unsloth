@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Only the barrel needs stubbing: it also exports the React panel, which bare Node cannot resolve. The helpers under test stay real.
+// Only the barrel needs stubbing: it also exports a React panel bare Node cannot resolve.
 export type { ManagedDownload } from "../../../src/features/hub/download-manager/download-manager-types.ts";
 export {
   downloadInventoryHintKind,
