@@ -714,6 +714,40 @@ def test_removing_the_config_retires_the_workers_once_a_load_commits(monkeypatch
     assert stopped == [1] and cs.state().workers == {}
 
 
+CPU_ONLY_LISTING = """Available devices:
+  RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)
+  RPC1: 10.0.0.3:50052 (65536 MiB, 60000 MiB free)
+  RPC2: 10.0.0.4:50052 (122502 MiB, 118000 MiB free)
+"""
+
+
+def test_backend_sampling_only_when_a_worker_holds_the_output_layer(monkeypatch):
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    # a local GPU comes last in the device order, so the output layer and the sampling stay here
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert cs.BACKEND_SAMPLING_FLAG not in out.llama_extra_args
+    # no local accelerator: the last worker holds the output layer and samples there
+    _cluster_env(monkeypatch, listing = CPU_ONLY_LISTING)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert out.llama_extra_args.count(cs.BACKEND_SAMPLING_FLAG) == 1
+    # off by env, by a build without the flag, and not doubled when the caller passes it
+    monkeypatch.setenv(cs.ENV_BACKEND_SAMPLING, "0")
+    assert cs.BACKEND_SAMPLING_FLAG not in run(ss.before_load(_request(), 4)).llama_extra_args
+    monkeypatch.delenv(cs.ENV_BACKEND_SAMPLING)
+    out = run(ss.before_load(_request(llama_extra_args = ["-bs"]), 4))
+    assert (
+        cs.BACKEND_SAMPLING_FLAG not in out.llama_extra_args
+        and out.llama_extra_args.count("-bs") == 1
+    )
+    monkeypatch.setattr(
+        ss, "llama_server_supports", lambda flag, binary = None: flag != cs.BACKEND_SAMPLING_FLAG
+    )
+    assert cs.BACKEND_SAMPLING_FLAG not in run(ss.before_load(_request(), 4)).llama_extra_args
+
+
 def test_the_projector_is_pinned_to_the_local_device_it_was_charged_to(monkeypatch):
     _cluster_env(monkeypatch)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
