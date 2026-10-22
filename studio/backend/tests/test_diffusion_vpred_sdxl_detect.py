@@ -93,10 +93,6 @@ def hub_cache(tmp_path, monkeypatch):
         return real(repo_id, filename, cache_dir = str(root), **kw)
 
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", only_tmp)
-    # The size HEAD the index fetch makes first: a small index unless a test says otherwise.
-    monkeypatch.setattr(
-        huggingface_hub, "get_hf_file_metadata", lambda *a, **k: types.SimpleNamespace(size = 400)
-    )
     evidence._HEADER_VERDICTS.clear()
 
     def put(
@@ -127,12 +123,11 @@ def _name(fam):
 # ---- detection ---------------------------------------------------------------------------------
 
 
-def test_vpred_diffusers_repo_detected_from_cached_model_index(hub_cache):
-    assert detect_family_for_pick(NOOB) is None  # nothing cached: the name says nothing
+def test_a_cached_index_alone_is_not_evidence(hub_cache):
+    # The picked file's header is the evidence; a repo's model_index.json does not vouch for anything.
     hub_cache.put(NOOB, "model_index.json", payload = SDXL_INDEX)
-    assert _name(detect_family_for_pick(NOOB)) == "sdxl"
-    # The packaged root single file of the same repo is vouched for by that index too.
-    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+    assert detect_family_for_pick(NOOB) is None
+    assert detect_family_for_pick(NOOB, NOOB_FILE) is None
 
 
 def test_vpred_single_file_detected_from_cached_header(hub_cache):
@@ -194,25 +189,16 @@ def test_fetch_reads_header_then_detection_is_offline(hub_cache, monkeypatch):
     assert calls == [(NOOB, NOOB_FILE)]
 
 
-def test_fetch_falls_back_to_the_index_for_a_pipeline_pick(hub_cache, monkeypatch):
+def test_a_pipeline_pick_makes_no_hub_call(hub_cache, monkeypatch):
     import huggingface_hub
 
-    fetched = []
+    def boom(*a, **k):
+        raise AssertionError("a pipeline pick reads no evidence")
 
-    def download(
-        repo_id,
-        filename,
-        token = None,
-        cache_dir = None,
-        **kw,
-    ):
-        fetched.append((repo_id, filename, cache_dir))
-        return str(hub_cache.put(repo_id, filename, payload = SDXL_INDEX))
-
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", boom)
     evidence.prefetch_for_pick(NOOB, None, None, "hf_x")
-    assert fetched == [(NOOB, "model_index.json", str(hub_cache.root))]
-    assert _name(detect_family_for_pick(NOOB)) == "sdxl"
+    assert detect_family_for_pick(NOOB) is None
 
 
 def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
@@ -231,11 +217,11 @@ def test_prefetch_is_skipped_for_named_overridden_local_and_gguf_picks(
     evidence.prefetch_for_pick(str(tmp_path), None, None, None)
 
 
-def test_name_veto_is_not_overridden_by_the_index(hub_cache):
-    # The name matched SDXL and then refused the edit variant; a cached index must not undo that.
-    repo = "someone/sdxl-edit-ft"
-    hub_cache.put(repo, "model_index.json", payload = SDXL_INDEX)
-    assert detect_family_for_pick(repo) is None
+def test_name_veto_is_not_overridden_by_the_header(hub_cache):
+    # The name matched SDXL and then refused the edit variant; a cached SDXL header must not undo that.
+    repo = "someone/neutral"
+    hub_cache.put(repo, "sdxl-edit.safetensors", keys = SDXL_UNET_KEYS)
+    assert detect_family_for_pick(repo, "sdxl-edit.safetensors") is None
 
 
 def test_named_sdxl_repos_never_read_evidence(monkeypatch):
@@ -392,44 +378,16 @@ def test_a_remembered_header_expires(hub_cache, monkeypatch):
     assert detect_family_for_pick(NOOB, NOOB_FILE) is None
 
 
-def test_the_index_fetch_records_the_credential_it_used(hub_cache, monkeypatch):
-    import contextlib
-
+def test_the_prefetch_writes_nothing_to_the_shared_cache(hub_cache, monkeypatch):
     import huggingface_hub
 
-    import hub.utils.hf_tokens as hf_tokens
-
-    events = []
-
-    @contextlib.contextmanager
-    def recording(
-        token,
-        repo_id,
-        repo_type = "model",
-    ):
-        events.append(("enter", token, repo_id, repo_type))
-        yield
-        events.append(("exit",))
-
-    def download(
-        repo_id,
-        filename,
-        token = None,
-        cache_dir = None,
-        **kw,
-    ):
-        events.append(("download", repo_id, filename))
-        return str(hub_cache.put(repo_id, filename, payload = SDXL_INDEX))
-
-    monkeypatch.setattr(hf_tokens, "recording_a_request_token_fetch", recording)
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
-    evidence.prefetch_for_pick(NOOB, None, None, "hf_private")
-    assert events == [
-        ("enter", "hf_private", NOOB, "model"),
-        ("download", NOOB, "model_index.json"),
-        ("exit",),
-    ]
-    assert _name(detect_family_for_pick(NOOB)) == "sdxl"
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *a, **k: pytest.fail("header range read only")
+    )
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS])
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, "hf_private")
+    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+    assert list(hub_cache.root.iterdir()) == []
 
 
 def test_a_cache_only_prefetch_never_touches_the_hub(hub_cache, monkeypatch):
@@ -478,20 +436,6 @@ FLUX1_DEV_KEYS = [
     "time_text_embed.timestep_embedder.linear_1.weight",
     "time_text_embed.guidance_embedder.linear_1.weight",
 ]
-
-
-@pytest.mark.parametrize("size", [50_000_000, None])
-def test_an_oversized_or_unsized_index_is_never_downloaded(hub_cache, monkeypatch, size):
-    import huggingface_hub
-
-    monkeypatch.setattr(
-        huggingface_hub, "get_hf_file_metadata", lambda *a, **k: types.SimpleNamespace(size = size)
-    )
-    monkeypatch.setattr(
-        huggingface_hub, "hf_hub_download", lambda *a, **k: pytest.fail("sized past the cap")
-    )
-    evidence.prefetch_for_pick(NOOB, None, None, None)
-    assert detect_family_for_pick(NOOB) is None
 
 
 def test_a_flux_dev_header_is_not_evidence_for_an_unnamed_pick(hub_cache, monkeypatch):
@@ -550,7 +494,7 @@ def test_the_anonymous_token_sentinel_reaches_every_hub_call(hub_cache, monkeypa
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", size)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
     evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, False)
-    assert seen == [("header", False), ("size", False), ("download", False)]
+    assert seen == [("header", False)]
 
 
 def test_a_positive_verdict_is_reread_when_the_hub_file_changes(hub_cache, monkeypatch):
@@ -589,3 +533,102 @@ def test_root_single_file_extensions_match_case_insensitively(tmp_path):
         "rescale_betas_zero_snr": True,
         "timestep_spacing": "trailing",
     }
+
+
+# ---- review round 4 ----------------------------------------------------------------------------
+
+
+def test_a_staged_pipeline_snapshot_reads_the_root_markers_off_the_hub(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    # The staged snapshot keeps only model_index.json at its root; the packaged single file stays on the Hub.
+    root = _pipeline_dir(tmp_path, NOOB_SCHEDULER, {})
+    seen = []
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        seen.append(("list", repo_id, token))
+        return ["model_index.json", NOOB_FILE, "unet/diffusion_pytorch_model.safetensors"]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        seen.append(("header", filename, token))
+        keys = SDXL_UNET_KEYS + ["v_pred", "ztsnr"]
+        return types.SimpleNamespace(tensors = {k: None for k in keys}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    want = {
+        "prediction_type": "v_prediction",
+        "rescale_betas_zero_snr": True,
+        "timestep_spacing": "trailing",
+    }
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(root), NOOB, "hf_x", True) == want
+    assert seen == [("list", NOOB, "hf_x"), ("header", NOOB_FILE, "hf_x")]
+    # A cache-only load never reaches the Hub; the shipped config stands.
+    seen.clear()
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(root), NOOB, None, False) == {}
+    assert seen == []
+
+
+def test_the_load_passes_the_repo_to_the_pipeline_marker_check():
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    ).read_text()
+    calls = [
+        c
+        for c in ast.walk(ast.parse(source))
+        if isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "apply_pipeline_prediction_type"
+    ]
+    assert len(calls) == 1
+    assert {k.arg for k in calls[0].keywords} >= {"repo_id", "hf_token", "allow_network"}
+
+
+@pytest.mark.parametrize(
+    "repo, filename",
+    [
+        ("someone/neutral-inpaint", "model.safetensors"),
+        ("someone/neutral-ft", "model-inpainting-edit.safetensors"),
+        ("someone/neutral-ft", "inpaint/model.safetensors"),
+    ],
+)
+def test_a_variant_named_pick_is_not_answered_from_its_header(hub_cache, repo, filename):
+    hub_cache.put(repo, filename, keys = SDXL_UNET_KEYS)
+    assert detect_family_for_pick(repo, filename) is None
+
+
+def test_a_refresh_keeps_the_last_verdict_visible(hub_cache, monkeypatch):
+    import huggingface_hub
+
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS])
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    during = []
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        # An overlapping request validating while this refresh reads the header.
+        during.append(_name(detect_family_for_pick(NOOB, NOOB_FILE)))
+        raise OSError("offline")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    assert during == ["sdxl"]
+    # A failed refresh keeps the last good read rather than forgetting it.
+    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"

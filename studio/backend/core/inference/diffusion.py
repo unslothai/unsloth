@@ -8722,8 +8722,14 @@ class DiffusionBackend:
                                     if fam.single_file_is_pipeline:
                                         # A v-pred SDXL repo can ship an epsilon scheduler config beside the root
                                         # single file that declares v_pred / ztsnr (NoobAI-XL V-Pred 1.0).
+                                        # A staged snapshot omits that root file, so its header is read off the Hub.
                                         apply_pipeline_prediction_type(
-                                            pipe, _base_local_dir or fetch_base, logger
+                                            pipe,
+                                            _base_local_dir or fetch_base,
+                                            logger,
+                                            repo_id = fetch_base,
+                                            hf_token = hf_token,
+                                            allow_network = not local_files_only,
                                         )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(

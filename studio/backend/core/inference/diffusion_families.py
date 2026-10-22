@@ -1529,11 +1529,15 @@ def detect_family_for_pick(
 def _family_from_hub_evidence(
     repo_id: str, gguf_filename: Optional[str]
 ) -> Optional[DiffusionFamily]:
-    """A Hub pick named for no family (``Laxhar/noobai-XL-Vpred-1.0``): the family its cached
-    ``model_index.json`` or picked checkpoint header declares. Never overrides a name that said no
-    (a ``...-layered`` / ``...-edit`` veto) or an excluded repo; disk only, no network."""
+    """A Hub single-file pick named for no family (``Laxhar/noobai-XL-Vpred-1.0``): the family its
+    checkpoint header declares. Never overrides a name that said no or an excluded repo, and never
+    answers for a repo or file named for a variant (``edit`` / ``inpaint`` / ...): the header cannot
+    tell an SDXL inpaint checkpoint from a plain one, and the base pipeline would load it. No network."""
     needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
     if any(_best_family_match(model_identity(n).lower()) is not None for n in needles):
+        return None
+    segments = [seg for n in needles for seg in re.split(r"[/\\]+", n.lower()) if seg]
+    if any(_token_in_needle(kw, seg) for kw in _EDIT_KEYWORDS for seg in segments):
         return None
     if excluded_model_reason(repo_id):
         return None
