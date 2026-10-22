@@ -198,7 +198,20 @@ _INTERPRET = textwrap.dedent(
     """
     import importlib.util, os, sys, types
     import torch
+    import triton
+    import triton.language as tl
     root = sys.argv[1]
+
+    @triton.jit
+    def _probe(X, n):
+        for i in range(0, n, 1):
+            tl.store(X + i, i)
+
+    try:  # some interpreter builds cannot take a runtime loop bound with this NumPy
+        _probe[(1,)](torch.zeros(2), 2)
+    except Exception as exc:  # noqa: BLE001
+        print("INTERPRETER UNSUPPORTED", repr(exc)[:200])
+        sys.exit(0)
     pkg = types.ModuleType("mlk"); pkg.__path__ = []; sys.modules["mlk"] = pkg
     utils = types.ModuleType("mlk.utils")
     utils._base_quant_state = lambda layer, W: None
@@ -243,6 +256,8 @@ def test_triton_kernels_match_fp64_in_the_interpreter(tmp_path, negative_control
     env = {**os.environ, "TRITON_INTERPRET": "1"}
     argv = [sys.executable, str(script), str(REPO)] + (["break"] if negative_control else [])
     proc = subprocess.run(argv, env = env, capture_output = True, text = True, timeout = 600)
+    if "INTERPRETER UNSUPPORTED" in proc.stdout:
+        pytest.skip(proc.stdout.strip())
     if negative_control:
         assert proc.returncode != 0 and "AssertionError" in proc.stderr, proc.stdout + proc.stderr
     else:
@@ -396,5 +411,98 @@ def test_fsdp2_sharded_grads_norm_and_clip_on_local_shards(tmp_path):
         env = os.environ,
     )
     assert proc.returncode == 0 and "DTENSOR OK" in proc.stdout, (
+        proc.stdout[-2000:] + proc.stderr[-4000:]
+    )
+
+
+def test_ddp_two_ranks_train_each_adapter_on_its_global_mean(tmp_path):
+    # Real torch.distributed (gloo, 2 CPU ranks, DDP): rank 0 holds adapter 0's rows, rank 1 adapter 1's
+    # with fewer valid labels. After DDP both ranks must agree on presence and hold, per adapter, the
+    # gradient of that adapter's mean over the global batch.
+    script = tmp_path / "ddp.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import importlib.util, os, sys, types, torch, torch.distributed as dist
+            import torch.multiprocessing as mp
+
+            def load(root):
+                pkg = types.ModuleType("mlk"); pkg.__path__ = []; sys.modules["mlk"] = pkg
+                utils = types.ModuleType("mlk.utils")
+                utils._base_quant_state = lambda layer, W: None
+                utils.fast_dequantize = lambda W, q = None, dtype = None, **k: W
+                utils.matmul_lora = lambda X, W, Wq, A, B, s, out = None: X @ W.t()
+                utils.torch_amp_custom_fwd = utils.torch_amp_custom_bwd = lambda f: f
+                sys.modules["mlk.utils"] = utils
+                path = os.path.join(root, "unsloth/kernels/multi_lora.py")
+                spec = importlib.util.spec_from_file_location("mlk.multi_lora", path)
+                ml = importlib.util.module_from_spec(spec); sys.modules[spec.name] = ml
+                spec.loader.exec_module(ml)
+                return ml
+
+            def model(ml):
+                torch.manual_seed(0)
+                m = torch.nn.Sequential(torch.nn.Linear(6, 5)).double()
+                ml.inject_multi_lora(m, ["0"], 3, r = 2)
+                for B in m[0].lora_B:
+                    torch.nn.init.normal_(B)
+                return m
+
+            def data():
+                g = torch.Generator().manual_seed(1)
+                x = torch.randn(4, 3, 6, generator = g, dtype = torch.float64)
+                labels = torch.randint(0, 5, (4, 3), generator = g)
+                labels[3, 1:] = -100  # adapter 1's second row: one valid label fewer
+                return x, labels, torch.tensor([0, 0, 1, 1])
+
+            def grads(m):
+                return [p.grad.clone() if p.grad is not None else None for p in m.parameters() if p.requires_grad]
+
+            def worker(rank, root, port, out):
+                os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = port)
+                dist.init_process_group("gloo", rank = rank, world_size = 2)
+                ml = load(root)
+                m = torch.nn.parallel.DistributedDataParallel(model(ml))
+                x, labels, ids = data()
+                rows = slice(2 * rank, 2 * rank + 2)
+                ml.set_multi_lora_batch(m.module, ids[rows], seq_len = 3)
+                total, _ = ml.per_adapter_loss(m(x[rows]), labels[rows], ids[rows], 3, model = m.module)
+                total.backward()
+                absent = ml.drop_absent_adapter_grads_(m.module)
+                torch.save({"absent": absent, "grads": grads(m.module)}, f"{out}/rank{rank}.pt")
+                dist.destroy_process_group()
+
+            if __name__ == "__main__":
+                root, port, out = sys.argv[1:4]
+                mp.spawn(worker, args = (root, port, out), nprocs = 2)
+                ml = load(root)
+                m = model(ml)
+                x, labels, ids = data()
+                ml.set_multi_lora_batch(m, ids, seq_len = 3)
+                total, _ = ml.per_adapter_loss(m(x), labels, ids, 3, model = m)
+                total.backward()
+                ml.drop_absent_adapter_grads_(m)
+                want = grads(m)
+                r0, r1 = (torch.load(f"{out}/rank{r}.pt") for r in (0, 1))
+                assert r0["absent"] == r1["absent"] == [2], (r0["absent"], r1["absent"])
+                for a, b, w in zip(r0["grads"], r1["grads"], want):
+                    if w is None:
+                        assert a is None and b is None
+                        continue
+                    torch.testing.assert_close(a, b)
+                    torch.testing.assert_close(a, w)
+                print("DDP OK")
+            """
+        ),
+        encoding = "utf-8",
+    )
+    port = str(30500 + os.getpid() % 1000)
+    proc = subprocess.run(
+        [sys.executable, str(script), str(REPO), port, str(tmp_path)],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert proc.returncode == 0 and "DDP OK" in proc.stdout, (
         proc.stdout[-2000:] + proc.stderr[-4000:]
     )
