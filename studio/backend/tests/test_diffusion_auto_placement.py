@@ -188,6 +188,7 @@ def decide(
     blocks: Optional[dict] = None,
     gpu_ids: Optional[list[int]] = None,
     preload_split: bool = True,
+    place: bool = True,
 ) -> Decision:
     """What an Automatic load (``gpu_ids`` None) or an explicit selection decides on ``host`` for ``sizes``."""
     host.install(monkeypatch)
@@ -227,20 +228,29 @@ def decide(
         )
     with mg.selection_scope(selection):
         plan = mg.refine_plan_for_multigpu(pipe, one_card)
-        if plan.layer_split is not None:
+        if not place:
+            pass  # placement failed: nothing engaged, the one-card fallback runs
+        elif plan.layer_split is not None:
             lsp.apply_layer_split_plan(pipe, plan, placement = f"cuda:{ordinal}")
         elif plan.secondary_ordinal is not None:
+            # what place_split records: the component-to-device map under "placement"
             mg._PLACEMENTS[pipe] = {
                 "primary": f"cuda:{ordinal}",
                 "secondary": f"cuda:{plan.secondary_ordinal}",
+                "placement": {
+                    name: f"cuda:{plan.secondary_ordinal}"
+                    if role == "text_encoder"
+                    else f"cuda:{ordinal}"
+                    for name, (_mib, role) in sizes.items()
+                },
             }
         cfg = mg.install_cfg_parallel(pipe, offload_policy = plan.offload_policy)
     return Decision(primary, selection, one_card, plan, mg.placement_status(pipe), cfg)
 
 
 def _placement(d: Decision) -> dict:
-    assert d.status is not None and "placement" in d.status, d.status
-    return d.status["placement"]
+    assert d.status is not None and "decision" in d.status, d.status
+    return d.status["decision"]
 
 
 # A: fits one card -> one card, no CFG-parallel, no CUDA context on the other card.
@@ -476,3 +486,81 @@ def test_the_apu_pool_keeps_the_uncapped_reserve(monkeypatch):
     memory = dm.DeviceMemory("cuda", "cuda:0", "unified_memory", 31 * GIB, 96 * GIB)
     monkeypatch.setattr(dm, "_rocm_linux_apu_os_room_outside_pool", lambda m: True)
     assert dm._safe_device_budget_mib(memory) == 31 * GIB - int(96 * GIB * 0.10)
+
+
+# Review follow-ups: the decision must not overwrite the component map, and forced splits of a model one card holds
+# must report their resident fallback as one card.
+def test_decision_keeps_the_companion_component_map(monkeypatch):
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    d = decide(monkeypatch, host, _sizes(dit = 7400, te = 7600))
+    assert d.plan.secondary_ordinal == 1
+    assert d.status["placement"]["text_encoder"] == "cuda:1"
+    assert d.status["placement"]["transformer"] == "cuda:0"
+    assert d.status["decision"]["chosen"] == "companion_split"
+
+
+def test_video_card_floors_still_read_the_component_map(monkeypatch):
+    from core.inference import video as vid
+
+    class _Module(torch.nn.Module):
+        def __init__(self, n):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(n))
+
+    pipe = _Pipe()
+    pipe.components = {"transformer": _Module(4), "text_encoder": _Module(8), "vae": _Module(2)}
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    host.install(monkeypatch)
+    sel = mg.make_selection(0, [0, 1], automatic = True)
+    mg._PLACEMENTS[pipe] = {
+        "primary": "cuda:0",
+        "secondary": "cuda:1",
+        "placement": {"transformer": "cuda:0", "text_encoder": "cuda:1", "vae": "cuda:0"},
+    }
+    mg._record_decision(pipe, sel, "companion_split", "companion split: text_encoder on cuda:1")
+    floors = vid._video_split_card_floors(pipe)
+    assert floors is not None
+    assert {int(card[0]) for card in floors} == {0, 1}
+
+
+def test_forced_layer_split_of_a_resident_model_that_does_not_cut_reports_one_card(monkeypatch):
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    monkeypatch.setattr(lsp, "engine_available", lambda: False)
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    d = decide(monkeypatch, host, _sizes(dit = 3900, te = 1600))
+    assert d.plan is d.one_card and d.plan.offload_policy == dm.OFFLOAD_NONE
+    p = _placement(d)
+    assert p["chosen"] == "one_card" and "everything resident" in p["summary"]
+
+
+def test_failed_forced_companion_split_of_a_resident_model_reports_one_card(monkeypatch):
+    monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    d = decide(monkeypatch, host, _sizes(dit = 3900, te = 1600), preload_split = False, place = False)
+    assert d.one_card.offload_policy == dm.OFFLOAD_NONE
+    assert d.plan.secondary_ordinal == 1
+    p = _placement(d)
+    assert p["chosen"] == "one_card", p
+    assert p["rejected"][0]["kind"] == "companion_split"
+
+
+def test_failed_companion_split_of_an_offloading_model_reports_offload(monkeypatch):
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    d = decide(monkeypatch, host, _sizes(dit = 7400, te = 7600), place = False)
+    assert d.plan.secondary_ordinal == 1
+    assert _placement(d)["chosen"] == "offload"
+
+
+def test_layer_split_decline_reports_the_encode_activation_it_charged():
+    layout = {"transformer": lsp.DenoiserLayout(500, (900,) * 20)}
+    split, reason = lsp.plan_layer_split(
+        denoisers = layout,
+        companions = {"text_encoder": (7000, "text_encoder"), "vae": (160, "other")},
+        primary = 0,
+        card_limits = {0: 9000, 1: 9000},
+        headroom_mib = 2000,
+        overhead_mib = 2048,
+        phase_headroom_mib = (5555, 1000, 1200),
+    )
+    assert split is None
+    assert "5555 MiB of activations" in reason

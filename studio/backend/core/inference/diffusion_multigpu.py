@@ -583,13 +583,16 @@ class PlacementCandidate:
 @dataclasses.dataclass(frozen = True)
 class PlacementDecision:
     """What the multi-GPU refinement chose for a load under a multi-card selection, and why every other candidate
-    was rejected. Recorded per pipeline; ``status()["multi_gpu"]["placement"]`` shows it."""
+    was rejected. Recorded per pipeline; ``status()["multi_gpu"]["decision"]`` shows it (``"placement"`` there stays
+    the companion split's component-to-device map). ``fallback_resident``: the one-card plan a split would fall back
+    to keeps everything resident (a forced split of a model that fits one card)."""
 
     chosen: str
     summary: str
     primary: int
     automatic: bool
     rejected: tuple[PlacementCandidate, ...] = ()
+    fallback_resident: bool = False
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -617,6 +620,8 @@ def _record_decision(
     chosen: str,
     summary: str,
     rejected: Sequence[PlacementCandidate] = (),
+    *,
+    fallback_resident: bool = False,
 ) -> None:
     with contextlib.suppress(TypeError):
         _DECISIONS[pipe] = PlacementDecision(
@@ -625,6 +630,7 @@ def _record_decision(
             primary = int(selection.primary),
             automatic = bool(selection.automatic),
             rejected = tuple(rejected),
+            fallback_resident = bool(fallback_resident),
         )
 
 
@@ -664,7 +670,15 @@ def refine_plan_for_multigpu(
     primary = int(selection.primary)
 
     def keep(chosen: str, summary: str, *rejected: PlacementCandidate) -> Any:
-        _record_decision(pipe, selection, chosen, summary, rejected)
+        fallback = getattr(plan, "fallback_plan", None)
+        _record_decision(
+            pipe,
+            selection,
+            chosen,
+            summary,
+            rejected,
+            fallback_resident = getattr(fallback, "offload_policy", None) == "none",
+        )
         return plan
 
     def one_card_plan(why: str) -> Any:
@@ -770,6 +784,7 @@ def refine_plan_for_multigpu(
                 f"layer split: denoiser blocks across {_cards(split.cards)} (denoiser "
                 f"{_gib(_denoiser_mib(sizes))} does not fit one card with its working memory)",
                 rejected,
+                fallback_resident = plan.offload_policy == "none",
             )
             return refined
         from .diffusion_layer_split_plan import (
@@ -788,13 +803,23 @@ def refine_plan_for_multigpu(
         else:
             declined = (layer_split_status(pipe) or {}).get("declined") or "no split fits"
         rejected.append(PlacementCandidate("layer_split", str(declined)))
-        _record_decision(
-            pipe,
-            selection,
-            "offload",
-            f"one card with '{plan.offload_policy}' offload on cuda:{primary} (no split fits)",
-            rejected,
-        )
+        if plan.offload_policy == "none":
+            # a forced split of a model one card already holds: the plan returned is that resident one-card plan
+            _record_decision(
+                pipe,
+                selection,
+                "one_card",
+                f"one card: everything resident on cuda:{primary} (no forced split fits)",
+                rejected,
+            )
+        else:
+            _record_decision(
+                pipe,
+                selection,
+                "offload",
+                f"one card with '{plan.offload_policy}' offload on cuda:{primary} (no split fits)",
+                rejected,
+            )
         return refined
 
     if layer_force:
@@ -836,6 +861,7 @@ def refine_plan_for_multigpu(
         f"cuda:{primary}, {_gib(on_primary)} of {_gib(int(primary_limit))} with its working memory; "
         f"{', '.join(moved)} {_gib(winner.moved_mib)} does not fit beside it)",
         rejected,
+        fallback_resident = plan.offload_policy == "none",
     )
     return dataclasses.replace(
         plan,
@@ -1302,7 +1328,7 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     elif declined is not None:
         out["cfg_parallel"] = {"armed": False, "declined": declined}
     if decision is not None:
-        out["placement"] = _live_decision(
+        out["decision"] = _live_decision(
             pipe, decision, info, layer, declined if cfg is None else None
         )
     return out
@@ -1325,8 +1351,16 @@ def _live_decision(
         failed = f"the layer split did not engage ({(layer or {}).get('declined') or 'placement failed'})"
     if failed is not None:
         out["rejected"] = [{"kind": decision.chosen, "reason": failed}, *out["rejected"]]
-        out["chosen"] = "offload"
-        out["summary"] = f"placement: one card on cuda:{decision.primary} ({failed})"
+        if decision.fallback_resident:
+            out["chosen"] = "one_card"
+            out["summary"] = (
+                f"placement: one card: everything resident on cuda:{decision.primary} ({failed})"
+            )
+        else:
+            out["chosen"] = "offload"
+            out["summary"] = (
+                f"placement: one card with offload on cuda:{decision.primary} ({failed})"
+            )
     if cfg_declined is not None:
         out["rejected"] = [*out["rejected"], {"kind": "cfg_parallel", "reason": cfg_declined}]
     return out

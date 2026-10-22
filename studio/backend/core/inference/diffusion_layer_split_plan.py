@@ -393,7 +393,8 @@ def plan_layer_split(
     )
     return None, (
         f"layer split does not fit the selected cards ({need_total - te_mib} MiB of denoiser and VAE weights with "
-        f"the text encoders streamed, {shortfall_text} after the per-card reserves and {max(denoise, decode)} MiB "
+        f"the text encoders streamed, {shortfall_text} after the per-card reserves and "
+        f"{max(denoise, decode, encode if te_mib else 0)} MiB "
         f"of activations on cuda:{primary})"
     )
 
