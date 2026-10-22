@@ -356,8 +356,12 @@ export const BUDGET = {
   // Lighter system polling (#14592: hidden-tab gating, Vulkan retry backoff, idle export poll, request timeout)
   // lives in the eager system and export hooks: +1,892 B raw / +589 B transfer (6,879,345 -> 6,881,237 B raw,
   // 2,071,823 -> 2,072,412 B transfer against 2749eeedaa, Node 26, 97 chunks). Raised by that.
-  transferBytes: 2_072_601,
-  rawBytes: 6_881_481,
+  // Floating panels (#14601): loaded models sources, sizes, empty states and live monitor stale/keyboard handling
+  // in the eager card and monitor, with their strings in the eager locales: +10,504 B raw / +2,834 B transfer
+  // on top of #14592 (6,881,237 -> 6,891,741 B raw, 2,072,412 -> 2,075,246 B transfer, Node 26, 97 chunks).
+  // Raised by that.
+  transferBytes: 2_075_435,
+  rawBytes: 6_891_985,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
