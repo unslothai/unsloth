@@ -1086,7 +1086,10 @@ def _clef_loss_scaler(model, args):
         or fsdp_version_requested()
     ):
         return None
-    return torch.amp.GradScaler(device.type)
+    if hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler(device.type)
+    # torch < 2.3 has only the CUDA scaler.
+    return torch.cuda.amp.GradScaler() if device.type == "cuda" else None
 
 
 def _clef_mixed_precision(model, args) -> None:

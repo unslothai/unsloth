@@ -1538,6 +1538,22 @@ def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
     assert isinstance(scaler, torch.amp.GradScaler) == wants
 
 
+def test_clef_loss_scaler_on_torch_without_torch_amp_grad_scaler(tmp_path, monkeypatch):
+    # torch < 2.3 has no torch.amp.GradScaler, only torch.cuda.amp.GradScaler.
+    monkeypatch.delattr(torch.amp, "GradScaler")
+    made = []
+    monkeypatch.setattr(torch.cuda.amp, "GradScaler", lambda: made.append(1) or "legacy")
+    for device, wants in (("cuda", "legacy"), ("xpu", None)):
+        model = types.SimpleNamespace(
+            parameters = lambda device = device: iter(
+                [types.SimpleNamespace(device = torch.device(device))]
+            ),
+            _unsloth_forced_float32 = True,
+        )
+        assert decision._clef_loss_scaler(model, _args(tmp_path)) == wants
+    assert made == [1]
+
+
 def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):
     # A T4: evaluate and serving autocast fp16, so training does too.
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
