@@ -129,6 +129,24 @@ def lora_bias_blocks_fused(proj):
     return not FUSED_LORA_BIAS and _has_active_lora_bias(proj)
 
 
+def _needs_peft_forward(proj, adapter):
+    # A PEFT LoRA variant (DoRA, MoNTeCLoRA, VeLoRA, BD-LoRA, ...) replaces the LoRA branch in PEFT's
+    # forward, and a trainable base weight needs its gradient: the fused Functions compute neither.
+    variants = proj.__dict__.get("lora_variant")
+    if variants and adapter in variants:
+        return True
+    base = proj._modules.get("base_layer")
+    W = None if base is None else base._parameters.get("weight")
+    return W is not None and W.requires_grad
+
+
+def _autocast_dtype_mismatch(X):
+    # Under autocast the fused matmuls return the autocast dtype but the in-place LoRA accumulation runs
+    # in X's dtype (in-place ops are not autocast), so a different autocast dtype cannot be fused.
+    device_type = X.device.type
+    return torch.is_autocast_enabled(device_type) and torch.get_autocast_dtype(device_type) != X.dtype
+
+
 def _is_plain_lora(proj):
     # One enabled, unmerged adapter with no dropout module and no lora_B bias (the default LoRA config).
     # Reads PEFT's instance state directly: getattr through nn.Module / properties costs more than the
@@ -140,6 +158,8 @@ def _is_plain_lora(proj):
             return False
         adapter = adapter[0]
     if state.get("_disable_adapters", True) or state.get("merged_adapters"):
+        return False
+    if _needs_peft_forward(proj, adapter):
         return False
     modules = proj._modules
     dropout = modules.get("lora_dropout")
@@ -156,6 +176,8 @@ def _is_plain_lora(proj):
 
 def _lora_dropout_and_bias(projs, X):
     """(dropout probabilities or None, lora_B biases) for the fused kernels, or None to use PEFT."""
+    if _autocast_dtype_mismatch(X):
+        return None
     for proj in projs:
         if not _is_plain_lora(proj):
             break
@@ -170,13 +192,10 @@ def _lora_dropout_and_bias(projs, X):
         if peft_when_unplain and not _is_plain_lora(proj):
             return None
         adapter = _active_lora_adapter(proj)
-        if adapter is None:
-            # Enabled adapter missing from this projection: PEFT runs the base layer alone.
-            if not getattr(proj, "disable_adapters", True) and not getattr(proj, "merged", False):
-                return None
-            dropout_p.append(0.0)
-            biases.append(None)
-            continue
+        if adapter is None or _needs_peft_forward(proj, adapter):
+            # Disabled, merged or missing adapter (PEFT runs the base layer alone, which the fused backward
+            # cannot do with no LoRA weights), a LoRA variant, or a trainable base weight.
+            return None
         dropout = getattr(proj, "lora_dropout", None)
         has_dropout_module |= (
             dropout is not None
