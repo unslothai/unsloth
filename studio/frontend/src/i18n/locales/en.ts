@@ -4299,7 +4299,7 @@ export const en = {
         compare: "Compare",
       },
       menu: {
-        fork: "Fork",
+        fork: "Fork chat",
         moveTo: "Move to project",
         newChatInProject: "New chat in project",
         edit: "Edit",
