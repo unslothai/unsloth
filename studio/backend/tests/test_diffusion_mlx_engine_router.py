@@ -78,6 +78,7 @@ _GOOD_VERSIONS = {
     "piexif": "1.1.3",
     "platformdirs": "4.3.8",
     "toml": "0.10.2",
+    "pillow": "12.3.0",
 }
 
 
@@ -287,6 +288,7 @@ def test_missing_runtime_falls_back(monkeypatch, mlx, mflux, needle):
         ({"mlx": None}, "mlx>=0.32.0,<0.33.0 (found none)"),
         ({"toml": None}, "toml>=0.10.2,<1 (found none)"),
         ({"platformdirs": "5.0.0"}, "platformdirs>=4,<5 (found 5.0.0)"),
+        ({"pillow": "13.0.0"}, "pillow>=12.3.0,<13 (found 13.0.0)"),
     ],
 )
 def test_an_incompatible_installed_runtime_falls_back(monkeypatch, versions, needle):
