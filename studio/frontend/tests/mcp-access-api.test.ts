@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -95,7 +94,7 @@ test("saving tools sends only the full turned-off list", async () => {
       tools: [{ name: "cancel", area: "cancel", enabled: false }],
     }),
   );
-  const saved = await c.api.updateMcpTools(["cancel"]);
+  const saved = await c.api.updateMcpTool("cancel", false);
   assert.deepEqual(saved.tools, [
     { name: "cancel", area: "cancel", enabled: false },
   ]);
@@ -105,7 +104,7 @@ test("saving tools sends only the full turned-off list", async () => {
       init: {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ disabled_tools: ["cancel"] }),
+        body: JSON.stringify({ tool_states: { cancel: false } }),
       },
     },
   ]);

@@ -4081,11 +4081,15 @@ class McpAccessPayload(BaseModel):
     # Either or both; a bare ``enabled`` comes from an older client.
     enabled: Optional[StrictBool] = None
     disabled_tools: Optional[list[StrictStr]] = None
+    # One tool's switch, merged into the stored list on the server so concurrent toggles both land.
+    tool_states: Optional[dict[StrictStr, StrictBool]] = None
 
     @model_validator(mode = "after")
     def at_least_one(self):
         if not self.model_fields_set:
-            raise ValueError("Send enabled, disabled_tools, or both.")
+            raise ValueError("Send enabled, disabled_tools or tool_states.")
+        if {"disabled_tools", "tool_states"} <= self.model_fields_set:
+            raise ValueError("Send disabled_tools or tool_states, not both.")
         for name in self.model_fields_set:
             if getattr(self, name) is None:
                 raise ValueError(f"{name} cannot be null.")
@@ -4640,9 +4644,16 @@ def update_mcp_access(
     if payload.enabled is not None and forced_by_env():
         raise HTTPException(status_code = 409, detail = "Set by UNSLOTH_STUDIO_ENABLE_MCP.")
     try:
-        set_mcp_settings(enabled = payload.enabled, disabled_tools = payload.disabled_tools)
+        set_mcp_settings(
+            enabled = payload.enabled,
+            disabled_tools = payload.disabled_tools,
+            tool_states = payload.tool_states,
+        )
     except UnknownMcpToolError as exc:
         raise HTTPException(status_code = 422, detail = str(exc))
+    except ValueError as exc:
+        # tool_states needs the stored list, which could not be read.
+        raise HTTPException(status_code = 409, detail = str(exc))
     response = _mcp_access_response(request)
     logger.info(
         "settings.mcp_access_updated subject=%s enabled=%s disabled=%s",

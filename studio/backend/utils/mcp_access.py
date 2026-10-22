@@ -29,6 +29,8 @@ _cached: Optional[tuple[float, _Record]] = None
 # Bumped by every write, so a read that started before it is never published.
 _generation = 0
 _cache_lock = threading.Lock()
+# Serialises read-modify-write of the tool list, so two windows toggling different tools both land.
+_write_lock = threading.Lock()
 
 
 class UnknownMcpToolError(ValueError):
@@ -113,13 +115,43 @@ def tool_enabled(name: str) -> bool:
     return disabled is not None and name not in disabled
 
 
+def _check_names(names: Iterable[str]) -> None:
+    from mcp_server import tool_names
+    known = set(tool_names())
+    for name in names:
+        if name not in known:
+            raise UnknownMcpToolError(f"Unknown Unsloth Studio MCP tool: {name}")
+
+
 def set_mcp_settings(
-    *, enabled: Optional[bool] = None, disabled_tools: Optional[Iterable[str]] = None
+    *,
+    enabled: Optional[bool] = None,
+    disabled_tools: Optional[Iterable[str]] = None,
+    tool_states: Optional[dict[str, bool]] = None,
 ) -> None:
-    """Write the switch, the turned-off tools, or both in one upsert."""
-    global _cached, _generation
+    """Write the switch, the turned-off tools (whole list, or ``tool_states`` merged into the stored one), or both."""
     if not is_owner_context():
         raise ValueError("Only the installation owner can change agent access over MCP.")
+    if disabled_tools is not None and tool_states is not None:
+        raise ValueError("Send disabled_tools or tool_states, not both.")
+    with _write_lock:
+        if tool_states is not None:
+            if not all(isinstance(k, str) and isinstance(v, bool) for k, v in tool_states.items()):
+                raise ValueError("tool_states maps tool names to true or false.")
+            _check_names(tool_states)
+            stored = _read_from_db()[1]
+            if stored is None:
+                raise ValueError(
+                    "The stored MCP tool list could not be read; send the whole list instead."
+                )
+            disabled_tools = (stored - {n for n, on in tool_states.items() if on}) | {
+                n for n, on in tool_states.items() if not on
+            }
+        _write(enabled, disabled_tools)
+
+
+def _write(enabled: Optional[bool], disabled_tools: Optional[Iterable[str]]) -> None:
+    global _cached, _generation
     settings: dict[str, Any] = {}
     if enabled is not None:
         if not isinstance(enabled, bool):
@@ -131,12 +163,7 @@ def set_mcp_settings(
         names = list(disabled_tools)
         if not all(isinstance(name, str) for name in names):
             raise ValueError("Turned-off MCP tools must be a list of tool names.")
-        from mcp_server import tool_names
-
-        known = set(tool_names())
-        for name in names:
-            if name not in known:
-                raise UnknownMcpToolError(f"Unknown Unsloth Studio MCP tool: {name}")
+        _check_names(names)
         settings[MCP_DISABLED_TOOLS_SETTING_KEY] = sorted(set(names))
     if not settings:
         raise ValueError("Nothing to change.")
