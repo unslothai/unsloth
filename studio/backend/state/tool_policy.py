@@ -205,9 +205,15 @@ def requires_os_isolation(
 
 
 def account_tool_stream(stream):
-    from utils.account_context import current_account, is_owner_context, run_as
+    from utils.account_context import (
+        current_account,
+        is_owner_context,
+        run_as,
+        via_api_key_context,
+    )
 
-    if is_owner_context():
+    # An owner API-key request is rebound too: the tool thread must still know it came from an API key.
+    if is_owner_context() and not via_api_key_context():
         return stream
     account = current_account()
 

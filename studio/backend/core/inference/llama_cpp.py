@@ -571,6 +571,7 @@ from state.tool_approvals import (
     begin_tool_decision,
     new_approval_id,
     decision_reason,
+    note_host_access,
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
@@ -42318,6 +42319,8 @@ class LlamaCppBackend:
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
                     )
+                    if needs_confirm:
+                        note_host_access(approval_id, decision.tool_name, decision.arguments)
                     start_event = decision.tool_start_event()
                     start_event["approval_id"] = approval_id
                     start_event["awaiting_confirmation"] = needs_confirm

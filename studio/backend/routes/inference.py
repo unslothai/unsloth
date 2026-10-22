@@ -4060,7 +4060,11 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
-from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
+from state.tool_approvals import (
+    resolve_tool_decision,
+    tool_decision_grants_host_access,
+    tool_decision_is_pending,
+)
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
@@ -23174,6 +23178,19 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
+    # Approving a call that names host paths runs it outside the OS sandbox: like Full access and
+    # Sandbox Low, that is the Unsloth UI's to choose, not an API key's. Deny stays open to everyone.
+    if (
+        request.decision == "allow"
+        and auth_policy.api_full_access_refused()
+        and tool_decision_grants_host_access(request.approval_id, request.session_id)
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "This tool call reaches files outside the sandbox, and API keys cannot approve "
+            "that: approve it in the Unsloth UI, or set UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on "
+            "the server to allow it.",
+        )
     matched = resolve_tool_decision(
         request.approval_id,
         request.decision,

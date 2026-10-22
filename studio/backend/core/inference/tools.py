@@ -8,6 +8,7 @@ import ast
 import base64
 import codecs
 import copy
+import dataclasses
 from collections import OrderedDict, deque
 from collections.abc import Iterable
 import fnmatch
@@ -10287,6 +10288,29 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
     return False
 
 
+def approval_grants_host_access(name: str, arguments) -> bool:
+    """Whether approving this call lets it reach host paths: what the executor checks before honouring the approval."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(arguments, dict):
+        return False
+    if name == "python":
+        return _reaches_host_paths("python", str(arguments.get("code") or ""))
+    if name == "terminal":
+        return _reaches_host_paths("terminal", str(arguments.get("command") or ""))
+    return False
+
+
+def _api_host_access_refused() -> bool:
+    """An API-key request keeps the OS sandbox even after an approval, like Full access (#14345, #14422)."""
+    from auth.policy import api_full_access_refused
+
+    return api_full_access_refused()
+
+
 def _prepare_tool_launch(
     plan,
     *,
@@ -10297,6 +10321,15 @@ def _prepare_tool_launch(
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if user_folder and plan.requested_mode == "auto":
         os_sandbox.recheck_overran_workdir(plan.workdir)
+    if host_access_approved and plan.requested_mode == "auto" and _api_host_access_refused():
+        # Approved from an API-key request: stay in the OS sandbox, and refuse rather than fall back if it is gone.
+        logger.info(
+            "Approved host access ignored for an API-key request; the call stays in the OS sandbox "
+            "(set UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 to allow it)"
+        )
+        host_access_approved = False
+        if not user_folder:
+            plan = dataclasses.replace(plan, requested_mode = "required")
     if host_access_approved and plan.requested_mode == "auto":
         # A chosen project folder is never a sandbox workdir in auto, so its calls keep importing from it.
         return _software_safeguards_launch(
@@ -24109,7 +24142,11 @@ def _bash_exec(
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
-        host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
+        host_reach_approved = (
+            host_access_approved
+            and _reaches_host_paths("terminal", command)
+            and not _api_host_access_refused()
+        )
         # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
         # advertised) but runs it with software safeguards (_prepare_tool_launch).
         chosen_folder = _is_user_project_folder(session_id, workdir)
