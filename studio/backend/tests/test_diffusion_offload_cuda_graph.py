@@ -266,6 +266,79 @@ def test_the_render_peak_counts_weights_moved_into_a_stable_range():
     assert sa.mapped_bytes(dev) == before
 
 
+def _repin_cycle(
+    net,
+    pipe,
+    enc_bytes = 6 << 20,
+):
+    restore = dm.release_resident_groups(pipe, 10_000, None)
+    hold = torch.empty(
+        enc_bytes, dtype = torch.uint8, device = "cuda"
+    )  # the encoder takes the freed room
+    restore()
+    del hold
+
+
+def test_a_group_range_is_rebuilt_when_its_host_tensors_change():
+    """A LoRA load or unload can change a released group's tensors: the re-pin lays the range out again, so every
+    weight of the group lands in it (none beside a fully mapped stale range at a new address each re-pin)."""
+    _cuda()
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 6)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    _repin_cycle(net, pipe)  # the first re-pin lays the ranges out
+    ranged = [g for g in dm._offload_groups(net) if "_unsloth_repin_range" in g.__dict__]
+    assert ranged
+    group = ranged[-1]
+    restore = dm.release_resident_groups(pipe, 10_000, None)
+    block = group.modules[0]
+    block.extra = torch.nn.Parameter(
+        torch.randn(256, 256)
+    )  # a new adapter weight, on the host like the rest
+    restore()
+    rng = group.__dict__["_unsloth_repin_range"]
+    lo, hi = rng.arena.va, rng.arena.va + rng.arena.size
+    assert all(lo <= t.data_ptr() < hi for t in dm._resident_tensors(group))
+    assert sa.repin_stats(net)["rebuilds"] == 1
+    cg.uninstall_all(handles)
+
+
+def test_a_failed_stable_re_pin_leaves_no_range_mapped(monkeypatch):
+    """A re-pin into the range that raises after mapping it (rebuilding a wrapper weight, say) unmaps the range
+    before the group moves the stock way: the fallback never holds two copies of the group."""
+    _cuda()
+    seeds = [0, 1, 2]
+    want = _eager_reference(6, seeds)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 6)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    got = _run(net, seeds[:1])
+    _repin_cycle(net, pipe)
+    got += _run(net, seeds[1:2])
+    real = sa.pin_group_in_range
+
+    def fails_after_mapping(owner, group, tensors, pending, host_of, device, swap):
+        rng = group.__dict__.get("_unsloth_repin_range")
+        if rng is not None:
+            rng.arena.map()
+        raise RuntimeError("wrapper rebuild failed")
+
+    monkeypatch.setattr(sa, "pin_group_in_range", fails_after_mapping)
+    _repin_cycle(net, pipe)
+    ranges = net.__dict__["_unsloth_repin_ranges"]
+    assert ranges and not any(r.arena.mapped for r in ranges)
+    assert all(
+        g._unsloth_resident for g in dm._offload_groups(net) if "_unsloth_repin_range" in g.__dict__
+    )  # placed the stock way
+    got += _run(net, seeds[2:])
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    monkeypatch.setattr(sa, "pin_group_in_range", real)
+    cg.uninstall_all(handles)
+
+
 def test_unpinned_host_copies_keep_the_forward_eager_with_the_reason(monkeypatch):
     _cuda()
     monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")

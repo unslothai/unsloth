@@ -688,7 +688,16 @@ def want_stable_repin(module: Any) -> Optional[str]:
         module.__dict__[_REPIN_WANTED] = True
         module.__dict__.setdefault(
             _REPIN_STATS,
-            {"groups": 0, "pins": 0, "placed": 0, "stock": 0, "maps": 0, "unmaps": 0, "bytes": 0},
+            {
+                "groups": 0,
+                "pins": 0,
+                "placed": 0,
+                "stock": 0,
+                "maps": 0,
+                "unmaps": 0,
+                "bytes": 0,
+                "rebuilds": 0,
+            },
         )
     except Exception as exc:  # noqa: BLE001
         return f"module not writable ({exc})"
@@ -765,9 +774,6 @@ def _close_ranges(ranges: list) -> None:
 
 def _range_for(owner: Any, group: Any, sources: list, device: Any) -> Optional[GroupRange]:
     """``group``'s range, built on first use from the host copies ``sources`` (index -> tensor) it places."""
-    rng = getattr(group, "__dict__", {}).get(_REPIN_ATTR)
-    if rng is not None:
-        return rng
     offset = 0
     layout: dict = {}
     for i, src in sources:
@@ -779,18 +785,34 @@ def _range_for(owner: Any, group: Any, sources: list, device: Any) -> Optional[G
             slots.append((offset, tuple(x.shape), tuple(x.stride()), x.dtype))
             offset += -(-max(_span(x), 1) // _ALIGN) * _ALIGN
         layout[i] = tuple(slots)
+    held = owner.__dict__.get("_unsloth_repin_ranges")
+    stats = owner.__dict__.get(_REPIN_STATS)
+    rng = getattr(group, "__dict__", {}).get(_REPIN_ATTR)
+    if rng is not None:
+        if rng.layout == layout or rng.arena.mapped:
+            # unchanged, or still holding weights (a release that could not move them all out): reused as is
+            return rng
+        # The group's host tensors changed since the range was laid out (a LoRA load or unload, a dtype or shape
+        # change): the stale range would be mapped in full while those weights move the stock way beside it, at new
+        # addresses every re-pin. Lay it out again (it is unmapped while the group streams).
+        rng.arena.close()
+        group.__dict__.pop(_REPIN_ATTR, None)
+        if held is not None and rng in held:
+            held.remove(rng)
+        if isinstance(stats, dict):
+            stats["rebuilds"] = stats.get("rebuilds", 0) + 1
+            stats["groups"] -= 1
+            stats["bytes"] -= rng.arena.size
     if not layout:
         return None
     rng = GroupRange(layout, offset, device.index)
     group.__dict__[_REPIN_ATTR] = rng
     # The ranges outlive any one group object only as long as the denoiser does.
-    held = owner.__dict__.get("_unsloth_repin_ranges")
     if held is None:
         held = []
         owner.__dict__["_unsloth_repin_ranges"] = held
         weakref.finalize(owner, _close_ranges, held)
     held.append(rng)
-    stats = owner.__dict__.get(_REPIN_STATS)
     if isinstance(stats, dict):
         stats["groups"] += 1
         stats["bytes"] += rng.arena.size

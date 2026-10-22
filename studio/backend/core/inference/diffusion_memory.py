@@ -3436,6 +3436,13 @@ def _keep_groups_resident(
                         )
                     except Exception as exc:  # noqa: BLE001 - the stock move still places the group
                         placed = set()
+                        # A failed attempt that left no tensor in the range unmaps it: the stock move below must not
+                        # pay for a second copy of the group beside it.
+                        try:
+                            from .diffusion_stable_arena import release_group_range
+                            release_group_range(module, member, members_tensors)
+                        except Exception:  # noqa: BLE001
+                            pass
                         if logger is not None:
                             logger.warning(
                                 "diffusion.memory: stable re-pin range unavailable (%s); the group moves the stock way",
