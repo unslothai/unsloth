@@ -154,9 +154,7 @@ class _QLoraModel(torch.nn.Module):
     ],
 )
 def test_merged_4bit_keeps_gathered_weights_on_their_device(monkeypatch, entry, method, offload):
-    # PEFT's 4-bit merge dequantizes on the packed weights' GPU; LoRA offloaded to the CPU next to
-    # it fails with "Expected all tensors to be on the same device". The Hub upload merges the
-    # same way as the local save, so both must keep those adapters with their base.
+    # PEFT's 4-bit merge runs on the packed weight's GPU: CPU-offloaded LoRA fails there (save and Hub).
     import contextlib
 
     seen = {}
@@ -174,8 +172,6 @@ def test_merged_4bit_keeps_gathered_weights_on_their_device(monkeypatch, entry, 
     for call in (dict(save_method = method), {}):
         seen.clear()
         positional = () if call else (method,)
-        # save_pretrained_merged(save_directory, tokenizer, save_method, ...) and
-        # push_to_hub_merged(repo_id, tokenizer, save_method, ...) share the positions.
         assert save(model, "out", None, *positional, **call) is None
         got = seen.get("offload_to_cpu", True)
         if offload:

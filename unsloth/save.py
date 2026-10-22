@@ -6641,8 +6641,7 @@ def unsloth_generic_save_pretrained_merged(
         gc.collect()
 
 
-# Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads. merged_4bit
-# keeps the LoRA weights of packed 4-bit layers on their base weight's device, as there.
+# Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
