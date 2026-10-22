@@ -499,6 +499,23 @@ def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
     assert entry.families == () and entry.weight_default == 1.0
 
 
+def _peft_add_adapter(layer, name, config):
+    # PEFT >= 0.19 takes ``config``; 0.18 takes every option positionally (``use_rslora`` required). Pass by keyword
+    # what the installed signature names, read off ``config``, so the helper holds across PEFT 0.18.0 -> 0.20.0.
+    import inspect
+
+    known = {"r": config.r, "lora_alpha": config.lora_alpha, "config": config}
+    kwargs = {}
+    for param in list(inspect.signature(layer.update_layer).parameters.values())[1:]:
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        if param.name in known:
+            kwargs[param.name] = known[param.name]
+        elif hasattr(config, param.name):
+            kwargs[param.name] = getattr(config, param.name)
+    layer.update_layer(name, **kwargs)
+
+
 def _peft_two_adapter_pipe():
     # A real PEFT LoRA Linear carrying two baked adapters, behind a pipe whose set_adapters does what diffusers does.
     import torch
@@ -515,9 +532,7 @@ def _peft_two_adapter_pipe():
         lora_alpha = 4,
         init_lora_weights = False,
     )
-    layer.update_layer(
-        "b", r = 2, lora_alpha = 4, config = config, lora_dropout = 0.0, init_lora_weights = False
-    )
+    _peft_add_adapter(layer, "b", config)
     layer.set_adapter(["a", "b"])
     layer.eval()
 
@@ -690,9 +705,7 @@ def test_pinned_lora_change_also_sets_the_text_encoder_scales(monkeypatch):
         lora_alpha = 4,
         init_lora_weights = False,
     )
-    te.update_layer(
-        "b", r = 2, lora_alpha = 4, config = config, lora_dropout = 0.0, init_lora_weights = False
-    )
+    _peft_add_adapter(te, "b", config)
     pipe.components = {"transformer": pipe.transformer, "text_encoder": torch.nn.Sequential(te)}
     b = _backend()
     state = _fake_state(pipe, quant = "int8")

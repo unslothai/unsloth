@@ -838,10 +838,14 @@ def _pin_baked_lora_scales(pipe: Any, target_device: Any) -> int:
 
     import torch
 
-    want = torch.device(str(target_device)).type
+    # The type off the string form ("cuda:0" -> "cuda"), as torch.device(...).type gives, without a torch.device.
+    want = str(target_device).split(":", 1)[0]
     found = []
     for _attr, root in denoiser_modules(pipe):
-        for module in root.modules():
+        modules = getattr(root, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
             scaling = module.__dict__.get("scaling")
             lora_b = getattr(module, "lora_B", None)
             if not isinstance(scaling, dict) or lora_b is None:
