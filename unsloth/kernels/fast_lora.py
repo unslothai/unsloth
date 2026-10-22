@@ -154,6 +154,22 @@ def _is_plain_lora(proj):
     )
 
 
+def _needs_backward(projs, X):
+    # Whether autograd will call the fused Function's backward: X or an active adapter needs a grad.
+    if not torch.is_grad_enabled():
+        return False
+    if X.requires_grad:
+        return True
+    for proj in projs:
+        adapter = _active_lora_adapter(proj)
+        if adapter is None:
+            continue
+        for module in (proj.lora_A[adapter], proj.lora_B[adapter]):
+            if any(p.requires_grad for p in module.parameters()):
+                return True
+    return False
+
+
 def _lora_dropout_and_bias(projs, X):
     """(dropout probabilities or None, lora_B biases) for the fused kernels, or None to use PEFT."""
     for proj in projs:
@@ -173,6 +189,10 @@ def _lora_dropout_and_bias(projs, X):
         if adapter is None:
             # Enabled adapter missing from this projection: PEFT runs the base layer alone.
             if not getattr(proj, "disable_adapters", True) and not getattr(proj, "merged", False):
+                return None
+            # Disabled or merged: the fused Functions get no LoRA weights for it and their backward
+            # needs them, so a pass that will backpropagate runs PEFT (the base layer alone).
+            if _needs_backward(projs, X):
                 return None
             dropout_p.append(0.0)
             biases.append(None)
