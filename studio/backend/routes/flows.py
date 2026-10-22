@@ -198,14 +198,13 @@ async def upload_asset(
     mime: Optional[str] = None,
 ) -> dict:
     data = await _read_body(request, MAX_ASSET_BYTES)
+    if asset_store.kind_of(asset_store.sniff_mime(data) or "") not in ("image", "audio", "video"):
+        raise HTTPException(status_code = 415, detail = "Flows take images, audio and video")
     try:
         digest, sniffed = await asyncio.to_thread(asset_store.store, data, mime)
     except ValueError as exc:
         raise HTTPException(status_code = 415, detail = str(exc))
-    media = asset_store.media_value(digest, sniffed)
-    if asset_store.kind_of(sniffed) not in ("image", "audio", "video"):
-        raise HTTPException(status_code = 415, detail = "Flows take images, audio and video")
-    return {"media": media}
+    return {"media": asset_store.media_value(digest, sniffed)}
 
 
 @router.get("/assets/{ref}")

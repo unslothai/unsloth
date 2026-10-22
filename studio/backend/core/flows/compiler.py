@@ -351,6 +351,16 @@ def compile_flow(doc: dict) -> Plan:
                 issue(f"{spec['title']} needs its {port['label']} input connected", node_id = nid)
             )
 
+    output_names: dict[str, str] = {}
+    for nid in nodes:
+        if nid in executable and specs[nid]["type"] == "output.result":
+            name = str((nodes[nid].get("params") or {}).get("name") or "result")
+            if name in output_names:
+                errors.append(
+                    issue(f"Another Flow Output is already named {name!r}; rename one", node_id = nid)
+                )
+            output_names.setdefault(name, nid)
+
     order = _topo(nodes, inputs, owner, collect)
     if order is None:
         errors.append(

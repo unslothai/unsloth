@@ -352,17 +352,28 @@ export function WorldPlayer({
       ...wsRef.current,
       player: game.current?.playerTile() ?? null,
     });
-    await api.saveSession(
-      flowId,
-      slot,
-      state,
-      `${spec.title} · ${new Date().toLocaleString()}`,
-    );
+    try {
+      await api.saveSession(
+        flowId,
+        slot,
+        state,
+        `${spec.title} · ${new Date().toLocaleString()}`,
+      );
+    } catch (e) {
+      toast(`Could not save: ${e instanceof Error ? e.message : e}`);
+      return;
+    }
     toast("Saved");
     setPanel(null);
   };
   const load = async (slot: string) => {
-    const rec = await api.loadSession(flowId, slot);
+    let rec: Awaited<ReturnType<typeof api.loadSession>>;
+    try {
+      rec = await api.loadSession(flowId, slot);
+    } catch (e) {
+      toast(`Could not load: ${e instanceof Error ? e.message : e}`);
+      return;
+    }
     const state = rec ? deserialize(spec, rec.state) : null;
     if (!state) {
       toast("That save is empty or from another world");

@@ -198,7 +198,15 @@ def test_import_export_assets_round_trip(client, monkeypatch):
     assert uploaded["ref"] == f"sha256:{PNG_SHA}" and uploaded["kind"] == "image"
     assert client.get(f"/api/flows/assets/sha256:{PNG_SHA}").content == PNG
     assert client.get(f"/api/flows/assets/sha256:{'0' * 64}").status_code == 404
-    assert client.post("/api/flows/assets", content = b"#!/bin/sh").status_code == 415
+    script = b"#!/bin/sh"
+    assert client.post("/api/flows/assets", content = script).status_code == 415
+    # JSON is only for packages: a refused upload leaves nothing behind in the asset store.
+    blob = b'{"not": "media"}'
+    assert client.post("/api/flows/assets?mime=application/json", content = blob).status_code == 415
+    assert (
+        client.get(f"/api/flows/assets/sha256:{hashlib.sha256(blob).hexdigest()}").status_code
+        == 404
+    )
 
     d = doc(
         [node("i", "input.image", asset = uploaded)], id = "withimg", baked = {"i": {"image": uploaded}}

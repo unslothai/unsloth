@@ -54,9 +54,14 @@ async def transcribe(ctx: NodeContext) -> dict:
     form = {"response_format": "verbose_json"}
     if ctx.params.get("speakers") and not ctx.params.get("translate"):
         form["response_format"] = "diarized_json"
-    answer = await ctx.call(
-        "POST", path, files = {"file": ("clip" + _ext(mime), data, mime)}, data = form
-    )
+    files = {"file": ("clip" + _ext(mime), data, mime)}
+    try:
+        answer = await ctx.call("POST", path, files = files, data = form)
+    except FlowNodeError as exc:
+        # Some local engines only time segments when told the language; plain text still works there.
+        if exc.status != 501:
+            raise
+        answer = await ctx.call("POST", path, files = files, data = {"response_format": "json"})
     if isinstance(answer, dict):
         return {"text": str(answer.get("text") or ""), "segments": answer.get("segments") or []}
     return {

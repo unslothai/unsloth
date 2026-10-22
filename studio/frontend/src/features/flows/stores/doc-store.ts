@@ -529,7 +529,7 @@ export const useDocStore = create<DocState>((set, get) => {
   };
 });
 
-/** Copy nodes (and the edges between them) with fresh ids, offset by `delta`. */
+/** Copy nodes (and the edges between them) with fresh ids, offset by `delta`, outside any group. */
 export function cloneFragment(
   graph: DocGraph,
   nodeIds: string[],
@@ -550,6 +550,8 @@ export function cloneFragment(
         unknown
       >,
       pos: [node.pos[0] + delta[0], node.pos[1] + delta[1]],
+      // The copy lands outside the frame (or in another flow), so it must not join a For Each body.
+      group: null,
     });
   }
   const edges: FlowEdge[] = [];

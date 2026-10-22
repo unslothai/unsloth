@@ -8,6 +8,7 @@ import { useReactFlow } from "@xyflow/react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
+import { getSpec } from "../stores/catalog-store";
 import { documentSignature, useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
@@ -29,17 +30,20 @@ import { useEditorShortcuts } from "./use-editor-shortcuts";
 
 type LoadState =
   | { status: "loading" }
-  | { status: "ready" }
+  | { status: "ready"; readOnly: boolean }
   | { status: "error"; message: string };
 
-function EditorBody({ flowId }: { flowId: string }) {
+function EditorBody({
+  flowId,
+  readOnly,
+}: { flowId: string; readOnly: boolean }) {
   const navigate = useNavigate();
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const drawerOpen = useUiStore((s) => s.drawerOpen);
   const runStatus = useRuntimeStore((s) => s.runStatus);
   const { screenToFlowPosition } = useReactFlow();
-  useEditorShortcuts(true);
-  useAutosave(true);
+  useEditorShortcuts(!readOnly);
+  useAutosave(!readOnly);
 
   const addAtCenter = useCallback(
     (type: string) => {
@@ -81,11 +85,17 @@ function EditorBody({ flowId }: { flowId: string }) {
           )
         }
       />
+      {readOnly && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] text-amber-200">
+          This flow uses blocks this version of Unsloth Studio does not know, so
+          it opens read-only. Update Studio to edit or run it.
+        </div>
+      )}
       <div className="flex min-h-0 flex-1">
-        {paletteOpen && <Palette onAdd={addAtCenter} />}
+        {paletteOpen && !readOnly && <Palette onAdd={addAtCenter} />}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
-            <FlowCanvas />
+            <FlowCanvas readOnly={readOnly} />
             {!drawerOpen && runStatus && (
               <button
                 type="button"
@@ -116,12 +126,16 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
       .then(([, record]) => {
         if (!alive) return;
         useDocStore.getState().load(record.doc);
-        beginSaveSession(
-          record.id,
-          record.updatedAt,
-          documentSignature(record.doc),
-        );
-        setState({ status: "ready" });
+        // A flow from a newer Studio is never saved back, so its unknown blocks survive until an update.
+        const readOnly = record.doc.nodes.some((node) => !getSpec(node.type));
+        if (!readOnly) {
+          beginSaveSession(
+            record.id,
+            record.updatedAt,
+            documentSignature(record.doc),
+          );
+        }
+        setState({ status: "ready", readOnly });
         void hydrateRuntime(record.id);
       })
       .catch((error: unknown) => {
@@ -160,7 +174,7 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
   }
   return (
     <ReactFlowProvider>
-      <EditorBody flowId={flowId} />
+      <EditorBody flowId={flowId} readOnly={state.readOnly} />
     </ReactFlowProvider>
   );
 }

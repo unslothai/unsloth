@@ -318,7 +318,7 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
         need = quest.get("requires_item")
         if not need or need in inventory:
             out["complete_quest"] = qid
-            if need and "take_item" not in out:
+            if need:
                 out["take_item"] = need
     sets = {}
     declared = world.get("vars") or {}

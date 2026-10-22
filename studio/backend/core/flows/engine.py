@@ -14,6 +14,7 @@ already finished. Each run reaches Studio as its own internal API key, revoked w
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import base64
 import hashlib
 import json
@@ -74,6 +75,12 @@ def _derive_seed(
 ) -> int:
     material = f"{flow_seed}:{node_id}:{iteration or ''}".encode()
     return int(hashlib.sha256(material).hexdigest()[:8], 16) % (2**31)
+
+
+# Set while cancel hooks run: their own Studio calls (the cancel endpoints) must go through.
+_IN_CANCEL_HOOK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "flows_in_cancel_hook", default = False
+)
 
 
 def _clamp(spec_param: dict, value: Any) -> Any:
@@ -323,7 +330,8 @@ class NodeContextImpl:
         content_type: Optional[str] = None,
         timeout_s: Optional[float] = None,
     ) -> Any:
-        self.check_cancelled()
+        if not _IN_CANCEL_HOOK.get():
+            self.check_cancelled()
         try:
             response = await flow_caller.forward(
                 self._rs.caller,
@@ -666,11 +674,15 @@ class FlowEngine:
     async def _fire_cancel_hooks(self, rs: RunState) -> None:
         hooks = [fn for fns in rs.cancel_hooks.values() for fn in fns]
         rs.cancel_hooks.clear()
-        for fn in hooks:
-            try:
-                await asyncio.wait_for(fn(), timeout = 15)
-            except Exception:
-                logger.debug("flows: cancel hook failed", exc_info = True)
+        token = _IN_CANCEL_HOOK.set(True)
+        try:
+            for fn in hooks:
+                try:
+                    await asyncio.wait_for(fn(), timeout = 15)
+                except Exception:
+                    logger.debug("flows: cancel hook failed", exc_info = True)
+        finally:
+            _IN_CANCEL_HOOK.reset(token)
 
         async def hard_stop() -> None:
             await asyncio.sleep(CANCEL_GRACE_S)
@@ -842,7 +854,12 @@ class FlowEngine:
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
         key = None
-        if spec["cacheable"] and not forced:
+        choice = params.get("model")
+        # "Use the loaded model" can change under the node (another run or page swaps it), so it is never cached.
+        cacheable = spec["cacheable"] and not (
+            spec.get("model_kind") and not (isinstance(choice, dict) and choice.get("repo"))
+        )
+        if cacheable and not forced:
             try:
                 model_key = await self._model_key(ctx, spec, params)
                 key = cache_key(
@@ -861,7 +878,7 @@ class FlowEngine:
             if hit is not None:
                 self._finish(rs, nid, env, hit, "cached", iteration)
                 return
-        elif spec["cacheable"]:
+        elif cacheable:
             try:
                 key = cache_key(
                     spec["type"], spec["v"], params, inputs,
@@ -982,12 +999,8 @@ class FlowEngine:
         kind = spec.get("model_kind")
         if not kind:
             return None
-        choice = params.get("model")
-        if isinstance(choice, dict) and choice.get("repo"):
-            return {"repo": choice["repo"], "variant": choice.get("variant")}
-        from core.flows.nodes import _common
-
-        return {"loaded": await _common.resident_name(ctx, kind)}
+        choice = params.get("model") or {}
+        return {"repo": choice.get("repo"), "variant": choice.get("variant")}
 
     async def _for_each(
         self,

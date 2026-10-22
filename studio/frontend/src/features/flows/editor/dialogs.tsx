@@ -19,7 +19,7 @@ import {
   exportFlow,
   planFlow,
 } from "../api";
-import { useDocStore } from "../stores/doc-store";
+import { documentFromState, useDocStore } from "../stores/doc-store";
 import type { FlowParam } from "../types";
 import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
@@ -201,7 +201,8 @@ export function PlanDialog({
     if (!open || !flowId) return;
     setPlan(null);
     setError(null);
-    planFlow(flowId)
+    // Plan what is on screen, not the last autosave.
+    planFlow(flowId, {}, documentFromState(useDocStore.getState()))
       .then(setPlan)
       .catch((e: unknown) =>
         setError(e instanceof Error ? e.message : "Could not plan the flow"),

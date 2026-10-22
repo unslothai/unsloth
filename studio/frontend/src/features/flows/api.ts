@@ -121,10 +121,14 @@ export interface FlowPlan {
   warnings: ValidationIssue[];
 }
 
-export const planFlow = (flowId: string, params?: Record<string, unknown>) =>
+export const planFlow = (
+  flowId: string,
+  params?: Record<string, unknown>,
+  doc?: FlowDocument,
+) =>
   request<FlowPlan>(
     `/${encodeURIComponent(flowId)}/plan`,
-    json("POST", { params: params ?? {} }),
+    json("POST", { params: params ?? {}, ...(doc ? { doc } : {}) }),
   );
 
 export interface StartRunBody {
