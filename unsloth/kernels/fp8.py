@@ -572,7 +572,8 @@ _FP8_GEMV_MAX_ROWS = 16
 _FP8_GEMV_ROWS = os.environ.get("UNSLOTH_FP8_GEMV_ROWS", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-@triton.jit
+# M (2..16 decode rows) is runtime and unspecialized: one compiled kernel serves every batch size.
+@triton.jit(do_not_specialize = ["M"])
 def _fp8_rowwise_gemv_rows_kernel(
     x_ptr,
     w_ptr,
@@ -611,7 +612,7 @@ def _fp8_rowwise_gemv_rows_kernel(
             mask = (offs_n[:, None] < N) & (offs_k[None, :] < K),
             other = 0.0,
         ).to(x.dtype)
-        acc = tl.dot(x, tl.trans(w), acc)
+        acc = tl.dot(x, tl.trans(w), acc, input_precision = "ieee", out_dtype = tl.float32)
     mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
     if SPLIT_K == 1:
         s = tl.load(s_ptr + offs_n, mask = offs_n < N, other = 0.0).to(tl.float32)
@@ -622,7 +623,7 @@ def _fp8_rowwise_gemv_rows_kernel(
         tl.store(p_ptr + (pid_k * M + offs_m[:, None]) * N + offs_n[None, :], acc, mask = mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["M"])
 def _fp8_rowwise_gemv_rows_reduce(p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N
@@ -673,10 +674,11 @@ def _fp8_rowwise_gemv_rows(X, weight, scale, out, rows):
             LONG_INDEXING = long_indexing(weight),
             num_warps = warps,
             num_stages = stages,
+            enable_fp_fusion = True,
         )
         if split_k > 1:
             _fp8_rowwise_gemv_rows_reduce[(triton.cdiv(rows * N, 1024),)](
-                partials, scale, out, rows, N, SPLIT_K = split_k, BLOCK = 1024
+                partials, scale, out, rows, N, SPLIT_K = split_k, BLOCK = 1024, enable_fp_fusion = True
             )
     return out
 
