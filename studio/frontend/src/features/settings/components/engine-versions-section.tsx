@@ -30,6 +30,7 @@ export function EngineVersionsSection() {
   const isOwner = useIsAccountOwner();
   const { status, applying, apply, refresh } = useLlamaUpdateCheck({
     onReloadRequired: resyncInferenceStatusAfterServerModelChange,
+    passive: true,
   });
   const [checking, setChecking] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
