@@ -633,7 +633,7 @@ export function TtsOutput({
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
-          <div className="flex w-full flex-col gap-2">
+          <div className="flex w-full max-w-xl flex-col gap-2">
             <VariationChips
               siblings={siblings}
               selectedId={selectedClip.id}
