@@ -2462,6 +2462,8 @@ def _scaler_for_native(trainer):
         # from their 0-dim step counts, which fails. Keep it 0-dim as GradScaler does.
         def unscale_(self, optimizer):
             super().unscale_(optimizer)
+            if not self.is_enabled():
+                return
             state = self._per_optimizer_states[id(optimizer)]
             state["found_inf_per_device"] = {
                 d: t.reshape(()) for d, t in state["found_inf_per_device"].items()

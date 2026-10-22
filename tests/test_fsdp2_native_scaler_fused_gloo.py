@@ -67,6 +67,27 @@ def _device_kept():
     return new._device, new.is_enabled()
 
 
+class _DisabledHandler:
+    def to_kwargs(self):
+        return {"device": "cpu", "enabled": False}
+
+
+def _disabled():
+    # GradScalerKwargs(enabled=False): unscale_ returns before any optimizer state exists.
+    native = _load_native()
+    old = torch.amp.GradScaler("cpu")
+    trainer = types.SimpleNamespace(accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _DisabledHandler()))
+    native._scaler_for_native(trainer)
+    scaler = trainer.accelerator.scaler
+    model = torch.nn.Linear(8, 8)
+    opt = torch.optim.AdamW(model.parameters(), lr = 1e-2, fused = True)
+    scaler.scale(model(torch.randn(4, 8)).pow(2).mean()).backward()
+    scaler.unscale_(opt)
+    scaler.step(opt)
+    scaler.update()
+    return float(opt.state[model.weight]["step"])
+
+
 def _worker(rank, world, port, out):
     os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port))
     torch.distributed.init_process_group("gloo", rank = rank, world_size = world)
@@ -78,6 +99,10 @@ def _worker(rank, world, port, out):
             except Exception as e:  # recorded, asserted in the parent
                 res[fused] = repr(e)
         res["device"] = _device_kept()
+        try:
+            res["disabled"] = _disabled()
+        except Exception as e:
+            res["disabled"] = repr(e)
         torch.save(res, os.path.join(out, f"rank{rank}.pt"))
     finally:
         torch.distributed.destroy_process_group()
@@ -104,3 +129,8 @@ def test_fused_adamw_steps_through_the_native_fp16_scaler(ranks):
             assert scale == 2.0**7, (fused, scale)  # backed off once
         for a, b in zip(res[False][2], res[True][2]):
             torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
+
+
+def test_disabled_scaler_still_steps(ranks):
+    for res in ranks:
+        assert res["disabled"] == 1.0, res["disabled"]
