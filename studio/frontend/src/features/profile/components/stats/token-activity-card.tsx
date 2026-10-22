@@ -17,135 +17,43 @@ import {
   YAxis,
 } from "recharts";
 import type { ProfileStatsDay } from "../../api/profile-stats";
-import { useActivityChartStore } from "../../stores/activity-chart-store";
 import {
+  type ActivityCell,
   type ActivityMode,
+  type HeatLevel,
   type WeekChartPoint,
   activitySummaryForMode,
+  buildActivityColumns,
   formatCompactNumber,
+  formatFullNumber,
   formatProfileCount,
   heatLevel,
+  heatThresholds,
+  monthLabelColumns,
   parseDayKey,
   seriesForMode,
   weekChartPoints,
-  windowBaseline,
 } from "../../utils/stats-format";
 import { StatsCard } from "./stat-primitives";
 import { roundIfSingleLine } from "@/lib/tooltip-pill";
 
 const DAYS_PER_WEEK = 7;
-const CELL_SIZE = 11;
+const WINDOW_WEEKS = 53;
+const MIN_CELL = 9;
 const CELL_GAP = 3;
-const COLUMN_WIDTH = CELL_SIZE + CELL_GAP;
 const MIN_COLUMNS = 8;
-const HEAT_OPACITY = [0, 0.4, 0.62, 0.8, 1] as const;
-// Weekly and cumulative are on/off, so they use one flat shade.
-const SOLID_LEVEL = 4;
+const MONTH_LABEL_SPAN = 3;
+const HEAT_OPACITY: Record<Exclude<HeatLevel, 0>, number> = {
+  1: 0.28,
+  2: 0.5,
+  3: 0.75,
+  4: 1,
+};
+const LEGEND_LEVELS: HeatLevel[] = [0, 1, 2, 3, 4];
 const MODES: ActivityMode[] = ["daily", "weekly", "cumulative"];
 
-type Cell = {
-  key: string;
-  day: ProfileStatsDay | null;
-  value: number;
-};
+type Cell = ActivityCell<ProfileStatsDay>;
 
-/**
- * Trim the series to the most recent `columns` weeks, ending on a partial
- * current week. The grid never scrolls, so older days fall off the left.
- */
-function buildColumns(
-  daily: ProfileStatsDay[],
-  values: number[],
-  columns: number,
-  mode: ActivityMode,
-): Cell[][] {
-  if (daily.length === 0 || columns <= 0) return [];
-
-  const lastDay = daily.at(-1);
-  if (!lastDay) return [];
-  // Days after today in the final (partial) week.
-  const trailing =
-    DAYS_PER_WEEK -
-    1 -
-    ((parseDayKey(lastDay.date).getDay() + 6) % DAYS_PER_WEEK);
-  const capacity = columns * DAYS_PER_WEEK - trailing;
-  const start = Math.max(0, daily.length - capacity);
-  const visible = daily.slice(start);
-  // Cumulative is a running total over what the grid shows, so a narrow card
-  // that drops older weeks has to rebase off the last hidden day.
-  const baseline = windowBaseline(values, start, mode);
-
-  const cells: Cell[] = [];
-  // Pad so every column is a Monday-started week.
-  const firstVisible = visible[0];
-  if (!firstVisible) return [];
-  const leading = (parseDayKey(firstVisible.date).getDay() + 6) % DAYS_PER_WEEK;
-  for (let index = 0; index < leading; index += 1) {
-    cells.push({ key: `pad-${index}`, day: null, value: 0 });
-  }
-  for (const [index, day] of visible.entries()) {
-    cells.push({
-      key: day.date,
-      day,
-      value: (values[start + index] ?? 0) - baseline,
-    });
-  }
-
-  const grid: Cell[][] = [];
-  for (let index = 0; index < cells.length; index += DAYS_PER_WEEK) {
-    grid.push(cells.slice(index, index + DAYS_PER_WEEK));
-  }
-  return grid;
-}
-
-/** Month captions under the grid, one per column where the month turns over. */
-function buildMonthLabels(grid: Cell[][], locale: string) {
-  const formatter = new Intl.DateTimeFormat(locale, { month: "short" });
-  const labels: Array<{ key: string; column: number; text: string }> = [];
-  let lastMonth = -1;
-  for (const [columnIndex, column] of grid.entries()) {
-    const firstDay = column.find((cell) => cell.day !== null)?.day;
-    if (!firstDay) continue;
-    const date = parseDayKey(firstDay.date);
-    if (date.getMonth() === lastMonth) continue;
-    lastMonth = date.getMonth();
-    // Skip a label that would collide with the previous one, or run off the end.
-    const previous = labels.at(-1);
-    if (previous && columnIndex - previous.column < 3) continue;
-    if (columnIndex > grid.length - 3) continue;
-    labels.push({
-      key: firstDay.date,
-      column: columnIndex,
-      text: formatter.format(date),
-    });
-  }
-  return labels;
-}
-
-/**
- * Per-column totals for the bar modes. Shading every day of an active week
- * instead would fill the grid solid and hide the shape.
- */
-function columnSummary(column: Cell[]) {
-  let value = 0;
-  let tokens = 0;
-  let firstDay: string | null = null;
-  for (const cell of column) {
-    if (!cell.day) continue;
-    value = Math.max(value, cell.value);
-    tokens += cell.day.tokens;
-    firstDay ??= cell.day.date;
-  }
-  return { value, tokens, firstDay };
-}
-
-/** Bar height in cells, at least one for any activity. */
-function barHeight(value: number, peakValue: number): number {
-  if (value <= 0 || peakValue <= 0) return 0;
-  return Math.max(1, Math.round((value / peakValue) * DAYS_PER_WEEK));
-}
-
-/** How many week columns fit the card's current width. */
 function useVisibleColumns(maxColumns: number) {
   const ref = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(maxColumns);
@@ -156,8 +64,7 @@ function useVisibleColumns(maxColumns: number) {
     const measure = () => {
       const width = element.clientWidth;
       if (width <= 0) return;
-      // The final column carries no trailing gap.
-      const fits = Math.floor((width + CELL_GAP) / COLUMN_WIDTH);
+      const fits = Math.floor((width + CELL_GAP) / (MIN_CELL + CELL_GAP));
       setColumns(Math.max(MIN_COLUMNS, Math.min(maxColumns, fits)));
     };
     measure();
@@ -169,101 +76,125 @@ function useVisibleColumns(maxColumns: number) {
   return { ref, columns };
 }
 
-const CELL_CLASS = "size-[11px] rounded-[3px]";
-
-function Block({
-  title,
-  tone,
-}: { title: string; tone: 0 | 1 | 2 | 3 | 4 | -1 }) {
+function HeatSwatch({ level, title }: { level: HeatLevel | null; title?: string }) {
   return (
     <div
       title={title}
       className={cn(
-        CELL_CLASS,
-        tone === -1
+        "aspect-square w-full rounded-[3px]",
+        level === null
           ? "bg-transparent"
-          : tone === 0
+          : level === 0
             ? "bg-muted-foreground/12"
             : "bg-primary",
       )}
-      style={
-        tone > 0 ? { opacity: HEAT_OPACITY[tone as 1 | 2 | 3 | 4] } : undefined
-      }
+      style={level ? { opacity: HEAT_OPACITY[level] } : undefined}
     />
   );
 }
 
-/** Daily: each day shaded by its own volume. */
-function DayColumn({
-  column,
-  peak,
+function DayHeatmap({
+  grid,
   dateFormatter,
 }: {
-  column: Cell[];
-  peak: number;
+  grid: Cell[][];
   dateFormatter: Intl.DateTimeFormat;
 }) {
   const t = useT();
   const locale = useLocale();
-
-  return (
-    <div className="flex flex-col gap-[3px]">
-      {column.map((cell) => {
-        if (!cell.day) {
-          return <Block key={cell.key} title="" tone={-1} />;
-        }
-        return (
-          <Block
-            key={cell.key}
-            tone={heatLevel(cell.value, peak)}
-            title={t("settings.profile.stats.cellTooltip", {
-              tokens: formatProfileCount(cell.day.tokens, "token", locale),
-              messages: formatProfileCount(
-                cell.day.messages,
-                "message",
-                locale,
-              ),
-              date: dateFormatter.format(parseDayKey(cell.day.date)),
-            })}
-          />
-        );
-      })}
-    </div>
+  const thresholds = useMemo(
+    () => heatThresholds(grid.flat().map((cell) => cell.day?.tokens ?? 0)),
+    [grid],
   );
-}
-
-/** Weekly and cumulative: one flat bar per column, anchored to the bottom. */
-function BarColumn({
-  column,
-  peak,
-  dateFormatter,
-}: {
-  column: Cell[];
-  peak: number;
-  dateFormatter: Intl.DateTimeFormat;
-}) {
-  const t = useT();
-  const locale = useLocale();
-  const summary = columnSummary(column);
-  const height = barHeight(summary.value, peak);
-  // The bar is scaled by summary.value, which in cumulative mode is the
-  // running total. The tooltip says "week of", so it reports that week.
-  const title = summary.firstDay
-    ? t("settings.profile.stats.weekTooltip", {
-        date: dateFormatter.format(parseDayKey(summary.firstDay)),
-        tokens: formatProfileCount(summary.tokens, "token", locale),
-      })
-    : "";
+  const monthFormatter = useMemo(
+    () => new Intl.DateTimeFormat(locale, { month: "short" }),
+    [locale],
+  );
+  const months = useMemo(() => monthLabelColumns(grid), [grid]);
+  const dayActivity = (day: ProfileStatsDay) => {
+    const parts: string[] = [];
+    if (day.messages > 0 || !day.apiRequests) {
+      parts.push(formatProfileCount(day.messages, "message", locale));
+    }
+    if (day.apiRequests) {
+      parts.push(
+        t("settings.profile.stats.apiRequests", {
+          count: formatFullNumber(day.apiRequests, locale),
+        }),
+      );
+    }
+    return parts.join(", ");
+  };
+  const columnTemplate = `repeat(${grid.length}, minmax(0, 1fr))`;
 
   return (
-    <div className="flex flex-col gap-[3px]">
-      {Array.from({ length: DAYS_PER_WEEK }, (_, row) => (
-        <Block
-          key={column[row]?.key ?? `slot-${row}`}
-          title={title}
-          tone={row >= DAYS_PER_WEEK - height ? SOLID_LEVEL : 0}
-        />
-      ))}
+    <div className="flex flex-col gap-2">
+      <div
+        className="grid grid-flow-col"
+        style={{
+          gridTemplateColumns: columnTemplate,
+          gridTemplateRows: `repeat(${DAYS_PER_WEEK}, auto)`,
+          gap: CELL_GAP,
+        }}
+      >
+        {grid.flatMap((column) =>
+          column.map((cell) =>
+            cell.day ? (
+              <HeatSwatch
+                key={cell.key}
+                level={heatLevel(cell.day.tokens, thresholds)}
+                title={
+                  cell.day.tokens > 0
+                    ? t("settings.profile.stats.cellTooltip", {
+                        tokens: formatProfileCount(cell.day.tokens, "token", locale),
+                        messages: dayActivity(cell.day),
+                        date: dateFormatter.format(parseDayKey(cell.day.date)),
+                      })
+                    : t("settings.profile.stats.emptyDayTooltip", {
+                        date: dateFormatter.format(parseDayKey(cell.day.date)),
+                      })
+                }
+              />
+            ) : (
+              <HeatSwatch key={`${column[0]?.key}-${cell.key}`} level={null} />
+            ),
+          ),
+        )}
+      </div>
+      {/* Same columns as the squares, so a month sits under the week its 1st falls in. One that
+          starts in the last weeks ends flush with the grid instead of adding columns past it. */}
+      <div
+        className="grid text-ui-11 text-muted-foreground"
+        style={{ gridTemplateColumns: columnTemplate, columnGap: CELL_GAP }}
+      >
+        {months.map((month) => {
+          const tail = month.column > grid.length - MONTH_LABEL_SPAN;
+          return (
+            <span
+              key={month.date}
+              className="whitespace-nowrap"
+              style={{
+                gridRow: 1,
+                gridColumn: tail
+                  ? `${Math.max(1, grid.length - MONTH_LABEL_SPAN + 1)} / -1`
+                  : `${month.column + 1} / span ${MONTH_LABEL_SPAN}`,
+                justifySelf: tail ? "end" : "start",
+              }}
+            >
+              {monthFormatter.format(parseDayKey(month.date))}
+            </span>
+          );
+        })}
+      </div>
+      <div className="flex items-center justify-end gap-1.5 text-ui-11 text-muted-foreground">
+        <span>{t("settings.profile.stats.less")}</span>
+        {LEGEND_LEVELS.map((level) => (
+          <div key={level} className="size-[11px]">
+            <HeatSwatch level={level} />
+          </div>
+        ))}
+        <span>{t("settings.profile.stats.more")}</span>
+      </div>
     </div>
   );
 }
@@ -272,7 +203,6 @@ const WEEK_CHART_CONFIG = {
   tokens: { color: "var(--primary)" },
 } satisfies ChartConfig;
 
-/** Opt-in view: Weekly as bars, Cumulative as a line, on labelled token and date axes. */
 function WeekChart({
   grid,
   mode,
@@ -323,10 +253,15 @@ function WeekChart({
         }
         return (
           <div ref={roundIfSingleLine} className="tooltip-compact">
-            {t("settings.profile.stats.weekTooltip", {
-              date: dateFormatter.format(parseDayKey(point.week)),
-              tokens: formatProfileCount(point.tokens, "token", locale),
-            })}
+            {t(
+              mode === "weekly"
+                ? "settings.profile.stats.weekTooltip"
+                : "settings.profile.stats.cumulativeTooltip",
+              {
+                date: dateFormatter.format(parseDayKey(point.week)),
+                tokens: formatProfileCount(point.tokens, "token", locale),
+              },
+            )}
           </div>
         );
       }}
@@ -337,7 +272,7 @@ function WeekChart({
   return (
     <ChartContainer
       config={WEEK_CHART_CONFIG}
-      className="h-[calc(140px*var(--ui-space-scale,1))] w-full"
+      className="h-[calc(160px*var(--ui-space-scale,1))] w-full"
     >
       {mode === "weekly" ? (
         <BarChart data={data} margin={margin} accessibilityLayer={true}>
@@ -377,51 +312,38 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   const t = useT();
   const pillId = useId();
   const [mode, setMode] = useState<ActivityMode>("daily");
-  const maxColumns = Math.ceil(daily.length / DAYS_PER_WEEK) + 1;
+  const maxColumns = Math.min(
+    WINDOW_WEEKS,
+    Math.ceil(daily.length / DAYS_PER_WEEK) + 1,
+  );
   const { ref, columns } = useVisibleColumns(maxColumns);
 
-  const shaded = mode === "daily";
-  const showChart = useActivityChartStore((state) => state.showChart);
-  const setShowChart = useActivityChartStore((state) => state.setShowChart);
-  const charted = !shaded && showChart;
   const values = useMemo(() => seriesForMode(daily, mode), [daily, mode]);
   const grid = useMemo(
-    () => buildColumns(daily, values, columns, mode),
+    () => buildActivityColumns(daily, values, columns, mode),
     [daily, values, columns, mode],
   );
   // The app language, not the browser's: those differ whenever the user picks
   // a language in Settings, and it has to be a dependency so switching while
   // the panel is open rebuilds the formatters.
   const locale = useLocale();
-  const monthLabels = useMemo(
-    () => buildMonthLabels(grid, locale),
-    [grid, locale],
-  );
-  // Daily scales against the busiest day, the bar modes against the busiest
-  // column, so a full-height bar always means the peak week.
-  const peak = useMemo(
-    () =>
-      shaded
-        ? grid.reduce(
-            (max, column) =>
-              column.reduce(
-                (best, cell) => Math.max(best, cell.day?.tokens ?? 0),
-                max,
-              ),
-            0,
-          )
-        : grid.reduce(
-            (max, column) => Math.max(max, columnSummary(column).value),
-            0,
-          ),
-    [grid, shaded],
-  );
   const summaryTotal = useMemo(
     () => activitySummaryForMode(grid, mode),
     [grid, mode],
   );
+  const firstShown = grid[0]?.find((cell) => cell.day !== null)?.day?.date;
 
   const dateFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(locale, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }),
+    [locale],
+  );
+  const sinceFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat(locale, {
         month: "short",
@@ -441,90 +363,35 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
           locale,
           formatCompactNumber(summaryTotal, locale),
         ),
-        weeks: formatProfileCount(grid.length, "week", locale),
+        since: firstShown ? sinceFormatter.format(parseDayKey(firstShown)) : "",
       })}
       action={
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {shaded ? null : (
-            <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
-              <button
-                type="button"
-                onClick={() => setShowChart(!showChart)}
-                aria-pressed={showChart}
-                title={t("settings.profile.stats.chartToggleHint")}
-                className={cn(
-                  "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
-                  showChart
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("settings.profile.stats.chartToggle")}
-              </button>
-            </div>
-          )}
-          <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
-            {MODES.map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => setMode(option)}
-                aria-pressed={mode === option}
-                className={cn(
-                  "relative inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
-                  mode === option
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {mode === option && (
-                  <SegmentedPill group={`${pillId}-mode`} />
-                )}
-                {t(`settings.profile.stats.mode.${option}`)}
-              </button>
-            ))}
-          </div>
+        <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
+          {MODES.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => setMode(option)}
+              aria-pressed={mode === option}
+              className={cn(
+                "relative inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
+                mode === option
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {mode === option && <SegmentedPill group={`${pillId}-mode`} />}
+              {t(`settings.profile.stats.mode.${option}`)}
+            </button>
+          ))}
         </div>
       }
     >
-      {/* Measured, never scrolled: the grid is trimmed to fit instead. */}
-      <div ref={ref} className="w-full overflow-hidden">
-        {charted ? (
-          <WeekChart grid={grid} mode={mode} dateFormatter={dateFormatter} />
+      <div ref={ref} className="w-full">
+        {mode === "daily" ? (
+          <DayHeatmap grid={grid} dateFormatter={dateFormatter} />
         ) : (
-          <>
-            <div className="flex gap-[3px]">
-              {grid.map((column) =>
-                shaded ? (
-                  <DayColumn
-                    key={column[0]?.key ?? "column"}
-                    column={column}
-                    peak={peak}
-                    dateFormatter={dateFormatter}
-                  />
-                ) : (
-                  <BarColumn
-                    key={column[0]?.key ?? "column"}
-                    column={column}
-                    peak={peak}
-                    dateFormatter={dateFormatter}
-                  />
-                ),
-              )}
-            </div>
-
-            <div className="relative mt-2 h-4">
-              {monthLabels.map((label) => (
-                <span
-                  key={label.key}
-                  className="absolute top-0 text-ui-11 text-muted-foreground"
-                  style={{ left: `${label.column * COLUMN_WIDTH}px` }}
-                >
-                  {label.text}
-                </span>
-              ))}
-            </div>
-          </>
+          <WeekChart grid={grid} mode={mode} dateFormatter={sinceFormatter} />
         )}
       </div>
     </StatsCard>
