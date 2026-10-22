@@ -225,7 +225,7 @@ def _count_skips(monkeypatch):
 
 
 def test_first_block_cache_on_a_flux2_split_matches_one_card_bitwise(monkeypatch):
-    """FBCache on a split: the head block on card 0, the single-stream tail on card 1. Same skips, same outputs."""
+    """FBCache with the head block on card 0 and the single-stream tail on card 1: same skips, same outputs."""
     from core.inference import diffusion_cache as dc
 
     seen = _count_skips(monkeypatch)
