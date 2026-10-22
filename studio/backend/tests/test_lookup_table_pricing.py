@@ -617,6 +617,24 @@ class TestListing:
         )
         assert sorted(modes) == [("local", "on"), ("remote", "on")]
 
+    def test_a_forced_lazy_mode_looks_up_a_cold_repo_of_small_files(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        monkeypatch.setattr(gv, "_listing_lazy_mode", lambda: "on")
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None))
+        monkeypatch.setattr(gv, "_hub_repo_architecture", lambda *a, **k: "gemma4")
+        monkeypatch.setattr(glt, "remote_lookup_info", lambda *a, **k: ("gemma4", 2 * GIB))
+        rows = [GgufVariantDetail(filename = "s.gguf", quant = "Q4", size_bytes = 3 * GIB)]
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows), "o/small", hf_token = None, offline = False, prefer_local_cache = False
+            )
+        )
+        # Every flagged table streams under "on", so even a 3 GiB file is worth the lookup.
+        assert out.response.variants[0].lookup_table_bytes == 2 * GIB
+
     def test_a_remote_answer_is_cached_per_lazy_mode(self):
         from hub.utils import gguf_lookup_tables as glt
 

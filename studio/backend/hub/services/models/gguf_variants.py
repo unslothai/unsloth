@@ -1593,10 +1593,14 @@ async def _with_lookup_tables(
                 if arch is None:
                     known, arch = _cached_hub_repo_architecture(repo_id, hf_token)
                     # A cold architecture is waited on within the listing's deadline only
-                    # when a row is big enough to hold a streamed table; a late answer
-                    # lands in the cache for the next listing.
-                    if not known and any(
-                        int(v.size_bytes or 0) > LAZY_READ_AUTO_MIN_BYTES for _i, v in unresolved
+                    # when a row can hold a streamed table (any row under a forced "on");
+                    # a late answer lands in the cache for the next listing.
+                    if not known and (
+                        mode == "on"
+                        or any(
+                            int(v.size_bytes or 0) > LAZY_READ_AUTO_MIN_BYTES
+                            for _i, v in unresolved
+                        )
                     ):
                         arch = await _lookup_await_once(
                             # Per credential, as the cache is: another token's lookup

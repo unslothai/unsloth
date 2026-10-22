@@ -15773,6 +15773,7 @@ def _gguf_memory_breakdown(
         _override_places_tensor_on_device,
         _without_torch_gpu_probe,
     )
+    from core.inference.lookup_tables import HOST_FORCED_TABLE_ARCHS
     from hub.utils.gguf_lookup_tables import local_lookup_info
 
     _lt_backend = get_llama_cpp_backend()
@@ -15837,7 +15838,11 @@ def _gguf_memory_breakdown(
     # layer fraction says (deepseek41's loader still forces it to the host).
     _lt_device_bytes = 0
     if lookup_table_bytes:
-        if not lookup_table_on_disk and _lt_arch != "deepseek41" and _lt_override_moves_table():
+        if (
+            not lookup_table_on_disk
+            and _lt_arch not in HOST_FORCED_TABLE_ARCHS
+            and _lt_override_moves_table()
+        ):
             _lt_device_bytes, lookup_table_bytes = lookup_table_bytes, 0
     if lookup_table_on_disk:
         # The launch reads the table resident (--lazy-mode off) where RAM holds it beside
@@ -15953,7 +15958,7 @@ def _gguf_memory_breakdown(
             not _lt_user
             # Read resident, a device override would apply to the table; the launch then
             # keeps it streamed (deepseek41's loader forces it to the host regardless).
-            and (_lt_arch == "deepseek41" or not _lt_override_moves_table())
+            and (_lt_arch in HOST_FORCED_TABLE_ARCHS or not _lt_override_moves_table())
             and _lt_resident_fits()
         ):
             lookup_table_on_disk = False

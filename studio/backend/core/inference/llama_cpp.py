@@ -30402,8 +30402,11 @@ class LlamaCppBackend:
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
                     if _on:
+                        # Host-pinned inputs and streamed tables hold no VRAM, as in the fit.
                         self._pending_plan_mib = _gpu_plan_mib(
-                            gguf_size + mmproj_size + kv_cache_bytes, _on, gpus
+                            max(1, gguf_size - _host_input_embd) + mmproj_size + kv_cache_bytes,
+                            _on,
+                            gpus,
                         )
                     if (
                         not gpus
@@ -32906,7 +32909,9 @@ class LlamaCppBackend:
                     layout = self._tensor_spill_layout(model_path, all_shards = True)
                     if layout is None or not getattr(layout, "complete", True):
                         return None
-                    if int(getattr(layout, "lm_head_bytes", 0) or 0):
+                    if int(getattr(layout, "lm_head_bytes", 0) or 0) and not (
+                        _override_places_tensor_on_device("token_embd.weight", run_argv, env)
+                    ):
                         need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
                     # Per-layer lookup tables are input-layer too and never duplicated,
                     # unless an -ot moves one onto the device (as in the fit).
@@ -35209,7 +35214,7 @@ class LlamaCppBackend:
                                 flash_attn = planned_flash_attn,
                             )
                             self._pending_plan_mib = _gpu_plan_mib(
-                                gguf_size + mmproj_size + kv_cache_bytes,
+                                max(1, gguf_size - _host_input_embd) + mmproj_size + kv_cache_bytes,
                                 list(self._pending_plan_mib),
                                 gpus,
                             )
