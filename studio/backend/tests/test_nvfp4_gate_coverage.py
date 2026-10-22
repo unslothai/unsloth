@@ -320,3 +320,27 @@ def test_the_backend_probe_is_skipped_when_the_installed_flashinfer_is_covered(
         == "nvfp4"
     )
     assert probed == []
+
+
+def test_auto_rejects_an_unchecked_flashinfer_silently_and_explicit_still_warns(
+    monkeypatch, enabled, caplog
+):
+    """Auto falls back to the ladder without the warning (it never runs those kernels), and does not use up the
+    once-only warning a later explicit nvfp4 load on the same base owes the user."""
+    target = _blackwell(monkeypatch)
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
+    with caplog.at_level("WARNING"):
+        assert tq._nvfp4_gate_backend_ok("z-image", _ZIMAGE, "cuda:0") is False
+        tq.select_transformer_quant_scheme(
+            target, "auto", family = "z-image", base_repo = _ZIMAGE, has_prequant = _hosted
+        )
+    assert not [r for r in caplog.records if "nvfp4.gate" in r.getMessage()]
+    with caplog.at_level("WARNING"):
+        assert (
+            tq.select_transformer_quant_scheme(
+                target, "nvfp4", family = "z-image", base_repo = _ZIMAGE, has_prequant = _hosted
+            )
+            == "nvfp4"
+        )
+    assert len([r for r in caplog.records if "flashinfer 0.7.0" in r.getMessage()]) == 1

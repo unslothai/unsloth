@@ -445,14 +445,15 @@ def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
     if not nvfp4_diffusion_enabled():
         return False
     try:
-        from .diffusion_nvfp4_gate import nvfp4_gate_backends, warn_flashinfer_mismatch_once
+        from .diffusion_nvfp4_gate import nvfp4_gate_backends, nvfp4_gate_flashinfer_mismatch
         from .diffusion_nvfp4_ops import select_nvfp4_backend
 
         backend = str(select_nvfp4_backend(device)).strip().lower()
         if backend not in nvfp4_gate_backends(family, base_repo):
             return False
-        # Auto takes a gated head only on a flashinfer whose kernels the record covers; an explicit pick still loads.
-        return backend != "flashinfer" or warn_flashinfer_mismatch_once(family, base_repo) is None
+        # Auto takes a gated head only on a flashinfer whose kernels the record covers. Silent: auto then runs another
+        # scheme, so the warning belongs to an explicit pick that really loads those kernels.
+        return backend != "flashinfer" or nvfp4_gate_flashinfer_mismatch(family, base_repo) is None
     except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe keeps the deny
         return False
 
