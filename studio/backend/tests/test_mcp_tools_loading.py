@@ -890,6 +890,111 @@ def test_unloading_media_waits_for_a_load_post_still_freeing_the_gpu(monkeypatch
     assert seen_at_unload == [True]
 
 
+def _registering_video_studio(registered, seen_at_unload):
+    def handoff() -> None:
+        time.sleep(0.5)
+        registered.append(True)
+
+    async def load(request, body):
+        await asyncio.to_thread(handoff)
+        return LTX_LOADED
+
+    def unload_route(request, body):
+        seen_at_unload.append(bool(registered))
+        return UNLOADED
+
+    return fake_studio(
+        {
+            ("POST", "/api/inference/video/download-plan"): {"entries": []},
+            ("POST", "/api/inference/video/load"): load,
+            ("GET", "/api/inference/video/load-progress"): READY,
+            VIDEO_STATUS: UNLOADED,
+            IMAGE_STATUS: UNLOADED,
+            ("POST", "/api/inference/video/unload"): unload_route,
+        }
+    )
+
+
+def test_a_media_load_post_that_outlasts_the_unload_is_unloaded_once_it_registers(
+    monkeypatch, fast_polls
+):
+    # Past MAX_WAIT_S the unload goes out before the load registers, so it cancels nothing: the
+    # call must not report the slot empty, and the load is unloaded once its POST is back.
+    registered, seen_at_unload = [], []
+    studio = _registering_video_studio(registered, seen_at_unload)
+    with session(monkeypatch, studio) as call:
+        # Patched once the tools exist: their wait_s bound is built from it.
+        monkeypatch.setattr(loading, "MAX_WAIT_S", 0.05)
+        call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
+        unloaded = call("unload_model", {"kind": "video"})["structuredContent"]
+        deadline = time.monotonic() + 5
+        while len(seen_at_unload) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+    assert unloaded["unloaded"] is False
+    assert seen_at_unload == [False, True]
+
+
+def test_a_cancelled_media_unload_still_unloads_the_load_it_stopped(monkeypatch, fast_polls):
+    from studio_mcp import placement as place
+
+    registered, seen_at_unload = [], []
+
+    async def scenario():
+        async def route_json(method, path, caller = None, json_body = None, params = None, **_kw):
+            if path == "/api/inference/video/load":
+                await asyncio.to_thread(time.sleep, 0.3)
+                registered.append(True)
+                return LTX_LOADED
+            if path == "/api/inference/video/unload":
+                seen_at_unload.append(bool(registered))
+                return UNLOADED
+            if path.endswith("/load-progress"):
+                return READY if registered else {"phase": "loading"}
+            return UNLOADED
+
+        async def nothing(*_a, **_k):
+            return {}
+
+        monkeypatch.setattr(loading, "route_json", route_json)
+        monkeypatch.setattr(loading, "try_json", lambda caller, path: route_json("GET", path))
+        monkeypatch.setattr(place, "post_plan", nothing)
+        caller = make_caller()
+        await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 0.02,
+        )
+        await asyncio.sleep(0.05)
+        unload = asyncio.ensure_future(loading.unload_media(caller, "video"))
+        await asyncio.sleep(0.05)
+        unload.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await unload
+        assert seen_at_unload == []
+        await asyncio.sleep(0.6)
+
+    asyncio.run(scenario())
+    assert seen_at_unload == [True]
+
+
+def test_a_late_media_unload_leaves_a_newer_load_alone(monkeypatch, fast_polls):
+    registered, seen_at_unload = [], []
+    studio = _registering_video_studio(registered, seen_at_unload)
+    with session(monkeypatch, studio) as call:
+        # Patched once the tools exist: their wait_s bound is built from it.
+        monkeypatch.setattr(loading, "MAX_WAIT_S", 0.05)
+        call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
+        call("unload_model", {"kind": "video"})
+        # The caller loads again before the stopped POST is back: that load is what it wants now.
+        call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
+        time.sleep(1.5)
+    assert seen_at_unload == [False]
+
+
 def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(
     monkeypatch, fast_polls
 ):

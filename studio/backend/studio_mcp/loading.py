@@ -735,19 +735,59 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
     stopped = _stop_loads(caller, (kind,))
     # A stopped load whose POST is still out registers its load once that returns: unload after it, so the unload cancels it.
     posts = {job.post for job in stopped if job.post is not None and not job.post.done()}
-    if posts:
-        await asyncio.wait(posts, timeout = MAX_WAIT_S)
-    before = as_dict(await route_json("GET", routes["status"], caller = caller))
-    if before.get("loaded") is not True and not stopped:
-        return UnloadResult(kind = kind, unloaded = False)
-    after = await route_json("POST", routes["unload"], caller = caller)
+    try:
+        if posts:
+            await asyncio.wait(posts, timeout = MAX_WAIT_S)
+        before = as_dict(await route_json("GET", routes["status"], caller = caller))
+        if before.get("loaded") is not True and not stopped:
+            return UnloadResult(kind = kind, unloaded = False)
+        after = await route_json("POST", routes["unload"], caller = caller)
+    except asyncio.CancelledError:
+        # The caller went away before this unload went out: unload each stopped load once its POST is back.
+        _unload_after_posts(caller, kind, stopped)
+        raise
+    # A POST that outlasted the wait registers its load after the unload above: unload that one later.
+    late = _unload_after_posts(
+        caller, kind, [job for job in stopped if job.post in posts and not job.post.done()]
+    )
     model = (
         opt_text(before.get("display_repo_id"))
         or opt_text(before.get("repo_id"))
         or (stopped[-1].model if stopped else None)
     )
-    unloaded = isinstance(after, dict) and after.get("loaded") is not True
+    # Not unloaded yet while a load is still on its way in, as for an STT load that outlasts the call.
+    unloaded = not late and isinstance(after, dict) and after.get("loaded") is not True
     return UnloadResult(kind = kind, model = model, unloaded = unloaded)
+
+
+def _unload_after_posts(caller: Caller, kind: str, jobs: list[LoadJob]) -> bool:
+    """Unload each of ``jobs`` once its load POST returns, after this call (held in _LATE_UNLOADS); whether any was scheduled."""
+    scheduled = False
+    for job in jobs:
+        if job.post is None:
+            continue
+        late = asyncio.get_running_loop().create_task(_unload_media_once_posted(caller, kind, job))
+        _LATE_UNLOADS.add(late)
+        late.add_done_callback(_LATE_UNLOADS.discard)
+        scheduled = True
+    return scheduled
+
+
+async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> None:
+    routes = MEDIA_ROUTES[kind]
+    if job.post is not None:
+        await asyncio.wait({job.post})
+    try:
+        # A newer load of this slot since the stop is what the caller wants now: leave it be.
+        if any(other.slot == kind for other in LOADS.running(caller.account_id)):
+            return
+        status = as_dict(await route_json("GET", routes["status"], caller = caller))
+        names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))} - {None}
+        if names and job.model.lower() not in {name.lower() for name in names}:
+            return
+        await route_json("POST", routes["unload"], caller = caller)
+    except Exception:
+        pass
 
 
 STT_STATUS = "/api/inference/audio/stt/status"
@@ -880,7 +920,7 @@ async def load_stt(
     return LoadResult(kind = "stt", model = resident)
 
 
-# Unloads waiting on an STT load that outlasted the unload call, held so they are not collected.
+# Unloads waiting on an STT load or a media load POST that outlasted the unload call, held so they are not collected.
 _LATE_UNLOADS: set[asyncio.Task] = set()
 
 
