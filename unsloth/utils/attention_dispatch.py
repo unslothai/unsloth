@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import functools
+import operator
 import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
@@ -265,8 +266,31 @@ def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal,
     return backends[0], choice
 
 
-if hasattr(torch.compiler, "assume_constant_result"):
-    _sdpa_backend_state = torch.compiler.assume_constant_result(_sdpa_backend_state)
+def _constant_probe(fn):
+    """torch.compiler.assume_constant_result for a shape probe. Dynamo can only hand it Python
+    constants, and dynamic=True makes head counts / head_dim SymInts, so those are specialised
+    (operator.index guards them) first: they are fixed per model, batch and length stay dynamic.
+    Plain ints pass through unchanged, so eager and static-shape answers are the same."""
+    if not hasattr(torch.compiler, "assume_constant_result"):
+        return fn
+    # Marks fn itself, so no functools.wraps: copying its __dict__ would mark the wrapper too.
+    constant = torch.compiler.assume_constant_result(fn)
+
+    def probe(*args, **kwargs):
+        concrete = []
+        for arg in args:
+            # Dynamo reports a SymInt as an int; index() on a plain int is the identity.
+            if isinstance(arg, (int, torch.SymInt)) and not isinstance(arg, bool):
+                arg = operator.index(arg)
+            concrete.append(arg)
+        return constant(*concrete, **kwargs)
+
+    probe.__name__, probe.__qualname__, probe.__doc__ = fn.__name__, fn.__qualname__, fn.__doc__
+    probe.__wrapped__ = fn
+    return probe
+
+
+_sdpa_backend_state = _constant_probe(_sdpa_backend_state)
 
 
 @functools.lru_cache(maxsize = 128)
@@ -378,8 +402,7 @@ def _sdpa_gqa_state(
     return not (gqa == math and mha not in (math, -1))
 
 
-if hasattr(torch.compiler, "assume_constant_result"):
-    _sdpa_gqa_state = torch.compiler.assume_constant_result(_sdpa_gqa_state)
+_sdpa_gqa_state = _constant_probe(_sdpa_gqa_state)
 
 
 def _sdpa_takes_gqa(

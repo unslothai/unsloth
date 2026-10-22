@@ -16,6 +16,7 @@ import {
 import {
   loadedContextFields,
   type MlxKvQuant,
+  type MlxOffload,
 } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
@@ -2660,6 +2661,17 @@ type ChatRuntimeStore = {
   mlxKvQuantNote: string | null;
   mlxInt8Prefill: boolean;
   loadedMlxInt8PrefillRequested: boolean;
+  /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
+   *  fraction it applied (null = none), and why a request was not applied. */
+  mlxPleOffload: MlxOffload;
+  mlxExpertOffload: MlxOffload;
+  loadedMlxPleOffloadRequested: MlxOffload;
+  loadedMlxExpertOffloadRequested: MlxOffload;
+  loadedMlxPleOffload: number | null;
+  loadedMlxExpertOffload: number | null;
+  mlxPleOffloadReason: string | null;
+  mlxExpertOffloadReason: string | null;
+  loadedMlxOffloadDiskBytes: number | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
@@ -4621,6 +4633,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvQuantNote: null,
   mlxInt8Prefill: false,
   loadedMlxInt8PrefillRequested: false,
+  mlxPleOffload: null,
+  mlxExpertOffload: null,
+  loadedMlxPleOffloadRequested: null,
+  loadedMlxExpertOffloadRequested: null,
+  loadedMlxPleOffload: null,
+  loadedMlxExpertOffload: null,
+  mlxPleOffloadReason: null,
+  mlxExpertOffloadReason: null,
+  loadedMlxOffloadDiskBytes: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
@@ -5614,6 +5635,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvQuantNote: null,
       mlxInt8Prefill: false,
       loadedMlxInt8PrefillRequested: false,
+      mlxPleOffload: null,
+      mlxExpertOffload: null,
+      loadedMlxPleOffloadRequested: null,
+      loadedMlxExpertOffloadRequested: null,
+      loadedMlxPleOffload: null,
+      loadedMlxExpertOffload: null,
+      mlxPleOffloadReason: null,
+      mlxExpertOffloadReason: null,
+      loadedMlxOffloadDiskBytes: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,

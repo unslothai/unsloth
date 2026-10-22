@@ -102,6 +102,70 @@ def _num_sms(device):
     return count
 
 
+_OPERAND_TILE_FITS = {}
+
+
+def _autotune_cache():
+    from .. import autotune_cache
+    return autotune_cache
+
+
+def _fit_tiles_to_operand_device(
+    kind, operand, weight_dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+):
+    """Caller-supplied tiles were fitted to the current card's shared memory when the caller passed no device
+    (unsloth_zoo <= 2026.10.7). If the operands sit on a different GPU model, shrink a copy to fit their card.
+    One GPU, or the same model as the current card: returned unchanged."""
+    tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    device = operand.device
+    try:
+        if device.type != "cuda" or DEVICE_TYPE != "cuda" or torch.cuda.device_count() <= 1:
+            return tiles
+        current = torch.cuda.current_device()
+        index = _device_index(device)
+        if index == current or _device_model(device) == _device_model(
+            torch.device("cuda", current)
+        ):
+            return tiles
+    except Exception:
+        return tiles
+    key = (kind, index, operand.dtype, weight_dtype, tiles)
+    fitted = _OPERAND_TILE_FITS.get(key)
+    if fitted is None:
+        fitted = tiles
+        try:
+            from types import SimpleNamespace
+
+            autotune_cache = _autotune_cache()
+
+            smem = autotune_cache._device_smem_per_block(device)
+            if smem is not None:
+                config = SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                autotune_cache._fit_config_to_smem(
+                    kind,
+                    config,
+                    operand.dtype.itemsize,
+                    weight_dtype.itemsize,
+                    tuple(torch.cuda.get_device_capability(device)),
+                    smem,
+                )
+                fitted = (
+                    config.BLOCK_SIZE_M,
+                    config.BLOCK_SIZE_N,
+                    config.BLOCK_SIZE_K,
+                    config.num_stages,
+                )
+        except Exception:
+            fitted = tiles
+        _OPERAND_TILE_FITS[key] = fitted
+    return fitted
+
+
 def _autotuner_for(kernel, device):
     """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
     the same GPU model share one results cache, so identical cards reuse each other's tuning; a run's
@@ -161,6 +225,9 @@ def get_per_device_per_stream_alloc_fn(device):
 def log_kernel_info(
     compiled_kernel: triton.compiler.CompiledKernel, best_config: triton.Config = None
 ):
+    # Runs after every launch: formatting the metadata costs several us per call even when nothing logs.
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     kernel_name = compiled_kernel.name
     nregs = compiled_kernel.n_regs
     nspills = compiled_kernel.n_spills
@@ -287,7 +354,9 @@ def _grouped_gemm_forward_impl(
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "fwd", X, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -434,7 +503,9 @@ def _grouped_gemm_dX_impl(
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dX", dY, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -639,7 +710,9 @@ def _launch_grouped_gemm_dW(
         use_tma_store = False
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dW", X, X.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     def grid(META):
         if per_expert:
@@ -926,10 +999,9 @@ def _dW_accumulate_enabled():
 def _dW_accumulate_target(ctx, X, autotune):
     """The leaf parameter whose existing .grad the dW kernel may add into, else None.
 
-    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW.
-    Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook) cannot be
-    enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores the
-    returned-gradient path."""
+    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW,
+    including Node hooks that can rewrite dW: prehooks on W's AccumulateGrad and post hooks on this
+    GroupedGemmBackward. Post hooks on AccumulateGrad only observe (they see None for this dW)."""
     if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
         return None
     # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
@@ -970,7 +1042,32 @@ def _dW_accumulate_target(ctx, X, autotune):
             return None
     except RuntimeError:
         return None  # autograd.grad(): W's gradient is captured, never accumulated
+    # Last: the only checks that cost Python work, so they run only for an otherwise eligible weight.
+    if _node_has_python_hooks(acc.register_prehook) or _node_has_python_hooks(ctx.register_hook):
+        return None
     return param
+
+
+def _node_hook_probe(*args):
+    return None
+
+
+def _node_has_python_hooks(register):
+    """True if the Node behind `register` (register_hook / register_prehook) already holds a Python hook.
+
+    Nodes cannot list their hooks, but every Python hook of one kind shares a single dict, and the
+    handle of a new registration points at it: register a no-op, count, remove it again."""
+    try:
+        handle = register(_node_hook_probe)
+    except Exception:
+        return True
+    try:
+        hooks = handle.hooks_dict_ref()
+        return hooks is None or len(hooks) > 1
+    except Exception:
+        return True
+    finally:
+        handle.remove()
 
 
 class GroupedGemm(torch.autograd.Function):
