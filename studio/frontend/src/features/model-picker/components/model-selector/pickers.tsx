@@ -3209,6 +3209,9 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
+  // The loader frees the resident chat model before reading free memory, so while one is loaded
+  // the free reading undercounts by that model and only the working-set ceiling still holds.
+  const chatModelResident = chatLoadedModelId !== undefined;
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufVariant =
@@ -4259,7 +4262,9 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
-            unifiedLoadBudgetGb: budget.unifiedLoadBudgetGb,
+            unifiedLoadBudgetGb: chatModelResident
+              ? budget.unifiedLoadCeilingGb
+              : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
@@ -4364,6 +4369,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    chatModelResident,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -7353,7 +7359,11 @@ export function HubModelPicker({
   return (
     <PickerScopes
       capabilityScope={capabilityScope}
-      unifiedLoadBudgetGb={inferenceGpu.unifiedLoadBudgetGb ?? null}
+      unifiedLoadBudgetGb={
+        (chatModelResident
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null
+      }
     >
       <div className="relative space-y-2">
         {/* A small right inset shortens the search bar so Search Hub lands on the last dropdown's right edge. */}

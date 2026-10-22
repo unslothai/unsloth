@@ -94,13 +94,28 @@ test("an Apple host pool publishes min(working set, free) * 0.85, floored to 0.2
   );
 });
 
+test("the ceiling ignores free memory, which a resident model the loader frees still holds", () => {
+  // 20 GiB model resident: 22 GiB reads free, but the loader sees ~42 once it has freed it.
+  const gpu = macInfo({ metal_working_set_gb: 51.84, vram_free_gb: 22 });
+  assert.ok(
+    Math.abs(
+      (gpu.unifiedLoadCeilingGb ?? 0) - Math.floor(51.84 * 0.85 * 4) / 4,
+    ) < 1e-9,
+  );
+  const reloaded = classifyGgufFit(bytesRequiring(22.2), {
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    gpuCount: gpu.deviceCount,
+    unifiedLoadBudgetGb: gpu.unifiedLoadCeilingGb,
+  });
+  assert.equal(reloaded, "fits");
+});
+
 test("an older backend without the working set keeps today's verdicts", () => {
   for (const ws of [undefined, null, 0, -1, Number.NaN]) {
-    assert.equal(
-      macInfo({ metal_working_set_gb: ws, vram_free_gb: 22 })
-        .unifiedLoadBudgetGb,
-      null,
-    );
+    const gpu = macInfo({ metal_working_set_gb: ws, vram_free_gb: 22 });
+    assert.equal(gpu.unifiedLoadBudgetGb, null);
+    assert.equal(gpu.unifiedLoadCeilingGb, null);
   }
 });
 
@@ -144,6 +159,7 @@ test("discrete NVIDIA 24 GiB is untouched", () => {
   };
   const gpu = hooks.useInferenceGpuInfo();
   assert.equal(gpu.unifiedLoadBudgetGb, null);
+  assert.equal(gpu.unifiedLoadCeilingGb, null);
   for (const requiredGb of [10, 22.2, 23.5, 40, 200]) {
     assert.equal(
       fitOn(gpu, requiredGb),

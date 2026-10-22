@@ -97,6 +97,9 @@ export interface GpuInfo {
   /** Apple MLX only: what llama.cpp and MLX admit right now, `min(working set, free) * 0.85`
    *  (`_apple_metal_memory_budget_bytes`). Null on every other host and on older backends. */
   unifiedLoadBudgetGb?: number | null;
+  /** The same budget with free memory ignored, `working set * 0.85`: what the loader sees once it
+   *  has freed a resident model, which the free reading above still counts as used. */
+  unifiedLoadCeilingGb?: number | null;
 }
 
 /** `_APPLE_UNIFIED_MEMORY_FRACTION` in llama_cpp.py and mlx_inference.py. */
@@ -111,14 +114,16 @@ function finitePositive(value: number | null | undefined): number | null {
 function appleUnifiedLoadBudgetGb(
   data: SystemInfoResponse | null,
   devices: readonly GpuDevice[],
+  withFree = true,
 ): number | null {
   if (data?.device_backend !== "mlx" || devices.length !== 1) return null;
   const device = devices[0];
   const workingSetGb = finitePositive(device.metal_working_set_gb);
   if (device.shared_memory !== true || workingSetGb === null) return null;
-  const freeGb =
-    finitePositive(device.vram_free_gb) ??
-    finitePositive(data.memory?.available_gb);
+  const freeGb = withFree
+    ? (finitePositive(device.vram_free_gb) ??
+      finitePositive(data.memory?.available_gb))
+    : null;
   // Floored to 0.25 GiB: free memory drifts every poll, and each change re-renders every picker row.
   return (
     Math.floor(
@@ -156,6 +161,7 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamAvailableKnown: false,
   systemRamTotalGb: 0,
   unifiedLoadBudgetGb: null,
+  unifiedLoadCeilingGb: null,
 };
 
 function toGpuInfo(
@@ -226,6 +232,7 @@ function toGpuInfo(
     }),
     deviceCount: devices.length,
     unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(data, devices),
+    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(data, devices, false),
   };
 }
 
