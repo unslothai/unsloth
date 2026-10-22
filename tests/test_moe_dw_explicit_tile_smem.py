@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An explicit dW tile the legacy kernel launched must still launch once the per-expert kernel is the default.
+"""An explicit dW tile the legacy kernel launched must still launch with the per-expert kernel as default.
 
-The per-expert kernel double buffers both operand tiles, so 128x256x256 at 4 stages compiles to
-131,584 B on sm_80 / sm_86 / sm_89 / sm_120 (legacy 69,632 B) and 262,656 B on sm_90 (legacy
-131,072 B): over the 101,376 B / 232,448 B limits (Triton metadata.shared, CPU cross-compiled,
-Triton 3.8). Fitted configs (heuristic, default, refit disk entries) never exceed the limit;
-a caller-supplied tile, or one fitted against another card, can, and raised OutOfResources."""
+128x256x256 at 4 stages needs 131,584 B (sm_80/86/89/120) / 262,656 B (sm_90) per-expert vs 69,632 /
+131,072 B legacy (Triton 3.8 metadata.shared), over the 101,376 / 232,448 B limits."""
 
 import importlib
 import sys
@@ -80,9 +77,7 @@ def test_explicit_tile_routes_by_operand_card(monkeypatch, gg, gpu):
     _card(monkeypatch, gg, capability, smem)
     device = torch.device("cuda", 0)
     M, N, K, stages = EXPLICIT
-    # Over the limit everywhere except A100's 166,912 B (131,584 B there).
     assert gg._per_expert_dW_fits(device, 2, M, N, K, stages) == (gpu == "A100")
-    # float32 X runs the per-expert kernel single stage: 262,144 B of operands fits no card.
     assert not gg._per_expert_dW_fits(device, 4, M, N, K, stages)
     M, N, K, stages = HEURISTIC
     assert gg._per_expert_dW_fits(device, 2, M, N, K, stages)
@@ -129,7 +124,6 @@ def test_explicit_tile_launches_on_this_gpu(monkeypatch, gg):
     torch.cuda.synchronize()
     assert torch.equal(default, legacy)
     assert bool((default[1] == 0).all())
-    # The accumulate path routes the same way: dW += dW.
     acc = default.float()
     gg._grouped_gemm_dW_accumulate_impl(X, dY, m_sizes, gather, acc, topk, **kw)
     torch.cuda.synchronize()

@@ -502,12 +502,9 @@ _PER_EXPERT_DW_FITS = {}
 
 
 def _per_expert_dW_fits(device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
-    """False when this tile needs more shared memory on ``device`` than the per-expert dW kernel can get.
+    """False when this tile overflows ``device`` shared memory in the per-expert dW kernel.
 
-    It double buffers both operand tiles where the legacy kernel single buffers them, so an explicit
-    tile the legacy kernel launched (128x256x256, 4 stages: 69,632 B legacy vs 131,584 B on an L4) can
-    raise OutOfResources. Fitted configs never get here; a caller-supplied tile or one fitted against
-    another card (configs fit the current device, not the operand's) can."""
+    It double buffers both operands, so a caller-supplied tile the legacy kernel launched can raise OutOfResources."""
     index = _device_index(device)
     key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
     fits = _PER_EXPERT_DW_FITS.get(key)
@@ -622,7 +619,6 @@ def _launch_grouped_gemm_dW(
             X.device, X.element_size(), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
         )
     ):
-        # Keep the kernel this tile launched with before the per-expert one (same result, bitwise).
         per_expert = False
 
     if accumulate:
