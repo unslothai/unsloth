@@ -34,3 +34,27 @@ def test_other_models_unchanged():
     skip = _architecture_skip_modules()
     for model_types in (["gemma3"], ["gemma4"], ["llama"], [], None):
         assert not ALTUP & set(skip(model_types)), model_types
+
+
+def test_altup_linears_match_the_transformers_skip_matcher():
+    """transformers 5 skips a Linear only when a key matches its full name (suffix or start-anchored regex)."""
+    import pytest
+
+    utils = pytest.importorskip("transformers.quantizers.quantizers_utils")
+    should_convert = getattr(utils, "should_convert_module", None)
+    if should_convert is None:
+        pytest.skip("transformers < 5 matches skip keys per path component")
+    skip = _architecture_skip_modules()(["gemma3n"])
+    for name in (
+        "model.language_model.altup_projections.0",
+        "model.language_model.altup_projections.2",
+        "model.language_model.altup_unembed_projections.1",
+        "model.language_model.layers.0.altup.prediction_coefs",
+        "model.language_model.layers.3.altup.correction_coefs",
+    ):
+        assert not should_convert(name, skip), name
+    for name in (
+        "model.language_model.layers.0.self_attn.q_proj",
+        "model.language_model.layers.0.mlp.down_proj",
+    ):
+        assert should_convert(name, skip), name
