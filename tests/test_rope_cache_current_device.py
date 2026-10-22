@@ -428,8 +428,6 @@ def test_cache_built_in_chunks_matches_one_shot(rows, dtype):
 
 
 def _assert_trainable(*tensors):
-    # A cache built inside generate's inference_mode reaches the training forward; saving an
-    # inference tensor for backward raises, and the compiled block then fell back to eager.
     for t in tensors:
         assert not t.is_inference()
     cos = tensors[0]
