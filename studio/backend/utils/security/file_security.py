@@ -4,6 +4,7 @@
 """Malware / unsafe-file gate for model loads. The ``trust_remote_code`` consent gate covers the ``auto_map`` Python vector; this covers the other one, a malicious pickle inside a weight file, which executes during ``from_pretrained`` deserialization even with ``trust_remote_code=False``. It reads Hugging Face's OWN scan (picklescan + ClamAV) via ``model_info(securityStatus=True).security_repo_status``. METADATA-ONLY: it never downloads, opens, or unpickles the flagged files. Policy: a hard, non-approvable block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of ``scansDone`` (often false even for clean repos); unknown/future levels fail CLOSED so Hub schema drift cannot silently allow a bad verdict, and only a small allowlist of clean / not-yet-scanned levels is non-blocking, while an unavailable status falls back to local inspection for a pinned cache snapshot and otherwise fails open. Scoped to the load-path RCE vector: a root-level (or load-subdir-level) code-executing file, since inert formats (safetensors / gguf / config / text) and subdirectory pickles that no root weight-index references are not loaded and do not block, while an index-referenced shard does, wherever it lives. That blocks real malware (eicar's root ``*.pkl``/``*.dat``) without false-blocking repos like ``nvidia/Nemotron-H-8B-Base-8K`` (flagged NeMo pickles under ``nemo/`` that no index lists). No first-party exemption (scoping is by load path/format, not org), and local paths are skipped (no Hub scan) while a remote ``*.gguf``-named repo is still scanned so a repo cannot dodge the gate by suffixing its name."""
 
 import json
+import os
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -74,6 +75,28 @@ def _escapes_folder(name: str) -> bool:
     return normalized == ".." or normalized.startswith("../")
 
 
+def _climbs_through_link(folder: Path, name: str) -> bool:
+    """True when a ``..`` in ``name`` climbs out of a linked directory. The kernel follows the link
+    first and then applies ``..`` (POSIX), so ``link/../x`` opens ``x`` beside the link's target,
+    not beside the link, and the lexical check above reads the wrong place. Compares where the
+    part up to the last ``..`` lands on disk with where its text says. Windows collapses ``..``
+    before the filesystem sees it, and ``realpath`` does the same there, so both sides agree."""
+    parts = name.replace("\\", "/").split("/")
+    if ".." not in parts:
+        return False
+    head = "/".join(parts[: len(parts) - parts[::-1].index("..")])
+    try:
+        on_disk = os.path.realpath(os.path.join(folder, head))
+        as_written = os.path.realpath(os.path.join(folder, posixpath.normpath(head)))
+    except (OSError, ValueError):
+        return True
+    return os.path.normcase(on_disk) != os.path.normcase(as_written)
+
+
+def _escapes(folder: Path, name: str) -> bool:
+    return _escapes_folder(name) or _climbs_through_link(folder, name)
+
+
 def _in_subfolder(sub: str, name: str) -> str:
     # A rooted or drive-qualified name ignores the subfolder it is joined onto.
     spelled = name.replace("\\", "/")
@@ -104,7 +127,7 @@ def _weight_names(folder: Path) -> list:
             continue
         names.append(name)
         # A custom index named here is read like the standard ones.
-        if name.endswith(".index.json") and not _escapes_folder(name):
+        if name.endswith(".index.json") and not _escapes(folder, name):
             try:
                 payload = json.loads((folder / name).read_text(encoding = "utf-8-sig"))
             except (OSError, ValueError):
@@ -117,9 +140,10 @@ def _weight_names(folder: Path) -> list:
 
 def escaping_weight_references(folder) -> list:
     """Weight names a local model folder's index files or config.json ``transformers_weights``
-    give that point outside the folder: transformers joins each onto the folder as is. Text only,
-    so Hub cache snapshots whose files link into the blob store still pass. A Sentence Transformers
-    folder's modules.json module folders are read too, judged against the model folder."""
+    give that point outside the folder: transformers joins each onto the folder as is. Judged by
+    the text, so Hub cache snapshots whose files link into the blob store still pass, except that
+    a ``..`` climbing out of a linked directory is judged where the kernel sends it. A Sentence
+    Transformers folder's modules.json module folders are read too, judged against the model folder."""
     try:
         folder = Path(str(folder)).expanduser()
         if not folder.is_dir():
@@ -135,14 +159,14 @@ def escaping_weight_references(folder) -> list:
         sub = module.get("path") if isinstance(module, dict) else None
         if not isinstance(sub, str) or not sub.strip("./\\"):
             continue
-        if _escapes_folder(sub):
+        if _escapes(folder, sub):
             names.append(sub)
             continue
         names.extend(_in_subfolder(sub, name) for name in _weight_names(folder / sub))
     # Spark-TTS / BiCodec load their transformers model from LLM/.
     if (folder / "LLM").is_dir():
         names.extend(_in_subfolder("LLM", name) for name in _weight_names(folder / "LLM"))
-    return [name for name in dict.fromkeys(names) if _escapes_folder(name)]
+    return [name for name in dict.fromkeys(names) if _escapes(folder, name)]
 
 
 def _normalize_repo_path(path: str) -> str:
