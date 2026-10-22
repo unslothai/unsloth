@@ -163,3 +163,96 @@ def test_positional_custom_format_mapping_still_binds():
     assert format_dataset(_pretokenized(), *defaults, None)["final_format"] == "pretokenized"
     mapped = format_dataset(_pretokenized(), *defaults, {"input_ids": "user"})
     assert mapped["final_format"] != "pretokenized"
+
+
+# Padded rows: TRL's collator rebuilds attention_mask as all ones, so masked padding is trimmed at preparation.
+_PADDED = {
+    "left": ([0, 0, 4, 5], [0, 0, 1, 1], [-100, -100, 4, 5], [4, 5], [4, 5]),
+    "right": ([2, 3, 5, 0, 0], [1, 1, 1, 0, 0], [2, 3, 5, -100, -100], [2, 3, 5], [2, 3, 5]),
+    "both": ([0, 2, 3, 0], [0, 1, 1, 0], [-100, -100, 3, -100], [2, 3], [-100, 3]),
+}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("with_labels", [True, False])
+@pytest.mark.parametrize("side", sorted(_PADDED))
+def test_prepare_trims_masked_padding(side, with_labels, streaming):
+    ids, mask, labels, want_ids, want_labels = _PADDED[side]
+    rows = {"input_ids": [ids, [2, 3]], "attention_mask": [mask, [1, 1]]}
+    if with_labels:
+        rows["labels"] = [labels, [2, 3]]
+    ds = Dataset.from_dict(rows)
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    out = list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
+    assert out[0]["input_ids"] == want_ids
+    assert out[0]["attention_mask"] == [1] * len(want_ids)
+    if with_labels:
+        assert out[0]["labels"] == want_labels
+    assert out[1] == {k: v[1] for k, v in rows.items()}
+
+
+def test_prepare_trims_then_truncates_and_is_idempotent():
+    ds = Dataset.from_dict({"input_ids": [[0, 0, 4, 5, 6]], "attention_mask": [[0, 0, 1, 1, 1]]})
+    once = prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100)
+    assert once.to_dict() == {"input_ids": [[4, 5]], "attention_mask": [[1, 1]]}
+    assert prepare_pretokenized_dataset(once, max_seq_length = 2, vocab_size = 100).to_dict() == once.to_dict()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "mask, match",
+    [
+        ([1, 0, 1, 1], "row 1 has 'attention_mask' zeros between attended tokens"),
+        ([0, 0, 0, 0], "row 1 has an all-zero 'attention_mask'"),
+        ([0, 2, 1, 1], "row 1 has 'attention_mask' values other than 0 and 1"),
+    ],
+)
+def test_prepare_refuses_masks_it_cannot_trim(mask, match, streaming):
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3, 4]] * 2, "attention_mask": [[1, 1, 1, 1], mask]})
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    with pytest.raises(ValueError, match = match):
+        list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
+
+
+def test_prepare_refuses_a_padded_mask_of_another_length():
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "attention_mask": [[0, 1]]})
+    with pytest.raises(ValueError, match = "'attention_mask' must have the same length"):
+        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("bad", [100, 250, -1, -5])
+def test_prepare_rejects_labels_outside_the_vocabulary(bad, streaming):
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "labels": [[-100, 2, bad]]})
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    with pytest.raises(ValueError, match = f"label {bad} is invalid"):
+        list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
+
+
+@pytest.mark.parametrize("with_mask", [True, False])
+def test_prepare_leaves_unpadded_rows_byte_identical(with_mask):
+    rows = {"input_ids": [[1, 2, 3], [4, 5]], "labels": [[-100, 2, 3], [-100, -100]]}
+    if with_mask:
+        rows["attention_mask"] = [[1, 1, 1], [1, 1]]
+    ds = Dataset.from_dict(rows)
+    out = prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+    assert out is ds
+    assert out.data.table.equals(Dataset.from_dict(rows).data.table)
+
+
+def test_trl_collator_never_attends_or_trains_masked_padding():
+    collator_cls = pytest.importorskip("trl.trainer.sft_trainer").DataCollatorForLanguageModeling
+    ids = [[0, 0, 4, 5], [2, 3, 5, 0], [0, 4, 2, 5]]
+    masks = [[0, 0, 1, 1], [1, 1, 1, 0], [0, 1, 1, 1]]
+    ds = prepare_pretokenized_dataset(
+        Dataset.from_dict({"input_ids": ids, "attention_mask": masks}), max_seq_length = 8, vocab_size = 6
+    )
+    batch = collator_cls(pad_token_id = 0)([ds[i] for i in range(len(ds))])
+    for r, (row, mask) in enumerate(zip(ids, masks)):
+        real = [t for t, m in zip(row, mask) if m]
+        attended = [t for t, m in zip(batch["input_ids"][r].tolist(), batch["attention_mask"][r].tolist()) if m]
+        assert attended == real
+        assert [x for x in batch["labels"][r].tolist() if x != -100] == real
