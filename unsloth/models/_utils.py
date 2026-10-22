@@ -7601,7 +7601,6 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
                 name, buffer, persistent = name not in src._non_persistent_buffers_set
             )
     for name, value in vars(src).items():
-        # An instance `forward` is a runtime wrapper (Accelerate's hook) bound to src: copying it runs src, not dst.
         if (
             name.startswith("_")
             or name == "forward"
@@ -7610,7 +7609,73 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
         ):
             continue
         setattr(dst, name, value)
+    _copy_instance_forward(dst, src)
     _move_dispatch_hook(dst, src)
+
+
+def _is_accelerate_forward(module: torch.nn.Module, forward) -> bool:
+    """Accelerate's add_hook_to_module wrapper: a partial of new_forward over module, the hooked forward in _old_forward."""
+    return (
+        isinstance(forward, functools.partial)
+        and bool(forward.args)
+        and forward.args[0] is module
+        and "_old_forward" in vars(module)
+    )
+
+
+def _copy_instance_forward(dst: torch.nn.Module, src: torch.nn.Module) -> None:
+    """Carry an instance-level forward override (e.g. Unsloth's offloaded embedding forward) onto dst, rebound to it.
+    Accelerate's own wrapper is not copied (it would run src): _move_dispatch_hook re-wraps dst instead."""
+    import types
+
+    forward = vars(src).get("forward")
+    if forward is None or "forward" in vars(dst):
+        return
+    if _is_accelerate_forward(src, forward):
+        forward = vars(src)["_old_forward"]  # what the hook wrapped: src's bound class forward, or an override
+    if isinstance(forward, types.MethodType) and forward.__self__ is src:
+        if forward.__func__ is getattr(type(src).forward, "__func__", type(src).forward):
+            return  # src's own class forward; dst's class forward replaces it
+        forward = types.MethodType(forward.__func__, dst)
+    elif _is_accelerate_forward(src, forward) or (
+        isinstance(forward, functools.partial) and forward.args and forward.args[0] is src
+    ):
+        return  # bound to src in a way that cannot be rebound safely
+    dst.forward = forward
+    # Unsloth's offloaded embedding pairs its forward with pre / post hooks that move ids and outputs.
+    for hooks_name in ("_forward_pre_hooks", "_forward_hooks"):
+        dst_hooks = getattr(dst, hooks_name)
+        for handle_id, hook in getattr(src, hooks_name).items():
+            dst_hooks.setdefault(handle_id, hook)
+    for kwargs_name in ("_forward_pre_hooks_with_kwargs", "_forward_hooks_with_kwargs", "_forward_hooks_always_called"):
+        if hasattr(src, kwargs_name) and hasattr(dst, kwargs_name):
+            for handle_id, flag in getattr(src, kwargs_name).items():
+                getattr(dst, kwargs_name).setdefault(handle_id, flag)
+    for name, value in vars(src).items():
+        if name.startswith("_unsloth_") and name not in vars(dst):
+            setattr(dst, name, value)
+
+
+def _materialize_offloaded_fake_quantized_embeddings(model: torch.nn.Module) -> None:
+    """QAT convert / strip read embedding weights directly, not through forward: give an offloaded fake quantized
+    embedding its real weight on the execution device and drop the offload hook, so conversion sees real data."""
+    for module in list(model.modules()):
+        hook = getattr(module, "_hf_hook", None)
+        if not (
+            isinstance(module, torch.nn.Embedding)
+            and hasattr(module, "weight_fake_quantizer")
+            and getattr(hook, "offload", False)
+            and getattr(hook, "weights_map", None) is not None
+        ):
+            continue
+        from accelerate.hooks import remove_hook_from_module
+        from accelerate.utils import set_module_tensor_to_device
+
+        device = hook.execution_device if hook.execution_device is not None else "cpu"
+        values = {n: hook.weights_map[n] for n, _ in module.named_parameters(recurse = False)}
+        remove_hook_from_module(module)
+        for name, value in values.items():
+            set_module_tensor_to_device(module, name, device, value = value)
 
 
 def _offload_hook_problem(module: torch.nn.Module):
@@ -7788,6 +7853,7 @@ def _strip_torchao_fake_quantization(model):
     from torchao.quantization import quantize_
     from torchao.quantization.qat import QATConfig
 
+    _materialize_offloaded_fake_quantized_embeddings(model)
     # torchao's NVFP4 / MX QAT linears fake-quantize inside forward() and carry no weight_fake_quantizer.
     try:
         from torchao.prototype import qat as prototype_qat
@@ -7911,6 +7977,7 @@ def _convert_torchao_model(model):
     from torchao.quantization.qat import QATConfig
     from torchao.utils import TorchAOBaseTensor
 
+    _materialize_offloaded_fake_quantized_embeddings(model)
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
