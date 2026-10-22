@@ -369,9 +369,11 @@ export const BUDGET = {
   // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer. Raised by that.
-  transferBytes: 2_078_223,
-  rawBytes: 6_898_706,
+  transferBytes: 2_078_266,
+  rawBytes: 6_898_730,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
