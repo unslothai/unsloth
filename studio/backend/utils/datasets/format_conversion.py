@@ -7,6 +7,11 @@ import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
+from .remote_images import (
+    is_remote_image_cell,
+    is_remote_image_path,
+    undecode_remote_image_columns,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -396,7 +401,7 @@ _MAX_ROW_IMAGE_BYTES = 64 * 1024 * 1024
 _ROW_IMAGE_TIMEOUT_S = 30
 
 
-def _fetch_row_image(url):
+def _fetch_row_image(url, exif_transpose = False):
     """Rows are untrusted: use the web tool's SSRF-guarded fetch (public IPs, redirects re-checked)."""
     import time
     from io import BytesIO
@@ -413,47 +418,25 @@ def _fetch_row_image(url):
     )
     if error is not None:
         raise OSError(error)
-    return Image.open(BytesIO(body)).convert("RGB")
-
-
-def _is_remote_image_path(path):
-    # hf:// paths resolve against the Hub itself; any other scheme is a fetch the row chose.
-    return isinstance(path, str) and "://" in path and not path.startswith("hf://")
+    image = Image.open(BytesIO(body))
+    if exif_transpose:
+        # Image() cells were decoded by datasets, which applies EXIF orientation.
+        from PIL import ImageOps
+        image = ImageOps.exif_transpose(image)
+    return image.convert("RGB")
 
 
 def _guard_remote_image_feature(dataset, image_column):
-    """Image() columns self-decode on access, so ``datasets`` would fetch a bytes-less URL row unguarded.
-    Turn decoding off only for columns holding such rows."""
-    try:
-        from datasets import Dataset
-        from datasets import Image as ImageFeature
-
-        if not isinstance(dataset, Dataset):
-            return dataset
-        feature = dataset.features.get(image_column)
-        if not isinstance(feature, ImageFeature) or not feature.decode:
-            return dataset
-        remote = False
-        for chunk in dataset.data.column(image_column).chunks:
-            paths = chunk.field("path").to_pylist()
-            missing = chunk.field("bytes").is_null().to_pylist()
-            if any(m and _is_remote_image_path(p) for p, m in zip(paths, missing)):
-                remote = True
-                break
-        if not remote:
-            return dataset
-        return dataset.cast_column(image_column, ImageFeature(decode = False))
-    except Exception as exc:
-        logger.debug(f"Image column remote-path check skipped: {exc}")
-        return dataset
+    return undecode_remote_image_columns(dataset, [image_column])
 
 
 def _decode_image_cell(value):
     """Remote paths via the guarded fetch, everything else via datasets' own decoder."""
-    if not _is_remote_image_path(value.get("path")) or value.get("bytes"):
-        from datasets import Image as ImageFeature
-        return ImageFeature().decode_example(value).convert("RGB")
-    return _fetch_row_image(value["path"])
+    if is_remote_image_cell(value):
+        return _fetch_row_image(value["path"], exif_transpose = True)
+    from datasets import Image as ImageFeature
+
+    return ImageFeature().decode_example(value).convert("RGB")
 
 
 def convert_to_vlm_format(
@@ -558,7 +541,9 @@ def convert_to_vlm_format(
     first_image = next(
         (row[image_column] for row in dataset if row[image_column] is not None), None
     )
-    has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    has_urls = (
+        isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    ) or is_remote_image_cell(first_image)
 
     if has_urls:
         with_image = [i for i, url in enumerate(dataset[image_column]) if url is not None]
@@ -897,8 +882,8 @@ def convert_sharegpt_with_images_to_vlm_format(
             if image_data.get("bytes"):
                 from io import BytesIO
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
-            if _is_remote_image_path(image_data.get("path")):
-                return _fetch_row_image(image_data["path"])
+            if is_remote_image_path(image_data.get("path")):
+                return _fetch_row_image(image_data["path"], exif_transpose = True)
             if image_data.get("path"):
                 return Image.open(_own_image_path(image_data["path"], account)).convert("RGB")
         raise ValueError(f"Cannot resolve image: {type(image_data)}")

@@ -148,7 +148,7 @@ def test_image_typed_url_rows_do_not_fetch_loopback(loopback_server):
     base, hits = loopback_server
     ds = _typed_image_dataset(f"{base}/typed.png")
 
-    with pytest.raises(ValueError, match = "no usable images"):
+    with pytest.raises(ValueError):
         convert_to_vlm_format(ds, instruction = "Describe.")
 
     assert hits == []
@@ -188,3 +188,45 @@ def test_embedded_image_columns_are_left_alone():
     assert format_conversion._guard_remote_image_feature(ds, "image") is ds
     out = convert_to_vlm_format(ds, instruction = "Describe.")
     assert isinstance(out[0]["messages"][0]["content"][1]["image"], Image.Image)
+
+
+def test_detection_does_not_decode_typed_url_rows(loopback_server):
+    from utils.datasets.format_detection import detect_vlm_dataset_structure
+
+    base, hits = loopback_server
+    detect_vlm_dataset_structure(_typed_image_dataset(f"{base}/detect.png"))
+    assert hits == []
+
+
+def test_typed_url_rows_keep_the_exif_orientation_datasets_applied(monkeypatch):
+    from core.inference import tools
+
+    rotated = io.BytesIO()
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 CW on display
+    Image.new("RGB", (4, 2), "red").save(rotated, format = "JPEG", exif = exif)
+    monkeypatch.setattr(
+        tools, "_fetch_url_raw", lambda url, **kwargs: (None, rotated.getvalue(), "image/jpeg")
+    )
+
+    out = convert_to_vlm_format(
+        _typed_image_dataset("https://example.com/r.jpg"), instruction = "Describe."
+    )
+    assert out[0]["messages"][0]["content"][1]["image"].size == (2, 4)
+
+
+def test_typed_url_columns_keep_the_failure_rate_abort(monkeypatch):
+    from core.inference import tools
+
+    def fake_fetch(url, **kwargs):
+        if url.endswith("ok.png"):
+            return None, _png(), "image/png"
+        return "Blocked: refusing to fetch non-public address 10.0.0.1.", b"", ""
+
+    monkeypatch.setattr(tools, "_fetch_url_raw", fake_fetch)
+    from datasets import Image as ImageFeature
+
+    urls = ["https://example.com/ok.png"] + [f"https://example.com/bad{i}.png" for i in range(3)]
+    ds = Dataset.from_dict({"image": urls, "text": ["x"] * 4}).cast_column("image", ImageFeature())
+    with pytest.raises(ValueError):
+        convert_to_vlm_format(ds, instruction = "Describe.")
