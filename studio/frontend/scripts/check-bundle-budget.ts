@@ -377,11 +377,21 @@ export const BUDGET = {
   // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
   // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
+  // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
   // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
-  // adopt-only pick in the chat runtime, +1,674 B raw / +549 B transfer (6,894,819 -> 6,896,493 B raw,
-  // 2,077,209 -> 2,077,758 B transfer against 833416887, Node 24, 98 chunks). Raised to that build plus about 100 B.
-  transferBytes: 2_077_862,
-  rawBytes: 6_896_600,
+  // adopt-only pick in the chat runtime, +1,709 B raw / +510 B transfer (6,920,141 -> 6,921,850 B raw,
+  // 2,084,275 -> 2,084,785 B transfer against 772ac8b1f, Node 24, 97 chunks). Raised by that.
+  transferBytes: 2_085_206,
+  rawBytes: 6_922_530,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -354,8 +354,31 @@ def _apple_performance_cores() -> Optional[int]:
     return total or _sysctl("hw.perflevel0.physicalcpu") or _sysctl("hw.physicalcpu")
 
 
+def _linux_physical_cores(sysfs: str = "/sys/devices/system/cpu") -> Optional[int]:
+    """Physical cores among the CPUs this process may run on: distinct ``thread_siblings_list`` sets over the affinity
+    mask, so a host without SMT counts every core and a taskset / container cpuset counts only its own. None when the
+    mask or the topology is unreadable."""
+    try:
+        allowed = os.sched_getaffinity(0)
+    except (AttributeError, OSError):
+        return None
+    cores: set[str] = set()
+    for cpu in allowed:
+        try:
+            with open(f"{sysfs}/cpu{cpu}/topology/thread_siblings_list", encoding = "utf-8") as f:
+                siblings = f.read().strip()
+        except OSError:
+            return None
+        if not siblings:
+            return None
+        cores.add(siblings)
+    return len(cores) or None
+
+
 def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else ``os.cpu_count() // 2`` capped by the cgroup quota."""
+    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else (Linux) the physical cores in the affinity mask, else
+    ``os.cpu_count() // 2``; capped by the cgroup quota on Linux. Half the logical CPUs is one thread per core only on
+    a 2-way SMT host that may use all of them: it halves a host without SMT and oversubscribes a cpuset."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -365,15 +388,28 @@ def _default_threads() -> int:
     performance_cores = _apple_performance_cores()
     if performance_cores:
         return performance_cores
-    cpu = os.cpu_count()
-    threads = cpu // 2 if cpu else 8
-    limit = _cgroup_cpu_limit() if sys.platform.startswith("linux") else None
+    linux = sys.platform.startswith("linux")
+    physical = _linux_physical_cores() if linux else None
+    if physical:
+        threads = physical
+    else:
+        cpu = os.cpu_count()
+        threads = cpu // 2 if cpu else 8
+    limit = _cgroup_cpu_limit() if linux else None
     return max(1, min(threads, limit) if limit else threads)
 
 
+def _sd_cpp_default_threads(cpu: Optional[int]) -> Optional[int]:
+    """What an sd.cpp build without its own topology read runs (``hardware_concurrency`` halved above 4 CPUs)."""
+    if not cpu:
+        return None
+    return cpu if cpu <= 4 else cpu // 2
+
+
 def _explicit_threads() -> Optional[int]:
-    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or a cgroup quota below sd.cpp's physical-core default; None
-    keeps that default."""
+    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux) the thread count above whenever it differs from what
+    sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix count half
+    the logical CPUs and ignore the affinity mask, so a host without SMT or a cpuset needs the count passed."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -384,10 +420,9 @@ def _explicit_threads() -> Optional[int]:
     if performance_cores:
         return performance_cores
     if sys.platform.startswith("linux"):
-        limit = _cgroup_cpu_limit()
-        cpu = os.cpu_count()
-        if limit and cpu and limit < cpu // 2:
-            return max(1, limit)
+        threads = _default_threads()
+        if threads != _sd_cpp_default_threads(os.cpu_count()):
+            return threads
     return None
 
 

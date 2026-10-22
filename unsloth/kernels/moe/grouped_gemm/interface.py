@@ -6,6 +6,7 @@ import functools
 import inspect
 import logging
 import os
+import types
 import warnings
 from typing import Optional
 from dataclasses import asdict
@@ -497,6 +498,43 @@ def _use_per_expert_dW_kernel():
     return os.environ.get("UNSLOTH_MOE_DW_KERNEL", "").strip().lower() != "legacy"
 
 
+_PER_EXPERT_DW_FITS = {}
+
+
+def _per_expert_dW_fits(device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
+    """False when this tile overflows ``device`` shared memory in the per-expert dW kernel.
+
+    It double buffers both operands, so a caller-supplied tile the legacy kernel launched can raise OutOfResources."""
+    index = _device_index(device)
+    key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    fits = _PER_EXPERT_DW_FITS.get(key)
+    if fits is None:
+        fits = True
+        try:
+            if not getattr(torch.version, "hip", None):
+                from ..autotune_cache import _estimate_smem
+
+                props = torch.cuda.get_device_properties(index)
+                smem = int(props.shared_memory_per_block_optin)
+                tile = types.SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                need = _estimate_smem("dW", tile, act_bytes, act_bytes, (props.major, props.minor))
+                fits = need <= smem
+                if not fits:
+                    logger.info(
+                        f"Unsloth: MoE dW tile (M, N, K, stages) {key[2:]} needs ~{need} B shared "
+                        f"memory per-expert, over {smem} B on cuda:{index}; using the legacy dW kernel."
+                    )
+        except Exception:
+            fits = True
+        _PER_EXPERT_DW_FITS[key] = fits
+    return fits
+
+
 def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
@@ -574,6 +612,14 @@ def _launch_grouped_gemm_dW(
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
     per_expert = _use_per_expert_dW_kernel()
+    if (
+        per_expert
+        and not autotune
+        and not _per_expert_dW_fits(
+            X.device, X.element_size(), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
+    ):
+        per_expert = False
 
     if accumulate:
         # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
