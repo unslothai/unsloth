@@ -6,8 +6,9 @@ unfused decode op sequence they replace, both against an fp64 reference, plus th
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
-if not torch.cuda.is_available():
+if not has_real_cuda():
     pytest.skip("needs a CUDA device", allow_module_level = True)
 
 pytest.importorskip("triton")
@@ -200,7 +201,7 @@ def test_decode_strided_int32_positions():
 
 
 def test_decode_split_sync_and_mixed_devices(monkeypatch):
-    # Split models: both helpers drain the source stream like the other eager RoPE entry points.
+    # Split models: the decode helpers never drain the stream on the host.
     cos, sin = _table(64, 128, torch.bfloat16)
     q = torch.randn(2, 4, 1, 128, device = "cuda", dtype = torch.bfloat16)
     k = torch.randn(2, 2, 1, 128, device = "cuda", dtype = torch.bfloat16)
@@ -213,7 +214,7 @@ def test_decode_split_sync_and_mixed_devices(monkeypatch):
     assert (
         QK.decode_qk_norm_rope(n, n, q.transpose(1, 2), k.transpose(1, 2), cos, sin, p) is not None
     )
-    assert len(calls) == 2
+    assert len(calls) == 0
     # any operand off Q's device keeps the unfused path, with nothing written
     before_q, before_k = q.clone(), k.clone()
     assert not RE.decode_rope_inplace(q, k, cos, sin.cpu(), p)
@@ -224,4 +225,23 @@ def test_decode_split_sync_and_mixed_devices(monkeypatch):
     assert QK.decode_qk_norm_rope(n, nc, qs, ks, cos, sin, p) is None
     assert QK.decode_qk_norm_rope(n, n, qs, ks.cpu(), cos, sin, p) is None
     assert QK.decode_qk_norm_rope(n, n, qs, ks, cos, sin.cpu(), p) is None
-    assert len(calls) == 2
+    assert len(calls) == 0
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two real GPUs"
+)
+def test_decode_rope_on_another_device_orders_with_the_copy():
+    # Rotate on GPU 1 with GPU 0 current, then copy to GPU 0: the copy must see rotated values.
+    cos, sin = _table(4096, 128, torch.bfloat16)
+    cos, sin = cos.to("cuda:1"), sin.to("cuda:1")
+    p = torch.randint(0, 4000, (4, 1), device = "cuda:1")
+    for _ in range(3):
+        q = 3 * torch.randn(4, 32, 1, 128, device = "cuda:1", dtype = torch.bfloat16)
+        k = 3 * torch.randn(4, 8, 1, 128, device = "cuda:1", dtype = torch.bfloat16)
+        qu, ku = _unfused_rope(q.clone(), k.clone(), cos, sin, p)
+        with torch.cuda.device(0):
+            assert RE.decode_rope_inplace(q, k, cos, sin, p)
+            q0, k0 = q.to("cuda:0"), k.to("cuda:0")
+        assert torch.allclose(q0.cpu().float(), qu.cpu().float(), atol = 0.05)
+        assert torch.allclose(k0.cpu().float(), ku.cpu().float(), atol = 0.05)

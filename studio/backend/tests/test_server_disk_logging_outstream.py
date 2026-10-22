@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for the Colab "OutStream has no attribute 'watch_fd_thread'"
-startup crash.
-
-Field report (Colab): Unsloth Studio dies at server startup with
-``❌ Unsloth Studio failed to start: 'OutStream' object has no attribute
-'watch_fd_thread'``.
-
-Root cause chain:
-  * Colab's ipykernel ``OutStream`` is created with ``watchfd=False``, so it
-    never gains a ``watch_fd_thread``; the ``OutStream.close()`` shipped in the
-    affected ipykernel versions joins that thread unconditionally and raises
-    ``AttributeError`` (ipython/ipykernel#867).
-  * ``run._setup_server_disk_logging()`` replaces ``sys.stdout``/``sys.stderr``
-    with a ``_TeeStream``. That changes the console object identity, so Colab's
-    ``absl`` logging handler -- which captured the ORIGINAL OutStream and whose
-    ``close()`` deliberately skips ``sys.stdout``/``sys.stderr`` -- no longer
-    recognizes it as the live console.
-  * ``run_server`` builds ``uvicorn.Config(...)``, whose ``configure_logging`` ->
-    ``logging.config.dictConfig`` -> ``logging.shutdown`` closes every existing
-    handler. The absl handler then calls ``OutStream.close()`` on the orphaned
-    stream, and the AttributeError aborts startup.
-
-These tests reproduce the mechanism with a stand-in OutStream (Colab-identical
-constructs are not importable off Colab) and assert the tee/console path used at
-startup survives it.
-"""
+"""Colab OutStream lacks watch_fd_thread, so the console tee must survive logging.shutdown."""
 
 from __future__ import annotations
 
@@ -71,8 +46,7 @@ class _ColabOutStream(io.TextIOBase):
         self.watch_fd_thread.join()
 
     def __del__(self):
-        # io.TextIOBase.__del__ would call our buggy close() at GC (the harmless
-        # "Exception ignored" tail seen in Colab); silence it so the test is clean.
+        # Silence io.TextIOBase.__del__ calling the buggy close() at GC.
         pass
 
 
@@ -114,7 +88,7 @@ class TestHardenConsoleClose:
 
         stream = _ColabOutStream("stdout", io.StringIO())
         run_mod._harden_console_close(stream)
-        assert stream.close() is None  # swallowed, no crash
+        assert stream.close() is None
 
     def test_healthy_close_still_runs_fully(self):
         stream = _WatchingOutStream("stdout", io.StringIO())
@@ -133,8 +107,7 @@ class TestHardenConsoleClose:
             stream.close()
 
     def test_unrelated_attributeerror_still_propagates(self):
-        # Only #867 is neutralized; a genuine missing attribute during teardown
-        # must still surface instead of looking like a clean close.
+        # Only ipykernel #867 is neutralized; a genuine missing attribute must still surface.
         class _Console:
             def close(self):
                 return self.not_a_real_attribute
@@ -159,7 +132,6 @@ class TestHardenConsoleClose:
         assert stream.close() is None
 
     def test_unsettable_close_is_left_alone(self):
-        # A stream whose close cannot be reassigned must not raise from hardening.
         class _Frozen:
             __slots__ = ()
 
@@ -167,7 +139,7 @@ class TestHardenConsoleClose:
                 return "ok"
 
         stream = _Frozen()
-        run_mod._harden_console_close(stream)  # must not raise
+        run_mod._harden_console_close(stream)
         assert stream.close() == "ok"
 
 
@@ -177,7 +149,7 @@ class TestTeeStreamClose:
         log = io.StringIO()
         tee = run_mod._TeeStream(console, log)
         tee.write("before-close")
-        tee.close()  # must not raise despite the wrapped stream's broken close
+        tee.close()
         assert log.getvalue() == "before-close"
 
     def test_tee_close_flushes_log(self):
@@ -198,15 +170,7 @@ class TestTeeStreamClose:
 
 
 class TestColabStartupRegression:
-    """End-to-end: the exact trigger -- an absl-style handler closing the
-    orphaned OutStream during the ``logging.shutdown`` that uvicorn's
-    ``uvicorn.Config`` -> ``dictConfig`` runs -- must not crash Unsloth, and the
-    tee must keep logging afterwards.
-
-    ``logging.shutdown`` is driven over a LOCAL weakref list (identical code path
-    to ``logging.config._clearExistingHandlers``) so the global logging state and
-    pytest's own capture are untouched.
-    """
+    """An absl-style handler closing the orphaned OutStream in logging.shutdown must not crash startup."""
 
     def _make_console_and_handlers(self, monkeypatch):
         out_sink, err_sink = io.StringIO(), io.StringIO()
@@ -214,13 +178,10 @@ class TestColabStartupRegression:
         err_stream = _ColabOutStream("stderr", err_sink)
         monkeypatch.setattr(sys, "stdout", out_stream)
         monkeypatch.setattr(sys, "stderr", err_stream)
-        # absl-like handlers capture the ORIGINAL OutStreams (as in Colab).
         handlers = [_AbslLikeHandler(sys.stdout), _AbslLikeHandler(sys.stderr)]
         return out_sink, err_sink, out_stream, err_stream, handlers
 
     def test_baseline_reproduces_crash_without_fix(self, monkeypatch):
-        # Prove the test exercises the real path: swapping the console identity
-        # (what the tee does) makes the absl-like close hit #867.
         _, _, out_stream, err_stream, handlers = self._make_console_and_handlers(monkeypatch)
         try:
             monkeypatch.setattr(sys, "stdout", io.StringIO())
@@ -228,7 +189,6 @@ class TestColabStartupRegression:
             with pytest.raises(AttributeError, match = "watch_fd_thread"):
                 logging.shutdown([weakref.ref(h) for h in handlers])
         finally:
-            # Neutralize so a lingering handler can't crash global teardown.
             run_mod._harden_console_close(out_stream)
             run_mod._harden_console_close(err_stream)
             for h in handlers:
@@ -240,18 +200,15 @@ class TestColabStartupRegression:
     def test_startup_survives_with_harden_and_tee(self, monkeypatch):
         out_sink, _, out_stream, err_stream, handlers = self._make_console_and_handlers(monkeypatch)
 
-        # Exactly what _setup_server_disk_logging does before serving:
         run_mod._harden_console_close(sys.stdout)
         run_mod._harden_console_close(sys.stderr)
         log_fh = io.StringIO()
         monkeypatch.setattr(sys, "stdout", run_mod._TeeStream(sys.stdout, log_fh))
         monkeypatch.setattr(sys, "stderr", run_mod._TeeStream(sys.stderr, log_fh))
 
-        # The close-storm uvicorn triggers via dictConfig -> logging.shutdown,
-        # closing the absl-like handlers over the (now orphaned) OutStreams.
-        logging.shutdown([weakref.ref(h) for h in handlers])  # must NOT raise
+        # uvicorn's dictConfig -> logging.shutdown closes the absl-like handlers over orphaned OutStreams.
+        logging.shutdown([weakref.ref(h) for h in handlers])
 
-        # The tee still tees to both console and disk afterwards.
         print("post-startup-line")
         sys.stdout.flush()
         assert "post-startup-line" in out_sink.getvalue()

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Verify the memory row's disclosure markup and wrapping captions.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ChevronDown } from "lucide-react";
@@ -184,7 +182,6 @@ test("breakdown captions preserve word groups", () => {
 test("an item's own spaces do not break", () => {
   const glued = glueNoteItems("f16 · 262,144 tokens · 4 slots");
   assert.equal(glued, `f16 ·${NBSP}262,144${NBSP}tokens ·${NBSP}4${NBSP}slots`);
-  // One breakable space remains per bullet.
   assert.equal(glued.split(" ").length - 1, 2);
 });
 
@@ -195,7 +192,6 @@ test("the bullet leads its item, so a break cannot orphan it", () => {
 });
 
 test("a note with no separator keeps every break opportunity it had", () => {
-  // Prose captions must still wrap.
   for (const note of [
     "256 of 257 layers on GPU",
     "2.14 GB on GPU",
@@ -224,6 +220,5 @@ test("gluing round-trips the note the row actually builds", () => {
     nParallel: 4,
     kvOnGpu: false,
   });
-  // Only whitespace changes.
   assert.equal(glueNoteItems(note).replace(new RegExp(NBSP, "g"), " "), note);
 });

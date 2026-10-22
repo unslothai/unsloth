@@ -412,9 +412,35 @@ def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
     result = CliRunner().invoke(start.start_app, ["opencode", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    text = config.read_text()
+    assert "// mine" in text and "/* x */" in text
+    data = start._load_app_config(config, text)
     assert (data["model"], data["theme"]) == ("openai/gpt-5.5", "a//b")
     assert "unsloth-studio" in data["provider"]
+
+    assert CliRunner().invoke(start.start_app, ["opencode", "--app"]).exit_code == 0
+    assert config.read_text() == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{}",
+        "{\n  // only a comment\n}\n",
+        '{\n  "provider": {\n    // keep\n    "openai": {"x": 1},\n  },\n}\n',
+        '{"provider": {"unsloth-studio": {"old": true}}, /* tail */ "model": "m"}',
+    ],
+)
+def test_set_app_values_keeps_jsonc_comments(tmp_path, text):
+    path = tmp_path / "opencode.jsonc"
+    updates = [(("provider", "unsloth-studio"), {"npm": "x", "models": {"a": {}}})]
+    out = start._set_app_values(text, path, updates)
+    expected = start._load_app_config(path, text)
+    expected.setdefault("provider", {})["unsloth-studio"] = updates[0][1]
+    assert start._load_app_config(path, out) == expected
+    for comment in ("// only a comment", "// keep", "/* tail */"):
+        assert (comment in out) is (comment in text)
+    assert start._set_app_values(out, path, updates) == out
 
 
 def test_opencode_app_reenables_a_disabled_unsloth(studio, monkeypatch):
@@ -439,7 +465,7 @@ def test_openclaw_app_reads_a_commented_config(studio):
     result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    data = start._load_app_config(config, config.read_text())
     assert data["agents"]["defaults"] == {"model": "openai/gpt-5.5"}
     assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
 
@@ -470,6 +496,35 @@ def test_codex_app_owner_without_psutil(monkeypatch):
     assert start._codex_app_owner_alive(owner) is True
 
 
+def test_hermes_app_replaces_the_provider_an_earlier_run_named_unsloth(studio):
+    yaml = pytest.importorskip("yaml")
+    config = start._hermes_app_target().path
+    config.parent.mkdir(parents = True, exist_ok = True)
+    legacy = {"base_url": f"{BASE}/v1", "api_mode": "openai", "api_key": "sk-unsloth-old"}
+    mine = {"base_url": "http://elsewhere.test/v1", "api_key": "k"}
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "model": {"provider": "custom:unsloth", "default": "m"},
+                "providers": {"unsloth": legacy, "other": mine},
+            }
+        )
+    )
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = yaml.safe_load(config.read_text())
+    assert set(data["providers"]) == {"unsloth-studio", "other"}
+    assert data["model"] == {"provider": "custom:unsloth-studio", "default": "m"}
+
+    providers = {"unsloth": {**mine, "base_url": f"{BASE}/v1", "headers": {"x": "1"}}}
+    config.write_text(yaml.safe_dump({"providers": providers}))
+    result = CliRunner().invoke(start.start_app, ["hermes", "--app"])
+    assert result.exit_code == 0, result.output
+    assert "unsloth" in yaml.safe_load(config.read_text())["providers"]
+
+
 def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     yaml = pytest.importorskip("yaml")
     root = start._hermes_app_target().path.parent
@@ -488,7 +543,7 @@ def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     data = yaml.safe_load(config.read_text())
     assert data["model"] == {"default": "openrouter/kimi-k3", "provider": "openrouter"}
     assert "compression" not in data
-    provider = data["providers"]["unsloth"]
+    provider = data["providers"]["unsloth-studio"]
     assert provider["api_key"] == APP_KEY
     assert provider["base_url"] == f"{BASE}/v1"
     assert "key_env" not in provider

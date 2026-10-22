@@ -21,6 +21,7 @@ import type {
 } from "../api/keyless-api-access";
 import { ApiKeyRow } from "../components/api-key-row";
 import { AudioApiExamples } from "../components/audio-api-examples";
+import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
 import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
@@ -213,6 +214,13 @@ export function ApiKeysTab() {
       ) : null}
 
       <AudioApiExamples
+        apiKey={revealed}
+        useTunnel={useTunnel}
+        keylessScope={keyless.scope}
+        keylessExposure={keyless.exposure}
+      />
+
+      <MediaApiExamples
         apiKey={revealed}
         useTunnel={useTunnel}
         keylessScope={keyless.scope}
