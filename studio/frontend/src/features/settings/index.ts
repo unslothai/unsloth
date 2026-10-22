@@ -117,6 +117,7 @@ export {
   currentBinding,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
+  resolveBindings,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
@@ -134,4 +135,8 @@ export {
 } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
-export { isMacPlatform } from "./lib/keyboard-shortcuts";
+export {
+  isMacPlatform,
+  isModEnter,
+  modEnterLabel,
+} from "./lib/keyboard-shortcuts";

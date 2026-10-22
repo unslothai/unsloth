@@ -1089,6 +1089,10 @@ export const hi = {
       alternateSlot: "वैकल्पिक शॉर्टकट",
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
+      metaUnsupported: "Windows कुंजी का उपयोग शॉर्टकट में नहीं किया जा सकता।",
+      altGraphUnsupported: "AltGr संयोजनों को शॉर्टकट के रूप में उपयोग नहीं किया जा सकता।",
+      desktopOnly: "केवल डेस्कटॉप ऐप में",
+      builtInKey: "अंतर्निहित: {key}",
       actions: {
         findInPage: {
           label: "पेज में खोजें",
@@ -1289,6 +1293,10 @@ export const hi = {
         steerMessage: {
           label: "उत्तर बदलें",
           description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
+        stopGeneration: {
+          label: "जनरेशन रोकें",
+          description: "लिखा जा रहा जवाब रोकें",
         },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
@@ -1812,20 +1820,14 @@ export const hi = {
       },
       notifications: {
         sectionTitle: "सूचनाएं",
-        showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
-        showLlamaUpdatesDescription:
-          "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
-        showLoadedModels: "लोड किए गए मॉडल का संकेतक",
-        showLoadedModelsDescription:
-          "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
-        showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
-        showAudioCppUpdatesDescription:
-          "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
-        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
-        showUnslothUpdatesDescription:
-          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        showLoadedModels: "लोड किए गए मॉडल कार्ड",
+        showLoadedModelsDescription: "कोने में हर लोड किए गए मॉडल का कार्ड, एक क्लिक में अनलोड करने के लिए।",
+        updateReminders: "अपडेट रिमाइंडर",
+        updateRemindersDescription: "नया संस्करण तैयार होने पर उसे कितनी बार पेश करना है।",
+        llamaHint: "चैट और GGUF मॉडल",
+        audioHint: "स्पीच, संगीत और ट्रांसक्रिप्शन",
         frequency: {
-          always: "हमेशा",
+          always: "उपलब्ध होते ही",
           daily: "दिन में एक बार",
           weekly: "सप्ताह में एक बार",
           biweekly: "हर दो सप्ताह में",
@@ -2071,9 +2073,9 @@ export const hi = {
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
         activityDescription: {
-          daily: "अवधि: {weeks} · {total}",
-          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
-          cumulative: "पिछले {weeks} में कुल {total}",
+          daily: "{since} से {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · {since} से",
+          cumulative: "{since} से कुल {total}",
         },
         mode: {
           daily: "दैनिक",
@@ -2082,8 +2084,9 @@ export const hi = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} वाला हफ़्ता · {tokens}",
-        chartToggle: "चार्ट",
-        chartToggleHint: "साप्ताहिक और संचयी को लेबल वाले अक्षों के साथ चार्ट के रूप में दिखाएँ",
+        emptyDayTooltip: "{date} · कोई गतिविधि नहीं",
+        apiRequests: "API से {count}",
+        cumulativeTooltip: "{date} के सप्ताह तक · कुल {tokens}",
         less: "कम",
         more: "ज़्यादा",
         insightsTitle: "गतिविधि विश्लेषण",
@@ -3149,6 +3152,14 @@ export const hi = {
           "मॉडल नाम से तभी लोड होता है जब मॉडल ऑटो-स्विच चालू हो। इसे चालू करें, या पहले मॉडल को उसके ऑडियो पेज पर लोड करें।",
         useViaApi: "API से इस्तेमाल करें",
       },
+      mediaApi: {
+        title: "इमेज और वीडियो API",
+        description: "OpenAI-संगत एंडपॉइंट से अपने कोड से इमेज और वीडियो बनाएं।",
+        images: "इमेज",
+        video: "वीडियो",
+        placeholderModel: "दिखाया गया मॉडल एक उदाहरण है। इमेज या वीडियो पेज पर मॉडल लोड करें और उसे भरने के लिए उसके API बटन से इसे खोलें।",
+        autoSwitchOff: "मीडिया ऑटो-स्विच बंद है, इसलिए अनुरोध उसी मॉडल पर चलते हैं जो पेज ने लोड किया है, चाहे वे कोई भी नाम दें।",
+      },
       decisionApi: {
         title: "निर्णय API",
         docs: "दस्तावेज़",
@@ -3228,6 +3239,24 @@ export const hi = {
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
+      whisperCppVersion: "whisper.cpp संस्करण",
+      engines: {
+        title: "इंजन",
+        description: "वे रनटाइम जिनसे Unsloth मॉडल चलाता है। अपडेट बैकग्राउंड में इंस्टॉल होते हैं, रीस्टार्ट की ज़रूरत नहीं।",
+        updatesLabel: "इंजन अपडेट",
+        notInstalled: "इंस्टॉल नहीं है",
+        available: "{version} उपलब्ध",
+        upToDate: "अप टू डेट",
+        updatesAvailable: "अपडेट उपलब्ध हैं",
+        checking: "अपडेट खोजे जा रहे हैं...",
+        checkFailed: "अपडेट नहीं खोजे जा सके। बाद में फिर से कोशिश करें।",
+        unsupported: "इस इंस्टॉल के इंजन Unsloth के बाहर प्रबंधित होते हैं।",
+        checkForUpdates: "अपडेट खोजें",
+        update: "अपडेट करें",
+        updating: "अपडेट हो रहा है...",
+        updated: "इंजन अपडेट हो गए।",
+        updateFailed: "अपडेट विफल: {error}",
+      },
       hardware: "हार्डवेयर",
       gpu: "GPU",
       gpuIntegrated: "इंटीग्रेटेड",
@@ -3313,6 +3342,9 @@ export const hi = {
         docsUpdating: "अपडेट करना",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
