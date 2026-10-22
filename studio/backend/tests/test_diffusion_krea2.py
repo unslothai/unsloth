@@ -289,10 +289,11 @@ def test_krea2_family_wiring():
 
     fam = detect_family("krea/Krea-2-Turbo")
     assert fam is not None and fam.name == KREA2_FAMILY_NAME
-    # Both vendor repos are non-GGUF allowlisted (Turbo for inference, Raw for training); no sd.cpp mapping, so diffusers fallback.
+    # Both vendor repos are non-GGUF allowlisted (Turbo for inference, Raw for training).
     assert _is_trusted_diffusion_repo("krea/Krea-2-Turbo")
     assert _is_trusted_diffusion_repo("krea/Krea-2-Raw")
-    assert not family_sd_cpp_supported(fam)
+    # No-GPU hosts run a Krea 2 GGUF on sd.cpp (gated on a build carrying Krea2; see test_sd_cpp_krea2.py).
+    assert family_sd_cpp_supported(fam)
     # Krea2TimestepEmbedding runs at M = batch; int8 (torch._int_mm, M above 16) must skip it.
     assert "time_embed" in exclude_tokens_for_scheme(TQ_INT8)
     # Adapters train on Raw but run on Turbo, so the family carries a deploy override.

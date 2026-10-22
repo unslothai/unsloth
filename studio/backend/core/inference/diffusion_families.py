@@ -377,6 +377,8 @@ _FLUX3_SD_CPP_TEXT_ENCODERS = (
 # FLUX.3 landed upstream in master-968 (leejet/stable-diffusion.cpp#2143), after builds were in the wild. The model
 # version name is in every sd-cli / sd-server that can run it and in none before.
 _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
+# Krea 2 landed upstream in master-721 (leejet/stable-diffusion.cpp#1705); its model version name is the marker.
+_KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
@@ -1153,6 +1155,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Adapters trained on Raw run on Turbo; deploy previews them there (same bf16 precision).
         deploy_base_repo = "krea/Krea-2-Turbo",
         fp16_incompatible = True,
+        # Native (sd.cpp) assets, for no-GPU hosts. The VAE is Krea's own file (AutoencoderKLQwenImage, the Wan 2.1
+        # layout sd.cpp reads for Krea2) from the ungated mirror; Raw and Turbo ship it byte-identical. The encoder is
+        # stock Qwen3-VL-4B-Instruct (Krea's text_encoder matches it tensor for tensor), so FLUX.3's Q8_0 serves both.
+        sd_cpp_vae = ("unsloth/Krea-2-Turbo", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _KREA2_SD_CPP_ARCH_MARKER,
     ),
     # Lumina Image 2.0: a 2.6B single-stream DiT with a Gemma2-2B encoder and a standard AutoencoderKL, so the generic
     # from_pretrained path loads it. NOT aliased to bare "lumina": Lumina-Next checkpoints are a different arch.
@@ -3028,6 +3037,10 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # A full mirror of a loadable base is itself loadable (Krea 2's VAE comes from unsloth/Krea-2-Turbo, the ungated
+    # copy of krea/Krea-2-Turbo), so naming it as a VAE source must not hide it.
+    loadable_lower = {r.strip().lower() for r in loadable if r}
+    loadable.update(m for u, m in _ALL_MIRROR_PAIRS if u.strip().lower() in loadable_lower)
     return (
         frozenset(r.strip().lower() for r in companions - loadable if r)
         | _RETIRED_SD_CPP_COMPANION_REPOS
