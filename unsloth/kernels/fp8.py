@@ -879,33 +879,40 @@ def _fp8_block_size(weight, weight_scale):
 
 
 def _fp8_block_gemv_weight_ok(weight, weight_scale):
-    # Everything that depends only on the weight: decided once per (weight, scale), not per decode call.
+    # Everything that depends only on the weight, decided once per (weight, scale): 0 when the GEMV never
+    # takes it, else the most decode rows it takes.
     if not weight.is_cuda or weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
-        return False
+        return 0
     N, K = weight.shape
     # Only where it is never slower than the block GEMM, with L2 flushed or L2-hot (CUDA graph replay),
     # on L4 (58 SMs) and RTX PRO 6000 (188): narrow outputs (down, kv, o), and small weights on small parts.
-    if 2 * N > K or (_sm_count(weight.device) < 100 and N * K > _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS):
-        return False
+    # Small parts also cap the rows: L2-hot, the GEMV's 16-row tile is compute bound past 8 rows, and past 2
+    # on weights over 8M elements (L4: 2048 x 6144 at 4 rows 1.06x, 16 rows 1.98x the GEMM's time).
+    small_gpu = _sm_count(weight.device) < 100
+    if 2 * N > K or (small_gpu and N * K > _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS):
+        return 0
+    max_rows = _FP8_BLOCK_GEMV_MAX_ROWS
+    if small_gpu:
+        max_rows = 2 if N * K > _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS // 2 else 8
     if (
         weight_scale.ndim != 2
         or weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16)
         or weight_scale.device != weight.device
     ):
-        return False
+        return 0
     block_size = _fp8_block_size(weight, weight_scale)
     if len(block_size) != 2:
-        return False
+        return 0
     group_n, group_k = int(block_size[0]), int(block_size[1])
     # Only the stored (N blocks, K blocks) layout; a transposed or mismatched grid keeps the GEMM.
     if tuple(weight_scale.shape) != (triton.cdiv(N, group_n), triton.cdiv(K, group_k)):
-        return False
+        return 0
     if group_n < 1 or group_k < 16 or group_k & (group_k - 1):
-        return False
+        return 0
     if _fp8_kernel_unsupported(weight):
-        return False
+        return 0
     # Triton 3.3 miscompiles fp8 GEMVs on Blackwell; keep the GEMM there.
-    return not _fp8_gemv_miscompiles(weight.device)
+    return 0 if _fp8_gemv_miscompiles(weight.device) else max_rows
 
 
 def can_use_fp8_block_gemv(X, weight, weight_scale):
@@ -914,7 +921,7 @@ def can_use_fp8_block_gemv(X, weight, weight_scale):
         return False
     cached = getattr(weight, "_unsloth_fp8_block_gemv", None)
     if cached is not None and cached[0] is weight_scale:
-        weight_ok = cached[1]
+        weight_ok = cached[1]  # max decode rows, 0 = never
     else:
         weight_ok = _fp8_block_gemv_weight_ok(weight, weight_scale)
         if not torch.compiler.is_compiling():
@@ -928,7 +935,7 @@ def can_use_fp8_block_gemv(X, weight, weight_scale):
         return False
     rows = X.numel() // K
     # Decode only: one token per sequence, prefill keeps the block GEMM.
-    if not 1 <= rows <= _FP8_BLOCK_GEMV_MAX_ROWS or (X.dim() >= 3 and X.shape[-2] != 1):
+    if not 1 <= rows <= weight_ok or (X.dim() >= 3 and X.shape[-2] != 1):
         return False
     return not (torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad))
 

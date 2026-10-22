@@ -68,7 +68,8 @@ def test_block_gemv_matches_oracle_and_beats_act_quant(dtype, M, NK):
     N, K = NK
     q, s = _quantize(N, K, seed = M)
     X = torch.randn(M, 1, K, device = "cuda", dtype = torch.float32).to(dtype)
-    assert F8.can_use_fp8_block_gemv(X, q, s)
+    # Routed on every part up to 2 rows; past that, small parts cap the rows (test_small_gpu_row_cap).
+    assert M > 2 or F8.can_use_fp8_block_gemv(X, q, s)
     with torch.no_grad():
         y = F8.fp8_block_gemv(X, q, s)
         y_main = F8.fp8_torch_block_quant_forward(X, q, s)
@@ -242,3 +243,17 @@ def test_router_binding_follows_sm_count():
         pytest.skip("FBGEMM / torchao block route: the GEMV wraps it")
     big = torch.version.hip is None and min(F8._SM_COUNTS) >= 100
     assert (bound is F8._fp8_block_small_m_first) == big
+
+
+def test_small_gpu_row_cap(monkeypatch):
+    # Below 100 SMs the GEMV takes up to 8 rows, and up to 2 on weights over 8M elements, where the L2-hot
+    # (CUDA graph replay) GEMV fell behind the block GEMM; 100+ SM parts take all 16.
+    def rows_ok(sms, N, K, rows):
+        monkeypatch.setattr(F8, "_sm_count", lambda device: sms)
+        q, s = _quantize(N, K)
+        X = torch.randn(rows, 1, K, device = "cuda", dtype = torch.bfloat16)
+        return F8.can_use_fp8_block_gemv(X, _uncached(q), s)
+
+    assert rows_ok(58, 1024, 4096, 8) and not rows_ok(58, 1024, 4096, 9)
+    assert rows_ok(58, 2048, 6144, 2) and not rows_ok(58, 2048, 6144, 3)
+    assert rows_ok(188, 2048, 6144, 16) and rows_ok(188, 1024, 4096, 16)
