@@ -159,15 +159,11 @@ test("a rejected tool change resyncs and shows the error inline, and an older ba
     TOOLS.indexOf("if (!(settings || error))"),
   );
   assert.ok(
-    toggle.indexOf("updateMcpTools(disabled)") <
+    toggle.indexOf("updateMcpTool(name, on)") <
       toggle.lastIndexOf("loadMcpAccess()"),
   );
-  // The full list is rebuilt from a fresh read, not this tab's possibly stale copy.
-  assert.ok(
-    toggle.indexOf("const latest = await loadMcpAccess()") <
-      toggle.indexOf("updateMcpTools(disabled)"),
-  );
-  assert.match(toggle, /latest\.tools\s*\.filter/);
+  // One tool's state, merged on the server: never a full list built from this tab's copy.
+  assert.doesNotMatch(toggle, /updateMcpTools|\.filter\(/);
   assert.match(toggle, /t\("settings\.mcp\.tools\.saveError"\)/);
   assert.match(TOOLS, /translate\("settings\.mcp\.tools\.loadError"\)/);
   assert.match(TOOLS, /text-xs leading-snug text-destructive/);

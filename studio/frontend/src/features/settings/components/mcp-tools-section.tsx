@@ -34,7 +34,7 @@ import {
   type McpAccessSettings,
   type McpToolSetting,
   loadMcpAccess,
-  updateMcpTools,
+  updateMcpTool,
 } from "../api/mcp-access";
 import { mcpToolLabelKey } from "./mcp-tool-labels";
 import { SettingsSection } from "./settings-section";
@@ -141,16 +141,7 @@ export function McpToolsSection(): ReactElement | null {
     setSaving(true);
     setError(null);
     try {
-      // The PUT replaces the whole list; a fresh read keeps another tab's changes.
-      const latest = await loadMcpAccess();
-      if (!latest.tools) {
-        setSettings(latest);
-        return;
-      }
-      const disabled = latest.tools
-        .filter((tool) => (tool.name === name ? !on : !tool.enabled))
-        .map((tool) => tool.name);
-      setSettings(await updateMcpTools(disabled));
+      setSettings(await updateMcpTool(name, on));
     } catch (err) {
       // resync because a rejected update may leave the server value unknown.
       try {

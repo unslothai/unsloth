@@ -158,6 +158,56 @@ def test_the_owner_turns_tools_off_and_back_on(client):
     assert _stored() == {MCP_ENABLED_SETTING_KEY: True, MCP_DISABLED_TOOLS_SETTING_KEY: []}
 
 
+def test_two_windows_toggling_different_tools_both_land(client):
+    # Each window read the same snapshot; a whole-list PUT from the second would drop the first.
+    a = client.put(URL, json = {"tool_states": {"voices": False}}, headers = _owner_session())
+    b = client.put(URL, json = {"tool_states": {"cancel": False}}, headers = _owner_session())
+    assert a.status_code == b.status_code == 200, (a.text, b.text)
+    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: ["cancel", "voices"]}
+    on = client.put(URL, json = {"tool_states": {"voices": True}}, headers = _owner_session())
+    assert _off(on) == ["cancel"]
+
+
+def test_concurrent_tool_states_all_land(client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    names = [entry["name"] for entry in tool_catalog()][:8]
+    with ThreadPoolExecutor(8) as pool:
+        codes = list(
+            pool.map(
+                lambda name: client.put(
+                    URL, json = {"tool_states": {name: False}}, headers = _owner_session()
+                ).status_code,
+                names,
+            )
+        )
+    assert codes == [200] * len(names)
+    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: sorted(names)}
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ({"tool_states": {"cancel": False}, "disabled_tools": []}, 422),
+        ({"tool_states": {"nope": False}}, 422),
+        ({"tool_states": {"cancel": "off"}}, 422),
+        ({"tool_states": None}, 422),
+    ],
+    ids = ["both", "unknown", "non-bool", "null"],
+)
+def test_a_bad_tool_states_body_writes_nothing(client, body, code):
+    response = client.put(URL, json = body, headers = _owner_session())
+    assert response.status_code == code, response.text
+    assert _stored() == {}
+
+
+def test_tool_states_on_an_unreadable_list_is_a_conflict(client):
+    studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: "x"})
+    response = client.put(URL, json = {"tool_states": {"cancel": True}}, headers = _owner_session())
+    assert response.status_code == 409, response.text
+    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: "x"}
+
+
 @pytest.mark.parametrize(
     "body",
     [

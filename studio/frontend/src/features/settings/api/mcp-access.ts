@@ -70,13 +70,14 @@ export function updateMcpAccess(enabled: boolean): Promise<McpAccessSettings> {
   });
 }
 
-/** Replaces the owner's list of turned-off tools. */
-export function updateMcpTools(
-  disabledTools: readonly string[],
+/** Turns one tool on or off; the server merges it into the stored list. */
+export function updateMcpTool(
+  name: string,
+  enabled: boolean,
 ): Promise<McpAccessSettings> {
   return request("Failed to update agent access tools", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ disabled_tools: disabledTools }),
+    body: JSON.stringify({ tool_states: { [name]: enabled } }),
   });
 }
