@@ -8933,12 +8933,13 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# triton-windows: torch 2.13 -> 3.7, 2.14 -> 3.8, older keeps <3.7.
+# triton-windows follows the Triton each torch pins: 2.12 and 2.13 -> 3.7, 2.14 -> 3.8, older keeps <3.7.
 function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
     if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
     if ($TorchVersion -match '^2\.(\d+)\.') {
         switch ([int]$Matches[1]) {
+            12 { return "triton-windows>=3.7,<3.8" }
             13 { return "triton-windows>=3.7,<3.8" }
             14 { return "triton-windows>=3.8,<3.9" }
         }

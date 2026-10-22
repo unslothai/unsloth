@@ -256,8 +256,8 @@ def _crt_headers_reachable() -> bool:
 def _triton_windows_spec() -> str:
     """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
 
-    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.13
-    pins triton 3.7 and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
+    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.12 and
+    2.13 pin triton 3.7 and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
     A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
     """
     import platform  # noqa: PLC0415
@@ -269,7 +269,7 @@ def _triton_windows_spec() -> str:
         major, minor = (int(part) for part in version("torch").split("+", 1)[0].split(".")[:2])
     except Exception:  # noqa: BLE001 -- a hint must never raise
         return "triton-windows<3.7"
-    if (major, minor) == (2, 13):
+    if (major, minor) in ((2, 12), (2, 13)):
         return "triton-windows>=3.7,<3.8"
     if (major, minor) == (2, 14):
         return "triton-windows>=3.8,<3.9"
