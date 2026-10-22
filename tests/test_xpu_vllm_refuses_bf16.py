@@ -24,7 +24,14 @@ def _vllm_gate(name):
     raise AssertionError(f"vLLM bf16 gate not found in {name}")
 
 
-def _resolve(name, device_type, dtype, fast_inference, refuses, vllm_available = True):
+def _resolve(
+    name,
+    device_type,
+    dtype,
+    fast_inference,
+    refuses,
+    vllm_available = True,
+):
     namespace = {
         "torch": torch,
         "dtype": dtype,

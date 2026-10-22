@@ -30,9 +30,7 @@ def test_xpu_bf16_model_with_the_fp16_idiom_trains_in_bf16():
 
 
 def test_xpu_bf16_model_with_both_flags_trains_in_bf16():
-    args, env = _run(
-        torch.bfloat16, bf16_supported = False, fp16 = True, bf16 = True, device_type = "xpu"
-    )
+    args, env = _run(torch.bfloat16, bf16_supported = False, fp16 = True, bf16 = True, device_type = "xpu")
     assert (args.fp16, args.bf16) == (False, True)
     assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
 
