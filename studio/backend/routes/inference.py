@@ -9349,8 +9349,23 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return slot.llama if slot is not None else _llama_cpp_backend
 
 
+def _worker_exited(slot: Optional[_ExtraSlot]) -> bool:
+    proc = getattr(model_slots.in_slot(slot, _peek_inference_backend), "_proc", None)
+    return proc is not None and not proc.is_alive()
+
+
+def _reap_dead_workers(slots: list) -> None:
+    for slot in slots:
+        model_slots.in_slot(slot, lambda: reap_dead_worker(_peek_inference_backend()))
+
+
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
     """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
+    # A killed worker keeps its model named, so status, routing and auto-switch would keep picking
+    # it. is_alive() is a non-blocking waitpid; only the reap leaves the loop.
+    exited = [slot for slot in (None, *model_slots.visible()) if _worker_exited(slot)]
+    if exited:
+        await asyncio.to_thread(_reap_dead_workers, exited)
     return await model_slots.route(requested, _loaded_satisfies)
 
 
@@ -12827,7 +12842,7 @@ def reap_dead_managed_engine(backend) -> None:
 
 
 def reap_dead_worker(backend) -> None:
-    """Cleared, never respawned: status is polled, so a respawn after an OOM kill would loop."""
+    """Cleared, never respawned: every routed request runs this, so an OOM respawn would loop."""
     from core.inference.gpu_arbiter import CHAT, holds
 
     if getattr(backend, "_proc", None) is None:
@@ -23723,7 +23738,6 @@ def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
         if public:
             checkpoints[public] = _llama_status_model_ids(llama)[1] or public
     backend = _peek_inference_backend()
-    reap_dead_worker(backend)
     name = getattr(backend, "active_model_name", None)
     if name:
         checkpoints[_orchestrator_public_model_id(backend) or name] = name
@@ -23739,8 +23753,6 @@ async def _slot_status(current_subject: str):
     backend = _peek_inference_backend()
     if getattr(backend, "_managed_engine", None) is not None:
         await asyncio.to_thread(reap_dead_managed_engine, backend)
-    else:
-        await asyncio.to_thread(reap_dead_worker, backend)
     if on_primary and account_access.resident_hidden("chat"):
         return account_access.hidden_chat_status_response()
     try:

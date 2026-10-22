@@ -68,6 +68,34 @@ def test_status_stops_reporting_a_model_whose_worker_was_killed(monkeypatch, rel
     assert released == ["release", "chat"]
 
 
+def test_an_api_request_clears_a_model_whose_worker_was_killed(monkeypatch, released):
+    from starlette.requests import Request
+
+    backend = _orchestrator()
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/v1/chat/completions", "headers": []}
+    )
+
+    asyncio.run(inference_route._maybe_auto_switch_model(None, request, "user"))
+
+    assert backend.active_model_name is None and backend._proc is None
+
+
+def test_a_request_is_not_routed_to_a_kept_model_whose_worker_was_killed(monkeypatch, released):
+    from core.inference import model_slots
+
+    kept = _orchestrator()
+    llama = SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None)
+    slot = model_slots.ExtraSlot(llama = llama, orchestrator = kept, account = "user")
+    monkeypatch.setattr(model_slots, "slots", [slot])
+
+    routed = asyncio.run(inference_route._route_to_extra_slot(MODEL))
+
+    assert routed is None
+    assert kept.active_model_name is None and kept._proc is None
+
+
 @pytest.mark.parametrize("state", ["alive", "loading", "replying"])
 def test_status_keeps_a_model_whose_worker_may_still_answer(monkeypatch, released, state):
     backend = _orchestrator(killed = state != "alive")
