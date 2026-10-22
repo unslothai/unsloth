@@ -98,10 +98,14 @@ def _compile_counts(fn, *inputs, dynamic):
 def test_gqa_probe_takes_symbolic_head_sizes(dynamic):
     # dynamic=True makes head_dim and the head counts SymInts; the constant-result probe must still trace.
     def state(Q, K):
-        takes = ad._sdpa_gqa_state(str(Q.device), Q.dtype, Q.shape[-1], Q.shape[1], K.shape[1], False, True)
+        takes = ad._sdpa_gqa_state(
+            str(Q.device), Q.dtype, Q.shape[-1], Q.shape[1], K.shape[1], False, True
+        )
         return Q.sum() + K.sum() + (1 if takes else 2)
 
-    inputs = [(torch.zeros(b, 8, t, 64), torch.zeros(b, 2, t, 64)) for b, t in ((3, 10), (5, 12), (6, 14))]
+    inputs = [
+        (torch.zeros(b, 8, t, 64), torch.zeros(b, 2, t, 64)) for b, t in ((3, 10), (5, 12), (6, 14))
+    ]
     outs, graphs, breaks = _compile_counts(state, *inputs, dynamic = dynamic)
     want = 1 if ad._sdpa_gqa_state("cpu", torch.float32, 64, 8, 2, False, True) else 2
     assert [out.item() for out in outs] == [want] * 3
@@ -114,7 +118,9 @@ def test_gqa_probe_takes_symbolic_head_sizes(dynamic):
 @pytest.mark.parametrize("dynamic", [False, True])
 def test_varlen_probe_takes_symbolic_head_sizes(dynamic):
     def beats(Q, K):
-        return Q.sum() + K.sum() + (1 if ad._torch_varlen_beats_segments(Q, K, (5, 3), 2, True) else 2)
+        return (
+            Q.sum() + K.sum() + (1 if ad._torch_varlen_beats_segments(Q, K, (5, 3), 2, True) else 2)
+        )
 
     Q, K = torch.zeros(1, 4, 8, 16), torch.zeros(1, 2, 8, 16)
     outs, _, breaks = _compile_counts(beats, (Q, K), dynamic = dynamic)
@@ -125,7 +131,9 @@ def test_varlen_probe_takes_symbolic_head_sizes(dynamic):
 
 def _has_real_cuda():
     try:
-        from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+        from real_accelerator import (
+            has_real_cuda,
+        )  # tests/_shared, on sys.path via tests/conftest.py
     except Exception:
         return torch.cuda.is_available()
     return has_real_cuda()
@@ -167,7 +175,9 @@ def test_cuda_gqa_sdpa_compiles_fullgraph(dynamic):
     for bsz, q_len in shapes:
         g = torch.Generator(device = "cuda").manual_seed(q_len)
         Q, K, V = (
-            torch.randn(bsz, h, q_len, 64, device = "cuda", generator = g, dtype = torch.bfloat16).requires_grad_()
+            torch.randn(
+                bsz, h, q_len, 64, device = "cuda", generator = g, dtype = torch.bfloat16
+            ).requires_grad_()
             for h in (8, 2, 2)
         )
         out = compiled(Q, K, V)
