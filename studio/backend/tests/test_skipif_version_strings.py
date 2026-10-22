@@ -42,8 +42,19 @@ def _version_names(tree: ast.AST) -> set[str]:
     }
 
 
-def _is_version_string(node: ast.expr, version_names: set[str]) -> bool:
+def _version_value_names(tree: ast.AST) -> set[str]:
+    """Names bound to the strings themselves by ``from torch.version import hip / cuda [as x]``."""
+    return {n for attr in _VERSION_ATTRS for n in _imported_names(tree, "torch.version", attr)}
+
+
+def _is_version_string(
+    node: ast.expr,
+    version_names: set[str],
+    value_names: set[str] = frozenset(),
+) -> bool:
     # <torch or any alias>.version.hip / .cuda, or <from-imported version>.hip / .cuda
+    if isinstance(node, ast.Name):
+        return node.id in value_names
     if not (isinstance(node, ast.Attribute) and node.attr in _VERSION_ATTRS):
         return False
     owner = node.value
@@ -52,20 +63,32 @@ def _is_version_string(node: ast.expr, version_names: set[str]) -> bool:
     )
 
 
-def _string_operands(condition: ast.expr, version_names: set[str] = frozenset()) -> list[str]:
+def _string_operands(
+    condition: ast.expr,
+    version_names: set[str] = frozenset(),
+    value_names: set[str] = frozenset(),
+) -> list[str]:
     """Operands a condition can evaluate to: ``or`` can return any operand, ``and`` only its last one, a
     conditional expression either branch."""
     if isinstance(condition, ast.BoolOp):
         values = condition.values if isinstance(condition.op, ast.Or) else condition.values[-1:]
-        return [found for value in values for found in _string_operands(value, version_names)]
+        return [
+            found
+            for value in values
+            for found in _string_operands(value, version_names, value_names)
+        ]
     if isinstance(condition, ast.NamedExpr):
-        return _string_operands(condition.value, version_names)
+        return _string_operands(condition.value, version_names, value_names)
     if isinstance(condition, ast.IfExp):
         return [
-            *_string_operands(condition.body, version_names),
-            *_string_operands(condition.orelse, version_names),
+            *_string_operands(condition.body, version_names, value_names),
+            *_string_operands(condition.orelse, version_names, value_names),
         ]
-    return [ast.unparse(condition)] if _is_version_string(condition, version_names) else []
+    return (
+        [ast.unparse(condition)]
+        if _is_version_string(condition, version_names, value_names)
+        else []
+    )
 
 
 def _marker_conditions(node: ast.AST, mark_names: set[str] = frozenset()) -> list[ast.expr]:
@@ -130,7 +153,10 @@ def test_ternaries_from_imports_and_marker_semantics(tmp_path, monkeypatch):
         "    pytest.xfail(v.hip)\n"
         "from pytest import mark as m\n"
         "@m.skipif((h := v.cuda), reason = 'x')\n"
-        "def test_d(): pass\n",
+        "def test_d(): pass\n"
+        "from torch.version import hip as hv\n"
+        "@pytest.mark.skipif(hv, reason = 'x')\n"
+        "def test_e(): pass\n",
         encoding = "utf-8",
     )
     monkeypatch.setattr(sys.modules[__name__], "_TESTS", tmp_path)
@@ -141,6 +167,7 @@ def test_ternaries_from_imports_and_marker_semantics(tmp_path, monkeypatch):
     assert "test_more.py:5" not in str(offenders)  # condition= wins over positionals
     assert "test_more.py:8" not in str(offenders)  # imperative pytest.xfail takes a reason
     assert "test_more.py:10: v.cuda" in str(offenders)  # from pytest import mark, walrus
+    assert "test_more.py:13: hv" in str(offenders)  # from torch.version import hip
 
 
 def test_no_skip_condition_can_evaluate_to_a_version_string():
@@ -156,12 +183,13 @@ def test_no_skip_condition_can_evaluate_to_a_version_string():
         except SyntaxError:
             continue
         names = _version_names(tree)
+        values = _version_value_names(tree)
         marks = _imported_names(tree, "pytest", "mark")
         for node in ast.walk(tree):
             for operand in (
                 found
                 for c in _marker_conditions(node, marks)
-                for found in _string_operands(c, names)
+                for found in _string_operands(c, names, values)
             ):
                 offenders.append(f"{path.relative_to(_TESTS)}:{node.lineno}: {operand}")
     assert not offenders, offenders
