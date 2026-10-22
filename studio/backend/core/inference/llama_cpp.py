@@ -4074,7 +4074,6 @@ def _pick_mmproj(
 def _mmproj_picker(
     model: Optional[str], weight_path: Optional[str] = None
 ) -> Callable[[list[str]], Optional[str]]:
-    """The projector pick for this model on this machine."""
     from utils.models.model_config import mmproj_order
 
     order = mmproj_order(model, weight_path)

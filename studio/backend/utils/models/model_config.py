@@ -2102,9 +2102,8 @@ def _pairing_stem(name: str) -> str:
 
 
 def mmproj_weight_match(weight: Optional[str], mmproj_name: str) -> int:
-    """Shared whole-token prefix of a weight and a projector, past ``mmproj-`` and before the
-    precision tag (an F16 weight never pairs with the F16 projector over the BF16 one); a projector
-    named exactly after the checkpoint beats a longer one (``Model-7B`` over ``Model-7B-v2``)."""
+    """Whole-token prefix shared past ``mmproj-`` and before the precision tag (an F16 weight must
+    not pull the F16 projector); an exact checkpoint name beats a longer one (``Model-7B-v2``)."""
     if not weight:
         return 0
     a, b = _pairing_stem(weight), _pairing_stem(mmproj_name)
