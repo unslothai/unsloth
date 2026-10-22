@@ -1843,7 +1843,7 @@ async def _media_fields(fields: dict) -> dict:
 
 
 async def _audio_upload_to_data_url(upload: UploadFile, name: str) -> str:
-    data = await upload.read()
+    data = await upload.read(_VIDEO_REFERENCE_AUDIO_MAX_BYTES + 1)
     if not data:
         raise _openai_video_error(400, f"{name} is empty.", param = "reference_audios")
     if len(data) > _VIDEO_REFERENCE_AUDIO_MAX_BYTES:
@@ -1944,7 +1944,7 @@ async def _reference_to_data_url(reference: Any, param: str = "input_reference")
         if reference is None:
             return None
     if isinstance(reference, UploadFile):
-        data = await reference.read()
+        data = await reference.read(VIDEO_INPUT_REFERENCE_MAX_BYTES + 1)
         if not data:
             raise _openai_video_error(400, f"{param} is empty.", param = param)
         if len(data) > VIDEO_INPUT_REFERENCE_MAX_BYTES:

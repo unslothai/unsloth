@@ -6311,6 +6311,14 @@ class AudioRunRequest(BaseModel):
         pattern = r"^[A-Za-z0-9_-]+$",
         description = "Your id for this run; POST it to /audio/cancel to stop the run",
     )
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, Speak sends the text to that "
+        "connection's /audio/speech as `model` and the clip is saved to history.",
+    )
+    voice: Optional[str] = Field(
+        None, max_length = 256, description = "Voice on the connection named by `provider_id`."
+    )
 
     @model_validator(mode = "after")
     def _take_fields(self):
