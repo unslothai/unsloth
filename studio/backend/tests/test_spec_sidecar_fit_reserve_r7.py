@@ -525,3 +525,39 @@ def test_borrowed_tensor_detection(tmp_path, monkeypatch, present, borrows):
     monkeypatch.setattr(gm, "_gguf_shard_has_named_tensor", lambda path, name: name in present)
     assert _lc._sidecar_borrows_target_tensors(str(draft)) is borrows
     assert _lc._sidecar_borrows_target_tensors(None) is True
+
+
+def test_the_underscore_tensor_split_spelling_places_the_draft(tmp_path, _discrete):
+    """llama.cpp reads --tensor_split as --tensor-split, so 1,0 keeps the drafter on card 0."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    _three_block_drafter(backend)
+    margins = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor_split", "1,0"]))
+    assert len(margins) == 2, margins
+    assert margins[0] >= _FLOOR
+    assert margins[1] < 2048
+
+
+def test_a_tensor_split_launch_gets_no_per_device_reserve(tmp_path, _discrete):
+    """--split-mode tensor folds the cards into one meta device: a per-card --fit-target
+    cannot hold the sidecar, so none is emitted and the load is not reported fit-sized."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    _three_block_drafter(backend)
+    cmd = _dspark(backend, gguf, tmp_path, extra_args = ["--split-mode", "tensor"])
+    assert all(m < 2048 for m in _margins(cmd)), _margins(cmd)
+
+
+@pytest.mark.parametrize(
+    "pin, devices, count, at",
+    [
+        ("Vulkan1", "Vulkan0,Vulkan1", 2, 1),
+        ("vulkan0", "Vulkan0,Vulkan1", 2, 0),
+        ("Vulkan2", "Vulkan0,Vulkan1", 2, None),
+        ("Vulkan1", None, 2, None),
+        ("CUDA1", None, 2, 1),
+        ("CUDA0,CUDA1", "CUDA0,CUDA1", 2, None),
+    ],
+)
+def test_a_draft_pin_resolves_to_its_target_card(pin, devices, count, at):
+    assert _lc._draft_pin_device_index(pin, devices, count) == at

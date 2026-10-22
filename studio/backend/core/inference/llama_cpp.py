@@ -5332,20 +5332,21 @@ def _sidecar_borrows_target_tensors(path: Optional[str]) -> bool:
 def _draft_pin_device_index(
     pin: Optional[str], spawn_devices: Optional[str], device_count: int
 ) -> Optional[int]:
-    """The child's device index a one-card CUDA / ROCm draft pin names, among the target's
-    devices: its position in the --device list (None if absent or the list repeats a card),
-    else CUDA<k> of the masked child. None for any other pin."""
+    """The child's device index a one-card draft pin names, among the target's devices: its
+    position in the --device list (None if absent or the list repeats a card), else a CUDA /
+    ROCm <k> of the masked child. None for any other pin."""
     names = {d.strip().lower() for d in (pin or "").split(",") if d.strip()}
     if len(names) != 1:
         return None
     (name,) = names
-    if not _CUDA_LIKE_DEVICE_RE.match(name):
-        return None
     if spawn_devices:
+        # Any backend's name (Vulkan1, CUDA0) found in the target's own --device list.
         listed = [d.strip().lower() for d in spawn_devices.split(",") if d.strip()]
         if name not in listed or len(set(listed)) != len(listed):
             return None
         return listed.index(name)
+    if not _CUDA_LIKE_DEVICE_RE.match(name):
+        return None
     k = int(re.sub(r"\D", "", name))
     return k if 0 <= k < device_count else None
 
@@ -7466,9 +7467,10 @@ def _extra_args_tensor_split(
         raw = str(env_value).strip()
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
-        if name not in _TENSOR_SPLIT_FLAGS:
+        # _flag_name: llama.cpp accepts --tensor_split for --tensor-split too.
+        if _flag_name(arg) not in _TENSOR_SPLIT_FLAGS:
             continue
+        _, _, inline = arg.partition("=")
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
         if value.strip():
             raw = value.strip()
@@ -31901,6 +31903,12 @@ class LlamaCppBackend:
                 _spec_extras_pick_a_gpu = bool(_spec_device_pick) and not _device_selection_is_cpu(
                     [*cmd, *(_spec_placement_extras or [])], _spec_placement_env
                 )
+                # The spawn attaches the multi-device reserve per card, except under
+                # --split-mode tensor, whose single meta device it cannot size.
+                # (A single-card launch carries it in _sidecar_fit_reserve_mib already.)
+                _sidecar_reserve_at_spawn = bool(_sidecar_fit_reserve_eligible_mib) and (
+                    _extra_args_split_mode(extra_args, os.environ) != "tensor"
+                )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -31915,11 +31923,11 @@ class LlamaCppBackend:
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
                     # Log-only: a multi-device launch attaches its per-card reserve at spawn.
                     dspark_fit_sized = not use_fit
-                    or bool(_sidecar_fit_reserve_mib or _sidecar_fit_reserve_eligible_mib)
+                    or bool(_sidecar_fit_reserve_mib or _sidecar_reserve_at_spawn)
                     or bool(server_caps.get("fit_measures_borrowed_drafts")),
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit
-                    or bool(_sidecar_fit_reserve_mib or _sidecar_fit_reserve_eligible_mib)
+                    or bool(_sidecar_fit_reserve_mib or _sidecar_reserve_at_spawn)
                     or bool(server_caps.get("fit_measures_borrowed_drafts")),
                     # So the fallback says unopenable, not missing. DSpark/DFlash never
                     # reach the drop.
@@ -33913,7 +33921,14 @@ class LlamaCppBackend:
                         _spawn_shares: Optional[list[float]] = [1.0]
                         _spawn_output_dev: Optional[int] = None
                         _spawn_pinned_at: Optional[int] = None
-                        if _spawn_device_count > 1 and not _split_mode_confines_to_one_device(
+                        if (
+                            _spawn_device_count > 1
+                            and _extra_args_split_mode(run_cmd, env) == "tensor"
+                        ):
+                            # --split-mode tensor folds the cards into one meta device, so a
+                            # per-device --fit-target cannot hold the sidecar: no reserve.
+                            _spawn_shares = None
+                        elif _spawn_device_count > 1 and not _split_mode_confines_to_one_device(
                             run_cmd, env
                         ):
                             _spawn_shares = None
