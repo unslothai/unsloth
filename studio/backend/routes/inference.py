@@ -4022,7 +4022,8 @@ def _request_may_use_saved_provider_key(request: Any) -> bool:
         verified = auth_storage.validate_api_key_account(token, touch = False)
         if verified is None or verified[0].get("role") not in (None, "owner"):
             return False
-        if verified[0].get("key_name") != auth_storage.UNSLOTH_START_API_KEY_NAME:
+        # The purpose, not the name: a pre-reservation namesake carries no purpose.
+        if verified[0].get("key_purpose") != auth_storage.UNSLOTH_START_API_KEY_PURPOSE:
             return False
         return not auth_storage.is_internal_api_key(token)
     except Exception:
@@ -32615,8 +32616,9 @@ def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
 
 # Provider replay metadata agent clients drop: Gemini 3 answers 400 to a functionCall without its
 # thoughtSignature (tool call extra_content), and Anthropic to a tool continuation without its signed
-# thinking (message extra_content). Keep both by the tool ids the client echoes back.
-_CONNECTION_TOOL_EXTRAS: collections.OrderedDict = collections.OrderedDict()
+# thinking (message extra_content). Keep both by the tool ids the client echoes back, capped per
+# subject so one account's traffic cannot evict another's.
+_CONNECTION_TOOL_EXTRAS: dict = {}
 _CONNECTION_TOOL_EXTRAS_MAX = 4096
 _CONNECTION_TOOL_EXTRAS_LOCK = threading.Lock()
 
@@ -32624,17 +32626,18 @@ _CONNECTION_TOOL_EXTRAS_LOCK = threading.Lock()
 def _remember_connection_extra(subject: Optional[str], kind: str, tool_id: Any, extra: Any) -> None:
     if not isinstance(tool_id, str) or not tool_id or not isinstance(extra, dict) or not extra:
         return
-    key = (subject or "", kind, tool_id)
+    key = (kind, tool_id)
     with _CONNECTION_TOOL_EXTRAS_LOCK:
-        _CONNECTION_TOOL_EXTRAS[key] = extra
-        _CONNECTION_TOOL_EXTRAS.move_to_end(key)
-        while len(_CONNECTION_TOOL_EXTRAS) > _CONNECTION_TOOL_EXTRAS_MAX:
-            _CONNECTION_TOOL_EXTRAS.popitem(last = False)
+        extras = _CONNECTION_TOOL_EXTRAS.setdefault(subject or "", collections.OrderedDict())
+        extras[key] = extra
+        extras.move_to_end(key)
+        while len(extras) > _CONNECTION_TOOL_EXTRAS_MAX:
+            extras.popitem(last = False)
 
 
 def _connection_extra(subject: Optional[str], kind: str, tool_id: Any) -> Optional[dict]:
     with _CONNECTION_TOOL_EXTRAS_LOCK:
-        return _CONNECTION_TOOL_EXTRAS.get((subject or "", kind, tool_id))
+        return _CONNECTION_TOOL_EXTRAS.get(subject or "", {}).get((kind, tool_id))
 
 
 class _ConnectionExtrasRecorder:

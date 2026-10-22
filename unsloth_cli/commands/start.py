@@ -1933,11 +1933,16 @@ def _agent_api_key(
             "or set UNSLOTH_API_KEY."
         )
     # Older releases could mint for a managed account, which cannot see the owner's model.
+    listed = _http_json(
+        "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
+    ).get("api_keys", [])
+    # A server that reports purposes only honors a key stamped at mint, so a key minted before
+    # the stamp existed is still accepted but cannot reach saved Connections: mint a new one.
+    stamped = any("purpose" in entry for entry in listed)
     owned = {
         entry.get("key_prefix")
-        for entry in _http_json(
-            "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
-        ).get("api_keys", [])
+        for entry in listed
+        if not stamped or entry.get("purpose") == "unsloth_start"
     }
     for key in _cached_keys(cache, base, "minted"):
         if key[len("sk-unsloth-") :][:8] in owned and _key_accepted(base, key):
