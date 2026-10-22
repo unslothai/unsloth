@@ -6476,13 +6476,13 @@ def _fsdp2_merged_offload(model, args, kwargs):
     return offload_all_but_4bit_merge_operands(model)
 
 
-@_fsdp2_collective_save(
-    lambda self, args, kwargs: isinstance(self, PeftModel)
-    and _is_adapter_save_method(_merged_save_method(args, kwargs)),
-    # merged_4bit merges with PEFT where the packed 4-bit weights stay (on the GPU), so those layers'
-    # LoRA weights stay on that device too; every other gathered weight still goes to the CPU.
-    offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
-)
+def _fsdp2_merged_adapter_only(model, args, kwargs):
+    return isinstance(model, PeftModel) and _is_adapter_save_method(_merged_save_method(args, kwargs))
+
+
+# merged_4bit merges with PEFT where the packed 4-bit weights stay (on the GPU), so those layers'
+# LoRA weights stay on that device too; every other gathered weight still goes to the CPU.
+@_fsdp2_collective_save(_fsdp2_merged_adapter_only, offload_to_cpu = _fsdp2_merged_offload)
 def unsloth_generic_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
@@ -6641,11 +6641,9 @@ def unsloth_generic_save_pretrained_merged(
         gc.collect()
 
 
-# Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
-@_fsdp2_collective_save(
-    lambda self, args, kwargs: isinstance(self, PeftModel)
-    and _is_adapter_save_method(_merged_save_method(args, kwargs))
-)
+# Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads, and a
+# merged_4bit push keeps the merge operands on the GPU the same way.
+@_fsdp2_collective_save(_fsdp2_merged_adapter_only, offload_to_cpu = _fsdp2_merged_offload)
 def unsloth_generic_push_to_hub_merged(
     self,
     repo_id: str,

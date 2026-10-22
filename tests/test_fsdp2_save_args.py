@@ -149,13 +149,17 @@ def test_merged_4bit_keeps_gathered_weights_on_their_device(monkeypatch, method,
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
     monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: False)
     monkeypatch.setattr(fsdp2_save, "fsdp2_gathered", _gathered)
-    save = unsloth_save.unsloth_generic_save_pretrained_merged
-    for call in (dict(save_method = method), {}):
-        seen.clear()
-        positional = () if call else (method,)
-        assert save(_Model(), "out", None, *positional, **call) is None
-        got = seen.get("offload_to_cpu", True)
-        assert (got is True) if offload else callable(got)
+    # push_to_hub_merged merges the same way before uploading, so it must decide the same.
+    for save in (
+        unsloth_save.unsloth_generic_save_pretrained_merged,
+        unsloth_save.unsloth_generic_push_to_hub_merged,
+    ):
+        for call in (dict(save_method = method), {}):
+            seen.clear()
+            positional = () if call else (method,)
+            assert save(_Model(), "out", None, *positional, **call) is None
+            got = seen.get("offload_to_cpu", True)
+            assert (got is True) if offload else callable(got), (save.__name__, call)
 
 
 def test_merged_4bit_keeps_only_merge_operands_on_the_gpu():
