@@ -60,6 +60,19 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
+MlxOffload = Optional[Union[Literal["auto", "off"], float]]
+
+
+def _mlx_offload_amount(value: Any) -> Any:
+    """``None`` (the default, as ``"auto"``), ``"auto"``, ``"off"``, or the fraction to read from
+    disk, in (0, 1]."""
+    if value is None or value in ("auto", "off"):
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 1:
+        raise ValueError("must be 'auto', 'off' or the fraction to keep on disk, in (0, 1]")
+    return float(value)
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -204,6 +217,28 @@ class LoadRequest(BaseModel):
             "accuracy drops. Applied only when the model supports it; the status reports the "
             "reason otherwise."
         ),
+    )
+    mlx_ple_offload: MlxOffload = Field(
+        None,
+        description = (
+            "MLX only: the fraction of the per-layer embedding (PLE) tables read from the "
+            "checkpoint on disk instead of held in memory, 'off', or 'auto' (also null): read "
+            "from disk only when the load would otherwise leave less than half the memory past "
+            "the weights for context. Applied only to a model with PLE tables; the status "
+            "reports the reason otherwise."
+        ),
+    )
+    mlx_expert_offload: MlxOffload = Field(
+        None,
+        description = (
+            "MLX only: the fraction of each MoE layer's routed experts read from the checkpoint "
+            "on disk on demand instead of held in memory, 'off', or 'auto' (also null): as "
+            "mlx_ple_offload, after the PLE tables. Slower decode; applied only to quantized "
+            "routed experts."
+        ),
+    )
+    _mlx_offload_amounts = field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")(
+        _mlx_offload_amount
     )
 
     gpu_ids: Optional[List[int]] = Field(
@@ -1125,6 +1160,11 @@ class EstimateMemoryRequest(BaseModel):
         "a model that never used it, and reading it here would quantize an estimate "
         "for a load whose cache stays full width.",
     )
+    mlx_ple_offload: MlxOffload = Field(None, description = "As /load's mlx_ple_offload.")
+    mlx_expert_offload: MlxOffload = Field(None, description = "As /load's mlx_expert_offload.")
+    _mlx_offload_amounts = field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")(
+        _mlx_offload_amount
+    )
 
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", "max_seq_length", mode = "before"
@@ -1175,6 +1215,20 @@ class MlxDraftersResponse(BaseModel):
     """Cached drafters an MLX load of the target could name: those named for it first, in Auto's order."""
 
     drafters: list[MlxDrafter] = Field(default_factory = list)
+
+
+class MlxOffloadEstimate(BaseModel):
+    """What an MLX load reads from disk instead of holding in memory, "auto" decided."""
+
+    ple: Optional[float] = Field(
+        None, description = "Fraction of the PLE tables read from disk; null for none"
+    )
+    experts: Optional[float] = Field(
+        None, description = "Fraction of the routed experts read from disk; null for none"
+    )
+    offloadable: list[Literal["ple", "experts"]] = Field(
+        default_factory = list, description = "What the load can read from disk at all"
+    )
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -1281,6 +1335,11 @@ class EstimateMemoryResponse(BaseModel):
         False,
         description = "True when --n-cpu-moe is set: experts move per-tensor, not "
         "per-block, so the GPU/host split above ignores it and reads high.",
+    )
+    mlx_offload: Optional[MlxOffloadEstimate] = Field(
+        None,
+        description = "MLX: what the load reads from disk instead of memory, priced in "
+        "weights_bytes; null when not MLX.",
     )
 
 
@@ -1389,6 +1448,9 @@ class MemoryEstimate(BaseModel):
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
     )
+    mlx_offload: Optional[MlxOffloadEstimate] = Field(
+        None, description = "MLX: what the load reads from disk; null when not MLX"
+    )
     context_fitted: Optional[int] = Field(
         None,
         description = "The window MLX would fit to this machine's memory for a load that "
@@ -1465,6 +1527,22 @@ class GenerateRequest(BaseModel):
     repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     image_base64: Optional[str] = Field(None, description = "Base64 encoded image for vision models")
+
+
+class MlxOffloadPart(BaseModel):
+    applied: Optional[float] = Field(None, description = "Fraction read from disk; null for none")
+    requested: Optional[Union[str, float]] = Field(None, description = "As the load asked for it")
+    reason: Optional[str] = Field(None, description = "Why a requested offload is not applied")
+
+
+class MlxOffloadStatus(BaseModel):
+    """The PLE tables and routed experts an MLX load reads from disk instead of memory."""
+
+    ple: MlxOffloadPart
+    experts: MlxOffloadPart
+    disk_bytes: Optional[int] = Field(
+        None, description = "Weight bytes the loaded model reads from the checkpoint on demand"
+    )
 
 
 class _InferenceRuntimeFields(BaseModel):
@@ -1749,6 +1827,7 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Why requested int8 prefill is not active, as unsloth_zoo reports it "
         "(for example nax_unavailable or no_eligible_projections)",
     )
+    mlx_offload: Optional[MlxOffloadStatus] = Field(None, description = "MLX: weights read from disk")
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
