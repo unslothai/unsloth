@@ -5098,17 +5098,10 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
 
 
 def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
-    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
-    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
+    """``no_context``: skip only torch's per-device occupancy reads (they leave a resident driver context): the
+    unified-memory correction of amd-smi rows and the torch fallback. The vendor CLI, Windows adapter counters and Linux
+    sysfs still answer; devices are empty only when none of those can."""
     device = get_device()
-    if no_context and IS_ROCM and device == DeviceType.CUDA:
-        return {
-            "available": False,
-            "backend": _backend_label(device),
-            "parent_visible_gpu_ids": [],
-            "devices": [],
-            "index_kind": "relative",
-        }
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -5117,8 +5110,10 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
             result["backend"] = _backend_label(device)
             numeric_ids = parent_visible_spec.get("numeric_ids")
             if IS_ROCM and numeric_ids is not None:
-                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.).
-                _reconcile_rocm_unified_memory(result, numeric_ids)
+                # Fix unified-memory VRAM on AMD iGPUs (Strix Halo etc.). Without it an APU keeps amd-smi's dedicated
+                # slice: an understated total, never an overstated one.
+                if not no_context:
+                    _reconcile_rocm_unified_memory(result, numeric_ids)
             elif not IS_ROCM:
                 # THIS is what /api/system reads (main.py::_get_cached_system_gpu_info),
                 # so the floating monitor's Unknown / 0.00 GiB is repaired here; the twin
