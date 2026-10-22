@@ -2048,11 +2048,40 @@ def _drop_fp8_dequantize_conversions(model):
         patterns = getattr(conversion, "_original_target_patterns", None) or []
         return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
 
+    def _sources(patterns):
+        # The dequantizing copy anchors `.weight` sources with `$` and adds `.weight_scale_inv$` ones.
+        patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
+        return tuple(sorted(p for p in patterns if not p.endswith(".weight_scale_inv")))
+
+    def _source_forms(conversion):
+        return {
+            _sources(getattr(conversion, "_original_source_patterns", None)),
+            _sources(getattr(conversion, "source_patterns", None)),
+        }
+
+    def _ops(conversion):
+        operations = getattr(conversion, "operations", None) or []
+        return tuple(type(op).__name__ for op in operations if not isinstance(op, Fp8Dequantize))
+
+    def _signature(conversion):
+        return (
+            type(conversion),
+            getattr(conversion, "scope_prefix", None),
+            min(_source_forms(conversion)),
+            _targets(conversion),
+            _ops(conversion),
+        )
+
+    def _has_dequant(conversion):
+        return any(isinstance(op, Fp8Dequantize) for op in getattr(conversion, "operations", None) or [])
+
     plain = None
-    kept, kept_ids, changed = [], set(), 0
+    kept, changed = [], 0
+    # Converters the load left untouched stay as they are; a counterpart equal to one is not re-added.
+    retained = {_signature(c) for c in conversions if not _has_dequant(c)}
     for conversion in conversions:
         operations = getattr(conversion, "operations", None) or []
-        if not any(isinstance(op, Fp8Dequantize) for op in operations):
+        if not _has_dequant(conversion):
             kept.append(conversion)
             continue
         if all(isinstance(op, Fp8Dequantize) for op in operations):
@@ -2067,13 +2096,17 @@ def _drop_fp8_dequantize_conversions(model):
             except Exception:
                 plain = []
         # A composite model scopes one converter per submodel; the dequantizing copy can lose its
-        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart.
+        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart with the same
+        # sources, targets and operations (another submodel's converter can share type and targets).
         scope = getattr(conversion, "scope_prefix", None)
+        sources = _source_forms(conversion)
         matches = [
             c
             for c in plain
             if type(c) is type(conversion)
             and _targets(c) == _targets(conversion)
+            and _source_forms(c) & sources
+            and _ops(c) == _ops(conversion)
             and (scope is None or getattr(c, "scope_prefix", None) == scope)
         ]
         if not matches:
@@ -2084,8 +2117,9 @@ def _drop_fp8_dequantize_conversions(model):
             kept.append(conversion)
             continue
         for match in matches:
-            if id(match) not in kept_ids:
-                kept_ids.add(id(match))
+            signature = _signature(match)
+            if signature not in retained:
+                retained.add(signature)
                 kept.append(match)
         changed += 1
     if changed:

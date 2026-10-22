@@ -169,3 +169,43 @@ def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit):
     after = LlamaForCausalLM.from_pretrained(tmp_path / "saved", dtype = torch.bfloat16).state_dict()
     assert before.keys() == after.keys()
     assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkeypatch):
+    # Two submodels whose converters share a type and target but differ in sources: only the
+    # `.weight`-sourced one gets the fp8 dequant prepended. The other one is kept as loaded and must
+    # not gain a second copy, or save_pretrained would reverse it twice.
+    import transformers.conversion_mapping as cm
+    from types import SimpleNamespace
+    from transformers.core_model_loading import Concatenate, MergeModulelist, Transpose, WeightConverter
+    from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+
+    target = "mlp.experts.gate_up_proj"
+
+    def plain():
+        merge = WeightConverter(
+            source_patterns = ["mlp.experts.*.gate_proj.weight", "mlp.experts.*.up_proj.weight"],
+            target_patterns = target,
+            operations = [MergeModulelist(dim = 0), Concatenate(dim = 1)],
+        )
+        merge.scope_prefix = "left"
+        transpose = WeightConverter(source_patterns = target, target_patterns = target, operations = [Transpose(1, 2)])
+        transpose.scope_prefix = "right"
+        return [merge, transpose]
+
+    quantizer = FineGrainedFP8HfQuantizer(FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK]))
+    quantizer.pre_quantized = True
+    loaded = quantizer.update_weight_conversions(plain())
+    model = SimpleNamespace(_weight_conversions = loaded)
+    monkeypatch.setattr(cm, "get_model_conversion_mapping", lambda *a, **k: plain())
+    assert _helper()(model) > 0
+
+    convs = [c for c in model._weight_conversions if isinstance(c, WeightConverter)]
+    transposes = [c for c in convs if any(isinstance(op, Transpose) for op in c.operations)]
+    merges = [c for c in convs if any(isinstance(op, MergeModulelist) for op in c.operations)]
+    assert len(transposes) == 1, [(c.scope_prefix, c._original_source_patterns) for c in transposes]
+    assert len(merges) == 1 and merges[0].scope_prefix == "left"
+    from transformers.integrations.finegrained_fp8 import Fp8Dequantize
+
+    assert not any(isinstance(op, Fp8Dequantize) for c in convs for op in c.operations)
