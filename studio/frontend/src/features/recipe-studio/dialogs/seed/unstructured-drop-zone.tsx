@@ -16,7 +16,15 @@ import {
   UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL,
 } from "./upload-limits";
 
-const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
+// Mirrors UNSTRUCTURED_ALLOWED_EXTS in routes/data_recipe/seed.py (parity test).
+const ACCEPTED_EXTENSIONS = [
+  ".pdf", ".docx", ".txt", ".md", ".markdown", ".html", ".htm", ".xhtml", ".xht",
+  ".doc", ".docm", ".dotx", ".dotm", ".odt", ".ott", ".rtf",
+  ".epub", ".mobi", ".fb2",
+  ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".ods", ".ots",
+  ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppt", ".pps", ".odp", ".otp",
+  ".eml", ".msg", ".mht", ".mhtml",
+];
 
 /** One queued upload: browser bytes, or a desktop drop the backend redeems. */
 type UploadCandidate = {
@@ -256,7 +264,7 @@ export function UnstructuredDropZone({
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD - up to {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}{" "}
+          PDF, Word, EPUB, MOBI, Excel, PowerPoint, HTML, TXT, MD and more - up to {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}{" "}
           each, {UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL} total
         </p>
       </div>
