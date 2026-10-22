@@ -159,8 +159,7 @@ _WRITABLE_RUNTIME_SUBTREES = tuple(
 )
 
 
-# The user-storage mounts among those. A root Studio was configured with (a registered model folder,
-# the HF cache) can live on such a drive, and is still covered under it.
+# User-storage mounts: a configured root on one (model folder, HF cache) still covers paths under it.
 _USER_STORAGE_MOUNTS = tuple(
     os.path.normcase(part) for part in ("/run/media", "/run/mount", "/run/host")
 )
@@ -605,9 +604,7 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # A writable subtree of an otherwise system root. `/dev/shm` and `/run/user/<uid>` are tmpfs the
     # user's own processes write into, so a read there is a read of somebody's data, not of the
     # machine's configuration. Checked before containment, so the enclosing root cannot cover them.
-    # The one exception is a silent root that itself sits INSIDE /run/media, /run/mount or /run/host:
-    # a model folder registered on an external drive, or an HF cache moved there. Only such a root
-    # covers the candidate; `/run` itself never does, and the checks below still run.
+    # Exception: a silent root INSIDE /run/media, /run/mount or /run/host covers it; `/run` itself never does.
     read_roots, write_roots = _silent_roots()
     roots = write_roots if writing else read_roots
     if _uncovered_runtime_subtree(candidate, roots):
@@ -635,10 +632,8 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
             roots = roots + tuple(_resolved_fs_text(r) for r in roots)
         if not _contained_in(resolved, roots):
             return True
-        # The same carve-out for the target: a link inside a silent root (a registered folder on a drive
-        # included) can point into /run/user or elsewhere on the drive, which the broad `/run` root holds.
-        # A root that is itself a link is exempt where the target only follows that link: macOS resolves
-        # `/dev/stdout` to `/dev/fd/1`, and `2> /dev/stderr` must stay silent as it was.
+        # Same carve-out for the target (a link may point into /run/user, held by the broad `/run` root).
+        # Exempt only when it follows its own root link: macOS `/dev/stdout` -> `/dev/fd/1` (`2> /dev/stderr`).
         if _uncovered_runtime_subtree(resolved, roots) and not _follows_its_own_root_link(
             candidate, resolved, lexical_roots
         ):
