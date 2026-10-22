@@ -353,8 +353,11 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  transferBytes: 2_072_012,
-  rawBytes: 6_879_589,
+  // Apple unified-memory fit hint (#14598): the load budget rides the eager GPU info hook and fit check:
+  // +1,034 B raw / +404 B transfer (6,879,345 -> 6,880,379 B raw, 2,071,823 -> 2,072,227 B transfer against
+  // 2749eeedaa, Node 26, 97 chunks). Raised by that.
+  transferBytes: 2_072_416,
+  rawBytes: 6_880_623,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
