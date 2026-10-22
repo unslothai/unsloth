@@ -511,8 +511,9 @@ _cached_settings = functools.lru_cache(maxsize = None)(calculate_settings)
 
 
 def _settings(n_cols):
-    # Cached per width for eager calls (host bound at small shapes); tracing calls it directly.
-    if torch.compiler.is_compiling():
+    # Cached per width for eager calls (host bound at small shapes). Tracing, and a traced op's fake
+    # run with a symbolic width (a SymInt cannot be hashed), call it directly.
+    if torch.compiler.is_compiling() or type(n_cols) is not int:
         return calculate_settings(n_cols)
     return _cached_settings(n_cols)
 
