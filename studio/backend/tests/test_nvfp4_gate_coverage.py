@@ -116,7 +116,11 @@ def test_video_builds_that_failed_the_gate_are_denied_and_not_advertised(
             != "nvfp4"
         ), (repo, requested)
     assert tq.family_denies_scheme(fam.name, "nvfp4", fam.base_repo)
-    assert "accuracy-gate" in tq.explain_unusable_scheme(fam.name, "nvfp4", fam.base_repo)
+    reason = tq.explain_unusable_scheme(fam.name, "nvfp4", fam.base_repo)
+    # A measured failure, not an unmeasured base: the refusal must not say nothing was measured.
+    assert "measured and failed the NVFP4 accuracy gate" in reason
+    assert "LPIPS" in reason
+    assert "nothing has measured" not in reason
 
 
 def test_every_video_family_with_a_hosted_nvfp4_build_is_denied_or_kept_out_of_auto():
@@ -224,3 +228,47 @@ def test_the_mismatch_warning_is_logged_once(monkeypatch, tmp_path, caplog):
 def test_the_installed_version_read_never_raises():
     value = gate.installed_flashinfer_version()
     assert value is None or isinstance(value, str)
+
+
+def test_an_ungated_base_that_was_never_measured_keeps_the_generic_refusal(enabled):
+    reason = tq.explain_unusable_scheme("qwen-image", "nvfp4", "Qwen/Qwen-Image")
+    assert "no reviewed NVFP4 accuracy-gate record" in reason
+    assert "measured and failed" not in reason
+
+
+@pytest.mark.parametrize(
+    ("family", "base"),
+    [("z-image", _ZIMAGE), ("qwen-image", "Qwen/Qwen-Image-2512")],
+)
+def test_every_explicit_gated_nvfp4_pick_warns_on_an_unchecked_flashinfer(
+    monkeypatch, enabled, tmp_path, caplog, family, base
+):
+    """z-image has no nvfp4 deny entry (its record only feeds auto); qwen-image does. Both must warn."""
+    target = _blackwell(monkeypatch)
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
+    assert family not in tq._FAMILY_SCHEME_DENY or "nvfp4" in tq._FAMILY_SCHEME_DENY[family]
+    with caplog.at_level("WARNING"):
+        for _ in range(2):
+            assert (
+                tq.select_transformer_quant_scheme(
+                    target, "nvfp4", family = family, base_repo = base, has_prequant = _hosted
+                )
+                == "nvfp4"
+            )
+    hits = [r for r in caplog.records if "flashinfer 0.7.0" in r.getMessage()]
+    assert len(hits) == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_a_covered_flashinfer_loads_explicit_nvfp4_silently(monkeypatch, enabled, caplog):
+    target = _blackwell(monkeypatch)
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.6.6")
+    with caplog.at_level("WARNING"):
+        assert (
+            tq.select_transformer_quant_scheme(
+                target, "nvfp4", family = "z-image", base_repo = _ZIMAGE, has_prequant = _hosted
+            )
+            == "nvfp4"
+        )
+    assert not [r for r in caplog.records if "nvfp4.gate" in r.getMessage()]

@@ -443,6 +443,22 @@ _HUNYUAN15_INT8_EXCLUDES = (
 # Wan2.2-TI2V-5B: hosted 0.29; weight-only 4-bit (bf16 activations) is already 0.29 at the default grid, and the
 # layer keep-sets that come near 0.25 save about 10% of fp8's bytes, where fp8 (0.17) already passes.
 _NVFP4_GATE_FAILED = frozenset({"nvfp4"})
+# What a refused explicit nvfp4 request says for those families: measured and failed, not merely unmeasured.
+NVFP4_GATE_FAILURES: dict[str, str] = {
+    "hunyuanvideo-1.5": "the hosted NVFP4 build measured LPIPS 0.62 against bf16 (bar 0.25), and no NVFP4 rebuild "
+    "clears it: GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
+    "hunyuanvideo-1.5-720p": "the hosted NVFP4 build (RTN) measured LPIPS 0.59 against bf16 (bar 0.25), and no NVFP4 "
+    "rebuild clears it: on the 480p weights GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
+    "wan2.2-ti2v-5b": "the hosted NVFP4 build measured LPIPS 0.29 to 0.30 against bf16 (bar 0.25); weight-only 4-bit is "
+    "already 0.29, while fp8 passes at 0.17",
+}
+
+
+def nvfp4_gate_failure(family: Optional[str]) -> Optional[str]:
+    """Why ``family``'s nvfp4 builds were measured and failed the accuracy gate, or None (not a measured failure)."""
+    return NVFP4_GATE_FAILURES.get(str(family or "").strip().lower())
+
+
 # nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 # LTX-2 is audiovisual: every block carries an audio-side stream (audio_attn1 / audio_attn2 / audio_ff, fed by

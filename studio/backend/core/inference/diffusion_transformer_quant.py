@@ -477,9 +477,17 @@ def _family_denied(
     if scheme not in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ()):
         return False
     if scheme == TQ_NVFP4 and _nvfp4_gate_passed(family, base_repo):
-        _warn_nvfp4_flashinfer_mismatch(family, base_repo)
         return False
     return True
+
+
+def _nvfp4_gate_failure(family) -> Optional[str]:
+    """The measured gate failure behind a family's nvfp4 deny, or None; lazy, the video registry imports late."""
+    try:
+        from .video_families import nvfp4_gate_failure
+        return nvfp4_gate_failure(family)
+    except Exception:  # noqa: BLE001 -- no reason on file falls back to the generic deny text
+        return None
 
 
 def _warn_nvfp4_flashinfer_mismatch(family, base_repo) -> None:
@@ -555,6 +563,13 @@ def explain_unusable_scheme(
         return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme, base_repo):
         if scheme == TQ_NVFP4:
+            failure = _nvfp4_gate_failure(family)
+            if failure is not None:
+                return (
+                    f"'{scheme}' is ruled out for family '{family}'"
+                    + (f" on base '{base_repo}'" if base_repo else "")
+                    + f": it was measured and failed the NVFP4 accuracy gate ({failure})"
+                )
             return (
                 f"'{scheme}' is ruled out for family '{family}'"
                 + (f" on base '{base_repo}'" if base_repo else "")
@@ -1063,7 +1078,12 @@ def select_transformer_quant_scheme(
     if requested != TQ_AUTO:
         if _family_denied(family, requested, base_repo):
             return None
-        return requested if _scheme_supported(requested, device, unproven_ok = unproven_ok) else None
+        if not _scheme_supported(requested, device, unproven_ok = unproven_ok):
+            return None
+        if requested == TQ_NVFP4:
+            # Every explicit nvfp4 pick, deny-listed family or not, names a flashinfer its gate record does not cover.
+            _warn_nvfp4_flashinfer_mismatch(family, base_repo)
+        return requested
     cap = _capability()
     if cap is None:
         return None
