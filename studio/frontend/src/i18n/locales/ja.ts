@@ -1971,6 +1971,18 @@ export const ja = {
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
       },
+      fullInstall: {
+        label: "インストールの種類",
+        description:
+          "チャット専用 (GGUF)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
+        action: "フルインストールにアップグレード",
+        confirmTitle: "フルインストールにアップグレードしますか？",
+        confirmDescription:
+          "このチャット専用インストールは GGUF モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
+        confirmAction: "アップグレード",
+        keywords:
+          "full install upgrade インストールの種類 フルインストール アップグレード チャット専用 chat only gguf add training トレーニング 学習 train fine-tune pytorch torch エクスポート 動画 画像生成 safetensors",
+      },
       repairInstall: {
         label: "インストールを修復",
         description:
@@ -1979,6 +1991,8 @@ export const ja = {
         confirmTitle: "このインストールを修復しますか？",
         confirmDescription:
           "サーバーを停止してインストーラーを再実行し、このマシンの GPU に合わせて PyTorch を再インストールします。チャットと設定は保持されます。数分かかる場合があります。",
+        confirmDescriptionChatOnly:
+          "サーバーを停止してインストーラーを再実行します。これはチャット専用インストールのため、インストーラーは PyTorch を含むフルインストールにもアップグレードします (合計数 GB)。チャットと設定は保持されます。数分かかる場合があります。",
         confirmAction: "今すぐ修復",
       },
       resetPreferences: {
