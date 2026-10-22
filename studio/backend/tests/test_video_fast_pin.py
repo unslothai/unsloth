@@ -165,8 +165,10 @@ print("DEV0_CONTEXT", primary_active(0))
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2 or torch.version.hip,
-    reason = "needs two CUDA devices",
+    # bool(): a bare torch.version.hip is a string on ROCm, which pytest evaluates as a Python expression ("7.13.99004"
+    # is a SyntaxError), so a two-card ROCm host errored here instead of skipping. The probe reads CUDA driver contexts.
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2 or bool(torch.version.hip),
+    reason = "needs two NVIDIA CUDA devices (reads CUDA driver primary contexts)",
 )
 def test_releasing_a_buffer_on_another_thread_syncs_its_own_card():
     # A buffer registered for cuda:1 and freed on a thread still on device 0 must wait on cuda:1, never open a
