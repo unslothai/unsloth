@@ -569,6 +569,38 @@ def _gpu_taken() -> bool:
     return any(owner != gpu_arbiter.DECISIONS for owner in gpu_arbiter.residents())
 
 
+def _torch_gpu(checkpoint: Checkpoint) -> bool:
+    if _is_mlx(checkpoint) or _is_native(checkpoint):
+        return False
+    if checkpoint.layout == "clef":
+        return True
+    from utils.systemone_settings import get_device as preferred_device
+    from utils.hardware.hardware import DeviceType, get_device
+
+    return preferred_device() == "gpu" and get_device() in (DeviceType.CUDA, DeviceType.XPU)
+
+
+def _gpu_load_in_flight() -> bool:
+    from core.inference import gpu_arbiter
+    from core.inference.gpu_residency import chat_load_in_flight
+
+    if chat_load_in_flight():
+        return True
+    # Held by the acquire that may have just ended the idle worker.
+    if not gpu_arbiter._lock.acquire(blocking = False):
+        return True
+    try:
+        # A CPU-only image or video load releases its GPU claim, so it does not count.
+        return any(
+            owner in gpu_arbiter._residents and gpu_arbiter._media_loading(owner)
+            for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO)
+        )
+    except Exception:
+        return False
+    finally:
+        gpu_arbiter._lock.release()
+
+
 def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
     """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
     from .catalog import clef_unsupported_reason
@@ -1520,6 +1552,25 @@ def evict_for_gpu() -> None:
     _close(agent, release_gpu = False)
 
 
+def evict_idle_worker() -> None:
+    global _agent, _loaded, _device_name, _generation, _unloads
+    from .clef_runtime import ClefAgent
+
+    if not _run_lock.acquire(blocking = False):
+        return
+    try:
+        with _state_lock:
+            if _loading is not None or not isinstance(_agent, (LayaWorker, ClefAgent)):
+                return
+            agent, _agent, _loaded, _device_name = _agent, None, None, None
+            _generation += 1
+            _unloads += 1
+    finally:
+        _run_lock.release()
+    logger.info("System One unloaded the idle decision model to free the GPU")
+    _close(agent)
+
+
 def _holds_gpu() -> bool:
     # A worker that fell back to CPU still holds its CUDA or XPU context until it ends.
     return _device_name not in (None, "cpu") or isinstance(_agent, LayaWorker)
@@ -1586,6 +1637,16 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
             raise Unavailable(503, "model_loading", f"{checkpoint.name} is loading", retry_after = 5)
         # Claimed before the registry probe, so a Hub download admitted from now on sees this load.
         _loading = checkpoint
+    # Checked after the claim, so an eviction that lands before it is still seen.
+    if _torch_gpu(checkpoint) and _gpu_load_in_flight():
+        with _state_lock:
+            _loading = None
+        raise Unavailable(
+            409,
+            "gpu_busy",
+            f"Another model is loading on the GPU; {checkpoint.name} loads once it has.",
+            retry_after = 1,
+        )
     # Outside _state_lock: the registry calls loading_repo_ids() while holding its own lock.
     if _hub_download_active(checkpoint):
         with _state_lock:

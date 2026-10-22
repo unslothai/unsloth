@@ -115,6 +115,7 @@ class SeedInspectResponse(BaseModel):
     split: str | None = None
     subset: str | None = None
     resolved_paths: list[str] | None = None
+    total_rows: int | None = None
 
 
 class UnstructuredFileUploadResponse(BaseModel):
