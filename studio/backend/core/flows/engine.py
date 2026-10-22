@@ -76,10 +76,27 @@ def _derive_seed(
     return int(hashlib.sha256(material).hexdigest()[:8], 16) % (2**31)
 
 
+def _clamp(spec_param: dict, value: Any) -> Any:
+    """Numbers stay inside the catalog's min/max: documents come from imports and the API, not only the editor."""
+    if (
+        spec_param.get("kind") not in ("number", "int")
+        or isinstance(value, bool)
+        or not isinstance(value, (int, float))
+    ):
+        return value
+    low, high = spec_param.get("min"), spec_param.get("max")
+    if low is not None and value < low:
+        value = low
+    if high is not None and value > high:
+        value = high
+    return int(value) if spec_param["kind"] == "int" else value
+
+
 def param_values(spec: dict, node: dict) -> dict:
+    by_id = {p["id"]: p for p in spec["params"]}
     params = {p["id"]: p.get("default") for p in spec["params"]}
     for key, value in (node.get("params") or {}).items():
-        params[key] = value
+        params[key] = _clamp(by_id[key], value) if key in by_id else value
     return params
 
 
@@ -151,6 +168,8 @@ class RunState:
     _pending_progress: dict[str, dict] = field(default_factory = dict)
     _pending_text: dict[tuple[str, str], list[str]] = field(default_factory = dict)
     executed: set[str] = field(default_factory = set)
+    # Every node that failed at least once; a later For Each iteration succeeding must not hide it.
+    ever_failed: set[str] = field(default_factory = set)
     input_overrides: dict[str, dict] = field(default_factory = dict)
     finished_at: Optional[float] = None
     hf_token: Optional[str] = field(default = None, repr = False)
@@ -208,6 +227,8 @@ class RunState:
         state = self.node(node_id)
         state.status = status
         state.message = message
+        if status == "failed":
+            self.ever_failed.add(node_id)
         data: dict[str, Any] = {"status": status}
         if message:
             data["message"] = message
@@ -604,7 +625,7 @@ class FlowEngine:
                 rs.flush()
             if rs.options.get("bake") and not rs.cancelled:
                 await self._bake(rs)
-            failed = [n for n, s in rs.nodes.items() if s.status == "failed"]
+            failed = sorted(rs.ever_failed)
             if rs.cancelled:
                 rs.status = "cancelled"
             elif failed:
@@ -800,7 +821,13 @@ class FlowEngine:
         seed = self._seed(rs, nid, params, inputs, iteration)
         forced = nid in set(rs.options.get("force_nodes") or [])
         baked = (rs.doc.get("baked") or {}).get(nid)
-        if baked and iteration is None and not forced and not rs.options.get("bake"):
+        if (
+            baked
+            and iteration is None
+            and not forced
+            and not rs.options.get("bake")
+            and not rs.options.get("ignore_baked")
+        ):
             self._finish(rs, nid, env, dict(baked), "cached", iteration, message = "Baked")
             return
 
@@ -1017,7 +1044,7 @@ class FlowEngine:
             env.values[nid] = SKIPPED
             rs.set_status(nid, "cancelled")
             return
-        failed_body = [b for b in body if rs.node(b).status == "failed"]
+        failed_body = [b for b in body if b in rs.ever_failed]
         last = items[-1] if items else None
         outputs = {"results": results, "item": last, "index": max(0, len(items) - 1)}
         self._finish(

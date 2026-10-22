@@ -56,6 +56,8 @@ class RunBody(BaseModel):
     target_nodes: list[str] = Field(default_factory = list, max_length = 2000)
     force_nodes: list[str] = Field(default_factory = list, max_length = 2000)
     bake: bool = False
+    # Recompute nodes the flow ships pre-generated (a story's "New story" re-roll).
+    ignore_baked: bool = False
     doc: Optional[dict[str, Any]] = None
 
 
@@ -271,6 +273,9 @@ def _after(request: Request) -> Optional[int]:
 
 
 # POST too: quick tunnels hold a streamed GET until it closes.
+REPLAY_PAGE = 5000
+
+
 @router.post("/runs/{run_id}/events")
 @router.get("/runs/{run_id}/events", include_in_schema = False)
 async def run_events(request: Request, run_id: str) -> StreamingResponse:
@@ -302,11 +307,16 @@ async def run_events(request: Request, run_id: str) -> StreamingResponse:
                 if rs is None:
                     return
             else:
-                for event in await asyncio.to_thread(flows_db.events_after, run_id, after):
-                    sent = event["seq"]
-                    yield _sse(event)
-                    if event["type"] in terminal:
-                        return
+                sent = after
+                while True:
+                    page = await asyncio.to_thread(flows_db.events_after, run_id, sent)
+                    for event in page:
+                        sent = event["seq"]
+                        yield _sse(event)
+                        if event["type"] in terminal:
+                            return
+                    if len(page) < REPLAY_PAGE:
+                        break
                 if rs is None:
                     return
             last = time.monotonic()
@@ -652,7 +662,16 @@ async def export_flow(
             )
 
     try:
-        data, filename, media_type = await package.export_flow(record["doc"], mode, read_media)
+        doc = record["doc"]
+        if mode == "baked":
+            # A Playable export ships what the flow last produced here, not only what an explicit bake stored.
+            latest = {
+                nid: entry["outputs"]
+                for nid, entry in _latest_outputs(flow_id).items()
+                if isinstance(entry.get("outputs"), dict)
+            }
+            doc = {**doc, "baked": {**(doc.get("baked") or {}), **latest}}
+        data, filename, media_type = await package.export_flow(doc, mode, read_media)
     finally:
         if key_id is not None:
             await asyncio.to_thread(flow_caller.revoke_run_key, key_id)

@@ -47,14 +47,22 @@ class PackageError(Exception):
     pass
 
 
+def _local_url(url: Any) -> bool:
+    return isinstance(url, str) and url.startswith("/api/") and "//" not in url and "\\" not in url
+
+
 def scrub(value: Any) -> Any:
-    """Drop secret-looking keys and blank secret-looking strings, recursively."""
+    """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively."""
     if isinstance(value, dict):
-        return {
+        found = {
             k: scrub(v)
             for k, v in value.items()
             if not (isinstance(k, str) and _SECRET_KEY.search(k))
         }
+        # The player fetches media URLs with the user's token; a shared flow must not point it at another origin.
+        if _is_media(found) and "url" in found and not _local_url(found["url"]):
+            found.pop("url")
+        return found
     if isinstance(value, list):
         return [scrub(v) for v in value]
     if isinstance(value, str) and _SECRET_VALUE.search(value):

@@ -375,8 +375,18 @@ export const useDocStore = create<DocState>((set, get) => {
           for (const id of drop) delete next[id];
           return next;
         };
+        let nodes = omit(s.graph.nodes, dropNodes);
+        if (dropGroups.size) {
+          // Membership drives For Each bodies, so a deleted frame must release the nodes it held.
+          for (const [id, n] of Object.entries(nodes)) {
+            if (n.group && dropGroups.has(n.group)) {
+              if (nodes === s.graph.nodes) nodes = { ...nodes };
+              nodes[id] = { ...n, group: null };
+            }
+          }
+        }
         return withGraph(s, {
-          nodes: omit(s.graph.nodes, dropNodes),
+          nodes,
           nodeOrder: dropNodes.size
             ? s.graph.nodeOrder.filter((id) => !dropNodes.has(id))
             : s.graph.nodeOrder,

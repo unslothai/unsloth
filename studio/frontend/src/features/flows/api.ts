@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import { isStudioMediaUrl } from "./media-url";
 import type {
   FlowDocument,
   FlowRecord,
@@ -115,7 +116,7 @@ export interface PlanModel {
 export interface FlowPlan {
   models: PlanModel[];
   gpu_ops: number;
-  cached_nodes: string[];
+  cached_nodes: number;
   errors: ValidationIssue[];
   warnings: ValidationIssue[];
 }
@@ -223,7 +224,7 @@ export async function uploadAsset(file: File): Promise<MediaValue> {
 
 /** Same-origin URL for a MediaValue; authenticated media is fetched as a blob by `useMediaUrl`. */
 export function mediaPath(media: MediaValue): string | null {
-  if (media.url) return media.url;
+  if (isStudioMediaUrl(media.url)) return media.url;
   if (media.ref.startsWith("sha256:") || media.ref.startsWith("flowasset:")) {
     return `${FLOWS_API}/assets/${encodeURIComponent(media.ref)}`;
   }

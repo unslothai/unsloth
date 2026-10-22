@@ -445,13 +445,9 @@ function RootLayout() {
     setAudioMounted(true);
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
-  // Same keep-alive for the Flows player: the last flow played stays mounted, hidden+inert off-route.
+  // The Flows player mounts only on its route: unmounting stops its music, narration and game loop (stories autosave).
   const playFlowId = FLOW_PLAY_ROUTE.exec(pathname)?.[1] ?? null;
   const isFlowPlayRoute = playFlowId !== null;
-  const [mountedPlayFlowId, setMountedPlayFlowId] = useState<string | null>(playFlowId);
-  if (playFlowId && mountedPlayFlowId !== playFlowId) {
-    setMountedPlayFlowId(playFlowId);
-  }
   const isFlowEditorRoute = !isFlowPlayRoute && pathname.startsWith("/flows/");
   // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
@@ -818,18 +814,11 @@ function RootLayout() {
                   </Suspense>
                 </div>
               )}
-              {/* Keep-alive for the Flows player, keyed by flow so switching games starts fresh. */}
-              {mountedPlayFlowId && (
-                <div
-                  className={
-                    isFlowPlayRoute
-                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
-                      : "hidden"
-                  }
-                  inert={!isFlowPlayRoute || undefined}
-                >
+              {/* Keyed by flow so switching games starts fresh. */}
+              {playFlowId && (
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
                   <Suspense fallback={<RouteFallback />}>
-                    <FlowPlayerPage key={mountedPlayFlowId} flowId={mountedPlayFlowId} />
+                    <FlowPlayerPage key={playFlowId} flowId={playFlowId} />
                   </Suspense>
                 </div>
               )}

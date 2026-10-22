@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { isStudioMediaUrl } from "../media-url";
 import type {
   FlowDocument,
   FlowKind,
@@ -81,7 +82,7 @@ async function json<T>(res: Response): Promise<T> {
 const enc = encodeURIComponent;
 
 export function mediaPath(media: MediaValue): string {
-  if (media.url) return media.url;
+  if (isStudioMediaUrl(media.url)) return media.url;
   const ref = media.ref;
   const colon = ref.indexOf(":");
   const kind = ref.slice(0, colon);
@@ -165,7 +166,8 @@ export const playerApi: PlayerApi = {
       await authFetch(`/api/flows/${enc(flowId)}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc }),
+        // A shared story ships its generator output baked; a re-roll has to run it again.
+        body: JSON.stringify({ doc, ignore_baked: true }),
         signal,
       }),
     );

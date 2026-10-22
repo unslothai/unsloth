@@ -21,6 +21,7 @@ import {
 } from "../api";
 import { useDocStore } from "../stores/doc-store";
 import type { FlowParam } from "../types";
+import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
 
 export function formatBytes(bytes: number | null | undefined): string {
@@ -80,7 +81,21 @@ export function RunDialog({
           {params.map((param) => (
             <div key={param.id} className="flex flex-col gap-1 text-sm">
               <span className="font-medium">{param.label ?? param.id}</span>
-              {param.type === "bool" ? (
+              {param.type === "image" || param.type === "audio" ? (
+                <ParamField
+                  spec={{
+                    id: param.id,
+                    kind: "asset",
+                    default: null,
+                    label: param.label ?? param.id,
+                    accept: param.type,
+                  }}
+                  value={values[param.id] ?? null}
+                  onChange={(value) =>
+                    setValues((v) => ({ ...v, [param.id]: value }))
+                  }
+                />
+              ) : param.type === "bool" ? (
                 <input
                   type="checkbox"
                   aria-label={param.label ?? param.id}
@@ -210,7 +225,7 @@ export function PlanDialog({
             <ModelRequirementList models={plan.models} />
             <p className="text-muted-foreground text-sm">
               {plan.gpu_ops} GPU step{plan.gpu_ops === 1 ? "" : "s"} ·{" "}
-              {plan.cached_nodes.length} cached
+              {plan.cached_nodes} cached
             </p>
             {[...plan.errors, ...plan.warnings].map((issue, i) => (
               <p

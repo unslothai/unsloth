@@ -470,7 +470,7 @@ setFlowsTransport(async (url, init) => {
         ],
         gpu_ops: entry.doc.nodes.filter((n) => specs[n.type]?.lane === "gpu")
           .length,
-        cached_nodes: [],
+        cached_nodes: 0,
         errors: [],
         warnings: [],
       });

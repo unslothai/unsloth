@@ -48,13 +48,32 @@ export function endSaveSession(): void {
   if (current.timer) {
     clearTimeout(current.timer);
     current.timer = null;
+    // Snapshot now: by the time an in-flight save settles the store may hold the next flow.
+    const state = useDocStore.getState();
+    const doc =
+      state.flowId === current.flowId ? documentFromState(state) : null;
     current.inflight = (current.inflight ?? Promise.resolve()).then(() =>
-      performSave(true),
+      doc ? saveClosing(current, doc) : undefined,
     );
   }
   void (current.inflight ?? Promise.resolve()).finally(() => {
     if (session === current) session = null;
   });
+}
+
+async function saveClosing(
+  current: SaveSession,
+  doc: ReturnType<typeof documentFromState>,
+): Promise<void> {
+  if (documentSignature(doc) === current.savedSignature) return;
+  try {
+    const record = await saveFlow(current.flowId, doc, current.baseUpdatedAt);
+    current.baseUpdatedAt = record.updatedAt;
+  } catch (error) {
+    toast.error(
+      error instanceof Error ? error.message : "Could not save the flow",
+    );
+  }
 }
 
 async function performSave(force = false): Promise<void> {

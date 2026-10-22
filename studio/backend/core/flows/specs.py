@@ -744,7 +744,6 @@ NODE_SPECS: list[dict] = [
         "Data Recipe",
         "data",
         "Run a saved Data Recipe and output its dataset.",
-        inputs = [inp("seed_text", "text", optional = True)],
         outputs = [out("dataset", "dataset"), out("preview", "json")],
         params = [
             P("recipe_id", "text", "", "Recipe"),

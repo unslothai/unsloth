@@ -192,8 +192,7 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     from studio_mcp import loading
 
     slot = MODEL_SLOT.get(model_kind, model_kind)
-    if slot in ctx.resident:
-        return ctx.resident[slot]
+    # Always ask Studio: another run or page can swap the model between two steps of this one.
     try:
         slots = await loading.resident_slots(_caller(ctx))
     except Exception:

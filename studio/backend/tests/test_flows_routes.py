@@ -246,3 +246,17 @@ def test_invoke_entrypoint_errors(client):
 
 def test_asset_ids_are_content_hashes():
     assert hashlib.sha256(PNG).hexdigest() == PNG_SHA
+
+
+def test_event_replay_pages_past_one_stored_page(client, monkeypatch):
+    client.post("/api/flows", json = {"doc": _simple()})
+    run_id = client.post("/api/flows/flow1/runs", json = {}).json()["run_id"]
+    _wait_terminal(client, run_id)
+    monkeypatch.setattr(flows_routes, "REPLAY_PAGE", 2)
+    real = flows_routes.flows_db.events_after
+    monkeypatch.setattr(
+        flows_routes.flows_db, "events_after", lambda rid, after: real(rid, after, limit = 2)
+    )
+    replay = _events(client.post(f"/api/flows/runs/{run_id}/events", params = {"after": 0}).text)
+    assert [e["seq"] for e in replay] == list(range(1, len(replay) + 1))
+    assert replay[-1]["type"] == "run.completed" and len(replay) > 2

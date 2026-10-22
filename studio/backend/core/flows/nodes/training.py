@@ -47,10 +47,16 @@ async def finetune(ctx: NodeContext) -> dict:
             config["train_split"] = dataset["split"]
     elif dataset.get("source") == "local":
         config["local_datasets"] = [dataset["ref"]]
+    elif dataset.get("source") == "recipe":
+        from core.flows.nodes.data import recipe_rows, upload_rows
+
+        rows = await recipe_rows(ctx, str(dataset["ref"]))
+        if not rows:
+            raise FlowNodeError("The Data Recipe produced no rows to train on")
+        saved = await upload_rows(ctx, rows, f"recipe-{dataset['ref']}")
+        config["local_datasets"] = [saved["ref"]]
     else:
-        raise FlowNodeError(
-            "Fine-tune takes a Hub dataset or Rows to Dataset; save a recipe's rows as a dataset first"
-        )
+        raise FlowNodeError("Fine-tune takes a Hub dataset, a Data Recipe or Rows to Dataset")
     started = await ctx.call("POST", "/api/train/start", json = config)
     job_id = started.get("job_id") if isinstance(started, dict) else None
     if not job_id:
@@ -111,6 +117,17 @@ async def export(ctx: NodeContext) -> dict:
     fmt = str(ctx.params.get("format") or "gguf")
     save_directory = f"flows-{name.replace('/', '-')}-{fmt}-{int(time.time())}"
     op = f"flow-{secrets.token_hex(6)}"
+
+    async def cancel() -> None:
+        for step in ("load", "export"):
+            try:
+                await ctx.call(
+                    "POST", "/api/export/cancel", json = {"expected_op_id": f"{op}-{step}"}
+                )
+            except FlowNodeError:
+                pass
+
+    ctx.on_cancel(cancel)
     loaded = await ctx.call(
         "POST",
         "/api/export/load-checkpoint",

@@ -132,10 +132,12 @@ async def rows_to_dataset(ctx: NodeContext) -> dict:
         rows = rows.get("rows") or rows.get("data") or [rows]
     if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
         raise FlowNodeError("Rows to Dataset takes a JSON list of objects")
-    name = (
-        re.sub(r"[^A-Za-z0-9._-]+", "-", str(ctx.params.get("name") or "flow-dataset")).strip("-")
-        or "flow-dataset"
-    )
+    return {"dataset": await upload_rows(ctx, rows, str(ctx.params.get("name") or "flow-dataset"))}
+
+
+async def upload_rows(ctx: NodeContext, rows: list[dict], name: str) -> dict:
+    """Save rows as a JSONL training dataset and return its DatasetValue."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
     data = "\n".join(json.dumps(r, ensure_ascii = False) for r in rows).encode()
     saved = await ctx.call(
         "POST",
@@ -149,11 +151,34 @@ async def rows_to_dataset(ctx: NodeContext) -> dict:
 
     columns = sorted({k for r in rows for k in r})
     return {
-        "dataset": {
-            "kind": "dataset",
-            "source": "local",
-            "ref": cache_reference(stored),
-            "rows": len(rows),
-            "columns": columns,
-        }
+        "kind": "dataset",
+        "source": "local",
+        "ref": cache_reference(stored),
+        "rows": len(rows),
+        "columns": columns,
     }
+
+
+async def recipe_rows(
+    ctx: NodeContext,
+    job_id: str,
+    limit: int = 100_000,
+) -> list[dict]:
+    """Every row a finished Data Recipe job produced."""
+    rows: list[dict] = []
+    while len(rows) < limit:
+        page = await ctx.call(
+            "GET",
+            f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset",
+            params = {"limit": 500, "offset": len(rows)},
+        )
+        batch = (
+            [r for r in (page.get("dataset") or []) if isinstance(r, dict)]
+            if isinstance(page, dict)
+            else []
+        )
+        rows.extend(batch)
+        total = page.get("total") if isinstance(page, dict) else None
+        if not batch or (isinstance(total, int) and len(rows) >= total):
+            break
+    return rows

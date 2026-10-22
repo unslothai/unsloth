@@ -59,11 +59,11 @@ def _unique(base: str, taken: set[str]) -> str:
 
 # Graph helpers shared with world.py
 def node_value(doc: dict, node_outputs: dict, node_id: str, port: str) -> Any:
-    """A node's output: baked first (Appendix B), then the latest run."""
-    baked = (doc.get("baked") or {}).get(node_id) or {}
-    if port in baked and baked[port] is not None:
-        return baked[port]
-    return ((node_outputs or {}).get(node_id) or {}).get(port)
+    """A node's output: the latest run first (a re-roll replaces what a package shipped), then the baked value."""
+    ran = ((node_outputs or {}).get(node_id) or {}).get(port)
+    if ran is not None:
+        return ran
+    return ((doc.get("baked") or {}).get(node_id) or {}).get(port)
 
 
 def input_values(doc: dict, node_outputs: dict, node_id: str, port: str) -> list[Any]:
