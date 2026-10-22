@@ -228,3 +228,28 @@ def test_macos_managed_profile_filters_network_mach_sysctl_and_shm(tmp_path):
     # The account's own sockets (multiprocessing) still work.
     assert f'(allow network-outbound (remote unix-socket (subpath "{writable}")))' in lines
     assert f'(allow network-bind (local unix-socket (subpath "{writable}")))' in lines
+
+
+@pytest.mark.skipif(os.sep != "/", reason = "POSIX paths")
+def test_registered_folders_on_removable_mounts_stay_silent(monkeypatch):
+    """A model folder registered on a /run/media drive, or an HF cache there, is not a new prompt."""
+    models = "/run/media/alice/SSD/models"
+    hf_home = "/run/media/alice/SSD/hf"
+    monkeypatch.setattr(
+        path_gate,
+        "_silent_roots",
+        lambda: (("/run", models, hf_home), (hf_home,)),
+    )
+    monkeypatch.setattr(path_gate, "_resolved_fs_text", lambda text: text)
+    assert path_gate._path_needs_approval(f"{models}/x.gguf") is False
+    assert path_gate._path_needs_approval(f"{hf_home}/hub/models--a--b/blob") is False
+    assert path_gate._path_needs_approval(f"{hf_home}/hub/new.bin", writing = True) is False
+    # The rest of the drive, a write into a read-only model folder, a credential in the HF home,
+    # and the other user-storage mounts still ask; `/run` itself never covers them.
+    assert path_gate._path_needs_approval("/run/media/alice/SSD/notes.txt") is True
+    assert path_gate._path_needs_approval("/run/media/alice/SSD/models-old/x") is True
+    assert path_gate._path_needs_approval(f"{models}/x.gguf", writing = True) is True
+    assert path_gate._path_needs_approval(f"{hf_home}/token") is True
+    assert path_gate._path_needs_approval("/run/host/etc/hostname") is True
+    assert path_gate._path_needs_approval("/run/user/1000/bus") is True
+    assert path_gate._path_needs_approval("/dev/sda") is True

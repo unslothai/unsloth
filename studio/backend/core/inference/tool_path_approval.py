@@ -159,6 +159,13 @@ _WRITABLE_RUNTIME_SUBTREES = tuple(
 )
 
 
+# The user-storage mounts among those. A root Studio was configured with (a registered model folder,
+# the HF cache) can live on such a drive, and is still covered under it.
+_USER_STORAGE_MOUNTS = tuple(
+    os.path.normcase(part) for part in ("/run/media", "/run/mount", "/run/host")
+)
+
+
 # Pseudo-devices a command legitimately writes to (`2> /dev/null`); the rest of /dev is read-silent but not
 # write-silent.
 _WRITE_SILENT_DEVICE_NODES = (
@@ -574,13 +581,19 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # A writable subtree of an otherwise system root. `/dev/shm` and `/run/user/<uid>` are tmpfs the
     # user's own processes write into, so a read there is a read of somebody's data, not of the
     # machine's configuration. Checked before containment, so the enclosing root cannot cover them.
+    # The one exception is a silent root that itself sits INSIDE /run/media, /run/mount or /run/host:
+    # a model folder registered on an external drive, or an HF cache moved there. Only such a root
+    # covers the candidate; `/run` itself never does, and the checks below still run.
+    read_roots, write_roots = _silent_roots()
+    roots = write_roots if writing else read_roots
     if any(
         candidate == root or candidate.startswith(root + os.sep)
         for root in _WRITABLE_RUNTIME_SUBTREES
+    ) and not _contained_in(
+        candidate,
+        tuple(root for root in roots if _contained_in(root, _USER_STORAGE_MOUNTS)),
     ):
         return True
-    read_roots, write_roots = _silent_roots()
-    roots = write_roots if writing else read_roots
     if not _contained_in(candidate, roots):
         return True
     # On a managed install the shared projects and tmp bases hold every account's own subtree, so a
