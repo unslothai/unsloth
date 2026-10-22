@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 
 import threading
@@ -400,6 +401,32 @@ def _container_network_address(address: str) -> bool:
     return any(ip in network for network in _CONTAINER_NETWORKS if ip.version == network.version)
 
 
+def _veth_addresses(sysfs: str = "/sys/class/net") -> set[str]:
+    """Addresses on a link whose peer is in another namespace: a bridged container's veth eth0. A real NIC's iflink
+    is its own ifindex and a VLAN's is its parent's, both visible here, so host networking keeps a 172.16/12 LAN
+    (Documentation/ABI/testing/sysfs-class-net)."""
+
+    def read(name: str, attr: str) -> str:
+        with open(f"{sysfs}/{name}/{attr}") as handle:
+            return handle.read().strip()
+
+    try:
+        import psutil
+        interfaces = psutil.net_if_addrs()
+        indexes = {read(name, "ifindex") for name in os.listdir(sysfs)}
+    except Exception:
+        return set()
+    addresses = set()
+    for name, entries in interfaces.items():
+        try:
+            if read(name, "iflink") in indexes:
+                continue
+        except OSError:
+            continue
+        addresses.update(entry.address.split("%", 1)[0] for entry in entries)
+    return addresses
+
+
 def _launch_urls(app_state) -> list[str]:
     """Where a launch-managed bind answers on this network. A wildcard launch cannot rely only on ``server_url``: run.py gives that direct base one LAN-reachable address, while Settings must show every currently reachable address in each family the launch serves."""
     if getattr(app_state, "lan_access_wildcard_bind", False):
@@ -413,7 +440,10 @@ def _launch_urls(app_state) -> list[str]:
                     addresses.append(address)
         if _in_container():
             # A bridged container's own IP reaches nothing outside it; host networking's addresses stay.
-            addresses = [a for a in addresses if not _container_network_address(a)]
+            bridged = _veth_addresses()
+            addresses = [
+                a for a in addresses if not (a in bridged and _container_network_address(a))
+            ]
         return _listener_urls(
             addresses,
             getattr(app_state, "lan_access_port", None),

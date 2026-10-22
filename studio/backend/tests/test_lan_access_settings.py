@@ -727,12 +727,40 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 
 def test_a_wildcard_launch_in_a_container_advertises_no_bridge_address(monkeypatch):
     monkeypatch.setattr(file_manager, "_in_container", lambda: True)
+    monkeypatch.setattr(lan_settings, "_veth_addresses", lambda: {"172.17.0.2"})
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.17.0.2"])
     state = _app(lan_access_launch_managed = True, lan_access_wildcard_bind = True)
     assert lan_settings.lan_access_status(state)["urls"] == []
 
-    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
-    assert lan_settings.lan_access_status(state)["urls"] == ["http://192.168.1.24:8888"]
+    # --network host sees the host's own NICs, no veth, even on a 172.16/12 office LAN.
+    monkeypatch.setattr(lan_settings, "_veth_addresses", lambda: set())
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.20.1.5"])
+    assert lan_settings.lan_access_status(state)["urls"] == ["http://172.20.1.5:8888"]
+
+
+def test_veth_addresses_reads_the_peer_link_from_sysfs(monkeypatch, tmp_path):
+    import psutil
+
+    entry = lambda address: SimpleNamespace(address = address)
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [entry("172.17.0.2")],
+            "enp3s0": [entry("172.20.1.5")],
+            "enp3s0.100": [entry("172.21.0.5")],
+        },
+    )
+    # eth0's peer (index 12) is the host-side veth, outside this namespace; a NIC and its VLAN link to index 2.
+    for name, (iflink, ifindex) in {
+        "eth0": ("12", "11"),
+        "enp3s0": ("2", "2"),
+        "enp3s0.100": ("2", "3"),
+    }.items():
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "iflink").write_text(iflink + "\n")
+        (tmp_path / name / "ifindex").write_text(ifindex + "\n")
+    assert lan_settings._veth_addresses(str(tmp_path)) == {"172.17.0.2"}
 
 
 def test_lan_status_reports_keyless_off_while_a_managed_account_exists(monkeypatch):
