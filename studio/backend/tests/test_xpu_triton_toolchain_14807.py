@@ -1,0 +1,176 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Intel XPU Triton's compiler on Windows (#14807). Discovery is stubbed, so these also run on CI Linux."""
+
+import os
+import sys
+import types
+import logging
+
+import pytest
+
+_backend = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, _backend)
+
+from core import _msvc_env
+from core import _xpu_triton_toolchain as toolchain
+
+CL = os.path.join("C:", "VS", "VC", "Tools", "MSVC", "bin", "Hostx64", "x64", "cl.exe")
+
+
+@pytest.fixture
+def xpu_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(toolchain, "_triton_is_xpu", lambda: True)
+    monkeypatch.delenv("CXX", raising = False)
+
+
+def _which(table):
+    return lambda name: table.get(name)
+
+
+def test_triton_spelling_matches_its_msvc_test():
+    spelled = toolchain._triton_cl_spelling(CL)
+    assert "cl.EXE" in spelled
+    assert os.path.dirname(spelled) == os.path.dirname(CL)
+
+
+def test_loads_visual_studio_and_points_triton_at_cl(xpu_windows, monkeypatch):
+    table = {}
+
+    def load():
+        table["cl"] = CL
+        return True
+
+    monkeypatch.setattr(toolchain.shutil, "which", _which(table))
+    monkeypatch.setattr(toolchain, "_msvc_environment_loaded", lambda: False)
+    monkeypatch.setattr(toolchain, "_load_msvc_environment", load)
+
+    toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert os.environ["CXX"] == toolchain._triton_cl_spelling(CL)
+
+
+def test_a_lowercase_cl_in_cxx_is_respelled(xpu_windows, monkeypatch):
+    monkeypatch.setenv("CXX", CL)
+    monkeypatch.setattr(toolchain.shutil, "which", _which({CL: CL}))
+    monkeypatch.setattr(toolchain, "_msvc_environment_loaded", lambda: True)
+
+    def never():
+        raise AssertionError("the environment was already loaded")
+
+    monkeypatch.setattr(toolchain, "_load_msvc_environment", never)
+
+    toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert "cl.EXE" in os.environ["CXX"]
+
+
+def test_a_gnu_driver_in_cxx_is_left_alone_with_a_warning(xpu_windows, monkeypatch, caplog):
+    monkeypatch.setenv("CXX", "clang++.exe")
+    monkeypatch.setattr(toolchain, "_load_msvc_environment", lambda: pytest.fail("not wanted"))
+
+    with caplog.at_level(logging.WARNING):
+        toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert os.environ["CXX"] == "clang++.exe"
+    assert "/LIBPATH:" in caplog.text
+
+
+def test_icpx_on_path_is_left_to_triton(xpu_windows, monkeypatch):
+    monkeypatch.setattr(toolchain.shutil, "which", _which({"icpx": "icpx.exe"}))
+    monkeypatch.setattr(toolchain, "_load_msvc_environment", lambda: pytest.fail("not wanted"))
+
+    toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert "CXX" not in os.environ
+
+
+def test_no_compiler_anywhere_warns_and_sets_nothing(xpu_windows, monkeypatch, caplog):
+    monkeypatch.setattr(toolchain.shutil, "which", _which({}))
+    monkeypatch.setattr(toolchain, "_msvc_environment_loaded", lambda: False)
+    monkeypatch.setattr(toolchain, "_load_msvc_environment", lambda: False)
+
+    with caplog.at_level(logging.WARNING):
+        toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert "CXX" not in os.environ
+    assert "Build Tools" in caplog.text
+
+
+def test_triton_windows_is_not_touched(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(toolchain, "_triton_is_xpu", lambda: False)
+    monkeypatch.delenv("CXX", raising = False)
+    monkeypatch.setattr(toolchain, "_prepare", lambda log: pytest.fail("not wanted"))
+
+    toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert "CXX" not in os.environ
+
+
+def test_off_windows_nothing_happens(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(toolchain, "_prepare", lambda log: pytest.fail("not wanted"))
+
+    toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+
+def test_a_failure_never_reaches_the_worker(xpu_windows, monkeypatch):
+    def boom(log):
+        raise RuntimeError("vswhere blew up")
+
+    monkeypatch.setattr(toolchain, "_prepare", boom)
+
+    toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+
+def test_vcvars_environment_keeps_only_what_cl_needs(monkeypatch):
+    out = "\n".join(
+        [
+            r"Path=C:\VS\bin;C:\Windows",
+            r"INCLUDE=C:\VS\include",
+            r"LIB=C:\VS\lib",
+            r"LIBPATH=C:\VS\libpath",
+            r"VSCMD_ARG_TGT_ARCH=x64",
+            r"USERNAME=someone",
+        ]
+    )
+    monkeypatch.setattr(
+        toolchain.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = out),
+    )
+
+    env = toolchain._vcvars_environment(r"C:\VS\vcvars64.bat")
+
+    assert env == {
+        "PATH": r"C:\VS\bin;C:\Windows",
+        "INCLUDE": r"C:\VS\include",
+        "LIB": r"C:\VS\lib",
+        "LIBPATH": r"C:\VS\libpath",
+    }
+
+
+def test_a_failed_vcvars_yields_nothing(monkeypatch):
+    monkeypatch.setattr(
+        toolchain.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode = 1, stdout = ""),
+    )
+
+    assert toolchain._vcvars_environment(r"C:\VS\vcvars64.bat") is None
+
+
+def test_the_windows_gate_prepares_xpu_triton(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
+    monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+    monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: True)
+    calls = []
+    monkeypatch.setattr(toolchain, "prepare_xpu_triton_compiler", lambda log: calls.append(log))
+
+    _msvc_env.gate_torch_compile_on_windows(logging.getLogger("t"))
+
+    assert len(calls) == 1
