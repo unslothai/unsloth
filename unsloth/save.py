@@ -6822,12 +6822,36 @@ def _unsloth_save_torchao_with_attached_config(
     # TorchAO does not support safe_serialization reliably.
     safe_serialization = False
 
-    if push_to_hub:
-        model.push_to_hub(save_directory, safe_serialization = safe_serialization, token = token)
-        tokenizer.push_to_hub(save_directory, token = token)
-    else:
-        model.save_pretrained(save_directory, safe_serialization = safe_serialization)
-        tokenizer.save_pretrained(save_directory)
+    with _torchao_hf_quantizer_attached(model):
+        if push_to_hub:
+            model.push_to_hub(save_directory, safe_serialization = safe_serialization, token = token)
+            tokenizer.push_to_hub(save_directory, token = token)
+        else:
+            model.save_pretrained(save_directory, safe_serialization = safe_serialization)
+            tokenizer.save_pretrained(save_directory)
+
+
+@contextmanager
+def _torchao_hf_quantizer_attached(model):
+    """Attach a torchao HfQuantizer to a model quantized in place by `_convert_torchao_model` for the save.
+
+    Without one, transformers 5 treats the torchao tensor subclasses as plain tensors: it fails in its tied-weight
+    storage check and could not write them to safetensors anyway. The quantizer flattens them as it does for a
+    model loaded with a TorchAoConfig. 4.x pickles them with safe_serialization = False and needs nothing."""
+    if getattr(model, "hf_quantizer", None) is not None or Version(
+        importlib_version("transformers")
+    ) < Version("5.0.0"):
+        yield
+        return
+    from transformers.quantizers.auto import AutoHfQuantizer
+
+    model.hf_quantizer = AutoHfQuantizer.from_config(
+        model.config.quantization_config, pre_quantized = False
+    )
+    try:
+        yield
+    finally:
+        del model.hf_quantizer
 
 
 def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
