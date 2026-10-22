@@ -18,7 +18,6 @@ if F8._fp8_device_lacks_kernel(torch.device("cuda")):
 
 @pytest.fixture(autouse = True)
 def _gemv_only(monkeypatch):
-    # The fused small-M kernel takes these shapes first on 100+ SM parts; see test_router_* below.
     monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", False)
 
 
@@ -35,7 +34,7 @@ def _quantize(N, K, seed = 0):
 
 
 def _uncached(q):
-    # Gate tests flip device gates on the same weight: drop its cached eligibility first.
+    # Drop cached eligibility: gate tests flip device gates on the same weight.
     q.__dict__.pop("_unsloth_fp8_block_gemv", None)
     return q
 
@@ -56,7 +55,6 @@ def test_block_gemv_matches_oracle_and_beats_act_quant(dtype, M, NK):
     N, K = NK
     q, s = _quantize(N, K, seed = M)
     X = torch.randn(M, 1, K, device = "cuda", dtype = torch.float32).to(dtype)
-    # Routed on every part up to 2 rows; past that, small parts cap the rows (test_small_gpu_row_cap).
     assert M > 2 or F8.can_use_fp8_block_gemv(X, q, s)
     with torch.no_grad():
         y = F8.fp8_block_gemv(X, q, s)
@@ -94,13 +92,11 @@ def test_routing_decode_only(monkeypatch):
     with torch.no_grad():
         F8.fp8_block_quant_linear(torch.randn(8, 1, 1024, device = "cuda", dtype = torch.bfloat16), q, s)
         assert len(calls) == 1
-        # prefill (several tokens per sequence), more than 16 rows, transposed grid: block GEMM
         F8.fp8_block_quant_linear(torch.randn(2, 4, 1024, device = "cuda", dtype = torch.bfloat16), q, s)
         F8.fp8_block_quant_linear(torch.randn(17, 1, 1024, device = "cuda", dtype = torch.bfloat16), q, s)
     X =torch.randn(2, 1, 1024, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
     F8.fp8_block_quant_linear(X, q, s).sum().backward()  # training keeps the autograd path
     assert len(calls) == 1 and X.grad is not None
-    # a scale grid that does not match the stored layout keeps the GEMM
     assert not F8.can_use_fp8_block_gemv(X.detach(), q, s.t().contiguous())
     assert not F8.can_use_fp8_block_gemv(X.detach().float(), q, s)
     assert not F8.can_use_fp8_block_gemv(X.detach(), q, s.to(torch.float64))
@@ -129,7 +125,6 @@ def test_weight_decision_cached_per_scale():
     X = torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16)
     assert F8.can_use_fp8_block_gemv(X, q, s)
     assert q._unsloth_fp8_block_gemv[0] is s and q._unsloth_fp8_block_gemv[1]
-    # a different scale tensor is re-checked, not served from the cache
     assert not F8.can_use_fp8_block_gemv(X, q, s.t().contiguous())
     assert F8.can_use_fp8_block_gemv(X, q, s)
 
@@ -185,8 +180,7 @@ def test_routes_only_where_never_slower(monkeypatch):
 
 @pytest.mark.parametrize("route, expect", [("small_m_first", "small_m"), ("gemv_first", "gemv")])
 def test_router_order(monkeypatch, route, expect):
-    # Both kernels take this decode call: 100+ SM parts try the fused act_quant + w8a8 kernel first,
-    # smaller ones the GEMV (fp8_block_quant_linear is bound to one of the two at import).
+    # 100+ SM parts take the fused kernel here, smaller ones the GEMV.
     if F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton:
         pytest.skip("the fused small-M kernel replaces the Triton block matmul route only")
     monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", True)
@@ -202,7 +196,6 @@ def test_router_order(monkeypatch, route, expect):
     assert calls == [expect]
     # act_quant rounds X to e4m3 on the fused path: a few percent, against the GEMV's bf16 eps.
     assert _rel_err(y, _oracle(X, q, s)) <= (5e-2 if expect == "small_m" else torch.finfo(torch.bfloat16).eps)
-    # Training keeps the autograd path on both routes.
     Xg = X.clone().requires_grad_()
     calls.clear()
     fn(Xg, q, s).sum().backward()
@@ -234,8 +227,7 @@ def test_router_binding_follows_sm_count():
 
 
 def test_small_gpu_row_cap(monkeypatch):
-    # Below 100 SMs the GEMV takes up to 8 rows, and up to 2 on weights over 8M elements, where the L2-hot
-    # (CUDA graph replay) GEMV fell behind the block GEMM; 100+ SM parts take all 16.
+    # Below 100 SMs: up to 8 rows, 2 over 8M elements; 100+ SM parts take all 16.
     def rows_ok(sms, N, K, rows):
         monkeypatch.setattr(F8, "_sm_count", lambda device: sms)
         q, s = _quantize(N, K)

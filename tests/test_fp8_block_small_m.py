@@ -22,8 +22,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse = True)
 def _no_block_gemv(monkeypatch):
-    # These test the fused small-M kernel against main's act_quant + GEMM; the weight-only GEMV,
-    # which takes some decode shapes first, has its own tests (test_fp8_block_gemv.py).
+    # The GEMV, which takes some decode shapes first, is tested in test_fp8_block_gemv.py.
     monkeypatch.setattr(f, "_FP8_BLOCK_GEMV", False, raising = False)
 
 

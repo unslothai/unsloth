@@ -921,9 +921,8 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     return out
 
 
-# Block-FP8 decode (1-16 tokens, one per sequence): act_quant + the block GEMM launch N / 128 programs
-# that each walk all of K (a flat 0.22 ms per 4096 x 4096 projection on L4). This reads the fp8 weight
-# once and applies the block scale on the fly to unquantized activations. UNSLOTH_FP8_BLOCK_GEMV=0 disables it.
+# Block-FP8 decode GEMV (1-16 tokens): reads the fp8 weight once, unquantized activations.
+# UNSLOTH_FP8_BLOCK_GEMV=0 disables it.
 _FP8_BLOCK_GEMV = os.environ.get("UNSLOTH_FP8_BLOCK_GEMV", "1").strip().lower() not in (
     "0",
     "false",
@@ -933,8 +932,7 @@ _FP8_BLOCK_GEMV = os.environ.get("UNSLOTH_FP8_BLOCK_GEMV", "1").strip().lower() 
 _FP8_BLOCK_GEMV_MAX_ROWS = 16
 
 
-# M (decode batch) and the partial stride that follows it stay unspecialized: one compiled variant serves
-# batch 1-16 instead of three (==1, %16, other).
+# M stays unspecialized: one compiled variant for batch 1-16.
 @triton.jit(do_not_specialize = ["M", "stride_ys"])
 def _fp8_block_gemv_kernel(
     x_ptr,
@@ -984,7 +982,6 @@ def _fp8_block_gemv_kernel(
             mask = mask_n[:, None] & mask_k[None, :],
             other = 0.0,
         ).to(x.dtype)
-        # BLOCK_K divides GROUP_K and K splits start on a block, so one scale per row per step.
         s = tl.load(s_rows + (k0 // GROUP_K) * stride_sk, mask = mask_n, other = 0.0).to(tl.float32)
         acc += tl.dot(x, tl.trans(w), out_dtype = tl.float32) * s[None, :]
     y = y_ptr + pid_k * stride_ys + offs_m[:, None] * stride_ym + offs_n[None, :]
@@ -1000,15 +997,12 @@ def _fp8_block_size(weight, weight_scale):
 
 
 def _fp8_block_gemv_weight_ok(weight, weight_scale):
-    # Everything that depends only on the weight, decided once per (weight, scale): 0 when the GEMV never
-    # takes it, else the most decode rows it takes.
+    # Cached per (weight, scale): 0 = never, else max decode rows.
     if not weight.is_cuda or weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
         return 0
     N, K = weight.shape
-    # Only where it is never slower than the block GEMM, with L2 flushed or L2-hot (CUDA graph replay),
-    # on L4 (58 SMs) and RTX PRO 6000 (188): narrow outputs (down, kv, o), and small weights on small parts.
-    # Small parts also cap the rows: L2-hot, the GEMV's 16-row tile is compute bound past 8 rows, and past 2
-    # on weights over 8M elements (L4: 2048 x 6144 at 4 rows 1.06x, 16 rows 1.98x the GEMM's time).
+    # Only where never slower than the block GEMM (L4, RTX PRO 6000; L2 flushed and hot). Small parts cap
+    # rows at 8, and 2 over 8M elements (L4 2048 x 6144: 16 rows 1.98x the GEMM's time).
     small_gpu = _sm_count(weight.device) < 100
     if 2 * N > K or (small_gpu and N * K > _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS):
         return 0
@@ -1025,7 +1019,6 @@ def _fp8_block_gemv_weight_ok(weight, weight_scale):
     if len(block_size) != 2:
         return 0
     group_n, group_k = int(block_size[0]), int(block_size[1])
-    # Only the stored (N blocks, K blocks) layout; a transposed or mismatched grid keeps the GEMM.
     if tuple(weight_scale.shape) != (triton.cdiv(N, group_n), triton.cdiv(K, group_k)):
         return 0
     if group_n < 1 or group_k < 16 or group_k & (group_k - 1):
@@ -1037,7 +1030,7 @@ def _fp8_block_gemv_weight_ok(weight, weight_scale):
 
 
 def can_use_fp8_block_gemv(X, weight, weight_scale):
-    # Not validated on ROCm yet: keep the block GEMM there.
+    # Not validated on ROCm yet.
     if not _FP8_BLOCK_GEMV or torch.version.hip is not None:
         return False
     cached = getattr(weight, "_unsloth_fp8_block_gemv", None)
@@ -1055,7 +1048,6 @@ def can_use_fp8_block_gemv(X, weight, weight_scale):
     if X.shape[-1] != K:
         return False
     rows = X.numel() // K
-    # Decode only: one token per sequence, prefill keeps the block GEMM.
     if not 1 <= rows <= weight_ok or (X.dim() >= 3 and X.shape[-2] != 1):
         return False
     return not (torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad))
@@ -1087,11 +1079,9 @@ def _fp8_block_gemv(
         x2 = x2.contiguous()
     M = x2.shape[0]
     sms = _sm_count(weight.device)
-    # Swept in both timing modes on L4 (58 SMs) and RTX PRO 6000 (188).
     block_n, num_warps, num_stages, programs_per_sm = (16, 2, 4, 1) if sms < 100 else (32, 4, 3, 4)
     block_k = min(128, group_k)
     n_tiles = triton.cdiv(N, block_n)
-    # Split K (in whole scale blocks) until about programs_per_sm programs per SM.
     k_blocks = triton.cdiv(K, group_k)
     split = max(1, min(k_blocks, (programs_per_sm * sms + n_tiles - 1) // n_tiles, 16))
     k_per_split = triton.cdiv(k_blocks, split) * group_k
@@ -1148,9 +1138,7 @@ def _with_fp8_block_gemv(block_forward):
 
 
 def _fp8_block_small_m_first(X, weight, weight_scale):
-    # 100+ SM parts: the fused act_quant + w8a8 kernel decodes faster end to end than the GEMV, so it goes
-    # first, called directly (as FP8BlockQuantLinear would, minus its per-call setup). It is eager only, so
-    # compiled regions fall through to the GEMV.
+    # 100+ SM parts: the fused small-M kernel is faster, so try it first (eager only; compiled uses the GEMV).
     if not (torch.is_grad_enabled() and X.requires_grad):
         if (
             can_use_fp8_block_small_m(X, weight, weight_scale, _fp8_block_size(weight, weight_scale))
@@ -1737,8 +1725,7 @@ try:
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
 except:
     pass
-# Decode-sized calls take the weight-only GEMV whichever block GEMM was selected above. With the Triton
-# block GEMM on CUDA parts that all have 100+ SMs, the fused small-M kernel is tried first instead.
+# Decode-sized calls take the GEMV whichever block GEMM was selected above.
 if (
     fp8_block_quant_linear is fp8_torch_block_quant_forward
     and torch.version.hip is None
