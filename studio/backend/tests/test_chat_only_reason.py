@@ -116,8 +116,7 @@ def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypa
 
 @pytest.mark.parametrize("devices", [[], [_INTEL_IGPU]], ids = ["no-gpu", "intel-igpu"])
 def test_a_no_torch_install_without_a_trainable_gpu_stays_no_gpu(monkeypatch, devices):
-    # no_torch offers the Desktop's full install, a multi-GB download. On a host with no GPU a
-    # PyTorch build could use, that install ends at no_gpu with Train still off.
+    # no_torch offers a multi-GB install that cannot enable Train here.
     _no_torch_off_mac(monkeypatch, devices = devices)
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
@@ -126,8 +125,7 @@ def test_a_no_torch_install_without_a_trainable_gpu_stays_no_gpu(monkeypatch, de
 
 
 def test_a_no_torch_install_whose_inventory_cannot_answer_keeps_no_torch(monkeypatch):
-    # A probe that timed out is not "no GPU": telling a GPU host it needs one is the bug
-    # no_torch replaced.
+    # A probe that timed out is not "no GPU".
     _no_torch_off_mac(monkeypatch, devices = [], unknown = True)
     hw.detect_hardware()
     assert hw.CHAT_ONLY_REASON == "no_torch"
@@ -155,7 +153,7 @@ def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatc
     [
         ("15.1", (3, 10), None),
         ("13.6.1", (3, 10), "macOS 14 or later"),
-        # install_python_stack reads an unreadable macOS as too old and skips MLX.
+        # install_python_stack reads it as too old.
         ("", (3, 10), "macOS 14 or later"),
         ("14.5", (99, 0), "Python 99.0 or later"),
     ],
@@ -164,8 +162,7 @@ def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatc
 def test_a_no_torch_mac_the_mlx_wheels_skip_gets_no_full_install_offer(
     monkeypatch, release, min_python, blocker
 ):
-    # The installer adds PyTorch there but skips MLX, so the full install leaves Train off.
-    # The hint is what the Desktop withholds the offer on; the reason stays no_torch.
+    # The installer skips MLX there. The hint withholds the offer; the reason stays no_torch.
     _no_torch_apple_silicon(monkeypatch, mlx_on_disk = False)
     monkeypatch.setattr(hw.platform, "mac_ver", lambda: (release, ("", "", ""), ""))
     monkeypatch.setattr(hw, "_MLX_MIN_PYTHON", min_python)
@@ -184,7 +181,7 @@ def test_a_no_torch_mac_the_mlx_wheels_skip_gets_no_full_install_offer(
 
 
 def test_an_old_macos_hint_is_for_apple_silicon_only(monkeypatch):
-    # Off Mac, platform.mac_ver() is empty, which reads as too old: the hint must not leak there.
+    # Off Mac, mac_ver() is empty, which reads as too old.
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
     monkeypatch.setattr(hw.platform, "mac_ver", lambda: ("", ("", "", ""), ""))
     assert hw.chat_only_permission_hint("no_torch", None) is None

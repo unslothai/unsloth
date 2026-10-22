@@ -271,7 +271,6 @@ export function ExportPage() {
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
-  // Names the Install type row only where it renders.
   const canUpgrade = useFullInstallUpgrade() !== null;
   const exportUnsupportedMessage = exportUnsupportedText(
     hardware.exportUnsupportedReason,

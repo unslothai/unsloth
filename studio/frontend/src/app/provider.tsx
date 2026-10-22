@@ -722,8 +722,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // Through a ref, not a dependency: startRepair is rebuilt on every render.
   const startRepairRef = useRef(startRepair);
   startRepairRef.current = startRepair;
-  // On a Chat only install that rerun is the upgrade to the full install, so the progress
-  // screen says so instead of promising a short wait over a multi-GB download.
+  // On a Chat only install that rerun is the multi-GB upgrade, so the progress screen says so.
   const [upgradingToFull, setUpgradingToFull] = useState(false);
   const repairController = useMemo(
     () => ({
@@ -735,7 +734,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     }),
     [isExternalServer],
   );
-  // Back to the plain wording for any later, automatic repair.
   if (upgradingToFull && status === "running") setUpgradingToFull(false);
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);

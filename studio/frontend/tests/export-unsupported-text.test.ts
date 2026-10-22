@@ -15,14 +15,12 @@ const NO_TORCH_MESSAGE =
 
 test("a Desktop Chat only install is pointed at the full install upgrade", () => {
   const text = exportUnsupportedText("no_torch", NO_TORCH_MESSAGE, true);
-  // The Settings > General row the Train row's dialog also leads to, not the Danger zone repair.
   assert.match(text, /Use Upgrade to full install in Settings/);
   assert.doesNotMatch(text, /--no-torch/);
 });
 
 test("without the Install type row the backend's message stays", () => {
-  // Web, CLI install.sh --no-torch, a Desktop attached to a terminal-started backend, or a Mac
-  // the MLX wheels skip, where the backend's message names the macOS it needs.
+  // Web, CLI --no-torch, a terminal-started backend, or a Mac the MLX wheels skip.
   assert.equal(exportUnsupportedText("no_torch", NO_TORCH_MESSAGE, false), NO_TORCH_MESSAGE);
 });
 

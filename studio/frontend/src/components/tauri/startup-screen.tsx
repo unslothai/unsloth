@@ -34,7 +34,6 @@ interface StartupScreenProps {
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
-  /** The repair in flight upgrades a Chat only install to the full one, a multi-GB download. */
   upgradingToFull?: boolean;
   onInstall: (options?: InstallOptions) => void;
   onRetry: () => void;

@@ -35,8 +35,7 @@ import { SettingsRow } from "./settings-row";
 export function DesktopRepairControl(): ReactElement | null {
   const t = useT();
   const repair = useTauriRepairController();
-  // On a Chat only install the installer also adds PyTorch, so the dialog has to say so. Not
-  // useFullInstallUpgrade(): a Mac the MLX wheels skip still gets PyTorch, only not Train.
+  // Not useFullInstallUpgrade(): a Mac the MLX wheels skip still gets PyTorch, only not Train.
   const upgradesToFull = usePlatformStore(
     (s) => s.chatOnlyReason === "no_torch" && s.isChatOnly() && !s.capabilitiesUnknown(),
   );

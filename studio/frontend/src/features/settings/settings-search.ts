@@ -402,7 +402,6 @@ const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.hub.datasetsServer",
 ]);
 
-// Shown only on a Desktop Chat only install that can be upgraded to the full one.
 const FULL_INSTALL_ENTRY: TranslationKey = "settings.general.fullInstall.label";
 
 // owner-only rows on tabs visible to every account.

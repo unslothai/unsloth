@@ -1333,9 +1333,7 @@ export function AppSidebar() {
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "no_torch"
-        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
-          // on Desktop the Install type row in Settings > General reruns the installer with PyTorch.
-          // A Mac the MLX wheels skip would get PyTorch but not Train, and the hint says why.
+        ? // `unsloth studio update` keeps no-torch. chatOnlyHint: a Mac the MLX wheels skip.
           chatOnlyHint
           ? chatOnlyHint
           : canRepair

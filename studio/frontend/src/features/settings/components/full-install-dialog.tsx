@@ -15,11 +15,6 @@ import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
-/**
- * Confirms turning a Chat only (GGUF) install into the full one. The work is the manual repair:
- * it reruns the installer with PyTorch, which training, export, video, safetensors models and
- * the image generation features beyond GGUF need.
- */
 function FullInstallDialog({
   open,
   onOpenChange,
@@ -45,8 +40,7 @@ function FullInstallDialog({
           </Button>
           <Button
             onClick={() => {
-              // Closed first: the repair swaps the app over to the progress screen, so a dialog
-              // still mounted would sit on top of it.
+              // Closed first, or it would sit on top of the progress screen.
               onOpenChange(false);
               onConfirm();
             }}
@@ -59,7 +53,6 @@ function FullInstallDialog({
   );
 }
 
-/** Settings > General "Install type" row, beside the version and update rows it belongs with. */
 export function DesktopInstallTypeControl(): ReactElement | null {
   const t = useT();
   const controller = useFullInstallUpgrade();

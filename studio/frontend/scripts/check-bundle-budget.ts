@@ -353,10 +353,7 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  // Upgrading a Desktop Chat only install from Settings adds 2,036 B raw / 756 B transfer (6,879,345 ->
-  // 6,881,381 B raw, 2,071,823 -> 2,072,579 B transfer against 0391814917, one machine and build, Node 22,
-  // 97 chunks): its strings in the eager English locale, the search filter in the eager settings dialog, the
-  // progress screen copy, and the stale-verdict flag in the eager platform store. Raised by that growth.
+  // Desktop Chat only upgrade (#14593): +2,036 B raw / +756 B transfer against 0391814917, Node 22.
   transferBytes: 2_072_768,
   rawBytes: 6_881_625,
 };

@@ -3,7 +3,7 @@
 
 // Kept out of config/hardware-verdict.ts (startup bundle): only the lazy Export route needs it.
 
-/** A Desktop Chat only user never typed the --no-torch the backend names: point at the upgrade instead. */
+/** A Desktop Chat only user never typed the --no-torch the backend names. */
 export function exportUnsupportedText(
   reason: string | null,
   message: string | null,

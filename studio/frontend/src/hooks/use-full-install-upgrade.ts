@@ -8,7 +8,6 @@ import {
   useTauriRepairController,
 } from "./tauri-repair-context";
 
-/** The repair controller when the full install would enable Train on this Chat only install, else null. */
 export function useFullInstallUpgrade(): TauriRepairController | null {
   const repair = useTauriRepairController();
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);

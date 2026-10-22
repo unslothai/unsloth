@@ -502,8 +502,7 @@ export function GeneralTab() {
       </header>
 
       {/* Desktop-only, and self-gating: outside the desktop app these render
-          nothing and the section keeps just the version rows. Install type
-          shows only on a Chat only install that can be upgraded. */}
+          nothing and the section keeps just the version rows. */}
       <StudioVersionSection>
         {isTauri ? (
           <div data-settings-label={t("settings.about.updates")}>

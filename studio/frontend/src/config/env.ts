@@ -53,7 +53,7 @@ interface PlatformState {
   secure: boolean;
   lanUrls: string[];
   fetched: boolean;
-  // The backend that measured the verdict was replaced and the new one has not answered yet.
+  // The backend that measured the verdict was replaced and the new one has not measured yet.
   verdictStale: boolean;
   // torch-warm kill switch defers detection to first use; the sidebar polls.
   detectionDeferred: boolean;
@@ -115,14 +115,8 @@ const HARDWARE_DETECT_POLL_MS = 200;
 // The bounded wait above is spent at most once per page load: see fetchDeviceType.
 let hardwareWaitSpent = false;
 
-/**
- * Drop the measured verdict when the backend that gave it is replaced (a repair, a restart).
- * The new process answers provisionally while it detects, and a provisional reply keeps the
- * stored verdict, so a Chat only install that was just upgraded kept its greyed Train for
- * the rest of the session. Stale, the rows spin and the sidebar re-reads until it lands; the
- * new process also gets its own bounded wait. The platform fields are kept: they describe the
- * host, not the process.
- */
+/** A provisional reply keeps the stored verdict, so a backend replaced by a repair or restart must
+ * not have its predecessor's verdict read as measured. Platform fields describe the host and stay. */
 export function forgetMeasuredVerdict(): void {
   hardwareWaitSpent = false;
   usePlatformStore.setState({ verdictStale: true });
@@ -237,8 +231,8 @@ export async function fetchDeviceType(options?: {
           : keepPlatform
             ? previous.fileManager
             : undefined;
-      // A still-provisional reply keeps the stored verdict: see resolveVerdict. A deferred one
-      // settles it, so it must not keep a replaced backend's reason as this one's.
+      // A still-provisional reply keeps the stored verdict (see resolveVerdict), but a deferred one
+      // settles it and must not inherit a replaced backend's reason.
       const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } = resolveVerdict(
         data,
         previous.verdictStale && isDetectionDeferred(data)
@@ -265,7 +259,6 @@ export async function fetchDeviceType(options?: {
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
         fetched: data.device_type !== undefined || keepPlatform,
-        // Only a measured verdict replaces the one the previous backend gave.
         verdictStale: previous.verdictStale && isProvisionalVerdict(data) && !isDetectionDeferred(data),
         detectionDeferred: isDetectionDeferred(data),
       });

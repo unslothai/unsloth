@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A Desktop install set up as Chat only (GGUF) becomes the full install through the manual repair,
-// which reruns the installer with PyTorch: training, export, video, safetensors models and the
-// image generation features beyond GGUF need it. The only pointer used to be the greyed Train row's
-// tooltip, aimed at a Settings row filed under Danger zone. Settings now has an Install type row,
-// shown only where the repair can do it, and the tooltip names that row.
+// Settings > General's Install type row upgrades a Desktop Chat only install through the manual
+// repair; it used to be reachable only through a Train tooltip aimed at Danger zone.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,15 +23,11 @@ const MAC_HINT = "Training on this Mac needs MLX, which requires macOS 14 or lat
 
 test("only a measured no_torch verdict with a managed repair can be upgraded", () => {
   assert.equal(canUpgradeToFullInstall("no_torch", null, true, managed), true);
-  // Before /api/health answers the verdict is a guess, and the row spins instead.
   assert.equal(canUpgradeToFullInstall("no_torch", null, false, managed), false);
-  // Web build, startup screen, or a backend started in a terminal: no repair to run.
   assert.equal(canUpgradeToFullInstall("no_torch", null, true, null), false);
   assert.equal(canUpgradeToFullInstall("no_torch", null, true, external), false);
-  // A Mac the MLX wheels skip: the installer would add PyTorch but not Train.
+  // A Mac the MLX wheels skip.
   assert.equal(canUpgradeToFullInstall("no_torch", MAC_HINT, true, managed), false);
-  // None of these is a Chat only install, so they keep their own hints (the PyTorch build
-  // mismatches already point at Repair installation).
   for (const reason of [
     "no_gpu",
     "intel_mac",
@@ -72,7 +65,6 @@ test("the Chat only confirm copy states the download and does not claim a reinst
   const full = en.settings.general.fullInstall;
   assert.match(full.confirmDescription, /gigabytes/);
   assert.doesNotMatch(full.confirmDescription, /reinstall/i);
-  // The upgrade is more than Train: naming only training undersold it.
   for (const unlocked of ["training", "export", "video", "safetensors", "image generation"]) {
     assert.match(full.confirmDescription, new RegExp(unlocked));
   }
@@ -94,12 +86,9 @@ test("the greyed Train row points at the Install type row, not at Danger zone", 
       "canRepair",
       `return ${hint[1]};`,
     )(true, "no_torch", null, chatOnlyHint, canRepair) as string;
-  // Desktop: the row the hint names is the one DesktopInstallTypeControl renders in this case.
   assert.match(forNoTorch(true), /Use Upgrade to full install in Settings/);
   assert.doesNotMatch(forNoTorch(true), /Repair installation/);
-  // Web and terminal-started backends have no repair to run, so they keep the CLI advice.
   assert.match(forNoTorch(false), /--no-torch/);
-  // No Install type row renders there, and neither reinstall would enable Train.
   assert.equal(forNoTorch(true, MAC_HINT), MAC_HINT);
   assert.equal(forNoTorch(false, MAC_HINT), MAC_HINT);
 });

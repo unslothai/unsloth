@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A repair replaces the backend. The new process answers /api/health provisionally while it
-// detects, and a provisional reply keeps the stored verdict, which was still marked measured. A
-// Chat only install that had just been upgraded kept "Train · Add" (main: a greyed Train) for
-// the rest of the session, and clicking it offered the multi-GB install again. The provider now
-// drops the measured verdict when a backend that already answered goes away, so the rows spin
-// and the sidebar's unknown poll re-reads until the new process measures.
+// A provisional reply keeps the stored verdict, so after a repair replaced the backend the old
+// no_torch stayed "measured" for the session and Train stayed greyed.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -55,12 +51,9 @@ test("a replaced backend's verdict is unmeasured until the new one answers", asy
   assert.equal(s.capabilitiesUnknown(), false);
   assert.equal(s.chatOnlyReason, "no_torch");
 
-  // The repair finished and the shell is back on a new process.
   forgetMeasuredVerdict();
   assert.equal(usePlatformStore.getState().capabilitiesUnknown(), true);
 
-  // It is still detecting. Without the stale flag this reply kept no_torch as measured, and
-  // the Train row went on offering the full install.
   reply = DETECTING;
   const realDateNow = Date.now;
   let clock = realDateNow();
@@ -72,11 +65,9 @@ test("a replaced backend's verdict is unmeasured until the new one answers", asy
   }
   s = usePlatformStore.getState();
   assert.equal(s.capabilitiesUnknown(), true, "a provisional reply ended the wait");
-  // The host did not change: the platform fields survive the provisional reply.
   assert.equal(s.deviceType, "windows");
   assert.equal(s.fileManager, "explorer");
 
-  // Detection lands; this is the sidebar's unknown poll.
   reply = FULL;
   await fetchDeviceType({ force: true });
   s = usePlatformStore.getState();
@@ -86,8 +77,7 @@ test("a replaced backend's verdict is unmeasured until the new one answers", asy
 });
 
 test("a replaced backend under deferred detection does not inherit the old reason", async () => {
-  // UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1: the new process detects nothing until first use, and a
-  // deferred reply counts as settled. Keeping no_torch there re-offered the install just run.
+  // UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1: a deferred reply counts as settled.
   reply = CHAT_ONLY;
   await fetchDeviceType({ force: true });
   assert.equal(usePlatformStore.getState().chatOnlyReason, "no_torch");
@@ -102,8 +92,7 @@ test("a replaced backend under deferred detection does not inherit the old reaso
 });
 
 test("only a backend that already answered marks the verdict stale", async () => {
-  // First launch has nothing stored to distrust; a re-run of the effect while the same backend
-  // stays up (auth landing later) must not either.
+  // Not on first launch, and not on an effect re-run while the same backend stays up.
   const src = await readSrcAsync("app/provider.tsx");
   assert.match(
     src,

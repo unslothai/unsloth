@@ -848,7 +848,7 @@ def _installed_without_torch() -> bool:
 
 
 def _a_gpu_build_would_train_here() -> bool:
-    """Whether this non-Mac host has a card a PyTorch GPU build could use, by the PyTorch-free inventory and the filter the mismatch verdicts apply. Not a copy of the installers' wheel routing, which also reads driver and ROCm versions this cannot see. Blocking, so detection only. An inventory that could not answer keeps the benefit of the doubt, since no_gpu on a GPU host is the wrong answer no_torch exists to replace."""
+    """Whether the PyTorch-free inventory shows a card the mismatch verdicts count. Blocking, so detection only. An inventory that cannot answer counts: no_gpu on a GPU host is the bug no_torch replaced."""
     try:
         inventory = get_physical_gpu_inventory()
         if _devices_that_can_establish_a_mismatch(inventory.get("devices") or []):
@@ -1729,8 +1729,7 @@ def _detect_hardware_locked() -> DeviceType:
                 )
         elif _installed_without_torch() and _a_gpu_build_would_train_here():
             # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
-            # A host without such a GPU keeps no_gpu: the Desktop offers the full install on
-            # no_torch, and adding PyTorch there cannot enable Train.
+            # Without such a GPU it stays no_gpu: the Desktop offers the full install on no_torch.
             CHAT_ONLY_REASON = "no_torch"
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
@@ -1909,7 +1908,7 @@ _MLX_MIN_MACOS_MAJOR = 14
 
 
 def _mlx_wheel_blocker() -> Optional[str]:
-    """What this Mac lacks for the pinned MLX wheels, or None. Mirrors install_python_stack._mlx_pins_are_installable, which skips MLX and leaves Train/Export off: an unreadable macOS reads as too old there too."""
+    """Mirrors install_python_stack._mlx_pins_are_installable, which skips MLX; an unreadable macOS reads as too old."""
     try:
         major = int(platform.mac_ver()[0].split(".", 1)[0])
     except (ValueError, IndexError):
@@ -1922,12 +1921,11 @@ def _mlx_wheel_blocker() -> Optional[str]:
 
 
 def _no_torch_mac_without_mlx_wheels() -> Optional[str]:
-    """The blocker when this is a --no-torch Apple Silicon verdict the full install cannot turn into Train: the installer adds PyTorch but skips MLX here."""
     return _mlx_wheel_blocker() if is_apple_silicon() else None
 
 
 def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
-    """Why the fix this verdict points at cannot enable Train, for /api/health: the closed-node sentence from the last detection pass that recorded this verdict, or a --no-torch Mac the MLX wheels do not support. The Desktop offers the full install only when this is None."""
+    """Why the fix this verdict points at cannot enable Train: a closed AMD node from the last detection pass, or a --no-torch Mac the MLX wheels skip. The Desktop offers the full install only when this is None."""
     if reason == "no_torch":
         blocker = _no_torch_mac_without_mlx_wheels()
         return f"Training on this Mac needs MLX, which requires {blocker}." if blocker else None
