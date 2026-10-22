@@ -13,6 +13,7 @@ ConvRot rotation is installed on exactly those, and that what cannot be mapped i
 from __future__ import annotations
 
 import json
+import sys
 import types
 
 import pytest
@@ -1302,15 +1303,44 @@ def test_fp8_stored_pricing_widens_keep_fp32_layers_as_the_loader_does(tmp_path)
     assert cq.fp8_stored_by_header("float8_e4m3fn", (n, n), names[0], keep)
 
 
-def test_keep_fp32_modules_come_from_the_family_transformer():
+def _fake_diffusers(monkeypatch):
+    # CPU CI may run without diffusers (or with a stub): pin the two classes these tests read.
+    class WanTransformer3DModel:
+        _keep_in_fp32_modules = ["time_embedder", "scale_shift_table", "norm1", "norm2", "norm3"]
+
+    class FluxTransformer2DModel:
+        pass
+
+    fake = types.SimpleNamespace(
+        WanTransformer3DModel = WanTransformer3DModel, FluxTransformer2DModel = FluxTransformer2DModel
+    )
+    monkeypatch.setitem(sys.modules, "diffusers", fake)
+
+
+def test_real_wan_transformer_keeps_its_time_embedder_in_fp32():
+    try:
+        import diffusers
+        cls = getattr(diffusers, "WanTransformer3DModel", None)
+    except Exception:  # noqa: BLE001 -- no usable diffusers here
+        cls = None
+    if cls is None:
+        pytest.skip("this diffusers has no WanTransformer3DModel")
+    wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
+    assert "time_embedder" in cq.keep_fp32_modules_for(wan)
+
+
+def test_keep_fp32_modules_come_from_the_family_transformer(monkeypatch):
+    _fake_diffusers(monkeypatch)
     wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
     assert "time_embedder" in cq.keep_fp32_modules_for(wan)
     assert cq.keep_fp32_modules_for(types.SimpleNamespace(transformer_class = "NoSuchModel")) == ()
     assert cq.keep_fp32_modules_for(types.SimpleNamespace()) == ()
 
 
-def test_planner_prices_keep_fp32_layers_at_fp32_only_on_fp16():
+def test_planner_prices_keep_fp32_layers_at_fp32_only_on_fp16(monkeypatch):
     from core.inference import diffusion as d
+
+    _fake_diffusers(monkeypatch)
 
     wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
     fp16 = d._comfy_keep_fp32_pricing(wan, types.SimpleNamespace(dtype = torch.float16))
