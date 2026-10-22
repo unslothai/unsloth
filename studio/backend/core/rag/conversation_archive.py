@@ -389,7 +389,9 @@ def _embed_pending_chunks(
     """
     vectors: list = []
     identity: Optional[str] = None
-    for start in range(0, len(texts), _ARCHIVE_EMBED_BATCH):
+    restarted = False
+    start = 0
+    while start < len(texts):
         if cancel_check is not None and cancel_check():
             return vectors, identity or embeddings.embedding_identity(model_name), True, None
         batch = texts[start : start + _ARCHIVE_EMBED_BATCH]
@@ -402,17 +404,17 @@ def _embed_pending_chunks(
                 raise
             # Keep finished batches, or a late timeout makes every request redo the whole pass.
             return vectors, identity, False, exc
-        if identity is None:
-            identity = batch_identity
-        elif batch_identity != identity:
-            # Same rule as ingestion: a mid-pass embedder swap must not label mixed spaces.
-            logger.warning(
-                "conversation_archive.embedder_changed_mid_pass; stopping at %s/%s chunks",
-                len(vectors),
-                len(texts),
-            )
-            break
+        if identity is not None and batch_identity != identity:
+            if restarted:
+                break
+            # An ST failure swaps the process to llama-server for good: restart in the new
+            # space, as ingestion does, so the turns are recallable by this request's query.
+            logger.warning("conversation_archive.embedder_changed_mid_pass; re-embedding")
+            vectors, identity, start, restarted = [], None, 0, True
+            continue
+        identity = batch_identity
         vectors.extend(out)
+        start += _ARCHIVE_EMBED_BATCH
     return vectors, identity or embeddings.embedding_identity(model_name), False, None
 
 

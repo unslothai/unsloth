@@ -1792,6 +1792,39 @@ def test_archive_embed_caps_chunks_per_call(conn, monkeypatch):
     assert conversation_archive.archive_turns(thread_id, evicted) == 0
 
 
+def test_archive_embed_restarts_in_the_new_space_after_a_backend_swap(conn, monkeypatch):
+    """Batches before an ST -> llama-server swap must not be written under the old identity."""
+    from core.rag import embeddings
+
+    thread_id = "swap-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 2)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT", 10_000)
+
+    real = embeddings.encode_with_identity
+    calls = []
+
+    def swapping(texts, **kwargs):
+        calls.append(len(texts))
+        vectors, _identity = real(texts, **kwargs)
+        return vectors, "sentence-transformers:old" if len(calls) <= 2 else "llama-server:new"
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", swapping)
+
+    evicted = []
+    for index in range(8):
+        evicted.append({"role": "user", "content": f"swap question {index} unique {index}"})
+        evicted.append({"role": "assistant", "content": f"swap answer {index} unique {index}"})
+
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8
+    scope = store.conversation_archive_scope(thread_id)
+    labels = {
+        row[0]
+        for row in conn.execute("SELECT embedding_model FROM documents WHERE scope = ?", (scope,))
+    }
+    assert labels == {"llama-server:new"}
+
+
 def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
     """A batch failing late in a long pass must not discard the batches before it (#14519)."""
     from core.rag import embeddings
