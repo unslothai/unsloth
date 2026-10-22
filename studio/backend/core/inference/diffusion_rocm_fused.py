@@ -118,7 +118,6 @@ def wanted(
     return _adaln_kernel() is not None
 
 
-# ----------------------------------------------------------------------------------------------------------------- RoPE
 @functools.lru_cache(maxsize = 1)
 def _rope_kernel() -> Optional[Callable]:
     from .diffusion_flux2_rope import _kernel
@@ -236,7 +235,6 @@ def uninstall_rope() -> None:
                 setattr(mod, _ROPE_ATTR, stock)
 
 
-# ----------------------------------------------------------------------------------------------------------------- AdaLN
 @functools.lru_cache(maxsize = 1)
 def _adaln_kernel() -> Optional[Callable]:
     try:
@@ -501,7 +499,6 @@ def uninstall_adaln() -> None:
                 del _ADALN_PREV[cls]
 
 
-# ------------------------------------------------------------------------------------------------------------- lifecycle
 def install_for_pipe(
     pipe: Any,
     dtype: Any,

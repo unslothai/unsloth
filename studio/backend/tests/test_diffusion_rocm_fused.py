@@ -249,7 +249,6 @@ def test_stock_lines_still_present_in_diffusers():
     ).read_text("utf-8")
 
 
-# ---------------------------------------------------------------------------------------------------------------- GPU
 def _freqs(S, D, device):
     pos = torch.randn(S, D // 2, dtype = torch.float64, device = device) * 50
     return (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
