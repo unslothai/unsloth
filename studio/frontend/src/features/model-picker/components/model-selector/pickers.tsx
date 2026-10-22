@@ -145,6 +145,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -166,6 +167,7 @@ import {
 } from "react";
 import {
   audioCppHubPath,
+  audioCppModelFor,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
@@ -605,6 +607,34 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
   null,
 );
 
+/** `GpuInfo.unifiedLoadBudgetGb` of the inventory GGUF chat loads into: non-null only on an Apple
+ *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
+const UnifiedLoadBudget = createContext<number | null>(null);
+
+/** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
+ *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
+function loadsOnAudioCpp(repoId: string): boolean {
+  return audioCppModelFor(repoId) !== null || isAudioCppFolderId(repoId);
+}
+
+function PickerScopes({
+  capabilityScope,
+  unifiedLoadBudgetGb,
+  children,
+}: {
+  capabilityScope: readonly (keyof ModelCapabilities)[] | null;
+  unifiedLoadBudgetGb: number | null;
+  children: ReactNode;
+}) {
+  return (
+    <CapabilityScope.Provider value={capabilityScope}>
+      <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
+        {children}
+      </UnifiedLoadBudget.Provider>
+    </CapabilityScope.Provider>
+  );
+}
+
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every column after it lined up.
 const MAX_CAPABILITY_BADGES = 3;
 
@@ -849,7 +879,18 @@ function VramBadge({
   status?: GgufFitClass | VramFitStatus | null;
   revealOnHover?: boolean;
 }) {
-  const verdict = status ? VRAM_VERDICT[status] : null;
+  const t = useT();
+  const unifiedLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const verdict =
+    status === "marginal" && unifiedLoadBudgetGb !== null
+      ? {
+          label: t("picker.unifiedTightFit"),
+          tone: AMBER,
+          hint: t("picker.unifiedTightFitHint"),
+        }
+      : status
+        ? VRAM_VERDICT[status]
+        : null;
   if (!verdict) return null;
   return (
     <Tooltip delayDuration={0}>
@@ -1962,6 +2003,10 @@ function GgufVariantExpander({
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   const capabilityScope = useContext(CapabilityScope);
+  // Diffusion loads never read it; keeping it out stops memory drift from re-planning downloads.
+  const chatLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const unifiedLoadBudgetGb =
+    diffusionLoad || loadsOnAudioCpp(repoId) ? null : chatLoadBudgetGb;
   const visionInScope =
     capabilityScope === null || capabilityScope.includes("vision");
   const showVision = hasVision === true && visionInScope;
@@ -2130,6 +2175,7 @@ function GgufVariantExpander({
         systemRamGb: systemRamGb ?? 0,
         budgetFraction,
         gpuCount,
+        unifiedLoadBudgetGb,
       });
     },
     [
@@ -2138,6 +2184,7 @@ function GgufVariantExpander({
       gpuGb,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
       diffusionLoad,
       hostPooledMemory,
       gpuCount,
@@ -3171,6 +3218,14 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
+  // The loader frees the resident model before reading free memory, so only the ceiling holds then.
+  // Not chatModelLoaded: it counts a remote API model, which frees nothing. Keep-loaded mode may
+  // leave the resident beside the new load, so the live budget stays in force there.
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const loadFreesResident =
+    !keepModelsLoaded &&
+    typeof residentCheckpoint === "string" &&
+    residentCheckpoint !== "";
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufVariant =
@@ -4198,6 +4253,7 @@ export function HubModelPicker({
     const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
+      repoId: string,
     ): GgufFitClass | VramFitStatus | null => {
       const anyBudget =
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
@@ -4221,6 +4277,11 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
+            unifiedLoadBudgetGb: loadsOnAudioCpp(repoId)
+              ? null
+              : loadFreesResident
+                ? budget.unifiedLoadCeilingGb
+                : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
@@ -4279,7 +4340,7 @@ export function HubModelPicker({
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
           // to the device the load LANDS on: unscoped, a downloaded media parent read as safe while
           // every variant inside it read as oom.
-          status: ggufRowFit(sizeBytes, rowInferenceGpu),
+          status: ggufRowFit(sizeBytes, rowInferenceGpu, r.id),
           // The figure the verdict was reached with, not the raw file size: classifyGgufFit scores
           // weights plus activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit" beside
           // "~20GB VRAM". The media rule scores the raw size and keeps it.
@@ -4325,6 +4386,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    loadFreesResident,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -7312,7 +7374,14 @@ export function HubModelPicker({
     (!showHfSection || npuBrowseRows.length > 0);
 
   return (
-    <CapabilityScope.Provider value={capabilityScope}>
+    <PickerScopes
+      capabilityScope={capabilityScope}
+      unifiedLoadBudgetGb={
+        (loadFreesResident
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null
+      }
+    >
       <div className="relative space-y-2">
         {/* A small right inset shortens the search bar so Search Hub lands on the last dropdown's right edge. */}
         <div
@@ -8950,7 +9019,7 @@ export function HubModelPicker({
           reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
-    </CapabilityScope.Provider>
+    </PickerScopes>
   );
 }
 

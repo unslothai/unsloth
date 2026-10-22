@@ -100,13 +100,16 @@ def test_detect_family_from_repo_id():
     assert kontext.cfg_kwarg == "guidance_scale"
     assert detect_family("unsloth/FLUX.1-dev-GGUF").name == "flux.1"
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
+    # Krea 2 (diffusers >= 0.39): single-stream DiT; no-GPU hosts run its GGUFs on sd.cpp with Qwen3-VL-4B.
     krea2 = detect_family("krea/Krea-2-Turbo")
     assert krea2.name == "krea-2"
     assert krea2.pipeline_class == "Krea2Pipeline"
     assert krea2.transformer_class == "Krea2Transformer2DModel"
     assert krea2.cfg_kwarg == "guidance_scale"
     assert krea2.fp16_incompatible is True
-    assert krea2.sd_cpp_text_encoders == ()
+    assert krea2.sd_cpp_text_encoders == (
+        ("unsloth/Qwen3-VL-4B-Instruct-GGUF", "Qwen3-VL-4B-Instruct-Q8_0.gguf", "llm"),
+    )
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
@@ -5512,7 +5515,8 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
         replan_calls.append(True)
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            # above the capacity margin, 0.85 * (183,359 - 4,096 capped reserve) = 152,373
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
@@ -5559,7 +5563,7 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
             return dataclasses.replace(real, offload_policy = "model")
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
@@ -11707,6 +11711,12 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     )
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
+    from core.inference import diffusion_nvfp4_gate as gate
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+
+    # The gate covers only the flashinfer its record was measured on; pin the version Studio installs so the
+    # answer does not depend on this host's flashinfer (CI runners have none).
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)
 
     target = SimpleNamespace(device = "cuda", dtype = None)
     assert (
@@ -11716,6 +11726,17 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     assert (
         dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
         == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+
+    # An unreadable version is not covered: the plan and the load both drop the nvfp4 rung, so nothing fetches it.
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: None)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "nvfp4"
+    )
+    assert (
+        dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "unsloth/FLUX.1-schnell-NVFP4"
     )
 
 
@@ -14304,3 +14325,31 @@ def test_untrusted_hub_single_file_header_is_checked_before_the_flux2_gguf_probe
             monkeypatch, tmp_path, lambda p: p.write_bytes(b"GGUF" + b"\x00" * 64), card_tag = None
         )
     assert probed == []
+
+
+def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
+    # set_adapters / load / unload change the denoiser's weights: a CFG-parallel replica built before must be rebuilt.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
+        ),
+    )
+    dropped: list = []
+    monkeypatch.setattr(
+        dmod, "invalidate_cfg_replica", lambda pipe, reason, logger = None: dropped.append(pipe)
+    )
+    ev = threading.Event()
+    pipe = _BakePipe()
+    pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 0.8),)
+    pipe._unsloth_loras_baked = True
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 0.8)], ev)
+    assert dropped == []  # same set: the weights did not change
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.4)], ev)
+    assert dropped == [pipe]
+    backend._apply_loras(_quant_lora_state(pipe), [], ev)
+    assert dropped == [pipe, pipe]

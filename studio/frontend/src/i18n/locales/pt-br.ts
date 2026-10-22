@@ -626,6 +626,8 @@ export const ptBR = {
       "Este chat não aparecerá no seu histórico e não será salvo. Ele desaparece quando você sair.",
   },
   picker: {
+    unifiedTightFit: "Ajuste apertado",
+    unifiedTightFitHint: "Pode carregar com um contexto menor ou rodar mais devagar neste Mac.",
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
     retry: "Tentar novamente",
@@ -1998,6 +2000,18 @@ export const ptBR = {
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
       },
+      fullInstall: {
+        label: "Tipo de instalação",
+        description:
+          "Somente chat (GGUF). A instalação completa adiciona treinamento, exportação, vídeo, modelos safetensors e mais recursos de geração de imagens.",
+        action: "Atualizar para a instalação completa",
+        confirmTitle: "Atualizar para a instalação completa?",
+        confirmDescription:
+          "Esta instalação somente chat executa modelos GGUF. A instalação completa adiciona o PyTorch para a GPU desta máquina, o que habilita treinamento, exportação, vídeo, modelos safetensors e mais recursos de geração de imagens. Ela baixa vários gigabytes (pelo menos 5 GB de espaço em disco) e reinicia o servidor. As conversas, os modelos e as configurações são mantidos. Isso pode levar alguns minutos.",
+        confirmAction: "Atualizar",
+        keywords:
+          "full install upgrade tipo de instalação instalação completa atualizar somente chat chat only gguf add training treinamento treinar train fine-tune pytorch torch exportação vídeo geração de imagens safetensors",
+      },
       repairInstall: {
         label: "Reparar a instalação",
         description:
@@ -2006,6 +2020,8 @@ export const ptBR = {
         confirmTitle: "Reparar esta instalação?",
         confirmDescription:
           "Para o servidor e executa o instalador novamente, que reinstala o PyTorch para a GPU desta máquina. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
+        confirmDescriptionChatOnly:
+          "Para o servidor e executa o instalador novamente. Esta é uma instalação somente chat, então o instalador também a atualiza para a instalação completa com o PyTorch, vários gigabytes no total. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
         confirmAction: "Reparar agora",
       },
       resetPreferences: {
@@ -3140,6 +3156,7 @@ export const ptBR = {
       relativeNever: "nunca",
       relativeJustNow: "agora mesmo",
       expired: "expirado",
+      expiredStatus: "Expirado",
       today: "hoje",
       created: "Criado {value}",
       used: "Usado {value}",
