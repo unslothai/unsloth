@@ -421,77 +421,6 @@ def test_offloaded_embedding_converts_to_a_real_embedding(convert):
         torch.testing.assert_close(emb(ids), reference.get_input_embeddings()(ids))
 
 
-def test_instance_forward_override_survives_qat():
-    import types
-
-    model = _tiny_gemma3()
-    original = model.get_input_embeddings()
-    seen = []
-
-    def _override(self, input_ids):
-        seen.append(self)
-        return type(self).forward(self, input_ids)
-
-    original.forward = types.MethodType(_override, original)
-    model = _prepare_model_for_qat(model, "int8-int4")
-    emb = model.get_input_embeddings()
-    calls = _count_fake_quant_calls(emb)
-    ids = torch.randint(0, model.config.vocab_size, (2, 12))
-    with torch.no_grad():
-        out = emb(ids).float()
-    assert seen == [emb]  # the override ran, rebound to the replacement
-    assert len(calls) == 1
-    torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
-
-
-def test_unsloth_offload_embedding_hooks_survive_qat():
-    from unsloth.models.vision import _install_offload_embedding_hooks
-
-    model = _tiny_gemma3()
-    original = model.get_input_embeddings()
-    assert _install_offload_embedding_hooks(original, model.get_output_embeddings(), torch.device("cpu"))
-    had_forward = "forward" in vars(original)
-    model = _prepare_model_for_qat(model, "int8-int4")
-    emb = model.get_input_embeddings()
-    assert getattr(emb, "_unsloth_offload_hooks_installed", False)
-    assert len(emb._forward_pre_hooks) >= 1 and len(emb._forward_hooks) >= 1
-    if had_forward:
-        assert emb.forward.__self__ is emb
-        inner = getattr(emb.forward.__func__, "_unsloth_inner_forward", None)
-        assert inner is vars(original)["forward"].__func__
-    calls = _count_fake_quant_calls(emb)
-    ids = torch.randint(0, model.config.vocab_size, (2, 12))
-    with torch.no_grad():
-        out = emb(ids).float()
-    assert len(calls) == 1
-    torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
-
-
-def test_accelerate_hook_over_instance_override_keeps_both():
-    import types
-
-    accelerate_hooks = pytest.importorskip("accelerate.hooks")
-    model = _tiny_gemma3()
-    original = model.get_input_embeddings()
-    seen = []
-
-    def _override(self, input_ids):
-        seen.append(self)
-        return type(self).forward(self, input_ids)
-
-    original.forward = types.MethodType(_override, original)
-    accelerate_hooks.add_hook_to_module(
-        original, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", io_same_device = True)
-    )
-    model = _prepare_model_for_qat(model, "int8-int4")
-    emb = model.get_input_embeddings()
-    assert hasattr(emb, "_hf_hook")
-    calls = _count_fake_quant_calls(emb)
-    with torch.no_grad():
-        emb(torch.tensor([[1, 2, 3]]))
-    assert seen == [emb] and len(calls) == 1
-
-
 def test_offloaded_embedding_converts_on_cpu_not_the_execution_device():
     pytest.importorskip("accelerate.hooks")
     model = _prepare_model_for_qat(_offload_embedding(_tiny_gemma3()), "int8-int4")
@@ -502,30 +431,6 @@ def test_offloaded_embedding_converts_on_cpu_not_the_execution_device():
     emb = model.get_input_embeddings()
     assert emb.weight.device.type == "cpu"
     assert all(b.device.type == "cpu" for b in emb.buffers())
-
-
-def test_instance_forward_reading_weight_directly_is_fake_quantized():
-    import types
-
-    model = _tiny_gemma3()
-    original = model.get_input_embeddings()
-
-    def _direct(self, input_ids):
-        return torch.nn.functional.embedding(input_ids, self.weight).float() * self.embed_scale
-
-    original.forward = types.MethodType(_direct, original)
-    ids = torch.randint(0, model.config.vocab_size, (2, 12))
-    with torch.no_grad():
-        unquantized = original(ids)
-    model = _prepare_model_for_qat(model, "int8-int4")
-    emb = model.get_input_embeddings()
-    calls = _count_fake_quant_calls(emb)
-    with torch.no_grad():
-        out = emb(ids)
-    assert len(calls) == 1
-    assert not torch.equal(out, unquantized)
-    torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
-    assert isinstance(emb.weight, torch.nn.Parameter)
 
 
 @pytest.mark.parametrize("qat_scheme", ["int4", "int8"])
@@ -581,3 +486,186 @@ def test_offloaded_embedding_with_offloaded_buffers_converts(convert):
     assert float(emb.embed_scale) == float(scale)
     with torch.no_grad():
         torch.testing.assert_close(emb(ids), reference.get_input_embeddings()(ids))
+
+
+def _direct_weight_override(self, input_ids):
+    return torch.nn.functional.embedding(input_ids, self.weight).float() * self.embed_scale
+
+
+def _delegating_override(self, input_ids):
+    return type(self).forward(self, input_ids)
+
+
+def _install_override(emb, kind):
+    import types
+
+    if kind == "direct_weight":
+        emb.forward = types.MethodType(_direct_weight_override, emb)
+    elif kind == "delegating":
+        emb.forward = types.MethodType(_delegating_override, emb)
+    elif kind == "accelerate_over_override":
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+        emb.forward = types.MethodType(_delegating_override, emb)
+        add_hook_to_module(emb, AlignDevicesHook(execution_device = "cpu", io_same_device = True))
+    elif kind == "forward_hook":
+        return emb.register_forward_hook(lambda m, a, out: out * 2)
+    elif kind == "unsloth_offload_hooks":
+        from unsloth.models.vision import _install_offload_embedding_hooks
+
+        assert _install_offload_embedding_hooks(emb, None, torch.device("cpu"))
+    return None
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["direct_weight", "delegating", "accelerate_over_override", "forward_hook", "unsloth_offload_hooks"],
+)
+@pytest.mark.parametrize("convert", ["unsloth", "strip"])
+def test_embedding_with_instance_forward_or_hooks_is_left_out_of_qat(kind, convert):
+    # Nothing is rebound: the embedding keeps its module, override and hooks, and stays full precision throughout.
+    pytest.importorskip("accelerate.hooks")
+    from torchao.utils import TorchAOBaseTensor
+    from unsloth.models._utils import _strip_torchao_fake_quantization
+
+    model = _tiny_gemma3()
+    original = model.get_input_embeddings()
+    handle = _install_override(original, kind)
+    ids = torch.randint(0, model.config.vocab_size, (2, 12))
+    with torch.no_grad():
+        before = original(ids)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "int8-int4")
+    emb = model.get_input_embeddings()
+    assert emb is original and not _is_fake_quantized(emb)
+    assert sum("leaves these embeddings in full precision" in str(w.message) for w in caught) == 1
+    assert _is_fake_quantized(model.model.layers[0].self_attn.q_proj)  # the rest of the recipe still applies
+    with torch.no_grad():
+        torch.testing.assert_close(emb(ids), before)
+    if handle is not None:
+        handle.remove()  # the caller's handle still controls the live module
+        with torch.no_grad():
+            torch.testing.assert_close(emb(ids) * 2, before)
+    if convert == "unsloth":
+        _convert_torchao_model(model)
+    else:
+        _strip_torchao_fake_quantization(model)
+    assert model.get_input_embeddings() is original
+    assert not isinstance(original.weight, TorchAOBaseTensor)  # saved as trained: unquantized
+
+
+@pytest.mark.parametrize("offload", [False, True])
+def test_sequential_hook_with_align_devices_hook_is_supported(offload):
+    accelerate_hooks = pytest.importorskip("accelerate.hooks")
+    from accelerate.utils import PrefixedDataset
+    from torchao.utils import TorchAOBaseTensor
+
+    ids = torch.randint(0, 256, (2, 12))
+    reference = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
+    with torch.no_grad():
+        expected = reference.get_input_embeddings()(ids)
+    model = _tiny_gemma3()
+    emb = model.get_input_embeddings()
+    kwargs = {"execution_device": "cpu", "offload": offload}
+    if offload:
+        prefix = "model.embed_tokens."
+        kwargs["weights_map"] = PrefixedDataset({prefix + "weight": emb.weight.detach().clone()}, prefix)
+    accelerate_hooks.add_hook_to_module(emb, accelerate_hooks.AlignDevicesHook(**kwargs))
+    accelerate_hooks.add_hook_to_module(emb, accelerate_hooks.ModelHook(), append = True)
+    assert type(emb._hf_hook).__name__ == "SequentialHook"
+    model = _prepare_model_for_qat(model, "int8-int4")
+    emb = model.get_input_embeddings()
+    assert _is_fake_quantized(emb) and type(emb._hf_hook).__name__ == "SequentialHook"
+    calls = _count_fake_quant_calls(emb)
+    with torch.no_grad():
+        torch.testing.assert_close(emb(ids), expected)
+    assert len(calls) == 1
+    _convert_torchao_model(reference)
+    _convert_torchao_model(model)
+    emb = model.get_input_embeddings()
+    assert emb.weight.device.type == "cpu" and isinstance(emb.weight, TorchAOBaseTensor)
+    with torch.no_grad():
+        torch.testing.assert_close(emb(ids), reference.get_input_embeddings()(ids))
+
+
+def test_two_offload_hooks_are_left_out_of_qat():
+    accelerate_hooks = pytest.importorskip("accelerate.hooks")
+    model = _tiny_gemma3()
+    emb = model.get_input_embeddings()
+    from accelerate.utils import PrefixedDataset
+
+    weights = {"w.weight": emb.weight.detach().clone()}
+    for append in (False, True):
+        hook = accelerate_hooks.AlignDevicesHook(
+            execution_device = "cpu", offload = True, weights_map = PrefixedDataset(weights, "w.")
+        )
+        accelerate_hooks.add_hook_to_module(emb, hook, append = append)
+    with pytest.warns(UserWarning, match = "2 AlignDevicesHooks"):
+        model = _prepare_model_for_qat(model, "int8-int4")
+    assert model.get_input_embeddings() is emb and not _is_fake_quantized(emb)
+
+
+@pytest.mark.parametrize("offload", [False, True])
+def test_plain_embedding_keeps_its_accelerate_hook(offload):
+    accelerate_hooks = pytest.importorskip("accelerate.hooks")
+    from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+    from torchao.utils import TorchAOBaseTensor
+
+    ids = torch.randint(0, 256, (2, 12))
+    reference = _prepare_model_for_qat(_tiny_qwen3(), "int8-int4")
+    with torch.no_grad():
+        expected = reference.get_input_embeddings()(ids)
+    model = _tiny_qwen3()
+    emb = model.get_input_embeddings()
+    assert type(emb) is torch.nn.Embedding
+    accelerate_hooks.add_hook_to_module(
+        emb, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", offload = offload, io_same_device = True)
+    )
+    model = _prepare_model_for_qat(model, "int8-int4")
+    emb = model.get_input_embeddings()
+    assert type(emb) is FakeQuantizedEmbedding and hasattr(emb, "_hf_hook")
+    calls = _count_fake_quant_calls(emb)
+    with torch.no_grad():
+        torch.testing.assert_close(emb(ids), expected)
+    assert len(calls) == 1
+    _convert_torchao_model(reference)
+    _convert_torchao_model(model)
+    emb = model.get_input_embeddings()
+    assert emb.weight.device.type == "cpu" and isinstance(emb.weight, TorchAOBaseTensor)
+
+
+def test_input_require_grads_hook_follows_the_qat_embedding():
+    # transformers' enable_input_require_grads hook is not a reason to skip QAT; it is re-registered on the swap.
+    model = _tiny_gemma3()
+    model.enable_input_require_grads()
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "int8-int4")
+    assert not any("leaves these embeddings" in str(w.message) for w in caught)
+    emb = model.get_input_embeddings()
+    assert _is_fake_quantized(emb)
+    ids = torch.randint(0, model.config.vocab_size, (2, 12))
+    for p in emb.parameters():
+        p.requires_grad_(False)
+    assert emb(ids).requires_grad
+    model.disable_input_require_grads()  # the owner's handles control the live embedding
+    assert not emb(ids).requires_grad
+
+
+def test_peft_require_grad_hook_follows_the_qat_embedding():
+    # PEFT's fallback hook (no handle kept) on a model without enable_input_require_grads.
+    model = _tiny_gemma3()
+    emb = model.get_input_embeddings()
+
+    def make_inputs_require_grad(module, input, output):
+        output.requires_grad_(True)
+
+    emb.register_forward_hook(make_inputs_require_grad)
+    model = _prepare_model_for_qat(model, "int8-int4")
+    emb = model.get_input_embeddings()
+    assert _is_fake_quantized(emb)
+    assert list(emb._forward_hooks.values()) == [make_inputs_require_grad]
+    for p in emb.parameters():
+        p.requires_grad_(False)
+    assert emb(torch.tensor([[1, 2, 3]])).requires_grad
