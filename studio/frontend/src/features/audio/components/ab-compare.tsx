@@ -16,7 +16,7 @@ import {
   resumeAfterLoad,
   switchSide,
 } from "./ab-compare-state";
-import { WaveformBarGlyphs } from "./waveform";
+import { PlaybackTime, WaveformBarGlyphs } from "./waveform";
 import { WAVEFORM_BARS, computePeaks, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
@@ -234,10 +234,7 @@ export function ABCompare({
             }
           />
         </div>
-        <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
-          {ab.position > 0 ? `${formatSeconds(ab.position)} / ` : ""}
-          {formatSeconds(duration)}
-        </span>
+        <PlaybackTime position={ab.position} duration={duration} />
       </div>
       {src ? (
         // biome-ignore lint/a11y/useMediaCaption: speech clips have no caption track; the clip's text is shown beside it.

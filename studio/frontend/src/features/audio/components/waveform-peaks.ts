@@ -3,7 +3,7 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-export const WAVEFORM_BARS = 72;
+export const WAVEFORM_BARS = 96;
 
 /** Per-bar peak across channels, normalised so the loudest bar is 1; silence stays 0. */
 export function computePeaks(

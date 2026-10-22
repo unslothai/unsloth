@@ -365,10 +365,10 @@ export const BUDGET = {
   // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
   // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
-  // #14590 (eager locale strings, help entry, API buttons) merged with main at 8bcbf837bd: 6,727.5 KB raw /
-  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_075_550,
-  rawBytes: 6_889_150,
+  // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 8bcbf837bd:
+  // 6,728.0 KB raw / 2,026.8 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_075_650,
+  rawBytes: 6_889_700,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

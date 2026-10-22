@@ -166,10 +166,7 @@ export function Waveform({
       ) : (
         slider
       )}
-      <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
-        {position > 0 ? `${formatSeconds(position)} / ` : ""}
-        {formatSeconds(duration)}
-      </span>
+      <PlaybackTime position={position} duration={duration} />
       {src ? (
         // biome-ignore lint/a11y/useMediaCaption: voice references have no caption track; the clip's text is shown beside it.
         <audio
@@ -255,6 +252,27 @@ export function WaveformBars({
   );
 }
 
+/** Holds the width of "duration / duration", so starting playback never narrows the bars beside it. */
+export function PlaybackTime({
+  position,
+  duration,
+}: {
+  position: number;
+  duration: number;
+}) {
+  return (
+    <span className="grid shrink-0 justify-items-end font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+      <span aria-hidden="true" className="invisible col-start-1 row-start-1">
+        {`${formatSeconds(duration)} / ${formatSeconds(duration)}`}
+      </span>
+      <span className="col-start-1 row-start-1">
+        {position > 0 ? `${formatSeconds(position)} / ` : ""}
+        {formatSeconds(duration)}
+      </span>
+    </span>
+  );
+}
+
 /** HTML pills: an SVG stretched with preserveAspectRatio="none" squashes rx into square ends. */
 export function WaveformBarGlyphs({
   peaks,
@@ -269,7 +287,8 @@ export function WaveformBarGlyphs({
     <div aria-hidden="true" className="flex size-full items-center">
       {Array.from({ length: count }, (_, index) => {
         const peak = peaks ? (peaks[index] ?? 0) : 0;
-        const height = Math.max(2, peak * 30);
+        // A curve lifts quiet passages off the floor; the floor is a round dot, never a dash.
+        const height = 12 + peak ** 0.7 * 88;
         return (
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
@@ -278,11 +297,12 @@ export function WaveformBarGlyphs({
           >
             <span
               className={cn(
-                "w-2/3 min-h-[2px] rounded-full bg-current",
-                isPlayed(index) ? "text-foreground" : "text-muted-foreground",
-                peaks ? "opacity-100" : "opacity-40",
+                "w-1/2 min-w-[2px] max-w-[3px] rounded-full bg-current",
+                isPlayed(index)
+                  ? "text-foreground"
+                  : cn("text-muted-foreground", peaks ? "opacity-50" : "opacity-25"),
               )}
-              style={{ height: `${(height / 32) * 100}%` }}
+              style={{ height: `${height}%` }}
             />
           </span>
         );
