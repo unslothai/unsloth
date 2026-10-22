@@ -724,3 +724,74 @@ def test_queue_ids_are_stored_and_loaded_per_account(queue, monkeypatch):
     assert writes == [bob.account_id]
     # Bob's own table is read even though another account loaded its ids first.
     assert bob.account_id in reads and len(set(reads)) == 2
+
+
+def _transient_409(request, current_subject, via_api_key):
+    raise openai_fine_tuning.HTTPException(
+        status_code = 409,
+        detail = "Cannot start training over the API while an inference request is in progress.",
+    )
+
+
+def test_a_cancel_during_a_start_that_hits_a_transient_conflict_ends_the_job(queue, monkeypatch):
+    client, calls, _live, gpu = queue
+    release, entered = asyncio.Event(), asyncio.Event()
+
+    async def slow_conflict(request, current_subject, via_api_key):
+        entered.set()
+        await release.wait()
+        _transient_409(request, current_subject, via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", slow_conflict)
+        gpu["busy"] = False
+        drain = asyncio.ensure_future(openai_fine_tuning._drain_once())
+        await entered.wait()
+        await client.fine_tuning.jobs.cancel(job.id)
+        release.set()
+        await drain
+        return await client.fine_tuning.jobs.retrieve(job.id), list(openai_fine_tuning._QUEUE)
+
+    job, remaining = _run(flow())
+    assert job.status == "cancelled" and remaining == []
+
+
+def test_a_ui_run_winning_the_gpu_keeps_the_queued_job_waiting(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def lost_to_ui(request, current_subject, via_api_key):
+        gpu["busy"] = True  # the UI run is now training
+        return TrainingJobResponse(
+            job_id = "",
+            status = "error",
+            message = "Training did not start.",
+            error = "subprocess_start_failed",
+        )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", lost_to_ui)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return await client.fine_tuning.jobs.retrieve(job.id)
+
+    assert _run(flow()).status == "queued"
+
+
+def test_a_create_during_a_chat_request_is_queued_not_refused(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+    gpu["busy"] = False
+
+    async def chat_in_flight(request, current_subject, via_api_key):
+        _transient_409(request, current_subject, via_api_key)
+
+    monkeypatch.setattr(training_routes, "start_training", chat_in_flight)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        return await _create(client, uploaded.id)
+
+    assert _run(flow()).status == "queued"

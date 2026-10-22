@@ -516,6 +516,10 @@ def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: 
         logger.exception("Could not persist fine-tuning job id %s", alias)
 
 
+def _transient(exc: HTTPException) -> bool:
+    return exc.status_code == 409 and any(text in str(exc.detail) for text in _TRANSIENT_CONFLICTS)
+
+
 def _training_busy() -> bool:
     from core.training import get_training_backend
     from routes import training as training_routes
@@ -572,15 +576,24 @@ async def _start_queued(entry: _Queued) -> bool:
             )
         except HTTPException as exc:
             entry.status = "queued"
-            transient = any(text in str(exc.detail) for text in _TRANSIENT_CONFLICTS)
+            if entry.cancel_requested:
+                _finish(entry, "cancelled")
+                return True
+            transient = _transient(exc) or _training_busy()
             entry.idle_conflicts += 0 if transient else 1
-            if exc.status_code == 409 and entry.idle_conflicts < QUEUE_IDLE_CONFLICTS:
+            if transient or (
+                exc.status_code == 409 and entry.idle_conflicts < QUEUE_IDLE_CONFLICTS
+            ):
                 return False
             _finish(entry, "failed", str(exc.detail))
             return True
         if started.status == "error" or not started.job_id:
             entry.status = "queued"
-            if started.error in _BUSY_ERRORS:
+            if entry.cancel_requested:
+                _finish(entry, "cancelled")
+                return True
+            # Busy, or another start (a UI run) took the GPU while this one was admitted: keep waiting.
+            if started.error in _BUSY_ERRORS or _training_busy():
                 return False
             _finish(entry, "failed", started.message or started.error or "Training did not start")
             return True
@@ -691,10 +704,18 @@ async def create_fine_tuning_job(
             return _for_caller(
                 _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
             )
-        started = await training_routes.start_training(
-            request, current_subject = current_subject, via_api_key = via_api_key
-        )
-        if started.error in _BUSY_ERRORS:
+        try:
+            started = await training_routes.start_training(
+                request, current_subject = current_subject, via_api_key = via_api_key
+            )
+        except HTTPException as exc:
+            # A chat request in flight or an install clears by itself: queue rather than refuse.
+            if not (_transient(exc) or _training_busy()):
+                raise
+            return _for_caller(
+                _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
+            )
+        if started.error in _BUSY_ERRORS or (started.status == "error" and _training_busy()):
             return _for_caller(
                 _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
             )
