@@ -1689,13 +1689,19 @@ class ClusterServing:
             except (OSError, ValueError) as exc:
                 failed[node.endpoint] = f"could not start ssh to {node.host}: {exc}"
                 continue
-            if not await ss.wait_for_own_port(
-                process,
-                node.host,
-                node.rpc_port,
-                WORKER_START_TIMEOUT_S,
-                cancelled = self._cancelled,
-            ):
+            try:
+                owned = await ss.wait_for_own_port(
+                    process,
+                    node.host,
+                    node.rpc_port,
+                    WORKER_START_TIMEOUT_S,
+                    cancelled = self._cancelled,
+                )
+            except BaseException:
+                # Not in self.workers yet, so shutdown would never find it: stop it before the cancel propagates.
+                await process.stop()
+                raise
+            if not owned:
                 tail = list(process.tail)[-3:]
                 await process.stop()
                 failed[node.endpoint] = (

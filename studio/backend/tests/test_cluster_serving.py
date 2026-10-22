@@ -558,6 +558,39 @@ def test_managed_workers_are_started_over_ssh_and_kept_across_reloads(monkeypatc
     assert cs.state().workers == {}
 
 
+def test_a_worker_cancelled_while_starting_is_stopped(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: "/b/ggml-rpc-server")
+
+    async def fake_ssh(target, remote, **kw):
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    stopped = []
+
+    async def fake_start(self):
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def fake_stop(self, timeout = 10.0):
+        stopped.append(self.peer)
+        self.proc = SimpleNamespace(returncode = 0)
+
+    async def cancelled_while_waiting(process, host, port, timeout, **kw):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss.PeerProcess, "stop", fake_stop)
+    monkeypatch.setattr(ss, "wait_for_own_port", cancelled_while_waiting)
+    with pytest.raises(asyncio.CancelledError):
+        run(ss.before_load(_request(), 4))
+    assert stopped == [
+        "me@10.0.0.2"
+    ], "a worker started but not yet registered is stopped on cancel"
+    assert cs.state().workers == {}
+
+
 def test_ssh_takes_a_nodes_own_login_and_keeps_the_spark_one(monkeypatch):
     monkeypatch.setattr(ss, "_ssh_user", lambda: "studio")
     assert ss.ssh_argv("10.0.0.2", "true")[-2] == "studio@10.0.0.2"
