@@ -91,6 +91,9 @@ def amd(monkeypatch):
     from utils.hardware import amd as amd_mod
 
     monkeypatch.setattr(amd_mod, "_display_cache", {})
+    # An empty mask (CPU-only CI) would make the primary GPU id None and skip amd-smi.
+    for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
     calls = []
     answer = {"data": [{"gpu": 0, "usage": {"gfx_activity": {"value": 50, "unit": "%"}}}]}
 
