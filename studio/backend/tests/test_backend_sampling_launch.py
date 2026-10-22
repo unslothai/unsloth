@@ -303,6 +303,42 @@ class TestTheGate:
         assert _backend_sampling_flags(ON, argv, **GPU, n_vocab = 151936) == ["--backend-sampling"]
         assert _backend_sampling_flags(ON, argv, **GPU, n_vocab = 512) == []
 
+    def test_an_env_layer_count_of_zero_gets_nothing(self):
+        argv = ["/x/llama-server", "-m", "m.gguf", "--parallel", "4"]
+        env = {"LLAMA_ARG_N_GPU_LAYERS": "0"}
+        assert _backend_sampling_flags(ON, argv, **{**GPU, "env": env}) == []
+        # argv wins over the env, as in llama.cpp
+        assert _backend_sampling_flags(ON, argv + ["-ngl", "99"], **{**GPU, "env": env}) == [
+            "--backend-sampling"
+        ]
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            ("spec-type = ngram-mod", []),
+            ("spec-default = true", []),
+            ("model-draft = /m/draft.gguf", []),
+            ("spec-type = none", ["--backend-sampling"]),
+            ("temp = 0.7", ["--backend-sampling"]),
+        ],
+        ids = ["spec-type", "spec-default", "draft-model", "spec-none", "unrelated"],
+    )
+    def test_a_config_ini_that_speculates_gets_nothing(self, tmp_path, line, expected):
+        (tmp_path / "llama.cpp").mkdir()
+        (tmp_path / "llama.cpp" / "config.ini").write_text(f"[default]\n{line}\n")
+        env = {"XDG_CONFIG_HOME": str(tmp_path)}
+        assert _backend_sampling_flags(ON, self.BASE, **{**GPU, "env": env}) == expected
+
+    def test_a_config_ini_layer_count_of_zero_gets_nothing_unless_argv_sets_one(self, tmp_path):
+        (tmp_path / "llama.cpp").mkdir()
+        (tmp_path / "llama.cpp" / "config.ini").write_text("[default]\nn-gpu-layers = 0\n")
+        env = {"XDG_CONFIG_HOME": str(tmp_path)}
+        argv = ["/x/llama-server", "-m", "m.gguf", "--parallel", "4"]
+        assert _backend_sampling_flags(ON, argv, **{**GPU, "env": env}) == []
+        assert _backend_sampling_flags(ON, self.BASE, **{**GPU, "env": env}) == [
+            "--backend-sampling"
+        ]
+
     @pytest.mark.parametrize("value", ["0", "false", "off", "no"])
     def test_the_opt_out(self, monkeypatch, value):
         monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND_SAMPLING", value)

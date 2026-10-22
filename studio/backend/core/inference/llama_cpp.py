@@ -7786,9 +7786,20 @@ def _backend_sampling_flags(
     # Measured on CUDA only; ROCm, SYCL and the rest keep CPU sampling until measured.
     if not gpus_detected or vulkan or not cuda_build or (platform or sys.platform) == "darwin":
         return []
-    if _device_selection_is_cpu(argv, source_env) or _argv_keeps_layers_on_cpu(argv):
+    if _device_selection_is_cpu(argv, source_env) or _argv_keeps_layers_on_cpu(argv, source_env):
         return []
     if _launch_speculates(argv, source_env if spec_env is None else spec_env):
+        return []
+    # A config.ini applies before argv and env: its spec types are appended to the ones above, and
+    # its layer count stands unless argv or env sets one, so either keeps the CPU sampler.
+    config_files = _llama_config_files(source_env, platform)
+    if _config_files_set_any(config_files, _CONFIG_SPEC_KEYS):
+        return []
+    if (
+        not _launch_flag_values(argv, _GPU_LAYER_FLAGS)
+        and source_env.get("LLAMA_ARG_N_GPU_LAYERS") is None
+        and _config_files_set_any(config_files, _CONFIG_GPU_LAYER_KEYS, value = "0")
+    ):
         return []
     # Every request that leaves a field to the launch would take a default the GPU sampler breaks on.
     if _gpu_sampler_envelope_breach({}, _launch_sampling_defaults(argv, source_env), n_vocab):
@@ -7796,10 +7807,15 @@ def _backend_sampling_flags(
     return ["--backend-sampling"]
 
 
-def _argv_keeps_layers_on_cpu(argv: Sequence[str]) -> bool:
-    """The last layer-count flag says 0: the output layer, and with it the sampler, is on the CPU."""
+def _argv_keeps_layers_on_cpu(argv: Sequence[str], env: Optional[Mapping[str, str]] = None) -> bool:
+    """The layer count is 0: the output layer, and with it the sampler, is on the CPU.
+
+    The last layer-count flag wins; without one, llama.cpp takes ``LLAMA_ARG_N_GPU_LAYERS``.
+    """
     values = _launch_flag_values(argv, _GPU_LAYER_FLAGS)
-    return bool(values) and values[-1].strip() == "0"
+    if values:
+        return values[-1].strip() == "0"
+    return str((env or {}).get("LLAMA_ARG_N_GPU_LAYERS", "")).strip() == "0"
 
 
 # llama.cpp's GPU sampler (src/llama-sampler.cpp, the *_backend_apply graphs) parts from the CPU
@@ -7962,11 +7978,34 @@ def _llama_config_files(env: Mapping[str, str], platform: Optional[str] = None) 
 _CONFIG_LOGIT_BIAS_KEYS = frozenset({"logit-bias", "logit_bias", "l", "llama_arg_logit_bias"})
 
 
-def _config_files_set_logit_bias(paths: Sequence[str]) -> bool:
-    """Whether any llama.cpp config.ini in ``paths`` may set a logit bias; True if one is unreadable.
+# Config keys are option names without dashes, or their LLAMA_ARG_* names (common/arg.cpp).
+_CONFIG_SPEC_KEYS = frozenset(
+    {
+        "spec-type",
+        "spec_type",
+        "spec-default",
+        "spec_default",
+        "md",
+        "model-draft",
+        "model_draft",
+        "spec-draft-model",
+        "spec_draft_model",
+        "llama_arg_spec_type",
+        "llama_arg_model_draft",
+        "llama_arg_spec_draft_model",
+    }
+)
+_CONFIG_GPU_LAYER_KEYS = frozenset(
+    {"ngl", "gpu-layers", "gpu_layers", "n-gpu-layers", "n_gpu_layers", "llama_arg_n_gpu_layers"}
+)
 
-    /props leaves logit_bias out, and llama.cpp appends the biases of every section it applies
-    (``[*]`` and the model's), so a config bias is a default the guard cannot otherwise see.
+
+def _config_files_set_any(
+    paths: Sequence[str], keys: Collection[str], value: Optional[str] = None
+) -> bool:
+    """Whether any llama.cpp config.ini in ``paths`` sets one of ``keys`` (to ``value``, if given).
+
+    True if a file is unreadable. A spec type of ``none`` does not draft, so it does not count.
     """
     for path in paths:
         try:
@@ -7975,10 +8014,25 @@ def _config_files_set_logit_bias(paths: Sequence[str]) -> bool:
         except OSError:
             return True
         for line in lines:
-            key, sep, _value = line.partition("=")
-            if sep and key.strip().lstrip("-").lower() in _CONFIG_LOGIT_BIAS_KEYS:
+            key, sep, got = line.partition("=")
+            if not sep or key.strip().lstrip("-").lower() not in keys:
+                continue
+            got = got.strip().strip("\"'")
+            if value is not None:
+                if got == value:
+                    return True
+            elif got.lower() != "none":
                 return True
     return False
+
+
+def _config_files_set_logit_bias(paths: Sequence[str]) -> bool:
+    """Whether any llama.cpp config.ini in ``paths`` may set a logit bias; True if one is unreadable.
+
+    /props leaves logit_bias out, and llama.cpp appends the biases of every section it applies
+    (``[*]`` and the model's), so a config bias is a default the guard cannot otherwise see.
+    """
+    return _config_files_set_any(paths, _CONFIG_LOGIT_BIAS_KEYS)
 
 
 def _gpu_sampler_envelope_breach(
