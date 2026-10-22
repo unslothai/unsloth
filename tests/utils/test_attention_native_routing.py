@@ -99,11 +99,18 @@ def _dense(monkeypatch, dtype, mask):
     return out, seen, (Q, K, V, attention_mask)
 
 
+def _gqa_falls_to_math(Q, K, masked):
+    # Before torch 2.14 the memory-efficient kernel rejects GQA, so masked fp32 GQA only has math left.
+    mask = torch.ones(Q.shape[0], 1, Q.shape[2], K.shape[2], dtype = torch.bool, device = Q.device) if masked else None
+    choice = torch._fused_sdp_choice(Q, K, K, attn_mask = mask, is_causal = not masked, enable_gqa = True)
+    return int(choice) == int(SDPBackend.MATH)
+
+
 @needs_cuda
 def test_fp32_masked_gqa_expands_instead_of_math(monkeypatch):
-    # fp32 (DoRA) with a padding mask: flash cannot run, the memory-efficient kernel rejects GQA.
+    # fp32 (DoRA) with a padding mask: flash cannot run; expand K/V only where GQA would leave math.
     out, seen, (Q, K, V, mask) = _dense(monkeypatch, torch.float32, True)
-    assert seen == [(8, False)]
+    assert seen == ([(8, False)] if _gqa_falls_to_math(Q, K, True) else [(2, True)])
     with torch.nn.attention.sdpa_kernel([SDPBackend.MATH]):
         ref = torch.nn.functional.scaled_dot_product_attention(
             Q,
@@ -200,7 +207,10 @@ def test_windowed_packed_runs_expand_where_gqa_would_force_math(monkeypatch):
         Q, K, K, lengths, n_groups = 2, is_causal = True, sliding_window = 4, sdpa_kwargs = {}
     )
     assert out is not None
-    assert all(not gqa and heads == 4 for heads, gqa, _ in seen if _), seen
+    if _gqa_falls_to_math(Q, K, True):
+        assert all(not gqa and heads == 4 for heads, gqa, _ in seen if _), seen
+    else:
+        assert all(gqa and heads == 2 for heads, gqa, _ in seen if _), seen
 
 
 def test_gqa_probe_failure_still_learns_the_expanded_choice(monkeypatch):
