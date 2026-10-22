@@ -103,11 +103,18 @@ class UnslothTrainer(_SFTTrainer):
         model = self.model
         decay = set(self.get_decay_parameter_names(model))
         optimizer_cls, optimizer_kwargs = _SFTTrainer.get_optimizer_cls_and_kwargs(self.args, model)
+        embedding_ids = set()
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            module = getattr(model, getter, lambda: None)()
+            if getattr(module, "weight", None) is not None:
+                embedding_ids.add(id(module.weight))
         groups = {}
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            is_embedding = name.endswith("modules_to_save.default.weight")
+            is_embedding = (
+                name.endswith("modules_to_save.default.weight") or id(param) in embedding_ids
+            )
             key = (is_embedding, name in decay)
             groups.setdefault(key, []).append(param)
         self.optimizer = optimizer_cls(
@@ -145,6 +152,9 @@ def _install_cpu_trainer_module():
     trainer.UnslothTrainingArguments = UnslothTrainingArguments
     trainer.UnslothVisionDataCollator = UnslothVisionDataCollator
     sys.modules[module_name] = trainer
+    package = sys.modules.get(trainer.__package__)
+    if package is not None:
+        setattr(package, "trainer", trainer)
 
 
 _install_cpu_trainer_module()

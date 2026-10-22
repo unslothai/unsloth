@@ -81,7 +81,15 @@ def _zoo_has_cpu_backend():
 
 @pytest.mark.skipif(not _zoo_has_cpu_backend(), reason = "unsloth_zoo without the CPU backend")
 def test_no_accelerator_loads_the_cpu_backend():
-    probe, out = _import_unsloth({"CUDA_VISIBLE_DEVICES": ""})
+    torch = pytest.importorskip("torch")
+    for name in ("xpu", "npu"):
+        try:
+            if getattr(torch, name).is_available():
+                pytest.skip(f"{name} host: hiding CUDA leaves that accelerator selected")
+        except Exception:
+            pass
+    # UNSLOTH_FORCE_GPU_PATH keeps an Apple Silicon host off the MLX backend.
+    probe, out = _import_unsloth({"CUDA_VISIBLE_DEVICES": "", "UNSLOTH_FORCE_GPU_PATH": "1"})
     if probe is None and "ROCm" in out.stderr:
         pytest.skip("ROCm runtime host without a ROCm torch keeps its install hint")
     assert probe is not None, out.stderr[-3000:]
