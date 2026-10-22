@@ -6796,7 +6796,9 @@ def _explicit_pick_backend(
         monkeypatch.delenv(var, raising = False)
     if mask is not None:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
-    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {apu}))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {apu})
+    )
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
     monkeypatch.setattr(LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda *a: False))
     monkeypatch.setattr(LlamaCppBackend, "_other_planned_vram_mib", lambda self: {})

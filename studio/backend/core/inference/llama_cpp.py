@@ -17933,7 +17933,11 @@ class LlamaCppBackend:
         and hands the accounting to ``_select_gpus``."""
         # Only an explicit pick passes the accounting on; the tier above already ran otherwise.
         _acct = (
-            {"integrated": integrated, "prefer_discrete": False, "discount_prefixes": discount_prefixes}
+            {
+                "integrated": integrated,
+                "prefer_discrete": False,
+                "discount_prefixes": discount_prefixes,
+            }
             if not prefer_discrete and integrated and discrete_size_bytes is not None
             else {}
         )
@@ -28456,11 +28460,7 @@ class LlamaCppBackend:
                         # Fewer slots before no drafter. The walk takes the first subset holding the
                         # drafter, so it must keep its target-only ctx (less the trim at one slot).
                         # An extras --parallel wins at launch, so it is kept; the env twin is scrubbed.
-                        if (
-                            _target_fits_somewhere
-                            and not _both_fit_somewhere
-                            and _slots_reducible
-                        ):
+                        if _target_fits_somewhere and not _both_fit_somewhere and _slots_reducible:
                             _mtp_slots = _mtp_slots_ctx = 0
                             for _s in range(n_parallel - 1, 0, -1):
                                 _keep = 1 - (
