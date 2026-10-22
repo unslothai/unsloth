@@ -108,9 +108,11 @@ def _run_cpu_fallback_load(
     platform = None,
     sink = None,
     stall_launches = (),
+    stall_kind = "no_progress",
 ):
     """``stall_launches``: 0-based launch indexes whose child stays alive while the
-    health wait reports a startup stall (a hung driver rather than a crash)."""
+    health wait reports a startup stall (a hung driver rather than a crash), ended
+    the way ``stall_kind`` says (``no_progress`` or ``ceiling``)."""
     if platform is not None:
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
 
@@ -193,12 +195,14 @@ def _run_cpu_fallback_load(
         health_kwargs.append(dict(_kw))
         health_timeouts.append(timeout)
         backend._health_wait_stalled = False
+        backend._health_wait_stall_kind = None
         if len(launches) == 1 and first_output:
             backend._stdout_lines = [first_output]
         if cancel_after is not None and len(launches) >= cancel_after:
             backend._cancel_event.set()
         if len(launches) - 1 in stall_launches:
             backend._health_wait_stalled = True
+            backend._health_wait_stall_kind = stall_kind
             return False
         return returncodes[len(launches) - 1] is None
 

@@ -3,8 +3,11 @@
 
 """An auto-selected Vulkan bundle on a host whose driver cannot answer (#142).
 
-Two paths reach the staged CPU runtime without a crash: the Vulkan probe saw no
-usable device before launch, or the first Vulkan child stalled in startup.
+Two paths reach the staged CPU runtime without a crash: the Vulkan probe completed
+and listed no device, or the probe could not enumerate (timed out or faulted) and the
+first Vulkan child then did no loading work for the whole stall window. A stall after
+a probe that listed a device fails with advice instead: it does not prove the GPU
+unusable. Nothing is remembered across loads.
 """
 
 from __future__ import annotations
@@ -89,8 +92,6 @@ def test_outcome_outside_a_load_never_claims_no_device(monkeypatch, tmp_path):
 
 
 def _route_env(monkeypatch, outcome):
-    # Class-level session memo: no test may see another's stall.
-    monkeypatch.setattr(LlamaCppBackend, "_auto_vulkan_cpu_routes", {})
     monkeypatch.setattr(
         LlamaCppBackend, "_binary_revision", staticmethod(lambda _binary: ("rev", 1))
     )
@@ -153,8 +154,9 @@ def test_a_lowered_stall_window_still_governs_a_suspect_launch(monkeypatch, tmp_
     assert sink["health_timeouts"][0] == 60.0
 
 
-def test_a_hung_suspect_launch_replays_on_cpu(monkeypatch, tmp_path):
-    _route_env(monkeypatch, "timeout")
+@pytest.mark.parametrize("outcome", ["timeout", "crashed"])
+def test_a_hung_suspect_launch_replays_on_cpu(monkeypatch, tmp_path, outcome):
+    _route_env(monkeypatch, outcome)
     sink = {}
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch, tmp_path, returncodes = [None, None], stall_launches = (0,), sink = sink
@@ -224,40 +226,69 @@ def test_a_reload_keeps_the_no_device_reason(monkeypatch, tmp_path):
     assert backend._cpu_fallback_reason == "vulkan_no_device"
 
 
-def test_a_stalled_vulkan_child_replays_once_on_cpu(monkeypatch, tmp_path):
-    _route_env(monkeypatch, "devices")
+@pytest.mark.parametrize("outcome", ["devices", "error"])
+def test_a_stall_after_a_listed_device_fails_without_a_cpu_replay(monkeypatch, tmp_path, outcome):
+    """The probe saw a working device, so a slow start is not proof of a broken driver:
+    no CPU replay, no relaunch into the same hang, and the error points at Settings."""
+    _route_env(monkeypatch, outcome)
     sink = {}
-    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
-        monkeypatch, tmp_path, returncodes = [None, None], stall_launches = (0,), sink = sink
-    )
-    assert loaded is True
-    assert len(launches) == 2
-    assert len(fallback_sources) == 1
-    assert fallback_sources[0][0] == "/fake/llama-server"
-    assert backend._cpu_fallback_reason == "vulkan_startup_stall"
-    # Only the Vulkan child ignores CPU-only activity; the CPU replay counts it.
+    with pytest.raises(RuntimeError, match = r"Settings > GGUF inference engine"):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [None, None],
+            stall_launches = (0,),
+            sink = sink,
+        )
+    assert [argv[0] for argv, _env in sink["launches"]] == ["/fake/llama-server"]
+    assert sink["fallback_sources"] == []
+    # The Vulkan child still ignores CPU-only activity, so a spinning driver ends.
     assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is False
-    assert sink["health_kwargs"][1].get("cpu_counts_as_progress", True) is True
 
 
-def test_a_stall_sends_later_loads_of_the_same_build_straight_to_cpu(monkeypatch, tmp_path):
-    _route_env(monkeypatch, "devices")
+def test_a_suspect_launch_cut_off_by_the_ceiling_fails_without_a_cpu_replay(
+    monkeypatch, tmp_path
+):
+    """Still loading when the ceiling hit: that is progress, not a dead driver."""
+    _route_env(monkeypatch, "timeout")
+    sink = {}
+    with pytest.raises(RuntimeError, match = r"Settings > GGUF inference engine"):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [None, None],
+            stall_launches = (0,),
+            stall_kind = "ceiling",
+            sink = sink,
+        )
+    assert len(sink["launches"]) == 1
+    assert sink["fallback_sources"] == []
+
+
+def test_a_recovered_stall_is_not_remembered(monkeypatch, tmp_path):
+    """The next load re-probes and launches Vulkan again; one bad start never pins a
+    build to CPU."""
+    _route_env(monkeypatch, "timeout")
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    _run_cpu_fallback_load(
+    first, loaded, launches, _ = _run_cpu_fallback_load(
         monkeypatch, tmp_path / "a", returncodes = [None, None], stall_launches = (0,)
     )
-    backend, loaded, launches, _ = _run_cpu_fallback_load(
+    assert loaded is True
+    assert first._cpu_fallback_reason == "vulkan_startup_stall"
+    _route_env(monkeypatch, "devices")
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch, tmp_path / "b", returncodes = [None]
     )
     assert loaded is True
     assert len(launches) == 1
-    assert launches[0][0][0] == "/staged/llama-server"
-    assert backend._cpu_fallback_reason == "vulkan_startup_stall"
+    assert launches[0][0][0] == "/fake/llama-server"
+    assert fallback_sources == []
+    assert backend._cpu_fallback_reason is None
 
 
 def test_a_stalled_cpu_replay_is_terminal(monkeypatch, tmp_path):
-    _route_env(monkeypatch, "devices")
+    _route_env(monkeypatch, "timeout")
     sink = {}
     with pytest.raises(RuntimeError):
         _run_cpu_fallback_load(
@@ -356,6 +387,7 @@ def _wait(
     cpu_counts,
     rss_growth = 0,
     max_total_s = None,
+    healthy_at = None,
 ):
     """A live child that burns CPU (and optionally allocates); returns whether the
     wait gave up."""
@@ -370,6 +402,8 @@ def _wait(
             clock.now += interval
 
     def _no_server(*a, **k):
+        if healthy_at is not None and clock.now >= healthy_at:
+            return SimpleNamespace(status_code = 200)
         raise llama_cpp.httpx.ConnectError("refused")
 
     monkeypatch.setattr(llama_cpp.httpx, "get", _no_server)
@@ -420,6 +454,28 @@ def test_a_driver_that_keeps_allocating_still_hits_the_ceiling(monkeypatch):
     assert backend._health_wait_stalled is True
     assert 120 <= elapsed < 130
     assert "not healthy after 120s" in backend._stdout_lines[-1]
+    assert backend._health_wait_stall_kind == "ceiling"
+
+
+@pytest.mark.parametrize("max_total_s", [None, 30.0, 120.0])
+def test_a_child_doing_no_loading_work_reads_no_progress(monkeypatch, max_total_s):
+    """Including a ceiling no longer than the window: nothing renewed, so it never cut
+    anything off."""
+    healthy, elapsed, backend = _wait(monkeypatch, cpu_counts = False, max_total_s = max_total_s)
+    assert healthy is False
+    assert backend._health_wait_stalled is True
+    assert backend._health_wait_stall_kind == "no_progress"
+
+
+def test_a_slow_but_loading_child_comes_up_on_its_device(monkeypatch):
+    """Loading work renews the window well past it, so a slow healthy start is not a stall."""
+    healthy, elapsed, backend = _wait(
+        monkeypatch, cpu_counts = False, rss_growth = 1 << 20, max_total_s = 600.0, healthy_at = 200
+    )
+    assert healthy is True
+    assert 200 <= elapsed < 210
+    assert backend._health_wait_stalled is False
+    assert backend._health_wait_stall_kind is None
 
 
 def test_an_allocating_child_without_a_ceiling_keeps_renewing(monkeypatch):

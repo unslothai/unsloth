@@ -33714,31 +33714,27 @@ class LlamaCppBackend:
                     else:
                         self._record_load_warning(_cuda_ctx_notice)
 
-                # Zero Vulkan devices or an earlier stall: the bundle would still init a driver
-                # that can hang or crash (#7213, #142). A timed-out or faulted probe stays.
+                # Zero Vulkan devices: the bundle would still init a driver that can hang
+                # or crash (#7213, #142). A timed-out or faulted probe stays on Vulkan, and
+                # nothing is remembered across loads: every load re-probes.
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
-                    _remembered = LlamaCppBackend._auto_vulkan_cpu_routes.get(
-                        self._binary_revision(binary)
-                    )
                     _vk_outcome = self._vulkan_probe_outcome(binary)
                     _vulkan_suspect = _vk_outcome in ("timeout", "crashed")
                     # Only when a replay can be built, so the block below never fails the load.
                     if (
-                        (_remembered or _vk_outcome == "none")
+                        _vk_outcome == "none"
                         and self._cpu_isolated_replay(cmd, dict(env), server_caps) is not None
                         and self._cpu_isolated_binary(binary) is not None
                     ):
                         logger.warning(
                             "The auto-selected Vulkan backend has no usable device "
-                            "(%s); starting llama.cpp on CPU without loading the "
+                            "(probe: %s); starting llama.cpp on CPU without loading the "
                             "Vulkan runtime.",
-                            f"earlier this session: {_remembered}"
-                            if _remembered
-                            else f"probe: {_vk_outcome}",
+                            _vk_outcome,
                         )
                         intent = replace(intent, cpu_fallback = True)
-                        _cpu_route_reason = _remembered or "vulkan_no_device"
+                        _cpu_route_reason = "vulkan_no_device"
 
                 # LoadRequest carries this flag, so a stale rollback, an API caller or
                 # a swapped-out runtime can ask for a replay that never happened. Hold
@@ -33847,8 +33843,11 @@ class LlamaCppBackend:
                     "Load cancelled during the llama-server health wait"
                 ):
                     return False
-                # A stalled launch is a stuck driver (#142): replay once on CPU, terminal like
-                # the crash replay since every rung below relaunches the same driver.
+                # A stalled auto-Vulkan launch (#142). Every rung below relaunches the same
+                # driver, so this ends the load either way. A stall alone does not prove the
+                # GPU unusable: only a probe that could not enumerate (timed out or faulted)
+                # plus a child that did no loading work for the whole window replays this
+                # load on CPU. A probe that listed a device fails with advice instead.
                 if (
                     not healthy
                     and getattr(self, "_health_wait_stalled", False)
@@ -33858,18 +33857,23 @@ class LlamaCppBackend:
                 ):
                     _stalled_cmd = list(_last_spawn_cmd)
                     self._kill_process()
-                    if _try_auto_vulkan_cpu_fallback(_stalled_cmd, None, stalled = True):
-                        healthy = True
-                        # Keyed by revision, so an update or backend switch starts over.
-                        _stalled_revision = self._binary_revision(binary)
-                        if _stalled_revision:
-                            LlamaCppBackend._auto_vulkan_cpu_routes[_stalled_revision] = (
-                                "vulkan_startup_stall"
-                            )
-                    elif _finish_cancelled_health_wait(
-                        "Load cancelled during the CPU replay health wait"
+                    if (
+                        _vulkan_suspect
+                        and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
                     ):
-                        return False
+                        if _try_auto_vulkan_cpu_fallback(_stalled_cmd, None, stalled = True):
+                            healthy = True
+                        elif _finish_cancelled_health_wait(
+                            "Load cancelled during the CPU replay health wait"
+                        ):
+                            return False
+                    else:
+                        _raise_terminal_load_failure(
+                            "llama-server did not finish starting on the auto-selected Vulkan "
+                            "backend (no loading progress). If this keeps happening, choose CPU "
+                            "in Settings > GGUF inference engine to run models without the "
+                            "Vulkan driver."
+                        )
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -38292,8 +38296,6 @@ class LlamaCppBackend:
     _SUSPECT_VULKAN_STALL_TIMEOUT_S = 300.0
     # Unrenewable auto-Vulkan ceiling per GiB of model (never below the stall window).
     _AUTO_VULKAN_START_S_PER_GIB = 60.0
-    # Builds whose auto-Vulkan launch stalled this session, by _binary_revision.
-    _auto_vulkan_cpu_routes: dict = {}
     _STARTUP_PROGRESS_SAMPLE_S = 5.0
     # Ignore activity from the health probes themselves.
     _STARTUP_PROGRESS_MIN_BYTES = 1 << 20
@@ -38385,6 +38387,9 @@ class LlamaCppBackend:
         deadline = time.monotonic() + timeout
         ceiling = deadline - timeout + max_total_s if max_total_s is not None else None
         self._health_wait_stalled = False
+        # "no_progress" (the stall window passed with no loading work) or "ceiling".
+        self._health_wait_stall_kind = None
+        clipped_by_ceiling = False
         work_sample = None
         work_sampled_at = None
         work_checked_at = None
@@ -38466,8 +38471,9 @@ class LlamaCppBackend:
                         cpu_counts = cpu_counts_as_progress,
                     ):
                         deadline = now + timeout
-                        if ceiling is not None:
-                            deadline = min(deadline, ceiling)
+                        if ceiling is not None and deadline > ceiling:
+                            deadline = ceiling
+                            clipped_by_ceiling = True
                     peak = sample[1] if work_sample is None else max(work_sample[1], sample[1])
                     work_sample = (sample[0], peak, sample[2], sample[3])
                     work_sampled_at = now
@@ -38521,11 +38527,14 @@ class LlamaCppBackend:
         # never-healthy load (too large, or a proxy hijacking the loopback
         # probe) apart from a bad GGUF (#5740).
         marker = f"llama-server health check timed out: no startup progress for {timeout:g}s"
-        if ceiling is not None and deadline >= ceiling:
+        stall_kind = "no_progress"
+        if clipped_by_ceiling:
             marker = f"llama-server health check timed out: not healthy after {max_total_s:g}s"
+            stall_kind = "ceiling"
         self._stdout_lines.append(marker)
         logger.error(marker)
         self._health_wait_stalled = True
+        self._health_wait_stall_kind = stall_kind
         return False
 
     @staticmethod
