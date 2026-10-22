@@ -236,14 +236,42 @@ def cuda_order_mismatch_names():
     return names if len(names) > 1 else []
 
 
+def _xpu_launch_indices():
+    """Under torchrun / accelerate, the XPUs this node's ranks use (LOCAL_WORLD_SIZE of them, clipped
+    to the visible count), else None. Unsloth is imported before a rank selects its XPU, so the
+    current device then reads XPU 0 on every rank; judging the ranks' devices together keeps every
+    rank on one dtype and is never narrower than the all-visible rule."""
+    def _env_int(name):
+        try:
+            return int(os.environ.get(name, ""))
+        except ValueError:
+            return None
+    local_world = _env_int("LOCAL_WORLD_SIZE")
+    world = _env_int("WORLD_SIZE")
+    if (local_world or 1) <= 1 and (world or 1) <= 1:
+        return None
+    try:
+        count = int(torch.xpu.device_count())
+    except Exception:
+        return None
+    if count <= 0:
+        return None
+    return list(range(min(local_world, count) if local_world and local_world > 0 else count))
+
+
 def _xpu_selected_indices(device = None):
     """XPU indices to judge: `device` (an index, "xpu:N", a torch.device or several of them), else
-    the current device, which torch.xpu.is_bf16_supported() also asks. None when unreadable."""
+    the XPUs of a distributed launch (_xpu_launch_indices), else the current device, which
+    torch.xpu.is_bf16_supported() also asks. None when unreadable."""
     items = device if isinstance(device, (list, tuple, set, frozenset)) else [device]
     indices = []
     for item in items:
         try:
             if item is None:
+                launch = _xpu_launch_indices()
+                if launch is not None:
+                    indices.extend(i for i in launch if i not in indices)
+                    continue
                 index = torch.xpu.current_device()
             elif isinstance(item, int) and not isinstance(item, bool):
                 index = item

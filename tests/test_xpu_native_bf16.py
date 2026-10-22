@@ -54,6 +54,12 @@ CASES = [
 ]
 
 
+@pytest.fixture(autouse = True)
+def _single_process(monkeypatch):
+    for name in ("LOCAL_WORLD_SIZE", "WORLD_SIZE", "LOCAL_RANK", "RANK"):
+        monkeypatch.delenv(name, raising = False)
+
+
 def _fake_torch(devices, current = 0):
     def get_device_properties(device = None):
         spec = devices[current if device is None else device]
@@ -140,6 +146,46 @@ def test_xpu_bf16_judges_the_devices_a_model_uses(monkeypatch, device, bf16):
     fake.device = torch.device
     monkeypatch.setattr(dt, "torch", fake)
     assert dt.xpu_supports_native_bf16(device) is bf16
+
+
+# torchrun imports unsloth before prepare_device_map selects the rank's XPU, so every rank reads
+# current device 0 at import: judge the launch's XPUs together instead, one answer for all ranks.
+LAUNCH_CASES = [
+    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, False, id = "2ranks-mixed"),
+    pytest.param([EMULATED, NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, False, id = "2ranks-mixed-rev"),
+    pytest.param([NATIVE, NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, True, id = "2ranks-native"),
+    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "1", "WORLD_SIZE": "2"}, True, id = "1rank-per-node"),
+    pytest.param([NATIVE, EMULATED], {"WORLD_SIZE": "2"}, False, id = "no-local-world-all-visible"),
+    pytest.param([NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, True, id = "affinity-mask-one-visible"),
+    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "1", "WORLD_SIZE": "1"}, True, id = "single-process"),
+    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "x", "WORLD_SIZE": "y"}, True, id = "garbage-env"),
+]
+
+
+@pytest.mark.parametrize("devices,env,bf16", LAUNCH_CASES)
+@pytest.mark.parametrize("path_name", ["GPU_INIT", "MODEL_UTILS"])
+def test_xpu_bf16_under_a_launch_judges_every_rank_xpu(monkeypatch, devices, env, bf16, path_name):
+    import unsloth._gpu_init as gpu_init
+    import unsloth.models._utils as model_utils
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    module = gpu_init if path_name == "GPU_INIT" else model_utils
+    namespace = _run(globals()[path_name], module, _fake_torch(devices, 0), monkeypatch)
+    assert namespace["SUPPORTS_BFLOAT16"] is bf16
+
+
+@pytest.mark.parametrize("devices,env,_bf16", LAUNCH_CASES)
+def test_launch_answer_matches_zoo(monkeypatch, devices, env, _bf16):
+    zoo_dt = pytest.importorskip("unsloth_zoo.device_type")
+    if not hasattr(zoo_dt, "_xpu_launch_indices"):
+        pytest.skip("installed unsloth_zoo predates _xpu_launch_indices")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    fake = _fake_torch(devices, 0)
+    monkeypatch.setattr(dt, "torch", fake)
+    monkeypatch.setattr(zoo_dt, "torch", fake)
+    assert dt.xpu_supports_native_bf16() is zoo_dt._xpu_bf16_supported()
 
 
 def test_xpu_unreadable_current_device_keeps_true(monkeypatch):
