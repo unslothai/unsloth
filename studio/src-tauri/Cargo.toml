@@ -19,6 +19,8 @@ rust-version = "1.89"
 tauri = { version = "~2.12.0", features = ["tray-icon", "unstable"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
+# The plugin's own crate, used directly to pin the Windows Run entry to HKCU (main.rs).
+auto-launch = "0.6"
 tauri-plugin-deep-link = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
