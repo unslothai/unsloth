@@ -330,18 +330,25 @@ def load_h3_quantized_text_encoder(
         # same way, so a load that was cleared on a cached copy reads it from the id it is actually cached under rather
         # than 401ing or re-pulling 27 GB.
         source_repo = h3_te_quant_source(scheme)
+        from .video_minimax_h3 import h3_pre_move_copy_if_uncached
+
+        pre_move = h3_pre_move_copy_if_uncached(source_repo, filename)
         try:
-            path = hf_hub_download_with_xet_fallback(
-                source_repo,
-                filename,
-                hf_token,
-                cache_dir = cache_dir,
-                # Resolve the artifact through whichever root holds it, exactly as the stager that cleared this load
-                # did; pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
-                reuse_other_cache_root = True,
-                local_files_only = local_files_only,
-                gguf_header_delta = True,
-            )
+            if pre_move is not None:
+                # The stager cleared this load on the same hash-identical pre-move copy: read it, never fetch.
+                path = str(pre_move)
+            else:
+                path = hf_hub_download_with_xet_fallback(
+                    source_repo,
+                    filename,
+                    hf_token,
+                    cache_dir = cache_dir,
+                    # Resolve the artifact through whichever root holds it, exactly as the stager that cleared this load
+                    # did; pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
+                    reuse_other_cache_root = True,
+                    local_files_only = local_files_only,
+                    gguf_header_delta = True,
+                )
         except Exception as exc:  # noqa: BLE001 -- only a cache miss has a pre-move copy to fall back to
             path = h3_te_quant_pre_move_copy(filename, exc)
 

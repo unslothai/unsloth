@@ -1380,6 +1380,48 @@ def h3_pre_move_bundle_file(
     return None
 
 
+def _h3_cache_roots() -> tuple[Optional[str], ...]:
+    """Every HF cache root a native H3 fetch can resolve from (``reuse_other_cache_root``), live root first."""
+    roots: list[Optional[str]] = []
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots.append(str(active_hf_hub_cache()))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+        roots += [str(legacy_hf_cache_dir()), str(hf_default_cache_dir())]
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(None)
+    return tuple(dict.fromkeys(roots))
+
+
+def h3_pre_move_copy_if_uncached(
+    repo_id: str,
+    filename: str,
+    cache_dirs: Optional[tuple[Optional[str], ...]] = None,
+) -> Optional[Path]:
+    """The hash-identical pre-move copy to read INSTEAD of fetching ``repo_id``/``filename``, else None.
+
+    Only when the official-path file is not cached under any root: a cached official copy always wins, and a file with
+    no pre-move copy is fetched as usual. The planners and the loaders ask this one question, so a plan never stages a
+    download the load then skips (or the reverse). Cache lookups only, no network."""
+    if filename not in H3_PRE_MOVE_COPIES or Path(repo_id).expanduser().exists():
+        return None
+    from huggingface_hub import try_to_load_from_cache
+
+    roots = _h3_cache_roots() if cache_dirs is None else cache_dirs
+    for cache_dir in roots:
+        try:
+            hit = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(hit, str):
+            return None
+    return h3_pre_move_cached_copy(filename, roots)
+
+
 def h3_pre_move_cached_copy(
     filename: str, cache_dirs: Optional[tuple[Optional[str], ...]] = None
 ) -> Optional[Path]:
@@ -1391,19 +1433,7 @@ def h3_pre_move_cached_copy(
     from huggingface_hub import try_to_load_from_cache
 
     if cache_dirs is None:
-        roots: list[Optional[str]] = []
-        try:
-            from utils.hf_cache_settings import active_hf_hub_cache
-            roots.append(str(active_hf_hub_cache()))
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
-            roots += [str(legacy_hf_cache_dir()), str(hf_default_cache_dir())]
-        except Exception:  # noqa: BLE001
-            pass
-        roots.append(None)
-        cache_dirs = tuple(dict.fromkeys(roots))
+        cache_dirs = _h3_cache_roots()
     for repo, old_name in pinned[3]:
         for cache_dir in cache_dirs:
             try:

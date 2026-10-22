@@ -4024,6 +4024,15 @@ def _return_direct_loaded_modules(
             )
 
 
+def _h3_pre_move_copy_if_uncached(repo_id: str, filename: str) -> Optional[Path]:
+    """``video_minimax_h3.h3_pre_move_copy_if_uncached``, failing closed (fetch as usual) on any error."""
+    try:
+        from .video_minimax_h3 import h3_pre_move_copy_if_uncached
+        return h3_pre_move_copy_if_uncached(repo_id, filename)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -5289,6 +5298,10 @@ class VideoBackend:
                     local = h3_pre_move_bundle_file(root, wanted)
                     if local is None:
                         raise
+            elif (pre_move := _h3_pre_move_copy_if_uncached(repo, wanted)) is not None:
+                # An install staged before the official-provenance move holds the same bytes under the old name
+                # (hash-checked): a cache read, not a download, and the plan already counted it as present.
+                local = pre_move
             else:
                 try:
                     local = Path(
@@ -5303,19 +5316,10 @@ class VideoBackend:
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
-                    from .video_minimax_h3 import (
-                        h3_cache_miss,
-                        h3_offline_miss_error,
-                        h3_pre_move_cached_copy,
-                    )
-
+                    from .video_minimax_h3 import h3_cache_miss, h3_offline_miss_error
                     if not h3_cache_miss(exc):
                         raise h3_download_error(repo, wanted, exc) from exc
-                    # Not cached and the Hub cannot be asked: an install staged before the move holds the same bytes
-                    # under the old name (hash-checked), which is a cache read, not a download.
-                    local = h3_pre_move_cached_copy(wanted)
-                    if local is None:
-                        raise h3_offline_miss_error(repo, wanted) from exc
+                    raise h3_offline_miss_error(repo, wanted) from exc
             resolved.append(local)
 
         engine = SdCppEngine(binary)
@@ -6301,6 +6305,9 @@ class VideoBackend:
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         repo = h3_te_quant_source(scheme)
+        if _h3_pre_move_copy_if_uncached(repo, filename) is not None:
+            # Staged before the official-provenance move: the same bytes are already on disk under the old name.
+            return ("text_encoder",)
         try:
             try:
                 hf_hub_download_with_xet_fallback(
@@ -7146,7 +7153,10 @@ class VideoBackend:
             h3_te_repo, h3_te_files = self._h3_te_quant_hub_files(
                 self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token), api
             )
-            if h3_te_repo:
+            if h3_te_repo and not any(
+                _h3_pre_move_copy_if_uncached(h3_te_repo, name) is not None
+                for name, _ in h3_te_files
+            ):
                 total += add(h3_te_repo, h3_te_files)
             if base and not Path(base).expanduser().exists():
                 listing = _video_listing_repo(base)
@@ -7267,7 +7277,9 @@ class VideoBackend:
                 from .video_minimax_h3 import h3_pre_move_bundle_file
 
                 # A bundle cloned before the official-provenance move holds the same bytes under the old name.
-                if h3_pre_move_bundle_file(root, filename, verify = False) is None:
+                # Hash-checked here, not only at load: a same-size file with other bytes must keep the Hub copy rather
+                # than route the load to a bundle it then refuses. Memoized, so the plan and the load hash it once.
+                if h3_pre_move_bundle_file(root, filename) is None:
                     return hub_repo
             return repo_id
         return hub_repo
@@ -7367,7 +7379,9 @@ class VideoBackend:
                     # Only when the metadata came from the repo the bytes come from: the mirror's head says nothing
                     # about which snapshot the repack's cache holds, and a foreign sha would only ever be a pinned miss.
                     revision = getattr(info, "sha", None) if meta_repo == repo else None
-                    if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
+                    if not DiffusionBackend._hub_file_is_loadable(
+                        repo, filename, revision, size
+                    ) and (_h3_pre_move_copy_if_uncached(repo, filename) is None):
                         missing_files.setdefault(repo, set()).add(filename)
                         entry["bytes"] += size
                         total += size
