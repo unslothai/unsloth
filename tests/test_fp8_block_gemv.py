@@ -194,15 +194,14 @@ def test_routes_only_where_never_slower(monkeypatch):
     assert F8.can_use_fp8_block_gemv(X, *_quantize(1024, 4096))
 
 
-@pytest.mark.parametrize("sms, expect", [(188, "small_m"), (58, "gemv")])
-def test_router_picks_small_m_on_big_parts(monkeypatch, sms, expect):
-    # Both kernels take this decode call: the fused act_quant + w8a8 kernel on 100+ SMs, the GEMV below.
-    monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", True)
-    if F8.fp8_block_quant_linear.__wrapped__ is not F8.fp8_torch_block_quant_forward or (
-        F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton
-    ):
+@pytest.mark.parametrize("route, expect", [("small_m_first", "small_m"), ("gemv_first", "gemv")])
+def test_router_order(monkeypatch, route, expect):
+    # Both kernels take this decode call: 100+ SM parts try the fused act_quant + w8a8 kernel first,
+    # smaller ones the GEMV (fp8_block_quant_linear is bound to one of the two at import).
+    if F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton:
         pytest.skip("the fused small-M kernel replaces the Triton block matmul route only")
-    monkeypatch.setattr(F8, "_sm_count", lambda device: sms)
+    monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", True)
+    fn = F8._fp8_block_small_m_first if route == "small_m_first" else F8._with_fp8_block_gemv(F8.fp8_torch_block_quant_forward)
     q, s = _quantize(1024, 4096)
     X = torch.randn(4, 1, 4096, device = "cuda", dtype = torch.bfloat16)
     calls = []
@@ -210,20 +209,36 @@ def test_router_picks_small_m_on_big_parts(monkeypatch, sms, expect):
     monkeypatch.setattr(F8, "fp8_block_gemv", lambda *a: calls.append("gemv") or real_gemv(*a))
     monkeypatch.setattr(F8, "fp8_block_small_m_linear", lambda *a: calls.append("small_m") or real_small(*a))
     with torch.no_grad():
-        y = F8.fp8_block_quant_linear(X, _uncached(q), s)
+        y = fn(X, q, s)
     assert calls == [expect]
     # act_quant rounds X to e4m3 on the fused path: a few percent, against the GEMV's bf16 eps.
     assert _rel_err(y, _oracle(X, q, s)) <= (5e-2 if expect == "small_m" else torch.finfo(torch.bfloat16).eps)
+    # Training keeps the autograd path on both routes.
+    Xg = X.clone().requires_grad_()
+    calls.clear()
+    fn(Xg, q, s).sum().backward()
+    assert "gemv" not in calls and Xg.grad is not None
 
 
-def test_router_compiled_keeps_gemv(monkeypatch):
-    # The fused kernel is eager only, so a compiled region on a 100+ SM part still gets the GEMV.
+def test_router_small_m_first_falls_back(monkeypatch):
+    # Compiled regions (the fused kernel is eager only) and pre-sm89 parts do not take the fused kernel.
     monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", True)
-    monkeypatch.setattr(F8, "_sm_count", lambda device: 188)
     q, s = _quantize(1024, 4096)
     X = torch.randn(2, 1, 4096, device = "cuda", dtype = torch.bfloat16)
     torch._dynamo.reset()
     with torch.no_grad():
-        compiled = torch.compile(lambda x: F8.fp8_block_quant_linear(x, q, s), fullgraph = True)(X)
+        compiled = torch.compile(lambda x: F8._fp8_block_small_m_first(x, q, s), fullgraph = True)(X)
         gemv = F8.fp8_block_gemv(X, q, s)
     torch.testing.assert_close(compiled, gemv, atol = 0, rtol = 0)
+    monkeypatch.setattr(F8, "_fp8_device_lacks_kernel", lambda device: True)
+    monkeypatch.setattr(F8, "fp8_block_small_m_linear", lambda *a: pytest.fail("fused kernel used below sm89"))
+    with torch.no_grad():
+        F8._fp8_block_small_m_first(X, _uncached(q), s)
+
+
+def test_router_binding_follows_sm_count():
+    bound = F8.fp8_block_quant_linear
+    if F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton or bound.__wrapped__ is not F8.fp8_torch_block_quant_forward:
+        pytest.skip("FBGEMM / torchao block route: the GEMV wraps it")
+    big = torch.version.hip is None and min(F8._SM_COUNTS) >= 100
+    assert (bound is F8._fp8_block_small_m_first) == big

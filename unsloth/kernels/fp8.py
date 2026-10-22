@@ -996,32 +996,29 @@ def fp8_block_gemv(X, weight, weight_scale):
 
 
 def _with_fp8_block_gemv(block_forward):
-    fused_small_m = block_forward is fp8_torch_block_quant_forward
-
     @functools.wraps(block_forward)
     def forward(X, weight, weight_scale):
-        # Settled weights skip the per-call checks: not GEMV shaped, or left (eager, 100+ SMs) to the fused kernel.
-        cached = getattr(weight, "_unsloth_fp8_block_gemv", None)
-        if (
-            cached is not None
-            and cached[0] is weight_scale
-            and (not cached[1] or (cached[2:] and _FP8_BLOCK_SMALL_M and not torch.compiler.is_compiling()))
-        ):
-            return block_forward(X, weight, weight_scale)
         if can_use_fp8_block_gemv(X, weight, weight_scale):
-            # On 100+ SM parts the fused act_quant + w8a8 kernel decodes faster end to end where it applies
-            # (eager only, so compiled regions keep the GEMV); on smaller ones the GEMV does.
-            if (
-                fused_small_m
-                and _sm_count(X.device) >= 100
-                and can_use_fp8_block_small_m(X, weight, weight_scale, _fp8_block_size(weight, weight_scale))
-            ):
-                weight._unsloth_fp8_block_gemv = (weight_scale, True, "small_m")
-                return block_forward(X, weight, weight_scale)
             return fp8_block_gemv(X, weight, weight_scale)
         return block_forward(X, weight, weight_scale)
 
     return forward
+
+
+def _fp8_block_small_m_first(X, weight, weight_scale):
+    # 100+ SM parts: the fused act_quant + w8a8 kernel decodes faster end to end than the GEMV, so it goes
+    # first, called directly (as FP8BlockQuantLinear would, minus its per-call setup). It is eager only, so
+    # compiled regions fall through to the GEMV.
+    if not (torch.is_grad_enabled() and X.requires_grad):
+        if (
+            can_use_fp8_block_small_m(X, weight, weight_scale, _fp8_block_size(weight, weight_scale))
+            and weight.is_contiguous()
+            and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
+        ):
+            return fp8_block_small_m_linear(X, weight, weight_scale)
+        if can_use_fp8_block_gemv(X, weight, weight_scale):
+            return fp8_block_gemv(X, weight, weight_scale)
+    return fp8_torch_block_quant_forward(X, weight, weight_scale)
 
 
 # Expanding the scale over the whole weight needs two m*n float32 temporaries, ~6x the triton
@@ -1598,8 +1595,18 @@ try:
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
 except:
     pass
-# Decode-sized calls take the block GEMV whichever block GEMM was selected above.
-fp8_block_quant_linear = _with_fp8_block_gemv(fp8_block_quant_linear)
+# Decode-sized calls take the weight-only GEMV whichever block GEMM was selected above. With the Triton
+# block GEMM on CUDA parts that all have 100+ SMs, the fused small-M kernel is tried first instead.
+if (
+    fp8_block_quant_linear is fp8_torch_block_quant_forward
+    and torch.version.hip is None
+    and _SM_COUNTS
+    and min(_SM_COUNTS) >= 100
+):
+    _fp8_block_small_m_first.__wrapped__ = fp8_torch_block_quant_forward
+    fp8_block_quant_linear = _fp8_block_small_m_first
+else:
+    fp8_block_quant_linear = _with_fp8_block_gemv(fp8_block_quant_linear)
 
 
 # Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
