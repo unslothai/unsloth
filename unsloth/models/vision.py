@@ -2081,6 +2081,27 @@ def _missing_torchvision_error(error = None):
     return False
 
 
+def _from_pretrained_left_padded(loader, name, **kwargs):
+    """`loader.from_pretrained(name, padding_side = "left", ...)`, retried without padding_side when the
+    processor forwards it into a sub-model's __init__ (Dia's DacModel, Higgs Audio's tokenizer model).
+    The inner tokenizer is set to left padding after loading either way."""
+    try:
+        return loader.from_pretrained(name, padding_side = "left", **kwargs)
+    except TypeError as error:
+        if "padding_side" not in str(error):
+            raise
+        return loader.from_pretrained(name, **kwargs)
+
+
+def _missing_audio_backend(error):
+    """The library an audio processor needed but could not import (Granite Speech and Fun-ASR-Nano
+    feature extractors require torchaudio), else None."""
+    if not isinstance(error, ImportError):
+        return None
+    match = re.search(r"requires the (\w+) library", str(error))
+    return match.group(1) if match else None
+
+
 # Only where class defaults are the checkpoint's settings (Step-3.7 hardcodes them remotely).
 _NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES = frozenset({"step3p7"})
 
@@ -4293,9 +4314,9 @@ class FastBaseModel:
                 "ForConditionalGeneration"
             ):
                 try:
-                    _tok = auto_processor.from_pretrained(
+                    _tok = _from_pretrained_left_padded(
+                        auto_processor,
                         tokenizer_name,
-                        padding_side = "left",
                         token = token,
                         language = whisper_language,
                         task = whisper_task,
@@ -4326,9 +4347,9 @@ class FastBaseModel:
                         _tok = None
                 try:
                     if _tok is None:
-                        _tok = auto_processor.from_pretrained(
+                        _tok = _from_pretrained_left_padded(
+                            auto_processor,
                             tokenizer_name,
-                            padding_side = "left",
                             token = token,
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
@@ -4397,6 +4418,19 @@ class FastBaseModel:
             import sys
             print(
                 f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
+                file = sys.stderr,
+            )
+        _audio_backend = _missing_audio_backend(_primary_err)
+        if (
+            needs_processor
+            and _audio_backend
+            and not any(hasattr(tokenizer, k) for k in ("feature_extractor", "audio_processor"))
+        ):
+            import sys
+            print(
+                f"Unsloth: Warning - the audio processor for `{tokenizer_name}` needs {_audio_backend}, "
+                f"which is not installed, so only its text tokenizer was loaded. Audio training "
+                f"needs the processor: `pip install {_audio_backend}`, then load again.",
                 file = sys.stderr,
             )
         # Backwards compat: if the processor has no chat_template (old saves without chat_template.jinja) but the inner tokenizer does, copy it to the processor.
