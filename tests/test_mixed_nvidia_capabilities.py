@@ -535,3 +535,34 @@ def test_both_llama_load_branches_check_the_placement():
     for branch in branches:
         assert checks(branch.body), "the num_labels branch must check where device_map put the weights"
         assert branch.orelse and checks(branch.orelse), "the causal LM branch must check the placement"
+
+
+def test_sentence_transformer_direct_loads_check_the_placement():
+    """FastSentenceTransformer's direct SentenceTransformer(model_name, ...) loads (incl. the compiled
+    fast encoder path) bypass the other loaders, so each must check where the weights landed."""
+    import ast
+
+    tree = ast.parse(
+        (REPO_ROOT / "unsloth" / "models" / "sentence_transformer.py").read_text(encoding = "utf-8")
+    )
+    found = 0
+    for block in ast.walk(tree):
+        body = getattr(block, "body", None)
+        if not isinstance(body, list):
+            continue
+        for i, stmt in enumerate(body):
+            if not (
+                isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.Call)
+                and getattr(stmt.value.func, "id", None) == "SentenceTransformer"
+                and stmt.value.args
+                and getattr(stmt.value.args[0], "id", None) == "model_name"
+            ):
+                continue
+            found += 1
+            assert any(
+                isinstance(n, ast.Call) and getattr(n.func, "id", None) == "check_mixed_gpu_placement"
+                for later in body[i + 1 :]
+                for n in ast.walk(later)
+            ), f"SentenceTransformer load at line {stmt.lineno} must check the placement"
+    assert found >= 2

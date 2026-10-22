@@ -27,6 +27,7 @@ from ._utils import (
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
     _mark_full_finetuning,
+    check_mixed_gpu_placement,
 )
 import inspect
 import json
@@ -2609,6 +2610,7 @@ class FastSentenceTransformer(FastModel):
             if _validated:
                 st_kwargs["revision"] = _validated
             st_model = SentenceTransformer(model_name, **st_kwargs)
+            check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
             # unsupported GPUs emulate bfloat16 slowly; float16 can yield non-finite activations.
             if (dtype is None and not SUPPORTS_BFLOAT16) or dtype == torch.float16:
                 _maybe_upcast_force_float32_inference(st_model)
@@ -2747,6 +2749,8 @@ class FastSentenceTransformer(FastModel):
                 **({"config_kwargs": config_kwargs} if config_kwargs else {}),
             )
 
+            # The fast encoder path loads and compiles without the other loaders, so it checks the placement itself.
+            check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
             st_model._unsloth_fast_encoder = True
             _apply_max_seq_length(st_model, max_seq_length)
             _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
