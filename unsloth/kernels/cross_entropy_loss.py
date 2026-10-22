@@ -419,8 +419,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 )
             # logsumexp(chunked_logsumexp) - x, with the -x done separately.
             logsumexp = torch.logsumexp(logsumexp, dim = 1)
-            losses += logsumexp
-            losses.masked_fill_(labels == -100, 0)  # Don't forget to mask padding out!
+            losses = (losses + logsumexp).masked_fill(labels == -100, 0)  # mask padding out
 
         ctx.save_for_backward(logits, logsumexp, labels)
         ctx.DO_SOFTCAPPING = DO_SOFTCAPPING
