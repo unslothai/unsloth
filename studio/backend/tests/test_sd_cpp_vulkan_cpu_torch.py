@@ -442,7 +442,9 @@ def test_windows_nvidia_without_nvidia_smi_is_found_in_the_adapter_registry(
 
 def _empty_failure_records(monkeypatch, stored = None):
     monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", {})
-    monkeypatch.setattr(sd_cpp_backend, "_stored_accelerator_runtime_failures", lambda: dict(stored or {}))
+    monkeypatch.setattr(
+        sd_cpp_backend, "_stored_accelerator_runtime_failures", lambda: dict(stored or {})
+    )
     monkeypatch.setattr(sd_cpp_backend, "_persist_accelerator_runtime_failures", lambda _r: None)
     monkeypatch.setattr(sd_cpp_backend, "_accelerator_fingerprint", lambda *_a: {"bundle": "t"})
 

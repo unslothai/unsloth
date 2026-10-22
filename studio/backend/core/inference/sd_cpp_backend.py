@@ -637,7 +637,10 @@ def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
 
 
 def _device_listing_identity(binary: str) -> tuple:
-    return (_binary_stat_identity(binary), tuple(os.environ.get(name) for name in _DEVICE_LISTING_ENV_VARS))
+    return (
+        _binary_stat_identity(binary),
+        tuple(os.environ.get(name) for name in _DEVICE_LISTING_ENV_VARS),
+    )
 
 
 def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None:
@@ -1244,7 +1247,6 @@ def _vulkan_cpu_rung_applies() -> bool:
     host (always Vulkan) and a ROCm host on its Vulkan rung leave the GPU only on decisive evidence. Unknown: as before."""
     try:
         from utils.hardware.hardware import DeviceType, get_device
-
         return get_device() == DeviceType.CPU
     except Exception:  # noqa: BLE001
         return True
