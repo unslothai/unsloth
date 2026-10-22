@@ -3108,10 +3108,85 @@ export const fr = {
       title: "Connexions",
       description: "Gérez les fournisseurs et les connexions externes.",
     },
+    namedTunnel: {
+      mode: "Type de connexion",
+      quick: "Lien temporaire",
+      named: "Domaine personnalisé",
+      method: "Méthode de configuration",
+      automatic: "Automatique",
+      existing: "Se connecter avec un jeton Cloudflare",
+      hostname: "Domaine",
+      token: "Jeton Cloudflare",
+      keepToken: "Laissez vide pour conserver le jeton enregistré.",
+      originHint:
+        "Dans le tableau de bord Cloudflare, faites pointer ce nom d’hôte vers {origin}. Studio ne modifie pas cette route.",
+      prepareHint:
+        "Configurez la connexion ici, puis cliquez sur Start pour vous connecter. Le démarrage automatique reste inchangé.",
+      remove: "Supprimer",
+      removeTitle: "Supprimer l’accès par domaine personnalisé ?",
+      removeAuto:
+        "Supprimer la connexion Cloudflare pour {hostname} ? L’enregistrement DNS restera dans votre compte Cloudflare et devra être supprimé manuellement.",
+      removeToken:
+        "Supprimer les identifiants locaux de {hostname} ? Votre connexion Cloudflare et l’enregistrement DNS resteront dans votre compte.",
+      authorizeAgain: "Autoriser à nouveau",
+      setup: "Configurer",
+      openLogin: "Ouvrir la connexion Cloudflare",
+      dnsCleanup:
+        "L’enregistrement DNS {hostname} reste dans Cloudflare. Supprimez-le manuellement s’il n’est plus nécessaire.",
+      dnsConflictTitle: "Un enregistrement DNS existe déjà",
+      dnsConflict:
+        "Un enregistrement DNS existe déjà pour {hostname}. Le remplacer par une redirection vers Unsloth ? L’ancien enregistrement ne sera pas restauré.",
+      overwrite: "Remplacer",
+      quickDescription:
+        "Obtenez un lien public. L’adresse peut changer au redémarrage.",
+      namedDescription:
+        "Utilisez une adresse fixe comme studio.example.com. Un domaine géré par Cloudflare est nécessaire.",
+      quickAutoStart:
+        "Créer une nouvelle URL distante au démarrage d’Unsloth. L’arrêt ne désactive pas le démarrage automatique.",
+      namedAutoStart:
+        "Connecter automatiquement votre domaine au démarrage d’Unsloth.",
+      states: {
+        preparing: "Préparation de Cloudflare…",
+        awaiting_login:
+          "Autorisez la connexion dans votre navigateur. Si aucun onglet ne s’est ouvert, utilisez le lien de connexion.",
+        configuring:
+          "Configuration de la connexion et de la redirection du domaine…",
+        dns_conflict:
+          "En attente de votre décision concernant l’enregistrement DNS existant.",
+        ready: "Configuré. Cliquez sur Start pour vous connecter.",
+        removing: "Suppression de la connexion Cloudflare…",
+        removed: "L’accès par domaine personnalisé a été supprimé.",
+        error: "Échec de la configuration.",
+      },
+      errors: {
+        hostname:
+          "Saisissez un nom d’hôte DNS sans protocole, port, chemin, adresse IP ni caractère générique.",
+        token: "Saisissez un jeton Cloudflare Tunnel valide.",
+        removeFirst:
+          "Supprimez la connexion au domaine enregistrée avant de modifier son adresse ou son mode de configuration.",
+        busy: "Arrêtez l’accès à distance et attendez la fin de l’opération en cours.",
+        login:
+          "L’autorisation Cloudflare a échoué ou a expiré. Autorisez à nouveau pour continuer.",
+        timeout:
+          "Le délai a expiré. Réessayez pour reprendre la configuration enregistrée.",
+        cancelled:
+          "Configuration annulée. Toute connexion déjà créée a été conservée.",
+        dns: "Échec du routage DNS. Vérifiez le nom d’hôte et la zone Cloudflare, puis réessayez.",
+        zone: "Vérifiez la zone Cloudflare sélectionnée et les informations de nettoyage DNS avant de réessayer.",
+        remove: "Impossible de supprimer la connexion. Réessayez.",
+        stillActive:
+          "Cloudflare indique que la connexion est encore active. Patientez quelques minutes, puis réessayez.",
+        statusUnavailable:
+          "Impossible de vérifier l’état de la connexion auprès de Cloudflare. Réessayez plus tard.",
+        credentials:
+          "Les identifiants enregistrés sont illisibles ou invalides.",
+        generic: "L’opération a échoué. Vérifiez votre connexion et réessayez.",
+      },
+    },
     remoteLan: {
       title: "Accès distant et LAN",
       description:
-        "Accédez à cet Unsloth depuis vos autres appareils, via votre réseau local ou une URL publique temporaire.",
+        "Accédez à cet Unsloth depuis vos autres appareils, via votre réseau local ou une URL Cloudflare.",
     },
     apiKeys: {
       title: "API",

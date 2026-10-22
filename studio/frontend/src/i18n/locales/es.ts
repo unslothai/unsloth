@@ -3100,10 +3100,82 @@ export const es = {
       title: "Conexiones",
       description: "Gestiona proveedores y conexiones externas.",
     },
+    namedTunnel: {
+      mode: "Tipo de conexión",
+      quick: "Enlace temporal",
+      named: "Dominio propio",
+      method: "Método de configuración",
+      automatic: "Automático",
+      existing: "Conectar con un token de Cloudflare",
+      hostname: "Dominio",
+      token: "Token de Cloudflare",
+      keepToken: "Déjalo vacío para conservar el token guardado.",
+      originHint:
+        "En el panel de Cloudflare, dirige este nombre de host a {origin}. Studio no cambia esa ruta.",
+      prepareHint:
+        "Configura la conexión aquí y pulsa Start para conectar. El inicio automático no cambia.",
+      remove: "Eliminar",
+      removeTitle: "¿Eliminar el acceso mediante dominio propio?",
+      removeAuto:
+        "¿Eliminar la conexión de Cloudflare para {hostname}? El registro DNS permanecerá en tu cuenta de Cloudflare y tendrás que eliminarlo manualmente.",
+      removeToken:
+        "¿Eliminar las credenciales locales de {hostname}? La conexión de Cloudflare y el registro DNS permanecerán en tu cuenta.",
+      authorizeAgain: "Autorizar de nuevo",
+      setup: "Configurar",
+      openLogin: "Abrir acceso a Cloudflare",
+      dnsCleanup:
+        "El registro DNS {hostname} permanece en Cloudflare. Elimínalo manualmente si ya no lo necesitas.",
+      dnsConflictTitle: "Ya existe un registro DNS",
+      dnsConflict:
+        "Ya existe un registro DNS para {hostname}. ¿Sustituirlo por una ruta a Unsloth? El registro anterior no se restaurará.",
+      overwrite: "Sobrescribir",
+      quickDescription:
+        "Obtén un enlace público. La dirección puede cambiar al reiniciar.",
+      namedDescription:
+        "Usa una dirección fija como studio.example.com. Necesitas un dominio gestionado por Cloudflare.",
+      quickAutoStart:
+        "Crear una nueva URL remota al iniciar Unsloth. Detenerlo ahora no desactiva el inicio automático.",
+      namedAutoStart: "Conecta tu dominio automáticamente al iniciar Unsloth.",
+      states: {
+        preparing: "Preparando Cloudflare…",
+        awaiting_login:
+          "Autoriza la conexión en el navegador. Si no se abrió ninguna pestaña, usa el enlace de acceso.",
+        configuring: "Configurando la conexión y la redirección del dominio…",
+        dns_conflict: "Esperando tu decisión sobre el registro DNS existente.",
+        ready: "Configurado. Pulsa Start para conectar.",
+        removing: "Eliminando la conexión de Cloudflare…",
+        removed: "Se ha eliminado el acceso mediante dominio propio.",
+        error: "Error de configuración.",
+      },
+      errors: {
+        hostname:
+          "Introduce un nombre de host DNS sin protocolo, puerto, ruta, dirección IP ni comodines.",
+        token: "Introduce un token válido de Cloudflare Tunnel.",
+        removeFirst:
+          "Elimina la conexión de dominio guardada antes de cambiar la dirección o el método de configuración.",
+        busy: "Detén el acceso remoto y espera a que termine la operación actual.",
+        login:
+          "La autorización de Cloudflare falló o caducó. Autoriza de nuevo para continuar.",
+        timeout:
+          "Se agotó el tiempo. Reintenta para continuar la configuración guardada.",
+        cancelled:
+          "Configuración cancelada. Se ha conservado cualquier conexión ya creada.",
+        dns: "Error de enrutamiento DNS. Comprueba el nombre de host y la zona de Cloudflare y reintenta.",
+        zone: "Comprueba la zona de Cloudflare seleccionada y la información de limpieza DNS antes de reintentar.",
+        remove: "No se pudo eliminar la conexión. Inténtalo de nuevo.",
+        stillActive:
+          "Cloudflare aún indica que la conexión está activa. Espera unos minutos e inténtalo de nuevo.",
+        statusUnavailable:
+          "No se pudo consultar el estado de la conexión en Cloudflare. Inténtalo más tarde.",
+        credentials:
+          "Las credenciales guardadas no se pueden leer o no son válidas.",
+        generic: "La operación falló. Comprueba tu conexión y reintenta.",
+      },
+    },
     remoteLan: {
       title: "Remoto y LAN",
       description:
-        "Accede a este Unsloth desde tus otros dispositivos, por tu red local o mediante una URL pública temporal.",
+        "Accede a este Unsloth desde tus otros dispositivos, por tu red local o mediante una URL de Cloudflare.",
     },
     apiKeys: {
       title: "API",

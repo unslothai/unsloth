@@ -3049,10 +3049,81 @@ export const ko = {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
     },
+    namedTunnel: {
+      mode: "연결 방식",
+      quick: "임시 링크",
+      named: "사용자 지정 도메인",
+      method: "설정 방식",
+      automatic: "자동",
+      existing: "Cloudflare 토큰으로 연결",
+      hostname: "도메인",
+      token: "Cloudflare 토큰",
+      keepToken: "비워 두면 저장된 토큰을 유지합니다.",
+      originHint:
+        "Cloudflare 대시보드에서 이 호스트 이름을 {origin}으로 연결하세요. Studio는 이 경로를 변경하지 않습니다.",
+      prepareHint:
+        "여기에서 연결을 설정한 후 Start를 눌러 연결하세요. 자동 시작 설정은 바뀌지 않습니다.",
+      remove: "제거",
+      removeTitle: "사용자 지정 도메인 액세스를 제거할까요?",
+      removeAuto:
+        "{hostname}의 Cloudflare 연결을 제거할까요? DNS 레코드는 Cloudflare 계정에 남으므로 직접 삭제해야 합니다.",
+      removeToken:
+        "{hostname}의 로컬 인증 정보를 제거할까요? Cloudflare 연결과 DNS 레코드는 계정에 유지됩니다.",
+      authorizeAgain: "다시 인증",
+      setup: "설정",
+      openLogin: "Cloudflare 로그인 열기",
+      dnsCleanup:
+        "DNS 레코드 {hostname}은 Cloudflare에 남아 있습니다. 더 이상 필요하지 않으면 직접 삭제하세요.",
+      dnsConflictTitle: "DNS 레코드가 이미 존재함",
+      dnsConflict:
+        "{hostname}에 DNS 레코드가 이미 있습니다. Unsloth로 연결되도록 바꿀까요? 이전 레코드는 복원되지 않습니다.",
+      overwrite: "덮어쓰기",
+      quickDescription:
+        "공개 링크를 만듭니다. 다시 시작하면 주소가 바뀔 수 있습니다.",
+      namedDescription:
+        "studio.example.com과 같은 고정 주소를 사용합니다. Cloudflare에서 관리하는 도메인이 필요합니다.",
+      quickAutoStart:
+        "Unsloth를 시작할 때 새 원격 URL을 만듭니다. 지금 중지해도 자동 시작은 꺼지지 않습니다.",
+      namedAutoStart:
+        "Unsloth를 시작할 때 사용자 지정 도메인에 자동으로 연결합니다.",
+      states: {
+        preparing: "Cloudflare 준비 중…",
+        awaiting_login:
+          "브라우저에서 연결을 인증하세요. 탭이 열리지 않으면 로그인 링크를 사용하세요.",
+        configuring: "연결 및 도메인 라우팅을 설정하는 중…",
+        dns_conflict: "기존 DNS 레코드에 대한 결정을 기다리는 중입니다.",
+        ready: "설정되었습니다. Start를 눌러 연결하세요.",
+        removing: "Cloudflare 연결을 제거하는 중…",
+        removed: "사용자 지정 도메인 액세스가 제거되었습니다.",
+        error: "설정에 실패했습니다.",
+      },
+      errors: {
+        hostname:
+          "프로토콜, 포트, 경로, IP 주소 또는 와일드카드가 없는 DNS 호스트 이름을 입력하세요.",
+        token: "유효한 Cloudflare Tunnel 토큰을 입력하세요.",
+        removeFirst:
+          "주소나 설정 방법을 변경하려면 먼저 저장된 도메인 연결을 제거하세요.",
+        busy: "원격 액세스를 중지하고 현재 작업이 끝날 때까지 기다리세요.",
+        login:
+          "Cloudflare 인증이 실패했거나 만료되었습니다. 계속하려면 다시 인증하세요.",
+        timeout:
+          "작업 시간이 초과되었습니다. 다시 시도하면 저장된 설정을 이어서 진행합니다.",
+        cancelled: "설정이 취소되었습니다. 이미 생성된 연결은 유지됩니다.",
+        dns: "DNS 라우팅에 실패했습니다. 호스트 이름과 Cloudflare 영역을 확인한 후 다시 시도하세요.",
+        zone: "다시 시도하기 전에 선택한 Cloudflare 영역과 DNS 정리 안내를 확인하세요.",
+        remove: "연결을 제거하지 못했습니다. 다시 시도하세요.",
+        stillActive:
+          "Cloudflare에서 연결이 아직 활성 상태라고 보고합니다. 몇 분 후 다시 시도하세요.",
+        statusUnavailable:
+          "Cloudflare에서 연결 상태를 확인하지 못했습니다. 나중에 다시 시도하세요.",
+        credentials: "저장된 자격 증명을 읽을 수 없거나 유효하지 않습니다.",
+        generic: "작업에 실패했습니다. 연결을 확인하고 다시 시도하세요.",
+      },
+    },
     remoteLan: {
       title: "원격 및 LAN",
       description:
-        "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
+        "로컬 네트워크나 Cloudflare URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
       title: "API",

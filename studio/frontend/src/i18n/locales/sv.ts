@@ -3279,10 +3279,83 @@ export const sv = {
       title: "Anslutningar",
       description: "Hantera leverantörer och externa anslutningar.",
     },
+    namedTunnel: {
+      mode: "Anslutningstyp",
+      quick: "Tillfällig länk",
+      named: "Egen domän",
+      method: "Konfigurationsmetod",
+      automatic: "Automatisk",
+      existing: "Anslut med en Cloudflare-token",
+      hostname: "Domän",
+      token: "Cloudflare-token",
+      keepToken: "Lämna tomt för att behålla sparad token.",
+      originHint:
+        "I Cloudflares kontrollpanel: dirigera värdnamnet till {origin}. Studio ändrar inte den routningen.",
+      prepareHint:
+        "Konfigurera anslutningen här och använd sedan Start för att ansluta. Automatisk start ändras inte.",
+      remove: "Ta bort",
+      removeTitle: "Ta bort åtkomst via egen domän?",
+      removeAuto:
+        "Ta bort Cloudflare-anslutningen för {hostname}? DNS-posten finns kvar i ditt Cloudflare-konto och måste tas bort manuellt.",
+      removeToken:
+        "Ta bort de lokala inloggningsuppgifterna för {hostname}? Cloudflare-anslutningen och DNS-posten finns kvar i ditt konto.",
+      authorizeAgain: "Auktorisera igen",
+      setup: "Konfigurera",
+      openLogin: "Öppna Cloudflare-inloggning",
+      dnsCleanup:
+        "DNS-posten {hostname} finns kvar hos Cloudflare. Ta bort den manuellt om den inte längre behövs.",
+      dnsConflictTitle: "DNS-post finns redan",
+      dnsConflict:
+        "Det finns redan en DNS-post för {hostname}. Ersätta den med en vidarebefordran till Unsloth? Den tidigare posten återställs inte.",
+      overwrite: "Skriv över",
+      quickDescription:
+        "Få en offentlig länk. Adressen kan ändras vid omstart.",
+      namedDescription:
+        "Använd en fast adress som studio.example.com. Du behöver en domän som hanteras av Cloudflare.",
+      quickAutoStart:
+        "Skapa en ny fjärr-URL när Unsloth startar. Att stoppa nu stänger inte av automatisk start.",
+      namedAutoStart: "Anslut din domän automatiskt när Unsloth startar.",
+      states: {
+        preparing: "Förbereder Cloudflare…",
+        awaiting_login:
+          "Auktorisera anslutningen i webbläsaren. Använd inloggningslänken om ingen flik öppnades.",
+        configuring: "Konfigurerar anslutningen och domänens vidarebefordran…",
+        dns_conflict: "Väntar på ditt beslut om den befintliga DNS-posten.",
+        ready: "Konfigurerad. Använd Start för att ansluta.",
+        removing: "Tar bort Cloudflare-anslutningen…",
+        removed: "Åtkomst via egen domän har tagits bort.",
+        error: "Konfigurationen misslyckades.",
+      },
+      errors: {
+        hostname:
+          "Ange ett DNS-värdnamn utan protokoll, port, sökväg, IP-adress eller jokertecken.",
+        token: "Ange en giltig Cloudflare Tunnel-token.",
+        removeFirst:
+          "Ta bort den sparade domänanslutningen innan du ändrar adress eller installationsmetod.",
+        busy: "Stoppa fjärråtkomsten och vänta tills den pågående åtgärden är klar.",
+        login:
+          "Cloudflare-auktoriseringen misslyckades eller har gått ut. Auktorisera igen.",
+        timeout:
+          "Åtgärden tog för lång tid. Försök igen för att fortsätta den sparade konfigurationen.",
+        cancelled:
+          "Installationen avbröts. Anslutningar som redan skapats har behållits.",
+        dns: "DNS-routningen misslyckades. Kontrollera värdnamn och Cloudflare-zon och försök igen.",
+        zone: "Kontrollera vald Cloudflare-zon och information om DNS-rensning innan du försöker igen.",
+        remove: "Anslutningen kunde inte tas bort. Försök igen.",
+        stillActive:
+          "Cloudflare rapporterar fortfarande att anslutningen är aktiv. Vänta några minuter och försök igen.",
+        statusUnavailable:
+          "Det gick inte att kontrollera anslutningsstatus hos Cloudflare. Försök igen senare.",
+        credentials:
+          "Sparade inloggningsuppgifter kan inte läsas eller är ogiltiga.",
+        generic:
+          "Åtgärden misslyckades. Kontrollera anslutningen och försök igen.",
+      },
+    },
     remoteLan: {
       title: "Fjärråtkomst och LAN",
       description:
-        "Anslut till denna Unsloth från andra enheter, via ditt lokala nätverk eller en tillfällig offentlig URL.",
+        "Anslut till denna Unsloth från andra enheter, via ditt lokala nätverk eller en Cloudflare-URL.",
     },
     apiKeys: {
       title: "API",

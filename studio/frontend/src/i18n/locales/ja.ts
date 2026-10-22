@@ -3034,10 +3034,81 @@ export const ja = {
       title: "接続",
       description: "プロバイダーと外部接続を管理します。",
     },
+    namedTunnel: {
+      mode: "接続方法",
+      quick: "一時リンク",
+      named: "独自ドメイン",
+      method: "設定方法",
+      automatic: "自動",
+      existing: "Cloudflare トークンで接続",
+      hostname: "ドメイン",
+      token: "Cloudflare トークン",
+      keepToken: "空欄にすると保存済みのトークンを保持します。",
+      originHint:
+        "Cloudflare ダッシュボードで、このホスト名の接続先を {origin} に設定してください。Studio はこのルートを変更しません。",
+      prepareHint:
+        "ここで接続を設定し、Start で接続してください。自動起動の設定は変わりません。",
+      remove: "削除",
+      removeTitle: "独自ドメインでのアクセスを削除しますか？",
+      removeAuto:
+        "{hostname} の Cloudflare 接続を削除しますか？DNS レコードは Cloudflare アカウントに残るため、手動で削除する必要があります。",
+      removeToken:
+        "{hostname} のローカル認証情報を削除しますか？Cloudflare 接続と DNS レコードはアカウントに残ります。",
+      authorizeAgain: "再認証",
+      setup: "設定",
+      openLogin: "Cloudflare ログインを開く",
+      dnsCleanup:
+        "DNS レコード {hostname} は Cloudflare に残っています。不要になった場合は手動で削除してください。",
+      dnsConflictTitle: "DNS レコードが既に存在します",
+      dnsConflict:
+        "{hostname} には既存の DNS レコードがあります。Unsloth への転送に置き換えますか？元のレコードは復元されません。",
+      overwrite: "上書き",
+      quickDescription:
+        "公開リンクを取得します。再起動するとアドレスが変わる場合があります。",
+      namedDescription:
+        "studio.example.com のような固定アドレスを使用します。Cloudflare で管理しているドメインが必要です。",
+      quickAutoStart:
+        "Unsloth の起動時に新しいリモート URL を作成します。今停止しても自動起動は無効になりません。",
+      namedAutoStart: "Unsloth の起動時に独自ドメインへ自動接続します。",
+      states: {
+        preparing: "Cloudflare を準備中…",
+        awaiting_login:
+          "ブラウザで接続を認証してください。タブが開かない場合はログインリンクを使ってください。",
+        configuring: "接続とドメインの転送を設定しています…",
+        dns_conflict: "既存の DNS レコードに関する選択を待っています。",
+        ready: "設定済みです。Start で接続してください。",
+        removing: "Cloudflare 接続を削除しています…",
+        removed: "独自ドメインでのアクセスを削除しました。",
+        error: "設定に失敗しました。",
+      },
+      errors: {
+        hostname:
+          "スキーム、ポート、パス、IP アドレス、ワイルドカードを含まない DNS ホスト名を入力してください。",
+        token: "有効な Cloudflare Tunnel トークンを入力してください。",
+        removeFirst:
+          "アドレスや設定方法を変更する前に、保存済みのドメイン接続を削除してください。",
+        busy: "リモートアクセスを停止し、実行中の操作が完了するまでお待ちください。",
+        login:
+          "Cloudflare の認証に失敗したか期限切れです。続行するには再認証してください。",
+        timeout:
+          "処理がタイムアウトしました。再試行すると保存済みの設定を再開できます。",
+        cancelled:
+          "設定をキャンセルしました。作成済みの接続は保持されています。",
+        dns: "DNS ルーティングに失敗しました。ホスト名と Cloudflare ゾーンを確認して再試行してください。",
+        zone: "再試行の前に、選択した Cloudflare ゾーンと DNS の削除に関する情報を確認してください。",
+        remove: "接続を削除できませんでした。もう一度お試しください。",
+        stillActive:
+          "Cloudflare は接続がまだ有効だと報告しています。数分待ってからもう一度お試しください。",
+        statusUnavailable:
+          "Cloudflare で接続状態を確認できませんでした。しばらくしてからもう一度お試しください。",
+        credentials: "保存済みの認証情報を読み取れないか、無効です。",
+        generic: "処理に失敗しました。接続を確認して再試行してください。",
+      },
+    },
     remoteLan: {
       title: "リモートとLAN",
       description:
-        "ローカルネットワークまたは一時的な公開URLを介して、他のデバイスからこのUnslothにアクセスできます。",
+        "ローカルネットワークまたは Cloudflare URL を介して、他のデバイスからこの Unsloth にアクセスできます。",
     },
     apiKeys: {
       title: "API",

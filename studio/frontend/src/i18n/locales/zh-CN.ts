@@ -3007,10 +3007,72 @@ export const zhCN = {
       title: "连接",
       description: "管理提供方和外部服务的连接。",
     },
+    namedTunnel: {
+      mode: "连接方式",
+      quick: "临时链接",
+      named: "自定义域名",
+      method: "设置方式",
+      automatic: "自动",
+      existing: "使用 Cloudflare 令牌连接",
+      hostname: "域名",
+      token: "Cloudflare 令牌",
+      keepToken: "留空以保留已保存的令牌。",
+      originHint:
+        "请在 Cloudflare 控制台中将此主机名指向 {origin}。Studio 不会更改该路由。",
+      prepareHint: "在此配置连接，然后点击 Start 连接。自动启动设置保持不变。",
+      remove: "移除",
+      removeTitle: "移除自定义域名访问？",
+      removeAuto:
+        "移除 {hostname} 的 Cloudflare 连接？DNS 记录会保留在你的 Cloudflare 账户中，需要手动删除。",
+      removeToken:
+        "移除 {hostname} 的本地凭据？Cloudflare 连接和 DNS 记录会保留在你的账户中。",
+      authorizeAgain: "重新授权",
+      setup: "设置",
+      openLogin: "打开 Cloudflare 登录",
+      dnsCleanup:
+        "DNS 记录 {hostname} 仍保留在 Cloudflare 中。如果不再需要，请手动删除。",
+      dnsConflictTitle: "DNS 记录已存在",
+      dnsConflict:
+        "{hostname} 已有 DNS 记录。是否替换为指向 Unsloth 的记录？原记录不会恢复。",
+      overwrite: "覆盖",
+      quickDescription: "获取一个公开链接。重新启动后，地址可能会改变。",
+      namedDescription:
+        "使用 studio.example.com 这样的固定地址。你需要一个由 Cloudflare 管理的域名。",
+      quickAutoStart:
+        "在 Unsloth 启动时创建新的远程 URL。现在停止不会关闭自动启动。",
+      namedAutoStart: "启动 Unsloth 时自动连接自定义域名。",
+      states: {
+        preparing: "正在准备 Cloudflare…",
+        awaiting_login:
+          "请在浏览器中授权连接。如果没有打开标签页，请使用登录链接。",
+        configuring: "正在设置连接和域名转发…",
+        dns_conflict: "等待你决定如何处理现有 DNS 记录。",
+        ready: "配置完成。点击 Start 连接。",
+        removing: "正在移除 Cloudflare 连接…",
+        removed: "已移除自定义域名访问。",
+        error: "设置失败。",
+      },
+      errors: {
+        hostname: "请输入 DNS 主机名，不含协议、端口、路径、IP 地址或通配符。",
+        token: "请输入有效的 Cloudflare Tunnel 令牌。",
+        removeFirst: "更改地址或设置方式前，请先移除已保存的域名连接。",
+        busy: "请停止远程访问，并等待当前操作完成。",
+        login: "Cloudflare 授权失败或已过期。请重新授权以继续。",
+        timeout: "操作超时。请重试以继续已保存的设置。",
+        cancelled: "设置已取消。已创建的连接将会保留。",
+        dns: "DNS 路由失败。请检查主机名和 Cloudflare 区域后重试。",
+        zone: "重试前，请检查所选的 Cloudflare 区域及 DNS 清理信息。",
+        remove: "无法移除连接，请重试。",
+        stillActive: "Cloudflare 仍显示连接处于活动状态。请等待几分钟后重试。",
+        statusUnavailable: "无法向 Cloudflare 查询连接状态。请稍后重试。",
+        credentials: "已保存的凭据无法读取或无效。",
+        generic: "操作失败。请检查连接后重试。",
+      },
+    },
     remoteLan: {
       title: "远程与局域网",
       description:
-        "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
+        "通过局域网或 Cloudflare URL，从其他设备访问此 Unsloth。",
     },
     apiKeys: {
       title: "API",
