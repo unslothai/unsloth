@@ -5273,6 +5273,16 @@ _LLAMA_COMMON_LIB_NAMES = (
     "libllama-common.dylib",
     "llama-common.dll",
 )
+_LLAMA_LIB_NAMES = (
+    "libllama.so.0",
+    "libllama.so",
+    "libllama.0.dylib",
+    "libllama.dylib",
+    "llama.dll",
+)
+# Added with the DFlash tied-head fallback (output = token_embd when a draft ships no head),
+# in the same loader; no flag or build number says so.
+_DFLASH_TIED_HEAD_MARKER = b"unsupported DFlash hidden activation"
 
 
 _CUDA_LIKE_DEVICE_RE = re.compile(r"(?i)(cuda|rocm|hip)\d+$")
@@ -5306,25 +5316,39 @@ def _spawn_draft_on_target(
     return int(re.sub(r"\D", "", pin)) == (LlamaCppBackend._effective_main_gpu(run_cmd, env) or 0)
 
 
-def _sidecar_borrows_target_tensors(path: Optional[str]) -> bool:
+def _sidecar_borrows_target_tensors(path: Optional[str], bin_path: Optional[str] = None) -> bool:
     """Whether a DFlash / DSpark draft borrows the target's token_embd or output.
 
     llama_context requires ctx_other only when either is missing (src/llama-context.cpp), and
     the fitter cannot measure a context it has not built; a draft carrying both is measured
-    like any model. Unknown or incomplete files count as borrowing."""
+    like any model. A DFlash draft with its own token_embd but no output ties its head to
+    those embeddings on a build that does so (_dflash_ties_head_to_embeddings), so it borrows
+    nothing there. Unknown or incomplete files count as borrowing."""
     if not path:
         return True
     try:
-        from utils.models.gguf_metadata import _gguf_shard_has_named_tensor
+        from utils.models.gguf_metadata import (
+            _gguf_shard_has_named_tensor,
+            read_gguf_architecture,
+        )
         from utils.models.model_config import colocated_split_shards
 
         shards, complete = colocated_split_shards(Path(path))
         if not complete or not shards:
             return True
-        return any(
-            not any(_gguf_shard_has_named_tensor(str(shard), name) is True for shard in shards)
+        present = {
+            name: any(_gguf_shard_has_named_tensor(str(shard), name) is True for shard in shards)
             for name in ("token_embd.weight", "output.weight")
-        )
+        }
+        if all(present.values()):
+            return False
+        if (
+            present["token_embd.weight"]
+            and read_gguf_architecture(str(shards[0])) == "dflash"
+            and _dflash_ties_head_to_embeddings(bin_path)
+        ):
+            return False
+        return True
     except Exception:
         return True
 
@@ -5362,16 +5386,29 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     common/fit.cpp is linked into the server in a static build and into
     libllama-common beside it in a shared one (the prebuilt default), so both are
     scanned. Fails closed: no marker keeps Studio's own sidecar reserve."""
+    return _llama_build_has_marker(
+        bin_path, _FIT_MEASURES_BORROWED_DRAFT_MARKER, _LLAMA_COMMON_LIB_NAMES
+    )
+
+
+def _dflash_ties_head_to_embeddings(bin_path: Optional[str]) -> bool:
+    """Whether ``bin_path``'s DFlash loader builds a missing output head from the draft's
+    own token_embd (src/models/dflash.cpp). Fails closed: an older build borrows the
+    target's output through ctx_other instead."""
+    return _llama_build_has_marker(bin_path, _DFLASH_TIED_HEAD_MARKER, _LLAMA_LIB_NAMES)
+
+
+def _llama_build_has_marker(bin_path: Optional[str], marker: bytes, lib_names) -> bool:
+    """Whether the server at ``bin_path``, or the first of ``lib_names`` beside it, holds
+    ``marker``: a static build links the code into the server, a shared one into the lib."""
     if not bin_path:
         return False
     candidates = [Path(bin_path)]
     try:
-        # A wrapper script execs the real server, which holds fit.cpp in a static build.
+        # A wrapper script execs the real server, which holds the code in a static build.
         candidates.append(Path(_resolve_llama_binary(bin_path)))
         lib_dir = _llama_lib_dir(bin_path)
-        linked = next(
-            (lib_dir / n for n in _LLAMA_COMMON_LIB_NAMES if (lib_dir / n).exists()), None
-        )
+        linked = next((lib_dir / n for n in lib_names if (lib_dir / n).exists()), None)
         if linked is not None:
             candidates.append(linked)
     except Exception:  # noqa: BLE001 -- an unreadable lib dir is "not known"
@@ -5387,9 +5424,7 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
             st = candidate.stat()
         except OSError:
             continue
-        if _binary_has_marker(
-            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKER
-        ):
+        if _binary_has_marker(str(candidate), st.st_mtime_ns, st.st_size, marker):
             return True
     return False
 
@@ -28234,12 +28269,10 @@ class LlamaCppBackend:
                                 if gpu_indices is not None
                                 else [g[0] for g in _detected_gpus]
                             )
-                            # --split-mode none puts the target on its --main-gpu, not ids[0].
-                            at = self._effective_main_gpu(_pl_args, _pl_env) or 0
-                            main = (
-                                f"Vulkan{ids[at]}"
-                                if 0 <= at < len(ids)
-                                else ("Vulkan0" if apple > 0 and not ids else None)
+                            # Every target card, as the emitted --device list names them; the
+                            # --split-mode none narrowing below keeps only its --main-gpu.
+                            main = ",".join(f"Vulkan{i}" for i in ids) or (
+                                "Vulkan0" if apple > 0 else None
                             )
                         elif main is None and apple > 0:
                             main = "MTL0"
@@ -30828,7 +30861,9 @@ class LlamaCppBackend:
                         # A fitter that measures borrowed-tensor drafts needs no reserve,
                         # and every fitter measures a draft that carries its own tensors.
                         and not server_caps.get("fit_measures_borrowed_drafts")
-                        and _sidecar_borrows_target_tensors(_mtp_draft_for_budget or mtp_draft_path)
+                        and _sidecar_borrows_target_tensors(
+                            _mtp_draft_for_budget or mtp_draft_path, binary
+                        )
                     ):
                         # Priced even under --fit off: a startup-OOM retry turns the
                         # fitter on with the drafter still loaded. With -c omitted the
