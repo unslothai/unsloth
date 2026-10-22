@@ -152,20 +152,30 @@ def test_invalid_requests_are_refused(node, kwargs, needle):
 
 
 @pytest.mark.parametrize(
-    "hi, lo, side", [(80.0, 80.0, 1024), (100.0, 0.0, 4096), (100.0, 0.0, 512)]
+    "hi, lo, w, h",
+    [
+        (80.0, 80.0, 1024, 1024),
+        (100.0, 0.0, 4096, 4096),
+        (100.0, 0.0, 512, 512),
+        (100.0, 0.0, 128, 128),
+        (0.0, 100.0, 1024, 1216),
+        (0.0, 100.0, 1024, 1056),
+    ],
 )
-def test_extreme_flux_shift_never_builds_nan_sigmas(hi, lo, side):
+def test_extreme_flux_shift_is_refused_or_builds_a_sane_schedule(hi, lo, w, h):
     resident = _flow_euler(shift = 3.0, use_dynamic_shifting = True, base_shift = 0.5, max_shift = 1.15)
     try:
         shift = requested_flow_shift(
-            SHIFT_NODE_FLUX, base_shift = lo, max_shift = hi, width = side, height = side
+            SHIFT_NODE_FLUX, base_shift = lo, max_shift = hi, width = w, height = h
         )
     except ValueError as exc:
         assert "no usable" in str(exc)
         return
     built = scheduler_with_flow_shift(resident, shift)
-    built.set_timesteps(5, device = "cpu")
-    assert all(math.isfinite(x) for x in built.sigmas.tolist())
+    built.set_timesteps(8, device = "cpu")
+    sigmas = built.sigmas.tolist()
+    assert all(0.0 <= x <= 1.0 + 1e-4 for x in sigmas), sigmas
+    assert all(a >= b for a, b in zip(sigmas, sigmas[1:])), sigmas
 
 
 def _flow_euler(**config):
