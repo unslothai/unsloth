@@ -184,6 +184,14 @@ def _has_fbgemm_rowwise():
         return False
 
 
+def _scale_mul(x, s, dtype):
+    # bf16 keeps its historical expression. Other dtypes multiply in fp32 and round once: an fp16
+    # scale goes subnormal below 6.1e-5 and overflows above 65504, zeroing or inf-ing the weight.
+    if dtype == torch.bfloat16:
+        return x.to(dtype) * s.to(dtype)
+    return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
+
+
 def weight_dequant(
     x: torch.Tensor,
     s: torch.Tensor,
@@ -194,14 +202,14 @@ def weight_dequant(
         return weight_dequant(x.t(), s, dtype).t()
     # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
-        return x.to(dtype) * s.view(1, 1).to(dtype)
+        return _scale_mul(x, s.view(1, 1), dtype)
     # Row quantized weight: scale shape is (m, 1) or (n, 1)
     elif s.ndim == 2 and s.shape[1] == 1:
         if x.shape[0] == s.shape[0]:
-            y = x.to(dtype) * s.to(dtype)
+            y = _scale_mul(x, s, dtype)
         elif x.shape[1] == s.shape[0]:
             # Sometimes called with the transpose of the weight.
-            y = x.t().to(dtype) * s.to(dtype)
+            y = _scale_mul(x.t(), s, dtype)
             y = y.t()
         else:
             raise ValueError(f"Incompatible shapes {x.shape = }, {s.shape = }")
