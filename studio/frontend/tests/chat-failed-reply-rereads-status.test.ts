@@ -21,8 +21,10 @@ const SYNC_FAILURE = RUNTIME.slice(
 test("a failed local reply quietly re-reads what the server still holds", () => {
   assert.match(
     FAILURE,
-    /if \(!isExternalRequest\) \{\s*void syncInferenceStatusToStore\(\{[^}]*preserveIdleUnloaded: true,[^}]*quiet: true/,
+    /if \(!isExternalRequest\) \{\s*void syncInferenceStatusToStore\(\{[^}]*quiet: true/,
   );
+  // An idle-unload armed refresh would read the crash reap's empty status as idle-unloaded and keep the dead pick.
+  assert.doesNotMatch(FAILURE, /preserveIdleUnloaded/);
   const catchBlock = SYNC_FAILURE.slice(SYNC_FAILURE.lastIndexOf("} catch (error) {"));
   assert.match(catchBlock, /if \(options\?\.quiet\) return;[\s\S]*setModelsError\(message\)/);
 });

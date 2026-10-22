@@ -9193,13 +9193,8 @@ export function createOpenAIStreamAdapter(
             });
           }
           // Only a status read tells the UI a killed worker's model is gone; quiet, as this failure has its toast.
-          // An idle-unloaded pick stays: the next send reloads it, as after any idle unload.
           if (!isExternalRequest) {
-            void syncInferenceStatusToStore({
-              includeLoras: false,
-              preserveIdleUnloaded: true,
-              quiet: true,
-            });
+            void syncInferenceStatusToStore({ includeLoras: false, quiet: true });
           }
         }
         // An explicit Stop is an abort too, but it must persist its reason instead of
