@@ -18,8 +18,8 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Declined per call under a step cache / static step skip (they key cond and uncond on the one batched call)
-and a CFG-parallel router. Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
+recompile. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
+Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 """
 
 from __future__ import annotations
@@ -56,14 +56,24 @@ def _is_zimage(module: Any) -> bool:
     return type(module).__name__ == _TRANSFORMER_CLASS
 
 
+def _skip_keys_calls_apart(skip: Any) -> bool:
+    """Whether a static step skip keys cond / uncond apart: without a step signal one shared counter advances twice."""
+    if not hasattr(skip, "plan"):
+        return False
+    if not skip.plan:
+        return True
+    return getattr(skip, "context", None) is None and bool(getattr(skip, "step_signal", False))
+
+
 def _declined_now(module: Any) -> Optional[str]:
     slots = getattr(module, "__dict__", {})
+    # FBCache keeps one residual per cache_context; two calls in one context would compare cond against uncond.
     if getattr(module, "_unsloth_step_cache", None):
         return "step cache"
-    if getattr(slots.get("forward"), "_unsloth_outer_forward", False):
-        return "static step skip"
-    if getattr(module, "_unsloth_cfg_router", None) is not None:
-        return "cfg parallel"
+    # A CFG-parallel router installed after the skip takes the forward slot.
+    for skip in (slots.get("_unsloth_static_skip"), slots.get("forward")):
+        if getattr(skip, "_unsloth_outer_forward", False) and not _skip_keys_calls_apart(skip):
+            return "static step skip without a per-step call order"
     if getattr(module, "training", False):
         return "training"
     return None
@@ -114,8 +124,19 @@ def _make_call(orig_call: Any) -> Any:
                 stats["batched"] += 1
             return orig_call(self, *args, **kwargs)
         cond, uncond, kw = parts
-        out_cond = orig_call(self, *cond, **kw)
-        out_uncond = orig_call(self, *uncond, **kw)
+        router = slots.get("_unsloth_cfg_router")
+        pair = None
+        if router is not None and slots.get("forward") is router:
+            pair = router.run_pair(lambda: orig_call(self, *cond, **kw), uncond, dict(kw))
+        if pair is not None:
+            out_cond, out_uncond = pair
+            if out_uncond is None:
+                out_uncond = orig_call(self, *uncond, **kw)
+            elif stats is not None:
+                stats["parallel"] = stats.get("parallel", 0) + 1
+        else:
+            out_cond = orig_call(self, *cond, **kw)
+            out_uncond = orig_call(self, *uncond, **kw)
         if stats is not None:
             stats["split"] += 1
         return _join(out_cond, out_uncond)

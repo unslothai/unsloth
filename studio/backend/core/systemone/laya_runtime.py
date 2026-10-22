@@ -1649,9 +1649,19 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
     key = json.dumps(question, ensure_ascii = False)
     if key not in cache:
         internal = agent._to_internal(question)
-        ids, markers = build_sequence(agent.tok, "", internal, max_len, head_max_len)
-        if len(markers) != len(render_options(internal)):
-            raise ValueError("question options exceed head_max_len=%d" % head_max_len)
+        tok = agent.tok
+        options = [" " + o.replace(tok.mask_token, " ") for o in render_options(internal)]
+        sizes = [1 + min(48, len(tok(o, add_special_tokens = False)["input_ids"])) for o in options]
+        # build_sequence's rule: past this budget, each option keeps only its share of it.
+        budget = head_max_len - 16
+        share = max(4, budget // len(sizes))
+        if sum(sizes) > budget and max(sizes) > share:
+            raise ValueError(
+                f"options would be cut short to fit Laya's {budget}-token option budget"
+            )
+        ids, markers = build_sequence(tok, "", internal, max_len, head_max_len)
+        if len(markers) != len(sizes):
+            raise ValueError(f"options exceed the Laya context window ({max_len} tokens)")
         if len(cache) >= _HEAD_CACHE_SIZE:
             cache.clear()
         cache[key] = (ids, markers, internal)
@@ -1672,11 +1682,8 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
     for name in names:
         try:
             heads.append(_head(agent, questions[name], max_len, head_max_len))
-        except ValueError:
-            raise ValueError(
-                f"Question {name!r} options exceed the Laya context window ({max_len} tokens). "
-                "Use fewer or shorter criteria."
-            ) from None
+        except ValueError as exc:
+            raise ValueError(f"Question {name!r} {exc}. Use fewer or shorter criteria.") from None
     room = max(0, max_len - min(len(ids) for ids, _, _ in heads))
     state_ids, state_cut = _state_ids(agent.tok, state, room)
     items, truncated = [], False
@@ -2487,15 +2494,17 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
 
 
 def shutdown() -> None:
-    """Studio shutdown: end a llama.cpp decision server or Laya worker (in-process models go with the process)."""
+    """Studio shutdown: end a llama.cpp decision server, Laya or Clef worker (in-process models go with the process)."""
     global _agent, _loaded, _device_name, _generation, _unloads
+    from .clef_runtime import ClefAgent
+
     with _state_lock:
         timer = _idle_timer
     if timer is not None:
         timer.cancel()
     with _run_lock:
         _unloads += 1
-        if not _is_native(_loaded) and not isinstance(_agent, LayaWorker):
+        if not _is_native(_loaded) and not isinstance(_agent, (LayaWorker, ClefAgent)):
             return
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1

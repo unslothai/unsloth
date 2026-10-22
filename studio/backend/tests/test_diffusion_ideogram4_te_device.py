@@ -28,7 +28,7 @@ class _State:
 
 
 def _streamed_encoder_states(text_encoder, token_ids, attention_mask, pos_2d):
-    # What leaf-level group offload does: every layer, and so every returned state, runs on the onload device.
+    # Mimics leaf-level group offload: every returned state is on the onload device.
     return [_State("cuda:0") for _ in range(3)]
 
 
@@ -57,7 +57,7 @@ def _load_with_stubs(monkeypatch):
 
 def test_streamed_text_encoder_states_land_on_the_mask_device(monkeypatch):
     pipe = _load_with_stubs(monkeypatch)
-    mask = torch.ones(1, 4, dtype = torch.long)  # on the CPU, where text_encoder.device pointed it
+    mask = torch.ones(1, 4, dtype = torch.long)
     states = pipe._get_text_encoder_hidden_states("te", mask, mask, mask)
     assert [s.device for s in states] == [mask.device] * 3
 

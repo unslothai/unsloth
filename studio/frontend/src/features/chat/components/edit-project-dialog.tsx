@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { NativeDocumentFolderSelection } from "@/features/native-intents";
 import { WorkingFolderPicker } from "./working-folder-picker";
 import { LinkedFoldersManager } from "@/features/rag";
+import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -163,7 +164,7 @@ export function EditProjectDialog({
             })
           )
             return;
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          if (isModEnter(e)) {
             e.preventDefault();
             void save();
           }
