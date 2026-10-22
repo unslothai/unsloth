@@ -1084,10 +1084,15 @@ function Invoke-ManagedLlamaCppPreflight {
 }
 
 function Test-MirrorConfigured {
-    param([ValidateSet('uv', 'pip')][string]$Tool)
-    if ($Tool -eq 'uv') {
-        if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
-        $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+    param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
+    if ($Tool -ne 'pip') {
+        if ($Tool -eq 'python') {
+            if ($env:UV_PYTHON_INSTALL_MIRROR) { return $true }
+            $pattern = '^\s*python-install-mirror\s*='
+        } else {
+            if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
+            $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+        }
         $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
         $dir = (Get-Location -PSProvider FileSystem).ProviderPath
         while ($dir) {
@@ -1191,6 +1196,8 @@ function Invoke-MirrorFallback {
     $cernet = 'https://tuna.mirrors.cernet.edu.cn'
     $npmMirror = 'https://registry.npmmirror.com'
     $pypiMirror = "$cernet/pypi/web/simple"
+    # GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
+    $pythonMirror = "$npmMirror/-/binary/python-build-standalone"
     $minBps = 1MB
     $useUv = -not (Test-MirrorConfigured -Tool uv)
     $usePip = -not (Test-MirrorConfigured -Tool pip)
@@ -1211,6 +1218,7 @@ function Invoke-MirrorFallback {
     }
     if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'npmmirror-node', "$npmMirror/-/binary/node", $null, $null) }
     if (-not "$env:UNSLOTH_NPM_REGISTRY$env:NPM_CONFIG_REGISTRY") { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
+    if (-not (Test-MirrorConfigured -Tool python)) { $hosts['python'] = @('astral', 'npmmirror', $pythonMirror, $null, $null) }
     if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
         $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
     }
@@ -1234,6 +1242,7 @@ function Invoke-MirrorFallback {
             'torch' { "UNSLOTH_PYTORCH_MIRROR=$to" }
             'node' { "UNSLOTH_NODE_MIRROR=$to" }
             'npm' { "UNSLOTH_NPM_REGISTRY=$to" }
+            'python' { "UV_PYTHON_INSTALL_MIRROR=$to" }
             'uvbin' { "UNSLOTH_UV_WHEEL_MIRROR=$to" }
         }
     }
@@ -1259,7 +1268,7 @@ function Invoke-MirrorFallback {
         if ($slow.Count -eq 0) { return }
         $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
         $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][3]; $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
-        $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
+        $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @(@($slow | ForEach-Object { $artifact[$hosts[$_][0]] }) + @($sources | ForEach-Object { $artifact[$_] }) | Select-Object -Unique) -Seconds 4 -LastByte 1048575)
         $sourceIndexes = Wait-MirrorProbe $indexes
         foreach ($url in $sourceIndexes.Keys) { $answered[$url] = $sourceIndexes[$url] }
     } finally {
@@ -1284,7 +1293,7 @@ function Invoke-MirrorFallback {
 
 function Get-MirrorName {
     param([string]$Name)
-    @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
+    @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; python = 'releases.astral.sh (Python builds)'; uvbin = 'releases.astral.sh (uv)' }[$Name]
 }
 
 function Set-MirrorEnv {
@@ -1316,6 +1325,7 @@ function Get-MirrorFailedHost {
         return
     }
     if ($Output -match 'download(-r2)?\.pytorch\.org') { 'torch' }
+    elseif ($Output -match 'python-build-standalone') { 'python' }
     elseif ($Output -match 'registry\.npmjs\.org') { 'npm' }
     elseif ($Output -match 'pypi\.org|pythonhosted\.org') { 'pypi' }
     elseif ($Ran -and $Output -notmatch 'https?://') { $Ran }
