@@ -10246,6 +10246,7 @@ class LlamaCppBackend:
                 self._kv_lora_rank is not None
                 or self._ssm_inner_size is not None
                 or self._sliding_window_pattern
+                or self._effective_sliding_window()
             ):
                 return None
             kv_weights = [1] * n_blocks

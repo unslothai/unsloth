@@ -308,8 +308,12 @@ def test_an_unpriced_uneven_kv_cache_leaves_the_split_to_llama_cpp():
         backend._kv_lora_rank, backend._ssm_inner_size = mla, ssm
         backend._sliding_window_pattern = pattern
         assert call() is None, (mla, ssm, pattern)
-    # A plain cache is uniform, so it is priced.
+    # A declared window whose pattern did not resolve is still uneven.
     backend._kv_lora_rank = backend._ssm_inner_size = backend._sliding_window_pattern = None
+    backend._sliding_window, backend._context_length = 4096, 1048576
+    assert call() is None
+    # A plain cache is uniform, so it is priced.
+    backend._sliding_window = None
     with pytest.raises(KeyError):
         call()
 
