@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Restore settings copied a gallery record's raw size into the Create form. Image-conditioned
-// workflows derive that size from the upload, so it could fall outside the 256..2048 that
-// ImageGenerationPresetParams forbids -- 422ing every debounced preset PUT for the rest of the session.
+// Restored sizes must stay within the 256..2048 ImageGenerationPresetParams allows, or preset PUTs 422.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -97,15 +95,10 @@ test("restoreSettings puts the record through restorableSize", () => {
 });
 
 test("a restore that had to move the size says so", () => {
-  // The Recipe popover goes on showing the recorded size, so a silent scale leaves the two
-  // disagreeing with nothing to explain it.
   const body = restoreSettingsBody();
   assert.match(body, /restored\.width !== image\.width/);
   assert.match(body, /Size scaled to \$\{restored\.width\}/);
 });
-
-// Transform bounds the upload by the requested size instead of taking it literally, so the
-// restored recipe only reproduces the record when the in-range side is left where it was.
 
 /** _fit_within + _snap_to_multiple from studio/backend/core/inference/diffusion.py. */
 const transform = (
@@ -133,11 +126,8 @@ const transform = (
 };
 
 test("restoring a Transform record reproduces it as exactly as an unscaled restore would", () => {
-  // The baseline is the unscaled restore: the raw record in the form, each side snapped by
-  // Generate on its own. Not an absolute round-trip assertion, because Transform is not perfectly
-  // self-reproducing either way -- _snap_to_multiple rounds a side and the tightened box changes
-  // the next run (3000x500 at 2048 records 2048x336 and re-runs to 2016x336, scaled or not). What
-  // the scale owes is that it never reproduces WORSE while making the recipe savable.
+  // Not an absolute round trip: _snap_to_multiple makes Transform imperfectly self-reproducing.
+  // The scale only owes never reproducing WORSE than the unscaled restore.
   for (const source of [
     [1920, 400],
     [1920, 320],
@@ -173,8 +163,7 @@ test("restoring a Transform record reproduces it as exactly as an unscaled resto
 });
 
 test("scaling a Transform record as a pair would NOT reproduce it", () => {
-  // Guards the reason the img2img branch exists: the shared scale is right for every other
-  // workflow and wrong for this one, so a later simplification that drops it has to fail here.
+  // The img2img branch exists because the shared scale is wrong for this workflow.
   const recorded = transform([1920, 400], 1024, 1024);
   assert.deepEqual(recorded, [1024, 208]);
   const asTransform = restorableSize(1024, 208, "img2img");
@@ -192,7 +181,6 @@ test("scaling a Transform record as a pair would NOT reproduce it", () => {
 });
 
 test("every other workflow still keeps the recipe's shape", () => {
-  // The headline case: an Edit of a phone photo must not come back square.
   for (const workflow of [
     null,
     undefined,
@@ -208,7 +196,6 @@ test("every other workflow still keeps the recipe's shape", () => {
       `workflow ${String(workflow)} restored 4032x3024 to ${restored.width}x${restored.height}`,
     );
   }
-  // Per-side clamping, which img2img wants, would square this one up.
   assert.deepEqual(restorableSize(4032, 3024, "img2img"), {
     width: 2048,
     height: 2048,

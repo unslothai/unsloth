@@ -1717,21 +1717,38 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
+def _autocast_state(torch: Any) -> tuple:
+    try:
+        return (
+            torch.is_autocast_cache_enabled(),
+            *(
+                (dev, torch.get_autocast_dtype(dev))
+                if torch.is_autocast_enabled(dev)
+                else (dev, None)
+                for dev in ("cuda", "cpu")
+            ),
+        )
+    except Exception:  # noqa: BLE001 - torch without per-device autocast queries
+        return ()
+
+
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """What a compiled forward's guards mostly key on: tensor layout, flags and modes (never per-step scalars)."""
+    """What a compiled forward's guards key on, numbers by value: 0 / 1 and ``dynamic=False`` compiles stay specialised."""
     torch = _torch()
     sig: list = []
     for path, leaf in _leaves((args, kwargs)):
         if isinstance(leaf, torch.Tensor):
             try:
                 stride = tuple(leaf.stride())
+                offset = leaf.storage_offset()
             except Exception:  # noqa: BLE001 - layouts without strides
-                stride = None
+                stride = offset = None
             sig.append(
                 (
                     path,
                     tuple(leaf.shape),
                     stride,
+                    offset,
                     leaf.dtype,
                     leaf.requires_grad,
                     leaf.is_inference(),
@@ -1739,9 +1756,16 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
             )
         elif leaf is None or isinstance(leaf, (bool, str)):
             sig.append((path, leaf))
+        elif isinstance(leaf, (int, float)):
+            sig.append((path, type(leaf), leaf))
         else:
             sig.append((path, type(leaf)))
-    return tuple(sig), torch.is_inference_mode_enabled(), torch.is_grad_enabled()
+    return (
+        tuple(sig),
+        torch.is_inference_mode_enabled(),
+        torch.is_grad_enabled(),
+        _autocast_state(torch),
+    )
 
 
 def _note_warm(seen: set, sig: tuple) -> None:

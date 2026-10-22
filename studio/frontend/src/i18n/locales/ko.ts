@@ -118,6 +118,7 @@ export const ko = {
     reload: "새로고침",
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
+    local: "로컬",
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -468,6 +469,8 @@ export const ko = {
       downloadFailed: "{name}을(를) 다운로드할 수 없습니다",
       notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
       blocked: "이 주소는 브라우저 패널에서 열 수 없습니다. 공개 웹사이트만 열 수 있습니다.",
+      blockedLocal: "이 로컬 주소는 여기에서 열 수 없습니다. 열려면 주소 표시줄에 입력하세요.",
+      studioAddress: "Unsloth 자체의 주소이므로 브라우저 패널에서 열 수 없습니다.",
       clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제합니다. 사이트에서 로그아웃됩니다.",
       clearDataDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
@@ -622,6 +625,8 @@ export const ko = {
     temporaryChatDescription: "이 채팅은 기록에 표시되지 않으며 저장되지 않습니다. 나가면 사라집니다.",
   },
   picker: {
+    unifiedTightFit: "빠듯함",
+    unifiedTightFitHint: "이 Mac에서는 더 짧은 컨텍스트로 로드되거나 느리게 실행될 수 있습니다.",
     onDevice: "기기",
     huggingFace: "Hugging Face",
     retry: "다시 시도",
@@ -1973,6 +1978,18 @@ export const ko = {
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
       },
+      fullInstall: {
+        label: "설치 유형",
+        description:
+          "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        action: "전체 설치로 업그레이드",
+        confirmTitle: "전체 설치로 업그레이드할까요?",
+        confirmDescription:
+          "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmAction: "업그레이드",
+        keywords:
+          "full install upgrade 설치 유형 전체 설치 업그레이드 채팅 전용 chat only gguf add training 학습 훈련 train fine-tune pytorch torch 내보내기 동영상 이미지 생성 safetensors",
+      },
       repairInstall: {
         label: "설치 복구",
         description:
@@ -1981,6 +1998,8 @@ export const ko = {
         confirmTitle: "이 설치를 복구할까요?",
         confirmDescription:
           "서버를 중지하고 설치 프로그램을 다시 실행하여 이 컴퓨터의 GPU에 맞는 PyTorch를 다시 설치합니다. 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionChatOnly:
+          "서버를 중지하고 설치 프로그램을 다시 실행합니다. 이 설치는 채팅 전용이므로 설치 프로그램이 PyTorch를 포함한 전체 설치로도 업그레이드합니다(총 수 GB). 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "지금 복구",
       },
       resetPreferences: {
@@ -2698,6 +2717,10 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      showReplyTimes: "응답 시간",
+      showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
+      showReplyTimesKeywords:
+        "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
@@ -3102,6 +3125,7 @@ export const ko = {
       relativeNever: "없음",
       relativeJustNow: "방금",
       expired: "만료됨",
+      expiredStatus: "만료됨",
       today: "오늘",
       created: "생성: {value}",
       used: "마지막 사용: {value}",
@@ -4666,5 +4690,42 @@ export const ko = {
     cantRun: "실행할 수 없습니다",
     failed: "오류 {status}",
     invalidJson: "요청 본문이 올바른 JSON이 아닙니다.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "로드된 모델",
+      countOne: "모델 {count}개 로드됨",
+      countMany: "모델 {count}개 로드됨",
+      pillLabel: "{count}. 세부 정보를 보거나 드래그하여 이동",
+      dragToMove: "드래그하여 이동",
+      dragHandleLabel: "로드된 모델 패널을 이동합니다. 방향키로 조금씩 움직일 수 있습니다.",
+      collapse: "접기",
+      collapseLabel: "로드된 모델 접기",
+      close: "닫기",
+      closeLabel: "로드된 모델 닫기",
+      backOnNextLoad: "다음 모델을 로드할 때 다시 표시됩니다",
+      ejectToFree: "꺼내서 메모리 확보",
+      ejectLabel: "{model} 꺼내기",
+      openTarget: "{target} 열기",
+      rowLabel: "{model}. {target} 열기",
+      loading: "로딩 중",
+      ejecting: "꺼내는 중",
+      stillInMemory: "아직 메모리에 있음",
+      alsoServing: "함께 서비스 중",
+      noneLoaded: "로드된 모델 없음",
+      noneLoadedDetail: "로드한 모델이 여기에 표시됩니다.",
+      otherAccount: "다른 계정에서 사용 중",
+      otherAccountDetail: "볼 수 없는 모델이 메모리를 점유하고 있습니다",
+      toastStillResident: "꺼내는 중에 \"{model}\"이(가) 로드되어 아직 메모리를 사용하고 있습니다. 다시 꺼내면 메모리가 해제됩니다.",
+      toastUnverified: "{model}의 언로드를 요청했지만 런타임이 확인하지 않았습니다. 잠시 후 카드를 확인하세요.",
+      toastAlreadyFree: "{model}은(는) 더 이상 로드되어 있지 않았습니다.",
+      toastReplaced: "{model}은(는) 더 이상 로드되어 있지 않습니다. \"{resident}\"이(가) 그 자리를 차지했으며 그대로 두었습니다.",
+      toastEjected: "{model} 꺼냄",
+      toastFailed: "{model}을(를) 꺼내지 못했습니다",
+    },
+    monitor: {
+      dragHandleLabel: "실시간 모니터를 이동합니다. 방향키로 조금씩 움직이고, 더블클릭하면 위치가 초기화됩니다.",
+      reconnecting: "다시 연결하는 중...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

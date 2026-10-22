@@ -14,6 +14,7 @@ import contextlib
 import gc
 import inspect
 import os
+import sys
 import threading
 import traceback
 import weakref
@@ -2494,6 +2495,43 @@ def stats(handles: Any) -> dict:
                     "type": str(error.get("type")),
                     "msg": str(error.get("msg")),
                 }
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def engagement(handles: Any) -> dict:
+    """Compile / CUDA-graph engagement counters for the status payload, so a client can tell an engaged path from one
+    that merely never recompiles: this load's graph captures, replays and ungraphed denoiser calls (whole-step and per
+    block, with a layer split's per-card segment graphs), and the process's dynamo frame and graph-break totals
+    (process-wide: a new frame or break after the first render is a recompile or a new break)."""
+    # A whole-step graph that dropped a key or failed hands its calls to per-block graphs it holds as
+    # ``fallback_handle`` (``GraphedForward._engage_fallback``): those count too.
+    units: list = []
+    for handle in handles or ():
+        units.append(handle)
+        nested = getattr(handle, "fallback_handle", None)
+        if nested is not None and nested is not handle:
+            units.append(nested)
+    s = stats(units)
+    out = {
+        field: s[field]
+        for field in ("graphs", "captures", "replays", "eager_calls", "invalidations", "fallbacks")
+    }
+    out["segment_captures"] = out["segment_replays"] = 0
+    for handle in units:
+        for segment in getattr(handle, "segments", None) or ():
+            try:
+                out["segment_captures"] += int(segment.stats.get("segment_captures", 0))
+                out["segment_replays"] += int(segment.stats.get("segment_replays", 0))
+            except Exception:  # noqa: BLE001
+                pass
+    out["dynamo_frames"] = out["graph_breaks"] = None
+    if "torch._dynamo" in sys.modules:
+        try:
+            from torch._dynamo.utils import counters
+            out["dynamo_frames"] = int(counters["stats"].get("unique_graphs", 0))
+            out["graph_breaks"] = int(sum(counters["graph_break"].values()))
         except Exception:  # noqa: BLE001
             pass
     return out

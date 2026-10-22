@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two ways the external tool loop can lose model output or desync the UI.
-
-Both were reproduced in a browser against an OpenAI-compatible mock server.
-
-1. ``finish_reason: "length"``. Refusing to execute a possibly-truncated call is
-   right, but promotion is destructive: the healer has already cut the
-   ``<tool_call>...</tool_call>`` span out of the relayed text, so dropping the
-   calls as well loses the call AND the sentence that introduced it. A small
-   GGUF on llama-server with a modest ``max_tokens`` hits this routinely.
-
-2. The budget/no-op branches close a tool card with ``tool_end`` and the replay
-   with a ``role="tool"`` message. Every card the loop closes has to have been
-   opened, and every ``role="tool"`` message has to be declared by a preceding
-   assistant ``tool_calls`` entry, or OpenAI, DeepSeek and strict vLLM answer
-   400 instead of continuing the conversation.
-"""
+"""Truncated calls must not run yet keep their text, and every closed tool card must have opened."""
 
 from __future__ import annotations
 
@@ -198,9 +183,6 @@ def _call_turn(
     ]
 
 
-# ── 1. A truncated turn must not swallow a promoted call's own text ──
-
-
 _HEALED_TURN = [
     _sse({"content": "Let me compute that. "}),
     _sse({"content": '<tool_call>{"name": "web_search", '}),
@@ -212,13 +194,7 @@ _HEALED_TURN = [
 
 
 def test_truncated_healed_call_releases_its_own_markup(executed):
-    """The user must still see what the model was attempting.
-
-    Promotion cut the markup out of the relayed text before the loop learned the
-    turn was truncated. Discarding the call then leaves the answer reading
-    "Let me compute that.  follow-up" -- no card, no execution, and the request
-    the model actually wrote is gone from the transcript.
-    """
+    """A truncated call's markup must be released back into the visible text, not silently dropped."""
     lines = _run(FakeTransport([_HEALED_TURN]))
 
     assert executed == [], "a truncated call must never be executed"
@@ -261,9 +237,7 @@ def test_truncated_structured_call_relays_nothing_extra(executed):
 
     assert executed == []
     assert _visible_text(lines) == "thinking"
-    # The delta was relayed as it arrived, so the client has a card for c1.
-    # Refusing to run it is right; leaving it open for the rest of the response
-    # is not, so it is closed the way every other unrun call is.
+    # the delta was already relayed, so close c1's card like any unrun call
     assert _card_ids(lines, "tool_end") == _card_ids(lines, "tool_start") == ["c1"]
     assert "output limit" in _events(lines, "tool_end")[0]["result"]
 
@@ -284,22 +258,12 @@ def test_a_truncated_call_never_streamed_gets_no_card(executed):
     assert _events(lines, "tool_end") == []
 
 
-# ── 2. Cards and replayed messages must stay balanced ──────────────
-
-
 def _card_ids(lines, kind):
     return [event.get("tool_call_id") for event in _events(lines, kind)]
 
 
 def _overflow_turns():
-    """One turn asking for two calls with one budget slot left.
-
-    The shape matters. A turn whose ONLY call overflows ends the loop, so its
-    replay is built and never sent; a turn where one call runs and the next
-    overflows is followed by the budget-nudge turn, which is what carries the
-    broken history to the provider. Parallel calls are ordinary for every model
-    the loop serves.
-    """
+    """Two parallel calls, one budget slot left: the overflow's broken history reaches the provider."""
     return [
         [
             _sse(

@@ -245,7 +245,6 @@ def test_create_like_the_sdk_poll_download_list_delete(client, backend):
     assert backend.last_generate_kwargs["width"] == 768
     assert backend.last_generate_kwargs["height"] == 512
     assert backend.last_generate_kwargs["num_frames"] == 97
-    # begin_generate resolves keyframes up front and hands the worker _resolved_inputs.
     assert backend.last_generate_kwargs["_resolved_inputs"].first_frame is None
 
     assert gallery_module.owned_video_path(job["id"]) is not None
@@ -370,8 +369,6 @@ def test_a_failed_job_reports_its_error_and_keeps_it_after_the_next_job(client, 
     assert gallery_module.owned_video_path(job["id"]) is None
     assert [v["status"] for v in client.get("/v1/videos").json()["data"]] == ["failed"]
 
-    # Polling can cross a Studio restart. Replacing the process-local cache must rehydrate
-    # the terminal error instead of turning the ID into a 404.
     video_routes._jobs = {}
     reloaded = client.get(f"/v1/videos/{job['id']}")
     assert reloaded.status_code == 200
@@ -794,11 +791,7 @@ def test_record_epoch_accepts_old_and_new_sidecar_timestamps(created_at, expecte
 
 
 def test_an_unservable_duration_is_refused_before_the_model_switch(client, backend, monkeypatch):
-    """The preflight judged size but passed None for the frame count.
-
-    A duration no family can serve was therefore only refused inside begin_generate --
-    after the resident pipeline had been evicted and the target model fully loaded.
-    """
+    """An unservable duration must be refused before the auto switch evicts the resident pipeline."""
     switched = {"completed": False}
 
     async def _fake_switch(
@@ -941,12 +934,7 @@ def test_reference_conditioning_follows_the_state_reserved_by_begin_generate(
 
 
 def test_the_created_job_reports_the_canvas_the_backend_resolved(client, backend, monkeypatch):
-    """With a reference image and no size the canvas follows the source aspect.
-
-    The route used to record the family's first resolution preset regardless, so the
-    create response advertised one size while the clip rendered at another, and the
-    same job's size changed once it was read back from the gallery.
-    """
+    """A created job must report the canvas the backend resolved, not the family's first preset."""
     real = backend.begin_generate
 
     def _begin(**kwargs):
@@ -959,11 +947,7 @@ def test_the_created_job_reports_the_canvas_the_backend_resolved(client, backend
 
 
 def test_deleting_a_job_that_finishes_mid_cancel_removes_the_clip(client, backend, monkeypatch):
-    """Cancellation losing the race is not proof that nothing was written.
-
-    The handler used to cancel and return deleted:true without ever deleting the pair,
-    so a clip persisted in that window came straight back through retrieve and list.
-    """
+    """A delete that loses the race to a finishing job must still remove the clip it wrote."""
     backend.gate.clear()
     job = _create(client, {"prompt": "racy"}).json()
     assert client.get(f"/v1/videos/{job['id']}").json()["status"] in ("queued", "in_progress")
@@ -1154,11 +1138,7 @@ def test_concurrent_pollers_cannot_move_progress_backward(backend, monkeypatch):
 
 
 def test_an_undecodable_reference_is_refused_before_the_model_switch(client, backend, monkeypatch):
-    """A well-formed content type is not a readable image.
-
-    _resolve_keyframes only decodes inside begin_generate, which runs after the auto
-    switch, so bad bytes used to evict the resident pipeline and load the target first.
-    """
+    """Undecodable reference bytes must be refused before the model switch, not inside begin_generate."""
     switched = {"completed": False}
 
     async def _fake_switch(
@@ -1181,18 +1161,12 @@ def test_an_undecodable_reference_is_refused_before_the_model_switch(client, bac
     )
     assert resp.status_code == 400, resp.json()
     assert resp.json()["error"]["param"] == "input_reference"
-    # The message matters: without the eager decode this path still 400s, but only via
-    # the keyframe-conditioning check, leaving real decode failures to run post-switch.
     assert "not a readable image" in resp.json()["error"]["message"], resp.json()
     assert switched["completed"] is False, "the model was switched before the refusal"
 
 
 def test_a_delete_that_cannot_observe_the_settle_does_not_confirm(client, backend, monkeypatch):
-    """Returning deleted:true on a timed-out wait let the worker commit afterwards.
-
-    The clip then reappeared through retrieve/list, so the caller was told a deletion
-    happened that had not. Report 409 instead and let them retry.
-    """
+    """A delete whose settle wait times out returns 409, since a late worker commit would reappear."""
     monkeypatch.setattr(video_routes, "_DELETE_SETTLE_TIMEOUT_S", 0.05)
     backend.gate.clear()
     try:
@@ -1210,11 +1184,7 @@ def test_a_delete_that_cannot_observe_the_settle_does_not_confirm(client, backen
 
 
 def test_the_create_call_opens_an_api_monitor_row(client, backend, monkeypatch):
-    """The OpenAI image and audio routes open a row; videos never did.
-
-    Without it the newly supported API is invisible to the API Monitor and its usage
-    receipts, so per-subject history silently undercounts video generation.
-    """
+    """Video create must open an API Monitor row, or usage receipts silently undercount videos."""
     from core.inference.api_monitor import api_monitor
 
     started: list[dict] = []
@@ -1242,16 +1212,11 @@ def test_the_create_call_opens_an_api_monitor_row(client, backend, monkeypatch):
 
 
 def test_the_job_describes_the_run_the_backend_reserved(client, backend, monkeypatch):
-    """A load committing between status() and the reservation swaps the family.
-
-    The job used to be described from the earlier snapshot, so it advertised the model
-    that had just been replaced and a duration computed against that model's fps.
-    """
+    """The job must describe the reserved run, since a load committing mid-request can swap the family."""
     real = backend.begin_generate
 
     def _begin(**kwargs):
         real(**kwargs)
-        # What the reservation actually committed to, different from the snapshot.
         return {
             "width": 704,
             "height": 1216,

@@ -2167,6 +2167,11 @@ def _resident_runtime_payload(status: dict, payload: dict) -> dict:
         if value is None:
             continue
         carried[load_field] = value
+    offload = status.get("mlx_offload") or {}
+    for part, load_field in (("ple", "mlx_ple_offload"), ("experts", "mlx_expert_offload")):
+        requested = (offload.get(part) or {}).get("requested")
+        if load_field not in payload and requested is not None:
+            carried[load_field] = requested
     return carried
 
 

@@ -945,6 +945,31 @@ def test_a_turboquant_resident_reloads_as_turboquant(monkeypatch):
     assert server.loads[0]["mlx_kv_quant"] == "tq-4"
 
 
+def test_a_resident_keeps_its_mlx_offload_on_reload(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": True,
+            "mlx_offload": {
+                "ple": {"requested": "off", "applied": None},
+                # applied, which a reload must not send back as the request
+                "experts": {"requested": 0.75, "applied": None},
+            },
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert (server.loads[0]["mlx_ple_offload"], server.loads[0]["mlx_expert_offload"]) == (
+        "off",
+        0.75,
+    )
+
+
 def test_a_proven_no_op_skips_the_preload_gate(monkeypatch):
     """A proven no-op skips the gate."""
     server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
