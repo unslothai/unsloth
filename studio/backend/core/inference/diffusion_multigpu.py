@@ -1717,21 +1717,44 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
-def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """What a compiled forward's guards mostly key on: tensor layout, flags and modes (never per-step scalars)."""
+_DYNAMIC_SCALAR = object()
+
+
+def _autocast_state(torch: Any) -> tuple:
+    try:
+        return tuple(
+            (dev, torch.get_autocast_dtype(dev)) if torch.is_autocast_enabled(dev) else (dev, None)
+            for dev in ("cuda", "cpu")
+        )
+    except Exception:  # noqa: BLE001 - torch without per-device autocast queries
+        return ()
+
+
+def _call_signature(
+    args: tuple,
+    kwargs: dict,
+    scalars: Optional[dict] = None,
+) -> tuple:
+    """What a compiled forward's guards key on: tensor layout, flags, modes and Python numbers.
+
+    Dynamo specialises an int / float argument on its first value and recompiles it as dynamic on the
+    second distinct one, so ``scalars`` (one dict per side, updated here) keys a number by value until
+    its path has changed once, then by type: a per-step number turns warm again after one cold call."""
     torch = _torch()
     sig: list = []
     for path, leaf in _leaves((args, kwargs)):
         if isinstance(leaf, torch.Tensor):
             try:
                 stride = tuple(leaf.stride())
+                offset = leaf.storage_offset()
             except Exception:  # noqa: BLE001 - layouts without strides
-                stride = None
+                stride = offset = None
             sig.append(
                 (
                     path,
                     tuple(leaf.shape),
                     stride,
+                    offset,
                     leaf.dtype,
                     leaf.requires_grad,
                     leaf.is_inference(),
@@ -1739,9 +1762,24 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
             )
         elif leaf is None or isinstance(leaf, (bool, str)):
             sig.append((path, leaf))
+        elif scalars is not None and isinstance(leaf, (int, float)):
+            first = scalars.setdefault(path, leaf)
+            if first is _DYNAMIC_SCALAR:
+                sig.append((path, type(leaf)))
+            else:
+                if first != leaf:
+                    scalars[path] = (
+                        _DYNAMIC_SCALAR  # this call recompiles it dynamic; later values reuse that
+                    )
+                sig.append((path, type(leaf), leaf))
         else:
             sig.append((path, type(leaf)))
-    return tuple(sig), torch.is_inference_mode_enabled(), torch.is_grad_enabled()
+    return (
+        tuple(sig),
+        torch.is_inference_mode_enabled(),
+        torch.is_grad_enabled(),
+        _autocast_state(torch),
+    )
 
 
 def _note_warm(seen: set, sig: tuple) -> None:
@@ -1826,6 +1864,8 @@ class CfgParallelRouter:
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
         self.warm_replica: set = set()
+        self.scalars_primary: dict = {}
+        self.scalars_replica: dict = {}
         self._pair_job: Optional[dict] = None
 
     def describe(self) -> dict[str, Any]:
@@ -1855,6 +1895,8 @@ class CfgParallelRouter:
         self.pairs = []
         self.warm_primary.clear()
         self.warm_replica.clear()
+        self.scalars_primary.clear()
+        self.scalars_replica.clear()
         self.prefetched.clear()
         self.carry = []
         self.next_carry = []
@@ -1897,7 +1939,7 @@ class CfgParallelRouter:
         return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
 
     def _primary_noting(self, sig: Optional[tuple], args: tuple, kwargs: dict) -> Any:
-        sig = _call_signature(args, kwargs) if sig is None else sig
+        sig = _call_signature(args, kwargs, self.scalars_primary) if sig is None else sig
         job = self._pair_job
         if sig not in self.warm_primary and job is not None:
             job["event"].wait()  # may compile: not while the replica runs
@@ -1936,7 +1978,7 @@ class CfgParallelRouter:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
-                sig = _call_signature(args, kwargs)
+                sig = _call_signature(args, kwargs, self.scalars_primary)
                 self._launch_prediction(latent, sig)
         if (
             self.branch % 2 == 1
@@ -2000,7 +2042,7 @@ class CfgParallelRouter:
             return None
         self.prefetched.clear()
         hook_state = _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs)
+        sig = _call_signature(args, kwargs, self.scalars_replica)
         try:
             r_args = self._to_replica(args)
             r_kwargs = self._to_replica(kwargs)
@@ -2090,7 +2132,7 @@ class CfgParallelRouter:
         p_args, p_kwargs = predicted
         if (
             sig not in self.warm_primary
-            or _call_signature(p_args, p_kwargs) not in self.warm_replica
+            or _call_signature(p_args, p_kwargs, self.scalars_replica) not in self.warm_replica
         ):
             return  # a side may compile: the odd branch runs unpredicted, after the primary one
         try:
@@ -2277,7 +2319,7 @@ class CfgParallelRouter:
         # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs)
+        sig = _call_signature(args, kwargs, self.scalars_replica)
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica

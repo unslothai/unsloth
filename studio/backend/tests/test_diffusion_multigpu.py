@@ -2366,3 +2366,46 @@ def test_replica_blocks_get_their_own_compile_guard():
     guard = getattr(wrapped, "_unsloth_compile_guard", None)
     assert guard is not None and guard is not source_guard
     assert replica.__dict__.get("_unsloth_compile_guard") is guard
+
+
+def test_warm_signature_turns_cold_exactly_when_dynamo_recompiles_a_number():
+    # A call the router reads as warm runs beside the other side, so it must not compile: up to torch 2.13
+    # FX tracing is process-wide and would trip the other branch's compiled frames.
+    compiles = []
+
+    def backend(gm, _example_inputs):
+        compiles.append(1)
+        return gm.forward
+
+    @torch.compile(backend = backend)
+    def fn(x, scale, k, kw):
+        return x * scale + k + kw["s"]
+
+    x = torch.randn(4)
+    warm: set = set()
+    scalars: dict = {}
+    calls = [
+        (1.0, 1, 0.5),
+        (2.0, 1, 0.5),
+        (3.0, 1, 0.5),
+        (3.0, 2, 0.5),
+        (3.0, 3, 0.5),
+        (4.5, 7, 0.25),
+    ]
+    for scale, k, s in calls:
+        sig = mg._call_signature((x, scale, k), {"kw": {"s": s}}, scalars)
+        before = len(compiles)
+        fn(x, scale, k, {"s": s})
+        if sig in warm:
+            assert len(compiles) == before, (scale, k, s)
+        mg._note_warm(warm, sig)
+    torch._dynamo.reset()
+
+
+def test_warm_signature_keys_on_storage_offset_and_autocast():
+    base = torch.zeros(8)
+    a = mg._call_signature((base[:4],), {})
+    assert mg._call_signature((base[4:],), {}) != a
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        assert mg._call_signature((base[:4],), {}) != a
+    assert mg._call_signature((base[:4],), {}) == a
