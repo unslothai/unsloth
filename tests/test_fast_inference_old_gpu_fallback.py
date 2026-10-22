@@ -13,14 +13,26 @@ GEMMA4_TYPES = ["gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"
 
 
 class _Device:
-    def __init__(self, type, index = None):
+    def __init__(
+        self,
+        type,
+        index = None,
+    ):
         self.type, self.index = type, index
 
     def __eq__(self, other):
-        return (self.type, self.index) == (getattr(other, "type", None), getattr(other, "index", None))
+        return (self.type, self.index) == (
+            getattr(other, "type", None),
+            getattr(other, "index", None),
+        )
 
 
-def _helper(monkeypatch, device_type, capability, target = "default"):
+def _helper(
+    monkeypatch,
+    device_type,
+    capability,
+    target = "default",
+):
     """The real helpers on a fake torch: `capability(device)` answers per device, `None` = current card.
     `target` is unsloth_zoo.vllm_utils.get_target_device's answer ("missing": an older zoo without it)."""
     fake_torch = types.ModuleType("torch")
@@ -36,7 +48,10 @@ def _helper(monkeypatch, device_type, capability, target = "default"):
     tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
     wanted = []
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in ("_vllm_needs_newer_gpu", "_vllm_engine_device"):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+            "_vllm_needs_newer_gpu",
+            "_vllm_engine_device",
+        ):
             wanted.append(node)
         elif isinstance(node, ast.Assign) and any(
             getattr(t, "id", None) == "VLLM_NEEDS_SM80_MODEL_TYPES" for t in node.targets
@@ -106,7 +121,9 @@ def test_gemma4_falls_back_when_the_engine_card_is_old(monkeypatch):
 
 
 def test_gemma4_follows_zoos_target_device(monkeypatch):
-    f = _helper(monkeypatch, "cuda", _mixed_host({0: (8, 0), 1: (7, 5)}, current = 0), _Device("cuda", 1))
+    f = _helper(
+        monkeypatch, "cuda", _mixed_host({0: (8, 0), 1: (7, 5)}, current = 0), _Device("cuda", 1)
+    )
     assert f(["gemma4"]) == "gemma4"
 
 

@@ -133,10 +133,8 @@ def _vllm_unsupported_model_types(model_types):
 def _vllm_engine_device():
     """The card fast_inference's vLLM engine runs on: unsloth_zoo's target device (cuda:0), not the current one."""
     import torch
-
     try:
         from unsloth_zoo.vllm_utils import get_target_device
-
         return get_target_device()
     except Exception:
         return torch.device("cuda", 0)
