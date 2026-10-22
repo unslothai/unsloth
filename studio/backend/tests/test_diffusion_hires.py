@@ -662,3 +662,79 @@ def test_preflight_refuses_before_the_base_pass(tiny_sdxl, monkeypatch):
         )
     assert ran == []  # refused before the base pass denoised
     assert (384, 384) in seen
+
+
+def test_run_hires_pass_kwargs_without_a_model(monkeypatch):
+    """Sequencing on a stand-in engine: one base call, one refine call per image with that image's seed and prompt, the
+    variation seed dropped from the refine pass, cancel re-armed between passes and progress cleared at the end."""
+    import contextlib
+    import threading
+
+    from PIL import Image
+
+    from core.inference.diffusion_sd_controls import SdControls
+
+    calls = []
+
+    class _Backend:
+        def __init__(self):
+            self._state = types.SimpleNamespace(
+                family = _fam("z-image"), offload_policy = "none", device = "cpu"
+            )
+            self._lock = threading.Lock()
+            self._generation_cancel_lock = threading.Lock()
+            self._gen = None
+            self._active_generate_cancel = None
+            self._active_generate_account = None
+
+        @contextlib.contextmanager
+        def _generation_slot(self, cancel):
+            yield
+
+    def fake_generate(backend, **kw):
+        ctx = kw.pop("_hires_pass")
+        calls.append(
+            (ctx.refine, ctx.defer_bg_kick, backend._active_generate_cancel is ctx.cancel, kw)
+        )
+        if not ctx.refine:
+            return {
+                "images": [Image.new("RGB", (256, 256))] * 2,
+                "seed": 5,
+                "seeds": [5, 6],
+                "workflow": "txt2img",
+            }
+        assert ctx.source.size == (384, 384)
+        return {"images": [ctx.source], "seed": kw["seed"], "seeds": [kw["seed"]]}
+
+    b = _Backend()
+    out = hires.run_hires(
+        b,
+        fake_generate,
+        hires.HiresParams(denoise = 0.4, steps = 6, guidance = 2.5),
+        {
+            "prompt": "p",
+            "prompts": ["a", "b"],
+            "width": 256,
+            "height": 256,
+            "steps": 8,
+            "guidance": 0.0,
+            "seed": 5,
+            "batch_size": 1,
+            "sd_controls": SdControls(variation_seed = 9, variation_strength = 0.3, clip_skip = 2),
+        },
+    )
+    assert [c[0] for c in calls] == [False, True, True]
+    assert calls[0][1] is True  # the base pass defers a pending background compile
+    assert calls[1][2] and calls[2][2]  # Stop is registered again for each refine pass
+    refine = [c[3] for c in calls[1:]]
+    assert [k["prompt"] for k in refine] == ["a", "b"] and [k["seed"] for k in refine] == [5, 6]
+    assert all(k["steps"] == 6 and k["strength"] == 0.4 and k["guidance"] == 2.5 for k in refine)
+    assert all("prompts" not in k and "seeds" not in k and k["batch_size"] == 1 for k in refine)
+    assert all(
+        k["sd_controls"].variation_strength is None and k["sd_controls"].clip_skip == 2
+        for k in refine
+    )
+    assert calls[0][3]["sd_controls"].variation_strength == 0.3  # the base pass keeps it
+    assert out["hires"]["refine_steps"] == 6 and out["hires"]["upscaler"] == "lanczos"
+    assert [im.size for im in out["images"]] == [(384, 384)] * 2
+    assert b._gen is None

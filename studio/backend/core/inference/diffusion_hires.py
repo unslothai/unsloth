@@ -681,6 +681,12 @@ def run_hires(
             pass_kwargs["width"], pass_kwargs["height"] = target
             if params.guidance is not None:
                 pass_kwargs["guidance"] = float(params.guidance)
+            controls = pass_kwargs.get("sd_controls")
+            if controls is not None and getattr(controls, "variation_strength", None):
+                # A variation seed shapes the base pass's noise; the refine pass takes its noise from the source.
+                pass_kwargs["sd_controls"] = replace(
+                    controls, variation_seed = None, variation_strength = None
+                )
             pass_ctx = HiresPass(cancel = cancel, source = source, latent_from = latent_from, refine = True)
             pass_ctx.stats["refine_steps"] = refine_steps
             pass_kwargs["steps"] = refine_steps  # converted to num_inference_steps inside the call
