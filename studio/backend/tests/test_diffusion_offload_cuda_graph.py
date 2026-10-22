@@ -266,6 +266,28 @@ def test_the_render_peak_counts_weights_moved_into_a_stable_range():
     assert sa.mapped_bytes(dev) == before
 
 
+def test_the_render_peak_counts_a_stable_range_unmapped_before_the_probe_ends():
+    """A model-offload denoiser range is mapped for the denoise and unmapped again before the render's probe ends:
+    the peak still counts it (the allocator never saw those bytes)."""
+    _cuda()
+    from core.inference.diffusion_measured_peaks import PeakProbe
+
+    try:
+        sa._driver()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"CUDA VMM unavailable ({exc})")
+    dev = torch.cuda.current_device()
+    arena = sa.VmmArena(16 << 20, dev)
+    before = sa.mapped_bytes(dev)
+    probe = PeakProbe("cuda")
+    arena.map()  # the denoiser onloads into its range ...
+    arena.unmap()  # ... and offloads before the decode
+    assert sa.mapped_bytes(dev) == before
+    peak = probe.finish()
+    assert peak is not None and peak >= arena.size >> 20
+    arena.close()
+
+
 def _repin_cycle(
     net,
     pipe,

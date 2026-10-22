@@ -484,6 +484,7 @@ class PeakProbe:
             self.window = open_window(dev)
             torch.cuda.synchronize(dev)
             torch.cuda.reset_peak_memory_stats(dev)
+            _reset_range_peak(dev)
             self.base = int(torch.cuda.memory_allocated(dev)) + _range_bytes(dev)
             self.device = dev
         except Exception:  # noqa: BLE001 - measurement only
@@ -498,10 +499,11 @@ class PeakProbe:
             # Weights a block-offload re-pin placed in a stable range (diffusion_stable_arena) sit outside the
             # allocator: on the render that first moves resident groups there, the allocator drops by their size.
             # Counting the range at both ends keeps that render's peak on the stock scale (an encode-phase peak is
-            # then read high by the mapped bytes, never low).
+            # then read high by the mapped bytes, never low). The range's own high-water mark, not what is still
+            # mapped at the end: a model-offload denoiser range is unmapped again before the decode finishes.
             peak = (
                 int(torch.cuda.max_memory_allocated(self.device))
-                + _range_bytes(self.device)
+                + _range_peak_bytes(self.device)
                 - self.base
             )
         except Exception:  # noqa: BLE001
@@ -518,6 +520,22 @@ def _range_bytes(dev: Any) -> int:
         return mapped_bytes(dev.index)
     except Exception:  # noqa: BLE001 - no stable ranges
         return 0
+
+
+def _range_peak_bytes(dev: Any) -> int:
+    try:
+        from .diffusion_stable_arena import peak_mapped_bytes
+        return peak_mapped_bytes(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        return 0
+
+
+def _reset_range_peak(dev: Any) -> None:
+    try:
+        from .diffusion_stable_arena import reset_peak_mapped
+        reset_peak_mapped(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        pass
 
 
 def current_device_name() -> Optional[str]:

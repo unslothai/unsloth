@@ -117,6 +117,8 @@ def _driver() -> Any:
 
 # Physical bytes mapped through every range, per CUDA ordinal: memory the caching allocator's counters do not see.
 _MAPPED: dict = {}
+# High-water mark of ``_MAPPED`` since the last ``reset_peak_mapped`` (the stable ranges' max_memory_allocated).
+_PEAK_MAPPED: dict = {}
 _MAPPED_LOCK = threading.Lock()
 
 
@@ -126,9 +128,22 @@ def mapped_bytes(device_index: Optional[int]) -> int:
         return int(_MAPPED.get(device_index, 0))
 
 
+def peak_mapped_bytes(device_index: Optional[int]) -> int:
+    """Most bytes mapped at once on ``device_index`` since the last ``reset_peak_mapped``."""
+    with _MAPPED_LOCK:
+        return int(max(_PEAK_MAPPED.get(device_index, 0), _MAPPED.get(device_index, 0)))
+
+
+def reset_peak_mapped(device_index: Optional[int]) -> None:
+    with _MAPPED_LOCK:
+        _PEAK_MAPPED[device_index] = _MAPPED.get(device_index, 0)
+
+
 def _count_mapped(device_index: int, delta: int) -> None:
     with _MAPPED_LOCK:
-        _MAPPED[device_index] = _MAPPED.get(device_index, 0) + int(delta)
+        now = _MAPPED.get(device_index, 0) + int(delta)
+        _MAPPED[device_index] = now
+        _PEAK_MAPPED[device_index] = max(_PEAK_MAPPED.get(device_index, 0), now)
 
 
 def _check(rc: int, what: str) -> None:
