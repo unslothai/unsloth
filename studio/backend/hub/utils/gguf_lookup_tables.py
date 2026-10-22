@@ -240,11 +240,13 @@ def remote_cached(
     filename: str,
     revision: Optional[str],
     identity = None,
+    *,
+    mode: str = "auto",
 ):
-    """The cached remote answer, keyed on the file's identity (its listed size by default),
-    so a re-upload under the same name is read again."""
+    """The cached remote answer under lazy ``mode``, keyed on the file's identity (its
+    listed size by default), so a re-upload under the same name is read again."""
     with _lock:
-        hit = _REMOTE_CACHE.get((repo_id, filename, revision or "", identity))
+        hit = _REMOTE_CACHE.get((repo_id, filename, revision or "", identity, mode))
     if hit is None or hit[1] <= time.monotonic():
         return None
     return hit[0]
@@ -258,12 +260,13 @@ def remote_lookup_info(
     revision: Optional[str] = None,
     identity = None,
     fetcher_fn: Optional[Callable] = None,
+    mode: str = "auto",
 ) -> tuple[Optional[str], int]:
     """(architecture, lazily read table bytes) from Range reads of a Hub GGUF's header(s).
     Blocking; call off the event loop. Failures answer ``(None, 0)`` and are not cached,
     so a transient error is retried on the next listing."""
-    key = (repo_id, filename, revision or "", identity)
-    hit = remote_cached(repo_id, filename, revision, identity)
+    key = (repo_id, filename, revision or "", identity, mode)
+    hit = remote_cached(repo_id, filename, revision, identity, mode = mode)
     if hit is not None:
         return hit
     if fetcher_fn is None:
@@ -282,7 +285,7 @@ def remote_lookup_info(
         return _read_growing(read)
 
     try:
-        answer = _scan_shards(read_header, shard_names(filename))
+        answer = _scan_shards(read_header, shard_names(filename), mode)
     except Exception:  # noqa: BLE001 -- unreachable or unreadable: today's behaviour
         return None, 0
     _remember(_REMOTE_CACHE, key, (answer, time.monotonic() + _REMOTE_TTL_S))

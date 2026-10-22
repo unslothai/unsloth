@@ -12,6 +12,7 @@ import atexit
 import bisect
 import weakref
 import contextlib
+import contextvars
 import ctypes
 import errno
 import functools
@@ -7619,6 +7620,22 @@ def _argv_loads_pinned(argv: Iterable[str], env: Optional[Mapping[str, str]] = N
     return bool(reserves_ram and not mlock and not direct_io)
 
 
+# Set while a capability read (a listing, an estimate) sizes the cards: the torch fallback
+# would cost the long-lived web process a permanent CUDA/HIP context for an advisory answer.
+_GPU_MEMORY_SKIP_TORCH: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "_GPU_MEMORY_SKIP_TORCH", default = False
+)
+
+
+@contextlib.contextmanager
+def _without_torch_gpu_probe():
+    token = _GPU_MEMORY_SKIP_TORCH.set(True)
+    try:
+        yield
+    finally:
+        _GPU_MEMORY_SKIP_TORCH.reset(token)
+
+
 def _effective_lazy_mode(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -11565,7 +11582,8 @@ class LlamaCppBackend:
             if mode != "auto":
                 return mode == "on"
             vulkan = self._is_vulkan_backend(binary)
-            rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
+            with _without_torch_gpu_probe():
+                rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
             shared = {idx for idx, _free, total in rows if total <= 0} if vulkan else set()
             picked = [int(i) for i in gpu_ids] if gpu_ids else None
             return not self._lazy_auto_resolves_off(
@@ -15866,7 +15884,11 @@ class LlamaCppBackend:
             return rocm_gpus
 
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
-        gpus = LlamaCppBackend._get_gpu_memory_torch(binary, for_llama_server)
+        gpus = (
+            []
+            if _GPU_MEMORY_SKIP_TORCH.get()
+            else LlamaCppBackend._get_gpu_memory_torch(binary, for_llama_server)
+        )
         if not gpus and mig_card_rows:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
             return LlamaCppBackend._widen_integrated_cuda_rows(mig_card_rows)
@@ -34620,6 +34642,9 @@ class LlamaCppBackend:
                                 "Arch-crash retry leaves one GPU; dropped tensor "
                                 "parallelism, which needs at least two."
                             )
+                        # Before either pricing: the resident-table verdict was for the crashed
+                        # device set, and a stale --lazy-mode off charges the table to RAM.
+                        cmd = self._drop_managed_lazy_mode(cmd, "device fallback")
                         # Priced after the mask and device rewrites, against the retry's
                         # own selection: a crash on the dGPU retried on the APU sibling is
                         # the first load into system RAM. Advisory only.
@@ -34654,9 +34679,6 @@ class LlamaCppBackend:
                             if not self._host_offload_warning_opted_out():
                                 _apu_ram_msg = _retry_apu_msg
                                 self._record_load_warning(_retry_apu_msg)
-                        # Before pricing: the resident-table verdict was for the crashed
-                        # device set, and a stale --lazy-mode off charges the table to RAM.
-                        cmd = self._drop_managed_lazy_mode(cmd, "device fallback")
                         _retry_host_msg = self._launch_host_shortfall_message(
                             cmd, _retry_rows, env, avail_mib = _retry_host_avail_mib
                         )

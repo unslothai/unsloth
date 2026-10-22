@@ -15771,6 +15771,7 @@ def _gguf_memory_breakdown(
         _effective_lazy_mode,
         _is_per_layer_embedding,
         _override_places_tensor_on_device,
+        _without_torch_gpu_probe,
     )
     from hub.utils.gguf_lookup_tables import local_lookup_info
 
@@ -15914,12 +15915,13 @@ def _gguf_memory_breakdown(
                     budget, max(0, _lt_avail - _HOST_RAM_HEADROOM_MIB) * 1024 * 1024
                 )
             try:
-                rows = list(
-                    _lt_backend._get_gpu_memory(
-                        _lt_backend._find_llama_server_binary(), for_llama_server = True
+                with _without_torch_gpu_probe():
+                    rows = list(
+                        _lt_backend._get_gpu_memory(
+                            _lt_backend._find_llama_server_binary(), for_llama_server = True
+                        )
+                        or ()
                     )
-                    or ()
-                )
             except Exception:  # noqa: BLE001 -- unread cards: the whole load in RAM
                 rows = []
             pick = sorted(int(i) for i in selected_gpu_ids) if selected_gpu_ids else None

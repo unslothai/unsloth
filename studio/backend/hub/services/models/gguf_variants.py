@@ -1449,6 +1449,20 @@ def _host_streams_lookup_tables() -> bool:
     return streams
 
 
+def _listing_lazy_mode() -> str:
+    """The lazy mode a default launch here runs under: a server-wide ``on`` streams every
+    flagged table, not only those over the auto threshold."""
+    try:
+        from core.inference.llama_cpp import _effective_lazy_mode
+        from routes.inference import get_llama_cpp_backend
+
+        flag = get_llama_cpp_backend().probe_server_capabilities().get("lazy_mode_flag")
+        mode = _effective_lazy_mode(None, os.environ, flag = str(flag or "--lazy-mode"))
+    except Exception:  # noqa: BLE001 -- unknown build: the default threshold
+        return "auto"
+    return "on" if mode == "on" else "auto"
+
+
 def _lookup_remote_enabled() -> bool:
     return (os.environ.get(_LOOKUP_REMOTE_ENV) or "").strip().lower() not in (
         "0",
@@ -1515,9 +1529,15 @@ def _local_variant_gguf(answer: "VariantsAnswer", repo_id: str, variant) -> Opti
     return None
 
 
-def _remote_lookup_bytes(repo_id: str, filename: str, hf_token, identity) -> int:
+def _remote_lookup_bytes(
+    repo_id: str,
+    filename: str,
+    hf_token,
+    identity,
+    mode = "auto",
+) -> int:
     from hub.utils.gguf_lookup_tables import remote_lookup_info
-    return remote_lookup_info(repo_id, filename, hf_token, identity = identity)[1]
+    return remote_lookup_info(repo_id, filename, hf_token, identity = identity, mode = mode)[1]
 
 
 async def _with_lookup_tables(
@@ -1539,6 +1559,7 @@ async def _with_lookup_tables(
         )
 
         variants = list(answer.response.variants or ())
+        mode = await listing_thread(True, _listing_lazy_mode)
         found: dict[int, int] = {}
         arch: Optional[str] = None
         unresolved = []
@@ -1547,7 +1568,7 @@ async def _with_lookup_tables(
                 continue
             path = await listing_thread(True, _local_variant_gguf, answer, repo_id, v)
             if path:
-                local_arch, table = await listing_thread(True, local_lookup_info, path)
+                local_arch, table = await listing_thread(True, local_lookup_info, path, mode)
                 # Only a lazy one speaks for the repo: a repo can hold several families.
                 if lazy_architecture(local_arch):
                     arch = arch or local_arch
@@ -1578,7 +1599,9 @@ async def _with_lookup_tables(
                         int(v.size_bytes or 0) > LAZY_READ_AUTO_MIN_BYTES for _i, v in unresolved
                     ):
                         arch = await _lookup_await_once(
-                            ("arch", repo_id.lower()),
+                            # Per credential, as the cache is: another token's lookup
+                            # answers only for that token.
+                            ("arch", repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token)),
                             deadline,
                             _hub_repo_architecture,
                             repo_id,
@@ -1588,22 +1611,19 @@ async def _with_lookup_tables(
                     tasks = {}
                     for index, v in unresolved:
                         identity = int(v.size_bytes or 0)
-                        cached = remote_cached(repo_id, v.filename, None, identity)
+                        cached = remote_cached(repo_id, v.filename, None, identity, mode = mode)
                         if cached is not None:
                             found[index] = cached[1]
                             continue
-                        key = ("table", repo_id, v.filename, identity)
+                        key = ("table", repo_id, v.filename, identity, mode)
                         with _lookup_arch_lock:
                             busy = key in _lookup_inflight
                             if not busy:
                                 _lookup_inflight.add(key)
                         if busy:
                             continue
-                        if len(tasks) >= _LOOKUP_CONCURRENCY:
-                            # One pool's worth per listing; the rest are read by later ones.
-                            with _lookup_arch_lock:
-                                _lookup_inflight.discard(key)
-                            continue
+                        # Every row is queued: the pool caps concurrency, and a read the
+                        # deadline outlasts lands in the cache for the next listing.
 
                         started: list = []
 
@@ -1615,7 +1635,7 @@ async def _with_lookup_tables(
                         ):
                             ran.append(True)
                             try:
-                                return _remote_lookup_bytes(repo_id, name, hf_token, ident)
+                                return _remote_lookup_bytes(repo_id, name, hf_token, ident, mode)
                             finally:
                                 with _lookup_arch_lock:
                                     _lookup_inflight.discard(k)

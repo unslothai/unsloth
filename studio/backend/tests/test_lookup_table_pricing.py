@@ -539,7 +539,7 @@ class TestListing:
         )
         assert [v.lookup_table_bytes for v in out.response.variants] == [0, FLASH_NEXT_TABLE]
 
-    def test_one_listing_reads_at_most_a_pool_of_headers(self, monkeypatch):
+    def test_one_listing_queues_every_uncached_header(self, monkeypatch):
         import threading
 
         from hub.schemas.inventory import GgufVariantDetail
@@ -571,8 +571,137 @@ class TestListing:
                 _answer(rows), "o/many", hf_token = None, offline = False, prefer_local_cache = False
             )
         )
-        assert len(calls) == gv._LOOKUP_CONCURRENCY
-        assert sum(1 for v in out.response.variants if v.lookup_table_bytes) == len(calls)
+        # The pool caps concurrency, not the rows a listing asks for.
+        assert sorted(calls) == sorted(r.filename for r in rows)
+        assert all(v.lookup_table_bytes for v in out.response.variants)
+
+    def test_a_forced_lazy_mode_sizes_the_tables_it_streams(self, monkeypatch, tmp_path):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        modes = []
+
+        def read(
+            repo,
+            name,
+            token,
+            identity = None,
+            mode = "auto",
+            **k,
+        ):
+            modes.append(("remote", mode))
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        def local(path, mode = "auto"):
+            modes.append(("local", mode))
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        monkeypatch.setattr(gv, "_listing_lazy_mode", lambda: "on")
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(glt, "remote_lookup_info", read)
+        monkeypatch.setattr(glt, "local_lookup_info", local)
+        on_disk = tmp_path / "local.gguf"
+        on_disk.write_bytes(b"x")
+        monkeypatch.setattr(
+            gv, "_local_variant_gguf", lambda a, r, v: str(on_disk) if v.quant == "L" else None
+        )
+        rows = [
+            GgufVariantDetail(filename = "l.gguf", quant = "L", size_bytes = 1, downloaded = True),
+            GgufVariantDetail(filename = "r.gguf", quant = "R", size_bytes = 2),
+        ]
+        asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows), "o/forced", hf_token = None, offline = False, prefer_local_cache = False
+            )
+        )
+        assert sorted(modes) == [("local", "on"), ("remote", "on")]
+
+    def test_a_remote_answer_is_cached_per_lazy_mode(self):
+        from hub.utils import gguf_lookup_tables as glt
+
+        def fetcher(
+            repo,
+            name,
+            token,
+            revision = None,
+        ):
+            return lambda start, end: b""
+
+        glt.remote_lookup_info("o/m", "f.gguf", identity = 11, fetcher_fn = fetcher)
+        assert glt.remote_cached("o/m", "f.gguf", None, 11, mode = "on") is None
+
+    def test_an_architecture_lookup_in_flight_for_another_token_does_not_block(self, monkeypatch):
+        import threading
+
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        asked = []
+        second = threading.Event()
+
+        def arch(repo, token):
+            asked.append(token)
+            if token == "hf_first":
+                # Still running when the other credential's listing asks.
+                second.wait(1.5)
+            else:
+                second.set()
+            return "qwen4exp"
+
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None))
+        monkeypatch.setattr(gv, "_hub_repo_architecture", arch)
+        monkeypatch.setattr(
+            glt, "remote_lookup_info", lambda *a, **k: ("qwen4exp", FLASH_NEXT_TABLE)
+        )
+        rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = 40 * GIB)]
+
+        async def both():
+            first = asyncio.ensure_future(
+                gv._with_lookup_tables(
+                    _answer(rows),
+                    "o/shared",
+                    hf_token = "hf_first",
+                    offline = False,
+                    prefer_local_cache = False,
+                )
+            )
+            await asyncio.sleep(0.2)
+            other = await gv._with_lookup_tables(
+                _answer(rows),
+                "o/shared",
+                hf_token = "hf_second",
+                offline = False,
+                prefer_local_cache = False,
+            )
+            return await first, other
+
+        _first, other = asyncio.run(both())
+        assert sorted(asked) == ["hf_first", "hf_second"]
+        assert other.response.variants[0].lookup_table_bytes == FLASH_NEXT_TABLE
+
+    def test_a_capability_read_never_falls_back_to_a_torch_context(self, monkeypatch):
+        from core.inference import llama_cpp as lc
+
+        B = lc.LlamaCppBackend
+        monkeypatch.setattr(B, "_is_vulkan_backend", staticmethod(lambda binary = None: False))
+        monkeypatch.setattr(B, "_get_gpu_memory_nvml", staticmethod(lambda: []))
+        monkeypatch.setattr(B, "_get_gpu_memory_amd_smi", staticmethod(lambda binary = None, **k: []))
+        monkeypatch.setattr(
+            B,
+            "_get_gpu_memory_torch",
+            staticmethod(lambda *a, **k: pytest.fail("torch probe in a capability read")),
+        )
+        from utils.hardware import gpu_query
+
+        def no_smi(*a, **k):
+            raise FileNotFoundError("nvidia-smi")
+
+        monkeypatch.setattr(gpu_query, "run_nvidia_smi", no_smi)
+        with lc._without_torch_gpu_probe():
+            assert B._get_gpu_memory("/fake/llama-server", for_llama_server = True) == []
+        assert lc._GPU_MEMORY_SKIP_TORCH.get() is False
 
     def test_offline_or_a_non_lazy_arch_never_reads_the_hub(self, monkeypatch):
         from hub.schemas.inventory import GgufVariantDetail
