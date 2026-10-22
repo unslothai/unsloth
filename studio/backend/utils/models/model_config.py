@@ -2052,6 +2052,7 @@ def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
 # MiMo-VL's F16 projector overflows to NaN on GPU: every image, then the rest of the chat, answers "!!!!".
 _F16_UNSAFE_MMPROJ_RE = _re.compile(r"mimo[-_ ]?vl", _re.IGNORECASE)
 _MMPROJ_PRECISION_RE = _re.compile(r"[-_.](bf16|f16|f32)(?:[-_.]mmproj)?\.gguf$", _re.IGNORECASE)
+_NAME_DELIMS = "-_. "
 _MMPROJ_PRECISION_TAIL_RE = _re.compile(r"(?:[-_.](?:bf16|f16|f32))?(?:[-_.]mmproj)?$")
 # None = a projector name with no precision tag.
 MMPROJ_ORDER_BF16 = ("bf16", "f16", "f32", None)
@@ -2101,11 +2102,18 @@ def _pairing_stem(name: str) -> str:
 
 
 def mmproj_weight_match(weight: Optional[str], mmproj_name: str) -> int:
-    """Shared name prefix of a weight and a projector, past ``mmproj-`` and before the precision
-    tag, so an F16 weight never pairs with the F16 projector over the BF16 one."""
+    """Shared whole-token prefix of a weight and a projector, past ``mmproj-`` and before the
+    precision tag (an F16 weight never pairs with the F16 projector over the BF16 one); a projector
+    named exactly after the checkpoint beats a longer one (``Model-7B`` over ``Model-7B-v2``)."""
     if not weight:
         return 0
-    return _shared_prefix_len(_pairing_stem(weight), _pairing_stem(mmproj_name))
+    a, b = _pairing_stem(weight), _pairing_stem(mmproj_name)
+    k = _shared_prefix_len(a, b)
+    while k and not (
+        (k == len(a) or a[k] in _NAME_DELIMS) and (k == len(b) or b[k] in _NAME_DELIMS)
+    ):
+        k -= 1
+    return 2 * k + (k == len(b))
 
 
 def mmproj_order_rank(mmproj_name: str, order: tuple) -> int:

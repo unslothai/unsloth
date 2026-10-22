@@ -340,6 +340,17 @@ def test_f16_weight_does_not_pair_with_the_f16_projector(device, tmp_path):
     assert _local_pick(tmp_path, F16_WEIGHT_LISTING) == "mmproj-MiMo-VL-7B-BF16.gguf"
 
 
+def test_exact_checkpoint_projector_beats_a_longer_name(device, tmp_path):
+    from core.inference.llama_cpp import _mmproj_picker
+
+    device("bf16")
+    listing = ["Model-7B-Q4_K_M.gguf", "mmproj-Model-7B-F16.gguf", "mmproj-Model-7B-v2-BF16.gguf"]
+    assert _mmproj_picker("org/collection-GGUF", "/c/snap/Model-7B-Q4_K_M.gguf")(listing) == (
+        "mmproj-Model-7B-F16.gguf"
+    )
+    assert _local_pick(tmp_path, listing) == "mmproj-Model-7B-F16.gguf"
+
+
 def test_local_folder_named_after_mimo_vl_with_a_generic_weight(device, tmp_path):
     folder = tmp_path / "MiMo-VL-7B"
     for n in ("model-Q4_K_M.gguf", "mmproj-F16.gguf", "mmproj-BF16.gguf"):
