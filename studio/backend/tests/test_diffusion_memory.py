@@ -1275,8 +1275,8 @@ def test_plan_fits_total_capacity():
 
     # FLUX.2-dev int8 incident numbers: 90,228 required on a 183,359 MiB card, so it fits.
     assert plan_fits_total_capacity(plan(90_228, 183_359)) is True
-    # Larger than the capacity margin (0.85 * (183,359 - 18,335) = 140,270), so no retry.
-    assert plan_fits_total_capacity(plan(150_000, 183_359)) is False
+    # Larger than the capacity margin (0.85 * (183,359 - 4,096 capped reserve) = 152,373), so no retry.
+    assert plan_fits_total_capacity(plan(160_000, 183_359)) is False
     # Unknown sizes keep today's behaviour (no retry).
     assert plan_fits_total_capacity(plan(None, 183_359)) is False
     assert plan_fits_total_capacity(plan(90_228, None)) is False
