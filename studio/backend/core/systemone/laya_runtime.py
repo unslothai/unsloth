@@ -569,6 +569,32 @@ def _gpu_taken() -> bool:
     return any(owner != gpu_arbiter.DECISIONS for owner in gpu_arbiter.residents())
 
 
+def _torch_gpu(checkpoint: Checkpoint) -> bool:
+    if _is_mlx(checkpoint) or _is_native(checkpoint):
+        return False
+    if checkpoint.layout == "clef":
+        return True
+    from utils.systemone_settings import get_device as preferred_device
+    from utils.hardware.hardware import DeviceType, get_device
+
+    return preferred_device() == "gpu" and get_device() in (DeviceType.CUDA, DeviceType.XPU)
+
+
+def _gpu_load_in_flight() -> bool:
+    from core.inference import gpu_arbiter
+    from core.inference.gpu_residency import chat_load_in_flight
+
+    if chat_load_in_flight():
+        return True
+    try:
+        return any(
+            gpu_arbiter._media_loading(owner)
+            for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO)
+        )
+    except Exception:
+        return False
+
+
 def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
     """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
     from .catalog import clef_unsupported_reason
@@ -1579,6 +1605,15 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
     # Asked before _state_lock: the training backend takes its own lock.
     _clef_blocked_by_training(checkpoint)
     misplaced = _misplaced()
+    with _state_lock:
+        resident = _loaded == checkpoint and _agent is not None and not misplaced
+    if not resident and _torch_gpu(checkpoint) and _gpu_load_in_flight():
+        raise Unavailable(
+            409,
+            "gpu_busy",
+            f"Another model is loading on the GPU; {checkpoint.name} loads once it has.",
+            retry_after = 1,
+        )
     with _state_lock:
         if _loaded == checkpoint and _agent is not None and not misplaced:
             return None

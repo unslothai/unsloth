@@ -715,6 +715,39 @@ def test_only_off_ends_an_idle_worker_on_a_load(
         assert _post(client).status_code == 200 and len(clef.agents) == 1
 
 
+@pytest.mark.parametrize("loading", ["chat", "diffusion", "video"])
+def test_a_decision_waits_for_a_gpu_load_in_flight_after_the_eviction(
+    home, client, clef, monkeypatch, loading
+):
+    from core.inference import gpu_arbiter, gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: loading == "chat")
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: owner == loading)
+    response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert len(clef.agents) == 1
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: False)
+    assert _post(client).status_code == 200 and len(clef.agents) == 2
+
+
+def test_a_resident_worker_answers_during_a_gpu_load(home, client, clef, monkeypatch):
+    from core.inference import gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: True)
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
 def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
     from core.systemone import clef_runtime
 
