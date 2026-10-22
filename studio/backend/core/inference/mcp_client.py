@@ -158,10 +158,10 @@ def _tool_http_client_factory(**kwargs):
 
 
 class _PostSlot:
-    __slots__ = ("key", "token")
+    __slots__ = ("key", "token", "rid")
 
     def __init__(self, key):
-        self.key, self.token = key, None
+        self.key, self.token, self.rid = key, None, None
 
 
 class _PostTracker:
@@ -173,14 +173,14 @@ class _PostTracker:
         self.open: set = set()
         self.waiting: list = []  # dispatches whose POST is not sent yet, FIFO per (method, target)
         self.abandoned: dict = {}  # open POST token -> when its call was abandoned
+        self.bound: dict = {}  # JSON-RPC id -> slot, so a redirected POST stays with its call
         self.installed = False
 
-    def expect(self, key: Optional[tuple]) -> _PostSlot:
-        slot = _PostSlot(key)
-        if key is not None:
+    def enqueue(self, slot: _PostSlot) -> None:
+        # Called on the session loop as the call starts, so the FIFO follows the order the SDK sends in.
+        if slot.key is not None:
             with self.lock:
                 self.waiting.append(slot)
-        return slot
 
     def settle(self, slot: _PostSlot, abandoned: bool) -> None:
         with self.lock:
@@ -188,6 +188,8 @@ class _PostTracker:
                 self.waiting.remove(slot)
             if abandoned and slot.token in self.open:
                 self.abandoned[slot.token] = time.monotonic()
+            elif not abandoned and self.bound.get(slot.rid) is slot:
+                del self.bound[slot.rid]
 
     def pending(self) -> Optional[tuple]:
         """(oldest abandonment time, count) of abandoned replies still open, else None."""
@@ -196,13 +198,18 @@ class _PostTracker:
                 return None
             return min(self.abandoned.values()), len(self.abandoned)
 
-    def _sent(self, token, key) -> None:
+    def _sent(self, token, key, rid) -> None:
         with self.lock:
             self.open.add(token)
+            slot = self.bound.get(rid)
+            if slot is not None and slot.key == key:
+                slot.token = token
+                return
             for slot in self.waiting:
                 if slot.key == key:
-                    slot.token = token
+                    slot.token, slot.rid = token, rid
                     self.waiting.remove(slot)
+                    self.bound[rid] = slot
                     break
 
     def _closed(self, token) -> None:
@@ -235,8 +242,14 @@ class _PostTracker:
             async def handle_async_request(self, request):
                 if request.method != "POST":
                     return await self.inner.handle_async_request(request)
-                token = object()
-                tracker._sent(token, _rpc_target(request))
+                token, (key, rid) = object(), _rpc_target(request)
+                if key is None or key[0] not in ("tools/call", "resources/read"):
+                    # Only a call's reply may outlive the SDK's old read cap; probes and handshakes keep it.
+                    request.extensions["timeout"] = {
+                        **request.extensions.get("timeout", {}),
+                        "read": _ABANDONED_REPLY_TIMEOUT,
+                    }
+                tracker._sent(token, key, rid)
                 try:
                     response = await self.inner.handle_async_request(request)
                 except BaseException:
@@ -258,16 +271,16 @@ class _PostTracker:
         self.installed = True
 
 
-def _rpc_target(request) -> Optional[tuple]:
-    """(JSON-RPC method, tool name or URI) of a request POST, else None."""
+def _rpc_target(request) -> tuple:
+    """((JSON-RPC method, tool name or URI), id) of a request POST, else (None, None)."""
     try:
         msg = json.loads(request.content)
         if "id" not in msg or "method" not in msg:
-            return None
+            return None, None
         params = msg.get("params") or {}
-        return msg["method"], params.get("name") or params.get("uri")
+        return (msg["method"], params.get("name") or params.get("uri")), msg["id"]
     except Exception:  # noqa: BLE001
-        return None
+        return None, None
 
 
 # Set by _McpSession.connect so _tool_http_client_factory can hook the client the SDK builds for that session.
@@ -2213,6 +2226,11 @@ async def _race_tool_call(
     raise _MCPCancelled
 
 
+async def _enqueued(tracker: _PostTracker, slot: _PostSlot, call) -> Any:
+    tracker.enqueue(slot)
+    return await call
+
+
 def _call_session_tool(
     url: str,
     headers: Optional[dict],
@@ -2328,17 +2346,21 @@ def _call_session_tool(
                     raise RuntimeError("MCP server is not responding")
             else:
                 rem = _remaining()
+                slot = _PostSlot(rpc)
                 # raise_on_error=False for the same reason as the one-shot path.
                 coro = _race_tool_call(
-                    dispatch(session.client)
-                    if dispatch is not None
-                    else session.client.call_tool(name, args, raise_on_error = False),
+                    _enqueued(
+                        session.posts,
+                        slot,
+                        dispatch(session.client)
+                        if dispatch is not None
+                        else session.client.call_tool(name, args, raise_on_error = False),
+                    ),
                     rem,
                     cancel_event,
                     # Only a cached session is worth waiting on.
                     0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
-                slot = session.posts.expect(rpc)
                 out = session.run(coro, rem)
                 # A completed round trip proves the transport better than any probe could, so it resets the idle clock
                 # the recheck reads.

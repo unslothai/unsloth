@@ -7,6 +7,9 @@ a real local server, so it fails in seconds without the fix instead of after fiv
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import json
 import socket
 import subprocess
 import sys
@@ -131,12 +134,56 @@ def _open_post(
     return token
 
 
+def _slot(tracker, key):
+    slot = mcp_client._PostSlot(key)
+    tracker.enqueue(slot)
+    return slot
+
+
+def test_redirected_post_stays_with_its_call(slow_server, cached_scope):
+    # A 307/308 resends the same JSON-RPC request: the slot follows it to the final POST.
+    tracker, key = _warm(slow_server, cached_scope).posts, ("tools/call", "slow")
+    slot, hop, final = _slot(tracker, key), object(), object()
+    tracker._sent(hop, key, 41)
+    tracker._closed(hop)
+    tracker._sent(final, key, 41)
+    tracker.settle(slot, abandoned = True)
+    assert list(tracker.abandoned) == [final]
+    tracker.settle(slot, abandoned = False)
+    tracker._closed(final)
+    assert tracker.pending() is None and not tracker.bound
+
+
+def test_only_call_replies_lose_the_read_cap():
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    client = create_mcp_http_client()
+    http = importlib.import_module(type(client).__module__.split(".")[0])
+    seen = {}
+
+    def handler(request):
+        seen[json.loads(request.content)["method"]] = request.extensions["timeout"]["read"]
+        return http.Response(200, json = {})
+
+    client._transport, client._mounts = http.MockTransport(handler), {}
+    client.timeout = type(client.timeout)(30.0, read = None)
+    mcp_client._PostTracker().install(client)
+
+    async def post(method):
+        await client.post("http://mcp.test/mcp", json = {"jsonrpc": "2.0", "id": 1, "method": method})
+
+    for method in ("tools/call", "resources/read", "tools/list", "initialize"):
+        asyncio.run(post(method))
+    assert seen["tools/call"] is None and seen["resources/read"] is None
+    assert seen["tools/list"] == seen["initialize"] == mcp_client._ABANDONED_REPLY_TIMEOUT
+
+
 def test_abandoned_call_is_bound_to_its_own_post(slow_server, cached_scope):
     # Call A is abandoned while a later call B to the same tool is still running: only A's POST may count.
     session = _warm(slow_server, cached_scope)
     assert session.posts.installed
     sent, real_sent = [], session.posts._sent
-    session.posts._sent = lambda token, key: (sent.append(token), real_sent(token, key))
+    session.posts._sent = lambda token, *a: (sent.append(token), real_sent(token, *a))
     a = threading.Thread(target = _call, args = (slow_server, cached_scope, 30, 1.0))
     a.start()
     time.sleep(0.3)
@@ -154,8 +201,8 @@ def test_retirement_deadline_starts_at_abandonment(slow_server, cached_scope, mo
     monkeypatch.setattr(mcp_client, "_ABANDONED_REPLY_TIMEOUT", 0.5)
     session = _warm(slow_server, cached_scope)
     tracker, key = session.posts, ("tools/call", "slow")
-    slot, token = tracker.expect(key), object()
-    tracker._sent(token, key)
+    slot, token = _slot(tracker, key), object()
+    tracker._sent(token, key, 1)
     time.sleep(0.6)
     session.note_abandoned(slot)
     assert not session.abandoned_overdue()
@@ -172,11 +219,12 @@ def test_abandonment_bookkeeping_is_thread_safe(slow_server, cached_scope):
     def churn():
         try:
             for _ in range(2000):
-                slot, token = tracker.expect(key), object()
-                tracker._sent(token, key)
+                slot, token = _slot(tracker, key), object()
+                tracker._sent(token, key, id(token))
                 session.note_abandoned(slot)
                 session.abandoned_overdue()
                 tracker._closed(token)
+                tracker.settle(slot, abandoned = False)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -185,7 +233,7 @@ def test_abandonment_bookkeeping_is_thread_safe(slow_server, cached_scope):
         t.start()
     for t in threads:
         t.join()
-    assert not errors and not tracker.abandoned and not tracker.waiting
+    assert not errors and not tracker.abandoned and not tracker.waiting and not tracker.bound
 
 
 def test_overdue_abandoned_reply_retires_the_session_without_probing(
