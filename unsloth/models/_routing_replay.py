@@ -55,22 +55,29 @@ def _new_hooks(model, before):
 
 @contextlib.contextmanager
 def _detached(hooks):
-    saved = []
+    # Hook order is call order, and ids do not give it (register_*_hook(prepend = True) puts a newer
+    # id first): keep each table's own key order and put it back exactly.
+    orders = {}
+    removed = []
     for module, name, extras, hook_id in hooks:
-        tables = [getattr(module, name)] + [getattr(module, e, None) for e in extras]
-        entries = [(t, t.pop(hook_id)) for t in tables if t is not None and hook_id in t]
-        saved.append((tables, hook_id, entries))
+        for table in [getattr(module, name, None)] + [getattr(module, e, None) for e in extras]:
+            if table is None or hook_id not in table:
+                continue
+            orders.setdefault(id(table), (table, list(table.keys())))
+            removed.append((table, hook_id, table.pop(hook_id)))
     try:
         yield
     finally:
-        for tables, hook_id, entries in reversed(saved):
-            for table, value in entries:
-                # Back in its original place: hook order is call order.
-                table[hook_id] = value
-                if hasattr(table, "move_to_end"):
-                    later = [k for k in table if k > hook_id]
-                    for k in later:
-                        table.move_to_end(k)
+        for table, hook_id, value in removed:
+            table[hook_id] = value
+        for table, order in orders.values():
+            known = set(order)
+            added = [k for k in table if k not in known]  # registered inside the context: keep last
+            items = dict(table)
+            table.clear()
+            for k in order + added:
+                if k in items:
+                    table[k] = items[k]
 
 
 def _prime_formula(rr, module, hook, layers):

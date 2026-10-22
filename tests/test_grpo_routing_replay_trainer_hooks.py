@@ -152,3 +152,34 @@ def test_no_replay_installs_nothing(monkeypatch):
     _run_post_init(model)
     assert model.disable_adapter == disable_adapter
     assert all(not m._forward_hooks and not m._forward_pre_hooks for m in model.modules())
+
+
+def test_reference_pass_restores_hook_order_with_prepended_hooks(replay):
+    # A hook registered after installation with prepend=True has a newer id but runs first: the
+    # reference pass must leave every hook table in exactly the order it found it.
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(_moe(), peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"]))
+    model.vllm_engine = None
+    _run_post_init(model)
+    decoder = model.base_model.model.model
+    router = decoder.layers[0].mlp.gate
+    calls = []
+    router.register_forward_hook(lambda m, a, out: calls.append("prepended"), prepend = True)
+    router.register_forward_hook(lambda m, a, out: calls.append("appended"))
+    decoder.register_forward_pre_hook(lambda m, a, k: None, prepend = True, with_kwargs = True)
+    decoder.layers[0].register_forward_pre_hook(lambda m, a: None, prepend = True)
+    tables = ("_forward_hooks", "_forward_hooks_with_kwargs", "_forward_hooks_always_called",
+              "_forward_pre_hooks", "_forward_pre_hooks_with_kwargs")
+
+    def orders():
+        return [[list(getattr(m, t, {}).items()) for t in tables] for m in model.modules()]
+
+    before = orders()
+    ids = torch.tensor([[5, 6, 7, 30]])
+    with torch.no_grad():
+        with model.disable_adapter():
+            model(input_ids = ids)
+        assert orders() == before
+        calls.clear()
+        model(input_ids = ids)
+    assert calls == ["prepended", "appended"]
