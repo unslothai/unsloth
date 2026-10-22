@@ -74,8 +74,7 @@ def _scale_embeddings(h, scale):
 
 
 def _softcap_logits(config, logits):
-    # Head transforms a stage never applies: Cohere logit_scale, Granite logits_scaling, Gemma soft
-    # cap.
+    # Head transforms a stage never applies (Cohere, Granite, Gemma soft cap).
     scale = getattr(config, "logit_scale", None)
     if scale is not None and scale != 1:
         logits = logits * scale
@@ -948,8 +947,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
     return total
 
 
-# SPARK_PP_TIME=1 cuda-syncs, which serialises the overlap a pipeline exists to create: an
-# instrumented run is NOT a valid throughput measurement.
+# SPARK_PP_TIME=1 cuda-syncs: not a valid throughput measurement.
 _TRACE = os.environ.get("SPARK_PP_TRACE", "0") == "1"
 
 
@@ -1226,8 +1224,7 @@ def stage_module_cls():
                 )
             self.layers = torch.nn.ModuleList([container[i] for i in layer_ids])
             self.rotary_emb = getattr(owner, "rotary_emb", None)
-            # GPT-J (and GPT-NeoX before transformers 4.48) rotate inside the block from position_ids;
-            # Gemma 2/3 below transformers 4.53 slice a sliding-window mask by cache_position.
+            # GPT-J / old GPT-NeoX need position_ids; old Gemma 2/3 need cache_position.
             block_params = _forward_params(self.layers[0]) if len(self.layers) else set()
             self.pass_position_ids = "position_ids" in block_params
             self.pass_cache_position = "cache_position" in block_params
@@ -1394,8 +1391,7 @@ def stage_module_cls():
     return _STAGE_MODULE_CLS
 
 
-# Valid target tokens in the batch / microbatch count, so the step optimises the full-batch token
-# mean. None = plain mean.
+# Full-batch valid-token count / M, so the step optimises the full-batch token mean. None = plain mean.
 _PP_TOKENS_PER_MICROBATCH = [None]
 
 
@@ -1584,8 +1580,7 @@ SCHEDULES = {
 SCHEDULE_CHOICES = sorted(set(SCHEDULES) | set(TORCH_PP_SCHEDULES))
 PP_BACKENDS = ("torch", "legacy")
 
-# Per-backend --schedule default: gpipe peaked 99.92 GiB vs 7.34 GiB for 1f1b; legacy 1f1b
-# deadlocks.
+# gpipe peaked 99.92 GiB vs 7.34 GiB for 1f1b; legacy 1f1b deadlocks.
 DEFAULT_SCHEDULE = {"torch": "1f1b", "legacy": "gpipe"}
 
 
