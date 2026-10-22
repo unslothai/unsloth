@@ -733,6 +733,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_forked_from "
+        "ON chat_threads(forked_from_thread_id, forked_from_message_id)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
     )
     conn.execute(
@@ -4591,6 +4595,8 @@ class ChatForkActiveGenerationError(RuntimeError):
 
 
 _FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
+# The frontend auto-titles only a chat still named this (runtime-provider generateTitle).
+_DEFAULT_CHAT_TITLE = "New Chat"
 
 # Roles the thread paints a row for. Mirrors threadMessageKind in
 # components/assistant-ui/thread-message-slot.ts, which is pinned from the other side by
@@ -4717,7 +4723,11 @@ def fork_chat_thread(
         # Named from the row this transaction read, under the write lock: a title taken
         # before it could be renamed by another tab, and the number could already be gone.
         base = fork_base_of(src)
-        title = _next_fork_title(conn, base)
+        # An untitled chat's fork stays untitled so its first reply still names it.
+        if base in ("", _DEFAULT_CHAT_TITLE):
+            title, base = _DEFAULT_CHAT_TITLE, None
+        else:
+            title = _next_fork_title(conn, base)
         # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
         # source's timestamps and take fresh ids. The last message that PAINTS one, not simply
         # the last copied: an imported chat can end on a system message, which renders as no row
@@ -4845,6 +4855,24 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
             (thread_id, message_id),
         ).fetchone()
         return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def next_message_created_at(thread_id: str, message_id: str) -> Optional[int]:
+    """created_at of the thread's first message after `message_id`; None when it is the tip."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT MIN(created_at) FROM chat_messages
+            WHERE thread_id = ? AND created_at > (
+                SELECT created_at FROM chat_messages WHERE thread_id = ? AND id = ?
+            )
+            """,
+            (thread_id, thread_id, message_id),
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
     finally:
         conn.close()
 
@@ -5616,6 +5644,31 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
     return merged
 
 
+# A command, not a setting: per model id, the remembered keys dropped before the rest of the patch
+# merges, since a deep merge can only add or overwrite (#14068). Keys, not rows, so a concurrent edit
+# to a key the command does not name survives.
+_FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
+
+
+def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    updates = dict(updates)
+    forget = updates.pop(_FORGET_PARAMS_KEY, None) or {}
+    by_model = current.get("inferenceParamsByModel")
+    if forget and isinstance(by_model, dict):
+        pruned = dict(by_model)
+        for model_id, keys in forget.items():
+            entry = pruned.get(model_id)
+            if not isinstance(entry, dict):
+                continue
+            rest = {k: v for k, v in entry.items() if k not in keys}
+            if rest:
+                pruned[model_id] = rest
+            else:
+                del pruned[model_id]
+        current = {**current, "inferenceParamsByModel": pruned}
+    return _deep_merge_settings(current, updates)
+
+
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
     """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
     cannot drop each other's updates."""
@@ -5638,7 +5691,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
             raise CorruptSettingsError(
                 f"Cannot apply partial settings patch to corrupt key(s): {keys}"
             )
-        merged = _deep_merge_settings(current, updates)
+        merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             """
@@ -5724,7 +5777,7 @@ def upsert_chat_settings_merge_if_current(
             # those timestamps reads as a settings change.
             conn.commit()
             return current, True
-        merged = _deep_merge_settings(current, updates)
+        merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             """

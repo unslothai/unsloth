@@ -2589,6 +2589,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    from unsloth_zoo.device_type import device_is_bf16_supported as _bf16_supported\n"
             "except Exception:\n"
             "    _bf16_supported = torch.cuda.is_bf16_supported\n"
+            "try:\n"
+            "    from unsloth_zoo.device_type import DEVICE_TYPE as _unsloth_device_type\n"
+            "except Exception:\n"
+            "    _unsloth_device_type = None\n"
             # FORCE_FLOAT32 models (Gemma3, gpt_oss) cannot use float16: without bf16 keep float32, with bf16 full finetuning may still autocast. Stamped by from_pretrained, since the env is process wide and a later load would otherwise answer for this trainer.
             "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
             "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
@@ -2629,7 +2633,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
             "    # Mixed precision training. bf16 only if the GPU supports it; V100/T4 use fp16.\n"
-            "    use_bf16_amp = (not float16) and _bf16_supported()\n"
+            # XPU keeps an explicit bf16 model in bf16 (emulated if need be), so autocast follows it.
+            "    use_bf16_amp = (not float16) and (_bf16_supported() or (bfloat16 and _unsloth_device_type == 'xpu'))\n"
             "    args.fp16 = not use_bf16_amp\n"
             "    args.bf16 = use_bf16_amp\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16_amp else 'fp16'\n"

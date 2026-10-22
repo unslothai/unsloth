@@ -12,6 +12,7 @@ import {
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
+import type { ShiftControl } from "./lib/shift-choice";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -83,11 +84,15 @@ export interface DiffusionStatus {
   native_engine_eligible?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
+  // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
+  lora_after_reload?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
+  supports_inpaint_only_masked?: boolean;
   // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
   negative_prompt_min_guidance?: number | null;
   // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
@@ -98,6 +103,10 @@ export interface DiffusionStatus {
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
+  // The Shift override the loaded flow-matching model takes; null/absent = no Shift control.
+  shift_control?: ShiftControl | null;
+  // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
+  textual_inversion?: string | null;
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
@@ -240,6 +249,10 @@ export interface DiffusionGenerateRequest {
   init_image?: string;
   mask_image?: string;
   strength?: number;
+  // Absent = today's behaviour; only_masked is refused (400) unless supports_inpaint_only_masked.
+  mask_blur?: number;
+  inpaint_only_masked?: boolean;
+  inpaint_padding?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
   allow_oversized?: boolean;
@@ -256,6 +269,10 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
+  // `shift` for "sd3", `base_shift` / `max_shift` for "flux"; omitted = the model's own schedule.
+  shift?: number;
+  base_shift?: number;
+  max_shift?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
@@ -347,9 +364,16 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
+  shift?: number | null;
+  base_shift?: number | null;
+  max_shift?: number | null;
+  embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
+  mask_blur?: number | null;
+  inpaint_only_masked?: boolean | null;
+  inpaint_padding?: number | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
@@ -362,7 +386,7 @@ export interface DiffusionGenerateResponse {
   images: GalleryImage[];
 }
 
-async function parseJson<T>(response: Response): Promise<T> {
+export async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(await readFastApiError(response));
   }

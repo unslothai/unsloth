@@ -820,6 +820,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
                 load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
+            from utils.security.file_security import escaping_weight_references
+
+            # Right before the load: the folder may have been edited since the route checked it.
+            lora_base = getattr(mc, "base_model", None) if mc.is_lora else None
+            for folder in (config["model_name"], lora_base):
+                if folder and escaping_weight_references(folder):
+                    raise ValueError("This model's weight index names files outside its folder.")
             success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
