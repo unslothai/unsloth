@@ -149,10 +149,18 @@ def test_auto_keeps_the_5b_dit_bf16_while_it_fits():
     from types import SimpleNamespace
 
     from core.inference.diffusion import _auto_keeps_bf16_reason, _auto_quant_eager_reason
+    from core.inference.diffusion_families import (
+        SMALL_DIT_BF16_WHEN_RESIDENT,
+        small_dit_rule_excludes,
+    )
     from core.inference.diffusion_transformer_quant import auto_bf16_when_resident_reason
 
     fam = _fam()
-    assert "0.049 vs 0.025" in auto_bf16_when_resident_reason("moss-image")
+    assert auto_bf16_when_resident_reason("moss-image") == SMALL_DIT_BF16_WHEN_RESIDENT
+    # Both 5B bases sit inside the rule; only FLUX.2 klein 9B variants are carved out.
+    for base in ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"):
+        assert not small_dit_rule_excludes(base)
+        assert _auto_keeps_bf16_reason(fam, "pipeline", base) is not None
     assert _auto_keeps_bf16_reason(fam, "pipeline") is not None
     assert _auto_keeps_bf16_reason(fam, "gguf") is None
 
