@@ -19,13 +19,11 @@ const FETCHING_TAG =
   /<(?=\/?(?:img|image|picture|source|video|audio|track|input|iframe|frame|embed|object|link|style|svg|use|meta|base|body|table|thead|tbody|tr|td|th)\b)/gi;
 
 // A style rule that could name a resource: CSS functions that load one, or an escape hiding one.
-// A statement can also start after `;`, and a stateDiagram classDef runs to the end of the line, so
-// everything from the keyword to the line's end is checked; the text before it stays.
+// A statement may follow `;`; a stateDiagram classDef runs to end of line, so cut from the keyword on.
 const STYLE_START = /(^|[;\s])[^\S\n]*(?:classDef|style|linkStyle)\b/gi;
 const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import/i;
 const STYLE_FETCHES = new RegExp(STYLE_FETCH.source, "gi");
-// These lexers also take a style statement mid-line after a space (`A --> B classDef x ...`), and
-// their ids may hold brackets, so there every keyword counts.
+// These lexers take a style statement mid-line after a space and allow brackets in ids: every keyword counts.
 const MIDLINE_STYLE = /^[^\S\n]*(?:stateDiagram|erDiagram|block(?:-beta)?|requirementDiagram)\b/im;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
@@ -109,8 +107,7 @@ function withoutRemoteIcon(json: string): string | null {
   return ` ${JSON.stringify(rest)}`;
 }
 
-/** The line cut before its first style statement that could fetch; one pass, labels tracked as it goes.
- *  Elsewhere a statement starts a line or follows `;`, and one inside a quoted or bracketed label is text. */
+/** Outside `midLine` diagrams a statement starts a line or follows `;`; one inside a quoted or bracketed label is text. */
 function withoutFetchingStyle(line: string, midLine: boolean): string {
   let lastFetch = -1;
   for (const found of line.matchAll(STYLE_FETCHES)) lastFetch = found.index;
