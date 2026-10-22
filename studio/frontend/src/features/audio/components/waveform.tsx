@@ -261,12 +261,19 @@ export function PlaybackTime({
   duration: number;
 }) {
   return (
-    <span className="grid shrink-0 justify-items-end font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+    <span className="grid shrink-0 justify-items-end font-mono text-ui-11 tabular-nums text-muted-foreground">
       <span aria-hidden="true" className="invisible col-start-1 row-start-1">
-        {`${formatSeconds(duration)} / ${formatSeconds(duration)}`}
+        {formatSeconds(duration)}
+        <span className="px-0.5">/</span>
+        {formatSeconds(duration)}
       </span>
       <span className="col-start-1 row-start-1">
-        {position > 0 ? `${formatSeconds(position)} / ` : ""}
+        {position > 0 ? (
+          <>
+            {formatSeconds(position)}
+            <span className="px-0.5">/</span>
+          </>
+        ) : null}
         {formatSeconds(duration)}
       </span>
     </span>
@@ -288,7 +295,7 @@ export function WaveformBarGlyphs({
       {Array.from({ length: count }, (_, index) => {
         const peak = peaks ? (peaks[index] ?? 0) : 0;
         // A curve lifts quiet passages off the floor; the floor is a round dot, never a dash.
-        const height = 12 + peak ** 0.7 * 88;
+        const height = 14 + peak ** 0.7 * 86;
         return (
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
@@ -297,12 +304,15 @@ export function WaveformBarGlyphs({
           >
             <span
               className={cn(
-                "w-1/2 min-w-[2px] max-w-[3px] rounded-full bg-current",
+                "w-[4px] max-w-[70%] rounded-full bg-current",
                 isPlayed(index)
                   ? "text-foreground"
-                  : cn("text-muted-foreground", peaks ? "opacity-50" : "opacity-25"),
+                  : cn(
+                      "text-muted-foreground",
+                      peaks ? "opacity-50" : "opacity-25",
+                    ),
               )}
-              style={{ height: `${height}%` }}
+              style={{ height: `max(4px, ${height}%)` }}
             />
           </span>
         );
