@@ -454,13 +454,24 @@ def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):
     cases = [
         _Case(E, N, K, T, topk, "permute_x", torch.bfloat16, seed = 100 * rank + i) for i in range(4)
     ]
+    allreduces = []
+
+    def counting_allreduce(state, bucket):
+        allreduces.append(1)
+        return dist.all_reduce(bucket.buffer(), async_op = True).get_future().then(
+            lambda fut: fut.value()[0].div_(world)
+        )
+
+    ddp.register_comm_hook(None, counting_allreduce)
     for i, case in enumerate(cases):
-        loss = ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean()
+        # The forward runs inside no_sync too: DDP decides at forward time whether to reduce.
         if i < 3:
             with ddp.no_sync():
-                loss.backward()
+                ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean().backward()
         else:
-            loss.backward()
+            assert not allreduces, "a no_sync step reduced gradients"
+            ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean().backward()
+    assert allreduces
     torch.save(
         {"grad": model.w.grad.float().cpu(), "inplace": gg.DW_ACCUMULATE_STATS["inplace"]},
         f"{out_path}.{rank}",
