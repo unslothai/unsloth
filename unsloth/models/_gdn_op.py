@@ -247,8 +247,7 @@ def _self_check(q, k, v, g, beta):
 
 
 def _self_check_varlen(q, k, v, g, beta):
-    """The op on a packed batch (B = 1, uneven cu_seqlens) vs fla's Function: bit-equal outputs,
-    fake metas and grads. Off when the installed fla's fwd / bwd do not take cu_seqlens."""
+    """Packed batch: bit-equal to fla's Function; False if fla's fwd / bwd lack cu_seqlens."""
     if _gdn_chunk is None or not q.is_cuda:
         return False
     fwd, bwd, _, _ = _FLA

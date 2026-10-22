@@ -186,8 +186,7 @@ def _gdn_chunk_adapter(original):
             _GDN_OP[0]
             and torch.compiler.is_compiling()
             and kwargs.get("use_qk_l2norm_in_kernel") is True
-            # The op is the self-checked default: no state, scale, layout or gating flags; a packed
-            # batch (B = 1 + cu_seqlens) only when that layout passed its own self-check.
+            # Only the self-checked default; packed batches only if their self-check passed.
             and (cu_seqlens is None or (_GDN_VARLEN[0] and q.shape[0] == 1))
             and all(
                 value is None or value is False
@@ -569,11 +568,8 @@ _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outsi
 
 
 def _training_flex_options(options):
-    """Blocks run training forwards only. Inductor lowers a query shorter than 128 to the flex
-    decoding kernel, whose tile picks fail there (GQA, head_dim 256: torch 2.14 rejects BLOCK_M 512
-    against SPARSE_Q_BLOCK_SIZE 128, torch 2.10 runs out of shared memory), so short training
-    batches (GRPO completions) demoted every block to the stock forward. The main flex kernel takes
-    any length; a caller's explicit choice is kept."""
+    """Force the main flex kernel: Inductor's decoding kernel for queries < 128 fails to lower
+    (GQA, head_dim 256), demoting every block. A caller's explicit choice is kept."""
     if options is None:
         return {"FORCE_USE_FLEX_ATTENTION": True}
     if isinstance(options, dict) and "FORCE_USE_FLEX_ATTENTION" not in options:
@@ -690,8 +686,7 @@ def _layer_kind(layer):
 
 def _wrap(cls, compile_options):
     original = cls.forward
-    # Unsloth layer forwards read packed lengths / PrefixGrouper segments on the host: those calls
-    # stay stock.
+    # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
     try:
@@ -728,8 +723,7 @@ def _wrap(cls, compile_options):
             or _forced_float32(self)
             or _zero3_partitioned(self)
             or (unsloth_forward and kwargs.get("packed_seq_lengths") is not None)
-            # GRPO PrefixGrouper rides the same route: its segment table (lengths as Python ints)
-            # and block-mask cache are guarded, so a block recompiled at every new GRPO length.
+            # PrefixGrouper's int segment table would recompile at every new GRPO length.
             or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
         ):
             return original(self, hidden_states, *args, **kwargs)

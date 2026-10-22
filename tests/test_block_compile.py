@@ -196,9 +196,7 @@ def test_cache_calls_keep_the_stock_forward(monkeypatch):
 
 @pytest.mark.parametrize("key", ["packed_seq_lengths", "prefix_seg_info"])
 def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
-    """Unsloth's own layer forwards read packed lengths and GRPO PrefixGrouper segment tables on
-    the host; compiled, a block guarded on them and recompiled at every new length (Llama GRPO:
-    9 recompiles in 2 steps, 17 in 6, growing with each new completion length)."""
+    """Host-read packed lengths / PrefixGrouper tables recompiled a block at every new length."""
     M = _load()
     calls = []
 
@@ -569,10 +567,7 @@ def test_block_flex_forces_the_main_kernel(monkeypatch):
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "flex_attention kernels need CUDA")
 def test_block_flex_options_lower_short_gqa_training_queries():
-    """Qwen3.5 GRPO shapes (84 tokens, 8 query / 2 kv heads, head_dim 256): with the options the
-    block hook adds, compiled flex forward + backward lower and match eager. Without them torch
-    2.14 picks the flex decoding kernel and fails to lower it (BLOCK_M 512 vs
-    SPARSE_Q_BLOCK_SIZE 128), torch 2.10 runs out of shared memory."""
+    """Qwen3.5 GRPO shapes: with the block options, compiled flex fwd + bwd lower and match eager."""
     from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
     M = _load()
@@ -604,9 +599,7 @@ def test_block_flex_options_lower_short_gqa_training_queries():
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
 def test_short_gqa_flex_block_stays_compiled():
-    """GRPO-length batches (< 128 tokens) with GQA and head_dim 256 (Qwen3.5): Inductor picked
-    the flex decoding kernel, failed to lower it, and every block fell back to the stock forward
-    (34 graph breaks per GRPO step on Qwen3.5-0.8B)."""
+    """Short GQA head_dim 256 batches used to fail flex decoding lowering and demote every block."""
     pytest.importorskip("unsloth")
     from transformers.models.qwen3 import modeling_qwen3 as modeling
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
@@ -777,8 +770,7 @@ def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
 
 
 def test_gdn_adapter_routes_packed_batches_once_self_checked(monkeypatch):
-    """Padding-free SFT hands fla cu_seqlens; once the op's packed self-check passed, those calls
-    stay in the block (Qwen3.5-0.8B: 99 graph breaks in 4 packed SFT steps before)."""
+    """Packed (cu_seqlens) fla calls stay in the block once the op's packed self-check passed."""
     M = _load()
     seen = []
     monkeypatch.setattr(M, "_GDN_OP", [True])
