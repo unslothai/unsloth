@@ -1152,6 +1152,10 @@ def calibrated_image_activation(
     )
 
 
+DISCRETE_RESERVE_CAP_MIB = 4096
+_ROCM_APU_POOL = "rocm_apu_pool"
+
+
 def _reserve_mib(memory_kind: str, base: int) -> int:
     if memory_kind == METAL_WORKING_SET:
         # Only other apps' growth during the load: the working set already sits below RAM. At least as strict as
@@ -1161,7 +1165,15 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         return max(2048, int(base * 0.20))  # OS + CPU share this pool
     if memory_kind == "system_memory":
         return max(1024, int(base * 0.10))
-    return max(2048, int(base * 0.10))
+    if memory_kind == _ROCM_APU_POOL:
+        # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
+        # keeps the uncapped 10%.
+        return max(2048, int(base * 0.10))
+    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations (the
+    # runtime headroom prices those). 10% of the TOTAL grew with the card: 17.8 GiB on a 178 GiB card, which refused
+    # a resident or companion-split plan on a partly used big card with plenty free. Capped near ComfyUI's fixed
+    # reserve (~1.2 GiB plus its activation estimate); cards up to 40 GiB keep 10% (the 2 GiB floor below 20 GiB).
+    return max(2048, min(int(base * 0.10), DISCRETE_RESERVE_CAP_MIB))
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
@@ -1188,7 +1200,7 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
 def _budget_reserve_kind(memory: DeviceMemory) -> str:
     if getattr(memory, "metal_working_set_mib", None) is not None:
         return METAL_WORKING_SET
-    return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
+    return _ROCM_APU_POOL if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
