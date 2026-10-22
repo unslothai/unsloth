@@ -380,6 +380,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         // Load-only op, or no clear success record: nothing was exported.
         return { ...base, isExporting: false, phase: "idle" as const };
       }
+      // The same object makes zustand skip notifying, so an idle poll re-renders nothing.
+      if (state.hasHydrated && state.backendActive === base.backendActive) {
+        return state;
+      }
       return base;
     }),
 

@@ -33,6 +33,7 @@ import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
 _MIN_TRITON = (3, 2)
@@ -853,7 +854,7 @@ def _device_ok(index: int) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     if (
         not (_triton_version_ok() and _triton_jit_toolchain_ok())
@@ -1061,6 +1062,20 @@ def _resolve_intmm() -> Any:
         if callable(getattr(module, "safe_int_mm", None)):
             return module
     return None
+
+
+def ensure_intmm_module() -> Any:
+    """Resolve and cache ``_INTMM_MODULE`` (idempotent). Must run eagerly, outside any trace: ``int8_linear`` runs on
+    every int8 Linear of a fused attention processor whether or not ``_finalize`` installed anything (an offloaded or
+    not yet resident denoiser), and an ``importlib.import_module`` reached from ``_int_mm`` under ``torch.compile`` is
+    a graph break in every one of them."""
+    global _INTMM_MODULE
+    module = _INTMM_MODULE
+    if module is None:
+        module = _resolve_intmm()
+        if module is not None:
+            _INTMM_MODULE = module
+    return module
 
 
 def _int_mm(a: Any, weight: Any) -> Any:
@@ -1492,7 +1507,7 @@ def resident_cuda_device(module: Any) -> Any:
     """The one CUDA device every parameter of ``module`` lives on (NVIDIA, not ROCm), else None."""
     try:
         import torch
-        if getattr(torch.version, "hip", None):
+        if is_rocm_torch(torch):
             return None
         devices = {p.device for p in module.parameters()}
     except Exception:  # noqa: BLE001
@@ -1562,6 +1577,11 @@ def install(
         _LINEAR_OFF = True
         return 0
     _LINEAR_OFF = False
+    # Before the offload / residency returns: int8_linear (fused attention processors) runs either way.
+    try:
+        ensure_intmm_module()
+    except Exception:  # noqa: BLE001 - _int_mm resolves on its own
+        pass
     if transformer is None or offload_active:
         return 0
     if resident_cuda_device(transformer) is not None:
@@ -1612,7 +1632,9 @@ def _has_eligible(transformer: Any) -> bool:
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
-    global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE
+    global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES
+    # Before every early return below: an offloaded denoiser keeps int8_linear in its attention processors.
+    intmm = ensure_intmm_module()
     dev = resident_cuda_device(transformer)
     cards: tuple = ()
     if dev is None:
@@ -1623,12 +1645,10 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     # Before the probe: it compiles and launches both Triton kernels, pure latency for a bf16 / fp16 model.
     if not _has_eligible(transformer):
         return 0
-    intmm = _resolve_intmm()
     if (
         intmm is None
     ):  # an int8 GEMM home this file does not know: keep the stock path rather than fail the render
         return 0
-    _INTMM_MODULE = intmm
     import torch
 
     if cards:

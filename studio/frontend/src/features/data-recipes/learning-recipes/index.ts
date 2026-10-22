@@ -23,6 +23,10 @@ const githubSupportBotUrl = new URL(
   "./github-support-bot.json",
   import.meta.url,
 ).href;
+const booksAndDocumentsUrl = new URL(
+  "./books-and-documents.json",
+  import.meta.url,
+).href;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -147,5 +151,12 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Crawl real GitHub issues and PRs and turn each thread into a {User, Assistant} training pair.",
     loadPayload: () => loadPayloadFromUrl(githubSupportBotUrl),
+  },
+  {
+    id: "books-and-documents",
+    title: "Books & Documents to Text",
+    description:
+      "Extract ebooks, PDFs and Office files into a text dataset for continued pretraining.",
+    loadPayload: () => loadPayloadFromUrl(booksAndDocumentsUrl),
   },
 ];
