@@ -13,6 +13,7 @@ __all__ = [
     "unsloth_fsdp2_requested",
     "unsloth_fsdp2_native_requested",
     "non_cuda_install",
+    "reclaim_native_fsdp2_for_cpu_trainer",
     "fsdp_version_from_env",
     "apply_unsloth_fsdp2_launch_env",
     "NATIVE_BACKEND_TABLE",
@@ -59,12 +60,59 @@ def unsloth_fsdp2_native_requested():
         )
     if backend == "" and _env_flag("ACCELERATE_USE_FSDP"):
         return False
-    if backend == "" and non_cuda_install() is not None:
+    if _non_cuda_accelerate_route() is not None:
         # Native FSDP2 runs on CUDA / ROCm or the CPU. On an XPU / NPU / HPU / ... install,
         # UNSLOTH_FSDP2=1 keeps accelerate's FSDP2 wrap, as it did before the native backend existed;
-        # an explicit UNSLOTH_FSDP2_BACKEND=native is still refused (refuse_native_backend_conflicts).
+        # an explicit native request (UNSLOTH_FSDP2=native or UNSLOTH_FSDP2_BACKEND=native) stays
+        # native and is refused when that device is present (refuse_native_backend_conflicts).
         return False
     return True
+
+
+# apply_unsloth_fsdp2_launch_env sets these when it exports accelerate's FSDP2 env only because this is
+# a non-CUDA install: {key: value before}, so Trainer setup can hand a CPU Trainer back to native FSDP2.
+_NON_CUDA_EXPORT = None
+_CPU_TRAINER = False
+
+
+def _non_cuda_accelerate_route():
+    """The non_cuda_install() label when the generic UNSLOTH_FSDP2=1 request (no explicit native pick,
+    no `accelerate launch` FSDP config) goes to accelerate's FSDP2, else None."""
+    if not _env_flag("UNSLOTH_FSDP2") or _env_value("UNSLOTH_FSDP2_BACKEND") != "":
+        return None
+    if _env_flag("ACCELERATE_USE_FSDP"):
+        return None
+    return non_cuda_install()
+
+
+def _trainer_args_use_cpu(training_args):
+    return bool(
+        getattr(training_args, "use_cpu", False) or getattr(training_args, "no_cuda", False)
+    )
+
+
+def reclaim_native_fsdp2_for_cpu_trainer(training_args):
+    """TrainingArguments(use_cpu = True) (or `no_cuda`) on a non-CUDA install whose launch step routed
+    UNSLOTH_FSDP2=1 to accelerate's FSDP2: accelerate runs that Trainer as MULTI_CPU, which never builds
+    its FSDP plugin (accelerate/state.py AcceleratorState.__init__), so the sharding would be lost. Undo
+    the exported env before the Accelerator exists and let native FSDP2 shard on the gloo CPU mesh, as
+    it does for the same Trainer on a CUDA install. True when native FSDP2 now applies."""
+    global _NON_CUDA_EXPORT, _CPU_TRAINER
+    if _NON_CUDA_EXPORT is None or not _trainer_args_use_cpu(training_args):
+        return False
+    for key, value in _NON_CUDA_EXPORT.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    _NON_CUDA_EXPORT = None
+    _CPU_TRAINER = True
+    if str(os.environ.get("RANK", "0")).strip() in ("", "0"):
+        print(
+            "Unsloth: UNSLOTH_FSDP2=1 with TrainingArguments(use_cpu = True): native FSDP2 shards the "
+            "model on the CPU (accelerate's FSDP2 does not run on a CPU launch)."
+        )
+    return unsloth_fsdp2_native_requested()
 
 
 def _torch_build():
@@ -74,7 +122,9 @@ def _torch_build():
     torch = sys.modules.get("torch")
     version = getattr(torch, "version", None) if torch is not None else None
     if version is not None:
-        return {name: getattr(version, name, None) for name in ("cuda", "hip", "xpu")}
+        build = {name: getattr(version, name, None) for name in ("cuda", "hip", "xpu")}
+        label = getattr(version, "__version__", None) or getattr(torch, "__version__", None)
+        return _xpu_from_label(build, label)
     try:
         spec = importlib.util.find_spec("torch")
     except (ImportError, ValueError):
@@ -86,14 +136,22 @@ def _torch_build():
         except OSError:
             continue
         build = {}
-        for name in ("cuda", "hip", "xpu"):
+        for name in ("cuda", "hip", "xpu", "__version__"):
             match = re.search(rf"^{name}\s*(?::[^=\n]*)?=\s*(.+?)\s*$", source, re.M)
             try:
                 build[name] = ast.literal_eval(match.group(1)) if match else None
             except (ValueError, SyntaxError):
                 build[name] = None
-        return build
+        return _xpu_from_label(build, build.pop("__version__"))
     return None
+
+
+def _xpu_from_label(build, label):
+    """A `+xpu` wheel can ship torch.version.xpu = None (and torch < 2.7 has no xpu attribute at all):
+    the version label is then the only build marker, read the same way with and without torch."""
+    if not build.get("xpu") and "+xpu" in str(label or "").lower():
+        build["xpu"] = str(label)
+    return build
 
 
 def non_cuda_install():
@@ -101,7 +159,7 @@ def non_cuda_install():
     NATIVE_BACKEND_TABLE device row), from the torch build and the installed vendor packages only, so
     every rank and every call agrees; None on a CUDA / ROCm torch build, for a CPU launch
     (ACCELERATE_USE_CPU), or when nothing matches."""
-    if _env_flag("ACCELERATE_USE_CPU"):
+    if _CPU_TRAINER or _env_flag("ACCELERATE_USE_CPU"):
         return None
     build = _torch_build()
     if not build or build.get("cuda") or build.get("hip"):
@@ -360,15 +418,32 @@ def refuse_native_backend_conflicts(training_args = None, uses_cpu = None):
     found = native_backend_conflicts(training_args, uses_cpu)
     if found:
         what = "; ".join(f"{label} ({', '.join(reasons)})" for _, label, reasons in found)
+        devices = {row["type"] for row in NATIVE_BACKEND_TABLE if "device" in row}
+        hint = ""
+        if any(kind in devices for kind, _, _ in found):
+            hint = (
+                " For accelerate's FSDP2 on this device, set UNSLOTH_FSDP2=1 without a native pick "
+                "(or UNSLOTH_FSDP2_BACKEND=accelerate)."
+            )
         raise RuntimeError(
             "Unsloth: UNSLOTH_FSDP2=1 shards the model with native FSDP2 (CUDA / ROCm, or the CPU), "
-            f"which cannot run under {what}. Drop that backend, or unset UNSLOTH_FSDP2."
+            f"which cannot run under {what}. Drop that backend, or unset UNSLOTH_FSDP2.{hint}"
         )
+
+
+_LAUNCH_EXPORTS = (
+    "ACCELERATE_USE_FSDP",
+    "FSDP_VERSION",
+    "FSDP_AUTO_WRAP_POLICY",
+    "FSDP_RESHARD_AFTER_FORWARD",
+    "FSDP_STATE_DICT_TYPE",
+)
 
 
 def apply_unsloth_fsdp2_launch_env():
     """UNSLOTH_FSDP2=1 with WORLD_SIZE > 1: export what `accelerate launch` exports for an FSDP2
     config (explicit FSDP_* values win). Must run before transformers / accelerate read the env."""
+    global _NON_CUDA_EXPORT
     if not unsloth_fsdp2_requested() or _env_world_size() <= 1:
         return False
     if unsloth_fsdp2_native_requested():
@@ -392,14 +467,13 @@ def apply_unsloth_fsdp2_launch_env():
         raise RuntimeError(
             "Unsloth: UNSLOTH_FSDP2=1 was set on a DeepSpeed launch. Unset one of them."
         )
-    device = None
-    if _env_value("UNSLOTH_FSDP2_BACKEND") == "" and not _env_flag("ACCELERATE_USE_FSDP"):
-        device = non_cuda_install()
+    device = _non_cuda_accelerate_route()
     if device is not None and str(os.environ.get("RANK", "0")).strip() in ("", "0"):
         print(
             f"Unsloth: UNSLOTH_FSDP2=1 with {device} (not a CUDA / ROCm torch build): native FSDP2 "
             "runs on CUDA / ROCm or the CPU, so accelerate's FSDP2 shards the model."
         )
+    before = {key: os.environ.get(key) for key in _LAUNCH_EXPORTS}
     version = str(os.environ.get("FSDP_VERSION", "")).strip()
     if version not in ("", "2"):
         raise ValueError(
@@ -422,4 +496,8 @@ def apply_unsloth_fsdp2_launch_env():
             "false" if reshard.strip().lower() in _FALSY else "true",
         )
     os.environ.setdefault("FSDP_STATE_DICT_TYPE", "FULL_STATE_DICT")
+    if device is not None:
+        _NON_CUDA_EXPORT = {
+            key: value for key, value in before.items() if os.environ.get(key) != value
+        }
     return True
