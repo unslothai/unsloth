@@ -21373,9 +21373,10 @@ class LlamaCppBackend:
 
         from utils.models.model_config import mmproj_f16_unsafe, mmproj_order
 
-        order = mmproj_order(hf_repo)
+        names = (hf_repo, Path(near_path).name if near_path else None)
+        order = mmproj_order(*names)
         # A cached MiMo-VL F16 projector is the broken one, so do not reuse it.
-        f16_unsafe = mmproj_f16_unsafe(hf_repo)
+        f16_unsafe = any(mmproj_f16_unsafe(n) for n in names)
         outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,

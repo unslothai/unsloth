@@ -2385,8 +2385,8 @@ def detect_mmproj_file(
         scored,
         key = lambda sc: (
             sc[0],
-            mmproj_order_rank(sc[1].name, order) if order else 0,
             _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
+            mmproj_order_rank(sc[1].name, order) if order else 0,
             -len(sc[1].stem),
         ),
     )

@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import threading
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Optional
 
@@ -1302,6 +1302,10 @@ def _run_claimed_job(phases: list[dict]) -> None:
             )
     finally:
         _operation_lock.release()
+        # The projector precision follows the installed backend.
+        with suppress(Exception):
+            from utils.models.model_config import device_mmproj_precision
+            device_mmproj_precision.cache_clear()
 
 
 def _start_llama_job(backend_request: Optional[str] = None) -> dict:

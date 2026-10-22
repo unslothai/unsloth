@@ -245,3 +245,37 @@ def test_download_bf16_device_keeps_cached_reuse(device):
     seen = _download_mmproj_call("unsloth/Qwen2.5-VL-7B-Instruct-GGUF")
     assert seen["reuse_snapshot_sibling"] is True
     assert seen["pick"](QWEN_LISTING) == "mmproj-BF16.gguf"
+
+
+def test_local_folder_pairs_the_checkpoint_before_precision(device, tmp_path):
+    device("bf16")
+    listing = [
+        "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        "mmproj-Qwen2.5-VL-7B-Instruct-F16.gguf",
+        "mmproj-Qwen2-VL-2B-Instruct-BF16.gguf",
+    ]
+    assert _local_pick(tmp_path, listing) == "mmproj-Qwen2.5-VL-7B-Instruct-F16.gguf"
+
+
+def test_download_detects_mimo_vl_from_the_weight_name(device):
+    backend = object.__new__(LlamaCppBackend)
+    backend._cancel_event = threading.Event()
+    seen = {}
+    backend._download_companion_gguf = lambda **kw: seen.update(kw)
+    backend._download_mmproj(
+        hf_repo = "someone/vision-gguf", near_path = "/c/snap/MiMo-VL-7B-RL-Q4_K_M.gguf"
+    )
+    assert seen["reuse_snapshot_sibling"] is False
+    assert seen["pick"](MIMO_LISTING) == "mmproj-BF16.gguf"
+
+
+def test_llama_update_job_clears_the_device_precision(monkeypatch):
+    from utils import llama_cpp_update as upd
+
+    monkeypatch.setattr(upd._flow, "run_chained_update", lambda *a, **k: None)
+    device_mmproj_precision.cache_clear()
+    device_mmproj_precision()
+    assert device_mmproj_precision.cache_info().currsize == 1
+    upd._operation_lock.acquire()
+    upd._run_claimed_job([])
+    assert device_mmproj_precision.cache_info().currsize == 0
