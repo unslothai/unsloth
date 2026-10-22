@@ -156,8 +156,8 @@ ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
 # for the next call before it is dropped; 0 never parks.
 ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
 PARK_SECONDS = 600.0
-# The parked copy is one page-locked (pinned) host buffer, so moving it back is a DMA a busy CPU does not slow down;
-# "0" keeps it pageable.
+# "1" makes the parked copy one page-locked (pinned) host buffer: moving it back is then a DMA (0.03 s for SAM 3.1
+# INT8 against ~0.6 s pageable), but page-locking 1.7 GB took minutes on a loaded host, so it is opt-in.
 ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
@@ -1026,7 +1026,7 @@ def _free_device_cache(device: Optional[str]) -> None:
 
 
 class _HostWeights:
-    """The parked model's weights as one host buffer (pinned unless ENV_PARK_PIN is "0") and, on the device, one
+    """The parked model's weights as one host buffer (pinned when ENV_PARK_PIN is "1") and, on the device, one
     storage that every weight tensor views. Moving ~1,500 separate tensors costs one device allocation each (after
     the cache is emptied, a cudaMalloc each), which on a busy host is slower than reading the file again; with one
     storage, park is a single device-to-host copy and a free, and unpark a single allocation and host-to-device copy.
@@ -1384,7 +1384,7 @@ class MaskSegmenter:
                 self._timer = None
         started = time.perf_counter()
         model = self._model
-        host = self._host or _HostWeights(pin = (os.environ.get(ENV_PARK_PIN) or "1").strip() != "0")
+        host = self._host or _HostWeights(pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1")
         try:
             host.park(model)
         except Exception as exc:  # noqa: BLE001 -- a module that will not move is simply unloaded
