@@ -11515,6 +11515,18 @@ class LlamaCppBackend:
         )
         selected = None
         override = self._effective_device_ids(extra_args, env)
+        # An RPC device is a model device without mmap: named in the list, or every
+        # --rpc server when no list narrows them away (llama.cpp puts them first).
+        _src_env = os.environ if env is None else env
+        if (
+            any(str(d).strip().lower().startswith("rpc") for d in override)
+            if override is not None
+            else bool(
+                (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+                or str(_src_env.get("LLAMA_ARG_RPC", "")).strip()
+            )
+        ):
+            return True
         if override is not None:
             gpu_names = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
             ordinals = [self._device_ordinal(d) for d in gpu_names]

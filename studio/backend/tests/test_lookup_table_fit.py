@@ -684,3 +684,32 @@ def test_an_inherited_projector_on_a_mac_keeps_the_table_streamed(name):
     )
     assert backend._apple_lazy_flags == []
     assert got == FLASH_NEXT_PLE
+
+
+@pytest.mark.parametrize(
+    "extra_args, env, off",
+    [
+        (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0,RPC0"], {}, True),
+        (["--rpc", "10.0.0.2:50052"], {}, True),
+        ([], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}, True),
+        # A list that leaves the RPC server out keeps the local rule.
+        (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0"], {}, False),
+        ([], {}, False),
+    ],
+)
+def test_an_rpc_model_device_turns_lazy_auto_off(extra_args, env, off):
+    """RPC devices have no mmap, so upstream's auto reads the table resident with one in
+    the model devices (ggml-org/llama.cpp#29932)."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    got = backend._lazy_auto_resolves_off(
+        gpu_indices = [0],
+        detected_gpus = [(0, 24_000)],
+        shared_gpu_ids = set(),
+        is_vulkan_backend = True,
+        probe_integrated_cuda = False,
+        extra_args = extra_args,
+        env = env,
+    )
+    assert got is off
