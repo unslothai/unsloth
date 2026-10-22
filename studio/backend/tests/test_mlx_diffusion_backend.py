@@ -579,7 +579,9 @@ _GIB = 1024**3
         (2048, 20.0, True),
     ],
 )
-def test_vae_tiling_engages_only_when_the_untiled_decode_does_not_fit(monkeypatch, side, free_gib, tiled):
+def test_vae_tiling_engages_only_when_the_untiled_decode_does_not_fit(
+    monkeypatch, side, free_gib, tiled
+):
     monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
     assert mb.vae_tiling_needed(side, side, int(free_gib * _GIB)) is tiled
 
@@ -599,8 +601,12 @@ def test_untiled_decode_estimate_matches_the_metal_measurements():
     assert abs(mb.untiled_decode_bytes(1024, 1024) / _GIB - 6.64) < 0.05
 
 
-@pytest.mark.parametrize("free_gib, implicit, expected", [(2.0, True, True), (40.0, True, False), (2.0, False, False)])
-def test_the_runtime_sets_mfluxs_tiling_config_per_generation(monkeypatch, free_gib, implicit, expected):
+@pytest.mark.parametrize(
+    "free_gib, implicit, expected", [(2.0, True, True), (40.0, True, False), (2.0, False, False)]
+)
+def test_the_runtime_sets_mfluxs_tiling_config_per_generation(
+    monkeypatch, free_gib, implicit, expected
+):
     pytest.importorskip("mlx.core")
     tiling = pytest.importorskip("mflux.models.common.vae.tiling_config")
     pytest.importorskip("mflux.utils.exceptions")
@@ -644,6 +650,17 @@ def test_the_runtime_sets_mfluxs_tiling_config_per_generation(monkeypatch, free_
     assert image == "png"
     assert isinstance(seen["tiling_config"], tiling.TilingConfig) is expected
     assert runtime.vae_tiled() is expected
+
+
+def test_a_new_load_does_not_report_the_previous_models_tiled_decode(env):
+    backend, runtime, _calls = env
+    assert _load(backend)["phase"] == "ready"
+    # The previous model's last generation tiled its decode.
+    runtime.last_vae_tiled = True
+    assert backend.status()["vae_tiling"] is True
+    backend.unload()
+    assert _load(backend)["phase"] == "ready"
+    assert backend.status()["vae_tiling"] is False
 
 
 def test_importing_the_engine_does_not_import_mlx():

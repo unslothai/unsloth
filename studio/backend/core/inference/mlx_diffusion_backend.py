@@ -888,6 +888,9 @@ class MlxDiffusionBackend:
             if _cancel_event.is_set():
                 return
             building = True
+            # The runtime outlives its models: the last decode's tiling belongs to the model it ran on.
+            if hasattr(runtime, "last_vae_tiled"):
+                runtime.last_vae_tiled = False
             model = runtime.build(
                 str(out_dir),
                 model_config = model_config,
