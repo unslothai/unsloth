@@ -9,8 +9,7 @@ from typing import Optional
 
 import typer
 
-# Why this exists: /usr/local/cuda/bin is on PATH only in login shells, so ssh ranks diverged and
-# hung in a collective.
+# /usr/local/cuda/bin is on PATH only in login shells, so ssh ranks diverged and hung.
 
 PARITY_SKIP = (
     "host",
