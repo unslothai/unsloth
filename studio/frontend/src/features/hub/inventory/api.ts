@@ -112,6 +112,8 @@ export interface LocalModelInfo {
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
   source: LocalSource;
+  /** Name the user gave the custom scan folder this row came from. */
+  source_label?: string | null;
   model_id?: string | null;
   active_cache?: boolean | null;
   base_model?: string | null;
@@ -193,6 +195,8 @@ export interface ScanFolderInfo {
   recursive?: boolean;
   /** Result of the last scan. Absent on older backends, which means "ok". */
   status?: ScanFolderStatus;
+  /** User-chosen display name, shown in place of "Custom folder". */
+  label?: string | null;
 }
 
 export interface GgufVariantDetail {
@@ -487,11 +491,27 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
 export async function addScanFolder(
   path: string,
   recursive?: boolean,
+  label?: string,
 ): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/hub/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, recursive }),
+    body: JSON.stringify({ path, recursive, label }),
+  });
+  const folder = await parseJsonOrThrow<ScanFolderInfo>(response);
+  bumpInventoryVersion();
+  return folder;
+}
+
+/** Renames a scan folder; a blank label clears the name. */
+export async function renameScanFolder(
+  id: number,
+  label: string,
+): Promise<ScanFolderInfo> {
+  const response = await authFetch(`/api/hub/scan-folders/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
   });
   const folder = await parseJsonOrThrow<ScanFolderInfo>(response);
   bumpInventoryVersion();

@@ -24,3 +24,11 @@ test("every known local source has its own label, not the generic fallback", () 
     );
   }
 });
+
+test("a named custom folder shows its name in place of the generic label", () => {
+  assert.equal(localSourceLabel("custom", "Jan"), "Jan");
+  assert.equal(localSourceLabel("custom", "  "), "Custom folder");
+  assert.equal(localSourceLabel("custom", null), "Custom folder");
+  // Only custom rows carry a user-chosen name; a built-in source keeps its own.
+  assert.equal(localSourceLabel("lmstudio", "Jan"), "LM Studio");
+});

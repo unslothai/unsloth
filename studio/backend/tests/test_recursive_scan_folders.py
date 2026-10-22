@@ -165,7 +165,13 @@ def test_an_existing_table_gains_the_column(tmp_path):
     conn.close()
     rows = studio_db.list_scan_folders()
     assert rows == [
-        {"id": 1, "path": str(tmp_path), "created_at": "2026-01-01", "recursive": False}
+        {
+            "id": 1,
+            "path": str(tmp_path),
+            "created_at": "2026-01-01",
+            "recursive": False,
+            "label": None,
+        }
     ]
 
 

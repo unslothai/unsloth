@@ -24,6 +24,7 @@ import {
   formatBytes,
   listScanFolders,
   removeScanFolder,
+  renameScanFolder,
   scanFolderStatusCopy,
 } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
@@ -48,6 +49,7 @@ import {
   FolderExportIcon,
   FolderOpenIcon,
   FolderSearchIcon,
+  PencilEdit02Icon,
   PlusSignIcon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
@@ -62,6 +64,9 @@ function pathTail(path: string): string {
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+// Matches the backend's SCAN_FOLDER_LABEL_MAX_LENGTH.
+const FOLDER_LABEL_MAX_LENGTH = 40;
 
 function formatFreeSpace(bytes: number | null): string | null {
   if (bytes === null || !Number.isFinite(bytes)) return null;
@@ -79,13 +84,17 @@ export function OnDeviceFoldersDialog({
 }) {
   const [folders, setFolders] = useState<ScanFolderInfo[]>([]);
   const [path, setPath] = useState("");
+  const [label, setLabel] = useState("");
   const [recursive, setRecursive] = useState(false);
+  const [editing, setEditing] = useState<{ id: number; value: string } | null>(
+    null,
+  );
   const [browserOpen, setBrowserOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState<"add" | `remove:${number}` | null>(
-    null,
-  );
+  const [pending, setPending] = useState<
+    "add" | `remove:${number}` | `rename:${number}` | null
+  >(null);
   const refreshIdRef = useRef(0);
   const mutationVersionRef = useRef(0);
   const [downloadCache, setDownloadCache] =
@@ -199,8 +208,13 @@ export function OnDeviceFoldersDialog({
       setPending("add");
       setError(null);
       try {
-        const folder = await addScanFolder(nextPath, recursive);
+        const folder = await addScanFolder(
+          nextPath,
+          recursive,
+          label.trim() || undefined,
+        );
         setPath("");
+        setLabel("");
         mutationVersionRef.current += 1;
         setFolders((current) => {
           const withoutDuplicate = current.filter(
@@ -220,7 +234,7 @@ export function OnDeviceFoldersDialog({
         setPending(null);
       }
     },
-    [handleInventoryChanged, pending, recursive],
+    [handleInventoryChanged, label, pending, recursive],
   );
 
   const isOwner = useIsAccountOwner();
@@ -229,6 +243,33 @@ export function OnDeviceFoldersDialog({
     if (picked === undefined) setBrowserOpen(true);
     else if (picked) await handleAdd(picked);
   }, [handleAdd, isOwner]);
+
+  const handleRename = useCallback(async () => {
+    if (!editing || pending) return;
+    const folder = folders.find((row) => row.id === editing.id);
+    const nextLabel = editing.value.trim();
+    if (!folder || nextLabel === (folder.label ?? "")) {
+      setEditing(null);
+      return;
+    }
+    setPending(`rename:${folder.id}`);
+    setError(null);
+    try {
+      const renamed = await renameScanFolder(folder.id, nextLabel);
+      mutationVersionRef.current += 1;
+      setFolders((current) =>
+        current.map((row) => (row.id === renamed.id ? renamed : row)),
+      );
+      setEditing(null);
+      handleInventoryChanged();
+    } catch (err) {
+      const message = formatError(err);
+      setError(message);
+      toast.error("Couldn't rename location", { description: message });
+    } finally {
+      setPending(null);
+    }
+  }, [editing, folders, handleInventoryChanged, pending]);
 
   // Scan folders are arbitrary paths that may be moved or deleted after they
   // were registered, so surface the command's failure as a toast.
@@ -426,6 +467,19 @@ export function OnDeviceFoldersDialog({
                   </Button>
                 </div>
               </div>
+              <Input
+                value={label}
+                onChange={(event) => setLabel(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  void handleAdd(path);
+                }}
+                maxLength={FOLDER_LABEL_MAX_LENGTH}
+                aria-label="Location name"
+                placeholder="Name (optional), e.g. Jan or GPT4All"
+                className="field-soft mt-2 h-9 rounded-full px-3 text-ui-12 sm:max-w-[calc(280px*var(--ui-space-scale,1))]"
+              />
               <div className="mt-2 flex items-center gap-2">
                 <Checkbox
                   id="scan-folder-recursive"
@@ -497,6 +551,8 @@ export function OnDeviceFoldersDialog({
                 ) : (
                   sortedFolders.map((folder) => {
                     const removing = pending === `remove:${folder.id}`;
+                    const renaming = pending === `rename:${folder.id}`;
+                    const isEditing = editing?.id === folder.id;
                     const problem = scanFolderStatusCopy(folder.status);
                     return (
                       <div
@@ -504,8 +560,8 @@ export function OnDeviceFoldersDialog({
                         className={cn(
                           "grid min-h-12 w-full items-center gap-3 border-b border-border/50 px-3 py-2 last:border-b-0",
                           isTauri
-                            ? "grid-cols-[2rem_minmax(0,1fr)_2rem_2rem]"
-                            : "grid-cols-[2rem_minmax(0,1fr)_2rem]",
+                            ? "grid-cols-[2rem_minmax(0,1fr)_2rem_2rem_2rem]"
+                            : "grid-cols-[2rem_minmax(0,1fr)_2rem_2rem]",
                         )}
                       >
                         <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">
@@ -516,12 +572,42 @@ export function OnDeviceFoldersDialog({
                           />
                         </div>
                         <div className="min-w-0 overflow-hidden">
-                          <p
-                            className="block w-full truncate text-ui-12p5 font-medium text-foreground"
-                            title={pathTail(folder.path)}
-                          >
-                            {pathTail(folder.path)}
-                          </p>
+                          {isEditing ? (
+                            <Input
+                              autoFocus={true}
+                              value={editing.value}
+                              onChange={(event) =>
+                                setEditing({
+                                  id: folder.id,
+                                  value: event.target.value,
+                                })
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  void handleRename();
+                                } else if (event.key === "Escape") {
+                                  // Leave the dialog open: Escape only cancels the rename.
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  setEditing(null);
+                                }
+                              }}
+                              onBlur={() => void handleRename()}
+                              disabled={renaming}
+                              maxLength={FOLDER_LABEL_MAX_LENGTH}
+                              aria-label={`Name for ${folder.path}`}
+                              placeholder={pathTail(folder.path)}
+                              className="field-soft h-7 rounded-full px-2.5 text-ui-12p5"
+                            />
+                          ) : (
+                            <p
+                              className="block w-full truncate text-ui-12p5 font-medium text-foreground"
+                              title={folder.label || pathTail(folder.path)}
+                            >
+                              {folder.label || pathTail(folder.path)}
+                            </p>
+                          )}
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
                               <p className="block w-full truncate font-mono text-ui-10p5 text-muted-foreground">
@@ -549,6 +635,38 @@ export function OnDeviceFoldersDialog({
                             </p>
                           ) : null}
                         </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild={true}>
+                            <button
+                              type="button"
+                              aria-label={`Rename ${folder.path}`}
+                              onClick={() =>
+                                setEditing({
+                                  id: folder.id,
+                                  value: folder.label ?? "",
+                                })
+                              }
+                              disabled={pending !== null || isEditing}
+                              className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                            >
+                              {renaming ? (
+                                <Spinner className="size-3.5" />
+                              ) : (
+                                <HugeiconsIcon
+                                  icon={PencilEdit02Icon}
+                                  strokeWidth={1.75}
+                                  className="size-4"
+                                />
+                              )}
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="left"
+                            className="tooltip-compact"
+                          >
+                            Rename
+                          </TooltipContent>
+                        </Tooltip>
                         {isTauri ? (
                           <Tooltip>
                             <TooltipTrigger asChild={true}>

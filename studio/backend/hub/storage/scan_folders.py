@@ -14,7 +14,11 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from storage.studio_db import get_connection
+from storage.studio_db import (
+    get_connection,
+    normalize_scan_folder_label,
+    update_scan_folder_label,
+)
 from hub.utils.paths import normalize_path
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
 from utils.paths.path_utils import macos_volume_ignores_case
@@ -129,17 +133,22 @@ def list_scan_folders() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at"
+            "SELECT id, path, created_at, recursive, label FROM scan_folders ORDER BY created_at"
         ).fetchall()
         return [{**dict(row), "recursive": bool(row["recursive"])} for row in rows]
     finally:
         conn.close()
 
 
-def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tuple[dict, bool]:
+def add_scan_folder_with_status(
+    path: str,
+    recursive: bool | None = None,
+    label: str | None = None,
+) -> tuple[dict, bool]:
     """Add a readable scan folder and return its row plus whether it was inserted."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
+    stored_label = normalize_scan_folder_label(label)
     normalized = os.path.realpath(os.path.expanduser(normalize_path(path.strip())))
 
     if not os.path.exists(normalized):
@@ -171,38 +180,44 @@ def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tup
         now = datetime.now(timezone.utc).isoformat()
         if is_win:
             existing = conn.execute(
-                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE",
+                "SELECT id, path, created_at, recursive, label FROM scan_folders WHERE path = ? COLLATE NOCASE",
                 (normalized,),
             ).fetchone()
         else:
             existing = conn.execute(
-                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?",
+                "SELECT id, path, created_at, recursive, label FROM scan_folders WHERE path = ?",
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            # None keeps the stored flag, so a re-add from export registration never resets it.
-            if recursive is None or bool(existing["recursive"]) == recursive:
+            # None keeps the stored value, so a re-add from export registration never resets it.
+            updates: dict = {}
+            if recursive is not None and bool(existing["recursive"]) != recursive:
+                updates["recursive"] = int(recursive)
+            if label is not None and existing["label"] != stored_label:
+                updates["label"] = stored_label
+            if not updates:
                 return dict(existing), False
+            assignments = ", ".join(f"{column} = ?" for column in updates)
             conn.execute(
-                "UPDATE scan_folders SET recursive = ? WHERE id = ?",
-                (int(recursive), existing["id"]),
+                f"UPDATE scan_folders SET {assignments} WHERE id = ?",
+                (*updates.values(), existing["id"]),
             )
             conn.commit()
-            return {**dict(existing), "recursive": int(recursive)}, True
+            return {**dict(existing), **updates}, True
         inserted = False
         try:
             conn.execute(
-                "INSERT INTO scan_folders (path, created_at, recursive) VALUES (?, ?, ?)",
-                (normalized, now, int(bool(recursive))),
+                "INSERT INTO scan_folders (path, created_at, recursive, label) VALUES (?, ?, ?, ?)",
+                (normalized, now, int(bool(recursive)), stored_label),
             )
             conn.commit()
             inserted = True
         except sqlite3.IntegrityError:
             pass
         fallback_sql = (
-            "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE"
+            "SELECT id, path, created_at, recursive, label FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
-            else "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?"
+            else "SELECT id, path, created_at, recursive, label FROM scan_folders WHERE path = ?"
         )
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
@@ -212,9 +227,13 @@ def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tup
         conn.close()
 
 
-def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
+def add_scan_folder(
+    path: str,
+    recursive: bool | None = None,
+    label: str | None = None,
+) -> dict:
     """Add a readable directory for the local OS user; not a multi-user sandbox."""
-    row, _ = add_scan_folder_with_status(path, recursive)
+    row, _ = add_scan_folder_with_status(path, recursive, label)
     return row
 
 

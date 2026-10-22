@@ -433,7 +433,8 @@ export function TrainModelSelector({
           .map((row) =>
             toLocalTrainModelDeviceItem(
               row,
-              t(localModelSourceLabelKey(row.source)),
+              (row.source === "custom" && row.folderLabel) ||
+                t(localModelSourceLabelKey(row.source)),
             ),
           ),
       ].sort(compareTrainModelDeviceItems),

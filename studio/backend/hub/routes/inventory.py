@@ -46,6 +46,7 @@ from hub.schemas.inventory import (
     RemoveScanFolderResponse,
     ScanFolderInfo,
     ScanFoldersResponse,
+    UpdateScanFolderRequest,
 )
 from hub.services.models import (
     cache_inventory,
@@ -119,13 +120,24 @@ def add_scan_folder_endpoint(
     # a relative one anchored) cannot answer for the host. Inside the try, since an exception
     # raised while evaluating an argument never reaches the function it was passed to.
     try:
-        payload = local_inventory.add_scan_folder_response(body.path, body.recursive)
+        payload = local_inventory.add_scan_folder_response(body.path, body.recursive, body.label)
     except HTTPException as error:
         raise HTTPException(
             status_code = error.status_code,
             detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
             headers = error.headers,
         ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
+@router.patch("/scan-folders/{folder_id}", response_model = ScanFolderInfo)
+def update_scan_folder_endpoint(
+    folder_id: int,
+    body: UpdateScanFolderRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    payload = local_inventory.update_scan_folder_response(folder_id, body.label)
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 

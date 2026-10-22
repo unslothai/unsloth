@@ -69,6 +69,8 @@ function isExpandableGguf(model: LocalModelInfo): boolean {
 }
 
 function sourceLabel(model: LocalModelInfo): string {
+  const named = model.source === "custom" ? model.source_label?.trim() : "";
+  if (named) return named;
   switch (model.source) {
     case "models_dir":
       return "Models";

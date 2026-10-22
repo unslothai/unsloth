@@ -742,7 +742,11 @@ def test_a_filesystem_backed_row_is_not_named_by_its_path(_local_inventory):
 
 
 def _stub_rejected_scan_folder(monkeypatch):
-    def _raises(path, recursive = None):
+    def _raises(
+        path,
+        recursive = None,
+        label = None,
+    ):
         raise HTTPException(
             status_code = 400,
             detail = f"Path is not readable: [Errno 36] File name too long: '{REPO_DIR}'",
@@ -998,7 +1002,7 @@ def test_the_compat_scan_folder_add_does_not_answer_with_the_path(monkeypatch):
     created = {"id": 7, "path": f"{HOST_ROOT}/extra", "created_at": "2026-09-01"}
     monkeypatch.setattr(
         "storage.studio_db.add_scan_folder_with_status",
-        lambda path, recursive = None: (created, False),
+        lambda path, recursive = None, label = None: (created, False),
     )
 
     payload = _models(via_api_key = True).post("/api/models/scan-folders", json = {"path": "."})
