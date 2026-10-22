@@ -134,7 +134,10 @@ class UnslothTrainer(_SFTTrainer):
                     "lr": embedding_lr if is_embedding else self.args.learning_rate,
                     "weight_decay": self.args.weight_decay if decays else 0.0,
                 }
-                for (is_embedding, decays), params in groups.items()
+                # Same order as the GPU trainer's groups, so its checkpoints resume here.
+                for (is_embedding, decays), params in sorted(
+                    groups.items(), key = lambda kv: (kv[0][0], not kv[0][1])
+                )
             ],
             **optimizer_kwargs,
         )
