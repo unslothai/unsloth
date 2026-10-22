@@ -732,6 +732,20 @@ def test_a_wildcard_launch_in_a_container_advertises_no_bridge_address(monkeypat
     state = _app(lan_access_launch_managed = True, lan_access_wildcard_bind = True)
     assert lan_settings.lan_access_status(state)["urls"] == []
 
+    # --network host sees the host's own interfaces, which peers do reach.
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
+    assert lan_settings.lan_access_status(state)["urls"] == ["http://192.168.1.24:8888"]
+
+
+def test_lan_status_reports_keyless_off_while_a_managed_account_exists(monkeypatch):
+    import auth.policy as policy
+    import utils.keyless_api_access as keyless
+
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", lambda: ("inference", True))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    status = lan_settings.lan_access_status(_app())
+    assert (status["keyless_scope"], status["keyless_tools"]) == ("off", False)
+
 
 @pytest.mark.parametrize(
     ("name", "host_only"),

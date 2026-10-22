@@ -206,7 +206,8 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
   const single = status.urls.length === 1;
   const stale = new Set(staleLanUrls(status));
   const keylessInference =
-    status.keylessScope !== "off" &&
+    // "full" stays localhost-only, so only "inference" reaches LAN callers.
+    status.keylessScope === "inference" &&
     status.keylessLanEligible &&
     status.publicUrls.length === 0;
   return (

@@ -389,20 +389,32 @@ def configure_lan_access(
     app_state.lan_access_ready = False
 
 
+_CONTAINER_NETWORKS = (ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("10.88.0.0/16"))
+
+
+def _container_network_address(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(ip in network for network in _CONTAINER_NETWORKS if ip.version == network.version)
+
+
 def _launch_urls(app_state) -> list[str]:
     """Where a launch-managed bind answers on this network. A wildcard launch cannot rely only on ``server_url``: run.py gives that direct base one LAN-reachable address, while Settings must show every currently reachable address in each family the launch serves."""
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
         from utils.paths.file_manager import _in_container
 
-        if _in_container():
-            # The container's own bridge IP (172.17.0.x) reaches nothing outside it; peers use the host's published port.
-            return []
         addresses = []
         for ip_version in getattr(app_state, "lan_access_wildcard_ip_versions", ()) or (4,):
             for address in detect_lan_addresses(ip_version):
                 if address not in addresses:
                     addresses.append(address)
+        if _in_container():
+            # A bridged container's own IP (Docker 172.16/12, Podman 10.88/16) reaches nothing outside it;
+            # host networking shows the host's real addresses, which stay.
+            addresses = [a for a in addresses if not _container_network_address(a)]
         return _listener_urls(
             addresses,
             getattr(app_state, "lan_access_port", None),
@@ -532,7 +544,13 @@ def lan_access_status(app) -> dict:
     controllable = block_reason is None
     try:
         from utils.keyless_api_access import get_keyless_api_access_settings
+
         keyless_scope, keyless_tools = get_keyless_api_access_settings()
+        from auth.policy import installation_has_managed_accounts
+
+        # Effective, not saved: one managed account turns keyless admission off install-wide.
+        if installation_has_managed_accounts():
+            keyless_scope, keyless_tools = "off", False
     except Exception:
         keyless_scope, keyless_tools = "off", False
     return {
