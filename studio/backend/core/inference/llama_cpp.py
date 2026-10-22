@@ -27291,6 +27291,8 @@ class LlamaCppBackend:
                 _sidecar_fit_reserve_mib = 0
                 _sidecar_fit_reserve_eligible_mib = 0
                 _sidecar_compute_mib = 0
+                # Set by the last reprice: the draft graph's vocabulary-wide part, in MiB.
+                _sidecar_reserve_graph_mib = [0]
                 # The drafter's block count, for rounding a multi-device share to whole layers.
                 _sidecar_draft_layers: Optional[int] = None
                 # The trailing --fit-target that re-adds the reserve over a user margin.
@@ -29543,7 +29545,12 @@ class LlamaCppBackend:
                                 < _sc_target_mib
                                 # The same reserve the launch carries (flat when unsized).
                                 + self._sidecar_fit_reserve_mib(
-                                    _mtp_bytes(_sc_ctx, ubatch = _sc_draft_ub),
+                                    # The slots the child runs: an extras --parallel wins.
+                                    _mtp_bytes(
+                                        _sc_ctx,
+                                        slots = _extra_args_n_parallel(extra_args, os.environ),
+                                        ubatch = _sc_draft_ub,
+                                    ),
                                     mtp_draft_path,
                                     flat_mib = math.ceil(
                                         _flat_mtp_reserve * max(0, _apple_budget_mib)
@@ -30433,6 +30440,20 @@ class LlamaCppBackend:
                                     run_args, default = planned_flash_attn, env = child_env
                                 ),
                             )
+                            # The vocabulary-wide graph part, which sits on the output card.
+                            try:
+                                _sidecar_reserve_graph_mib[0] = math.ceil(
+                                    self._mtp_draft_compute_bytes(
+                                        _ctx,
+                                        drafter_path = _dp,
+                                        n_ubatch = _ub,
+                                        n_parallel = _np,
+                                        spec_draft_n_max = _n,
+                                    )
+                                    / (1024 * 1024)
+                                )
+                            except Exception:  # noqa: BLE001 - unsized: the shares carry it
+                                _sidecar_reserve_graph_mib[0] = 0
                             return (
                                 self._sidecar_fit_reserve_mib(_v or 0, _dp, flat_mib = _flat) + _floor
                             )
@@ -33885,14 +33906,18 @@ class LlamaCppBackend:
                             )
                             # Blocks follow the shares; the draft's compute buffers sit on
                             # every card it runs on, the output (last) card included.
-                            _spawn_body = max(0, _spawn_total - _sidecar_compute_mib)
+                            # Its vocabulary-wide graph (logits over the borrowed output)
+                            # stays whole on the output card, as llama.cpp sizes it there.
+                            _spawn_graph = min(
+                                _sidecar_reserve_graph_mib[0] if len(_spawn_shares) > 1 else 0,
+                                max(0, _spawn_total - _sidecar_compute_mib),
+                            )
+                            _spawn_body = max(0, _spawn_total - _sidecar_compute_mib - _spawn_graph)
+                            _last = len(_spawn_shares) - 1
                             _spawn_per_device = [
                                 math.ceil(_spawn_body * f)
-                                + (
-                                    _sidecar_compute_mib
-                                    if f > 0 or i == len(_spawn_shares) - 1
-                                    else 0
-                                )
+                                + (_sidecar_compute_mib if f > 0 or i == _last else 0)
+                                + (_spawn_graph if i == _last else 0)
                                 for i, f in enumerate(_spawn_shares)
                             ]
                             _spawn_reserve = max(_spawn_per_device)

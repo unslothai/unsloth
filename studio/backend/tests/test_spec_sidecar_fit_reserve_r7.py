@@ -391,3 +391,23 @@ def test_the_output_card_keeps_the_draft_compute_buffers_without_a_block(tmp_pat
     floor = math.ceil(_lc.LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024))
     _big, small = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
     assert small >= 1024 + floor
+
+
+def test_the_output_card_keeps_the_whole_vocabulary_graph(tmp_path, _discrete):
+    """The draft graph's logits over the borrowed vocabulary are sized on the output card,
+    so that part is not split by block shares (3:2 leaves the card no blocks at all)."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    graph = 3 * _GIB
+    backend._mtp_draft_compute_bytes = lambda *a, **k: graph
+    read = backend._draft_backend_for
+
+    def three_blocks(path):
+        db = read(path)
+        db._n_layers = 3
+        return db
+
+    backend._draft_backend_for = three_blocks
+    floor = math.ceil(_lc.LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024))
+    _big, small = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
+    assert small >= 1024 + floor + 3 * 1024
