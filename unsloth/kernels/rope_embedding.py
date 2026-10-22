@@ -155,7 +155,7 @@ def _rope_embedding_QK(
     else:
         rot_position = row_position % seqlen
     if LONG_INDEXING:
-        # A cos / sin table past 2**31 elements (millions of positions) needs a 64-bit row offset.
+        # cos / sin tables past 2**31 elements need a 64-bit row offset.
         rot_position = rot_position.to(tl.int64)
 
     sin1 = tl.load(sin + rot_position * sin_row_stride + col_offsets, mask = mask, other = 0)

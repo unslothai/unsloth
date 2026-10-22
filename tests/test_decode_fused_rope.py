@@ -245,7 +245,7 @@ def test_decode_rope_on_another_device_orders_with_the_copy():
 
 
 def test_a_cos_table_past_int32_offsets_takes_64_bit_indexing():
-    # Only shapes and strides are read: meta tensors stand in for a 4 GiB table.
+    # Meta tensors: only shapes and strides are read.
     from unsloth.kernels.indexing import long_indexing
 
     rows = 2**31 // 128 + 4
@@ -258,7 +258,6 @@ def test_a_cos_table_past_int32_offsets_takes_64_bit_indexing():
 
 @pytest.mark.gpu
 def test_decode_rope_past_int32_cache_offsets_matches_the_reference():
-    # Position * row stride past 2**31 elements: the row offset must be 64-bit, not wrap negative.
     head_dim = 128
     pos = 2**31 // head_dim + 3
     need = 2 * (pos + 1) * head_dim * 2 + (1 << 30)
@@ -269,7 +268,7 @@ def test_decode_rope_past_int32_cache_offsets_matches_the_reference():
     half = head_dim // 2
     cos[pos, :half].uniform_(-1, 1)
     sin[pos, :half].uniform_(-1, 1)
-    cos[pos, half:] = cos[pos, :half]  # RoPE tables repeat their half
+    cos[pos, half:] = cos[pos, :half]
     sin[pos, half:] = sin[pos, :half]
     torch.manual_seed(0)
     Q = torch.randn(2, 8, 1, head_dim, device = "cuda", dtype = torch.float16)
