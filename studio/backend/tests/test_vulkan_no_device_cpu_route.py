@@ -144,6 +144,8 @@ def test_a_listed_device_or_unproven_probe_keeps_vulkan(monkeypatch, tmp_path, o
     assert sink["health_timeouts"][0] == expected
     # Every Vulkan launch of an eligible load is capped, renewals included.
     assert sink["health_kwargs"][0]["max_total_s"] >= expected
+    # Only a suspect probe stops CPU work from renewing the stall window.
+    assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is (outcome not in ("timeout", "crashed"))
     if outcome not in ("timeout", "crashed"):
         # That stall only ever fails with advice: a slow disk gets three times the room.
         assert sink["health_kwargs"][0]["max_total_s"] >= (
@@ -247,8 +249,8 @@ def test_a_stall_after_a_listed_device_fails_without_a_cpu_replay(monkeypatch, t
         )
     assert [argv[0] for argv, _env in sink["launches"]] == ["/fake/llama-server"]
     assert sink["fallback_sources"] == []
-    # The Vulkan child still ignores CPU-only activity, so a spinning driver ends.
-    assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is False
+    # A listed device counts CPU work (a first shader compile); the ceiling ends a spinning driver.
+    assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is True
 
 
 def test_a_suspect_launch_cut_off_by_the_ceiling_fails_without_a_cpu_replay(monkeypatch, tmp_path):
@@ -323,7 +325,7 @@ def test_the_text_only_retry_is_bounded_too(monkeypatch, tmp_path):
     )
     assert loaded is True
     assert "--mmproj" not in launches[1][0]
-    assert sink["health_kwargs"][1]["cpu_counts_as_progress"] is False
+    assert sink["health_kwargs"][1]["cpu_counts_as_progress"] is True
     assert "max_total_s" in sink["health_kwargs"][1]
 
 
@@ -690,3 +692,22 @@ def test_one_vulkan_probe_per_load(monkeypatch, tmp_path):
         )
     assert loaded is True
     assert probes == ["/fake/llama-server"]
+
+
+def test_a_stall_replay_with_the_vision_argv_clears_the_text_only_diagnosis(monkeypatch, tmp_path):
+    """A guessed projector fault, then a stalled text-only retry after a timed-out probe: the CPU
+    replay runs with the original projector, so vision is back and the text-only reason must go."""
+    _route_env(monkeypatch, "timeout")
+    sink = {}
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [-11, None, None],
+        mmproj_from_argv = True,
+        stall_launches = (1,),
+        sink = sink,
+    )
+    assert loaded is True
+    assert "--mmproj" in fallback_sources[0]
+    assert backend._cpu_fallback_reason == "vulkan_startup_stall"
+    assert backend._mmproj_fallback_reason is None

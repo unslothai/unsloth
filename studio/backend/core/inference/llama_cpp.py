@@ -33027,12 +33027,13 @@ class LlamaCppBackend:
                         floor = timeout
                     elif not _vulkan_suspect:
                         # A probe that listed a device only ever fails with advice, never moves
-                        # to CPU: give a slow disk or a first shader compile far more room.
+                        # to CPU: CPU work counts as progress (a first shader compile), and only
+                        # a far larger ceiling ends a driver that spins forever.
                         per_gib *= self._LISTED_VULKAN_CEILING_FACTOR
                         floor = timeout * self._LISTED_VULKAN_CEILING_FACTOR
                     ceiling = (model_size or 0) / (1 << 30) * per_gib
                     return timeout, {
-                        "cpu_counts_as_progress": False,
+                        "cpu_counts_as_progress": not _vulkan_suspect,
                         "max_total_s": max(floor, ceiling),
                     }
 
@@ -34971,6 +34972,9 @@ class LlamaCppBackend:
                                         _last_spawn_cmd if _projector_msg else _vision_gpu_cmd
                                     ):
                                         healthy = True
+                                        # The replay carries the original vision argv, as below.
+                                        if not _projector_msg:
+                                            self._mmproj_fallback_reason = None
                                     elif _finish_cancelled_health_wait(
                                         "Load cancelled during the CPU replay health wait"
                                     ):
