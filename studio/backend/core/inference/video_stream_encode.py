@@ -61,8 +61,11 @@ class StreamEncode:
         self._patch = patch
         # ROCm's bf16 decode (diffusion_device.install_rocm_vae_bf16_decode) runs the decoder in bf16 and hands the
         # pipeline the fp32 widening of its output, so the pipeline postprocesses fp32: the chunks must be widened the
-        # same way or no frame ever matches. NVIDIA's fp16 decode returns fp16 as is, which the chunks already are.
-        self._widen = bool(getattr(getattr(vae, "decode", None), "_unsloth_bf16_decode", False))
+        # same way or no frame ever matches. Read off the VAE, not ``vae.decode``: the untiled-when-fits decode (and
+        # the OOM scope) wrap it from outside. NVIDIA's fp16 decode returns fp16 as is, which the chunks already are.
+        self._widen = bool(getattr(vae, "_unsloth_bf16_decode_mode", None)) or bool(
+            getattr(getattr(vae, "decode", None), "_unsloth_bf16_decode", False)
+        )
         self._side = None
         self.chunks: list = []
         self.reason = ""

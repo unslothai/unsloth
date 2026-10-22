@@ -250,10 +250,23 @@ def test_rocm_bf16_decode_streams_the_exported_frames(monkeypatch, tmp_path):
         "UNSLOTH_VIDEO_VAE_BF16_DECODE", "1"
     )  # forced: the CPU stands in for the ROCm card
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
-    for patch in (False, True):
+    for patch, outer in ((False, False), (True, False), (False, True), (True, True)):
         pipe = _Pipe(_vae(patch))
         target = SimpleNamespace(device = "cuda", backend = "rocm", dtype = torch.bfloat16)
         assert install_rocm_vae_bf16_decode(pipe, target) == "weights"
+        if outer:
+            # Studio's default video load wraps the bf16 decode again (video_vae_untiled's untiled-when-fits layer):
+            # the outer function carries none of the inner wrapper's attributes.
+            inner = pipe.vae.decode
+
+            def untiled_when_fits(
+                *args,
+                _inner = inner,
+                **kwargs,
+            ):
+                return _inner(*args, **kwargs)
+
+            pipe.vae.decode = untiled_when_fits
         assert pipe.vae.decoder.conv_in.weight.dtype == torch.bfloat16
         z = torch.randn(1, 4, 4, 8, 8)
         session = vse.StreamEncode(pipe.vae, pipe.video_processor, 8)
