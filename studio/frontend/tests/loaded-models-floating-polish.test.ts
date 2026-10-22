@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Row labels, kept-alongside models, sizes, other-account and empty states, poll stability and the
-// drag sentinel for the Loaded models card. Pure modules only; the .tsx cannot load under node.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -143,7 +141,6 @@ test("the embedder is listed only while one is resident", () => {
     tab: "data",
     label: "Data settings",
   });
-  // Resident, but not the configured model: say so rather than name the wrong one.
   const [stale] = describeEmbeddingStatus({
     embedding_model: "org/New",
     loaded: false,
@@ -184,7 +181,6 @@ test("a poll that changed nothing is the same rows", () => {
 });
 
 test("a drag from a handle no click follows clears the sentinel", () => {
-  // The pill is a button: its click consumes the flag. The header grip is not.
   assert.equal(sentinelAfterSettle(true, true), true);
   assert.equal(sentinelAfterSettle(true, false), false);
   assert.equal(sentinelAfterSettle(false, true), false);

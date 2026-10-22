@@ -48,11 +48,8 @@ export type LoadedModelEntry = {
   source: LoadedModelSource;
   /** The id the backend reports; also what the eject call names. */
   name: string;
-  /** What the row shows when it differs from `name`, e.g. the Hub id of a local snapshot. */
   label?: string;
-  /** A model kept alongside the active one: what /unload names it by. */
   servingCheckpoint?: string;
-  /** Best-effort memory the model holds, MiB, when the runtime reports one. */
   residentMib?: number;
   /** One short line: quantisation, family, device. */
   detail: string;
@@ -195,14 +192,12 @@ export function shortModelLabel(name: string): string {
   return segments.slice(-2).join("/");
 }
 
-/** The row's visible name. */
 export function loadedModelLabel(
   entry: Pick<LoadedModelEntry, "name" | "label">,
 ): string {
   return shortModelLabel(entry.label || entry.name);
 }
 
-/** "5.2 GiB" from MiB, binary; null when unknown or nonsense. */
 export function formatResidentMib(mib: number | null | undefined): string | null {
   if (typeof mib !== "number" || !Number.isFinite(mib) || mib <= 0) return null;
   const gib = mib / 1024;
@@ -279,8 +274,7 @@ export function describeInferenceStatus(
       loading: true,
     });
   }
-  // Models kept alongside the active one (Keep multiple models loaded) answer requests too. Matched
-  // by checkpoint, which is also what /unload routes on: two local files can share a label.
+  // Matched by checkpoint, which /unload routes on: two local files can share a label.
   const serving = status.serving ?? [];
   const checkpoints = status.serving_checkpoints ?? [];
   const activeCheckpoint = status.model_identifier || active;
@@ -544,7 +538,6 @@ const PENDING_KINDS: Record<LoadedModelSource, LoadedModelKind> = {
   embedding: "embedding",
 };
 
-/** /api/settings/embedding-model, the fields the card reads. */
 export type EmbeddingStatusResponse = {
   // biome-ignore lint/style/useNamingConvention: API schema
   embedding_model?: string;
@@ -553,8 +546,6 @@ export type EmbeddingStatusResponse = {
   backend_loaded?: boolean;
 };
 
-/** The RAG embedder, when one is resident. `backend_loaded` without `loaded` is an embedder
- *  for a model since replaced in Settings, so its name is not the configured one. */
 export function describeEmbeddingStatus(
   status: EmbeddingStatusResponse | null,
 ): LoadedModelEntry[] {
@@ -572,14 +563,12 @@ export function describeEmbeddingStatus(
   ];
 }
 
-/** True when a runtime answered with another account's resident hidden (`yours: false`). */
 export function heldByAnotherAccount(
   statuses: readonly ({ yours?: boolean } | null | undefined)[],
 ): boolean {
   return statuses.some((status) => status?.yours === false);
 }
 
-/** Same rows as far as the card can tell, so a poll that changed nothing keeps the old array. */
 export function sameLoadedModels(
   left: readonly LoadedModelEntry[],
   right: readonly LoadedModelEntry[],
@@ -605,8 +594,6 @@ export function sameLoadedModels(
   });
 }
 
-/** What the card shows: its rows, a note that another account holds the memory, the brief
- *  "nothing loaded" note right after it is switched on, or nothing at all. */
 export type LoadedModelsCardState = "rows" | "otherAccount" | "empty" | null;
 
 export function loadedModelsCardState(

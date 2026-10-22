@@ -45,7 +45,6 @@ export type UseLoadedModels = {
   polledEntries: LoadedModelEntry[];
   /** Row ids with an eject in flight. */
   ejecting: ReadonlySet<string>;
-  /** Another account's model holds a runtime this account cannot see into. */
   heldByOther: boolean;
   eject: (entry: LoadedModelEntry) => Promise<void>;
   refresh: () => void;
@@ -144,7 +143,6 @@ export function useLoadedModels(
       .then((next) => {
         unreadable = next.unreadable;
         if (mountedRef.current && generation === generationRef.current) {
-          // Same rows keep the same array, so an idle card does not re-render every poll.
           setEntries((prev) =>
             sameLoadedModels(prev, next.entries) ? prev : next.entries,
           );

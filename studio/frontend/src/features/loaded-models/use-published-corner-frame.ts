@@ -4,7 +4,6 @@
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { useEffect } from "react";
 
-/** Publish the card's box for the Live monitor's default corner; null clears it. */
 export function usePublishedCornerFrame(element: HTMLElement | null): void {
   useEffect(() => {
     const { setFrame } = useCornerCardFrameStore.getState();

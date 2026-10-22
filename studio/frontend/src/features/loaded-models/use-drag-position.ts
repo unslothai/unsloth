@@ -52,8 +52,7 @@ export function passedDragThreshold(dx: number, dy: number): boolean {
   return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
 }
 
-/** The drag sentinel after a press ends. Only a handle that is a button gets the click that
- *  consumes it, so any other handle clears it here or the pill's next click is swallowed. */
+/** Non-button handles get no click, so they must clear the sentinel here or the pill's next click is swallowed. */
 export function sentinelAfterSettle(moved: boolean, clickFollows: boolean): boolean {
   return moved && clickFollows;
 }
@@ -99,9 +98,7 @@ export type UseDragPosition = {
    *  button. Reading it clears the flag, so a later keyboard activation on the
    *  same button is not swallowed too. */
   justDragged: () => boolean;
-  /** The panel node, for callers that measure it. */
   element: HTMLDivElement | null;
-  /** Arrow-key move for a focused handle; true when it handled the key. */
   nudge: (event: React.KeyboardEvent<HTMLElement>) => boolean;
 };
 

@@ -61,7 +61,6 @@ export interface VideoStatus {
   repo_id: string | null;
   /** Logical Hub identity when repo_id is an exact local snapshot. */
   display_repo_id?: string | null;
-  /** Best-effort memory the resident pipeline holds, MiB; absent on older backends. */
   resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];

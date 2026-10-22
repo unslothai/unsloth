@@ -69,7 +69,6 @@ const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   embedding: DatabaseIcon,
 };
 
-// Long enough to read after closing Settings, short enough not to linger as a card.
 const EMPTY_HINT_MS = 5000;
 
 const ROW_ICON_CLASS =
@@ -101,7 +100,6 @@ function rowSubtitle(entry: LoadedModelEntry, t: Translate): string {
     .join(" · ");
 }
 
-/** A row with no model to open or eject: the empty and other-account notes. */
 function NoteRow({
   icon,
   title,
@@ -239,7 +237,6 @@ export function LoadedModelsIndicator({
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const showIndicator = useShowLoadedModels();
-  // Switched on in this tab: a card that then shows nothing reads as broken, so say so briefly.
   const [wasShown, setWasShown] = useState(showIndicator);
   const [justEnabled, setJustEnabled] = useState(false);
   if (wasShown !== showIndicator) {
@@ -292,7 +289,6 @@ export function LoadedModelsIndicator({
     justDragged,
     nudge,
   } = useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
-  // Only while it rests in the corner: a card the user dragged away is no obstacle there.
   usePublishedCornerFrame(position ? null : element);
 
   // A new load brings a closed card back: closing it means "not now", not "stop telling me", which
@@ -344,7 +340,6 @@ export function LoadedModelsIndicator({
       : "floatingPanels.loadedModels.countMany",
     { count: entries.length },
   );
-  // The empty note is brief and has nothing to collapse to.
   const showPill = collapsed && cardState !== "empty";
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Escape" || event.defaultPrevented) return;

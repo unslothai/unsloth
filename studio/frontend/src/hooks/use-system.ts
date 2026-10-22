@@ -60,7 +60,6 @@ export interface SystemInfoResponse {
   /** Client-side, not sent by the backend. Readers rendering a host verdict -- "no GPU",
    * "CPU only" -- must check it, or they state the placeholder below as fact. */
   status: SystemInfoStatus;
-  /** Client-side: the polls behind this "ready" reading have been failing, so it may be old. */
   stale?: boolean;
   platform: string;
   python_version: string;

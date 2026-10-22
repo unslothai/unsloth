@@ -136,7 +136,6 @@ export type LoadedModelsRead = {
   /** Sources whose status did not come back, so nothing in this read is
    *  evidence about them. */
   unreadable: LoadedModelSource[];
-  /** A runtime is held by another account's model (managed accounts only). */
   heldByOther: boolean;
 };
 
@@ -225,7 +224,6 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
   return { status: "ejected" };
 }
 
-/** A model kept alongside the active one: /unload routes to its slot by checkpoint. */
 async function ejectServingRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
   const checkpoint = entry.servingCheckpoint ?? entry.name;
   const decision = await confirmStopRunningChatsIfNeeded(
@@ -356,7 +354,6 @@ export async function ejectLoadedModel(
       }
       if (!(before.backend_loaded ?? before.loaded))
         return { status: "alreadyFree" };
-      // Through the Settings store, so an open Documents section shows the unload too.
       await useEmbeddingModelStore
         .getState()
         .applyResidency(unloadEmbeddingModel);

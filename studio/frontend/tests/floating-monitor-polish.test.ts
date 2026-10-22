@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Live monitor: stale readings while polls fail, resting above the Loaded models card at its
-// default corner, snapping a drop back to that corner, and keyboard nudging.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -39,7 +37,6 @@ test("only a polled, real reading can go stale", () => {
   assert.equal(isReadingStale("unavailable", 5, true), false);
 });
 
-// Monitor 256x200 in the bottom-right of a 1440x900 viewport, card 268x120 under it.
 const PANEL = { left: 1168, top: 684, width: 256, height: 200 };
 const CARD = { left: 1156, top: 764, right: 1424, bottom: 884 };
 

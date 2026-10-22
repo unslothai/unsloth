@@ -42,14 +42,12 @@ export function vulkanRetryDelayMs(attempt: number): number {
   );
 }
 
-/** Failed polls in a row before a reading on screen is called stale. One miss is a blip. */
 export const STALE_AFTER_FAILED_POLLS = 2;
 
 export function nextFailedPolls(previous: number, ok: boolean): number {
   return ok ? 0 : previous + 1;
 }
 
-/** Only a polled reading can go stale: with polling off nothing would ever clear it. */
 export function isReadingStale(
   status: SystemInfoStatus,
   failedPolls: number,

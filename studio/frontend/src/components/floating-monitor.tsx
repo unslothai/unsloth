@@ -157,8 +157,7 @@ function FloatingMonitorPanel({
     cornerCard,
   );
 
-  // offsetWidth, not the bounding rect: a drag paints through a transform, and a rect
-  // read through it is not the width the panel settles at.
+  // offsetWidth, not the bounding rect: a drag's transform skews the rect.
   useEffect(() => {
     const monitor = monitorRef.current;
     if (!monitor) {
@@ -186,7 +185,6 @@ function FloatingMonitorPanel({
   const ramPercent = clampPercent(systemInfo.memory?.percent_used ?? 0);
   // The placeholder's zeros are not a reading: loading or a failed first request shows "--".
   const ramKnown = systemInfo.status === "ready";
-  // Polls failing: the last reading stays, dimmed, until one succeeds.
   const stale = systemInfo.stale === true;
 
   const displayedGpu = systemInfo.gpu?.available

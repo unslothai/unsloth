@@ -55,7 +55,6 @@ export function clearPanelIntent(key: string | undefined): void {
   }
 }
 
-/** Arrow-key nudge for a focused drag handle: 8 px, 32 with Shift; null for any other key. */
 export function nudgeDelta(
   key: string,
   shift: boolean,
@@ -77,11 +76,6 @@ export function nudgeDelta(
 
 export type FrameBox = { left: number; top: number; right: number; bottom: number };
 
-/**
- * The viewport top that rests `panel` just above `obstacle`, or null when they do not
- * overlap (counting `gap` above the obstacle). Used for the Live monitor's default corner,
- * which the Loaded models card shares.
- */
 export function liftAboveObstacle(
   panel: { left: number; top: number; width: number; height: number },
   obstacle: FrameBox | null | undefined,
@@ -95,7 +89,6 @@ export function liftAboveObstacle(
   return overlapsX && overlapsY ? obstacle.top - gap - panel.height : null;
 }
 
-/** A drop this close to the resting corner (or the anchored far corner) re-anchors the panel. */
 export const ANCHOR_SNAP_PX = 16;
 
 export function snapsToAnchor(

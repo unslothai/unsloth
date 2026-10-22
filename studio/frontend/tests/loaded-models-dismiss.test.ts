@@ -188,7 +188,6 @@ test("recording follows the route and auth gate, but not the dismissal", () => {
   assert.doesNotMatch(call, /dismissed/);
 });
 
-// Switching the card on in Settings is asking to see it, so an older X must not keep it hidden.
 test("switching the setting on clears an earlier dismissal", () => {
   reset();
   setLoadedModelsDismissed(true);
