@@ -43,6 +43,8 @@ test("the slider has an Auto step below off, so a part on Auto is never shown as
 test("Auto's pick is read only from an estimate of the current settings", () => {
   const estimate = { mlxPleOffload: 1, mlxExpertOffload: 0.5 };
   assert.deepEqual(mlxOffloadDecided({ estimate, stale: false, loading: false }), { ple: 1, experts: 0.5 });
-  assert.deepEqual(mlxOffloadDecided({ estimate, stale: true, loading: false }), { ple: null, experts: null });
-  assert.deepEqual(mlxOffloadDecided({ estimate, stale: false, loading: true }), { ple: null, experts: null });
+  // Unknown, not resident: Manual would otherwise pin every part off while the estimate refreshes.
+  assert.equal(mlxOffloadDecided({ estimate, stale: true, loading: false }), null);
+  assert.equal(mlxOffloadDecided({ estimate, stale: false, loading: true }), null);
+  assert.equal(mlxOffloadDecided({ estimate: null, stale: false, loading: false }), null);
 });

@@ -585,14 +585,15 @@ export function mlxOffloadFromSlider(position: number): MlxOffload {
   return position === 0 ? "off" : position / 100;
 }
 
-/** The fractions Auto picks for the current settings; a stale or loading estimate answers earlier ones. */
+/** The fractions Auto picks for the current settings, or null until an estimate of them settles: a stale or
+ *  loading estimate answers earlier ones, and reading its parts as resident would pin them off. */
 export function mlxOffloadDecided(state: {
   estimate: { mlxPleOffload?: number | null; mlxExpertOffload?: number | null } | null;
   stale: boolean;
   loading: boolean;
-}): { ple: number | null; experts: number | null } {
-  const fresh = state.stale || state.loading ? null : state.estimate;
-  return { ple: fresh?.mlxPleOffload ?? null, experts: fresh?.mlxExpertOffload ?? null };
+}): { ple: number | null; experts: number | null } | null {
+  if (state.stale || state.loading || !state.estimate) return null;
+  return { ple: state.estimate.mlxPleOffload ?? null, experts: state.estimate.mlxExpertOffload ?? null };
 }
 
 export function mlxOffloadPercent(fraction: number): string {
