@@ -998,6 +998,9 @@ export function ChatSettingsPanel({
       },
     ];
     setCustomPresets(merged);
+    // The screen is the preset's now, as after a pick: the hand edits that built it were filed as the
+    // loaded model's own, and would bring the preset back on that model after Default.
+    setParams(paramsWithCommittedSeed, { fromPreset: true });
     setActivePreset(saveName);
     setActivePresetSource("custom");
     setPresetNameInput(saveName);
