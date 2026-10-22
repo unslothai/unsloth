@@ -51,6 +51,13 @@ try:
     from unsloth_zoo.mxfp4_gemm import mxfp4_gemm_available, mxfp4_matmul as _zoo_mxfp4_matmul
 except Exception:
     _zoo_mxfp4_matmul = None
+try:
+    # Self-check only, no sm_80 floor (zoo #1899+): below sm_80 the tile kernel is the low-memory last resort.
+    from unsloth_zoo.mxfp4_gemm import (
+        mxfp4_grouped_gemv_available as _zoo_mxfp4_kernel_verified,
+    )
+except Exception:
+    _zoo_mxfp4_kernel_verified = None
 
 _FP4_VALUES = (
     0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
@@ -80,13 +87,18 @@ def dequantize_mxfp4_packed(
     packed,
     scale,
     dtype = torch.bfloat16,
+    out = None,
 ):
-    """Packed ``[out, in / 2]`` + E8M0 scales ``[out, in / 32]`` -> ``[out, in]``; zoo kernel if self-verified, else torch."""
+    """Packed ``[out, in / 2]`` + E8M0 scales ``[out, in / 32]`` -> ``[out, in]``; zoo kernel if self-verified, else torch.
+    ``out``: a contiguous ``[out, in]`` buffer to decode into."""
     out_features, half = packed.shape
     blocks = packed.view(out_features, half // 16, 16)
     if _zoo_mxfp4_dequantize is not None and dtype in (torch.bfloat16, torch.float16):
-        return _zoo_mxfp4_dequantize(blocks, scale, dtype = dtype)
-    return _dequantize_torch(blocks, scale, dtype)
+        if out is None:
+            return _zoo_mxfp4_dequantize(blocks, scale, dtype = dtype)
+        return _zoo_mxfp4_dequantize(blocks, scale, dtype = dtype, out = out)
+    weight = _dequantize_torch(blocks, scale, dtype)
+    return weight if out is None else out.copy_(weight)
 
 
 def _fused_max_rows():
@@ -109,7 +121,8 @@ def mxfp4_packed_matmul(
     bias = None,
 ):
     """``x @ W^T (+ bias)`` (``transpose=False``) or ``x @ W`` for the packed ``[out, in / 2]`` weight, in x's dtype.
-    Skinny forward inputs (decode, small batches) never build the 16-bit weight; the rest decode it once for cuBLAS."""
+    Skinny forward inputs (decode, small batches) never build the 16-bit weight on sm_80+; below sm_80 they decode it
+    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS."""
     rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
     # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
     if (
@@ -117,15 +130,130 @@ def mxfp4_packed_matmul(
         and _zoo_mxfp4_matmul is not None
         and rows <= _FUSED_MAX_ROWS
         and x.is_cuda
-        and mxfp4_gemm_available(x.device, x.dtype)
     ):
-        return _zoo_mxfp4_matmul(x, packed, scale, trans = transpose, out = out, bias = bias)
+        if mxfp4_gemm_available(x.device, x.dtype):
+            return _zoo_mxfp4_matmul(x, packed, scale, trans = transpose, out = out, bias = bias)
+        if _zoo_mxfp4_kernel_verified is not None and _zoo_mxfp4_kernel_verified(
+            x.device, x.dtype
+        ):
+            # Below sm_80 decode + cuBLAS beats the tile kernel, but only the tile kernel never builds the
+            # 16-bit weight: decode in chunks of output rows when the weight does not fit.
+            return _bounded_dense_matmul(x, packed, scale, out, bias)
     weight = dequantize_mxfp4_packed(packed, scale, x.dtype)
     if transpose:
         return torch.matmul(x, weight, out = out)
+    return _linear(x, weight, out, bias)
+
+
+def _linear(x, weight, out, bias):
     if bias is not None or out is None:
         return torch.nn.functional.linear(x, weight, bias)
     return torch.matmul(x, weight.t(), out = out)
+
+
+# Below sm_80 (`_bounded_dense_matmul`): per GPU, the bytes a decoded chunk may take once the whole 16-bit
+# weight failed to allocate, and the calls left before the whole weight is tried again.
+_DENSE_BUDGET = {}
+_DENSE_RETRY_CALLS = 1024
+# Fewer decoded rows than this per chunk: the tile kernel (output only) instead.
+_DENSE_MIN_CHUNK_ROWS = 128
+
+
+def _free_bytes(device):
+    """What the caching allocator can still hand out: driver free (capped by a per-process memory fraction)
+    plus its own cached free blocks. Only queried after an allocation failed: the queries cost ~100 us."""
+    free, total = torch.cuda.mem_get_info(device)
+    reserved = torch.cuda.memory_reserved(device)
+    try:
+        cap = int(torch.cuda.get_per_process_memory_fraction(device) * total)
+        free = min(free, cap - reserved)
+    except Exception:
+        pass
+    return max(0, free) + max(0, reserved - torch.cuda.memory_allocated(device))
+
+
+def _try_empty(shape, dtype, device):
+    try:
+        return torch.empty(shape, dtype = dtype, device = device)
+    except torch.cuda.OutOfMemoryError:
+        return None
+
+
+def _bounded_dense_matmul_eager(x, packed, scale, out = None, bias = None):
+    """``x @ W^T (+ bias)`` without ever holding more of the 16-bit W than fits: the whole W when it allocates
+    (one decode + one cuBLAS call), else row chunks of W written to ``y[..., r0:r1]`` (no cross-chunk sums),
+    else the tile kernel."""
+    N, half = packed.shape
+    K = half * 2
+    dtype, device = x.dtype, x.device
+    row_bytes = K * x.element_size()
+    key = device.index
+    state = _DENSE_BUDGET.get(key)
+    if state is not None:
+        state[1] -= 1
+        if state[1] <= 0:
+            _DENSE_BUDGET.pop(key, None)
+            state = None
+    if state is None or N * row_bytes <= state[0]:
+        weight = _try_empty((N, K), dtype, device)
+        if weight is not None:
+            return _linear(x, dequantize_mxfp4_packed(packed, scale, dtype, out = weight), out, bias)
+        state = _DENSE_BUDGET[key] = [_free_bytes(device) // 2, _DENSE_RETRY_CALLS]
+    lead = x.shape[:-1]
+    x2 = x.reshape(-1, K)
+    M = x2.shape[0]
+    if out is not None and out.dtype == dtype and out.is_contiguous() and out.numel() == M * N:
+        y = out.view(M, N)
+    else:
+        y = torch.empty((M, N), dtype = dtype, device = device)
+    while True:
+        step = min(N, state[0] // row_bytes)
+        buffer = None if step < _DENSE_MIN_CHUNK_ROWS else _try_empty((step, K), dtype, device)
+        if buffer is not None:
+            break
+        if step < _DENSE_MIN_CHUNK_ROWS:
+            # Not even a small chunk fits: the tile kernel only needs the output.
+            return _zoo_mxfp4_matmul(x, packed, scale, trans = False, out = y, bias = bias)
+        state[0] = step * row_bytes // 2
+    for r0 in range(0, N, step):
+        r1 = min(N, r0 + step)
+        weight = dequantize_mxfp4_packed(
+            packed[r0:r1], scale[r0:r1], dtype, out = buffer[: r1 - r0]
+        )
+        y[:, r0:r1] = torch.nn.functional.linear(
+            x2, weight, None if bias is None else bias[r0:r1]
+        )
+    return y.view(*lead, N)
+
+
+_bounded_dense_matmul_op = None
+try:
+
+    @torch.library.custom_op("unsloth::mxfp4_bounded_dense_matmul", mutates_args = ())
+    def _bounded_dense_matmul_op(
+        x: torch.Tensor,
+        packed: torch.Tensor,
+        scale: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        return _bounded_dense_matmul_eager(x, packed, scale, None, bias)
+
+    @_bounded_dense_matmul_op.register_fake
+    def _(x, packed, scale, bias):
+        return x.new_empty((*x.shape[:-1], packed.shape[0]))
+
+except Exception:
+    _bounded_dense_matmul_op = None
+
+
+def _bounded_dense_matmul(x, packed, scale, out, bias):
+    if torch.compiler.is_compiling():
+        # Opaque to the trace: the allocation fallbacks must run at call time, not be traced once.
+        if _bounded_dense_matmul_op is None:
+            return _linear(x, dequantize_mxfp4_packed(packed, scale, x.dtype), out, bias)
+        y = _bounded_dense_matmul_op(x, packed, scale, bias)
+        return y if out is None or out.shape != y.shape else out.copy_(y)
+    return _bounded_dense_matmul_eager(x, packed, scale, out, bias)
 
 
 def _compute_dtype(x):

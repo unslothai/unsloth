@@ -1,0 +1,180 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
+"""Below sm_80 a packed MXFP4 forward decodes the 16-bit weight for cuBLAS; it must not need more memory than the
+tile kernel it replaced when the whole weight does not fit (T4 with little headroom)."""
+
+import contextlib
+import gc
+
+import pytest
+from llama_patch_isolation import restore_llama_patches  # noqa: F401
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+import torch
+
+import unsloth  # noqa: F401
+import unsloth.models.mxfp4_compressed_linear as mcl
+
+pytestmark = [
+    pytest.mark.usefixtures("restore_llama_patches"),
+    pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device"),
+]
+
+
+def _zoo():
+    try:
+        import unsloth_zoo.mxfp4_gemm as mg
+    except Exception:
+        pytest.skip("needs unsloth_zoo.mxfp4_gemm")
+    if not hasattr(mg, "mxfp4_grouped_gemv_available"):
+        pytest.skip("unsloth_zoo before the sm_80 tile GEMM floor: the tile kernel still runs here")
+    return mg
+
+
+@pytest.fixture
+def sm75(monkeypatch):
+    """The sm_75 policy on whatever GPU runs this: the verified tile GEMM is kept off, real kernels run."""
+    mg = _zoo()
+    device = torch.device("cuda", torch.cuda.current_device())
+    monkeypatch.delenv("UNSLOTH_MXFP4_FUSED_GEMM", raising = False)
+    for dtype in (torch.float16, torch.bfloat16):
+        if not mg.mxfp4_grouped_gemv_available(device, dtype):
+            pytest.skip("the fused MXFP4 kernel does not self-check on this GPU")
+        monkeypatch.setitem(mg._AVAILABLE_DTYPE, (str(device), dtype, "tiles"), False)
+        assert not mg.mxfp4_gemm_available(device, dtype)
+    monkeypatch.setattr(mcl, "_DENSE_BUDGET", {}, raising = False)
+    return device
+
+
+@contextlib.contextmanager
+def _headroom(mib, device):
+    """Let the caching allocator hand out at most ``mib`` MiB more than is allocated now."""
+    gc.collect()
+    torch.cuda.synchronize(device)
+    torch.cuda.empty_cache()
+    total = torch.cuda.get_device_properties(device).total_memory
+    cap = torch.cuda.memory_allocated(device) + mib * 2**20
+    torch.cuda.set_per_process_memory_fraction(cap / total, device)
+    try:
+        yield
+    finally:
+        torch.cuda.set_per_process_memory_fraction(1.0, device)
+        torch.cuda.empty_cache()
+
+
+def _weight(N, K, device, seed = 0):
+    g = torch.Generator(device = device).manual_seed(seed)
+    packed = torch.randint(0, 256, (N, K // 2), dtype = torch.uint8, device = device, generator = g)
+    scale = torch.randint(118, 128, (N, K // 32), dtype = torch.uint8, device = device, generator = g)
+    return packed, scale
+
+
+def _single_shot(x, packed, scale, bias = None):
+    # What #1899 runs below sm_80: the whole 16-bit weight, one cuBLAS call.
+    weight = mcl.dequantize_mxfp4_packed(packed, scale, x.dtype)
+    return torch.nn.functional.linear(x, weight, bias)
+
+
+def test_t4_decode_fits_in_64mib_headroom(sm75):
+    # 14336 x 4096 decodes to 112 MiB of fp16: the tile kernel needed 28 KiB, dequantize + cuBLAS must not OOM.
+    device = sm75
+    N, K = 14336, 4096
+    packed, scale = _weight(N, K, device)
+    x = torch.randn(1, K, dtype = torch.float16, device = device)
+    want = _single_shot(x, packed, scale)
+    mcl.mxfp4_packed_matmul(x, packed, scale)  # warm kernels and their self-checks
+    with _headroom(64, device):
+        start = torch.cuda.memory_allocated(device)
+        torch.cuda.reset_peak_memory_stats(device)
+        got = mcl.mxfp4_packed_matmul(x, packed, scale)
+        torch.cuda.synchronize(device)
+        peak = torch.cuda.max_memory_allocated(device) - start
+    assert peak < 64 * 2**20
+    torch.testing.assert_close(got, want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+    # The next calls go straight to chunks: no second allocation failure.
+    ooms = torch.cuda.memory_stats(device).get("num_ooms", 0)
+    with _headroom(64, device):
+        mcl.mxfp4_packed_matmul(x, packed, scale)
+    assert torch.cuda.memory_stats(device).get("num_ooms", 0) == ooms
+
+
+def test_weight_that_fits_keeps_the_single_shot_decode(sm75):
+    device = sm75
+    packed, scale = _weight(1024, 512, device, seed = 1)
+    x = torch.randn(3, 512, dtype = torch.bfloat16, device = device)
+    assert torch.equal(mcl.mxfp4_packed_matmul(x, packed, scale), _single_shot(x, packed, scale))
+    assert not mcl._DENSE_BUDGET
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("rows", [1, 7, 64])
+@pytest.mark.parametrize("bias", [False, True])
+@pytest.mark.parametrize("lead", [(), (2,)])
+def test_row_chunks_match_the_single_shot_decode(sm75, dtype, rows, bias, lead):
+    device = sm75
+    N, K = 1000, 384  # 1000 rows: the last chunk is ragged
+    packed, scale = _weight(N, K, device, seed = rows)
+    x = torch.randn(*lead, rows, K, dtype = dtype, device = device)
+    b = torch.randn(N, dtype = dtype, device = device) if bias else None
+    want = _single_shot(x, packed, scale, b)
+    row_bytes = K * x.element_size()
+    mcl._DENSE_BUDGET[device.index] = [300 * row_bytes, 1024]  # 300-row chunks
+    got = mcl.mxfp4_packed_matmul(x, packed, scale, bias = b)
+    assert got.shape == want.shape and got.dtype == dtype
+    # Same decoded rows, same math; cuBLAS may pick another reduction order for the narrower chunk (1 ulp).
+    tol = 1.6e-2 if dtype == torch.bfloat16 else 2e-3
+    torch.testing.assert_close(got, want, rtol = tol, atol = tol * want.abs().max().item())
+    out = torch.empty_like(want)
+    mcl._DENSE_BUDGET[device.index] = [300 * row_bytes, 1024]
+    if not bias:
+        assert mcl.mxfp4_packed_matmul(x, packed, scale, out = out).data_ptr() == out.data_ptr()
+        torch.testing.assert_close(out, want, rtol = tol, atol = tol * want.abs().max().item())
+
+
+def test_no_room_for_a_chunk_takes_the_tile_kernel(sm75, monkeypatch):
+    device = sm75
+    N, K = 4096, 4096
+    packed, scale = _weight(N, K, device, seed = 3)
+    x = torch.randn(2, K, dtype = torch.float16, device = device)
+    want = _single_shot(x, packed, scale)
+    calls = []
+    tile = mcl._zoo_mxfp4_matmul
+    monkeypatch.setattr(mcl, "_zoo_mxfp4_matmul", lambda *a, **k: calls.append(1) or tile(*a, **k))
+    mcl._DENSE_BUDGET[device.index] = [64 * K * 2, 1024]  # 64 rows < the 128-row chunk floor
+    got = mcl.mxfp4_packed_matmul(x, packed, scale)
+    assert calls
+    torch.testing.assert_close(got, want, rtol = 2e-2, atol = 2e-2 * want.abs().max().item())
+
+
+def test_budget_is_retried_after_a_while(sm75):
+    device = sm75
+    packed, scale = _weight(512, 256, device, seed = 4)
+    x = torch.randn(1, 256, dtype = torch.float16, device = device)
+    mcl._DENSE_BUDGET[device.index] = [128 * 256 * 2, 2]
+    mcl.mxfp4_packed_matmul(x, packed, scale)
+    assert device.index in mcl._DENSE_BUDGET
+    mcl.mxfp4_packed_matmul(x, packed, scale)
+    assert device.index not in mcl._DENSE_BUDGET  # whole weight fitted again
+
+
+def test_compiled_forward_is_bounded_without_graph_breaks(sm75):
+    from torch._dynamo.utils import counters
+
+    device = sm75
+    N, K = 14336, 4096
+    module = mcl.make_mxfp4_packed_linear(K, N, device = device)
+    module.weight_packed.data, module.weight_scale.data = _weight(N, K, device, seed = 5)
+    module.compute_dtype = torch.float16
+    x = torch.randn(1, K, dtype = torch.float16, device = device)
+    with torch.no_grad():
+        want = module(x)
+        torch._dynamo.reset()
+        counters.clear()
+        compiled = torch.compile(module, fullgraph = True)
+        torch.testing.assert_close(compiled(x), want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+        assert sum(counters["graph_break"].values()) == 0
+        with _headroom(64, device):
+            got = compiled(x)
+            torch.cuda.synchronize(device)
+    torch.testing.assert_close(got, want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+    torch._dynamo.reset()
