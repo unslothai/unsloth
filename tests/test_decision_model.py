@@ -32,6 +32,9 @@ from unsloth.models.decision import (
     _target,
 )
 
+# torch < 2.3 has only the CUDA scaler.
+GRAD_SCALER = getattr(torch.amp, "GradScaler", None) or torch.cuda.amp.GradScaler
+
 laya = _laya()
 # Every word the states, questions and options use, so the toy task below is learnable.
 WORDS = (
@@ -1414,7 +1417,7 @@ def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
     )
     assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
     # The float32 path trains with a loss scaler of its own, autocast still off (#14439).
-    assert isinstance(trainer.accelerator.scaler, torch.amp.GradScaler) == (dtype == torch.float16)
+    assert isinstance(trainer.accelerator.scaler, GRAD_SCALER) == (dtype == torch.float16)
     trainer.train()
     assert grads and all(math.isfinite(loss) for loss, _ in grads)
     # The scaler skips the steps that overflow while it calibrates; they log a nan grad norm.
@@ -1535,12 +1538,12 @@ def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # GradScaler warns when this host has no CUDA
         scaler = decision._clef_loss_scaler(model, args)
-    assert isinstance(scaler, torch.amp.GradScaler) == wants
+    assert isinstance(scaler, GRAD_SCALER) == wants
 
 
 def test_clef_loss_scaler_on_torch_without_torch_amp_grad_scaler(tmp_path, monkeypatch):
     # torch < 2.3 has no torch.amp.GradScaler, only torch.cuda.amp.GradScaler.
-    monkeypatch.delattr(torch.amp, "GradScaler")
+    monkeypatch.delattr(torch.amp, "GradScaler", raising = False)
     made = []
     monkeypatch.setattr(torch.cuda.amp, "GradScaler", lambda: made.append(1) or "legacy")
     for device, wants in (("cuda", "legacy"), ("xpu", None)):
