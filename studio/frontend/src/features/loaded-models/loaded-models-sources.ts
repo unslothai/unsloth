@@ -551,16 +551,21 @@ export function describeEmbeddingStatus(
 ): LoadedModelEntry[] {
   const resident = status?.backend_loaded ?? status?.loaded ?? false;
   if (!resident) return [];
-  const configured = status?.loaded ? status.embedding_model : undefined;
   return [
     {
       id: "embedding:rag",
       kind: "embedding",
       source: "embedding",
-      name: configured || "Embedding model",
+      name: embeddingRowName(status),
       detail: "Documents",
     },
   ];
+}
+
+export function embeddingRowName(
+  status: EmbeddingStatusResponse | null,
+): string {
+  return (status?.loaded ? status.embedding_model : undefined) || "Embedding model";
 }
 
 export function heldByAnotherAccount(

@@ -28,6 +28,7 @@ import { useEmbeddingModelStore } from "@/features/settings/stores/embedding-mod
 import { notifyModelEjected } from "@/lib/model-lifecycle-events";
 import { ejectChatModel } from "./eject-chat-model";
 import {
+  embeddingRowName,
   type EmbeddingStatusResponse,
   type LoadedModelEntry,
   type LoadedModelSource,
@@ -229,7 +230,7 @@ async function ejectServingRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
   const decision = await confirmStopRunningChatsIfNeeded(
     "Unloading this model",
     "unloadOne",
-    entry.name,
+    checkpoint,
   );
   if (!decision.proceed) return { status: "declined" };
   const servedCheckpoints = async () =>
@@ -354,6 +355,9 @@ export async function ejectLoadedModel(
       }
       if (!(before.backend_loaded ?? before.loaded))
         return { status: "alreadyFree" };
+      // The unload route releases whatever is resident: a model swapped in since the poll stays.
+      const resident = embeddingRowName(before);
+      if (resident !== entry.name) return { status: "replaced", resident };
       await useEmbeddingModelStore
         .getState()
         .applyResidency(unloadEmbeddingModel);

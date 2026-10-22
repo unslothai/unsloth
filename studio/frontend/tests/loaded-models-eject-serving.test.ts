@@ -40,6 +40,11 @@ test("a kept model unloads by its checkpoint and leaves the active one", async (
     [KEPT],
   );
   assert.equal(stub.state.active, ACTIVE);
+  // The running-chat check and the unload must address the same slot.
+  assert.deepEqual(
+    stub.state.confirmCalls.map((c) => c.model),
+    [KEPT],
+  );
 });
 
 test("a kept model already gone unloads nothing", async () => {
@@ -92,4 +97,13 @@ test("an embedder already released is reported as free", async (t) => {
   assert.deepEqual(await ejectLoadedModel(embeddingRow()), {
     status: "alreadyFree",
   });
+});
+
+test("an embedder swapped in since the poll is reported, not unloaded", async (t) => {
+  t.after(() => auth.setAuthFetchHandler(null));
+  stub.resetStub({ embeddingLoaded: true });
+  answerEmbeddingStatus();
+  const outcome = await ejectLoadedModel({ ...embeddingRow(), name: "org/Old" });
+  assert.deepEqual(outcome, { status: "replaced", resident: "org/E" });
+  assert.equal(stub.state.embeddingLoaded, true);
 });
