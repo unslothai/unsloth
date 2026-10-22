@@ -573,21 +573,23 @@ def inject_multi_lora(
 ) -> list[str]:
     """Freeze ``model`` and wrap every linear layer named, or dotted-suffixed by, a target, as PEFT does."""
     targets = (target_modules,) if isinstance(target_modules, str) else tuple(target_modules)
+    found = [
+        (name, module)
+        for name, module in model.named_modules()
+        if name
+        and any(name == t or name.endswith("." + t) for t in targets)
+        and hasattr(module, "in_features")
+        and hasattr(module, "weight")
+    ]
+    if not found:
+        raise ValueError(f"No linear layers named {targets} found.")
     for p in model.parameters():
         p.requires_grad_(False)
-    replaced = []
-    for name, module in list(model.named_modules()):
-        if not name or not any(name == t or name.endswith("." + t) for t in targets):
-            continue
-        if not hasattr(module, "in_features") or not hasattr(module, "weight"):
-            continue
+    for name, module in found:
         parent_name, _, child = name.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
         setattr(parent, child, MultiLoraLinear(module, num_adapters, r, lora_alpha, use_rslora))
-        replaced.append(name)
-    if not replaced:
-        raise ValueError(f"No linear layers named {targets} found.")
-    return replaced
+    return [name for name, _ in found]
 
 
 def _layers(model: nn.Module) -> list[tuple[str, MultiLoraLinear]]:

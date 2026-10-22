@@ -158,6 +158,13 @@ def test_an_adapter_absent_from_the_batch_is_not_stepped():
         assert (p in opt.state and len(opt.state[p]) > 0) == moved, name
 
 
+def test_a_target_that_matches_nothing_leaves_the_model_trainable():
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    with pytest.raises(ValueError):
+        ml.inject_multi_lora(model, ["q_proj"], 2)
+    assert all(p.requires_grad for p in model.parameters())
+
+
 def test_a_single_string_target_is_one_name():
     torch.manual_seed(0)
     model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
