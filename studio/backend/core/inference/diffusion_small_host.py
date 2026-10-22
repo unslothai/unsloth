@@ -29,9 +29,6 @@ _HOST_RESERVE_MIN_MIB = 3072
 _HOST_RESERVE_FRACTION = 0.10
 # fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
-# A converting load holds the copy-on-write source view next to the converted copy, and Windows charges that
-# view to commit (#13432); measured qwen-image loads peaked near 2x the copy-only estimate.
-_TRANSIENT_MARGIN = 1.5
 _INT8_MIN_ELEMENTS = 1 << 22
 # DiT denoisers the route stores as int8; a UNet (mostly convs) converts dense like any other non-encoder component
 INT8_DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer")
@@ -149,22 +146,33 @@ def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Pa
     return None
 
 
-def host_ram_mib() -> tuple[Optional[int], Optional[int]]:
-    """(total, available) host MiB, both capped by an enforcing cgroup; available additionally capped by the
-    Windows commit headroom (commit exhaustion is the #13432 failure mode, invisible to a physical reading)
-    and by the ``HOST_RAM_LIMIT_ENV`` test hook."""
-    from .diffusion_memory import _host_available_mib, _host_ram_capacity_mib
-
-    total = _host_ram_capacity_mib()
-    available = _host_available_mib()
+def _host_ram_limit_mib() -> int:
     try:
-        limit = int((os.environ.get(HOST_RAM_LIMIT_ENV) or "").strip())
+        return max(0, int((os.environ.get(HOST_RAM_LIMIT_ENV) or "").strip()))
     except ValueError:
-        limit = 0
-    if limit > 0:
-        total = limit if total is None else min(total, limit)
-        available = limit if available is None else min(available, limit)
-    return total, available
+        return 0
+
+
+def _capped(value: Optional[int], limit: int) -> Optional[int]:
+    if limit <= 0:
+        return value
+    return limit if value is None else min(value, limit)
+
+
+def host_ram_mib() -> tuple[Optional[int], Optional[int]]:
+    """(total, available) host MiB, both capped by an enforcing cgroup and the ``HOST_RAM_LIMIT_ENV`` test hook."""
+    from .diffusion_memory import _available_system_memory_mib, _host_ram_capacity_mib
+
+    limit = _host_ram_limit_mib()
+    return _capped(_host_ram_capacity_mib(), limit), _capped(_available_system_memory_mib(), limit)
+
+
+def host_commit_mib() -> Optional[int]:
+    """Windows commit headroom MiB (None elsewhere or unreadable), capped by the ``HOST_RAM_LIMIT_ENV`` test hook."""
+    from .diffusion_memory import _windows_commit_headroom_mib
+
+    headroom = _windows_commit_headroom_mib()
+    return None if headroom is None else _capped(headroom, _host_ram_limit_mib())
 
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:
@@ -189,8 +197,9 @@ class SmallHostDecision:
     total_mib: Optional[int] = None
     dense_host_mib: int = 0
     route_host_mib: int = 0
-    # pre-built single-file bytes (GGUF DiT) added to both routes' host need
-    prebuilt_host_mib: int = 0
+    # Windows commit headroom at the decision and the dense load's commit need (source views + converted copy)
+    commit_mib: Optional[int] = None
+    dense_commit_mib: int = 0
     # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
@@ -204,11 +213,12 @@ def decide_small_host(
     host_total_mib: Optional[int],
     host_available_mib: Optional[int],
     lora_active: bool = False,
-    prebuilt_host_mib: int = 0,
+    host_commit_mib: Optional[int] = None,
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
-    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``prebuilt_host_mib`` adds bytes
-    that sit on the host before ``from_pretrained`` runs (a single-file GGUF transformer) to both routes."""
+    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
+    also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
+    violation in native code, not a Python error (#13432, #14513)."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
     if str(device) != "cuda":
@@ -237,53 +247,72 @@ def decide_small_host(
         for n, c in converted.items()
     )
     reserve = host_reserve_mib(host_total_mib)
-    # A pre-built single-file DiT occupies the host in both routes (checkpoint dict plus dequant staging);
-    # the converting load additionally holds the copy-on-write source view next to the converted copy, which
-    # Windows charges to commit (#13432) — measured peaks ran near 2x the copy-only estimate.
-    prebuilt = max(0, int(prebuilt_host_mib or 0))
-    dense_need = int(dense * _TRANSIENT_MARGIN) + prebuilt
-    route_need = route + prebuilt
+    # Windows charges each copy-on-write safetensors view to commit for the whole load, so a converting load
+    # commits the stored bytes next to the converted copy (measured 2.06x dense on a Qwen-Image encoder).
+    # Linux / macOS do not enforce commit: there the physical check alone decides.
+    dense_commit = dense + int(sum(c.mib for c in converted.values()) * _CONVERT_MARGIN)
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
-    fits = host_available_mib is not None and dense_need + reserve <= int(host_available_mib)
+    commit = None if host_commit_mib is None else int(host_commit_mib)
+    commit_fits = commit is None or dense_commit + reserve <= commit
+    fits = (
+        host_available_mib is not None
+        and dense + reserve <= int(host_available_mib)
+        and commit_fits
+    )
+    commit_note = (
+        ""
+        if commit is None
+        else f", {commit} MiB commit headroom (dense needs ~{dense_commit} MiB)"
+    )
+    extra = {"commit_mib": commit, "dense_commit_mib": dense_commit}
     if fits and not forced:
         return SmallHostDecision(
             False,
-            f"dense {compute} load ({dense_need} MiB) fits {host_available_mib} MiB available host RAM",
+            f"dense {compute} load ({dense} MiB) fits {host_available_mib} MiB available host RAM{commit_note}",
             host_available_mib,
             host_total_mib,
             dense,
             route,
-            prebuilt_host_mib = prebuilt,
+            **extra,
         )
     if lora_active and not forced:
         # the int8 denoiser cannot carry adapters
         return SmallHostDecision(
             False,
-            f"LoRA adapters need the dense denoiser (dense load ~{dense_need} MiB, {host_available_mib} MiB available)",
+            f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available"
+            f"{commit_note})",
             host_available_mib,
             host_total_mib,
             dense,
             route,
-            prebuilt_host_mib = prebuilt,
+            **extra,
         )
     refuse = None
     if (
         host_available_mib is not None
-        and route_need + reserve > int(host_available_mib)
+        and route + reserve > int(host_available_mib)
         and not host_ram_check_disabled()
     ):
-        refuse = _refusal(route_need, reserve, host_available_mib, "even the low-memory route")
+        refuse = _refusal(route, reserve, host_available_mib, "even the low-memory route")
     why = (
         f"{SMALL_HOST_ENV}=1"
         if forced and fits
-        else f"dense {compute} load needs ~{dense_need} MiB + {reserve} MiB reserve of host RAM, "
-        f"{host_available_mib} MiB available"
+        else f"dense {compute} load needs ~{dense} MiB + {reserve} MiB reserve of host RAM, "
+        f"{host_available_mib} MiB available{commit_note}"
     )
     return SmallHostDecision(
-        True, why, host_available_mib, host_total_mib, dense, route, prebuilt, storage, refuse
+        True,
+        why,
+        host_available_mib,
+        host_total_mib,
+        dense,
+        route,
+        storage_dtypes = storage,
+        refuse = refuse,
+        **extra,
     )
 
 

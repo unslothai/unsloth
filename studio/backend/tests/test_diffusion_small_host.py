@@ -114,77 +114,101 @@ def test_refuses_before_loading_when_even_the_route_cannot_fit(monkeypatch):
     assert _decide(QWEN, dtype = torch.float32, total = 16 * 1024, available = 14000).refuse is None
 
 
-def test_prebuilt_single_file_bytes_decide_the_qwen_image_cases():
-    # 2026-10-14: a 17 GB bf16 encoder with a 4 GB pre-built GGUF DiT read as "fits" on a host with ~36 GB
-    # free and then ramped the server to ~45 GB commit; with the pre-built bytes and the source-view
-    # transient budgeted, the same host takes the route instead.
-    comps = {
-        "text_encoder": sh.StoredComponent("text_encoder", 16717, "bfloat16"),
-        "vae": sh.StoredComponent("vae", 335, "bfloat16"),
-    }
-    assert not _decide(comps, total = 47 * 1024, available = 36 * 1024).engaged
-    d = _decide(comps, total = 47 * 1024, available = 36 * 1024, prebuilt_host_mib = 4096)
-    assert d.engaged and d.refuse is None and d.prebuilt_host_mib == 4096
-    # even the route refuses when the checkpoint alone outgrows the host, and the message counts it
-    d = _decide(comps, total = 16 * 1024, available = 9000, prebuilt_host_mib = 12000)
-    assert d.engaged and d.refuse and "Not enough system RAM" in d.refuse
-    assert "14.7 GB" in d.refuse
+# #14513: Qwen-Image GGUF on a 48 GB Windows host with a 16 GB fixed pagefile. The GGUF DiT is already built (and
+# already out of both readings), so only the 16.7 GB bf16 encoder converts; its fp16 load committed ~2x dense.
+QWEN_GGUF_COMPANIONS = {
+    "text_encoder": sh.StoredComponent("text_encoder", 16717, "bfloat16"),
+    "vae": sh.StoredComponent("vae", 242, "bfloat16"),
+}
+WIN_TOTAL = 48 * 1024
 
 
-@pytest.mark.parametrize(
-    ("lora_active", "available"),
-    [(False, 100 * 1024), (True, KAGGLE_AVAILABLE)],
-)
-def test_dense_decisions_report_prebuilt_host_bytes(lora_active, available):
-    baseline = _decide(FLUX1, total = 128 * 1024, available = available, lora_active = lora_active)
-    decision = _decide(
-        FLUX1,
-        total = 128 * 1024,
-        available = available,
-        lora_active = lora_active,
-        prebuilt_host_mib = 4096,
+def test_windows_commit_headroom_routes_a_dense_load_that_fits_physical_ram():
+    # physical RAM alone says the dense load fits, which is what crashed
+    base = _decide(QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024)
+    assert not base.engaged and base.dense_commit_mib == 2 * base.dense_host_mib
+    d = _decide(
+        QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 30 * 1024
     )
-    assert not decision.engaged and decision.refuse is None
-    assert decision.prebuilt_host_mib == 4096
-    assert decision.dense_host_mib == baseline.dense_host_mib
-    assert decision.route_host_mib == baseline.route_host_mib
-    assert decision.storage_dtypes == baseline.storage_dtypes
-    assert ("LoRA" in decision.reason) is lora_active
+    assert d.engaged and d.refuse is None and d.commit_mib == 30 * 1024
+    assert d.storage_dtypes == {"text_encoder": "bfloat16"}
+    assert "commit headroom" in d.reason
+    # enough commit for the source views plus the converted copy: dense, as before
+    d = _decide(
+        QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 50 * 1024
+    )
+    assert not d.engaged and "commit headroom" in d.reason
+
+
+def test_commit_headroom_only_routes_and_never_refuses():
+    # the route's refusal stays on physical RAM: commit can grow with a system-managed pagefile
+    d = _decide(QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 0)
+    assert d.engaged and d.refuse is None
+    d = _decide(QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 4000, host_commit_mib = 60 * 1024)
+    assert d.engaged and d.refuse and "Not enough system RAM" in d.refuse
+
+
+def test_unreadable_commit_keeps_every_decision():
+    # Linux / macOS (and an unreadable Windows counter) pass None: byte-identical decisions to the physical check
+    for comps, dtype, total, available, lora in [
+        (FLUX1, torch.float16, KAGGLE_TOTAL, KAGGLE_AVAILABLE, False),
+        (FLUX1, torch.float16, 64 * 1024, 58 * 1024, False),
+        (FLUX1, torch.float16, KAGGLE_TOTAL, KAGGLE_AVAILABLE, True),
+        (QWEN, torch.float32, 16 * 1024, 14000, False),
+        (QWEN_GGUF_COMPANIONS, torch.float16, WIN_TOTAL, 30 * 1024, False),
+    ]:
+        a = _decide(comps, dtype, total, available, lora_active = lora)
+        b = _decide(comps, dtype, total, available, lora_active = lora, host_commit_mib = None)
+        assert (a.engaged, a.refuse, a.reason, a.storage_dtypes) == (
+            b.engaged,
+            b.refuse,
+            b.reason,
+            b.storage_dtypes,
+        )
+    # FLUX.1 fp16 with 58 GB free on a 64 GB host stays dense (no transient margin on the physical side)
+    assert not _decide(FLUX1, total = 64 * 1024, available = 58 * 1024).engaged
+
+
+def test_lora_with_tight_commit_keeps_the_dense_denoiser():
+    d = _decide(
+        FLUX1, total = 128 * 1024, available = 100 * 1024, host_commit_mib = 20 * 1024, lora_active = True
+    )
+    assert (
+        not d.engaged and d.refuse is None and "LoRA" in d.reason and "commit headroom" in d.reason
+    )
 
 
 def test_host_ram_limit_env_caps_the_guard_view(monkeypatch):
     monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 32000)
-    monkeypatch.setattr(dm, "_host_available_mib", lambda: 20000)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 20000)
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 25000)
     monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "6144")
     assert sh.host_ram_mib() == (6144, 6144)
+    assert sh.host_commit_mib() == 6144
     monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "90000")
     assert sh.host_ram_mib() == (32000, 20000)
+    assert sh.host_commit_mib() == 25000
     monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "not-a-number")
     assert sh.host_ram_mib() == (32000, 20000)
-
-
-def test_available_host_mib_is_capped_by_the_windows_commit_headroom(monkeypatch):
-    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 5000)
-    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 3000)
-    assert dm._host_available_mib() == 3000
-    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 9000)
-    assert dm._host_available_mib() == 5000
+    # no commit reading (Linux / macOS) stays None under the hook
     monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: None)
-    assert dm._host_available_mib() == 5000
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "6144")
+    assert sh.host_commit_mib() is None
 
 
 def test_windows_commit_headroom_reader_reports_a_value_on_windows():
     # the reader once called an unexported kernel32 name and silently returned None, leaving the guard on the
     # physical reading; on Windows it must reach the real API, elsewhere None is by design
     if sys.platform != "win32":
-        pytest.skip("Windows-only reader")
+        assert dm._windows_commit_headroom_mib() is None
+        return
     value = dm._windows_commit_headroom_mib()
     assert value is not None and value >= 0
 
 
-def test_a_measured_fits_decision_logs_its_numbers(tmp_path, monkeypatch):
-    # a load the guard lets through dense used to leave no log line at all; every measured
-    # decision now logs, the fits case included
+def test_the_pipeline_decision_passes_the_commit_headroom_and_logs_a_dense_decision(
+    tmp_path, monkeypatch
+):
     from core.inference import diffusion as dif
 
     records = []
@@ -193,30 +217,28 @@ def test_a_measured_fits_decision_logs_its_numbers(tmp_path, monkeypatch):
         def info(self, event, *args):
             records.append(event % args if args else event)
 
-    monkeypatch.setattr(dif, "host_ram_mib", lambda: (47 * 1024, 30 * 1024))
-    monkeypatch.setattr(dif, "_available_system_memory_mib", lambda: 45 * 1024)
-    monkeypatch.setattr(dif, "_windows_commit_headroom_mib", lambda: 58 * 1024)
-    monkeypatch.setattr(
-        dif,
-        "stored_components",
-        lambda snapshot: {"vae": sh.StoredComponent("vae", 800, "bfloat16")},
-    )
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (WIN_TOTAL, 30 * 1024))
+    monkeypatch.setattr(dif, "stored_components", lambda snapshot: dict(QWEN_GGUF_COMPANIONS))
     monkeypatch.setattr(dif, "logger", _LogSpy())
-    decision = dif.DiffusionBackend()._small_host_decision(
-        str(tmp_path),
-        {},
-        types.SimpleNamespace(device = "cuda"),
-        torch.float16,
-        lora_active = False,
-    )
-    assert not decision.engaged and decision.refuse is None
-    assert re.fullmatch(
-        r"dense float16 load \(\d+ MiB\) fits 30720 MiB available host RAM",
-        decision.reason,
-    )
+
+    def decide(commit):
+        monkeypatch.setattr(dif, "host_commit_mib", lambda: commit)
+        return dif.DiffusionBackend()._small_host_decision(
+            str(tmp_path),
+            {"transformer": object()},
+            types.SimpleNamespace(device = "cuda"),
+            torch.float16,
+            lora_active = False,
+        )
+
+    d = decide(None)
+    assert not d.engaged and d.refuse is None
+    assert records[-1] == f"diffusion.small_host: engaged=False ({d.reason})"
+    d = decide(30 * 1024)
+    assert d.engaged and d.refuse is None and d.commit_mib == 30 * 1024
     assert (
-        f"diffusion.small_host: engaged=False ({decision.reason}); "
-        "host available: physical 46080 MiB, commit 59392 MiB" in records
+        records[-1].startswith("diffusion.small_host: engaged=True (")
+        and "commit headroom" in records[-1]
     )
 
 

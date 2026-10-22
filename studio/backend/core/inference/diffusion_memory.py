@@ -1013,17 +1013,6 @@ def _windows_commit_headroom_mib() -> Optional[int]:
         return None
 
 
-def _host_available_mib() -> Optional[int]:
-    """Available host MiB for the diffusion guards: system available capped by the Windows commit headroom."""
-    available = _available_system_memory_mib()
-    headroom = _windows_commit_headroom_mib()
-    if headroom is None:
-        return available
-    if available is None:
-        return headroom
-    return min(available, headroom)
-
-
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
