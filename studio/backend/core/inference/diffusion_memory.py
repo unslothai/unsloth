@@ -3124,8 +3124,16 @@ def refine_plan_from_loaded_weights(
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
         # The dense table covers fp16 / fp32 unpacked weights only; everything else uses a learned peak alone.
+        # Stored fp8 layers widen per forward, which no static table priced, even beside torchao layers.
         static_seed = not (
-            dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
+            any(
+                _holds_fp8_stored(getattr(pipe, name, None))
+                for name in ("transformer", "transformer_2", "unconditional_transformer", "unet")
+            )
+            or (
+                dense_mib is not None
+                and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
+            )
         )
         quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
         try:

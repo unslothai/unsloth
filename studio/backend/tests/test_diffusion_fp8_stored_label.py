@@ -184,3 +184,30 @@ def test_stored_fp8_places_from_its_own_learned_peak_only(learned_store):
     assert new.estimates["measured_static_seed"] is False
     assert new.estimates["measured_learned_peak_mib"] == 2000
     assert new.estimates["measured_runtime_headroom_mib"] == 2304  # 2000 x 1.15 -> 256 MiB step
+
+
+def _refine_default(pipe, plan):
+    return dm.refine_plan_from_loaded_weights(
+        pipe, plan, family = "flux.2-klein", speed_mode = "default"
+    )
+
+
+def test_stored_fp8_beside_torchao_layers_never_takes_a_static_seed(learned_store, monkeypatch):
+    # a ComfyUI file whose int8 layers run on torchao while its fp8 layers stay stored: the torchao quant table
+    # (dense_mib None) never priced the stored layers' per-forward widen
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    monkeypatch.setitem(dm._MEASURED_IMAGE_PEAK_MIB, "flux.2-klein", 2000)
+    plan = _flat_plan()
+    dense = _refine_default(_pipe(torch.float16, False), plan)
+    assert (
+        dense.estimates["measured_static_seed"] is True
+    )  # control: a torchao-only load keeps its seed
+    pipe = _pipe(torch.float16, True)
+    assert _refine_default(pipe, plan) is plan
+    kw = dict(family = "flux.2-klein", speed_mode = "default", width = 1024, height = 1024)
+    learned_store.record(**kw, quant = dm.learned_peak_label(pipe), peak_mib = 1000)
+    new = _refine_default(pipe, plan)
+    assert new.estimates["measured_static_seed"] is False
+    assert (
+        new.estimates["measured_runtime_headroom_mib"] == 1280
+    )  # 1000 x 1.15, not the 2000 table seed
