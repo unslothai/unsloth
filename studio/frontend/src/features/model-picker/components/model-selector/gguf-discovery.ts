@@ -22,8 +22,11 @@ function withHubState<V extends GgufVariantDetail>(
           download_size_bytes: published.download_size_bytes,
         }
       : {}),
-    // A local-only listing that could not read the header sends 0; the Hub's reading wins.
-    lookup_table_bytes: local.lookup_table_bytes || published?.lookup_table_bytes,
+    // Paired with the size it came from: the Hub's when its sizes win above (an update can
+    // change the table), else the local header's, the Hub's filling an unread 0.
+    lookup_table_bytes: published
+      ? published.lookup_table_bytes || local.lookup_table_bytes
+      : local.lookup_table_bytes,
   };
 }
 

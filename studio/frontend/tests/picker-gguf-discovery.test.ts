@@ -314,3 +314,49 @@ test("an up-to-date cached quant keeps the Hub's companion-inclusive size", asyn
   assert.equal(result.variants[0].download_size_bytes, 900);
   assert.equal(result.variants[0].cache_path, "/cache/old");
 });
+
+test("an update's table size travels with the update's file size", async () => {
+  const GIB = 1024 ** 3;
+  const cached: GgufVariantsResponse = {
+    ...local,
+    variants: [
+      { ...local.variants[0], size_bytes: 70 * GIB, lookup_table_bytes: 20 * GIB },
+    ],
+  };
+  const hub: GgufVariantsResponse = {
+    ...local,
+    variants: [
+      {
+        ...local.variants[0],
+        size_bytes: 80 * GIB,
+        lookup_table_bytes: 30 * GIB,
+        update_available: true,
+      },
+    ],
+  };
+  const merged = await loadPickerGgufVariants(
+    async (localOnly) => (localOnly ? cached : hub),
+    options,
+    () => {},
+  );
+  assert.equal(merged.variants[0].size_bytes, 80 * GIB);
+  assert.equal(merged.variants[0].lookup_table_bytes, 30 * GIB);
+});
+
+test("a Hub row with no table reading keeps the local header's", async () => {
+  const GIB = 1024 ** 3;
+  const cached: GgufVariantsResponse = {
+    ...local,
+    variants: [{ ...local.variants[0], lookup_table_bytes: 20 * GIB }],
+  };
+  const hub: GgufVariantsResponse = {
+    ...local,
+    variants: [{ ...local.variants[0], lookup_table_bytes: 0 }],
+  };
+  const merged = await loadPickerGgufVariants(
+    async (localOnly) => (localOnly ? cached : hub),
+    options,
+    () => {},
+  );
+  assert.equal(merged.variants[0].lookup_table_bytes, 20 * GIB);
+});

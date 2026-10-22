@@ -15896,10 +15896,22 @@ def _gguf_memory_breakdown(
             # --no-kv-offload keeps the whole cache in RAM whatever the layer placement.
             if not _kv_offload_from_args(_lt_extras, env = _lt_env):
                 host_only += runtime.kv_bytes
+            # CPU-pinned companions live in RAM whatever the cards hold: a drafter under
+            # -ngld 0 (its file and its runtime), a projector under --no-mmproj-offload.
+            if not drafter_on_gpu:
+                host_only += host_drafter_bytes + drafter_runtime_bytes
+            _lt_mm = _charged_projector_bytes(config, extras, disable_vision)
+            _lt_mm = _lt_mm if _lt_mm and _lt_mm <= companion_bytes else 0
+            # Its encoder buffers too, as the panel charges them below.
+            _lt_mm_runtime = int(_lt_mm * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
+            if _lt_mm and _resolved_mmproj_offload(llama_extra_args) is False:
+                host_only += _lt_mm + _lt_mm_runtime
             footprint = (
                 _lt_device_share
                 # The drafter and projector files and pass-through adapters load too.
                 + companion_bytes
+                + host_drafter_bytes
+                + _lt_mm_runtime
                 + adapter_bytes
                 + runtime.kv_bytes
                 + runtime.compute_bytes

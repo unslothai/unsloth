@@ -974,6 +974,31 @@ class TestEstimate:
         assert b.lookup_table_on_disk is bool(extras)
         assert b.lookup_table_bytes == FLASH_NEXT_TABLE
 
+    def test_a_cpu_pinned_projector_is_charged_to_ram_in_the_residency_proof(
+        self, breakdown, monkeypatch
+    ):
+        """A 96 GB card holds everything but the table, so 34 GiB of RAM keeps the table
+        resident; --no-mmproj-offload puts the 6 GiB projector and its buffers beside it in
+        RAM, which then no longer holds both (the launch streams it)."""
+        import routes.inference as ri
+
+        MM = 6 * GIB
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri, "_gguf_resident_file_gb", lambda cfg, **kw: (self.WEIGHTS + MM) / GIB
+        )
+        monkeypatch.setattr(ri, "_charged_projector_bytes", lambda *a, **k: MM)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gpu_memory",
+            staticmethod(lambda binary = None, **k: [(0, 96000, 98304)]),
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 34 * 1024)
+        )
+        assert breakdown().lookup_table_on_disk is False
+        assert breakdown(llama_extra_args = ["--no-mmproj-offload"]).lookup_table_on_disk is True
+
     def test_ram_the_spilled_weights_crowd_out_keeps_the_table_streamed(
         self, breakdown, monkeypatch
     ):
