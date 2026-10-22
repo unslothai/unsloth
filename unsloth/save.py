@@ -6088,6 +6088,17 @@ def _cast_state_dict_16bit(model, state_dict, target_dtype):
     }
 
 
+@contextmanager
+def _unmerge_flags_on_error(streamed):
+    try:
+        yield
+    except BaseException:
+        if streamed:
+            from .models.fsdp2_save import unmerge_flags
+            unmerge_flags(streamed)
+        raise
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -6328,7 +6339,14 @@ def unsloth_generic_save(
 
         # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
-        with nullcontext() if in_place else lora_relative_to_original_base(model):
+        # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
+        # its GPU first, so the merge below only unloads those layers.
+        streamed = []
+        if in_place and getattr(model.config, "quantization_config", None):
+            from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
+            streamed = merge_4bit_lora_layer_by_layer(model)
+        relative = nullcontext() if in_place else lora_relative_to_original_base(model)
+        with relative, _unmerge_flags_on_error(streamed):
             merge_and_overwrite_lora(
                 _modelscope_base_model_name
                 if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
@@ -6416,12 +6434,15 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     return include
 
 
-def _fsdp2_collective_save(trainable_only, offload_to_cpu = None, offload_4bit = False):
+def _fsdp2_collective_save(
+    trainable_only, offload_to_cpu = None, offload_4bit = False, gather_options = None
+):
     """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
     return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough;
     `offload_to_cpu(self, args, kwargs)` (default True) whether gathered weights go to the CPU.
     `offload_4bit`: the save only writes packed 4-bit weights (never merges them), so they go to
-    the CPU too.
+    the CPU too. `gather_options(self, args, kwargs)`, when given, returns the `offload_to_cpu` /
+    `offload_4bit` options for `fsdp2_gathered` instead (merged saves).
     A model FSDP2 does not shard, or a call that brings its own `state_dict`, is passed through."""
 
     def decorate(fn):
@@ -6443,12 +6464,14 @@ def _fsdp2_collective_save(trainable_only, offload_to_cpu = None, offload_4bit =
                     + " weights to rank 0, which writes. Every rank must make this call."
                 )
             offload = True if offload_to_cpu is None else offload_to_cpu(self, args, kwargs)
+            options = dict(offload_to_cpu = offload, offload_4bit = offload_4bit)
+            if gather_options is not None and not only:
+                options.update(gather_options(self, args, kwargs))
             with fsdp2_gathered(
                 self,
                 trainable_only = only,
                 include = include,
-                offload_to_cpu = offload,
-                offload_4bit = offload_4bit,
+                **options,
             ) as writer:
                 if writer is False:
                     return None
@@ -6482,12 +6505,19 @@ def _fsdp2_merged_offload(model, args, kwargs):
     return offload_all_but_4bit_merge_operands(model)
 
 
+def _fsdp2_merged_gather_options(model, args, kwargs):
+    from .models.fsdp2_save import merged_save_gather_options
+    return merged_save_gather_options(model, _merged_save_method(args, kwargs))
+
+
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
-    # merged_4bit merges with PEFT where the packed 4-bit weights stay (on the GPU), so those layers'
-    # LoRA weights stay on that device too; every other gathered weight still goes to the CPU.
+    # Packed 4-bit weights are staged on the CPU as they are gathered. merged_4bit merges with PEFT
+    # one layer at a time on the GPU the packed weight came from, so those layers' LoRA weights stay
+    # on that device; every other gathered weight goes to the CPU.
     offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
+    gather_options = _fsdp2_merged_gather_options,
 )
 def unsloth_generic_save_pretrained_merged(
     self,
@@ -6650,7 +6680,9 @@ def unsloth_generic_save_pretrained_merged(
 # Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
-    and _is_adapter_save_method(_merged_save_method(args, kwargs))
+    and _is_adapter_save_method(_merged_save_method(args, kwargs)),
+    offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
+    gather_options = _fsdp2_merged_gather_options,
 )
 def unsloth_generic_push_to_hub_merged(
     self,

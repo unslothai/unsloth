@@ -95,9 +95,10 @@ def test_refusal_passes_through_without_fsdp2(monkeypatch):
     assert export(object(), 1) == ("ran", 1)
 
 
-def test_only_saves_that_write_packed_bytes_stage_4bit_on_the_cpu(monkeypatch):
-    """save_pretrained / push_to_hub write the packed 4-bit bytes as they are, so the gather may put
-    them on the CPU; a merged save dequantizes them where they are and keeps them there."""
+def test_full_and_merged_saves_stage_4bit_on_the_cpu(monkeypatch):
+    """save_pretrained / push_to_hub write the packed 4-bit bytes as they are, merged_16bit reads its
+    base from the 16-bit checkpoint, and merged_4bit brings one packed layer at a time back to its
+    device to merge, so every one of them gathers the packed bytes onto the CPU."""
     seen = []
 
     @contextlib.contextmanager
@@ -119,4 +120,4 @@ def test_only_saves_that_write_packed_bytes_stage_4bit_on_the_cpu(monkeypatch):
         is None
     )
     assert unsloth_save.unsloth_generic_push_to_hub_merged(model, "user/repo", None) is None
-    assert seen == [True, True, False, False, False], seen
+    assert seen == [True, True, True, True, True], seen
