@@ -236,17 +236,36 @@ def infotext_meta(meta: dict) -> dict:
         or not meta.get("hires_base_height")
     ):
         return meta
-    return {**meta, "width": meta["hires_base_width"], "height": meta["hires_base_height"]}
+    return {
+        **meta,
+        "width": meta["hires_base_width"],
+        "height": meta["hires_base_height"],
+        # The rendered size, for infotext_fields' Hires resize.
+        "hires_width": meta.get("width"),
+        "hires_height": meta.get("height"),
+    }
 
 
 def infotext_fields(meta: dict) -> str:
     """A1111 infotext for a hires image in A1111 / Forge key names; empty for any other image."""
     if meta.get("hires_scale") is None:
         return ""
-    parts = [
-        f"Denoising strength: {meta.get('hires_denoise')}",
-        f"Hires upscale: {meta.get('hires_scale')}",
-    ]
+    parts = [f"Denoising strength: {meta.get('hires_denoise')}"]
+    out_w, out_h = meta.get("hires_width"), meta.get("hires_height")
+    base_w, base_h = meta.get("hires_base_width"), meta.get("hires_base_height")
+    scale = float(meta["hires_scale"])
+    if (
+        out_w
+        and out_h
+        and base_w
+        and base_h
+        and (int(out_w), int(out_h)) != (int(int(base_w) * scale), int(int(base_h) * scale))
+    ):
+        # A1111 sizes ``Hires upscale`` as int(side * scale); a capped or 16-rounded target is written the way A1111
+        # writes an explicit size (processing.py: "Hires resize" in place of "Hires upscale"), so it reproduces.
+        parts.append(f"Hires resize: {int(out_w)}x{int(out_h)}")
+    else:
+        parts.append(f"Hires upscale: {meta.get('hires_scale')}")
     if meta.get("hires_steps"):
         parts.append(f"Hires steps: {meta['hires_steps']}")
     label = upscalers.model_label(meta.get("hires_upscaler"))
@@ -408,6 +427,21 @@ def sd_cpp_upscaler_name(upscaler_id: str, staged_name: Optional[str] = None) ->
     if not staged_name:
         raise ValueError(f"Upscaler '{upscaler_id}' was not staged for the native engine.")
     return staged_name
+
+
+def sd_cpp_hires_sampled_steps(steps: int, denoise: float) -> int:
+    """Steps sd.cpp's Hires pass samples (and reports progress over), from make_hires_sigma_schedule in
+    src/pipeline/request.cpp: ``scheduler_steps = int(steps / strength)``, ``t_enc = int(scheduler_steps * strength)``
+    capped at ``scheduler_steps - 1``, in C ``float`` arithmetic."""
+    import numpy as np
+
+    strength = np.float32(denoise)
+    effective = max(1, int(steps))
+    scheduler_steps = max(1, int(np.float32(effective) / strength))
+    t_enc = int(np.float32(scheduler_steps) * strength)
+    if t_enc >= scheduler_steps:
+        t_enc = scheduler_steps - 1
+    return max(1, t_enc)
 
 
 def sd_cpp_payload(

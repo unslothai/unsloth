@@ -223,11 +223,22 @@ export function parseHiresInfotext(
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
-  const scale = num(take("hires upscale"));
+  let scale = num(take("hires upscale"));
+  const resizeKey = Object.keys(fields).find((k) => k.toLowerCase() === "hires resize");
   const steps = num(take("hires steps"));
   const upscaler = take("hires upscaler");
   const cfg = num(take("hires cfg scale"));
-  // Without a factor the pass is sized by `Hires resize`, which Studio does not offer: leave it all unapplied.
+  // `Hires resize: WxH` (A1111's explicit size; Studio writes it for a capped target) maps to the factor that
+  // reaches it from Size; the backend's own cap lands on the same size again.
+  const wh = resizeKey === undefined ? null : fields[resizeKey].trim().match(/^(\d+)\s*x\s*(\d+)$/i);
+  if (scale === undefined && wh && typeof size.width === "number" && typeof size.height === "number" && size.width > 0 && size.height > 0) {
+    const factor = Math.max(Number(wh[1]) / size.width, Number(wh[2]) / size.height);
+    if (Number.isFinite(factor) && factor > 0) {
+      scale = clamp(Math.round(factor * 100) / 100, 1, 4);
+      delete fields[resizeKey as string];
+    }
+  }
+  // Without a factor or a usable size, Studio cannot size the pass: leave it all unapplied.
   if (scale === undefined) {
     if (steps !== undefined) fields["Hires steps"] = String(steps);
     if (upscaler !== undefined) fields["Hires upscaler"] = upscaler;

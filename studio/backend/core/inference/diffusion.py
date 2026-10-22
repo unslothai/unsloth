@@ -13830,9 +13830,13 @@ def _hires_status(fam: DiffusionFamily) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - a broken scan hides model upscalers, never the status
         logger.debug("diffusion.upscalers: scan failed: %s", exc)
         models = []
+    hires = diffusion_hires.capability(fam, model_rows = models)
     return {
-        "hires": diffusion_hires.capability(fam, model_rows = models),
-        "hires_unavailable_reason": None,
+        "hires": hires,
+        # Why the control is hidden (no img2img path yet), shown in its place.
+        "hires_unavailable_reason": diffusion_hires.unavailable_reason(fam)
+        if hires is None
+        else None,
         "upscale_models": models if getattr(fam, "img2img_pipeline_class", None) else [],
     }
 

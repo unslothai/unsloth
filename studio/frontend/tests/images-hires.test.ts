@@ -221,3 +221,16 @@ test("a model upscaler is sent only while the status still lists it", () => {
   assert.equal(upscaleModelRequest("realesrgan_x4plus", undefined), undefined);
   assert.equal(upscaleModelRequest(null, models), undefined);
 });
+
+test("a capped target exported as Hires resize restores to the factor that reaches it", () => {
+  const r = parseA1111Parameters(
+    "x\nSteps: 20, Seed: 2, Size: 1536x1024, Denoising strength: 0.5, Hires resize: 2048x1360, Hires upscaler: Lanczos",
+  );
+  assert.ok(r);
+  assert.deepEqual(importNotApplied(r), []);
+  const settings = recipeSettings(r, DEFAULTS);
+  const choice = hiresFromRecipe(settings);
+  assert.equal(choice.scale, 1.33);
+  assert.deepEqual(hiresTargetSize(1536, 1024, choice.scale), { width: 2048, height: 1360 });
+  assert.deepEqual(hiresBaseSize(settings), { width: 1536, height: 1024 });
+});

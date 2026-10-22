@@ -315,7 +315,38 @@ def test_infotext_writes_a1111_hires_keys_and_the_base_size():
     assert fields["Hires steps"] == "14"
     assert fields["Hires upscaler"] == "Latent (nearest-exact)"
     assert "Hires CFG Scale" not in fields
+    assert "Hires resize" not in fields
     assert meta["width"] == 1248
+
+
+def test_infotext_writes_a_capped_target_as_a1111_hires_resize():
+    from core.inference import image_gallery
+
+    # 1536x1024 at 2x is capped to 2048 px: the factor alone would describe 3072x2048.
+    target = hires.hires_target_size(1536, 1024, 2.0)
+    assert target == (2048, 1360)
+    meta = {
+        "prompt": "p",
+        "steps": 20,
+        "seed": 1,
+        "width": target[0],
+        "height": target[1],
+        "model": "m",
+        "workflow": "txt2img",
+        **hires.record_fields(
+            {
+                "scale": 2.0,
+                "denoise": 0.5,
+                "upscaler": "lanczos",
+                "base_width": 1536,
+                "base_height": 1024,
+            }
+        ),
+    }
+    fields = _a1111_fields(image_gallery._params_text(meta).splitlines()[-1])
+    assert fields["Size"] == "1536x1024"
+    assert fields["Hires resize"] == "2048x1360"
+    assert "Hires upscale" not in fields
 
 
 def test_infotext_omits_hires_steps_when_same_and_names_models_like_a1111():
@@ -407,6 +438,30 @@ def test_tiled_apply_matches_untiled_for_a_local_operator():
     assert tiled.shape == full.shape
     assert torch.allclose(tiled, full, atol = 1e-6)
     assert len(ups.tile_boxes(97, 150, 64, 8)) > 1
+    assert ups.tiled_apply(x, up2, 2, tile = 64, overlap = 8, output_device = "cpu").device.type == "cpu"
+
+
+@pytest.mark.parametrize("tile", [512, 64])
+def test_stop_during_the_last_upscaler_tile_is_honoured(tile):
+    import threading
+
+    torch = pytest.importorskip("torch")
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    cancel = threading.Event()
+    calls = []
+
+    def up_then_stop(x):
+        calls.append(1)
+        if len(calls) == len(ups.tile_boxes(97, 150, tile, 8)):
+            cancel.set()  # Stop lands while the final (or only) tile runs
+        return torch.nn.functional.interpolate(x, scale_factor = 2, mode = "nearest")
+
+    with pytest.raises(RuntimeError) as exc:
+        ups.tiled_apply(
+            torch.rand(1, 3, 150, 97), up_then_stop, 2, tile = tile, overlap = 8, cancel = cancel
+        )
+    assert str(exc.value) == DIFFUSION_CANCELLED_MSG
 
 
 def test_tiled_esrgan_matches_untiled_on_a_tiny_random_model(tmp_path, monkeypatch):
@@ -421,6 +476,14 @@ def test_tiled_esrgan_matches_untiled_on_a_tiny_random_model(tmp_path, monkeypat
     torch.save(net.state_dict(), path)
     monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
     img = Image.fromarray((torch.rand(96, 80, 3) * 255).to(torch.uint8).numpy())
+    seen_devices = []
+    real_tiled_apply = ups.tiled_apply
+
+    def spy(*a, **k):
+        seen_devices.append(k.get("output_device"))
+        return real_tiled_apply(*a, **k)
+
+    monkeypatch.setattr(ups, "tiled_apply", spy)
     untiled = ups.upscale_with_model(img, "local:tiny_esrgan", (320, 384), device = "cpu", tile = 512)
     tiled = ups.upscale_with_model(
         img, "local:tiny_esrgan", (320, 384), device = "cpu", tile = 48, overlap = 16
@@ -434,6 +497,7 @@ def test_tiled_esrgan_matches_untiled_on_a_tiny_random_model(tmp_path, monkeypat
     # The receptive field crosses the seams, so feathered blending is close, not exact.
     assert np.abs(a - b).mean() < 2.0
     assert untiled.released and not ups._resident  # freed after use when not asked to stay
+    assert seen_devices == ["cpu", "cpu"]  # the full-scale result accumulates in host memory
 
 
 def test_native_request_carries_the_hires_block():
@@ -883,3 +947,46 @@ def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
         new_dir,
     ]  # staged again in the new server's dir
     assert not any(p.exists() for p in staged_paths)  # both removed after
+
+
+def test_diffusers_status_names_why_hires_is_hidden():
+    from core.inference.diffusion import _hires_status
+
+    assert "image-to-image" in _hires_status(_fam("krea-2"))["hires_unavailable_reason"]
+    shown = _hires_status(_fam("sdxl"))
+    assert shown["hires"] is not None and shown["hires_unavailable_reason"] is None
+
+
+def test_native_hires_progress_follows_each_sampling_pass():
+    import core.inference.sd_cpp_backend as scb
+
+    # sd.cpp make_hires_sigma_schedule: int(14 / 0.5) = 28 -> 14; int(20 / 0.35) = 57 -> int(19.95) = 19.
+    assert hires.sd_cpp_hires_sampled_steps(14, 0.5) == 14
+    assert hires.sd_cpp_hires_sampled_steps(20, 0.35) == 19
+    assert hires.sd_cpp_hires_sampled_steps(5, 1.0) == 4
+
+    b = scb.SdCppDiffusionBackend()
+    for base, refine in ((20, 14), (20, 20)):
+        b._gen = scb._SdGen(total_steps = base + refine, passes = (base, refine))
+        seen = []
+        for line in (
+            [f"|====| {i}/{base} - 1.0s/it" for i in range(1, base + 1)]
+            + [f"|====| {base}/{base} - 1.0s/it"]  # a repeated last line is not the next pass
+            + [f"|====| {i}/{refine} - 1.0s/it" for i in range(1, refine + 1)]
+        ):
+            b._on_log(line)
+            seen.append(b._gen.step)
+        assert seen[base - 1] == base and seen[base] == base
+        assert seen[base + 1] == base + 1 and seen[-1] == base + refine
+        assert b.generate_progress()["fraction"] == 1.0
+        b._on_log(f"|=| 1/{base} - 1.0s/it")  # a batch's next image starts its base pass again
+        assert b._gen.step == 1
+    b._gen = scb._SdGen(total_steps = 8)
+    b._on_log("|=| 3/8 - 1.0s/it")
+    assert b._gen.step == 3  # a plain render is unchanged
+
+
+def test_mlx_engine_takes_the_hires_keyword_and_refuses_it():
+    from core.inference.mlx_diffusion_backend import MlxDiffusionBackend
+    with pytest.raises(ValueError, match = "not available on the MLX engine"):
+        MlxDiffusionBackend.generate(types.SimpleNamespace(), prompt = "p", hires = hires.HiresParams())

@@ -2709,6 +2709,10 @@ class _SdGen:
     step: int = 0
     first_step_at: float = 0.0
     eta_seconds: Optional[float] = None
+    # Per sampling pass denominators (Hires fix: base, refine); empty = one pass of ``total_steps``.
+    passes: tuple[int, ...] = ()
+    pass_index: int = 0
+    pass_offset: int = 0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -4489,7 +4493,14 @@ class SdCppDiffusionBackend:
                         height = int(height),
                         steps = int(steps),
                     )
-                    self._gen = _SdGen(total_steps = int(steps) + hires_plan.refine_steps)
+                    # sd.cpp samples the base and Hires schedules separately, each reporting its own denominator.
+                    passes = (
+                        int(steps),
+                        diffusion_hires.sd_cpp_hires_sampled_steps(
+                            hires_plan.refine_steps, hires_plan.params.denoise
+                        ),
+                    )
+                    self._gen = _SdGen(total_steps = sum(passes), passes = passes)
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
                 else:
@@ -4997,12 +5008,30 @@ class SdCppDiffusionBackend:
         if gen is None or gen.total_steps <= 0:
             return
         for a, b in _STEP_RE.findall(line):
-            if int(b) == gen.total_steps:
-                now = time.time()
-                gen.step = min(int(a), gen.total_steps)
-                if gen.first_step_at == 0.0:
-                    gen.first_step_at = now
-                gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
+            a, b = int(a), int(b)
+            if gen.passes:
+                i = gen.pass_index
+                nxt = (i + 1) % len(gen.passes)
+                # The next pass (the next image's base pass after the last one) starts once this one completed; a
+                # repeat of this pass's last line is not a start.
+                if (
+                    nxt != i
+                    and b == gen.passes[nxt]
+                    and gen.step >= gen.pass_offset + gen.passes[i]
+                    and (b != gen.passes[i] or a < b)
+                ):
+                    gen.pass_offset = gen.pass_offset + gen.passes[i] if nxt else 0
+                    gen.pass_index = i = nxt
+                if b != gen.passes[i]:
+                    continue
+                a += gen.pass_offset
+            elif b != gen.total_steps:
+                continue
+            now = time.time()
+            gen.step = min(a, gen.total_steps)
+            if gen.first_step_at == 0.0:
+                gen.first_step_at = now
+            gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
 
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen

@@ -318,33 +318,44 @@ def tiled_apply(
     tile: int = DEFAULT_TILE,
     overlap: int = DEFAULT_OVERLAP,
     cancel: Any = None,
+    output_device: Any = None,
 ) -> Any:
-    """Run ``fn`` (BCHW -> BC(sH)(sW)) over overlapping tiles, blending seams linearly in float32."""
+    """Run ``fn`` (BCHW -> BC(sH)(sW)) over overlapping tiles, blending seams linearly in float32.
+
+    The full-scale result accumulates on ``output_device`` (default: the input's device); ComfyUI's
+    ImageUpscaleWithModel keeps it on the intermediate (CPU) device the same way, so only one tile is on the GPU."""
     import torch
 
     _, c, h, w = image.shape
+    out_dev = image.device if output_device is None else torch.device(output_device)
     boxes = tile_boxes(w, h, tile, overlap)
     if len(boxes) == 1:
-        return fn(image).float()
+        result = fn(image).float().to(out_dev)
+        if cancel is not None and cancel.is_set():
+            _raise_cancelled()
+        return result
     out = None
-    weight = torch.zeros((1, 1, h * scale, w * scale), device = image.device, dtype = torch.float32)
+    weight = torch.zeros((1, 1, h * scale, w * scale), device = out_dev, dtype = torch.float32)
     ramp = overlap * scale
     for x0, y0, x1, y1 in boxes:
         if cancel is not None and cancel.is_set():
             _raise_cancelled()
-        piece = fn(image[:, :, y0:y1, x0:x1]).float()
+        piece = fn(image[:, :, y0:y1, x0:x1]).float().to(out_dev)
         if out is None:
             out = torch.zeros(
                 (image.shape[0], piece.shape[1], h * scale, w * scale),
-                device = image.device,
+                device = out_dev,
                 dtype = torch.float32,
             )
-        wy = _feather(piece.shape[2], ramp, y0 == 0, y1 == h, torch, image.device)
-        wx = _feather(piece.shape[3], ramp, x0 == 0, x1 == w, torch, image.device)
+        wy = _feather(piece.shape[2], ramp, y0 == 0, y1 == h, torch, out_dev)
+        wx = _feather(piece.shape[3], ramp, x0 == 0, x1 == w, torch, out_dev)
         mask = (wy[:, None] * wx[None, :])[None, None]
         ys, xs = y0 * scale, x0 * scale
         out[:, :, ys : ys + piece.shape[2], xs : xs + piece.shape[3]] += piece * mask
         weight[:, :, ys : ys + piece.shape[2], xs : xs + piece.shape[3]] += mask
+    # Stop may land while the last tile runs: never hand back a result for an accepted cancel.
+    if cancel is not None and cancel.is_set():
+        _raise_cancelled()
     return out / weight.clamp_min(1e-8)
 
 
@@ -450,14 +461,24 @@ def upscale_with_model(
         boxes = tile_boxes(x.shape[3], x.shape[2], tile, overlap)
         try:
             with torch.inference_mode():
-                y = tiled_apply(x, _run, scale, tile = tile, overlap = overlap, cancel = cancel)
+                # A 4x model on a 2048 px source is an 8192 px float32 result (~1 GiB with its weights): keep it in
+                # host memory, so the GPU holds the model and one tile, as in ComfyUI.
+                y = tiled_apply(
+                    x,
+                    _run,
+                    scale,
+                    tile = tile,
+                    overlap = overlap,
+                    cancel = cancel,
+                    output_device = "cpu",
+                )
         finally:
             if not keep_resident:
                 del model, descriptor, cached
                 _resident.pop(key, None)
         tw, th = int(target[0]), int(target[1])
         if (y.shape[3], y.shape[2]) != (tw, th):
-            # Resize on the device: a 4x output of a 1 MP render is 16 MP.
+            # Resized where it accumulated (host), as ComfyUI's ImageScale after ImageUpscaleWithModel.
             y = torch.nn.functional.interpolate(y, size = (th, tw), mode = "bicubic", antialias = True)
         out = (y.clamp(0, 1) * 255.0).round().to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
     result = Image.fromarray(out, mode = "RGB")
