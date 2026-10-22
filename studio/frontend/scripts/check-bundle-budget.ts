@@ -353,12 +353,19 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
+  // Chat fork affordances (the sidebar fork mark, the "Forked from" divider and the shared fork toasts) in the
+  // eager chat chunk: +1_460 B raw / +361 B transfer against 77e742c8e2 (6_879_345 -> 6_880_805 raw,
+  // 2_071_823 -> 2_072_184 transfer, 97 chunks). Raised by that growth.
+  // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
+  // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
+  // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
   // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier, model picker and memory bar adds
   // 911 B raw / 466 B transfer (6,879,331 -> 6,880,242 B raw, 2,071,848 -> 2,072,314 B transfer against 463e3f348,
   // one machine and build, 97 chunks). Raised to that build plus a 400 B raw / 189 B transfer margin (another
   // reviewer's build of the same tree measured 282 B larger raw).
-  transferBytes: 2_072_503,
-  rawBytes: 6_880_642,
+  // Both on main (merged at cb2590f39): measured within budget with 0.5 KB transfer / 0.6 KB raw to spare.
+  transferBytes: 2_073_400,
+  rawBytes: 6_882_900,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
