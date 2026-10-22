@@ -51,10 +51,12 @@ _PATH_SPLIT = re.compile(r"[/\\]+")
 _WEIGHT_FILE_SUFFIXES = (".gguf", ".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin")
 # Folders holding a model's files without naming it (diffusers component, ComfyUI kind folder, quant tier, and an
 # original layout's expert / variant folder: Wan2.2 A14B's high_noise_model / low_noise_model, HunyuanVideo-1.5's
-# transformer/480p_t2v ... 1080p_sr_distilled). The variant folder stays in the identity, so its tier still routes.
+# transformer/480p_t2v / 720p_i2v...). The variant folder stays in the identity, so its tier still routes and an i2v
+# folder still meets the family's refusal. Not the *_sr_* folders: a super-resolution transformer (98 input channels,
+# SR conditioning) is no T2V model, so it must stay unrecognized rather than borrow the T2V family from its parent.
 _CONTAINER_SEGMENT = re.compile(
     r"^(?:transformer(?:_\d)?|unet|vae|text_encoder(?:_\d)?|tokenizer(?:_\d)?|scheduler|"
-    r"high_noise_model|low_noise_model|\d{3,4}p_(?:t2v|i2v|sr)(?:_[a-z0-9]+)*|"
+    r"high_noise_model|low_noise_model|\d{3,4}p_(?:t2v|i2v)(?:_[a-z0-9]+)*|"
     r"diffusion_models|split_files|gguf|weights?|checkpoints?|ckpts?|models?|files|safetensors|original|"
     r"(?:u?d-)?(?:i?q\d\w*|f16|bf16|f32|fp8\w*|fp16|nvfp4|mxfp4))$",
     re.IGNORECASE,

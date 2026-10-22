@@ -600,6 +600,19 @@ def test_an_original_layout_expert_or_variant_folder_keeps_the_family_name(path,
     assert detect_video_family("/data/h3_backup/plain/transformer/720p_t2v") is None
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/models/HunyuanVideo-1.5/transformer/1080p_sr_distilled",
+        "/models/HunyuanVideo-1.5/transformer/720p_sr_distilled/diffusion_pytorch_model.safetensors",
+        "C:\\models\\HunyuanVideo-1.5\\transformer\\720p_sr_distilled",
+    ],
+)
+def test_a_super_resolution_variant_folder_does_not_borrow_the_t2v_family(path):
+    # The SR transformers take 98 input channels and SR conditioning (T2V: 32): not a T2V pipeline's weights.
+    assert detect_video_family(path) is None
+
+
 def test_a_parent_folder_keyword_does_not_pick_the_video_defaults():
     plain = default_video_generation_params("/data/plain/model.gguf", fallback = (7, 7.0))
     assert plain == (7, 7.0)
