@@ -70,7 +70,6 @@ function NumberInput({
   );
 }
 
-/** Hires fix: a toggle under Create's sampling controls, shown only where the loaded model can refine. */
 export function HiresControls({
   capability,
   choice,
@@ -189,7 +188,6 @@ export function HiresControls({
   );
 }
 
-/** The Upscale workflow's upscaler pick; renders nothing without model upscalers. */
 export function UpscaleModelField({
   models,
   value,

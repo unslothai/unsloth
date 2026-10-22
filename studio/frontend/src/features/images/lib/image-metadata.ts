@@ -1285,7 +1285,6 @@ export function recipeSettings(
   };
 }
 
-/** The Hires fix / model upscaler fields, type-checked (a dropped file is untrusted); absent when unset. */
 function hiresRecipeFields(r: ImportedRecipe): Partial<RestorableRecipe> {
   const out: Partial<RestorableRecipe> = {};
   const upscaleModel = str(r.upscale_model);

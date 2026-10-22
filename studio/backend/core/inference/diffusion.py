@@ -12330,7 +12330,6 @@ class DiffusionBackend:
         inpaint_padding: Optional[int] = None,
         # Upscale workflow: a model upscaler id (diffusion_upscalers) in place of the Lanczos resize. None = Lanczos.
         upscale_model: Optional[str] = None,
-        # Internal: one pass of a Hires fix request (diffusion_hires.run_hires), which already holds the slot.
         _hires_pass: Optional[HiresPass] = None,
     ) -> dict[str, Any]:
         import torch
@@ -12515,8 +12514,6 @@ class DiffusionBackend:
                     workflow = "reference"
                     conditioned = True
                 elif _hires_pass is not None and _hires_pass.refine:
-                    # Hires fix refine pass: the upscaled base image through the Upscale workflow's img2img pipe, at
-                    # exactly the requested step count.
                     workflow = "upscale"
                     pipe = self._workflow_pipe(state, fam.img2img_pipeline_class, workflow)
                     init_pil = _hires_pass.source
@@ -12937,7 +12934,6 @@ class DiffusionBackend:
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if _hires_pass is not None and _hires_pass.preflight is not None:
-                        # Refuse a Hires fix whose refine pass cannot fit before the base pass denoises.
                         _hires_pass.preflight(guard_kwargs)
                     _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
                     restore_vae = _tile_for_verdict(
@@ -13646,7 +13642,6 @@ class DiffusionBackend:
         self._aux_pipes.clear()
         self._cn_pipes.clear()
         self._cn_models.clear()
-        # A model upscaler kept resident for Hires fix / Upscale leaves with the model it served.
         diffusion_upscalers.release_models()
         self._state = None
         del state
@@ -13775,7 +13770,6 @@ class DiffusionBackend:
             if pipe_sample_sigmas(state.pipe) is not None
             else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
             "textual_inversion": getattr(state.family, "textual_inversion", None),
-            # Hires fix and model upscalers (Upscale workflow): diffusion_hires / diffusion_upscalers.
             **_hires_status(state.family),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
@@ -13838,7 +13832,6 @@ def _hires_status(fam: DiffusionFamily) -> dict[str, Any]:
         models = []
     return {
         "hires": diffusion_hires.capability(fam, model_rows = models),
-        # Hidden without a reason, like the sampler picker: the family simply has no image-to-image path.
         "hires_unavailable_reason": None,
         "upscale_models": models if getattr(fam, "img2img_pipeline_class", None) else [],
     }

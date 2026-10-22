@@ -1773,7 +1773,6 @@ export function ImagesPage({
   const [upscaleFactor, setUpscaleFactor] = useState(2);
   const [upscaleStrength, setUpscaleStrength] = useState(0.35);
   const [upscaleModel, setUpscaleModel] = useState<string | null>(null);
-  // Hires fix (Create only): off by default; status.hires gates the control.
   const [hires, setHires] = useState<HiresChoice>(HIRES_OFF);
   // Reference and Edit: the ADDITIONAL images after the source. "" holds a cleared slot so others do not renumber.
   const [referenceImages, setReferenceImages] = useState<string[]>([]);

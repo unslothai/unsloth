@@ -164,7 +164,6 @@ test("an unknown upscaler or a model without Hires fix is reported as not applie
   assert.deepEqual(hiresNotApplied(restored, null), [
     "Hires fix (2x, denoise 0.4, base steps, 4x_foolhardy_Remacri)",
   ]);
-  // Keys Studio cannot honour stay named by importNotApplied.
   const resize = parseA1111Parameters("x\nSteps: 20, Seed: 2, Hires resize: 1024x1024, Hires sampler: Euler");
   assert.ok(resize);
   assert.deepEqual(importNotApplied(resize), ["hires fix (Hires resize: 1024x1024, Hires sampler: Euler)"]);

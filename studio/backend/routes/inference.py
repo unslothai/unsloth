@@ -51994,8 +51994,7 @@ def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
 
 
 def _hires_kwargs(generate: Any, request: Any) -> dict:
-    """Hires fix / model upscaler kwargs; only the set ones, so an untouched request is unchanged. An engine whose
-    generate() takes neither refuses the request (ValueError -> 400) instead of silently rendering without it."""
+    """Only the set Hires fix / upscaler kwargs; an engine that takes neither refuses (ValueError -> 400)."""
     try:
         import inspect
         params = inspect.signature(generate).parameters

@@ -3,24 +3,8 @@
 
 """Hires fix: txt2img, upscale, then refine (img2img at a denoise) in one request.
 
-Defaults are ComfyUI's two-pass example (comfyanonymous.github.io/ComfyUI_examples/2_pass_txt2img/, the
-``hiresfix_latent_workflow.png`` graph): LatentUpscale nearest-exact 768 -> 1152 (1.5x), second KSampler denoise 0.5,
-14 steps. ComfyUI's KSampler runs exactly ``steps`` steps at a denoise (``comfy/samplers.py``:
-``new_steps = int(steps / denoise)``, last ``steps`` sigmas), and A1111 does the same for its hires pass
-(``modules/processing.py`` ``sample_img2img(..., steps=self.hr_second_pass_steps or self.steps)`` ->
-``sd_samplers_common.setup_img2img_steps``), so "Hires steps" here is the exact count the refine pass runs, and
-None means the base pass's count.
-
-On the diffusers engine the refine pass is the family's img2img pipeline (the same one the Upscale workflow uses),
-so it exists exactly where ``img2img_pipeline_class`` is set. ``latent`` (SDXL only) re-encodes the base image and
-interpolates the latents nearest-exact before the refine pass; ``lanczos`` and model upscalers work in pixels. The
-sd.cpp engine runs its own ``hires`` request block (sd-server ``/sdcpp/v1/img_gen``, examples/common/common.cpp).
-
-Graph policy: the base pass is the unchanged txt2img call, so its compiled graphs and CUDA graphs are the ones every
-plain render uses. The refine pass runs the img2img pipeline (sharing the denoiser) at the hires size, a new input
-shape: a CUDA-graph wrapper records one more graph for it beside the base shape's (``diffusion_cuda_graph``: one
-graph per input shape, ``MAX_GRAPHS_PER_MODULE``), and a compiled denoiser follows its usual shape policy. The next
-hires render at the same size replays both.
+Defaults follow ComfyUI's 2_pass_txt2img example (1.5x, denoise 0.5, 14 steps). Hires steps is the exact refine
+count, as in ComfyUI (``new_steps = int(steps / denoise)``) and A1111 (``hr_second_pass_steps or steps``).
 """
 
 from __future__ import annotations
@@ -45,12 +29,10 @@ DEFAULT_DENOISE = 0.5
 MIN_SCALE = 1.0
 MAX_SCALE = 4.0
 MAX_SIDE = 2048
-# The latent upscaler needs a 4-channel SDXL latent the img2img pipe accepts as is
-# (StableDiffusionXLImg2ImgPipeline.prepare_latents: ``if image.shape[1] == 4: init_latents = image``).
+# StableDiffusionXLImg2ImgPipeline.prepare_latents takes a 4-channel latent as is.
 LATENT_FAMILIES = frozenset({"sdxl"})
 SDXL_LATENT_FACTOR = 8
 
-# Rules for how an img2img pipeline turns (num_inference_steps, strength) into steps run.
 RULE_FLOOR = "floor"  # SDXL: init_timestep = min(int(N * s), N)
 RULE_FLOW = "flow"  # FLUX / Qwen-Image / Z-Image: t_start = int(max(N - min(N * s, N), 0)); runs N - t_start
 
@@ -69,12 +51,8 @@ class HiresParams:
 
 @dataclass
 class HiresPass:
-    """Private context one hires request hands its two inner ``generate`` calls."""
-
     cancel: threading.Event
-    # Base pass: called with the activation guard kwargs to refuse a refine pass that cannot fit, before denoising.
     preflight: Optional[Callable[[dict], None]] = None
-    # Refine pass: the upscaled source (PIL at the hires size) and, for the latent upscaler, the base image to encode.
     source: Any = None
     latent_from: Any = None
     # The base pass leaves a pending background compile for after the refine pass (else the refine pass waits on it).
@@ -115,8 +93,7 @@ def hires_target_size(
     max_side: int = MAX_SIDE,
     max_pixels: Optional[int] = None,
 ) -> tuple[int, int]:
-    """The refine size: ``round(side * scale)`` to a multiple of 16, scaled down so the longest side fits ``max_side``
-    (and the area ``max_pixels``). The same rounding and 2048 cap as the Upscale workflow."""
+    """``round(side * scale)`` to a multiple of 16, scaled down to fit ``max_side`` and ``max_pixels``."""
     multiple = max(1, int(multiple))
     tw_f, th_f = float(width) * float(scale), float(height) * float(scale)
     fit = min(1.0, float(max_side) / max(tw_f, th_f))
@@ -154,7 +131,6 @@ def refine_inference_steps(steps: int, denoise: float, rule: str) -> int:
     for n in (guess, guess + 1, guess - 1, guess + 2, guess - 2, guess + 3):
         if n >= steps and steps_run(n, denoise, rule) == steps:
             return n
-    # Float edge: fall back to the smallest count that reaches it.
     n = steps
     while steps_run(n, denoise, rule) < steps and n < 100000:
         n += 1
@@ -169,10 +145,6 @@ def timestep_rule(pipe: Any) -> str:
     except (OSError, TypeError):
         src = ""
     return RULE_FLOOR if "int(num_inference_steps * strength)" in src else RULE_FLOW
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Capability (status)
 
 
 def _upscaler_rows(family_name: Optional[str], model_rows: list[dict]) -> list[dict]:
@@ -225,12 +197,7 @@ def unavailable_reason(family: Any) -> Optional[str]:
     return None
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Metadata
-
-
 def record_fields(result_hires: Optional[dict]) -> dict:
-    """Gallery-record keys for a hires result block (empty when off)."""
     if not result_hires:
         return {}
     return {
@@ -245,8 +212,7 @@ def record_fields(result_hires: Optional[dict]) -> dict:
 
 
 def infotext_meta(meta: dict) -> dict:
-    """``meta`` with ``width``/``height`` set to the base pass for a Hires fix image (A1111 ``Size`` is the first
-    pass, ``modules/processing.py`` create_infotext ``"Size": f"{p.width}x{p.height}"``); unchanged otherwise."""
+    """A1111 ``Size`` is the base pass, so a Hires fix image records the base ``width``/``height``."""
     if (
         meta.get("hires_scale") is None
         or not meta.get("hires_base_width")
@@ -257,9 +223,7 @@ def infotext_meta(meta: dict) -> dict:
 
 
 def infotext_fields(meta: dict) -> str:
-    """A1111 infotext for a hires image, in A1111's own key names (``modules/processing.py``): ``Denoising
-    strength``, ``Hires upscale``, ``Hires steps`` (only when set, as A1111 omits 0), ``Hires upscaler``, and Forge's
-    ``Hires CFG Scale``. Empty for any other image."""
+    """A1111 infotext for a hires image in A1111 / Forge key names; empty for any other image."""
     if meta.get("hires_scale") is None:
         return ""
     parts = [
@@ -276,12 +240,7 @@ def infotext_fields(meta: dict) -> str:
     return ", " + ", ".join(parts)
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# sd.cpp
-
-
-# sd-server's img_gen ``hires`` object (examples/common/common.cpp, SDGenerationParams::from_json) and the --help flag
-# that marks a build carrying it (``--hires`` landed with the same parser, upstream PR #1451).
+# sd-server img_gen ``hires`` object (examples/common/common.cpp), upstream PR #1451.
 SD_CPP_HELP_MARKER = "--hires-denoising-strength"
 
 
@@ -289,8 +248,7 @@ _sd_cpp_help_cache: dict[tuple[str, int], bool] = {}
 
 
 def sd_cpp_supports_hires(binary: Optional[str]) -> bool:
-    """Whether ``binary``'s ``--help`` lists the hires options. Fails closed: an older sd-server ignores an unknown
-    ``hires`` JSON key and would render the base pass alone. Cached per (path, mtime)."""
+    """Whether ``--help`` lists hires. Fails closed: an older sd-server ignores ``hires`` and renders the base pass."""
     import os
 
     if not binary:
@@ -312,10 +270,8 @@ def sd_cpp_supports_hires(binary: Optional[str]) -> bool:
 def sd_cpp_capability(
     family: Any, *, mode: Optional[str], binary: Optional[str]
 ) -> tuple[Optional[dict], Optional[str]]:
-    """``(hires, hires_unavailable_reason)`` status values for the sd.cpp engine."""
     base = capability(family, model_rows = upscalers.native_model_upscalers())
     if base is None:
-        # No image-to-image path: hidden like the sampler picker, no reason line.
         return None, None
     if mode != "server":
         return None, "Hires fix runs on the resident native server; this load uses one-shot sd-cli."
@@ -428,8 +384,6 @@ def result_block(plan: "SdCppHiresPlan") -> dict:
 
 
 def sd_cpp_upscaler_name(upscaler_id: str, staged_name: Optional[str] = None) -> str:
-    """The ``hires.upscaler`` string sd.cpp resolves: its built-in names, else a model file stem in
-    --hires-upscalers-dir."""
     if upscaler_id == upscalers.LATENT:
         return "Latent (nearest-exact)"
     if upscaler_id == upscalers.LANCZOS:
@@ -442,9 +396,7 @@ def sd_cpp_upscaler_name(upscaler_id: str, staged_name: Optional[str] = None) ->
 def sd_cpp_payload(
     hires: HiresParams, base_steps: int, target: tuple[int, int], upscaler_name: str
 ) -> dict:
-    """The ``hires`` request object for sd-server. ``steps`` is the exact refine count (sd.cpp: ``hires.steps > 0 ?
-    hires.steps : default_steps``, scheduler steps = steps / denoise, src/stable-diffusion.cpp), the target size is
-    passed explicitly so both engines produce the same size."""
+    """``steps`` is the exact refine count in sd.cpp too; the size is explicit so both engines match."""
     return {
         "enabled": True,
         "upscaler": upscaler_name,
@@ -456,13 +408,8 @@ def sd_cpp_payload(
     }
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Diffusers orchestration
-
-
 def encode_upscaled_latents(pipe: Any, base_image: Any, target: tuple[int, int]) -> Any:
-    """SDXL latent upscaler: VAE-encode the base image exactly as StableDiffusionXLImg2ImgPipeline.prepare_latents does
-    (upcast when the VAE asks, latents_mean/std, scaling_factor), then interpolate nearest-exact to the hires size."""
+    """VAE-encode as StableDiffusionXLImg2ImgPipeline.prepare_latents does, then interpolate nearest-exact."""
     import torch
     import torch.nn.functional as F
 
@@ -497,8 +444,7 @@ def encode_upscaled_latents(pipe: Any, base_image: Any, target: tuple[int, int])
 
 
 def _rearm_cancel(backend: Any, cancel: threading.Event) -> None:
-    """The base pass deregisters the generation's cancel event as it returns; register it again for the refine pass so
-    Stop still lands."""
+    """The base pass deregisters the cancel event; re-register it so Stop still lands in the refine pass."""
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
     from utils.account_context import current_account_id
 
@@ -518,8 +464,7 @@ def _publish_upscale_phase(backend: Any, total_steps: int) -> None:
 
 @contextlib.contextmanager
 def _progress_cleared_on_exit(backend: Any):
-    """The phase published between the passes must not outlive the request (an upscale-only run has no refine pass
-    to clear it, and a failed upscale none either)."""
+    """Clear the between-passes phase even when no refine pass runs (upscale-only or failed upscale)."""
     try:
         yield
     finally:
@@ -651,8 +596,7 @@ def run_hires(
                     params.upscaler,
                     target,
                     device = device,
-                    # Small (RealESRGAN x4plus is 33 MB in fp16): kept for the next request unless the load
-                    # offloads, where it leaves right after (the unload drops it too).
+                    # Small (33 MB fp16): kept resident unless the load offloads.
                     keep_resident = keep_resident,
                     cancel = cancel,
                 )
@@ -677,7 +621,6 @@ def run_hires(
             pass_kwargs["seed"] = int(seeds[index])
             pass_kwargs["batch_size"] = 1
             pass_kwargs["strength"] = float(params.denoise)
-            # Placeholder only; the refine pass sizes from the source image.
             pass_kwargs["width"], pass_kwargs["height"] = target
             if params.guidance is not None:
                 pass_kwargs["guidance"] = float(params.guidance)

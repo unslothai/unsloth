@@ -1010,7 +1010,6 @@ def build_img_gen_request(
         req["ref_images"] = list(ref_images)
     if qwen_image_layers is not None:
         req["qwen_image_layers"] = int(qwen_image_layers)
-    # Hires fix: the server's own two-pass block (examples/common/common.cpp SDGenerationParams "hires").
     if hires:
         req["hires"] = dict(hires)
     return req

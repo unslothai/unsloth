@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image upscalers for Hires fix and the Upscale workflow: Lanczos, latent, and ESRGAN-family models.
+"""Image upscalers for Hires fix and the Upscale workflow: Lanczos, latent, and ESRGAN-family models via spandrel.
 
-Model upscalers load through ``spandrel`` (MIT), the loader ComfyUI (``comfy_extras/nodes_upscale_model.py``) and
-InvokeAI (``invocations/spandrel_image_to_image.py``) use. Ids resolve against a fixed catalog plus a drop-in
-folder (``<workspace>/upscale_models``); a request never carries a path.
-
-Catalog entries are limited to weights whose licence allows redistribution and download:
-
-- ``realesrgan_x4plus`` / ``realesrgan_x4plus_anime_6b``: release assets of github.com/xinntao/Real-ESRGAN
-  (BSD-3-Clause, LICENSE at the repo root; the model zoo in docs/model_zoo.md links these same URLs). A1111 downloads
-  the same files from the same URLs (``modules/realesrgan_model.py``). Pinned by size and SHA-256.
-
-Anything else (4x-UltraSharp is CC BY-NC-SA, Remacri and AnimeSharp vary) stays user-supplied in the drop-in folder.
+The catalog holds only redistributable weights (Real-ESRGAN, BSD-3-Clause, pinned by size and SHA-256); others
+(4x-UltraSharp is CC BY-NC-SA) stay user-supplied in ``<workspace>/upscale_models``. A request never carries a path.
 """
 
 from __future__ import annotations
@@ -35,16 +26,13 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Built-in, model-free upscalers. ``latent`` interpolates the VAE latents (nearest-exact, ComfyUI LatentUpscaleBy's
-# default, nodes.py LatentUpscaleBy); ``lanczos`` resizes pixels (today's Upscale workflow).
 LATENT = "latent"
 LANCZOS = "lanczos"
 LOCAL_PREFIX = "local:"
 # A1111 "Hires upscaler" strings (modules/shared.py latent_upscale_modes, modules/upscaler.py UpscalerLanczos).
 BUILTIN_LABELS = {LATENT: "Latent (nearest-exact)", LANCZOS: "Lanczos"}
 
-# Tiled inference: 512 px input tiles with 32 px overlap (ComfyUI ImageUpscaleWithModel starts at 512 / overlap 32,
-# comfy_extras/nodes_upscale_model.py). A tile's activations scale with its area, not the image's.
+# ComfyUI ImageUpscaleWithModel tiling: 512 px tiles, 32 px overlap.
 DEFAULT_TILE = 512
 DEFAULT_OVERLAP = 32
 MIN_TILE = 64
@@ -88,8 +76,7 @@ CATALOG: tuple[CatalogUpscaler, ...] = (
     ),
 )
 _CATALOG_BY_ID = {entry.id: entry for entry in CATALOG}
-# What spandrel loads without pickle (it torch.loads .pth / .pt with weights_only) and what sd.cpp's
-# --hires-upscalers-dir resolves (examples/common/common.cpp valid_ext).
+# Loadable without pickle by spandrel and resolvable by sd.cpp --hires-upscalers-dir.
 LOCAL_SUFFIXES = (".pth", ".pt", ".safetensors")
 _STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+()\-]{0,127}$")
 
@@ -129,7 +116,6 @@ def _local_files() -> dict[str, Path]:
 
 
 def model_label(upscaler_id: Optional[str]) -> Optional[str]:
-    """The A1111-style display name written as ``Hires upscaler``; None for None."""
     if upscaler_id is None:
         return None
     if upscaler_id in BUILTIN_LABELS:
@@ -147,7 +133,6 @@ def is_model_upscaler(upscaler_id: Optional[str]) -> bool:
 
 
 def model_upscalers() -> list[dict[str, Any]]:
-    """Model upscalers this host can run on the diffusers engine: empty without spandrel."""
     if not spandrel_available():
         return []
     rows = [{"id": e.id, "label": e.label, "scale": e.scale} for e in CATALOG]
@@ -158,7 +143,6 @@ def model_upscalers() -> list[dict[str, Any]]:
 
 
 def native_model_upscalers() -> list[dict[str, Any]]:
-    """Model upscalers for the sd.cpp engine, which runs ESRGAN itself (no spandrel needed)."""
     rows = [{"id": e.id, "label": e.label, "scale": e.scale} for e in CATALOG]
     for stem, path in _local_files().items():
         rows.append({"id": LOCAL_PREFIX + stem, "label": stem, "scale": 4})
@@ -258,7 +242,6 @@ def _download(
 
 
 def resolve_model_path(upscaler_id: str, *, cancel: Any = None) -> Path:
-    """The on-disk file for a model upscaler id, downloading a catalog entry on first use."""
     check_upscaler_id(upscaler_id)
     if upscaler_id in BUILTIN_LABELS:
         raise ValueError(f"'{upscaler_id}' is not a model upscaler.")
@@ -285,10 +268,6 @@ def resolve_model_path(upscaler_id: str, *, cancel: Any = None) -> Path:
     return dest
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Tiling
-
-
 def tile_starts(length: int, tile: int, overlap: int) -> list[int]:
     """Start offsets covering ``[0, length)`` with windows of ``tile`` that overlap by at least ``overlap``; the last
     window ends exactly at ``length``. One window when ``length <= tile``."""
@@ -297,7 +276,6 @@ def tile_starts(length: int, tile: int, overlap: int) -> list[int]:
     stride = max(1, tile - overlap)
     count = int(math.ceil((length - tile) / stride)) + 1
     starts = [min(i * stride, length - tile) for i in range(count)]
-    # Deduplicate while keeping order (the clamp can repeat the last start).
     out: list[int] = []
     for s in starts:
         if not out or s != out[-1]:
@@ -306,7 +284,6 @@ def tile_starts(length: int, tile: int, overlap: int) -> list[int]:
 
 
 def tile_boxes(width: int, height: int, tile: int, overlap: int) -> list[tuple[int, int, int, int]]:
-    """``(x0, y0, x1, y1)`` input boxes for a tiled pass."""
     tw, th = min(tile, width), min(tile, height)
     return [
         (x, y, x + tw, y + th)
@@ -316,7 +293,6 @@ def tile_boxes(width: int, height: int, tile: int, overlap: int) -> list[tuple[i
 
 
 def _feather(length: int, ramp: int, at_start: bool, at_end: bool, torch: Any, device: Any) -> Any:
-    """A 1-D blend weight: ones, with a linear ramp of ``ramp`` samples on each side that borders another tile."""
     w = torch.ones(length, device = device, dtype = torch.float32)
     ramp = min(ramp, length // 2)
     if ramp > 0:
@@ -337,8 +313,7 @@ def tiled_apply(
     overlap: int = DEFAULT_OVERLAP,
     cancel: Any = None,
 ) -> Any:
-    """Run ``fn`` (BCHW -> BC(sH)(sW)) over overlapping tiles of ``image`` and blend the seams linearly. A single tile
-    is exactly ``fn(image)``. Accumulates in float32 on the input's device."""
+    """Run ``fn`` (BCHW -> BC(sH)(sW)) over overlapping tiles, blending seams linearly in float32."""
     import torch
 
     _, c, h, w = image.shape
@@ -367,16 +342,11 @@ def tiled_apply(
     return out / weight.clamp_min(1e-8)
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Model cache and inference
-
 _model_lock = threading.Lock()
-# Keyed on (path, device, dtype): the one resident model upscaler, if any.
 _resident: dict[tuple[str, str, str], Any] = {}
 
 
 def release_models() -> int:
-    """Drop every resident model upscaler; returns how many were released."""
     with _model_lock:
         count = len(_resident)
         _resident.clear()
@@ -441,9 +411,7 @@ def upscale_with_model(
     overlap: int = DEFAULT_OVERLAP,
     cancel: Any = None,
 ) -> UpscaleOutcome:
-    """Enlarge a PIL ``image`` with a model upscaler, then resize to ``target`` (w, h) on the device: the ComfyUI ESRGAN
-    hires example runs RealESRGAN_x4plus and then scales to the wanted size (ImageUpscaleWithModel -> ImageScale).
-    ``keep_resident`` False frees the model right after (low-VRAM loads)."""
+    """Model upscale, then resize to ``target`` on the device (ComfyUI ImageUpscaleWithModel -> ImageScale)."""
     import numpy as np
     import torch
     from PIL import Image
@@ -483,8 +451,7 @@ def upscale_with_model(
                 _resident.pop(key, None)
         tw, th = int(target[0]), int(target[1])
         if (y.shape[3], y.shape[2]) != (tw, th):
-            # Down to the target on the device (antialiased bicubic), not a 4x image through PIL on the host: the 4x
-            # output of a 1 MP render is 16 MP.
+            # Resize on the device: a 4x output of a 1 MP render is 16 MP.
             y = torch.nn.functional.interpolate(y, size = (th, tw), mode = "bicubic", antialias = True)
         out = (y.clamp(0, 1) * 255.0).round().to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
     result = Image.fromarray(out, mode = "RGB")

@@ -4807,10 +4807,9 @@ class DiffusionLoadRequest(BaseModel):
 
 
 class HiresSpec(BaseModel):
-    """Hires fix: render, upscale, then refine the result with img2img at ``denoise`` (txt2img only).
+    """Hires fix: render, upscale, then refine with img2img at ``denoise`` (txt2img only).
 
-    Defaults follow ComfyUI's two-pass example (1.5x, denoise 0.5); ``steps`` is the exact number of refine steps
-    (None = the base pass's steps, A1111 ``hr_second_pass_steps or steps``)."""
+    ``steps`` is the exact refine count; None = the base pass's steps."""
 
     scale: float = Field(1.5, ge = 1.0, le = 4.0, description = "Upscale factor (A1111 'Hires upscale')")
     denoise: float = Field(

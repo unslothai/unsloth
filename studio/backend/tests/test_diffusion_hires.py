@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hires fix (diffusion_hires) and model upscalers (diffusion_upscalers): request validation, step and size math,
-gating, infotext round trip, tiling, the native request block, and the engine sequencing on a tiny SDXL."""
+"""Hires fix and model upscalers."""
 
 from __future__ import annotations
 
@@ -19,10 +18,6 @@ from core.inference.diffusion_families import _FAMILIES
 
 def _fam(name):
     return next(f for f in _FAMILIES if f.name == name)
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Request model
 
 
 def test_request_defaults_follow_the_comfyui_two_pass_example():
@@ -80,7 +75,6 @@ def test_route_refuses_hires_on_an_engine_without_it():
         _hires_kwargs(no_hires, req)
     out = _hires_kwargs(with_hires, req)
     assert out["hires"] == hires.HiresParams(scale = 1.5, denoise = 0.5, upscaler = "lanczos")
-    # Untouched request: nothing is added.
     assert _hires_kwargs(no_hires, DiffusionGenerateRequest(prompt = "p")) == {}
     with pytest.raises(ValueError, match = "Model upscalers are not available"):
         _hires_kwargs(
@@ -110,10 +104,6 @@ def test_hires_refuses_conditioned_requests():
         with pytest.raises(ValueError):
             hires._check_request({"prompt": "p", **kwargs})
     hires._check_request({"prompt": "p", "controlnet": ("id", "img", "canny", 0.0, 0.0, 1.0)})
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Step and size math
 
 
 @pytest.mark.parametrize("rule", [hires.RULE_FLOOR, hires.RULE_FLOW])
@@ -154,10 +144,6 @@ def test_timestep_rule_reads_each_pipelines_rounding():
         assert hires.timestep_rule(cls.__new__(cls)) == hires.RULE_FLOW, name
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Gating
-
-
 def test_capability_only_where_the_family_has_img2img():
     sdxl = hires.capability(_fam("sdxl"))
     assert sdxl["default_upscaler"] == "latent" and sdxl["defaults"] == {
@@ -172,7 +158,6 @@ def test_capability_only_where_the_family_has_img2img():
     for name in ("krea-2", "lumina-2", "flux.2-dev", "hidream-i1"):
         assert hires.capability(_fam(name)) is None, name
         assert "image-to-image" in hires.unavailable_reason(_fam(name))
-    # Edit-only families have no text to image at all, so no reason either.
     assert hires.capability(_fam("qwen-image-edit")) is None
     assert hires.unavailable_reason(_fam("qwen-image-edit")) is None
 
@@ -255,10 +240,6 @@ def test_catalog_entries_are_pinned():
         assert re.fullmatch(r"[0-9a-f]{64}", entry.sha256) and entry.size > 1_000_000
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Metadata
-
-
 def _a1111_fields(line):
     # modules/infotext_utils.py re_param
     re_param = re.compile(r'\s*(\w[\w \-/]+):\s*("(?:\\.|[^\\"])+"|[^,]*)(?:,|$)')
@@ -297,7 +278,6 @@ def test_infotext_writes_a1111_hires_keys_and_the_base_size():
     assert fields["Hires steps"] == "14"
     assert fields["Hires upscaler"] == "Latent (nearest-exact)"
     assert "Hires CFG Scale" not in fields
-    # The gallery record keeps the real output size.
     assert meta["width"] == 1248
 
 
@@ -362,10 +342,6 @@ def test_gallery_round_trips_hires_fields(tmp_path, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Tiling
-
-
 @pytest.mark.parametrize(
     "length,tile,overlap",
     [(100, 512, 32), (512, 512, 32), (513, 512, 32), (1500, 512, 32), (2048, 256, 16), (70, 64, 8)],
@@ -421,10 +397,6 @@ def test_tiled_esrgan_matches_untiled_on_a_tiny_random_model(tmp_path, monkeypat
     # The receptive field crosses the seams, so feathered blending is close, not exact.
     assert np.abs(a - b).mean() < 2.0
     assert untiled.released and not ups._resident  # freed after use when not asked to stay
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# sd.cpp
 
 
 def test_native_request_carries_the_hires_block():
@@ -509,10 +481,6 @@ def test_help_probe_fails_closed(monkeypatch, tmp_path):
     assert hires.sd_cpp_supports_hires(None) is False
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Engine sequencing on a tiny SDXL (CPU), same seed
-
-
 @pytest.fixture(scope = "module")
 def tiny_sdxl():
     torch = pytest.importorskip("torch")
@@ -590,8 +558,7 @@ def test_tiny_sdxl_hires_sequencing(tiny_sdxl, monkeypatch):
     assert out["images"][0].size == (384, 384)
     assert out["workflow"] == "txt2img"
     assert out["hires"]["refine_steps"] == 3 and out["hires"]["base_width"] == 256
-    # One refine pass on 4-channel latents at the hires size over the VAE factor, exactly 3 steps of a 6-step
-    # schedule at strength 0.5.
+    # One refine pass on 4-channel latents: 3 steps of a 6-step schedule at strength 0.5.
     f = tiny_sdxl.vae_scale_factor
     assert calls == [(6, 0.5, (1, 4, 384 // f, 384 // f), 3)]
 
@@ -606,7 +573,6 @@ def test_tiny_sdxl_hires_sequencing(tiny_sdxl, monkeypatch):
     calls.clear()
     out = b.generate(**kw, hires = hires.HiresParams(scale = 2.0, denoise = 0.0, upscaler = "lanczos"))
     assert out["images"][0].size == (512, 512) and calls == [] and out["hires"]["refine_steps"] == 0
-    # The base pass is the plain render: an upscale-only result is that image resized.
     from PIL import Image
 
     expected = plain["images"][0].resize((512, 512), Image.LANCZOS)
@@ -665,8 +631,7 @@ def test_preflight_refuses_before_the_base_pass(tiny_sdxl, monkeypatch):
 
 
 def test_run_hires_pass_kwargs_without_a_model(monkeypatch):
-    """Sequencing on a stand-in engine: one base call, one refine call per image with that image's seed and prompt, the
-    variation seed dropped from the refine pass, cancel re-armed between passes and progress cleared at the end."""
+    """Sequencing on a stand-in engine: per-image seeds, no variation seed, cancel re-armed, progress cleared."""
     import contextlib
     import threading
 

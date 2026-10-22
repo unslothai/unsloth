@@ -4329,7 +4329,6 @@ class SdCppDiffusionBackend:
         expected_load: Optional[LoadIdentity] = None,
         # Interface parity only: the activation guard is diffusers-only.
         allow_oversized: bool = False,
-        # Hires fix (diffusion_hires.HiresParams): sd-server's own hires block. None = off.
         hires: Any = None,
     ) -> dict[str, Any]:
         import tempfile
@@ -5210,7 +5209,6 @@ class SdCppDiffusionBackend:
 
 
 def _native_hires_status(state: Any) -> dict[str, Any]:
-    """Hires fix on the native engine: sd-server's own hires block, gated on the build's --help."""
     try:
         from core.inference import diffusion_hires
         hires, reason = diffusion_hires.sd_cpp_capability(
