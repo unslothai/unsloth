@@ -12,6 +12,7 @@ import getpass
 import fnmatch
 import glob
 import importlib.util
+import inspect
 import logging
 import os
 import os.path as osp
@@ -2614,7 +2615,10 @@ class SparkServing:
             if running.alive and self._confirm_teardown is not None:
                 # The served model computes through this rpc-server: refuse before tearing it down.
                 try:
-                    self._confirm_teardown()
+                    confirmed = self._confirm_teardown()
+                    if inspect.isawaitable(confirmed):
+                        # The route cancels and drains forced-away chats here, before detach().
+                        await confirmed
                 except BaseException as exc:
                     self.load_in_progress = False
                     self._restore_pre_load_state()

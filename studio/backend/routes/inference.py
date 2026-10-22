@@ -18720,20 +18720,30 @@ async def _run_tracked_load_model_impl(
         ):
             # before_load can tear down the current model's split, so refuse first.
             await asyncio.to_thread(account_access.require_model_access, request.model_path)
+        force_cancel = bool(getattr(request, "force_cancel_active", False))
+
+        async def _confirm_split_teardown() -> None:
+            account_access.require_idle_other_accounts()
+            on_reload_confirmed(cancel = False)
+            if not force_cancel:
+                return
+            # Tearing the split down kills the served model's remote layers: stop and drain its
+            # chats first, or they fail as upstream errors before _load_model_impl's own cancel.
+            if attempt.cancel_event.is_set():
+                raise HTTPException(status_code = 409, detail = "Model load cancelled")
+            on_reload_confirmed(cancel = True)
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+            )
+
         try:
             request = await spark_serving.before_load(
                 request,
                 _spark_slots,
                 inherited_extra_args = _spark_inherited_extra_args(request),
                 cancel_event = attempt.cancel_event,
-                confirm_teardown = (
-                    None
-                    if on_reload_confirmed is None
-                    else lambda: (
-                        account_access.require_idle_other_accounts(),
-                        on_reload_confirmed(cancel = False),
-                    )
-                ),
+                confirm_teardown = None if on_reload_confirmed is None else _confirm_split_teardown,
             )
         except spark_serving.SparkLoadDoesNotFit as exc:
             logger.warning("inference.spark_load_does_not_fit: %s", exc)
