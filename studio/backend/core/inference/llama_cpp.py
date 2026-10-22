@@ -16,7 +16,6 @@ import ctypes
 import errno
 import functools
 import hashlib
-import importlib
 import json
 import logging
 import math
