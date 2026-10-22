@@ -268,6 +268,13 @@ def test_releasing_the_st_embedder_frees_the_allocator_cache(monkeypatch):
     monkeypatch.setattr(embeddings, "_model", object())
     monkeypatch.setattr(embeddings, "_name", "m")
 
+    # Before detection publishes, a release must not trigger it through clear_gpu_cache().
+    monkeypatch.setattr(hardware.hardware, "DEVICE", None)
+    assert embeddings._release_st_model() is True
+    assert cleared == []
+
+    monkeypatch.setattr(hardware.hardware, "DEVICE", hardware.DeviceType.CUDA)
+    monkeypatch.setattr(embeddings, "_model", object())
     assert embeddings._release_st_model() is True
     assert cleared == [True]
     assert embeddings._release_st_model() is False

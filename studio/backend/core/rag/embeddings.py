@@ -809,10 +809,12 @@ def _release_st_model() -> bool:
             _model = None
             _name = None
     if released:
-        # Dropping the reference alone leaves its blocks reserved in the torch allocator.
+        # Dropping the reference alone leaves its blocks reserved in the torch allocator. Only once
+        # detection has published: before that, clear_gpu_cache() would run it here, for seconds.
         try:
-            from utils.hardware import clear_gpu_cache
-            clear_gpu_cache()
+            from utils import hardware
+            if hardware.hardware.DEVICE is not None:
+                hardware.clear_gpu_cache()
         except Exception as e:  # noqa: BLE001 - freeing is best effort
             logger.debug("GPU cache clear after embedder release failed: %s", e)
     return released
