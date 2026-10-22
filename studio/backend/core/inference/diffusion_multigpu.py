@@ -1717,26 +1717,23 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
-_DYNAMIC_SCALAR = object()
-
-
 def _autocast_state(torch: Any) -> tuple:
     try:
-        return tuple(
-            (dev, torch.get_autocast_dtype(dev)) if torch.is_autocast_enabled(dev) else (dev, None)
-            for dev in ("cuda", "cpu")
+        return (
+            torch.is_autocast_cache_enabled(),
+            *(
+                (dev, torch.get_autocast_dtype(dev))
+                if torch.is_autocast_enabled(dev)
+                else (dev, None)
+                for dev in ("cuda", "cpu")
+            ),
         )
     except Exception:  # noqa: BLE001 - torch without per-device autocast queries
         return ()
 
 
-def _call_signature(
-    args: tuple,
-    kwargs: dict,
-    scalars: Optional[dict] = None,
-) -> tuple:
-    """What a compiled forward's guards key on. Dynamo specialises a number on its first value and recompiles it
-    dynamic on the second, so ``scalars`` (per side, updated here) keys it by value until it changes once."""
+def _call_signature(args: tuple, kwargs: dict) -> tuple:
+    """What a compiled forward's guards key on, numbers by value: 0 / 1 and ``dynamic=False`` compiles stay specialised."""
     torch = _torch()
     sig: list = []
     for path, leaf in _leaves((args, kwargs)):
@@ -1759,16 +1756,8 @@ def _call_signature(
             )
         elif leaf is None or isinstance(leaf, (bool, str)):
             sig.append((path, leaf))
-        elif scalars is not None and isinstance(leaf, (int, float)):
-            first = scalars.setdefault(path, leaf)
-            if first is _DYNAMIC_SCALAR:
-                sig.append((path, type(leaf)))
-            else:
-                if first != leaf:
-                    scalars[path] = (
-                        _DYNAMIC_SCALAR  # this call recompiles it dynamic; later values reuse that
-                    )
-                sig.append((path, type(leaf), leaf))
+        elif isinstance(leaf, (int, float)):
+            sig.append((path, type(leaf), leaf))
         else:
             sig.append((path, type(leaf)))
     return (
@@ -1861,8 +1850,6 @@ class CfgParallelRouter:
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
         self.warm_replica: set = set()
-        self.scalars_primary: dict = {}
-        self.scalars_replica: dict = {}
         self._pair_job: Optional[dict] = None
 
     def describe(self) -> dict[str, Any]:
@@ -1892,8 +1879,6 @@ class CfgParallelRouter:
         self.pairs = []
         self.warm_primary.clear()
         self.warm_replica.clear()
-        self.scalars_primary.clear()
-        self.scalars_replica.clear()
         self.prefetched.clear()
         self.carry = []
         self.next_carry = []
@@ -1936,7 +1921,7 @@ class CfgParallelRouter:
         return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
 
     def _primary_noting(self, sig: Optional[tuple], args: tuple, kwargs: dict) -> Any:
-        sig = _call_signature(args, kwargs, self.scalars_primary) if sig is None else sig
+        sig = _call_signature(args, kwargs) if sig is None else sig
         job = self._pair_job
         if sig not in self.warm_primary and job is not None:
             job["event"].wait()  # may compile: not while the replica runs
@@ -1975,7 +1960,7 @@ class CfgParallelRouter:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
-                sig = _call_signature(args, kwargs, self.scalars_primary)
+                sig = _call_signature(args, kwargs)
                 self._launch_prediction(latent, sig)
         if (
             self.branch % 2 == 1
@@ -2039,7 +2024,7 @@ class CfgParallelRouter:
             return None
         self.prefetched.clear()
         hook_state = _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs, self.scalars_replica)
+        sig = _call_signature(args, kwargs)
         try:
             r_args = self._to_replica(args)
             r_kwargs = self._to_replica(kwargs)
@@ -2129,7 +2114,7 @@ class CfgParallelRouter:
         p_args, p_kwargs = predicted
         if (
             sig not in self.warm_primary
-            or _call_signature(p_args, p_kwargs, self.scalars_replica) not in self.warm_replica
+            or _call_signature(p_args, p_kwargs) not in self.warm_replica
         ):
             return  # a side may compile: the odd branch runs unpredicted, after the primary one
         try:
@@ -2316,7 +2301,7 @@ class CfgParallelRouter:
         # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
-        sig = _call_signature(args, kwargs, self.scalars_replica)
+        sig = _call_signature(args, kwargs)
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica

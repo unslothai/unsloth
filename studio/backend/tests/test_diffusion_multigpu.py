@@ -2368,7 +2368,8 @@ def test_replica_blocks_get_their_own_compile_guard():
     assert replica.__dict__.get("_unsloth_compile_guard") is guard
 
 
-def test_warm_signature_turns_cold_exactly_when_dynamo_recompiles_a_number():
+@pytest.mark.parametrize("dynamic", [None, False])
+def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic):
     # A warm call runs beside the other side, so it must never compile (FX tracing is process-wide up to 2.13).
     compiles = []
 
@@ -2376,13 +2377,12 @@ def test_warm_signature_turns_cold_exactly_when_dynamo_recompiles_a_number():
         compiles.append(1)
         return gm.forward
 
-    @torch.compile(backend = backend)
+    @torch.compile(backend = backend, dynamic = dynamic)
     def fn(x, scale, k, kw):
         return x * scale + k + kw["s"]
 
     x = torch.randn(4)
     warm: set = set()
-    scalars: dict = {}
     calls = [
         (1.0, 1, 0.5),
         (2.0, 1, 0.5),
@@ -2390,9 +2390,13 @@ def test_warm_signature_turns_cold_exactly_when_dynamo_recompiles_a_number():
         (3.0, 2, 0.5),
         (3.0, 3, 0.5),
         (4.5, 7, 0.25),
+        (4.5, 0, 0.25),
+        (4.5, 1, 0.25),
+        (4.5, 7, 0.25),
+        (5.5, 1, 0.25),
     ]
     for scale, k, s in calls:
-        sig = mg._call_signature((x, scale, k), {"kw": {"s": s}}, scalars)
+        sig = mg._call_signature((x, scale, k), {"kw": {"s": s}})
         before = len(compiles)
         fn(x, scale, k, {"s": s})
         if sig in warm:
@@ -2406,5 +2410,7 @@ def test_warm_signature_keys_on_storage_offset_and_autocast():
     a = mg._call_signature((base[:4],), {})
     assert mg._call_signature((base[4:],), {}) != a
     with torch.autocast("cpu", dtype = torch.bfloat16):
+        assert mg._call_signature((base[:4],), {}) != a
+    with torch.autocast("cpu", enabled = False, cache_enabled = False):
         assert mg._call_signature((base[:4],), {}) != a
     assert mg._call_signature((base[:4],), {}) == a
