@@ -217,3 +217,16 @@ test("a 0 GiB free reading is the tightest budget, not an unknown one", () => {
   const gpu = macInfo({ metal_working_set_gb: 51.84, vram_free_gb: 0 });
   assert.equal(gpu.unifiedLoadBudgetGb, 0);
 });
+
+test("audio pickers keep the plain verdict: audio.cpp GGUFs do not load under the llama.cpp budget", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(src, /unifiedLoadBudgetGb: audioTaskPicker\s*\?\s*null/);
+  assert.match(src, /unifiedLoadBudgetGb=\{\s*audioTaskPicker\s*\?\s*null/);
+});

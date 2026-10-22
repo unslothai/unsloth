@@ -4267,9 +4267,12 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
-            unifiedLoadBudgetGb: loadFreesResident
-              ? budget.unifiedLoadCeilingGb
-              : budget.unifiedLoadBudgetGb,
+            // audio.cpp GGUFs load through their own runtime, not the llama.cpp Metal budget.
+            unifiedLoadBudgetGb: audioTaskPicker
+              ? null
+              : loadFreesResident
+                ? budget.unifiedLoadCeilingGb
+                : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
@@ -4375,6 +4378,7 @@ export function HubModelPicker({
     gpu,
     inferenceGpu,
     loadFreesResident,
+    audioTaskPicker,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -7365,9 +7369,11 @@ export function HubModelPicker({
     <PickerScopes
       capabilityScope={capabilityScope}
       unifiedLoadBudgetGb={
-        (loadFreesResident
-          ? inferenceGpu.unifiedLoadCeilingGb
-          : inferenceGpu.unifiedLoadBudgetGb) ?? null
+        audioTaskPicker
+          ? null
+          : ((loadFreesResident
+              ? inferenceGpu.unifiedLoadCeilingGb
+              : inferenceGpu.unifiedLoadBudgetGb) ?? null)
       }
     >
       <div className="relative space-y-2">
