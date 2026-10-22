@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The backend owns the remembered model; localStorage is a shadow so old
-// bundles, old backends and dropped writes all still behave.
+// The backend owns the remembered model; localStorage is a shadow for old bundles and backends.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -37,7 +36,6 @@ globalThis.fetch = (async (_input: string, init?: RequestInit) => {
   if (init?.method === "PUT") {
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     puts.push(body);
-    // Mirror the server: shift into its frame, then keep the newer stamp.
     const shifted =
       typeof body.loaded_at === "number" && typeof body.client_now === "number"
         ? body.loaded_at + (serverNow - body.client_now)
@@ -83,13 +81,11 @@ test("a new frontend against an old backend falls back to the shadow", async () 
   recordLastLocalModelLoad({ id: "u/m", kind: "gguf", ggufVariant: "Q4" });
   const got = await readLastLocalModelLoad();
   assert.deepEqual(got, { id: "u/m", kind: "gguf", ggufVariant: "Q4" });
-  // The write could not land, so the shadow stays flagged for a later sync.
   assert.equal(legacy()?.pendingSync, true);
 });
 
 test("the shadow is written synchronously so a teardown cannot lose it", () => {
   reset();
-  // No await: the record must already be stored when this returns.
   recordLastLocalModelLoad({ id: "u/m", kind: "model", ggufVariant: null });
   assert.equal(legacy()?.id, "u/m");
   assert.equal(typeof legacy()?.loadedAt, "number");
@@ -124,7 +120,6 @@ test("a newer shadow wins over an older backend record and is re-synced", async 
   backend.record = { id: "stale", kind: "model", gguf_variant: null, loaded_at: now - 60_000 };
   const got = await readLastLocalModelLoad();
   assert.equal(got?.id, "fresh");
-  // Re-issued so the server stops handing the stale one to other surfaces.
   assert.equal(puts.at(-1)?.id, "fresh");
 });
 
@@ -139,7 +134,6 @@ test("a stale shadow loses to an unstamped backend record", async () => {
       loadedAt: Date.now() - 60_000,
     }),
   );
-  // Written by a pre-loaded_at client, so there is no stamp to compare.
   backend.record = { id: "backend", kind: "model", gguf_variant: null, loaded_at: null };
   const got = await readLastLocalModelLoad();
   assert.equal(got?.id, "backend");
@@ -170,7 +164,6 @@ for (const skew of [-86_400_000, 86_400_000]) {
       LEGACY_KEY,
       JSON.stringify({ id: "fresh", kind: "model", ggufVariant: null, loadedAt: now }),
     );
-    // The same instant, expressed in the server's frame.
     backend.record = {
       id: "stale",
       kind: "model",
@@ -190,7 +183,6 @@ test("a corrupt shadow is ignored rather than thrown", async () => {
 test("a gguf record with no variant and a repo id is rejected", async () => {
   reset();
   backend.record = { id: "u/m", kind: "gguf", gguf_variant: null, loaded_at: Date.now() };
-  // Names no file to load, so it cannot be acted on.
   assert.equal(await readLastLocalModelLoad(), null);
 });
 

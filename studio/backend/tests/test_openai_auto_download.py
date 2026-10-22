@@ -721,6 +721,11 @@ def test_setting_off_does_nothing_at_all(hub):
     assert hub["started"] == []
 
 
+def test_a_decision_api_repo_is_never_fetched_for_chat(hub):
+    assert _hook("ggml-org/OpenJev-GGUF:Q8_0", _Req(), enabled = True) is None
+    assert hub["started"] == []
+
+
 def test_hook_raises_the_openai_envelope_with_retry_after(hub):
     with pytest.raises(HTTPException) as excinfo:
         _hook("unsloth/x-GGUF:UD-Q5_K_XL", _Req(), enabled = True)

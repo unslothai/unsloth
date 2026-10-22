@@ -1513,11 +1513,22 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
     )
 
 
+def custom_folder_identities(folders: list[dict], identity) -> list[str]:
+    """``identity(path)`` per folder under the scan budget, else the raw path: realpath stats every component, so
+    on a hung mount it parks the caller as long as the scan would."""
+    identities = []
+    for folder in folders:
+        raw = str(folder.get("path", ""))
+        resolved = run_custom_folder_bounded_sync(raw, lambda raw = raw: identity(raw))
+        identities.append(os.path.normcase(raw.strip()) if resolved is None else resolved)
+    return identities
+
+
 def _list_custom_folders_with_identity() -> list[dict]:
-    # The identity is a realpath, so it is taken here, off the loop: on a hung network mount it would stall every request.
+    folders = list_scan_folders()
     return [
-        {**folder, "_identity": _inventory_path_identity(str(folder.get("path", "")))}
-        for folder in list_scan_folders()
+        {**folder, "_identity": key}
+        for folder, key in zip(folders, custom_folder_identities(folders, _inventory_path_identity))
     ]
 
 
