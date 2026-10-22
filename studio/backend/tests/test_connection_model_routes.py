@@ -552,6 +552,18 @@ def test_one_accounts_signatures_cannot_evict_anothers(v1, monkeypatch):
     assert inf._connection_extra("bob", "call", "call_19") == {"n": 19}
 
 
+
+def test_signature_cache_bounds_the_number_of_accounts(v1, monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX", 3)
+    for i in range(5):
+        inf._remember_connection_extra(f"user{i}", "call", "call_1", {"n": i})
+
+    assert len(inf._CONNECTION_TOOL_EXTRAS) == 3
+    assert inf._connection_extra("user0", "call", "call_1") is None
+    assert inf._connection_extra("user4", "call", "call_1") == {"n": 4}
+
 def test_chat_completions_without_stream_returns_one_completion_object(v1):
     FakeExternalClient.tool_extra = SIGNED
     resp = v1.post(

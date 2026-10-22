@@ -32617,9 +32617,10 @@ def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
 # Provider replay metadata agent clients drop: Gemini 3 answers 400 to a functionCall without its
 # thoughtSignature (tool call extra_content), and Anthropic to a tool continuation without its signed
 # thinking (message extra_content). Keep both by the tool ids the client echoes back, capped per
-# subject so one account's traffic cannot evict another's.
-_CONNECTION_TOOL_EXTRAS: dict = {}
+# subject so one account's traffic cannot evict another's, and over all subjects.
+_CONNECTION_TOOL_EXTRAS: collections.OrderedDict = collections.OrderedDict()
 _CONNECTION_TOOL_EXTRAS_MAX = 4096
+_CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX = 64
 _CONNECTION_TOOL_EXTRAS_LOCK = threading.Lock()
 
 
@@ -32629,10 +32630,13 @@ def _remember_connection_extra(subject: Optional[str], kind: str, tool_id: Any, 
     key = (kind, tool_id)
     with _CONNECTION_TOOL_EXTRAS_LOCK:
         extras = _CONNECTION_TOOL_EXTRAS.setdefault(subject or "", collections.OrderedDict())
+        _CONNECTION_TOOL_EXTRAS.move_to_end(subject or "")
         extras[key] = extra
         extras.move_to_end(key)
         while len(extras) > _CONNECTION_TOOL_EXTRAS_MAX:
             extras.popitem(last = False)
+        while len(_CONNECTION_TOOL_EXTRAS) > _CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX:
+            _CONNECTION_TOOL_EXTRAS.popitem(last = False)
 
 
 def _connection_extra(subject: Optional[str], kind: str, tool_id: Any) -> Optional[dict]:
