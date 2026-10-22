@@ -215,7 +215,10 @@ def spoof_cell(monkeypatch, spoof_hardware):
         # An inherited ZE_AFFINITY_MASK plus a CPU-only torch would route the cell to XPU.
         for var in ("ZE_AFFINITY_MASK", "UNSLOTH_FORCE_XPU", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(var, raising = False)
-        return _DISPATCH._import_studio_hardware_module()
+        hw = _DISPATCH._import_studio_hardware_module()
+        # The real sysctl answers hw.optional.arm64=1 on an Apple Silicon runner, turning a spoofed Intel Mac into Rosetta.
+        monkeypatch.setattr(hw, "_running_under_rosetta", lambda: False)
+        return hw
 
     return _apply
 

@@ -142,6 +142,26 @@ export function lanApiUrls(status: LanAccessStatus): string[] {
   return status.managedBy === "settings" ? status.urls : [];
 }
 
+// A listener keeps the address it bound after Wi-Fi changes or DHCP renews, while detection is fresh.
+export function staleLanUrls(status: LanAccessStatus): string[] {
+  if (
+    status.managedBy !== "settings" ||
+    status.availableAddresses.length === 0
+  ) {
+    return [];
+  }
+  const present = new Set(
+    status.availableAddresses.map((entry) => entry.address),
+  );
+  return status.urls.filter((url) => {
+    try {
+      return !present.has(new URL(url).hostname.replace(/^\[|\]$/g, ""));
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function keylessLanAccessDescription(
   status: LanAccessStatus | null,
 ): string {

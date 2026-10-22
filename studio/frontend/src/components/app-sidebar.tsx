@@ -92,6 +92,7 @@ import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
+import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
@@ -105,6 +106,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
+  DashboardSquareEditIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -148,7 +150,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Copy, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Copy, GitBranchIcon, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -164,6 +166,7 @@ import {
   EditProjectDialog,
   forkChatRow,
   showForkCreatedToast,
+  showForkFailedToast,
   getSidebarItemThreadIds,
   useForkInFlight,
   sandboxSessionIdsHolding,
@@ -1307,8 +1310,13 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
+  const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
+  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
+  const repair = useTauriRepairController();
+  const canRepair = repair !== null && !repair.isExternalServer;
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -1327,22 +1335,30 @@ export function AppSidebar() {
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "no_torch"
-        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix.
-          "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
+          // on Desktop the manual repair reruns the installer with PyTorch.
+          canRepair
+          ? "Training was left out of this install (Chat only). Use Repair installation in Settings to add it."
+          : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        : chatOnlyReason === "rosetta"
+        ? "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
         : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "torch_cpu_build" ||
             chatOnlyReason === "torch_cuda_unavailable"
           ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
             // and unactionable here, so name the installed build and point at the repair.
-            chatOnlyDetail
-            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
-            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+            // A closed AMD device node is not fixed by a reinstall (#14067).
+            chatOnlyHint
+            ? `Training cannot use this machine's GPU. ${chatOnlyHint}`
+            : chatOnlyDetail
+              ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+              : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
             ? "Training needs an NVIDIA or AMD GPU."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
-  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn);
   const videoDisabled = videoDisabledHint !== undefined;
 
   // Two things can change the verdict after the first /api/health: the backend MLX self-heal
@@ -3629,16 +3645,9 @@ export function AppSidebar() {
       const result = await forkChatRow(item);
       setActiveThreadId(result.thread.id);
       navigate({ to: "/chat", search: { thread: result.thread.id } });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
-      // A chat still generating is a refusal, not a failure: say so without the alarm.
-      if ((error as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
-        toast.info(error instanceof Error ? error.message : "Cannot fork this chat.");
-      } else {
-        toast.error("Failed to fork", {
-          description: error instanceof Error ? error.message : undefined,
-        });
-      }
+      showForkFailedToast(error);
     } finally {
       inFlight.setForking(false);
     }
@@ -4101,66 +4110,81 @@ export function AppSidebar() {
       isSurfaceBackgrounded("#root")
     );
   };
-  useShortcut("archiveChat", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("archiveChat", () => void archiveSelected());
-      return;
-    }
-    if (followsSelectionAction("archiveChat")) return;
-    withActiveChat((item) => void handleArchiveThread(item));
-  });
-  useShortcut("markChatUnread", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("markChatUnread", markSelectedUnread);
-      return;
-    }
-    if (followsSelectionAction("markChatUnread")) return;
-    withActiveChat((item) =>
-      markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
-    );
-  });
-  useShortcut("togglePinChat", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
-      return;
-    }
-    if (followsSelectionAction("togglePinChat")) return;
-    withActiveChat((item) => togglePinnedChat(item.id));
-  });
+  const sidebarUncovered = () => !sidebarCovered();
+  useShortcut(
+    "archiveChat",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("archiveChat", () => void archiveSelected());
+        return;
+      }
+      if (followsSelectionAction("archiveChat")) return;
+      withActiveChat((item) => void handleArchiveThread(item));
+    },
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "markChatUnread",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("markChatUnread", markSelectedUnread);
+        return;
+      }
+      if (followsSelectionAction("markChatUnread")) return;
+      withActiveChat((item) =>
+        markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
+      );
+    },
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "togglePinChat",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
+        return;
+      }
+      if (followsSelectionAction("togglePinChat")) return;
+      withActiveChat((item) => togglePinnedChat(item.id));
+    },
+    { claims: sidebarUncovered },
+  );
   // A selection made behind a dialog is invisible and still what the mutating chords hit once the
   // dialog closes, which is the thing those chords being guarded was meant to prevent.
-  useShortcut("selectAllChats", () => {
-    if (sidebarCovered()) return;
-    selectAllChats();
+  useShortcut("selectAllChats", () => selectAllChats(), {
+    claims: sidebarUncovered,
   });
   useShortcut("clearChatSelection", clearSelection);
-  useShortcut("deleteSelectedChats", () => {
-    if (sidebarCovered()) return;
-    if (selectionCount > 0) deleteSelected();
-  });
+  useShortcut(
+    "deleteSelectedChats",
+    () => {
+      if (selectionCount > 0) deleteSelected();
+    },
+    { claims: sidebarUncovered },
+  );
   // Through the dialog: the row's inline pill is rendered by the row, and the open chat may be behind
   // a collapsed section, past a folder's "show more", or on a route with no chat list at all, where
   // the chord would look dead and leave a rename waiting to appear when the row came back.
-  useShortcut("renameChat", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => openRenameChat(item));
-  });
+  useShortcut(
+    "renameChat",
+    () => withActiveChat((item) => openRenameChat(item)),
+    { claims: sidebarUncovered },
+  );
   // The clipboard is outside the app, so writing a hidden chat's contents into it from behind a
   // dialog is not something the user can take back by closing the dialog.
-  useShortcut("copyChatAsMarkdown", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => void copyChatItemAsMarkdown(item));
-  });
-  useShortcut("copySessionId", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => void copyChatSessionId(item));
-  });
+  useShortcut(
+    "copyChatAsMarkdown",
+    () => withActiveChat((item) => void copyChatItemAsMarkdown(item)),
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "copySessionId",
+    () => withActiveChat((item) => void copyChatSessionId(item)),
+    { claims: sidebarUncovered },
+  );
 
   // The chat header's menu acts on the open chat through the same handlers as its row's menu and
   // the chords above. Every render, so the handlers it calls are never stale.
@@ -4246,18 +4270,33 @@ export function AppSidebar() {
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
-  // No undo and no menu item anywhere, so it says what it did.
-  useShortcut("clearAllUnreads", () => {
-    if (sidebarCovered()) return;
-    const state = useChatNavigationStore.getState();
-    const cleared = countUnreadRows(state);
-    if (state.unreadThreadIds.size === 0) {
-      toast.info("No unread chats");
-      return;
-    }
-    state.clearAllUnreads();
-    toast.success(`Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`);
-  });
+  useShortcut(
+    "clearAllUnreads",
+    () => {
+      const state = useChatNavigationStore.getState();
+      const cleared = countUnreadRows(state);
+      if (state.unreadThreadIds.size === 0) {
+        toast.info("No unread chats");
+        return;
+      }
+      const threadIds = [...state.unreadThreadIds];
+      const rowIds = { ...state.unreadRowIds };
+      state.clearAllUnreads();
+      toast.success(
+        `Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`,
+        {
+          action: {
+            label: t("shell.sections.undo"),
+            onClick: () =>
+              useChatNavigationStore
+                .getState()
+                .markThreadsUnread(threadIds, rowIds),
+          },
+        },
+      );
+    },
+    { claims: sidebarUncovered },
+  );
 
   // The six slots register as <Shortcut> elements: a loop of hooks would break the rules of hooks.
   const slotShortcuts = (
@@ -4413,6 +4452,16 @@ export function AppSidebar() {
             onChange: setChatSort,
             options: CHAT_SORT_OPTIONS,
           })}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              navigateFromRow({ to: "/projects" });
+              closeMobileIfOpen();
+            }}
+          >
+            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.organize.projectsHome")}</span>
+          </DropdownMenuItem>
         </>
       );
     } else if (options.kind === "recents") {
@@ -5215,7 +5264,7 @@ export function AppSidebar() {
               onSelect={() => void forkChatFromRow(item)}
             >
               <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
-              <span>Fork</span>
+              <span>{t("library.chats.menu.fork")}</span>
             </P.Item>
             {/* Projects and sections in one place: both are where the chat is kept. */}
             <P.Sub>
@@ -5361,6 +5410,8 @@ export function AppSidebar() {
     );
     const hasUnreadActivity =
       !isGenerating && !hasQueuedActivity && alreadyUnread;
+    // The spinner and the unread dot say more, and share its spot.
+    const showForkMark = Boolean(item.isFork) && !showWorkSpinner && !hasUnreadActivity;
     const itemClass = cn(
       variant === "project"
         ? "group/project-chat-item relative"
@@ -5379,7 +5430,7 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
-      showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : undefined,
+      showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : showForkMark ? "pr-9" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
       showWorkSpinner && "[@media(pointer:coarse)]:pr-[calc(78px*var(--ui-space-scale,1))]",
@@ -5497,8 +5548,23 @@ export function AppSidebar() {
                 )}
                 aria-hidden
               >
-                {/* Neutral: a finished reply is news, not a fault. */}
-                <span className="size-2 rounded-full bg-muted-foreground/60" />
+                {/* Accent, not a warning colour: a finished reply is news, not a fault. */}
+                <span className="size-2 rounded-full bg-primary" />
+              </span>
+            ) : null}
+            {showForkMark ? (
+              // In the trailing column the spinner uses, and yields it to the pin and kebab like the unread dot.
+              <span
+                role="img"
+                aria-label="Forked chat"
+                className={cn(
+                  "pointer-events-none absolute right-4 top-1/2 z-10 flex -translate-y-1/2 text-muted-foreground transition-opacity [@media(pointer:coarse)]:hidden",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                )}
+              >
+                <GitBranchIcon aria-hidden={true} strokeWidth={1.75} className="size-3.5" />
               </span>
             ) : null}
             {variant === "project" && (
@@ -6485,7 +6551,7 @@ export function AppSidebar() {
                           side="bottom"
                           align="end"
                           sideOffset={0}
-                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 font-heading rounded-full border-0"
                           trigger={(triggerRef) => (
                             <button
                               ref={triggerRef}
@@ -6744,6 +6810,18 @@ export function AppSidebar() {
                   alignEnd={true}
                   className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-56"
                 >
+                  {/* Pinned here rather than among the shortcuts above, which it can hide. */}
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      useSettingsDialogStore.getState().openDialog("appearance", {
+                        scrollTarget: "appearance-sidebar-nav",
+                      })
+                    }
+                  >
+                    <HugeiconsIcon icon={DashboardSquareEditIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.customizeSidebar")}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   {HELP_GROUPS.map((group, index) => (
                     <DropdownMenuGroup key={group[0]}>
                       {index > 0 && <DropdownMenuSeparator />}

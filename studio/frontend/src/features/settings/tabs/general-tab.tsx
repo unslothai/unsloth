@@ -28,9 +28,13 @@ import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
-import { NOTIFICATION_PREF_KEYS } from "@/hooks/use-notification-frequency";
+import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
+import {
+  NOTIFICATION_PREF_KEYS,
+  type NotificationChannel,
+} from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   SPELLCHECK_STORAGE_KEY,
@@ -59,6 +63,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
+import { loadTrayIconVisible, updateTrayIconVisible } from "../api/tray-icon";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
 import {
@@ -68,6 +73,7 @@ import {
 } from "@/features/library";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
+import { DeveloperModeSection } from "../components/developer-mode-section";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
@@ -79,6 +85,7 @@ import {
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
@@ -89,6 +96,25 @@ import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-sto
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
+
+// whisper.cpp rides along with llama.cpp's card, so it has no line of its own.
+const UPDATE_REMINDER_CHANNELS: {
+  channel: NotificationChannel;
+  name: string;
+  hintKey?: TranslationKey;
+}[] = [
+  { channel: "unsloth", name: "Unsloth" },
+  {
+    channel: "llama",
+    name: "llama.cpp",
+    hintKey: "settings.general.notifications.llamaHint",
+  },
+  {
+    channel: "audio",
+    name: "audio.cpp",
+    hintKey: "settings.general.notifications.audioHint",
+  },
+];
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
@@ -175,6 +201,7 @@ const PREFS_KEYS: string[] = [
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
   LOADED_MODELS_PREFERENCE_KEYS.position,
   LOADED_MODELS_PREFERENCE_KEYS.dismissed,
+  ...Object.values(FLOATING_PANEL_POSITION_KEYS),
   // Voice settings
   "unsloth_voice_settings",
   // Retired keys. The onboarding wizard is gone, but installs that ran it still
@@ -248,6 +275,13 @@ export function GeneralTab() {
     save: updateCloseToTray,
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
+  const trayIconSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadTrayIconVisible,
+    save: updateTrayIconVisible,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.menuBarIconSaveError"),
   });
 
   const draftRef = useRef(draftToken);
@@ -654,8 +688,35 @@ export function GeneralTab() {
               />
             </SettingsRow>
           ) : null}
+
+          {trayIconSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.menuBarIcon")}
+              description={t("settings.general.startup.menuBarIconDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={trayIconSetting.value ?? false}
+                  disabled={
+                    trayIconSetting.value === null || trayIconSetting.saving
+                  }
+                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
+                />
+                {trayIconSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {trayIconSetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
         </SettingsSection>
       ) : null}
+
+      {/* Owner-only like the installation-wide block below: its routes are. */}
+      {isOwner ? <DocumentsRagSection /> : null}
+
+      <EngineVersionsSection />
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
@@ -670,49 +731,34 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.general.notifications.showUnslothUpdates")}
+          label={t("settings.general.notifications.updateReminders")}
           description={t(
-            "settings.general.notifications.showUnslothUpdatesDescription",
+            "settings.general.notifications.updateRemindersDescription",
           )}
-        >
-          <NotificationFrequencySelect
-            channel="unsloth"
-            label={t("settings.general.notifications.showUnslothUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showLlamaUpdates")}
-          description={t(
-            "settings.general.notifications.showLlamaUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="llama"
-            label={t("settings.general.notifications.showLlamaUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showWhisperUpdates")}
-          description={t(
-            "settings.general.notifications.showWhisperUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="whisper"
-            label={t("settings.general.notifications.showWhisperUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showAudioCppUpdates")}
-          description={t(
-            "settings.general.notifications.showAudioCppUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="audio"
-            label={t("settings.general.notifications.showAudioCppUpdates")}
-          />
-        </SettingsRow>
+          className="pb-1"
+        />
+        <div className="flex flex-col pb-3">
+          {UPDATE_REMINDER_CHANNELS.map(({ channel, name, hintKey }) => (
+            <div
+              key={channel}
+              data-settings-label={name}
+              className="flex items-center justify-between gap-4 py-1.5"
+            >
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span className="text-sm text-foreground">{name}</span>
+                {hintKey ? (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {t(hintKey)}
+                  </span>
+                ) : null}
+              </div>
+              <NotificationFrequencySelect
+                channel={channel}
+                label={`${t("settings.general.notifications.updateReminders")}: ${name}`}
+              />
+            </div>
+          ))}
+        </div>
       </SettingsSection>
 
       {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
@@ -753,8 +799,6 @@ export function GeneralTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
-
-      <DocumentsRagSection />
 
       <HubSettingsSection />
 
@@ -836,6 +880,8 @@ export function GeneralTab() {
           />
         </SettingsRow>
       </SettingsSection>
+
+      <DeveloperModeSection />
         </>
       ) : null}
 

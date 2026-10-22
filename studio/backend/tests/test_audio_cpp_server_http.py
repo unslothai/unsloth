@@ -100,7 +100,6 @@ def fake_binary(tmp_path, monkeypatch):
     real_popen = srv.subprocess.Popen
 
     def launch(command, *args, **kwargs):
-        # The fake runs as the direct child (no shell wrapper), so stop() terminates the server itself.
         if command and command[0] == str(binary):
             command = [sys.executable, str(script), *command[1:]]
         return real_popen(command, *args, **kwargs)
@@ -122,7 +121,6 @@ def test_ready_only_when_our_model_id_is_listed(fake_binary, tmp_path, monkeypat
         server.stop()
     assert not server.alive()
     assert not server._config_dir.exists()
-    # A responder that does not list this launch's id is not our child: never treated as ready.
     with pytest.raises(srv.AudioCppUnavailableError, match = "did not start in time"):
         srv.AudioCppServer.start(model, str(tmp_path / "wrong-id.gguf"))
 
@@ -155,7 +153,6 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
             )
         # Returns on the cancel, not on the server's reply or the timeout (Windows never woke the recv).
         assert time.monotonic() - started < 5
-        # The server is untouched by the client-side cancel and still serves.
         _ctype, data = server.post_json(
             "/v1/audio/speech", {"model": server.model_id, "input": "hi"}
         )
@@ -196,7 +193,6 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
         threading.Timer(0.3, cancel.set).start()
         with side._lock, pytest.raises(SttTranscriptionCancelledError):
             side._post_details(tmp_path / "a.wav", "slow", cancel, {})
-        # The child still decoding the abandoned clip is gone, so the next load starts a fresh one.
         assert side._server is None and not server.alive()
     finally:
         server.stop()
@@ -204,7 +200,7 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
 
 def test_threads_budget_reaches_the_command_line(fake_binary, tmp_path, monkeypatch):
     seen = {}
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen["command"] = command
@@ -223,7 +219,7 @@ def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
     fake_binary, tmp_path, monkeypatch
 ):
     seen = []
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen.append(kwargs["env"])
@@ -239,7 +235,7 @@ def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
 
 def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp_path, monkeypatch):
     seen = []
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen.append(command)
@@ -248,7 +244,7 @@ def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp
     monkeypatch.setattr(srv.subprocess, "Popen", spy)
     monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
     monkeypatch.setattr(srv.os, "cpu_count", lambda: 192)
-    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()  # the fixture's CPU backend
+    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
     monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cuda")
     srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", "32")
@@ -280,7 +276,6 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     assert srv.select_backend(build("cpu", "cpu"), False) == "cpu"
     assert srv.select_backend(build("vulkan", "cpu,vulkan"), False) == "vulkan"
     assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
-    # A build too old to report keeps the host guess.
     assert srv.select_backend(build("silent", ""), False) == "cuda"
 
 
@@ -430,6 +425,95 @@ def test_other_early_exits_keep_pointing_at_the_model(fake_binary, tmp_path, out
     message = str(raised.value)
     assert "the model file may be incomplete or unsupported by this build" in message
     assert "unknown tensor type 42" in message
+
+
+_GPU_FAILS = textwrap.dedent(
+    """
+    import json, sys
+    if json.load(open(sys.argv[sys.argv.index("--config") + 1], encoding="utf-8"))["backend"] != "cpu":
+        print({output!r}, flush=True)
+        sys.exit(1)
+    """
+)
+_NO_GPU = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected"
+
+
+def _backend_whose_gpu_fails(
+    tmp_path,
+    monkeypatch,
+    output,
+    preference = None,
+):
+    """The fake server exits with ``output`` unless launched on CPU."""
+    from core.inference import audio_cpp_backend as acb
+
+    (tmp_path / "fake_server.py").write_text(
+        _GPU_FAILS.format(output = output) + FAKE_SERVER, encoding = "utf-8"
+    )
+    starts = []
+
+    def select(binary, force_cpu):
+        starts.append(force_cpu)
+        return "cpu" if force_cpu else "cuda"
+
+    monkeypatch.setattr(srv, "select_backend", select)
+    monkeypatch.setattr(acb.audio_cpp_files, "materialize", lambda model: str(tmp_path / "m.gguf"))
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    return acb.AudioCppBackend(preference), starts
+
+
+def test_gpu_unavailable_start_retries_once_on_cpu(fake_binary, tmp_path, monkeypatch):
+    backend, starts = _backend_whose_gpu_fails(tmp_path, monkeypatch, _NO_GPU)
+    try:
+        backend._start_server(KOKORO)
+        assert starts == [False, True]
+        assert (backend.device, backend._device_fallback, backend._server.backend) == (
+            "cpu",
+            "cpu",
+            "cpu",
+        )
+        backend._start_server(KOKORO)
+        assert starts == [False, True, True]
+        backend._model = KOKORO
+        fields = backend.runtime_fields()
+        assert (fields["audio_cpu"], fields["audio_device_fallback"]) == (True, "cpu")
+    finally:
+        backend._stop_server_locked()
+
+
+@pytest.mark.parametrize(
+    "output, preference, code",
+    [
+        (_NO_GPU, "gpu", "gpu_unavailable"),
+        ("failed to allocate CUDA0 backend weight buffer", None, "out_of_memory"),
+    ],
+)
+def test_pinned_gpu_or_oom_does_not_retry(
+    fake_binary, tmp_path, monkeypatch, output, preference, code
+):
+    from core.inference.audio_cpp_failures import failure_of
+
+    backend, starts = _backend_whose_gpu_fails(tmp_path, monkeypatch, output, preference)
+    with pytest.raises(srv.AudioCppUnavailableError) as raised:
+        backend._start_server(KOKORO)
+    assert starts == [False] and backend._device_fallback is None
+    assert failure_of(raised.value).code == code
+
+
+def test_cancelled_start_does_not_retry(monkeypatch):
+    from core.inference import audio_cpp_backend as acb
+    from core.inference.audio_cpp_failures import AudioCppFailure, attach_failure
+
+    backend = acb.AudioCppBackend("auto")
+    gpu = attach_failure(
+        srv.AudioCppUnavailableError("x"), AudioCppFailure("gpu_unavailable", "m", 503)
+    )
+    assert backend._may_retry_on_cpu(gpu, threading.Event())
+    cancelled = threading.Event()
+    cancelled.set()
+    assert not backend._may_retry_on_cpu(gpu, cancelled)
+    monkeypatch.setattr("utils.process_lifetime.is_process_shutting_down", lambda: True)
+    assert not backend._may_retry_on_cpu(gpu, None)
 
 
 def test_stop_survives_a_server_slow_to_exit_after_sigkill(tmp_path):

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ``diffusion_rocm_fused.py``: the switches (auto = ROCm only), install / uninstall wiring, and on a GPU the
-kernels against diffusers (RoPE bit-identical, AdaLN within one rounding of stock) plus a tiny FLUX.1 transformer."""
+"""Tests for ``diffusion_rocm_fused.py``: the switches (auto = RoPE on ROCm and on NVIDIA CUDA under Linux, AdaLN
+opt-in), install / uninstall wiring, and on a GPU the kernels against diffusers (RoPE bit-identical, AdaLN within one
+rounding of stock) plus tiny FLUX.1 / FLUX.2 transformers."""
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux")
 from diffusers.models import normalization as nm  # noqa: E402
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
 
-# Another test file in the same session may leave Studio's eager AdaLN patch live on the classes: start from stock.
+# another test file may leave Studio's eager AdaLN patch on the classes: start from stock
 ep.uninstall_patches()
 _STOCK_FWD = {name: getattr(nm, name).forward for name in rf._ADALN_CLASSES}
 
@@ -54,14 +55,61 @@ def fake_kernels(monkeypatch):
     monkeypatch.setattr(rf, "_adaln_kernel", lambda: (lambda x, scale, shift, eps: None))
 
 
-def test_auto_is_inert_off_rocm(fake_kernels, monkeypatch):
+def _nvidia(monkeypatch, platform = "linux"):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", "13.0", raising = False)
+    monkeypatch.setattr(rf.sys, "platform", platform)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_auto_engages_rope_only_on_nvidia_linux(fake_kernels, monkeypatch, dtype):
+    _nvidia(monkeypatch)
+    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda") == {"rope": True, "adaln": 0}
+    assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
+    assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_auto_is_inert_on_nvidia_outside_linux(fake_kernels, monkeypatch, platform):
+    # Windows keeps stock: a Triton JIT failure there would be retried on every call.
+    _nvidia(monkeypatch, platform)
     assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
     assert not rf.is_installed()
 
 
+def test_auto_is_inert_without_a_gpu_torch(fake_kernels, monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", None, raising = False)
+    monkeypatch.setattr(rf.sys, "platform", "linux")
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
+    assert not rf.is_installed()
+
+
+@pytest.mark.parametrize("value", ["0", "off", "false"])
+def test_kill_switch_on_nvidia(fake_kernels, monkeypatch, value):
+    _nvidia(monkeypatch)
+    monkeypatch.setenv(rf.FUSED_ROPE_ENV, value)
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
+    assert fmod.apply_rotary_emb is stock_rope
+
+
+def test_flux2_fp16_keeps_its_own_patch_on_nvidia(fake_kernels, monkeypatch):
+    from core.inference import diffusion_flux2_rope as fr
+
+    f2mod = pytest.importorskip("diffusers.models.transformers.transformer_flux2")
+    _nvidia(monkeypatch)
+    monkeypatch.setattr(fr, "_kernel", lambda: (lambda *a, **k: None))
+    pipe = _PipeLike("diffusers.models.transformers.transformer_flux2")
+    try:
+        assert fr.install_for_pipe(pipe, torch.float16, "cuda")
+        assert rf.install_for_pipe(pipe, torch.float16, "cuda") == {"rope": False, "adaln": 0}
+        assert f2mod.apply_rotary_emb is fr._fused_apply_rotary_emb
+    finally:
+        fr.uninstall()
+
+
 def test_auto_engages_rope_only_on_rocm(fake_kernels, monkeypatch):
-    # auto = the bit-identical RoPE kernel on ROCm; fused AdaLN bought no speed on gfx1151 and is opt-in.
+    # ROCm auto = bit-identical RoPE kernel; fused AdaLN gave no speed on gfx1151, so it is opt-in
     monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
     got = rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
     assert got == {"rope": True, "adaln": 0}
@@ -120,7 +168,6 @@ def test_reinstall_is_clean(fake_kernels, monkeypatch):
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     for _ in range(2):
         rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
-    # the second install must not have stashed the first install's fused forward as "previous"
     assert all(prev not in rf._FORWARDS.values() for prev in rf._ADALN_PREV.values())
 
 
@@ -201,7 +248,6 @@ def test_stock_lines_still_present_in_diffusers():
     ).read_text("utf-8")
 
 
-# ---------------------------------------------------------------------------------------------------------------- GPU
 def _freqs(S, D, device):
     pos = torch.randn(S, D // 2, dtype = torch.float64, device = device) * 50
     return (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
@@ -263,11 +309,10 @@ def test_adaln_matches_stock(monkeypatch, dtype, cls_name, D, S):
         )
     assert rf.COUNTS["adaln_fused"] == before + 1
     got0, want0 = (got, want) if torch.is_tensor(got) else (got[0], want[0])
-    if not torch.is_tensor(got):  # gates / mlp modulation pass through untouched
+    if not torch.is_tensor(got):
         assert all(torch.equal(a, b) for a, b in zip(got[1:], want[1:]))
     diff = (got0.float() - want0.float()).abs()
-    # The stock rounding chain is reproduced; only the row reduction order differs, which can flip the rounding of the
-    # normalised value by one ULP. Bound: that flip carried through the product, plus one rounding of product and sum.
+    # only the row reduction order differs: allow a one-ULP flip plus one rounding of product and sum
     with torch.no_grad():
         e = mod.linear(mod.silu(emb))
         scale = (
@@ -329,9 +374,57 @@ def test_tiny_flux1_transformer_end_to_end(monkeypatch):
     assert rel < 1e-2, float(rel)
 
 
+@needs_gpu
+def test_tiny_flux2_transformer_default_on(monkeypatch):
+    f2 = pytest.importorskip("diffusers").Flux2Transformer2DModel
+    if not (rf._is_rocm() or rf._is_nvidia_linux()):
+        pytest.skip("auto engages on ROCm and NVIDIA Linux only")
+    dev, dtype = "cuda", torch.bfloat16
+    torch.manual_seed(0)
+    model = (
+        f2(
+            patch_size = 1,
+            in_channels = 16,
+            num_layers = 2,
+            num_single_layers = 2,
+            attention_head_dim = 32,
+            num_attention_heads = 4,
+            joint_attention_dim = 64,
+            timestep_guidance_channels = 32,
+            axes_dims_rope = (8, 8, 8, 8),
+            guidance_embeds = False,
+        )
+        .to(dev, dtype)
+        .eval()
+    )
+    img, txt = 256, 32
+    ids = torch.cartesian_prod(torch.arange(1), torch.arange(16), torch.arange(16), torch.arange(1))
+    inputs = dict(
+        hidden_states = torch.randn(1, img, 16, device = dev, dtype = dtype),
+        encoder_hidden_states = torch.randn(1, txt, 64, device = dev, dtype = dtype),
+        timestep = torch.tensor([0.5], device = dev, dtype = dtype),
+        img_ids = ids.to(dev)[None].float(),
+        txt_ids = torch.cartesian_prod(
+            torch.arange(1), torch.arange(1), torch.arange(1), torch.arange(txt)
+        )
+        .to(dev)[None]
+        .float(),
+        return_dict = False,
+    )
+    with torch.no_grad():
+        want = model(**inputs)[0]
+        assert rf.install_for_pipe(type("P", (), {"transformer": model})(), dtype, dev) == {
+            "rope": True,
+            "adaln": 0,
+        }
+        r0 = rf.COUNTS["rope_fused"]
+        got = model(**inputs)[0]
+    assert rf.COUNTS["rope_fused"] - r0 == 2 * 2 + 2 * 2
+    assert torch.equal(got, want)
+
+
 def test_teardown_survives_a_later_eager_layer(fake_kernels, monkeypatch):
-    # Deferred speed profile: fused AdaLN at load, Studio's eager patch layered on top at the 3rd image, then unload
-    # in the order diffusion.py uses (fused teardown first, eager after).
+    # unload in diffusion.py's order: fused teardown first, eager after
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     try:
         assert rf.install_adaln(torch.bfloat16, "cuda") == len(rf._ADALN_CLASSES)
@@ -364,3 +457,56 @@ def test_stock_branch_never_loses_its_previous_forward(fake_kernels, monkeypatch
     finally:
         for n, fwd in _STOCK_FWD.items():
             getattr(nm, n).forward = fwd
+
+
+def test_a_failed_rope_launch_disables_the_fused_path_for_the_load(monkeypatch):
+    calls = []
+
+    def failing_launch(x, cos, sin):
+        calls.append(1)
+        raise RuntimeError("PTX JIT compilation failed")
+
+    monkeypatch.setattr(rf, "_rope_kernel", lambda: failing_launch)
+    monkeypatch.setattr(rf, "_rope_eligible", lambda *a, **k: True)
+    _nvidia(monkeypatch)
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")["rope"] is True
+    x = torch.randn(1, 6, 2, 8)
+    pos = torch.randn(6, 4, dtype = torch.float64)
+    freqs = (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
+    want = stock_rope(x, freqs, sequence_dim = 1)
+    for _ in range(4):
+        assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), want)
+    assert len(calls) == 1
+    rf.uninstall()
+    rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
+    fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
+    assert len(calls) == 2
+
+
+def test_a_failed_adaln_launch_disables_the_fused_path_for_the_load(monkeypatch):
+    calls = []
+
+    def failing_launch(x, scale, shift, eps):
+        calls.append(1)
+        raise RuntimeError("PTX JIT compilation failed")
+
+    monkeypatch.setattr(rf, "_adaln_kernel", lambda: failing_launch)
+    monkeypatch.setattr(rf, "_rope_kernel", lambda: (lambda x, cos, sin: None))
+    monkeypatch.setattr(rf, "_adaln_eligible", lambda norm, x, scale, shift: float(norm.eps))
+    monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")["adaln"] == 3
+    torch.manual_seed(0)
+    norm = nm.AdaLayerNormContinuous(8, 8, elementwise_affine = False, eps = 1e-6)
+    x = torch.randn(2, 5, 8)
+    cond = torch.randn(2, 8)
+    with torch.no_grad():
+        want = _STOCK_FWD["AdaLayerNormContinuous"](norm, x, cond)
+        for _ in range(4):
+            assert torch.equal(norm(x, cond), want)
+    assert len(calls) == 1
+    rf.uninstall()
+    rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
+    with torch.no_grad():
+        norm(x, cond)
+    assert len(calls) == 2

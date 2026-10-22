@@ -11,13 +11,19 @@ import {
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+import {
+  enableWindowsLongPaths,
+  windowsLongPathsNeedPrompt,
+} from "@/lib/windows-long-paths";
 
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -28,7 +34,7 @@ interface StartupScreenProps {
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
-  onInstall: () => void;
+  onInstall: (options?: InstallOptions) => void;
   onRetry: () => void;
   onRetryInstall: () => void;
   onApproveElevation: () => void;
@@ -79,8 +85,64 @@ function CheckingContent() {
   );
 }
 
-function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
-  const [starting, setStarting] = useState(false);
+type InstallOptions = { skipLongPaths?: boolean; chatOnly?: boolean };
+
+function NotInstalledContent({
+  onInstall,
+}: {
+  onInstall: (options?: InstallOptions) => void;
+}) {
+  const [phase, setPhase] = useState<
+    "idle" | "checking" | "explain" | "elevating"
+  >("idle");
+  const [chatOnly, setChatOnly] = useState(false);
+
+  // Synchronous: a double click lands before the re-render that disables the buttons.
+  const busy = useRef(false);
+
+  async function getStarted() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("checking");
+    if (await windowsLongPathsNeedPrompt()) {
+      busy.current = false;
+      setPhase("explain");
+    } else {
+      onInstall({ chatOnly });
+    }
+  }
+
+  async function allowLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("elevating");
+    const outcome = await enableWindowsLongPaths();
+    // "failed" leaves setup.ps1's own UAC as the fallback.
+    onInstall({ skipLongPaths: outcome === "declined", chatOnly });
+  }
+
+  function skipLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    onInstall({ skipLongPaths: true, chatOnly });
+  }
+
+  if (phase === "explain" || phase === "elevating") {
+    return (
+      <LongPathsExplainer
+        waiting={phase === "elevating"}
+        onContinue={allowLongPaths}
+        onSkip={skipLongPaths}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
@@ -95,16 +157,73 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         </p>
         <Button
           size="hero"
-          onClick={() => {
-            setStarting(true);
-            onInstall();
-          }}
+          onClick={getStarted}
+          disabled={phase === "checking"}
         >
           Get Started
         </Button>
-        <InstallLocation disabled={starting} />
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="install-chat-only"
+            checked={chatOnly}
+            disabled={phase !== "idle"}
+            onCheckedChange={(checked) => setChatOnly(checked === true)}
+          />
+          <Label
+            htmlFor="install-chat-only"
+            className="text-ui-12 font-normal text-muted-foreground"
+          >
+            Chat only (GGUF): smaller install, no training
+          </Label>
+        </div>
+        <InstallLocation disabled={phase !== "idle"} />
       </div>
     </div>
+  );
+}
+
+function LongPathsExplainer({
+  waiting,
+  onContinue,
+  onSkip,
+}: {
+  waiting: boolean;
+  onContinue: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <>
+      <Logo />
+      <div className="mt-8 flex max-w-md flex-col items-center gap-2">
+        <p className="text-sm font-medium text-foreground">
+          Windows will ask for permission
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Approve{" "}
+          <span className="font-medium text-foreground">
+            Registry Console Tool
+          </span>{" "}
+          once to turn on long file paths for compiled kernels.
+        </p>
+        {waiting ? (
+          <div className="mt-4 flex items-center gap-2">
+            <Spinner className="size-4 text-primary" />
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              Waiting for Windows permission...
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 flex gap-3">
+            <Button variant="muted" size="hero" onClick={onSkip}>
+              Skip
+            </Button>
+            <Button size="hero" onClick={onContinue}>
+              Continue
+            </Button>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 

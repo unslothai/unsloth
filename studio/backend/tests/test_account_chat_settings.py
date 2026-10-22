@@ -362,6 +362,7 @@ OWNER_PATHS = [
         "/upload-limit": ("PUT",),
         "/tool-result-limit": ("PUT",),
         "/helper-precache": ("PUT",),
+        "/developer-mode": ("PUT",),
         "/download-transport": ("PUT",),
         "/xet-notice/reserve": ("POST",),
         "/model-memory": ("GET", "PUT"),
@@ -405,6 +406,7 @@ def test_every_owner_setting_rejects_managed_accounts(client, method, path):
         ("/personalization", {"profile": {"displayName": "Alice"}}),
         ("/chat-preferences", {"show_model_disclaimer": True}),
         ("/current-date-prompt", {"enabled": False}),
+        ("/chat-memory", {"enabled": False}),
     ],
 )
 def test_personal_settings_do_not_change_owner_rows(client, path, body):
@@ -454,7 +456,6 @@ def test_owner_setting_keeps_200_and_single_account_policy_is_inert(client, monk
     response = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert response.status_code == 200, response.text
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
-    # Deactivating the last managed account must not open an owner-only setting to a request still bound to it.
     owner = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert owner.status_code == 200
     assert client.get("/settings/llama-cpp-path").status_code == 403
@@ -486,7 +487,6 @@ def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache
     from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
 
     run_as(OWNER, set_model_override, "org/model", max_seq_length = 4096)
-    # Never configured by Alice: the owner's settings apply, as they did before she could save any.
     assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
     run_as(ALICE, set_model_override, "org/model", max_seq_length = 16384)
     assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 16384
@@ -670,6 +670,28 @@ def test_api_usage_statistics_read_only_the_account_database(client):
     assert "bob-model" not in response.text
 
 
+def test_usage_export_reads_only_the_account_database(client):
+    receipt = api_usage_db.ApiUsageReceipt(
+        id = "receipt",
+        subject = "bob",
+        endpoint = "/v1/chat/completions",
+        model = "bob-model",
+        status = "completed",
+        prompt_tokens = 10,
+        completion_tokens = 20,
+        total_tokens = 30,
+        created_at = 1,
+        via_api_key = True,
+    )
+    run_as(BOB, api_usage_db.record_api_usage, receipt)
+    as_bob = client.get("/profile/stats/export", headers = {"x-test-account": "bob"})
+    assert as_bob.status_code == 200, as_bob.text
+    assert "bob-model" in as_bob.text
+    response = client.get("/profile/stats/export")
+    assert response.status_code == 200, response.text
+    assert "bob-model" not in response.text
+
+
 def test_single_account_cancel_still_calls_the_original_supervisor(monkeypatch):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
     calls = []
@@ -731,3 +753,20 @@ def test_research_cleanup_reaches_the_account_keyed_supervisor():
     bob_event = run_as(BOB, supervisor._cancel_event, "same")
     run_as(ALICE, chat_history._cancel_research_runs, request, ["same"])
     assert alice_event.is_set() and not bob_event.is_set()
+
+
+def test_chat_memory_is_per_account(client):
+    from utils.paths import studio_root
+
+    saved = client.put("/settings/chat-memory", json = {"text": "Alice uses uv.", "enabled": False})
+    assert saved.status_code == 200, saved.text
+    assert (studio_root() / "accounts" / ALICE.account_id / "AGENTS.md").read_text(
+        encoding = "utf-8"
+    ) == "Alice uses uv.\n"
+    assert not (studio_root() / "AGENTS.md").exists()
+    owner = client.get("/settings/chat-memory", headers = {"x-test-account": OWNER.username}).json()
+    assert owner["text"] == "" and owner["enabled"] is True
+    bob = client.get("/settings/chat-memory", headers = {"x-test-account": "bob"}).json()
+    assert bob["text"] == "" and bob["enabled"] is True
+    alice = client.get("/settings/chat-memory").json()
+    assert alice["text"] == "Alice uses uv.\n" and alice["enabled"] is False

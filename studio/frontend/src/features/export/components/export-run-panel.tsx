@@ -30,7 +30,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { ExportLogEntry } from "../api/export-api";
+import type { ExportDrafterInfo, ExportLogEntry } from "../api/export-api";
 import {
   EXPORT_METHODS,
   type ExportMethod,
@@ -122,6 +122,8 @@ export interface ExportRunPanelProps {
   onClose: () => void;
   /** Decision model: output goes to the run folder's gguf/ only; this note replaces the destination picker. */
   decisionNote?: string;
+  /** REAP expert pruning on this export, e.g. "25% of experts removed (96 of 128 kept)"; hidden when null. */
+  reapLabel?: string | null;
 }
 
 export function ExportRunPanel(props: ExportRunPanelProps) {
@@ -139,6 +141,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     saveDirectoryOverridden,
     onSaveDirectoryChange,
     decisionNote,
+    reapLabel,
     hfUsername,
     onHfUsernameChange,
     modelName,
@@ -218,6 +221,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const summaryFormats = (summary?.mergedFormats ?? []).map(
     (v) => findMergedFormat(v)?.label ?? v,
   );
+  const summaryReap = summary ? (summary.reapLabel ?? null) : (reapLabel ?? null);
   const showProgress = isExporting || isTerminal;
   const hubRepoMissing =
     destination === "hub" &&
@@ -456,6 +460,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 </div>
               ));
             })()}
+            {run.result?.drafter ? (
+              <ExportDrafterNote drafter={run.result.drafter} />
+            ) : null}
           </div>
         </div>
       )}
@@ -515,6 +522,14 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <span>Quantizations</span>
             <span className="font-medium text-foreground">
               {summaryQuants.join(", ")}
+            </span>
+          </div>
+        )}
+        {summaryReap && (
+          <div className="flex justify-between gap-3">
+            <span>Expert pruning</span>
+            <span className="font-medium text-foreground text-right">
+              REAP, {summaryReap}
             </span>
           </div>
         )}
@@ -647,6 +662,24 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         }
         onSelect={(path) => onSaveDirectoryChange(path)}
       />
+    </div>
+  );
+}
+
+function ExportDrafterNote({ drafter }: { drafter: ExportDrafterInfo }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span>
+        Includes trained drafter ({drafter.strategy === "mtp" ? "MTP" : "EAGLE-3"})
+      </span>
+      {drafter.vllm_command ? (
+        <code
+          className="select-all whitespace-pre-wrap break-all font-mono text-ui-12 text-foreground/90"
+          title={drafter.vllm_command}
+        >
+          {drafter.vllm_command}
+        </code>
+      ) : null}
     </div>
   );
 }

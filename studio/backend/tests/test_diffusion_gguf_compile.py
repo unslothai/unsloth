@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the compiled GGUF dequant accelerator (``diffusion_gguf_compile.py``).
-
-Covers install/uninstall idempotency + exact reversibility, the kill-switch, and the
-on-by-default behaviour. Runs on CPU -- patching the module attribute is lazy
-(torch.compile only traces on the first real call).
-"""
+"""Compiled GGUF dequant accelerator: install, reversibility and kill-switch, run on CPU."""
 
 from __future__ import annotations
 
@@ -34,18 +29,14 @@ def test_compiled_dequant_install_uninstall_reversible():
 
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
-    # The module attribute is now a different (compiled) callable...
     assert gguf_utils.dequantize_gguf_tensor is not orig
-    # ...idempotent: a second install is a no-op, attribute unchanged.
     patched = gguf_utils.dequantize_gguf_tensor
     assert gc.install_compiled_dequant() is True
     assert gguf_utils.dequantize_gguf_tensor is patched
 
     gc.uninstall_compiled_dequant()
     assert gc.is_compiled_dequant_installed() is False
-    # Exact original restored.
     assert gguf_utils.dequantize_gguf_tensor is orig
-    # Uninstall is idempotent.
     gc.uninstall_compiled_dequant()
     assert gguf_utils.dequantize_gguf_tensor is orig
 
@@ -59,7 +50,6 @@ def test_compiled_dequant_kill_switch(monkeypatch):
 
 
 def test_compiled_dequant_on_by_default(monkeypatch):
-    # The compiled dequant is the real win, so it is ON without any env opt-in.
     monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT", raising = False)
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
@@ -163,11 +153,7 @@ def test_installed_dequant_survives_a_failing_compile(monkeypatch):
 
 
 class TestGgufTrimmedDimsAreRestored:
-    """GGUF stores no leading size-1 axes, so ``nn.Parameter(torch.zeros((1, dim)))`` comes back as
-    ``(dim,)`` and diffusers' exact shape check refuses the load. Z-Image is the live case: a GGUF
-    pick with Precision = Off died with ``cap_pad_token expected shape torch.Size([1, 3840]), but
-    got torch.Size([3840])``.
-    """
+    """GGUF drops size-1 axes, so trimmed dims must be restored or diffusers refuses the shape check."""
 
     @staticmethod
     def _model():
@@ -189,7 +175,6 @@ class TestGgufTrimmedDimsAreRestored:
         sd = {"cap_pad_token": torch.arange(8, dtype = torch.float32)}
         out = _restore_gguf_trimmed_dims(model, sd)
         assert tuple(out["cap_pad_token"].shape) == (1, 8)
-        # The values must survive the reshape in order, or the pad token is silently scrambled.
         assert torch.equal(out["cap_pad_token"].flatten(), torch.arange(8, dtype = torch.float32))
 
     def test_a_tensor_of_the_wrong_size_is_left_alone(self):

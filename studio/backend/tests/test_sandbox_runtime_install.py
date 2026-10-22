@@ -49,8 +49,11 @@ class _Proc:
 
 @pytest.fixture
 def x64_windows(monkeypatch):
+    from core.inference import wsl_host
+
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86_64")
     monkeypatch.setattr(
         sys, "getwindowsversion", lambda: _types.SimpleNamespace(build = 26100), raising = False
     )
@@ -78,14 +81,19 @@ def _wait(job, limit = 5.0):
 @pytest.mark.parametrize(
     "machine, build, expected",
     [
-        ("AMD64", 26100, None),
+        ("x86_64", 26100, None),
         ("x86_64", 26200, None),
-        ("ARM64", 26100, "arch"),
-        ("AMD64", 22631, "build"),
+        ("arm64", 26100, None),
+        ("x86", 26100, "arch"),
+        ("x86_64", 22631, "build"),
     ],
 )
-def test_only_x64_windows_11_24h2_or_newer_can_run_mxc(monkeypatch, machine, build, expected):
-    monkeypatch.setattr(platform, "machine", lambda: machine)
+def test_only_x64_or_arm64_windows_11_24h2_or_newer_can_run_mxc(
+    monkeypatch, machine, build, expected
+):
+    from core.inference import wsl_host
+
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: machine)
     monkeypatch.setattr(
         sys, "getwindowsversion", lambda: _types.SimpleNamespace(build = build), raising = False
     )
@@ -113,7 +121,9 @@ def test_no_plan_when_installed_or_unsupported(x64_windows, monkeypatch):
     monkeypatch.setattr(plan_mod, "windows_runtime_installed", lambda: True)
     assert plan_mod.windows_runtime_plan().action is None
     monkeypatch.setattr(plan_mod, "windows_runtime_installed", lambda: False)
-    monkeypatch.setattr(platform, "machine", lambda: "ARM64")
+    from core.inference import wsl_host
+
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86")
     plan = plan_mod.windows_runtime_plan()
     assert plan.action is None and "x64" in plan.reason
 
@@ -198,7 +208,6 @@ def route(x64_windows, monkeypatch):
 
 
 def test_owner_starts_the_install_even_from_a_remote_browser(route, monkeypatch):
-    # No administrator prompt is involved, so the local-console rule of Prepare this PC does not apply.
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     with _client(OWNER) as client:
         response = client.post("/sandbox/setup", json = {"operation": "windows-runtime"})
@@ -245,7 +254,9 @@ def test_not_on_other_platforms(route, monkeypatch):
 
 
 def test_an_unavailable_install_is_a_conflict(x64_windows, monkeypatch):
-    monkeypatch.setattr(platform, "machine", lambda: "ARM64")
+    from core.inference import wsl_host
+
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86")
     with _client(OWNER) as client:
         response = client.post("/sandbox/setup", json = {"operation": "windows-runtime"})
     assert response.status_code == 409 and "x64" in response.json()["detail"]

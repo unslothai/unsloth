@@ -168,6 +168,17 @@ def _downloaded_file_bytes(
     if blob_key:
         blobs = repo_cache / "blobs"
         candidates.extend((blobs / f"{blob_key}.incomplete", blobs / blob_key))
+        # huggingface_hub >= 1.18 writes a process-unique `<etag>.<8 hex>.incomplete` partial instead.
+        from hub.utils.hf_cache_state import incomplete_blob_hash
+
+        try:
+            candidates.extend(
+                partial
+                for partial in blobs.glob(f"{blob_key}.*.incomplete")
+                if incomplete_blob_hash(partial.name) == blob_key
+            )
+        except OSError:
+            pass
     if revision:
         candidates.append(repo_cache / "snapshots" / revision / filename)
     sizes: list[int] = []
@@ -264,6 +275,41 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
         return None
     primary = normalized.split("-", 1)[0]
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
+
+
+# Whisper code -> Qwen3-ASR prompt name (config.support_languages; audio.cpp qwen3_asr/assets.cpp).
+QWEN3_ASR_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
 
 
 def _stt_quiet_window_end(decoded_audio, start: int, window: int) -> Optional[int]:
@@ -1140,16 +1186,20 @@ def _close_engine(engine) -> bool:
         return not _engine_is_alive(engine)
 
 
-def _av_open(av, source):
+# An upload probed as a concat playlist would otherwise decode the files it names.
+NO_PROTOCOLS = {"protocol_whitelist": "none"}
+
+
+def _av_open(av, source, **extra):
     """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", **extra)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
         # format = None is PyAV's own default (probe the container); spelling it keeps this call
         # distinguishable from Path.open for the text-encoding lint.
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, **extra)
 
 
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
@@ -1195,7 +1245,7 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         raw_buffer.write(array)
 
     try:
-        with _av_open(av, io.BytesIO(audio)) as container:
+        with _av_open(av, io.BytesIO(audio), options = NO_PROTOCOLS) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
             try:

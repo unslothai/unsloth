@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { explicitFamily } from "../src/features/model-picker/components/model-selector/family-override.ts";
 import {
   componentFilesMatch,
@@ -92,7 +92,6 @@ test("recalling a quantized model carries the selected adapters into its load", 
       kind: "gguf",
       filename: "model-Q8_0.gguf",
     };
-    // The live selection (qwen-image) must not leak into a recalled load.
     const { scope, loads, callbacks } = recall({
       loras: [
         { id: " org/style ", weight: 0.7 },
@@ -131,7 +130,6 @@ test("recalling a quantized model carries the selected adapters into its load", 
     );
   }
 
-  // An opaque pipeline loaded under an explicit family recalls with it after a restart (UI at Auto).
   const { loads, callbacks } = recall({
     rememberedModel: { repoId: "/cache/models--org--custom/snapshots/abc", kind: "pipeline", familyOverride: "flux.1" },
   });
@@ -306,9 +304,15 @@ test("a new model pick cancels recalled generation and retires the staged load",
     stagedLoadDeferred: { current: true },
     stagedQuantRevert: { current: { prev: "Q8_0" } },
     pickToast: { dismissed: 0, dismissAll() { this.dismissed += 1; } },
+    // An older pick's Load anyway toast and dialog retire with it.
+    loadAnyway: { dismissed: 0 },
+    dismissLoadAnyway: () => {
+      scope.loadAnyway.dismissed += 1;
+    },
   };
   new Function(...Object.keys(scope), outputText)(...Object.values(scope));
   assert.equal(scope.pickToast.dismissed, 1);
+  assert.equal(scope.loadAnyway.dismissed, 1);
   assert.equal(scope.pendingRecalledGeneration.current, null);
   assert.equal(scope.pickSeq.current, 5);
   assert.equal(scope.pendingStagedLoad.current, null);

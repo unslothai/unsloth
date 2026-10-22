@@ -68,7 +68,7 @@ def test_the_chunk_fail_tab_is_one_the_dialog_has() -> None:
     workflow = (ROOT / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(
         encoding = "utf-8"
     )
-    targets = re.findall(r"PW_CHUNK_FAIL:\s*([a-z0-9-]+)", workflow)
+    targets = re.findall(r"PW_CHUNK_FAIL[:=]\s*([a-z0-9-]+)", workflow)
     assert targets, "no PW_CHUNK_FAIL in studio-frontend-ci.yml; the blocked-panel run is not wired"
     dialog = set(_dialog_tabs())
     unknown = sorted(t for t in set(targets) if t not in dialog)

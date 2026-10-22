@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { readSrc, readText } from "./helpers/kit.ts";
 import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 import { AUTH_SESSION_ENDING_EVENT } from "../src/features/auth/session-events.ts";
@@ -128,7 +128,6 @@ test("the previous result is replaced only after its replacement model is ready"
 });
 
 test("leaving the page lets a transcription finish into history; the input card owns the microphone", () => {
-  // The input card records; the page stays mounted when hidden, so hiding it must end a recording too.
   assert.doesNotMatch(source, /getUserMedia|stopAndDiscardRecording/);
   assert.match(
     readSrc("features/audio/hooks/use-audio-source.ts"),

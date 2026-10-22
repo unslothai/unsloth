@@ -3,6 +3,7 @@
 
 """AMD GPU monitoring via amd-smi. Mirrors nvidia.py so hardware.py can swap backends based on IS_ROCM; all functions return the same dict shapes as their nvidia.py counterparts."""
 
+import copy
 import glob
 import json
 import math
@@ -13,7 +14,6 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
 import threading
 import time
 from pathlib import PurePath
@@ -34,56 +34,12 @@ _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
 
 
-def _path_inside_venv(path: str) -> bool:
-    """True if ``path`` is inside the active venv (sys.prefix). The venv hipInfo.exe (AMD wheel, put on PATH by main.py/worker.py for bitsandbytes) is NOT a HIP SDK (see _hip_sdk_present)."""
-    try:
-        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
-        root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on it. A venv is never at root, so treat that as outside.
-        if os.path.dirname(root) == root:
-            return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
-    except (ValueError, OSError):
-        # Different drive / unresolvable -> treat as outside the venv.
-        return False
-
-
-def _external_hipinfo_on_path() -> bool:
-    """True if a hipinfo OUTSIDE the venv is on PATH. shutil.which returns only the first hit, so the venv hipInfo could shadow a real HIP SDK's; scan every PATH entry and skip the venv copy."""
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        directory = directory.strip('"')  # PATH entries can be quoted on Windows
-        if not directory:
-            continue
-        candidate = os.path.join(directory, "hipinfo.exe")
-        if os.path.isfile(candidate) and not _path_inside_venv(candidate):
-            return True
-    return False
-
-
-def _hip_sdk_present() -> bool:
-    """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/ROCM_PATH), so amd-smi has a runtime and runs un-elevated. Ignores the venv hipInfo.exe (AMD wheel via the bnb fix): not a HIP SDK, and does not stop amd-smi's DiskPart UAC."""
-    if _external_hipinfo_on_path():
-        return True
-    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
-        root = os.environ.get(var)
-        if not root:
-            continue
-        candidate = os.path.join(root, "bin", "hipinfo.exe")
-        if os.path.exists(candidate) and not _path_inside_venv(candidate):
-            return True
-    return False
-
-
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here. On Windows without a working HIP runtime, amd-smi elevates a child at runtime, popping a UAC/DiskPart prompt that RunAsInvoker cannot suppress (its manifest is asInvoker), so only call it on Windows with a HIP SDK present or UNSLOTH_ENABLE_AMD_SMI=1. Linux amd-smi never elevates."""
+    """Windows is opt-in only (UNSLOTH_ENABLE_AMD_SMI=1): amd-smi.exe pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK."""
     if platform.system() != "Windows":
         return True
     flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
-    if flag in ("1", "true", "yes", "on"):
-        return True
-    if flag in ("0", "false", "no", "off"):
-        return False
-    return _hip_sdk_present()
+    return flag in ("1", "true", "yes", "on")
 
 
 def _run_amd_smi(
@@ -96,11 +52,10 @@ def _run_amd_smi(
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows without a HIP SDK: every call pops a UAC/DiskPart prompt. VRAM polling is then unavailable, which beats the prompt (UNSLOTH_ENABLE_AMD_SMI=1 opts back in).
         if not _amd_smi_disabled:
             logger.info(
-                "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
-                "UAC/DiskPart elevation prompt; GPU VRAM polling unavailable. "
+                "amd-smi disabled on Windows to avoid a UAC/DiskPart elevation "
+                "prompt; VRAM comes from the adapter perf counters. "
                 "Set UNSLOTH_ENABLE_AMD_SMI=1 to force amd-smi."
             )
             _amd_smi_disabled = True
@@ -158,7 +113,17 @@ def _run_amd_smi(
             _amd_smi_disabled = True
         return None
     if not result.stdout.strip():
-        logger.debug("amd-smi exited 0 but returned no output")
+        if platform.system() == "Windows":
+            # System32 amd-smi.exe exits 0 with no stdout when it can't run, prompting each spawn.
+            logger.info(
+                "amd-smi exited 0 with no output (%s); GPU utilization polling via amd-smi disabled",
+                (result.stderr or "").strip().splitlines()[-1]
+                if (result.stderr or "").strip()
+                else "no stderr",
+            )
+            _amd_smi_disabled = True
+        else:
+            logger.debug("amd-smi exited 0 but returned no output")
         return None
     _amd_smi_consecutive_failures = 0
     try:
@@ -166,6 +131,39 @@ def _run_amd_smi(
     except json.JSONDecodeError:
         logger.warning("Failed to parse amd-smi JSON output")
         return None
+
+
+_display_lock = threading.Lock()
+_display_cache: dict[tuple[str, ...], tuple[float, int, Any]] = {}
+
+
+def _run_amd_smi_for_display(*args: str) -> Optional[Any]:
+    """``_run_amd_smi`` under gpu_query's display rules; the lock coalesces pollers, failures are never cached."""
+    try:
+        from utils import gpu_memory_events
+        from utils.hardware import gpu_query
+
+        use_cache = gpu_query.display_cache_allowed()
+        ttl = gpu_query.ttl_for(gpu_query.DISPLAY)
+    except Exception:
+        use_cache = False
+    if not use_cache:
+        return _run_amd_smi(*args)
+    with _display_lock:
+        cached = _display_cache.get(args)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < ttl
+            and cached[1] == gpu_memory_events.generation()
+        ):
+            return copy.deepcopy(cached[2])
+        generation = gpu_memory_events.generation()
+        data = _run_amd_smi(*args)
+        if data is None:
+            _display_cache.pop(args, None)
+        else:
+            _display_cache[args] = (time.monotonic(), generation, copy.deepcopy(data))
+        return data
 
 
 def _parse_numeric(value: Any) -> Optional[float]:
@@ -438,7 +436,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     gpu_idx = _first_visible_amd_gpu_id()
     if gpu_idx is None:
         return {"available": False}
-    data = _run_amd_smi("metric", "-g", gpu_idx)
+    data = _run_amd_smi_for_display("metric", "-g", gpu_idx)
     if data is None:
         return {"available": False}
 
@@ -472,7 +470,7 @@ def get_visible_gpu_utilization(
             "index_kind": "unresolved",
         }
 
-    data = _run_amd_smi("metric")
+    data = _run_amd_smi_for_display("metric")
     if data is None:
         return {
             "available": False,

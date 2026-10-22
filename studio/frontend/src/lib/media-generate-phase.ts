@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export interface MediaGeneratePhaseProgress {
-  // encode | denoise | decode | export (video); absent or null (sd.cpp) reads as denoise.
+  // enhance (FLUX.3 prompt upsampler) | encode | denoise | decode | export (video); absent or null (sd.cpp) reads as
+  // denoise.
   phase?: string | null;
   step: number;
   total: number;
@@ -14,6 +15,7 @@ export function generatePhaseLabel(
   p: MediaGeneratePhaseProgress,
   opts: { hasAudio?: boolean; formatEta?: (seconds: number) => string } = {},
 ): string {
+  if (p.phase === "enhance") return "Enhancing prompt…";
   if (p.phase === "encode") return "Encoding prompt…";
   if (p.phase === "decode") return opts.hasAudio ? "Decoding video and audio…" : "Decoding…";
   if (p.phase === "export") return "Encoding video…";

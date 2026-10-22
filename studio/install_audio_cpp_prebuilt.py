@@ -42,6 +42,7 @@ import argparse
 import datetime
 import fnmatch
 import glob
+import hashlib
 import json
 import os
 import platform
@@ -50,10 +51,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -268,6 +269,32 @@ def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+def _nvidia_has_prebuilt_arch() -> Optional[bool]:
+    """Any NVIDIA card sm_75+ (audio.cpp CUDA*_ARCHS in unsloth-prebuilt-build.yml start at 75); None if unreadable."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            timeout = 15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    caps = []
+    for line in (out.stdout or "").splitlines() if out.returncode == 0 else ():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", line)
+        if not match:
+            # Old driver ("[N/A]"): unknown, keep the CUDA answer.
+            return None
+        caps.append((int(match.group(1)), int(match.group(2))))
+    return any(cap >= (7, 5) for cap in caps) if caps else None
+
+
 def _nvidia_gpu_present() -> bool:
     """An NVIDIA card, also one whose driver reports no CUDA version (wedged, partial)."""
     if shutil.which("nvidia-smi"):
@@ -304,7 +331,10 @@ def detect_accelerator() -> str:
     system = platform.system().lower()
     if system == "darwin":
         return "metal"
-    if nvidia_driver_cuda_version() is not None:
+    # Pascal / Volta-only hosts: the fork's bundles have no kernels for them. Other publishers set their own archs.
+    if nvidia_driver_cuda_version() is not None and (
+        _repo().casefold() != DEFAULT_REPO.casefold() or _nvidia_has_prebuilt_arch() is not False
+    ):
         return "cuda"
     # No HIP bundle is published (#13042); never beside NVIDIA, which Vulkan could enumerate first.
     if _amd_gpu_present() and not _nvidia_gpu_present():
@@ -528,6 +558,7 @@ def _release_index(
                     if isinstance(a, dict) and isinstance(a.get("name"), str)
                 ],
                 "checksums": None,
+                "source_commit": None,
             }
     else:
         release = {
@@ -542,6 +573,7 @@ def _release_index(
                 for a in bundle.manifest.get("artifacts") or []
             ],
             "checksums": checksums,
+            "source_commit": bundle.manifest.get("source_commit"),
         }
     _RELEASE_INDEX_MEMO[key] = release
     return release
@@ -677,6 +709,91 @@ def _extract(archive: Path, target: Path) -> None:
         tf.extractall(target)
 
 
+MODEL_SPECS_DIR = "model_specs"
+_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+_REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_SPEC_NAME = re.compile(r"[a-z0-9_]+\.json")
+# The specs are optional, so a network that blocks GitHub costs one short try, not retries.
+_SPEC_TIMEOUT = 10
+
+
+def _spec_tree(repo: str, commit: str) -> object:
+    url = f"https://api.github.com/repos/{repo}/git/trees/{commit}:{MODEL_SPECS_DIR}"
+    data = core.download_bytes(
+        _OPS, url, timeout = _SPEC_TIMEOUT, attempts = 1, headers = _OPS.github_api_headers(url)
+    )
+    return json.loads(data.decode("utf-8"))
+
+
+def _spec_blob(repo: str, commit: str, name: str) -> bytes:
+    url = f"https://raw.githubusercontent.com/{repo}/{commit}/{MODEL_SPECS_DIR}/{name}"
+    return core.download_bytes(_OPS, url, timeout = _SPEC_TIMEOUT, attempts = 1)
+
+
+def _spec_bytes(repo: str, commit: str, name: str, blob_sha: str) -> bytes:
+    data = _spec_blob(repo, commit, name)
+    got = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    if got != blob_sha:
+        raise RuntimeError(f"{name}: git blob sha {got} != {blob_sha}")
+    if not isinstance(json.loads(data.decode("utf-8")), dict):
+        raise RuntimeError(f"{name} is not a JSON object")
+    return data
+
+
+def _fetch_model_specs(repo: str, commit: Optional[str], dest_dir: Path) -> bool:
+    """Put audio.cpp's ``model_specs/*.json`` at ``commit`` into ``dest_dir/model_specs``, the folder
+    Unsloth Studio reads to tell which model families this runtime loads. All or nothing: every file is
+    checked against its git blob sha and must parse, else no folder is left. Never raises; True when
+    the folder is there afterwards (one already present is kept as is, with no network call).
+
+    Always by commit (the manifest's ``source_commit``), never the release tag: the fork's release
+    tags all point at its packaging commit, whose ``model_specs`` is an older tree."""
+    dest_dir = Path(dest_dir)
+    dest = dest_dir / MODEL_SPECS_DIR
+    if dest.is_dir():
+        return True
+    if not isinstance(commit, str) or not _COMMIT.fullmatch(commit):
+        log("no source commit for this release; model specs not fetched")
+        return False
+    if not isinstance(repo, str) or not _REPO_NAME.fullmatch(repo):
+        log(f"unexpected repo {repo!r}; model specs not fetched")
+        return False
+    tmp = None
+    try:
+        tree = _spec_tree(repo, commit)
+        if not isinstance(tree, dict) or tree.get("truncated") or not tree.get("tree"):
+            raise RuntimeError("empty or truncated model_specs listing")
+        entries = {
+            e["path"]: e["sha"]
+            for e in tree["tree"]
+            if isinstance(e, dict)
+            and e.get("type") == "blob"
+            and isinstance(e.get("path"), str)
+            and _SPEC_NAME.fullmatch(e["path"])
+            and isinstance(e.get("sha"), str)
+        }
+        if not entries:
+            raise RuntimeError("no spec files in the model_specs listing")
+        with ThreadPoolExecutor(max_workers = 8) as pool:
+            blobs = dict(
+                zip(
+                    entries,
+                    pool.map(lambda item: _spec_bytes(repo, commit, *item), entries.items()),
+                )
+            )
+        tmp = core.make_staging_dir(dest_dir, ".model_specs-")
+        for name, data in blobs.items():
+            (tmp / name).write_bytes(data)
+        os.replace(tmp, dest)
+        tmp = None
+    except Exception as exc:  # noqa: BLE001 - offline, 404, rate limit, bad blob: install goes on
+        log(f"model specs at {commit[:12]} not fetched ({exc})")
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors = True)
+    return dest.is_dir()
+
+
 def _locate_server(root: Path) -> Optional[Path]:
     for p in sorted(root.rglob(SERVER_NAME), key = lambda p: len(p.parts)):
         if p.is_file():
@@ -716,12 +833,30 @@ def _sweep_retired_trees(target: Path) -> None:
     """Remove ``<target>.old-*`` trees an earlier swap could not delete (Windows keeps a running
     server's files open). Best-effort: one still in use stays for the next run."""
     for old in target.parent.glob(target.name + ".old-*"):
-        if old.is_dir() and (old / OWNERSHIP_MARKER).is_file():
+        try:
+            owned = old.is_dir() and (old / OWNERSHIP_MARKER).is_file()
+        except OSError:
+            # Unreadable (an elevated run's tree, #14052): only an elevated run can remove it.
+            owned = False
+        if owned:
             shutil.rmtree(old, ignore_errors = True)
     # Staging dirs of a killed run; the install lock is held, so none belongs to a live one.
     for staging in target.parent.glob(".audio.cpp-staging-*"):
         if staging.is_dir() and not staging.is_symlink():
             shutil.rmtree(staging, ignore_errors = True)
+
+
+def _is_unreadable(target: Path) -> bool:
+    """Whether this account cannot look inside ``target``: a tree an elevated run staged under
+    mkdtemp's Windows ACL is owned by Administrators and denies the same user unelevated (#14052).
+    Renaming it is refused too, so only an elevated shell can clear it."""
+    try:
+        os.stat(target / OWNERSHIP_MARKER)
+    except PermissionError:
+        return True
+    except OSError:
+        pass
+    return False
 
 
 def _server_in_use(server: Optional[Path]) -> bool:
@@ -1000,6 +1135,17 @@ def install(
     target = (install_dir or default_install_dir()).resolve()
     if target.exists() and not target.is_dir():
         raise RuntimeError(f"audio.cpp install target is not a directory: {target}")
+    if _is_unreadable(target):
+        # Matched by setup.ps1, which shows the repair instead of a generic failure.
+        repair = (
+            f'from an elevated PowerShell with Remove-Item -Recurse -Force "{target}"'
+            if sys.platform == "win32"
+            else f"with sudo rm -rf '{target}'"
+        )
+        raise RuntimeError(
+            f"{target} cannot be read by this account (left by an elevated run); remove it "
+            f"{repair}, then run the install again"
+        )
     if target.exists() and not (target / OWNERSHIP_MARKER).is_file():
         entries = {p.name for p in target.iterdir()}
         if entries - _STUDIO_LEFTOVERS:
@@ -1134,7 +1280,7 @@ def _install_locked(
         # Checked again before the swap; here it saves the download.
         raise PermissionError(f"audiocpp_server in {target} is running")
     target.parent.mkdir(parents = True, exist_ok = True)
-    staging = Path(tempfile.mkdtemp(prefix = ".audio.cpp-staging-", dir = str(target.parent)))
+    staging = core.make_staging_dir(target.parent, ".audio.cpp-staging-")
     try:
         archive = staging / chosen
         print(f"audio.cpp: downloading {chosen} from {repo} {tag}", flush = True)
@@ -1166,12 +1312,18 @@ def _install_locked(
             extra_dirs = _cuda_runtime_dirs(backend),
             require_vulkan_device = requested == "auto" and backend == "vulkan",
         )
+        # Beside the server (bin/ on Windows), where Studio reads it; a failed fetch never fails the install.
+        source_commit = release.get("source_commit")
+        if _fetch_model_specs(repo, source_commit, server.parent):
+            specs = len(list((server.parent / MODEL_SPECS_DIR).glob("*.json")))
+            print(f"audio.cpp: {specs} model specs beside the server", flush = True)
         (tree / OWNERSHIP_MARKER).touch()
         record = {
             "schema_version": 1,
             "component": "audio.cpp",
             "published_repo": repo,
             "release_tag": tag,
+            "source_commit": source_commit,
             "asset": chosen,
             "asset_sha256": digest,
             "cudart_asset": cudart_used,
@@ -1265,7 +1417,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except PermissionError as exc:
         # Windows: a running audiocpp_server holds the tree open.
         print(
-            f"error: the audio.cpp runtime is in use ({exc}); stop Studio and retry",
+            f"error: the audio.cpp runtime is in use ({exc}); stop Unsloth Studio and retry",
             file = sys.stderr,
         )
         return EXIT_BUSY

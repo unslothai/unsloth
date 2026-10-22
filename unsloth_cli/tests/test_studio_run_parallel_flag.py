@@ -108,6 +108,18 @@ def test_parallel_range_guards_are_set():
     assert getattr(opt, "max", None) == 64, "max must be 64 (KV split sanity cap)"
 
 
+def test_parallel_help_describes_the_shared_kv_cache():
+    """Multi-slot launches add --kv-unified; builds lacking it run one slot (load_model), never ctx/N."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    help_text = " ".join(sig.parameters["parallel"].default.help.split())
+    assert "--kv-unified" in help_text
+    assert "ctx/N" not in help_text
+    assert "fall back to one slot" in help_text
+
+
 def test_typer_parallel_aliases_are_subset_of_backend_denylist():
     """Backend must deny every --parallel alias, or /load can smuggle it in via llama_extra_args."""
     studio_mod = _load_run_command()
@@ -456,6 +468,38 @@ def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
     result, captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, result.output
     assert "--gpu-memory-mode" not in captured[0]["argv"]
+
+
+def test_reexec_forwards_engine_parallelism_and_gpus(monkeypatch):
+    result, captured = _invoke_run(
+        monkeypatch,
+        ["--model", "unsloth/Qwen3-8B", "--engine", "vllm"]
+        + ["--engine-parallelism", "data", "--gpus", "0,2"],
+    )
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--engine-parallelism") == "data", argv
+    assert _value_after(argv, "--gpus") == "0,2", argv
+
+
+def test_reexec_omits_default_engine_parallelism_and_gpus(monkeypatch):
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    assert "--engine-parallelism" not in captured[0]["argv"]
+    assert "--gpus" not in captured[0]["argv"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--engine-parallelism", "data"], "--engine-parallelism applies only to --engine"),
+        (["--gpus", "0,x"], "--gpus takes comma-separated GPU indices"),
+    ],
+)
+def test_bad_engine_parallelism_or_gpus_is_refused_before_reexec(monkeypatch, extra, message):
+    result, captured = _invoke_run(monkeypatch, _BASE + extra)
+    assert result.exit_code == 2 and not captured
+    assert message in result.output
 
 
 def test_reexec_forwards_speculative_options(monkeypatch):

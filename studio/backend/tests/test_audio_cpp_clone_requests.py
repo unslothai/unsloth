@@ -119,13 +119,11 @@ SPEECH, TASKS = "/v1/audio/speech", "/v1/tasks/run"
     ("qwen3", {"reference_text": T, "language": "en"}, {**BASE, "reference_text": T, "language": "English"}),
     ("chatterbox", {"reference_text": T, "audio_options": {"exaggeration": 0.7, "guidance_scale": 9, "temperature": 0.1}},
      {**BASE, "options": {"exaggeration": "0.7", "guidance_scale": "5"}}),
-    # Emotion audio switches to the tasks endpoint with top-level audio.
     ("index", {"audio_inputs": {"reference": REF, "emotion": EMOTION}, "audio_options": {"emotion_alpha": 0.7}},
      {"path": TASKS, "model": "studio-test", "text": TEXT, "voice_ref": REF, "audio": EMOTION,
       "options": {"emotion_alpha": "0.7"}, "seed": "7"}),
     ("qwen3", {"language": "Japanese"}, {"language": "Japanese"}),
     ("qwen3", {"language": "pt-BR"}, {"language": "Portuguese"}),
-    # Auto and unknown codes are left out rather than refused at runtime.
     ("qwen3", {"language": "auto"}, {"language": ABSENT}),
     ("qwen3", {"language": "xx"}, {"language": ABSENT}),
     ("qwen3", {"reference_text": T, "audio_options": {"x_vector_only_mode": True, "bogus_key": "1"}},
@@ -156,7 +154,7 @@ def test_clone_request_body(key, kwargs, expect):
     expect = dict(expect)
     assert path == expect.pop("path", SPEECH)
     assert {k: body.get(k, ABSENT) for k in expect} == expect
-    if "model" in expect:  # full-body rows
+    if "model" in expect:
         assert body.keys() == expect.keys()
 
 
@@ -165,6 +163,105 @@ def test_voxcpm2_speak_body_is_unchanged_by_clone_support():
     backend.generate_audio_response(TEXT, seed = 7, language = "en", instructions = "warm")
     body = {"model": "studio-test", "input": TEXT, "options": {"instruct": "warm", "language": "en"}}
     assert server.calls == [(SPEECH, {**body, "seed": "7"})]
+
+
+class _StrictRecorder(_Recorder):
+    """Refuses an option the model's contract does not declare, as the runtime does."""
+
+    def post_json(self, path, payload, **kwargs):
+        keys = self.model.request_keys
+        undeclared = sorted(set(payload.get("options") or {}) - set(keys or ()))
+        if keys is not None and undeclared:
+            self.calls.append((path, json.loads(json.dumps(payload))))
+            raise srv.AudioCppRequestError(500, f"unknown request option: {undeclared[0]}")
+        return super().post_json(path, payload, **kwargs)
+
+
+# Request option names each published GGUF's embedded (strict) spec declares.
+STRICT_KEYS = {
+    "Breeze-TTS-2-GGUF": ("breeze_tts", {"instruction", "reference_text", "guidance_scale", "seed"}),
+    "Irodori-TTS-v4-Small-GGUF": ("irodori_tts", {"instruction", "language", "no_ref", "seed"}),
+    "DramaBox-GGUF": ("dramabox", {"negative_prompt", "target_voice", "guidance_scale", "seed"}),
+    "DotTTS-MF-GGUF": ("dots_tts", {"language", "reference_text", "template_name", "seed"}),
+    "DotTTS-Edit-GGUF": ("dots_tts", {"instruct", "instruction", "language", "template_name"}),
+    "Maya1-GGUF": ("maya1", {"instruct", "max_tokens", "temperature", "seed"}),
+}
+
+
+# fmt: off
+@pytest.mark.parametrize("display, language, options", [
+    ("Breeze-TTS-2-GGUF", None, {"instruction": "warm"}),
+    ("Breeze-TTS-2-GGUF", "en", {"instruction": "warm"}),
+    ("Irodori-TTS-v4-Small-GGUF", None, {"instruction": "warm"}),
+    ("Irodori-TTS-v4-Small-GGUF", "ja", {"instruction": "warm", "language": "ja"}),
+    ("DramaBox-GGUF", "en", ABSENT),
+    ("DotTTS-MF-GGUF", "en", {"language": "en"}),
+    ("DotTTS-Edit-GGUF", None, {"instruct": "warm"}),
+    ("Maya1-GGUF", "en", {"instruct": "warm"}),
+])
+# fmt: on
+def test_speak_sends_the_description_under_the_name_the_contract_declares(display, language, options):
+    family, keys = STRICT_KEYS[display]
+    model = replace(_model(family, display), request_keys = frozenset(keys))
+    backend = acb.AudioCppBackend()
+    server = _StrictRecorder(model)
+    backend._server, backend._model = server, model
+    backend.models, backend.active_model_name = {model.id: {"is_audio": True}}, model.id
+    backend.generate_audio_response(TEXT, language = language, instructions = "warm")
+    # One request: nothing the contract lacks is sent, so there is no refusal to retry after.
+    ((path, body),) = server.calls
+    assert path == SPEECH and body.get("options", ABSENT) == options
+
+
+def _spec(*names, strict = True):
+    spec = {"family": "dots_tts", "options": {"request": [{"name": n, "type": "string"} for n in names]}}
+    return {**spec, "schema_version": 1} if strict else spec
+
+
+# fmt: off
+@pytest.mark.parametrize("runtime, embedded, keys", [
+    # DotTTS-MF: model_specs/ declares instruct, the GGUF's v1 contract (what the server checks) does not.
+    (_spec("instruct", "instruction", "language"), _spec("language", "seed"), {"language", "seed"}),
+    # A legacy GGUF is checked against model_specs/, so that list still wins.
+    (_spec("instruct", "language"), _spec("language", strict = False), {"instruct", "language"}),
+    # A v1 GGUF that lists no request options leaves the runtime's list in charge, as before.
+    (_spec("instruct", "language"), {**_spec(), "options": {}}, {"instruct", "language"}),
+    (None, _spec("language"), {"language"}),
+    (None, _spec("language", strict = False), None),
+])
+# fmt: on
+def test_request_keys_follow_the_contract_the_server_checks(runtime, embedded, keys):
+    assert acm._request_keys(runtime, embedded) == (frozenset(keys) if keys else None)
+
+
+# fmt: off
+@pytest.mark.parametrize("runtime, embedded, keys", [
+    # v0.9.2 checks model_specs/ before the GGUF's v1 contract.
+    (_spec("instruct", "instruction", "language"), _spec("language", "seed"), {"instruct", "instruction", "language"}),
+    # A legacy model_specs/ entry is not strict, even over a v1 GGUF.
+    (_spec("instruct", "language", strict = False), _spec("language", "seed"), None),
+    # No runtime spec, or one without request options: the GGUF's own contract.
+    (None, _spec("language"), {"language"}),
+    ({**_spec(), "options": {}}, _spec("language"), {"language"}),
+    (None, _spec("language", strict = False), None),
+])
+# fmt: on
+def test_request_keys_on_a_spec_first_runtime(runtime, embedded, keys):
+    got = acm._request_keys(runtime, embedded, runtime_first = True)
+    assert got == (frozenset(keys) if keys else None)
+
+
+def test_speak_on_a_runtime_with_model_specs_sends_only_what_the_gguf_declares():
+    runtime = _spec("instruct", "instruction", "language")
+    embedded = _spec("language", "template_name", "seed")
+    model = replace(_model("dots_tts", "DotTTS-MF-GGUF"), request_keys = acm._request_keys(runtime, embedded))
+    backend = acb.AudioCppBackend()
+    server = _StrictRecorder(model)
+    backend._server, backend._model = server, model
+    backend.models, backend.active_model_name = {model.id: {"is_audio": True}}, model.id
+    backend.generate_audio_response(TEXT, language = "en", instructions = "warm")
+    ((path, body),) = server.calls
+    assert path == SPEECH and body["options"] == {"language": "en"}
 
 
 # fmt: off
@@ -280,10 +377,16 @@ def test_miotts_downloads_mio_codec_and_starts_with_its_path(monkeypatch, tmp_pa
     ((served, path),) = started
     assert path.endswith("miotts.gguf")
     assert served.model_options["session_options"] == {"miotts.codec_model_path": codec_path}
-    # Equal to the requested model, so the next request does not restart the server.
     assert served == model
     entry = _server_entry(monkeypatch, tmp_path, replace(model, model_options = served.model_options))
     assert entry["session_options"] == {"miotts.codec_model_path": codec_path}
     assert entry["task"] == "tts"
     kokoro = MODELS["kokoro"]()
     assert acb._with_companions(kokoro) is kokoro
+
+
+def test_a_blank_clone_seed_is_picked_by_the_server(monkeypatch):
+    monkeypatch.setattr(acb.cm, "random_seed", lambda: 99)
+    backend, server = _backend(MODELS["chatterbox"]())
+    backend.generate_audio_response(TEXT, workflow = "clone", audio_inputs = {"reference": REF})
+    assert server.calls[-1][1]["seed"] == "99" and backend.last_generation_stats["seed"] == 99

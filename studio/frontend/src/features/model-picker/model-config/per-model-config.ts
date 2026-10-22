@@ -28,6 +28,8 @@ export interface PerModelConfig {
   engineSeed?: number | null;
   engineGpuMemoryUtilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
+  /** Default engine only; optional so older blobs parse, and anything but false is the 4-bit default. */
+  loadIn4bit?: boolean;
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
@@ -80,6 +82,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   engineKvCacheDtype: "auto",
   engineSeed: null,
   engineGpuMemoryUtilization: null,
+  loadIn4bit: true,
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
@@ -168,6 +171,7 @@ const NO_MLX_REASONS = new Set([
   "mlx_unavailable",
   "no_torch",
   "intel_mac",
+  "rosetta",
   "detection_failed",
 ]);
 
@@ -471,6 +475,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "kvCacheDtype",
   "mlxKvQuant",
   "mlxInt8Prefill",
+  "loadIn4bit",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
@@ -1112,6 +1117,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     engineGpuMemoryUtilization: normalizeEngineGpuMemoryUtilization(
       partial.engineGpuMemoryUtilization,
     ),
+    loadIn4bit: partial.loadIn4bit !== false,
     customContextLength:
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength) &&
@@ -1393,6 +1399,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     (config.engineKvCacheDtype ?? "auto") === "auto" &&
     config.engineSeed == null &&
     config.engineGpuMemoryUtilization == null &&
+    config.loadIn4bit !== false &&
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&

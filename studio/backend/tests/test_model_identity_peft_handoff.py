@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The pinned-snapshot path must not reach PEFT through ``name_or_path``.
-
-``restore_hf_cache_repo_identity`` runs in ``UnslothTrainer.load_model`` *before*
-``get_peft_model``, so at that point there is no ``peft_config`` for its adapter branch
-to repair. PEFT then derives the adapter's ``base_model_name_or_path`` from
-``model.__dict__["name_or_path"]``:
-
-    # peft/mapping_func.py
-    new_name = model.__dict__.get("name_or_path", None)
-    peft_config.base_model_name_or_path = new_name
-
-``PreTrainedModel.__init__`` copies ``config.name_or_path`` onto the instance, so
-restoring only ``config._name_or_path`` leaves that slot holding the machine-local
-snapshot path. It then travels into ``adapter_config.json``, every
-``checkpoint-*/adapter_config.json``, the run card, ``export_metadata.json`` and the
-model card uploaded by ``push_to_hub`` -- none of which are loadable on another machine.
-
-The existing coverage in ``test_model_identity.py`` asserts the *call site* via AST,
-which stays green even when the call cannot do anything, so these are behavioural.
-"""
+"""PEFT copies the instance name_or_path into adapter_config.json, so the local snapshot path leaks."""
 
 from types import SimpleNamespace
 

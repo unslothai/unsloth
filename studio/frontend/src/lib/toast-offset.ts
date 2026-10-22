@@ -79,11 +79,17 @@ type InsetStyle = Pick<
 
 const insetScopes = new Set<HTMLElement>();
 const insetValues = new Map<string, string>();
+const insetListeners = new Set<() => void>();
+
+function notifyInsetChange(): void {
+  for (const listener of insetListeners) listener();
+}
 
 function removeCornerInset(name: string): string {
   const previous = insetValues.get(name) ?? "";
   insetValues.delete(name);
   for (const scope of insetScopes) scope.style.removeProperty(name);
+  if (previous) notifyInsetChange();
   return previous;
 }
 
@@ -92,8 +98,18 @@ function setCornerInset(name: string, value: string | null): void {
     removeCornerInset(name);
     return;
   }
+  const changed = insetValues.get(name) !== value;
   insetValues.set(name, value);
   for (const scope of insetScopes) scope.style.setProperty(name, value);
+  if (changed) notifyInsetChange();
+}
+
+/** Fires after a corner inset changes: rail cards move with it without resizing, so no ResizeObserver sees it. */
+export function subscribeCornerInsets(listener: () => void): () => void {
+  insetListeners.add(listener);
+  return () => {
+    insetListeners.delete(listener);
+  };
 }
 
 export const cornerInsets: { style: InsetStyle } = {
@@ -114,6 +130,45 @@ export function cornerInsetScope(
   }
   return () => {
     insetScopes.delete(element);
+  };
+}
+
+export const COMPOSER_CLEARANCE_VAR = "--studio-composer-clearance";
+// The collapsed download button's column: 16px inset, 44px button, 16px of air.
+const CORNER_RAIL_COLUMN = 76;
+const composerClearances = new Map<object, number>();
+
+function applyComposerClearance(): void {
+  const lift = Math.max(0, ...composerClearances.values());
+  cornerInsets.style.setProperty(COMPOSER_CLEARANCE_VAR, lift > 0 ? `${lift}px` : "");
+}
+
+/** Lifts the corner rail above `composer` while it reaches into the rail's column (#14146); compare panes each register. */
+export function watchComposerClearance(
+  composer: HTMLElement,
+  uiSpaceScale = 1,
+): () => void {
+  const key = {};
+  const apply = () => {
+    const rect = composer.getBoundingClientRect();
+    const intrudes =
+      rect.height > 0 &&
+      window.innerWidth - rect.right < CORNER_RAIL_COLUMN * uiSpaceScale;
+    // The rail already keeps a 16px gutter; this leaves 8px between it and the composer.
+    const lift = intrudes ? Math.round(window.innerHeight - rect.top - 8) : 0;
+    if (lift > 0) composerClearances.set(key, lift);
+    else composerClearances.delete(key);
+    applyComposerClearance();
+  };
+  apply();
+  const observer = new ResizeObserver(apply);
+  observer.observe(composer);
+  window.addEventListener("resize", apply);
+  return () => {
+    observer.disconnect();
+    window.removeEventListener("resize", apply);
+    composerClearances.delete(key);
+    applyComposerClearance();
   };
 }
 

@@ -51,6 +51,11 @@ import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
+import {
+  HUB_SPLIT_CUSTOM_WIDTH_CLASS,
+  HubSplitDivider,
+  useHubSplitWidth,
+} from "./components/hub-split-divider";
 import { buildHubTourSteps } from "./tour";
 import {
   ModelsCatalog,
@@ -63,8 +68,6 @@ import {
   type AllModelsView,
   HubListHeader,
   type InventorySort,
-  InventorySortControl,
-  InventoryTypeFilterControl,
 } from "./catalog/models-table";
 import {
   HUB_UPLOADERS,
@@ -112,10 +115,8 @@ import {
   hubAudioRunRefused,
   hubAudioTask,
 } from "./lib/model-run-selection";
-import {
-  type ModelTypeFilter,
-  matchesModelType,
-} from "./lib/model-type-filter";
+import { inventoryRowFormat } from "./catalog/inventory-sort";
+import { matchesInventoryCapabilities } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
@@ -133,10 +134,12 @@ import {
   buildDiscoverRows,
   detectResultFormat,
   discoveryInventorySignature,
+  hasRecommendedCheckpointLikes,
   isUnslothFinetunable,
   matchesHubCapability,
   matchesFormat,
   matchesRecommended,
+  matchesRecommendedDiffusion,
 } from "./lib/view-models";
 import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
 import {
@@ -157,13 +160,17 @@ import type {
 const NO_SEARCH_FILTERS: ModelSearchFilters = {};
 const UNSLOTH_UPLOADER: readonly HubUploader[] = ["unsloth"];
 
-const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 
 // Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
+
+// Image and video models skip Recommended's likes rules: new diffusion uploads rarely clear them.
+function isDiffusionRow(row: DiscoverRow): boolean {
+  return row.capabilities.some((c) => c.key === "diffusion");
+}
 
 function withoutGgufTag(
   tags: readonly string[] | undefined,
@@ -237,29 +244,6 @@ function buildFocusedHeading({
   return isDataset ? "Datasets" : "Models";
 }
 
-function readModelsTabPreference(): ModelsTab | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const value = window.localStorage.getItem(MODELS_TAB_STORAGE_KEY);
-    return value === "discover" || value === "downloaded" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeModelsTabPreference(tab: ModelsTab): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(MODELS_TAB_STORAGE_KEY, tab);
-  } catch {
-    return;
-  }
-}
-
 // "All models" defaults to split layout; the choice persists across sessions.
 function readAllModelsViewPreference(): AllModelsView {
   if (typeof window === "undefined") {
@@ -284,7 +268,10 @@ function readInventorySortPreference(): InventorySort {
   }
   try {
     const value = window.localStorage.getItem(INVENTORY_SORT_STORAGE_KEY);
-    return value === "name" || value === "size" || value === "recent"
+    return value === "name" ||
+      value === "size" ||
+      value === "format" ||
+      value === "recent"
       ? value
       : "recent";
   } catch {
@@ -321,12 +308,8 @@ function useModelsTabState(): {
   const navigate = useNavigate();
   const search = useSearch({ from: "/hub" });
   const urlTab: ModelsTab | null = search.tab ?? null;
-  const hasModelDeepLink =
-    typeof search.model === "string" && search.model.length > 0;
-  const [fallbackTab, setFallbackTab] = useState<ModelsTab>(
-    () => readModelsTabPreference() ?? "discover",
-  );
-  const tab = urlTab ?? (hasModelDeepLink ? "discover" : fallbackTab);
+  // Opening the Hub without an explicit ?tab= always lands on Discover; the last tab is not remembered.
+  const tab = urlTab ?? "discover";
 
   useEffect(() => {
     if (urlTab !== null) return;
@@ -339,8 +322,6 @@ function useModelsTabState(): {
 
   const setTab = useCallback(
     (next: ModelsTab) => {
-      setFallbackTab(next);
-      writeModelsTabPreference(next);
       void navigate({
         to: "/hub",
         search: (prev) => ({
@@ -697,8 +678,17 @@ export function ModelsPage() {
     setInventorySortState(sort);
     writeInventorySortPreference(sort);
   }, []);
-  const [inventoryTypeFilter, setInventoryTypeFilter] =
-    useState<ModelTypeFilter>("all");
+  const [inventoryCapabilities, setInventoryCapabilities] = useState<
+    HubCapabilityFilter[]
+  >([]);
+  const [inventoryFirstPickArmed, setInventoryFirstPickArmed] = useState(true);
+  const handleInventoryCapabilitiesChange = useCallback(
+    (next: HubCapabilityFilter[]) => {
+      setInventoryFirstPickArmed(false);
+      setInventoryCapabilities(next);
+    },
+    [],
+  );
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
   const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
@@ -922,11 +912,14 @@ export function ModelsPage() {
 
   const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
-  // ModelScope has no creation-date sort; its closest is last modified.
+  // ModelScope has neither a creation-date sort nor trending; its closest is last modified.
   const effectiveSort: HfSortKey =
-    hubSource === "modelscope" && requestedSort === "createdAt"
+    hubSource === "modelscope" &&
+    (requestedSort === "createdAt" || requestedSort === "fresh")
       ? "lastModified"
-      : requestedSort;
+      : isDatasetMode && requestedSort === "fresh"
+        ? "createdAt"
+        : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (Recommended) hides unrunnable checkpoints and picking a format changes the rows.
@@ -1015,7 +1008,10 @@ export function ModelsPage() {
     inventoryError,
     inventoryWarning,
     refreshInventory,
-  } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
+  } = useHubInventory({
+    kind: isDatasetMode ? "datasets" : "models",
+    includeUnslothModels: true,
+  });
 
   const reloadReadySent = useRef(false);
   useEffect(() => {
@@ -1112,19 +1108,21 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Recommended curates browsing to logo'd models plus well-liked iconless ones; a typed
-        // search and every other format show all matches.
+        // Recommended curates browsing to logo'd models plus well-liked iconless ones, and to
+        // well-liked checkpoints; a typed search and every other format show all matches.
         (effectiveDiscoverFormat !== "recommended" ||
           hasQuery ||
+          isDiffusionRow(row) ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
+        (effectiveDiscoverFormat !== "recommended" ||
+          hasQuery ||
+          isDiffusionRow(row) ||
+          hasRecommendedCheckpointLikes(row.result)) &&
         (effectiveDiscoverFormat === "recommended"
-          ? matchesRecommended(
-              row.result,
-              row.capabilities.some((c) => c.key === "diffusion")
-                ? diffusionQuantFormats
-                : checkpointQuantFormats,
-            )
+          ? isDiffusionRow(row)
+            ? matchesRecommendedDiffusion(row.result, diffusionQuantFormats)
+            : matchesRecommended(row.result, checkpointQuantFormats)
           : matchesFormat(
               detectResultFormat(row.result),
               effectiveDiscoverFormat,
@@ -1179,6 +1177,10 @@ export function ModelsPage() {
             !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id),
         )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        // Catches low-like safetensors repos cross-tagged "gguf" for a stray .gguf export.
+        .filter(
+          (row) => isDiffusionRow(row) || hasRecommendedCheckpointLikes(row.result),
+        )
         // Same fit filter as the main Discover list, so the feed carousel honors the toggle too.
         .filter(
           (row) =>
@@ -1256,8 +1258,9 @@ export function ModelsPage() {
             // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
             // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
-            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
-              matchesModelType(row, inventoryTypeFilter) &&
+            (deferredFormatFilter !== "unsloth" &&
+              matchesFormat(inventoryRowFormat(row), deferredFormatFilter) &&
+              matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -1266,7 +1269,7 @@ export function ModelsPage() {
       effectiveCachedRows,
       isDatasetMode,
       deferredFormatFilter,
-      inventoryTypeFilter,
+      inventoryCapabilities,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -1280,8 +1283,10 @@ export function ModelsPage() {
             // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
             // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
-            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
-              matchesModelType(row, inventoryTypeFilter) &&
+            ((deferredFormatFilter === "unsloth"
+              ? row.source === "unsloth"
+              : matchesFormat(inventoryRowFormat(row), deferredFormatFilter)) &&
+              matchesInventoryCapabilities(row, inventoryCapabilities) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -1290,7 +1295,7 @@ export function ModelsPage() {
       effectiveLocalRows,
       isDatasetMode,
       deferredFormatFilter,
-      inventoryTypeFilter,
+      inventoryCapabilities,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -1326,7 +1331,7 @@ export function ModelsPage() {
         // ModelScope drops searchFilters, but the dataset rows are filtered here either way.
         minRows,
         maxRows,
-        inventoryTypeFilter,
+        inventoryCapabilities,
         effectiveSort,
         effectiveDirection,
         activeChannelId,
@@ -1341,7 +1346,7 @@ export function ModelsPage() {
       searchFilters,
       minRows,
       maxRows,
-      inventoryTypeFilter,
+      inventoryCapabilities,
       effectiveSort,
       effectiveDirection,
       activeChannelId,
@@ -1360,7 +1365,8 @@ export function ModelsPage() {
       }
     } else {
       setDownloadedFormat("all");
-      setInventoryTypeFilter("all");
+      setInventoryCapabilities([]);
+      setInventoryFirstPickArmed(true);
     }
     setCapabilityFilters([]);
     setDatasetModalities([]);
@@ -1368,6 +1374,10 @@ export function ModelsPage() {
     setUploaderPick(null);
     setFirstPickArmed(true);
   }, [isDiscoverTab, urlSection, navigate]);
+  const handleResetInventoryFilters = useCallback(() => {
+    setInventoryCapabilities([]);
+    setInventoryFirstPickArmed(true);
+  }, []);
   const handleResetPopoverFilters = useCallback(() => {
     setCapabilityFilters([]);
     setDatasetModalities([]);
@@ -1636,7 +1646,7 @@ export function ModelsPage() {
     );
   }, [loadingModel, selectedModel]);
 
-  const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
+  const { vramInfo } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
     ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
@@ -1805,7 +1815,6 @@ export function ModelsPage() {
       isActive,
       activeGgufVariant,
       isLoadingThisModel,
-      minMemory,
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       gpuCount: inferenceGpu.deviceCount,
@@ -1818,7 +1827,6 @@ export function ModelsPage() {
       isActive,
       activeGgufVariant,
       isLoadingThisModel,
-      minMemory,
       vramInfo,
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
@@ -1846,7 +1854,7 @@ export function ModelsPage() {
   const catalogState = useMemo<ModelsCatalogState>(
     () => {
       const typeFilterActive =
-        !isDatasetMode && inventoryTypeFilter !== "all";
+        !isDatasetMode && inventoryCapabilities.length > 0;
       return {
         tab,
         discoverRows: listRows,
@@ -1920,7 +1928,7 @@ export function ModelsPage() {
       uploaderPick,
       ownerScope,
       debouncedQuery,
-      inventoryTypeFilter,
+      inventoryCapabilities,
     ],
   );
 
@@ -2039,28 +2047,12 @@ export function ModelsPage() {
   ]);
 
   const downloadedHeader = useMemo(() => {
-    // Compact pills so they stay beside the view-mode tabs even in the narrow split pane.
-    const controls = (
-      <div className="flex min-w-0 items-center gap-1.5">
-        {!isDatasetMode && (
-          <InventoryTypeFilterControl
-            value={inventoryTypeFilter}
-            onChange={setInventoryTypeFilter}
-          />
-        )}
-        <InventorySortControl
-          value={inventorySort}
-          onChange={setInventorySort}
-        />
-      </div>
-    );
     return (
       <HubListHeader
         title="On device"
         count={filteredCachedRows.length + filteredLocalRows.length}
         view={allModelsView}
         onViewChange={setAllModelsView}
-        actions={controls}
       />
     );
   }, [
@@ -2068,10 +2060,6 @@ export function ModelsPage() {
     filteredLocalRows,
     allModelsView,
     setAllModelsView,
-    inventorySort,
-    setInventorySort,
-    inventoryTypeFilter,
-    isDatasetMode,
   ]);
 
   // NPU rows have no detail view; one left open would cover their list.
@@ -2079,6 +2067,9 @@ export function ModelsPage() {
   const splitMode = allModelsView === "split" && !showNpuCatalog;
   // Unreachable under the full-page detail overlay.
   const catalogCovered = detailOpen && !splitMode;
+
+  const catalogPaneRef = useRef<HTMLDivElement>(null);
+  const splitWidth = useHubSplitWidth();
 
   const tour = useGuidedTourController({
     id: "hub",
@@ -2128,6 +2119,12 @@ export function ModelsPage() {
           onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
           npuAvailable={npuSource !== undefined}
+          inventorySort={inventorySort}
+          onInventorySortChange={setInventorySort}
+          inventoryCapabilities={inventoryCapabilities}
+          onInventoryCapabilitiesChange={handleInventoryCapabilitiesChange}
+          isolateFirstInventoryCapability={inventoryFirstPickArmed}
+          onResetInventoryFilters={handleResetInventoryFilters}
         />
       </HubTopBar>
 
@@ -2141,17 +2138,24 @@ export function ModelsPage() {
         )}
       >
         <div
+          ref={catalogPaneRef}
           data-tour="hub-catalog"
           className={cn(
             "flex min-h-0 flex-col",
             // Split mode keeps the catalog as a master pane that grows off a 460px floor; otherwise it
             // fills the area and the detail view overlays it.
             splitMode
-              ? "flex-1 lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
+              ? cn(
+                  "flex-1 lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60",
+                  splitWidth.width === null
+                    ? "lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%]"
+                    : HUB_SPLIT_CUSTOM_WIDTH_CLASS,
+                )
               : "flex-1",
             // A full-bleed opaque overlay, so the catalog leaves the tab order; else tabbing walks behind it.
             catalogCovered && "pointer-events-none",
           )}
+          style={splitMode ? splitWidth.style : undefined}
           aria-hidden={catalogCovered || undefined}
           inert={catalogCovered || undefined}
         >
@@ -2176,6 +2180,13 @@ export function ModelsPage() {
           )}
         </div>
 
+        {splitMode && !isCompactViewport && (
+          <HubSplitDivider
+            paneRef={catalogPaneRef}
+            width={splitWidth.width}
+            onWidthChange={splitWidth.setWidth}
+          />
+        )}
         {splitMode ? (
           detailOpen ? (
             <div
@@ -2226,7 +2237,6 @@ export function ModelsPage() {
       <OnDeviceFoldersDialog
         open={foldersDialogOpen}
         onOpenChange={setFoldersDialogOpen}
-        onInventoryChange={refreshInventory}
       />
       <FreeUpSpaceDialog
         open={freeUpSpaceOpen}

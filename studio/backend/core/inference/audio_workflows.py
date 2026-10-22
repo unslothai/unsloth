@@ -20,6 +20,17 @@ from core.inference.audio_cpp_models import (
 
 AUDIO_WORKFLOW_IDS = ("speak", "clone", "edit", "convert", "music", "separate", "transcribe")
 
+# The page names people see in the sidebar.
+AUDIO_WORKFLOW_LABELS = {
+    "speak": "Text to Speech",
+    "clone": "Clone",
+    "edit": "Edit",
+    "convert": "Convert",
+    "music": "Music",
+    "separate": "Separate",
+    "transcribe": "Transcribe",
+}
+
 # Generation audio types that make music; every other generation audio type speaks.
 MUSIC_AUDIO_TYPES = frozenset(("minimax_music3", AUDIO_CPP_MUSIC_AUDIO_TYPE))
 
@@ -62,3 +73,13 @@ def inventory_audio_workflows(
     if task == HUB_TASKS["tts"]:
         return [workflow_for_audio_type(audio_type)]
     return None
+
+
+def pages_sentence(workflows) -> str:
+    """``It runs on Text to Speech (speak) and Clone (clone).``, for an error naming a model's pages."""
+    runs = set(workflows or ())
+    names = [f"{AUDIO_WORKFLOW_LABELS[wf]} ({wf})" for wf in AUDIO_WORKFLOW_IDS if wf in runs]
+    if not names:
+        return "Unsloth Studio has no Audio page for it yet."
+    pages = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return f"It runs on {pages}."

@@ -150,7 +150,7 @@ def _read(path: Path, fresh: bool = False) -> dict:
     ):
         return _cache["data"]
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding = "utf-8"))
         if (
             not isinstance(data, dict)
             or data.get("version") != _VERSION
@@ -187,7 +187,7 @@ def _write(path: Path, data: dict) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
     fd, tmp = tempfile.mkstemp(prefix = ".peaks.", dir = str(path.parent))
     try:
-        with os.fdopen(fd, "w") as handle:
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             json.dump(data, handle, indent = 1)  # insertion order is the eviction order
         os.replace(tmp, path)
     except BaseException:

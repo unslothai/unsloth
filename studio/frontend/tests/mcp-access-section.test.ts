@@ -101,7 +101,7 @@ test("the setup snippet shows only while on, targets the usage examples' address
   assert.match(SECTION, /buildMcpSnippet\(agent, settings\.url, os, apiKey\)/);
   assert.match(
     SECTION,
-    /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*\(serverUrl \?\? origin\)/,
+    /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*isTauri\s*\?\s*\(serverUrl \?\? origin\)\s*:\s*origin/,
   );
   // tunnel preference changes must notify this section immediately.
   assert.match(
@@ -122,7 +122,7 @@ test("the setup snippet shows only while on, targets the usage examples' address
   );
   assert.equal(
     en.settings.apiKeys.mcp.exportKeyHint,
-    "Set {name} to an access token from this page before you start the agent.",
+    "Set {name} to an Unsloth API key from this page before you start the agent.",
   );
 });
 

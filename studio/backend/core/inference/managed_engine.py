@@ -65,7 +65,7 @@ def validate_load(engine: str, request) -> list[int]:
     # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
     gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
-        raise ValueError("Studio has no GPU it can assign to this engine.")
+        raise ValueError("Unsloth has no GPU it can assign to this engine.")
     from . import wsl_host
 
     if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
@@ -85,7 +85,7 @@ def validate_load(engine: str, request) -> list[int]:
             mask = None
         if mask:
             raise ValueError(
-                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with {mask}. "
+                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Unsloth runs with {mask}. "
                 "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
             )
     for gpu_id in gpu_ids:
@@ -99,7 +99,7 @@ def validate_load(engine: str, request) -> list[int]:
         )
     if stale(info):
         raise ValueError(
-            f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
+            f"Unsloth's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
     if info.get("profile_digest") != profile_digest(engine) and not (
         info.get("restored") and built_for_this_gpu(engine, info)
@@ -490,6 +490,10 @@ class _MambaSeqLimit(RuntimeError):
         self.blocks = blocks
 
 
+class _EngineExited(RuntimeError):
+    """The engine process exited during startup (not a stop, cancel or timeout)."""
+
+
 def _token_file_token(env) -> str | None:
     """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
     guest gets its own HF_HOME, so the token has to cross over. Anonymous loads keep none."""
@@ -546,8 +550,49 @@ class ManagedEngine:
         model_path = None,
     ):
         """``model`` is the served name; ``model_path`` is what the engine loads when they differ."""
-        args = (model, context, gpu_ids, env, cancel_event)
         options = dict(options or {})
+        try:
+            return self._start_seq_limited(
+                model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
+            )
+        except _EngineExited as exc:
+            if not self._drafter_retry(model, model_path, options):
+                raise
+            if cancel_event is not None and cancel_event.is_set():
+                self.stop()
+                raise RuntimeError("Model load cancelled") from exc
+            # A drafter trained with the fine-tune must not keep the model itself from loading.
+            from loggers import get_logger
+
+            get_logger(__name__).warning(
+                "vLLM did not start with the trained drafter (%s); retrying without it.", exc
+            )
+            self._tail.clear()
+            self._mamba_blocks = None
+            self.phase = "starting"
+            return self._start_seq_limited(
+                model,
+                context,
+                gpu_ids,
+                env,
+                cancel_event,
+                {**options, "no_speculative_config": True},
+                trust_remote_code,
+                model_path,
+            )
+
+    def _drafter_retry(self, model, model_path, options) -> bool:
+        """A failed vLLM start that passed a drafter's --speculative-config is retried without it."""
+        if self.engine != "vllm" or (options or {}).get("no_speculative_config"):
+            return False
+        from core.inference.engine_adapters import vllm_speculative_args
+
+        return bool(vllm_speculative_args(model_path or model))
+
+    def _start_seq_limited(
+        self, model, context, gpu_ids, env, cancel_event, options, trust_remote_code, model_path
+    ):
+        args = (model, context, gpu_ids, env, cancel_event)
         key = (
             self.engine,
             model_path or model,
@@ -711,7 +756,7 @@ class ManagedEngine:
                 )
                 adopt_pid(self.process.pid)
                 if is_process_shutting_down():
-                    raise RuntimeError("Studio is shutting down")
+                    raise RuntimeError("Unsloth is shutting down")
                 self._reader = threading.Thread(
                     target = self._drain, args = (self.process,), daemon = True
                 )
@@ -736,7 +781,7 @@ class ManagedEngine:
                         message = "Engine failed to start. " + "\n".join(self._tail)
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
-                        raise RuntimeError(message)
+                        raise _EngineExited(message)
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
@@ -752,6 +797,12 @@ class ManagedEngine:
         except _MambaSeqLimit:
             # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
             self._teardown()
+            raise
+        except _EngineExited:
+            if self._drafter_retry(model, model_path, options):
+                self._teardown()
+            else:
+                self.stop()
             raise
         except Exception:
             self.stop()
@@ -1025,7 +1076,7 @@ class ManagedEngine:
             )
         if params.get("video"):
             raise ValueError(
-                "Video input is not yet supported by the Studio managed engine transport."
+                "Video input is not yet supported by the Unsloth managed engine transport."
             )
         from .orchestrator import _encoded_images, InferenceOrchestrator
 

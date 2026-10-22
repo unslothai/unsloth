@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end handshake test for the tool-confirmation gate, no model.
-
-The real Unsloth stream wrappers in ``routes/inference.py`` drive the
-synchronous agentic generator with ``await asyncio.to_thread(next, gen,
-...)`` so the blocking ``threading.Event`` wait runs off the event loop.
-This test rebuilds that exact pattern around the real
-``state.tool_approvals`` functions, served by a real uvicorn process on
-loopback (the same server Unsloth uses), and proves the load-bearing
-property:
-
-* ``tool_start`` reaches the client before the gate blocks, and
-* the separate ``/tool-confirm`` POST is served *while* the stream
-  connection is blocked, after which the stream resumes with the executed
-  (allow) or rejected (deny) result -- i.e. no deadlock.
-
-Each scenario runs under a socket-level timeout, so a regression that
-reintroduces a deadlock fails fast instead of hanging the suite.
-"""
+"""The blocking gate wait runs off the loop via to_thread, so a /tool-confirm POST can be served."""
 
 import asyncio
 import json
@@ -139,12 +122,7 @@ class _Server:
 
 
 async def _gate_is_blocking(approval_id) -> None:
-    """Wait until the stream thread is parked on this approval's slot.
-
-    The slot is registered before ``tool_start`` is yielded, so it exists
-    by the time the client receives the event -- exactly as in reality,
-    where the confirm POST only arrives after the card renders.
-    """
+    """Waits until the stream thread parks on this approval's slot, which exists before tool_start."""
     for _ in range(400):
         with tool_approvals._lock:
             slot = tool_approvals._pending.get(approval_id)
@@ -167,9 +145,7 @@ async def _drive(base_url, session_id, decision):
                 event = json.loads(line[len("data: ") :])
                 events.append(event)
                 if event["type"] == "tool_start":
-                    # The stream is now blocked on the gate; the confirm
-                    # POST (echoing approval_id) must still be served over a
-                    # second connection.
+                    # The stream is blocked on the gate; the confirm POST uses a second connection.
                     approval_id = event["approval_id"]
                     await _gate_is_blocking(approval_id)
                     r = await client.post(
@@ -210,9 +186,7 @@ def test_deny_resumes_stream_with_rejection_result():
 
 
 def test_tool_start_precedes_the_block_and_carries_approval_id():
-    # The first streamed event is always tool_start, proving the buttons
-    # can render before the backend pauses for the decision -- and it
-    # carries the approval_id / awaiting_confirmation the UI needs.
+    # tool_start comes first so the buttons render before the backend pauses.
     events, _ = _run("sess-order", "allow")
     assert events[0]["type"] == "tool_start"
     assert events[0]["awaiting_confirmation"] is True
