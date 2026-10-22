@@ -46,7 +46,10 @@ REPLAY_OK = _replay_matches_device()
 
 @pytest.fixture
 def multirow(monkeypatch, request):
-    if not REPLAY_OK and request.node.originalname != "test_rocm_without_the_dpp_order_stays_one_row":
+    if (
+        not REPLAY_OK
+        and request.node.originalname != "test_rocm_without_the_dpp_order_stays_one_row"
+    ):
         pytest.skip("this ROCm arch does not reduce in the replayed order")
     monkeypatch.setattr(rms_layernorm, "_MULTIROW", True)
     monkeypatch.setattr(rms_layernorm, "_MULTIROW_CHECKED", {})
