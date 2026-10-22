@@ -199,6 +199,7 @@ export function parseSeedConfig(
     seed_columns?: string[];
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
+    seed_total_rows?: number;
     local_file_name?: string;
     unstructuredUploadUid?: string;
     unstructuredFileIds?: string[];
@@ -239,6 +240,9 @@ export function parseSeedConfig(
       : {}),
     ...(options?.seed_preview_rows
       ? { seed_preview_rows: options.seed_preview_rows }
+      : {}),
+    ...(options?.seed_total_rows !== undefined
+      ? { seed_total_rows: options.seed_total_rows }
       : {}),
     ...(options?.local_file_name !== undefined
       ? { local_file_name: options.local_file_name }

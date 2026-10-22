@@ -4,6 +4,7 @@
 """Training history API routes: browse, view, and delete past training runs."""
 
 import asyncio
+import functools
 import json
 import shutil
 import uuid
@@ -263,8 +264,8 @@ async def list_training_runs(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List training runs, newest first."""
-    result = list_runs(limit = limit, offset = offset)
-    sharing_on = get_preview_sharing_enabled() and not no_credential
+    result = await asyncio.to_thread(functools.partial(list_runs, limit = limit, offset = offset))
+    sharing_on = await asyncio.to_thread(get_preview_sharing_enabled) and not no_credential
     runs = await asyncio.to_thread(
         _summaries_from_rows,
         result["runs"],
@@ -286,7 +287,7 @@ async def get_training_run_detail(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get a single training run with full config and metrics."""
-    run = get_run(run_id)
+    run = await asyncio.to_thread(get_run, run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
 
@@ -297,13 +298,12 @@ async def get_training_run_detail(
         logger.debug("Failed to parse config_json for run %s", run_id)
         config = {}
 
-    metrics_data = get_run_metrics(run_id)
+    metrics_data = await asyncio.to_thread(get_run_metrics, run_id)
+    sharing_on = await asyncio.to_thread(get_preview_sharing_enabled) and not no_credential
 
-    summary = await asyncio.to_thread(
-        _summary_from_row,
-        run,
-        get_preview_sharing_enabled() and not no_credential,
-    )
+    summary = await asyncio.to_thread(_summary_from_row, run, sharing_on)
+    # The same persisted path, in the summary as `model_name` and again inside `config_json`,
+    # so the WHOLE response goes through.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(

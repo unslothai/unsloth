@@ -55,7 +55,63 @@ _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
 _system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
 
-# Python 3.8+ ignores PATH for extension DLLs, so register ROCm bin dirs before torch import.
+_CPU_PERCENT_MIN_WINDOW_S = 1.0
+_cpu_percent_lock = threading.Lock()
+_cpu_percent_reading: Optional[tuple[float, Optional[float]]] = None
+
+
+def _prime_cpu_percent() -> None:
+    global _cpu_percent_reading
+    try:
+        import psutil
+        psutil.cpu_percent(interval = None)
+    except Exception:
+        return
+    with _cpu_percent_lock:
+        _cpu_percent_reading = (time.monotonic(), None)
+
+
+def _cpu_usage_percent() -> float:
+    """cpu_percent(None) measures since anyone's last call: sample at most once per window."""
+    global _cpu_percent_reading
+    import psutil
+
+    with _cpu_percent_lock:
+        now = time.monotonic()
+        reading = _cpu_percent_reading
+        if (
+            reading is not None
+            and reading[1] is not None
+            and now - reading[0] < _CPU_PERCENT_MIN_WINDOW_S
+        ):
+            return reading[1]
+        value = psutil.cpu_percent(interval = None)
+        _cpu_percent_reading = (now, value)
+        return value
+
+
+_prime_cpu_percent()
+
+
+def _process_tree_rss_mb(process: Any) -> int:
+    """RSS of this process and its children (llama-server, the training worker), best effort."""
+    import psutil
+
+    total = process.memory_info().rss
+    try:
+        children = process.children(recursive = True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        children = []
+    for child in children:
+        try:
+            total += child.memory_info().rss
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return round(total / 1024**2)
+
+
+# Windows AMD ROCm DLL injection: Python 3.8+ ignores PATH for extension modules, so register ROCm bin
+# dirs with os.add_dll_directory() to find amdhip64.dll etc. before any torch import.
 if sys.platform == "win32":
     # Module scope: the handle removes the search-path entry when garbage collected.
     _ROCM_DLL_HANDLES: list = []
@@ -2196,6 +2252,7 @@ def _get_cached_system_gpu_info(
     logger, *, refresh_memory: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return training and inference GPU info with bounded live-probe churn."""
+    import contextlib
     import time
     from utils.hardware import (
         LIVE_GPU_TELEMETRY_KEYS,
@@ -2204,6 +2261,7 @@ def _get_cached_system_gpu_info(
         get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
         get_vulkan_inference_gpu_info,
+        gpu_query,
     )
 
     global _system_gpu_cache
@@ -2221,9 +2279,7 @@ def _get_cached_system_gpu_info(
             visibility_info = {"available": False, "devices": []}
 
         try:
-            import contextlib
-
-            from utils.hardware import gpu_query
+            # Already behind a 10 s cache: no stale-while-revalidate on top.
             with (
                 contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
             ):
@@ -2310,7 +2366,10 @@ def _get_cached_system_gpu_info(
             gpu_info["gguf_gpu_ids_supported"] = bool(enriched_devices)
             inference_gpu_info = gpu_info
         else:
-            vulkan_info = get_vulkan_inference_gpu_info()
+            with (
+                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
+            ):
+                vulkan_info = get_vulkan_inference_gpu_info()
             cross_vendor_info = (
                 get_cross_vendor_inference_gpu_info() if vulkan_info is None else None
             )
@@ -2559,7 +2618,15 @@ def get_system_info(
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
     except Exception as e:
         logger.debug(f"Failed to get current process memory: {e}")
+        current_process = None
         process_used_mb = 0
+    try:
+        process_tree_used_mb = (
+            _process_tree_rss_mb(current_process) if current_process else process_used_mb
+        )
+    except Exception as e:
+        logger.debug(f"Failed to get process tree memory: {e}")
+        process_tree_used_mb = process_used_mb
 
     try:
         boot_time = psutil.boot_time()
@@ -2589,7 +2656,7 @@ def get_system_info(
         "cpu": {
             "logical_count": psutil.cpu_count(logical = True),
             "physical_count": psutil.cpu_count(logical = False),
-            "usage_percent": psutil.cpu_percent(interval = None),
+            "usage_percent": _cpu_usage_percent(),
             "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
@@ -2597,6 +2664,7 @@ def get_system_info(
             "available_gb": round(memory_available / 1024**3, 2),
             "percent_used": memory_percent,
             "process_used_mb": process_used_mb,
+            "process_tree_used_mb": process_tree_used_mb,
         },
         "disk": {
             "total_gb": round(disk.total / 1e9, 2) if disk else 0,

@@ -7033,8 +7033,17 @@ class ExternalProviderClient:
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
             f"{self.base_url}/models",
-            # Anthropic pages 20 models by default; 1000 is its documented maximum.
-            params = {"limit": 1000} if self.provider_type == "anthropic" else None,
+            # Anthropic pages 20 models and native Gemini 50 by default; both cap a page at 1000. A Gemini
+            # connection through a proxy gets no native parameter it may reject.
+            params = (
+                {"limit": 1000}
+                if self.provider_type == "anthropic"
+                else {"pageSize": 1000}
+                if self.provider_type == "gemini"
+                and (urlparse(self.base_url).hostname or "").lower()
+                == "generativelanguage.googleapis.com"
+                else None
+            ),
             headers = self._auth_headers(),
             timeout = timeout,
         )

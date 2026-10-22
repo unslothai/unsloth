@@ -2133,6 +2133,10 @@ class LlamaFlagCatalogResponse(BaseModel):
 class InferenceStatusResponse(_InferenceRuntimeFields):
     """Current inference backend status"""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
     )
@@ -5535,6 +5539,10 @@ class DiffusionDownloadPlanResponse(BaseModel):
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
@@ -6343,6 +6351,12 @@ class TranscribeSourceRequest(BaseModel):
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
+    provider_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Saved connection ID. When set, the audio goes to that connection's "
+        "/audio/transcriptions as `model`; engine and device are ignored.",
+    )
 
 
 class AudioAnalyzeRequest(TranscribeSourceRef):
@@ -7162,6 +7176,10 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "

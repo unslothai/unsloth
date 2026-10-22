@@ -393,7 +393,11 @@ def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     assert "fit_target_delta_mib=_fit_target_delta_mibifuse_fitelse0.0" in call
     assert "supports_fit_target=use_fitand" in call
     assert "fit_target_margin_in(_fit_extras,_fit_env)or0.0" in call
-    assert "fit_margin_mib=_fit_margin_mib" in call
+    # Studio's per-card margins replace it only while Studio owns the margin: the
+    # fitter really runs on this launch's --fit, with no pass-through --fit-target.
+    assert "if_fitter_runsanduse_fit" in call
+    assert "fit_target_margin_in(_fit_extras,_fit_env)isNoneelseNone" in call
+    assert "fit_margin_mib=_fit_margins_by_idxor_fit_margin_mib" in call
 
 
 def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():

@@ -1776,15 +1776,9 @@ async def validate_systemone_settings(
 
 
 def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
-    from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
-        values = _systemone_values(payload)
-        if values:
-            try:
-                laya_runtime.ensure_can_unload()
-            except laya_runtime.Unavailable as exc:
-                raise HTTPException(status_code = 409, detail = exc.message) from None
+        _systemone_values(payload)
 
 
 @_owner_settings_router.get(
@@ -3805,6 +3799,7 @@ class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+    suspended_by_accounts: bool = False
 
 
 class McpAccessPayload(BaseModel):
@@ -4262,6 +4257,7 @@ def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
         scope = scope,
         tools = tools,
         exposure = access_exposure(request.app.state),
+        suspended_by_accounts = policy.installation_has_managed_accounts(),
     )
 
 

@@ -860,6 +860,11 @@ async def video_status(
         owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
         visible = owner is None or owner == current_account_id()
         status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
+    if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
+        from core.inference.gpu_residency import media_owner_held_mib
+        status_dict = {**status_dict, "resident_mib": media_owner_held_mib("video")}
+    # This route answers long after the request that resolved the reference ended, so there is
+    # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
@@ -1765,7 +1770,7 @@ async def _media_fields(fields: dict) -> dict:
 
 
 async def _audio_upload_to_data_url(upload: UploadFile, name: str) -> str:
-    data = await upload.read()
+    data = await upload.read(_VIDEO_REFERENCE_AUDIO_MAX_BYTES + 1)
     if not data:
         raise _openai_video_error(400, f"{name} is empty.", param = "reference_audios")
     if len(data) > _VIDEO_REFERENCE_AUDIO_MAX_BYTES:
@@ -1866,7 +1871,7 @@ async def _reference_to_data_url(reference: Any, param: str = "input_reference")
         if reference is None:
             return None
     if isinstance(reference, UploadFile):
-        data = await reference.read()
+        data = await reference.read(VIDEO_INPUT_REFERENCE_MAX_BYTES + 1)
         if not data:
             raise _openai_video_error(400, f"{param} is empty.", param = param)
         if len(data) > VIDEO_INPUT_REFERENCE_MAX_BYTES:
