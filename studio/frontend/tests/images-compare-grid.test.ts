@@ -734,6 +734,9 @@ test("grid metadata, every field x shared / varied / axis / absent: written only
     ["variation_seed", "variation_seed", "Variation seed", 5, 6, 5, undefined],
     ["variation_strength", "variation_strength", "Variation seed strength", 0.1, 0.3, 0.1, undefined],
     ["width", "width", "Size", 1024, 768, "1024x1024", undefined],
+    ["clip_skip", "clip_skip", "Clip skip", 2, 3, 2, undefined],
+    ["cfg_rescale", "cfg_rescale", "CFG rescale", 0.7, 0.35, 0.7, undefined],
+    ["prompt_weighting", "prompt_weighting", "Emphasis", false, true, "None", undefined],
     ["enhance_prompt", "enhance_prompt", "Prompt enhancement", false, true, "off", undefined],
     // Each cell's unit is a fresh object: compared by content.
     ["controlnet", "controlnet", "ControlNet 0", cn(0.7), cn(0.5), "Module: canny, Model: xinsir/canny, Weight: 0.7", undefined],
@@ -773,4 +776,29 @@ test("a Var. strength axis runs every cell on one variation seed; the grid resto
   const info = gridParameters(plan([{ axisId: "steps", text: "4, 8" }]), sdxl(), [off, off], { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false });
   assert.match(info, /Prompt enhancement: off/);
   assert.equal(parseA1111Parameters(info)?.prompt_enhancement, "off");
+});
+
+test("the SD controls axes reach the backend's request fields, the form's variation seed unshifted per cell", async () => {
+  const { readFileSync } = await import("node:fs");
+  const backend = readFileSync(new URL("../../backend/models/inference.py", import.meta.url), "utf8");
+  const sdControls = { clip_skip: { min: 1, max: 12 }, cfg_rescale: { min: 0, max: 1 }, variation_seed: true, vary_strength: 0.2 };
+  const ctx = sdxl({ sdControls });
+  for (const [axisId, text] of [["variation_seed", "1, 2"], ["variation_strength", "0.1, 0.3"], ["clip_skip", "1, 2"], ["cfg_rescale", "0, 0.7"]]) {
+    const p = plan([{ axisId, text }], ctx);
+    const run = createCompareRun(p, ctx, { keepRandomSeeds: false, seedFieldEmpty: false, rng: () => 0.5 });
+    const req = run.request(1, base(), 7) as unknown as Record<string, unknown>;
+    assert.notEqual(req[axisId], undefined, axisId);
+    // Every key a cell sends is a field of the backend's generate request.
+    for (const key of ["variation_seed", "variation_strength", "clip_skip", "cfg_rescale"]) {
+      if (req[key] !== undefined) assert.match(backend, new RegExp(`^\\s+${key}: Optional\\[`, "m"), key);
+    }
+  }
+  // A Var. seed axis cell carries the implicit strength the backend needs to apply it.
+  const vs = plan([{ axisId: "variation_seed", text: "1, 2" }], ctx);
+  const cell = createCompareRun(vs, ctx, { keepRandomSeeds: false, seedFieldEmpty: false }).request(0, base(), 7) as unknown as Record<string, unknown>;
+  assert.equal(cell.variation_strength, 0.2);
+  // The page sends a compare grid the form's variation seed without the per-run offset.
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /baseVariationSeed !== null \? \(baseVariationSeed \+ \(compare \? 0 : i \* batchSize\)\) % 2 \*\* 32 : null/);
+  assert.match(page, /const compareSdControls = sdCaps;/);
 });

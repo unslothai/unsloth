@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only unit tests for the pure per-family inference-info helper.
-
-Covers ``family_inference_infos()``: every auto-policy family appears, the component sizes
-round-trip, and the quant estimates order correctly (quantised < bf16, nvfp4 < int8). No
-torch / diffusers / GPU."""
+"""family_inference_infos lists every auto-policy family; quantised estimates sit below bf16."""
 
 from __future__ import annotations
 
@@ -17,7 +13,6 @@ def test_covers_every_auto_policy_family():
     infos = family_inference_infos()
     names = {info["family"] for info in infos}
     assert names == set(_FAMILY_BF16_GB), "info must list exactly the auto-policy families"
-    # One entry per family, in registry order.
     assert [info["family"] for info in infos] == list(_FAMILY_BF16_GB)
 
 
@@ -25,7 +20,6 @@ def test_each_family_reports_all_schemes():
     for info in family_inference_infos():
         estimated = info["estimated_resident_gb"]
         assert set(estimated) == {"bf16", *_QUANT_STEADY_FACTOR}
-        # Every reported value is a float rounded to one decimal.
         for value in estimated.values():
             assert isinstance(value, float)
             assert round(value, 1) == value
@@ -41,7 +35,7 @@ def test_component_sizes_match_the_table():
 
 
 def test_quantised_estimate_is_below_bf16():
-    # A quantised transformer is smaller than bf16, so its resident estimate must be too (companions are shared, every steady factor is below 1).
+    # Companions are shared and every steady factor is below 1, so quantised < bf16.
     for info in family_inference_infos():
         estimated = info["estimated_resident_gb"]
         for scheme in _QUANT_STEADY_FACTOR:
@@ -49,7 +43,6 @@ def test_quantised_estimate_is_below_bf16():
 
 
 def test_nvfp4_is_below_int8():
-    # nvfp4 packs two params per byte vs int8's one, so nvfp4's estimate is the smaller on every family.
     for info in family_inference_infos():
         estimated = info["estimated_resident_gb"]
         assert estimated["nvfp4"] < estimated["int8"], info["family"]

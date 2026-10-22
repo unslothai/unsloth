@@ -1169,7 +1169,7 @@ def test_real_laya_answers_through_the_route(client, monkeypatch):
     )
     assert options_response.status_code == 422
     message = options_response.json()["detail"]["message"]
-    assert "route" in message and "context window" in message and "criteria" in message
+    assert "route" in message and "cut short" in message and "criteria" in message
     assert "answers" not in options_response.json()
     assert _post(client).status_code == 200
 
@@ -1197,6 +1197,58 @@ def test_long_state_is_tokenized_only_as_far_as_the_model_reads():
     assert max(tok.calls) < 100_000
 
 
+_CHARGED = "the customer was charged twice and wants the money back"
+
+
+@pytest.mark.parametrize(
+    "options, description, status, refusal",
+    [
+        (14, _CHARGED, 200, None),
+        # 16 options of 11 tokens fill the budget exactly.
+        (16, _CHARGED.replace(" the money", " money"), 200, None),
+        (15, _CHARGED, 422, "cut short to fit Laya's 176-token option budget"),
+        (40, _CHARGED, 422, "cut short to fit Laya's 176-token option budget"),
+        (40, None, 200, None),
+        (100, None, 200, None),
+        (255, None, 422, "context window"),
+    ],
+)
+def test_choice_options_laya_would_cut_short_are_refused(
+    client, monkeypatch, options, description, status, refusal
+):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    tok = WordTokenizer()
+    tok.mask_token_id, tok.cls_token_id, tok.sep_token_id = 1, 2, 3
+    agent = SimpleNamespace(
+        tok = tok,
+        cfg = {"max_len": 512, "head_max_len": 192},
+        _to_internal = laya_runtime._laya().Agent._to_internal,
+        temperature = [1.0, 1.0, 1.0],
+        temperature_by_options = {},
+    )
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", lambda c: (agent, "cpu"))
+    monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
+    monkeypatch.setattr(
+        laya_runtime, "_forward", lambda agent, items: (np.zeros((len(items), 256)), 1)
+    )
+    question = {
+        "type": "choice",
+        "instructions": "Which queue should handle this ticket?",
+        "criteria": {f"team_{i}": description for i in range(options)},
+    }
+    internal = agent._to_internal(question)
+    build = laya_runtime._laya().common.build_sequence
+    cut = build(tok, "", internal, 10**6, 192)[0] != build(tok, "", internal, 10**6, 10**6)[0]
+    assert cut == ("cut short" in (refusal or ""))
+    response = _post(client, questions = {"route": question})
+    assert response.status_code == status, response.text
+    if refusal:
+        message = response.json()["detail"]["message"]
+        assert "'route'" in message and refusal in message
+        assert "answers" not in response.json()
+
+
 @pytest.mark.parametrize("words, cut", [(900, False), (901, True), (5000, True)])
 def test_state_cut_matches_the_full_tokenization(words, cut):
     pytest.importorskip("torch")
@@ -1219,7 +1271,6 @@ class MovableModel:
 @pytest.fixture
 def gpu_agent(monkeypatch):
     torch = pytest.importorskip("torch")
-    # A CPU without native fp16/bf16: the fallback lands in fp32 whatever this host supports.
     monkeypatch.setattr(laya_runtime, "_precision", lambda device, fp16_checkpoint: (None, None))
     collate = lambda groups, pad: {"attention_mask": torch.ones(1, len(groups[0][0]["ids"]))}
     monkeypatch.setitem(
@@ -1299,7 +1350,6 @@ def test_mlx_out_of_memory_falls_back_to_cpu(monkeypatch, gpu_agent):
     loads, mlx_models, cleared = [], [], []
 
     def load(path, device):
-        # The MLX model and MLX's buffer cache are both released before the CPU copy loads.
         assert mlx_models[-1]() is None and cleared
         loads.append((path, device))
         if len(loads) == 1:
@@ -1438,7 +1488,6 @@ def _tiny_decision_model(torch):
             return self.out(self.layer(self.norm(self.emb(ids)))).float()
 
     model = Tiny().eval()
-    # Weights exactly representable in fp16, as a checkpoint saved in fp16 loads into fp32.
     for param in model.parameters():
         param.data = param.data.half().float()
     return model
@@ -1511,12 +1560,10 @@ def test_skip_init_build_matches_laya_after_loading(tmp_path):
     embedding = fast.encoder.get_input_embeddings()
     assert embedding.num_embeddings == 300 and fast.encoder.config.vocab_size == 300
     assert embedding.padding_idx == reference.encoder.get_input_embeddings().padding_idx
-    # laya loads strictly, so every parameter and persistent buffer comes from the checkpoint.
     fast.load_state_dict(reference.state_dict(), strict = True)
     ours = dict(fast.named_parameters()) | dict(fast.named_buffers())
     theirs = dict(reference.named_parameters()) | dict(reference.named_buffers())
     assert ours.keys() == theirs.keys()
-    # Includes the rotary inv_freq buffers, which the checkpoint does not carry.
     assert any("inv_freq" in name for name in theirs)
     assert all(torch.equal(ours[name], theirs[name]) for name in theirs)
     assert repr(fast) == repr(reference)
@@ -1686,7 +1733,6 @@ def test_marker_head_matches_laya_forward(tmp_path, head_layers):
         got = laya_runtime._decision_logits(model, *args)
         assert got.dtype == want.dtype == torch.float32
         torch.testing.assert_close(got, want, atol = 1e-5, rtol = 1e-4)
-        # Without padding the mask is dropped altogether.
         unpadded = [arg[:1] for arg in args]
         torch.testing.assert_close(
             laya_runtime._decision_logits(model, *unpadded, padded = False),
@@ -1772,7 +1818,6 @@ def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
     with torch.inference_mode():
         reference = model(*(value.cuda() for value in batch.values()))[0]
     torch.testing.assert_close(graphed, reference, atol = 1e-4, rtol = 1e-4)
-    # A second request with other contents replays the same graph.
     batch["input_ids"] = torch.randint(5, 300, ids.shape)
     with torch.inference_mode():
         reference = model(*(value.cuda() for value in batch.values()))[0]
@@ -1783,7 +1828,6 @@ def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
     # Moving or recasting the model drops the graphs that point at its old weights.
     laya_runtime._place(agent, torch.device("cuda"), False)
     assert "_unsloth_graphs" not in agent.__dict__
-    # Batches too large to be worth padding into a bucket run eagerly.
     assert (
         laya_runtime._CUDAGraphs(agent).run(
             {"input_ids": torch.zeros(16, 1024), "marker_pos": torch.zeros(16, 2)}
@@ -1896,7 +1940,6 @@ def test_cuda_graphs_sharing_a_pool_replay_in_any_order(tmp_path, monkeypatch):
         )
 
     graphs = None
-    # Capture order A B C D, then replay out of order, interleaving buckets.
     for index in [0, 1, 2, 3, 0, 2, 1, 3, 3, 0, 1, 0, 2]:
         batch = request(*shapes[index])
         got = laya_runtime._run_model(agent, batch).clone()
@@ -1916,7 +1959,6 @@ def test_cuda_graphs_over_the_memory_budget_run_eagerly(tmp_path, monkeypatch):
     agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
     batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
     graphs = agent.__dict__["_unsloth_graphs"] = laya_runtime._CUDAGraphs(agent)
-    # The first capture alone takes more than the budget.
     graphs.max_pool_bytes = 1 << 20
     reserved = iter([0, 2 << 20])
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: next(reserved))
@@ -1953,7 +1995,6 @@ def test_chunks_split_rows_and_trim_padding():
             continue
         assert torch.equal(torch.cat([p[name] for p in parts]), batch[name])
     assert list(laya_runtime._chunks(batch, 10**6)) == [batch]
-    # A row longer than the budget still runs, one row at a time.
     assert [p["input_ids"].shape[0] for p in laya_runtime._chunks(batch, 4)] == [1] * 5
 
 
@@ -1978,7 +2019,6 @@ def test_chunked_forward_matches_one_forward(tmp_path, monkeypatch):
         or torch.zeros(part["input_ids"].shape[0], part["marker_pos"].shape[1]),
     )
     assert laya_runtime._run_model(agent, batch).shape == want.shape and len(calls) == 4
-    # The kill switch keeps laya's single forward.
     calls.clear()
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_FAST", "0")
     laya_runtime._run_model(agent, batch)
@@ -2092,7 +2132,7 @@ def test_mlx_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
     agent = SimpleNamespace(device = "mlx", dtype = "float16", model = Model(), tok = gpu_agent.tok)
     logits, _ = laya_runtime._forward(agent, _items())
     assert logits.tolist() == [[1.0, 0.5]] and agent.dtype == agent.model.dtype == "float32"
-    # An fp32 agent has nothing wider to retry in: its non-finite logits come back without a set_dtype call.
+    # An fp32 agent has nothing wider to retry in.
     agent.model.dtype = "float16"  # only makes the fake emit inf
     agent.model.set_dtype = None
     logits, _ = laya_runtime._forward(agent, _items())
@@ -2226,7 +2266,6 @@ def test_mlx_overflow_in_a_later_chunk_reruns_the_whole_request_in_fp32(monkeypa
     items = [{"ids": [2, 5, 6, 1], "markers": [1, 2], "qtype": 0} for _ in range(5)]
     logits, _ = laya_runtime._forward(agent, items)
     assert np.isfinite(logits).all() and logits.shape == (5, 2)
-    # Three fp16 chunks, the last overflowing, then all three again in fp32.
     assert seen == [
         ("float16", 2),
         ("float16", 2),

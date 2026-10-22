@@ -82,6 +82,7 @@ import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   CHAT_IMAGE_ACCEPT,
+  getChatImageSizeError,
   isChatImageFile,
   normalizeChatImage,
 } from "./image-normalize";
@@ -282,8 +283,6 @@ export interface CompareHandle {
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
-
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
 function isNativeComposing(event: Event) {
@@ -1319,9 +1318,13 @@ export function SharedComposer({
           continue;
         }
         if (!isChatImageFile(file)) continue;
-        if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
+          continue;
+        }
+        const sizeError = getChatImageSizeError(file);
+        if (sizeError) {
+          toast.error(sizeError);
           continue;
         }
         let image: File;
@@ -1384,11 +1387,9 @@ export function SharedComposer({
             // Classify before the check, so a pasted audio-only 3GP is not read
             // as unsupported on its extension alone.
             const files = await classifiedAttachmentFiles(pasted);
-            // Let addFiles report audio size errors.
+            // Let addFiles report audio and image size errors.
             const supported = files.some(
-              (file) =>
-                isAudioAttachmentFile(file) ||
-                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+              (file) => isAudioAttachmentFile(file) || isChatImageFile(file),
             );
             if (!supported) throw new Error("Unsupported compare attachment");
             await addFilesUntracked(files);
@@ -2554,6 +2555,10 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  useShortcut("stopGeneration", stop, {
+    enabled: chatActive && busy,
+    claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
+  });
 
   const runPromptList = useCallback(
     (items: string[]) => {

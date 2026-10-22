@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A reload during an install or update must wait it out: repairing instead is what
-// produced "Update failed: Repair is already running.". The hook cannot be rendered,
-// so its functions are lifted by regex, as in forced-repair-retry.test.ts.
+// Repairing during an install fails, so a reload must wait it out. Functions lifted by regex.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -56,7 +54,6 @@ interface Preflight {
 
 const BUSY: Preflight = {
   disposition: "managed_stale",
-  // The busy branch must win over it: the busy environment refuses that repair.
   can_auto_repair: true,
   reason: MANAGED_ENVIRONMENT_BUSY,
   port: null,
@@ -86,13 +83,13 @@ function harness(
     MANAGED_ENVIRONMENT_WAIT_POLLS: POLL_LIMIT,
     SERVER_STARTUP_MESSAGE: "Nearly done...",
     authFailureRef: { current: authFailure },
-    // Fresh per harness: left true, the hook's single-flight guard returns before the probe.
+    // Left true, the single-flight guard returns before the probe.
     preflightInFlightRef: { current: false },
     environmentWaitRef: { current: null as unknown },
     environmentWaitPollsRef,
     statusRef: { current: "checking" },
     portRef: { current: null as number | null },
-    // The bare specifier does not resolve inside `new Function`.
+    // The bare specifier does not resolve inside new Function.
     importTauriCore: () =>
       Promise.resolve({
         invoke: (command: string) => {
@@ -180,7 +177,6 @@ ${checkBody
       assert.ok(next, "no wait was armed");
       armed = null;
       next();
-      // The timer dispatches checkInstallAndStart as a floating promise.
       for (let i = 0; i < 8; i += 1) await Promise.resolve();
     },
   };

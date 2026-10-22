@@ -165,6 +165,10 @@ export function gridRecipeFields(
     ["Seed", shared("seed")],
     ["Variation seed", shared("variation_seed")],
     ["Variation seed strength", shared("variation_strength")],
+    // The backend's own infotext names (core/inference/image_gallery.py).
+    ["Clip skip", shared("clip_skip")],
+    ["CFG rescale", shared("cfg_rescale")],
+    ["Emphasis", sharedValue(sent, varied, "prompt_weighting")?.value === false ? "None" : undefined],
     // The fitted size the cells ran at, not the form's (Generate may shrink it to the model's pixel limit).
     ["Size", sent.length ? (width && height ? `${width}x${height}` : undefined) : `${form.width}x${form.height}`],
     ["Model", form.model],

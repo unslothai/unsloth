@@ -138,7 +138,7 @@ def test_capability_query_never_raises(monkeypatch):
 
 
 def test_load_paths_key_the_bundle_on_the_same_decision():
-    # The bundle key follows the arch-scoped decision, else a load reuses a bundle compiled the other way.
+    # the bundle key must follow the arch-scoped decision or a load reuses the wrong bundle
     import inspect
 
     from core.inference import diffusion
