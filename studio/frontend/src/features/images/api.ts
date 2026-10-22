@@ -70,6 +70,8 @@ export interface DiffusionStatus {
   // Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), null = default SDPA.
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  // Adapter ids baked into the transformer at load time (part of the build); absent on an older backend.
+  baked_loras?: string[] | null;
   vae_tiling?: boolean;
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or
   // on the native engine.

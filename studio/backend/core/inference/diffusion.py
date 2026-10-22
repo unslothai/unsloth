@@ -13472,6 +13472,7 @@ class DiffusionBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "transformer_cache_stats": None,
+                "baked_loras": [],
                 "workflows": [],
                 "conditioning": None,
                 "supports_lora": False,
@@ -13526,6 +13527,8 @@ class DiffusionBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
+            # Adapters baked in at LOAD time, as the gallery record's baked_loras names them: part of the build.
+            "baked_loras": _baked_lora_names(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "cfg_batch": cfg_batch_status(state.pipe),
             "zimage_cfg_split": zimage_cfg_split_status(state.pipe),

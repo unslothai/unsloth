@@ -118,16 +118,31 @@ type VaryBuild = {
   gguf_filename?: string | null;
   transformer_quant?: string | null;
   text_encoder_quant?: string | null;
+  attention_backend?: string | null;
+  transformer_cache?: string | null;
+  baked_loras?: string[] | null;
 };
-const VARY_BUILD_KEYS = ["engine", "model_kind", "gguf_filename", "transformer_quant", "text_encoder_quant"] as const;
+const VARY_BUILD_KEYS = [
+  "engine",
+  "model_kind",
+  "gguf_filename",
+  "transformer_quant",
+  "text_encoder_quant",
+  "attention_backend",
+  "transformer_cache",
+] as const;
+// Baked adapters are a set (the bake order is not recorded as meaningful); absent reads as none.
+const bakedKey = (b: VaryBuild) => [...new Set(b.baked_loras ?? [])].sort().join("\n");
 
 /** Why `image` did not provably come off the loaded build, else null. The same seed only gives a nearby image on the
- *  same engine, checkpoint file and quants; a record without the engine (or from before the build was stored, no
- *  schema_version) cannot be verified, so it is blocked rather than guessed. */
+ *  same engine, checkpoint file, quants, attention backend, step cache and load-time baked LoRAs; a record without
+ *  the engine (or from before the build was stored, no schema_version) cannot be verified, so it is blocked rather
+ *  than guessed. */
 export function varyBuildMismatch(image: VaryBuild & { schema_version?: number | null }, loaded: VaryBuild): string | null {
   if (!image.schema_version || !image.engine)
     return "This image does not record which engine and build made it, so Vary cannot check it matches the current load.";
-  const differs = VARY_BUILD_KEYS.filter((k) => (image[k] ?? null) !== (loaded[k] ?? null));
+  const differs: string[] = VARY_BUILD_KEYS.filter((k) => (image[k] ?? null) !== (loaded[k] ?? null));
+  if (bakedKey(image) !== bakedKey(loaded)) differs.push("baked_loras");
   return differs.length
     ? `This image came from a different build (${differs.map((k) => k.replace(/_/g, " ")).join(", ")}) than the current load, so the same seed would not give a nearby image. Load that build to vary it.`
     : null;

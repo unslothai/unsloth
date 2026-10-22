@@ -360,6 +360,25 @@ test("Vary is disabled unless the selected image came off the exact loaded build
   assert.match(varyBlockedReason({ ...image, engine: "mlx", variation_strength: 0.2 }, true, SDXL, loaded) ?? "", /different build/);
 });
 
+test("Vary compares the load-time baked LoRAs, attention backend and step cache as part of the build", async () => {
+  const { varyBlockedReason } = await import("../src/features/images/lib/sd-controls.ts");
+  const loaded = { engine: "diffusers", model_kind: "pipeline", baked_loras: ["ink", "sloth"], attention_backend: "_native_cudnn", transformer_cache: "fbcache" };
+  const image = { ...loaded, schema_version: 1, baked_loras: ["sloth", "ink"] };
+  // The same adapter set in another order is the same build.
+  assert.equal(varyBlockedReason(image, true, SDXL, loaded), null);
+  // A baked record against a load without the bake, a different set, or a bake the record lacks.
+  for (const other of [{ ...loaded, baked_loras: [] }, { ...loaded, baked_loras: undefined }, { ...loaded, baked_loras: ["sloth"] }])
+    assert.match(varyBlockedReason(image, true, SDXL, other) ?? "", /different build \(baked loras\)/);
+  assert.match(varyBlockedReason({ ...image, baked_loras: [] }, true, SDXL, loaded) ?? "", /baked loras/);
+  // An empty and an absent set read alike on both sides.
+  const plain = { engine: "diffusers", schema_version: 1 };
+  assert.equal(varyBlockedReason({ ...plain, baked_loras: [] }, true, SDXL, { engine: "diffusers" }), null);
+  assert.match(varyBlockedReason({ ...image, attention_backend: null }, true, SDXL, loaded) ?? "", /attention backend/);
+  assert.match(varyBlockedReason({ ...image, transformer_cache: "static" }, true, SDXL, loaded) ?? "", /transformer cache/);
+  // The status type declares the field the page passes in.
+  assert.match(readSrc("features/images/api.ts"), /baked_loras\?: string\[\] \| null;/);
+});
+
 test("Create with an SDXL ControlNet engaged sends no CFG rescale, and the control says why", () => {
   const choice = { ...DEFAULT_SD_CONTROLS, cfgRescale: 0.7, variationStrength: 0.2, variationSeed: "5" };
   assert.deepEqual(sdControlsRequestFields(SDXL, choice, null, true, false), {
