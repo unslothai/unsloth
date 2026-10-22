@@ -8,6 +8,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -20,6 +21,10 @@ import {
   aggregateGpuMemoryTotalGb,
   defaultGpuMemoryTotalGb,
 } from "../src/hooks/gpu-vram.ts";
+import type * as GpuHooks from "../src/hooks/use-gpu-info.ts";
+import { normalizeDenseQuantSchemes } from "../src/lib/dense-quant-schemes.ts";
+import { normalizeReportedOffloadFitTiers } from "../src/lib/offload-fit-tiers.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const R9700: MemoryTotalDevice = { memory_total_gb: 31.86 };
 const IGPU_SHARED: MemoryTotalDevice = {
@@ -114,4 +119,62 @@ test("an Automatic selection sends the default ids, a manual pick is kept", () =
     reconcileGpuSelection(null, undefined, undefined, null, [0, 1]),
     { ids: null, indexKind: null },
   );
+});
+
+let snapshot: unknown = null;
+const hooks = loadWithStubs<typeof GpuHooks>(
+  new URL("../src/hooks/use-gpu-info.ts", import.meta.url),
+  {
+    react: {
+      useState: (initial: unknown) => [initial, () => {}],
+      useEffect: () => {},
+      useMemo: (read: () => unknown) => read(),
+    },
+    "./use-system": { getCachedSystemInfo: () => snapshot },
+    "@/lib/dense-quant-schemes": { normalizeDenseQuantSchemes },
+    "@/lib/offload-fit-tiers": { normalizeReportedOffloadFitTiers },
+  },
+  { relativePassthrough: true },
+);
+
+test("Automatic gets its default pick only once devices are cached", () => {
+  snapshot = null;
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null), {
+    ids: null,
+    indexKind: null,
+  });
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", ...R9700 },
+      { index: 1, index_kind: "physical", ...R9700 },
+      { index: 2, index_kind: "physical", ...IGPU_SHARED },
+    ],
+  };
+  snapshot = {
+    status: "ready",
+    device_backend: "rocm",
+    gpu,
+    inference_gpu: gpu,
+  };
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null), {
+    ids: [0, 1],
+    indexKind: "physical",
+  });
+});
+
+test("chat load paths warm the device cache even for an Automatic pick", () => {
+  // A warm gated on an explicit pick leaves Automatic on a cold cache, so /load omits gpu_ids.
+  const gated =
+    /if \([^{]*selectedGpuIds[^{]*\)\s*\{\s*await ensureGpuDeviceCache\(/;
+  for (const file of [
+    "../src/features/chat/api/chat-adapter.ts",
+    "../src/features/chat/shared-composer.tsx",
+    "../src/features/chat/hooks/use-chat-model-runtime.ts",
+  ]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.match(source, /await ensureGpuDeviceCache\(/, file);
+    assert.doesNotMatch(source, gated, file);
+  }
 });

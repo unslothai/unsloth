@@ -1608,9 +1608,7 @@ export function SharedComposer({
       // Warm the device cache before the snapshot below reconciles the GPU pick: on a cold cache the
       // reconcile passes a stale pick through.
       try {
-        if (store.selectedGpuIds != null) {
-          await ensureGpuDeviceCache();
-        }
+        await ensureGpuDeviceCache();
       } catch (error) {
         releaseCompareModelLifecycle();
         resetPromptQueue();
@@ -1791,9 +1789,7 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.disableVision
             : DEFAULT_PER_MODEL_CONFIG.disableVision;
-        if (ownConfig.selectedGpuIds != null) {
-          await ensureGpuDeviceCache();
-        }
+        await ensureGpuDeviceCache();
         // A pane's OWN saved split is sent instead of being forced to Auto (#7574); the shared Send-time
         // snapshot is not, since its layer count is bounded by another GGUF. Knobs the runner has no
         // equivalent for (MoE offload, tensor parallel) stay hard-forced, as does an UNCLASSIFIED GGUF.

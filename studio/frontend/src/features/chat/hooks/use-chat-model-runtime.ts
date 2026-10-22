@@ -1585,8 +1585,8 @@ export function useChatModelRuntime() {
           getInferenceStatus(undefined, modelId).catch(() => null);
         const residentStatus = await readPickStatus();
         // Warm before reconciling the remembered GPU pick below: load-on-selection can run before any
-        // GPU hook mounted, and a cold cache passes the pick through unvalidated.
-        if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {
+        // GPU hook mounted, and a cold cache passes the pick through unvalidated (or drops Automatic's default).
+        if (residentStatus) {
           await ensureGpuDeviceCache().catch(() => {});
         }
         // What /load would carry for a pick with no saved config, which is not always the live runtime:
@@ -2249,13 +2249,8 @@ export function useChatModelRuntime() {
               : stateBeforeUnload.splitRatio;
           // Reconcile the persisted pick against the GPUs present now, so a stale cross-host pick is
           // dropped before /load rather than rejected there. Warm the device cache first: a cold cache
-          // would pass the pick through unvalidated.
-          if (
-            pendingLoadConfig?.selectedGpuIds !== undefined ||
-            stateBeforeUnload.selectedGpuIds != null
-          ) {
-            await ensureGpuDeviceCache();
-          }
+          // would pass the pick through unvalidated, and leave Automatic without its default pick.
+          await ensureGpuDeviceCache();
           const stagedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
               ? reconcilePersistedGpuIds(
