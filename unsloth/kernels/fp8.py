@@ -441,9 +441,7 @@ def w8a8_block_fp8_matmul_triton(
     return C
 
 
-# Decode-sized M: act_quant fused into a narrow-N w8a8 GEMM, one launch. The 128 x 128 tile above
-# runs only N / 128 programs at M <= 16 (32 for a 4096 wide projection) and a separate act_quant.
-# M is not specialized: batch 1 and batch 8 decode share one compiled variant per call site.
+# Decode-sized M: act_quant fused into a narrow-N w8a8 GEMM; the 128 x 128 tile above runs only N / 128 programs.
 @triton.jit(do_not_specialize = ["M"])
 def _w8a8_block_fp8_small_m(
     X,

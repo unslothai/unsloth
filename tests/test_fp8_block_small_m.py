@@ -74,9 +74,7 @@ def test_small_m_matches_main(monkeypatch, dtype, scale_dtype, N, K, M):
         # Same quantized operands and the same accumulation order as main.
         assert torch.equal(new, main)
     else:
-        # Only the fp32 sum order over K splits differs: one output rounding at most, no less accurate.
-        # One output rounding plus fp32 summation error, which scales with sum |terms| (near zero after
-        # cancellation that is more than one output ulp, for main's order as much as for this one).
+        # Only the fp32 sum order over K splits differs: bound is one output rounding plus fp32 sum error.
         mag = torch.maximum(new.double().abs(), main.double().abs())
         k_blocks = K // 128
         bound = torch.finfo(dtype).eps * mag + 2 * k_blocks * torch.finfo(torch.float32).eps * _oracle_abs(X, q, s)
@@ -150,7 +148,6 @@ def test_compiled_path_adds_no_graph_or_break():
             X = torch.randn(1, M, 4096, device = "cuda", dtype = torch.bfloat16)
             torch.testing.assert_close(fn(X), _main_path_eager(X, q, s), rtol = 0, atol = 0)
     assert sum(counters["graph_break"].values()) == 0
-    # A static first graph, then one dynamic graph, as on main.
     assert counters["stats"]["unique_graphs"] <= 2
 
 
