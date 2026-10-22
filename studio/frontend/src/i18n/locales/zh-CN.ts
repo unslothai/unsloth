@@ -2041,9 +2041,9 @@ export const zhCN = {
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
         activityDescription: {
-          daily: "过去{weeks}共{total}",
-          weekly: "峰值周 {total} · 最近{weeks}",
-          cumulative: "过去{weeks}累计{total}",
+          daily: "自 {since} 起共 {total}",
+          weekly: "最活跃的一周 {total} · 自 {since} 起",
+          cumulative: "自 {since} 起累计 {total}",
         },
         mode: {
           daily: "按天",
@@ -2052,6 +2052,9 @@ export const zhCN = {
         },
         cellTooltip: "{date} · {tokens}，{messages}",
         weekTooltip: "{date} 当周 · {tokens}",
+        emptyDayTooltip: "{date} · 无活动",
+        apiRequests: "通过 API {count} 次",
+        cumulativeTooltip: "截至 {date} 那一周 · 累计 {tokens}",
         less: "较少",
         more: "较多",
         insightsTitle: "活跃度分析",

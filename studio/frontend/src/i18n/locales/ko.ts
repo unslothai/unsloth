@@ -2059,9 +2059,9 @@ export const ko = {
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
         activityDescription: {
-          daily: "최근 {weeks} 동안 {total}",
-          weekly: "최고 주 {total} · 최근 {weeks}",
-          cumulative: "최근 {weeks} 동안 누적 {total}",
+          daily: "{since} 이후 {total}",
+          weekly: "가장 많은 주 {total} · {since} 이후",
+          cumulative: "{since} 이후 누적 {total}",
         },
         mode: {
           daily: "일별",
@@ -2070,6 +2070,9 @@ export const ko = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} 주간 · {tokens}",
+        emptyDayTooltip: "{date} · 활동 없음",
+        apiRequests: "API로 {count}건",
+        cumulativeTooltip: "{date} 주까지 · 누적 {tokens}",
         less: "적음",
         more: "많음",
         insightsTitle: "활동 분석",

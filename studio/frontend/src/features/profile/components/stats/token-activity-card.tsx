@@ -364,8 +364,6 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
           formatCompactNumber(summaryTotal, locale),
         ),
         since: firstShown ? sinceFormatter.format(parseDayKey(firstShown)) : "",
-        // Still read by translations that name the span in weeks.
-        weeks: formatProfileCount(grid.length, "week", locale),
       })}
       action={
         <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">

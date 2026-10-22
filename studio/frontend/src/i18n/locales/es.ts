@@ -2089,9 +2089,9 @@ export const es = {
         longestStreak: "Racha más larga",
         activityTitle: "Actividad de tokens",
         activityDescription: {
-          daily: "Período: {weeks} · {total}",
-          weekly: "Semana pico {total} · últimas {weeks}",
-          cumulative: "{total} acumulados en las últimas {weeks}",
+          daily: "{total} desde el {since}",
+          weekly: "Semana más activa {total} · desde el {since}",
+          cumulative: "{total} en total desde el {since}",
         },
         mode: {
           daily: "Diaria",
@@ -2100,6 +2100,9 @@ export const es = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana del {date} · {tokens}",
+        emptyDayTooltip: "{date} · Sin actividad",
+        apiRequests: "{count} vía API",
+        cumulativeTooltip: "Hasta la semana del {date} · {tokens} en total",
         less: "Menos",
         more: "Más",
         insightsTitle: "Análisis de actividad",

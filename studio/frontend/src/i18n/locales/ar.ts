@@ -2065,9 +2065,9 @@ export const ar = {
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
         activityDescription: {
-          daily: "{total} خلال آخر {weeks}",
-          weekly: "أسبوع الذروة {total} · آخر {weeks}",
-          cumulative: "{total} متراكمة خلال آخر {weeks}",
+          daily: "{total} منذ {since}",
+          weekly: "أكثر أسبوع نشاطا {total} · منذ {since}",
+          cumulative: "{total} إجمالا منذ {since}",
         },
         mode: {
           daily: "يومي",
@@ -2076,6 +2076,9 @@ export const ar = {
         },
         cellTooltip: "{date} · {tokens}، {messages}",
         weekTooltip: "أسبوع {date} · {tokens}",
+        emptyDayTooltip: "{date} · لا نشاط",
+        apiRequests: "{count} عبر API",
+        cumulativeTooltip: "حتى أسبوع {date} · {tokens} إجمالا",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",

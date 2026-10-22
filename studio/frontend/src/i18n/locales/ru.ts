@@ -2075,9 +2075,9 @@ export const ru = {
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
         activityDescription: {
-          daily: "Период: {weeks} · {total}",
-          weekly: "Пиковая неделя {total} · последние {weeks}",
-          cumulative: "{total} накоплено за последние {weeks}",
+          daily: "{total} с {since}",
+          weekly: "Самая активная неделя {total} · с {since}",
+          cumulative: "Всего {total} с {since}",
         },
         mode: {
           daily: "По дням",
@@ -2086,6 +2086,9 @@ export const ru = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Неделя с {date} · {tokens}",
+        emptyDayTooltip: "{date} · Нет активности",
+        apiRequests: "{count} через API",
+        cumulativeTooltip: "К неделе {date} · всего {tokens}",
         less: "Меньше",
         more: "Больше",
         insightsTitle: "Сводка по активности",

@@ -1998,9 +1998,9 @@ export const it = {
         longestStreak: "Serie più lunga",
         activityTitle: "Attività in token",
         activityDescription: {
-          daily: "Periodo: {weeks} · {total}",
-          weekly: "Settimana di punta {total} · ultime {weeks}",
-          cumulative: "{total} accumulati nelle ultime {weeks}",
+          daily: "{total} dal {since}",
+          weekly: "Settimana più attiva {total} · dal {since}",
+          cumulative: "{total} in totale dal {since}",
         },
         mode: {
           daily: "Giornaliera",
@@ -2009,6 +2009,9 @@ export const it = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Settimana del {date} · {tokens}",
+        emptyDayTooltip: "{date} · Nessuna attività",
+        apiRequests: "{count} tramite API",
+        cumulativeTooltip: "Fino alla settimana del {date} · {tokens} in totale",
         less: "Meno",
         more: "Più",
         insightsTitle: "Analisi dell'attività",
