@@ -12,7 +12,9 @@ import {
   hiresRequest,
   hiresSummary,
   hiresTargetSize,
+  hiresEngagesNegative,
   hiresMinDenoiseFor,
+  hiresRecordUsedNegative,
   hiresVisible,
   matchHiresUpscaler,
   resolveRestoredHires,
@@ -259,4 +261,18 @@ test("a Hires resize no single factor reproduces stays not applied", () => {
     assert.equal(importNotApplied(r).length, 1, line);
     assert.match(importNotApplied(r)[0], /Hires resize/, line);
   }
+});
+
+test("Hires CFG that turns CFG on engages and restores the negative prompt", () => {
+  const on = { ...HIRES_OFF, enabled: true, upscaler: "lanczos", guidance: 5 };
+  assert.equal(hiresEngagesNegative(on, FLUX, "create", 1), true);
+  assert.equal(hiresEngagesNegative({ ...on, guidance: 1 }, FLUX, "create", 1), false);
+  assert.equal(hiresEngagesNegative({ ...on, guidance: null }, FLUX, "create", 1), false);
+  assert.equal(hiresEngagesNegative({ ...on, denoise: 0 }, FLUX, "create", 1), false); // no refine pass
+  assert.equal(hiresEngagesNegative({ ...on, enabled: false }, FLUX, "create", 1), false);
+  assert.equal(hiresEngagesNegative(on, { ...FLUX, supports_guidance: false }, "create", 1), false);
+  assert.equal(hiresEngagesNegative(on, FLUX, "img2img", 1), false);
+  assert.equal(hiresRecordUsedNegative({ hires_scale: 1.5, hires_guidance: 5 }), true);
+  assert.equal(hiresRecordUsedNegative({ hires_scale: 1.5, hires_guidance: null }), false);
+  assert.equal(hiresRecordUsedNegative({ hires_guidance: 5 }), false);
 });

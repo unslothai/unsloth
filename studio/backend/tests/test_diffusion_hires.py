@@ -639,6 +639,7 @@ def test_tiny_sdxl_hires_sequencing(tiny_sdxl, monkeypatch):
 
         def counting(pipe, i, t, kw):
             steps_seen.append(i)
+            totals.append(getattr(holder[0]._gen, "total_steps", None))
             return cb(pipe, i, t, kw) if cb else kw
 
         k["callback_on_step_end"] = counting
@@ -648,6 +649,7 @@ def test_tiny_sdxl_hires_sequencing(tiny_sdxl, monkeypatch):
 
     monkeypatch.setattr(diffusers.StableDiffusionXLImg2ImgPipeline, "__call__", spy)
     b = _backend(tiny_sdxl)
+    holder, totals = [b], []
     kw = dict(
         prompt = "a cat", width = 256, height = 256, steps = 4, guidance = 5.0, seed = 7, live_preview = False
     )
@@ -666,6 +668,8 @@ def test_tiny_sdxl_hires_sequencing(tiny_sdxl, monkeypatch):
     # One refine pass on 4-channel latents: 3 steps of a 6-step schedule at strength 0.5.
     f = tiny_sdxl.vae_scale_factor
     assert calls == [(6, 0.5, (1, 4, 384 // f, 384 // f), 3)]
+    # Progress counts the 3 steps the refine runs, not the 6-step schedule it enters halfway.
+    assert totals == [3, 3, 3]
 
     calls.clear()
     out = b.generate(
@@ -1030,3 +1034,64 @@ def test_catalog_download_honours_every_offline_switch(tmp_path, monkeypatch, en
     )
     with pytest.raises(ValueError, match = "offline"):
         ups.resolve_model_path(ups.CATALOG[0].id)
+
+
+def test_upscale_only_with_a_model_upscaler_defers_the_compile_until_it_ran(monkeypatch):
+    import contextlib
+    import threading
+
+    from PIL import Image
+
+    order = []
+
+    class _Bg:
+        def kick(self):
+            order.append("kick")
+            return True
+
+    class _Backend:
+        def __init__(self):
+            self._state = types.SimpleNamespace(
+                family = _fam("flux.1"), offload_policy = "none", device = "cpu", bg_compile = _Bg()
+            )
+            self._lock = threading.Lock()
+            self._generation_cancel_lock = threading.Lock()
+            self._gen = None
+            self._active_generate_cancel = None
+            self._active_generate_account = None
+
+        @contextlib.contextmanager
+        def _generation_slot(self, cancel):
+            yield
+
+    def fake_upscale(image, upscaler_id, target, **kw):
+        order.append("upscale")
+        return ups.UpscaleOutcome(Image.new("RGB", target), 4, 1, "float32", 0.0, True)
+
+    monkeypatch.setattr(ups, "spandrel_available", lambda: True)
+    monkeypatch.setattr(ups, "upscale_with_model", fake_upscale)
+    seen = []
+
+    def fake_generate(backend, **kw):
+        ctx = kw.pop("_hires_pass")
+        seen.append(ctx.defer_bg_kick)
+        return {"images": [Image.new("RGB", (256, 256))] * 2, "seed": 1, "seeds": [1, 2]}
+
+    hires.run_hires(
+        _Backend(),
+        fake_generate,
+        hires.HiresParams(denoise = 0.0, upscaler = "realesrgan_x4plus"),
+        {"prompt": "p", "width": 256, "height": 256, "steps": 4, "seed": 1, "batch_size": 2},
+    )
+    assert seen == [True]  # the base pass leaves the compile pending
+    assert order == ["upscale", "upscale", "kick"]  # started only once the GPU upscales finished
+    order.clear()
+    hires.run_hires(
+        _Backend(),
+        fake_generate,
+        hires.HiresParams(denoise = 0.0, upscaler = "lanczos"),
+        {"prompt": "p", "width": 256, "height": 256, "steps": 4, "seed": 1, "batch_size": 1},
+    )
+    assert (
+        seen[-1] is False and order == []
+    )  # a CPU Lanczos upscale lets the base pass kick as before

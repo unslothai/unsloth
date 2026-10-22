@@ -12946,7 +12946,13 @@ class DiffusionBackend:
                         "diffusion.generate: activation headroom re-check skipped (%s)", exc
                     )
 
-                gen = _GenState(total_steps = steps * len(chunks))
+                # The steps the pipe runs: a Hires refine converts its count to a longer schedule it enters partway.
+                progress_steps = (
+                    int(_hires_pass.stats.get("refine_steps") or steps)
+                    if _hires_pass is not None and _hires_pass.refine
+                    else steps
+                )
+                gen = _GenState(total_steps = progress_steps * len(chunks))
                 # Steps completed by FINISHED chunks, so the bar spans the whole multi-chunk call (mutable cell for
                 # _on_step).
                 steps_done = [0]
@@ -12983,7 +12989,7 @@ class DiffusionBackend:
                         width = preview_w,
                         device = state.device,
                         publish = _publish_preview,
-                        total_steps = steps,
+                        total_steps = progress_steps,
                     )
 
                 # Count steps the GPU FINISHED (per-step CUDA events, as the video path): under CUDA graphs the host
@@ -12997,12 +13003,12 @@ class DiffusionBackend:
                 )
 
                 # Replaced per chunk: a finished chunk's boundary must not end the next one's denoise.
-                chunk_ticker = [_CompletedStepTicker(steps)]
+                chunk_ticker = [_CompletedStepTicker(progress_steps)]
 
                 def _report(done_in_chunk: int) -> None:
                     if gen.phase not in ("encode", "denoise"):
                         return
-                    done = steps_done[0] + max(0, min(int(done_in_chunk), steps))
+                    done = steps_done[0] + max(0, min(int(done_in_chunk), progress_steps))
                     if done <= gen.step:
                         return
                     gen.phase = "denoise"
@@ -13017,7 +13023,7 @@ class DiffusionBackend:
 
                 def _flip_to_decode(gen = gen) -> None:
                     # The chunk's denoise is provably over: complete it even if a skipped event left the count short.
-                    _report(steps)
+                    _report(progress_steps)
                     gen.phase = "decode"
                     gen.eta_seconds = None
 
@@ -13186,7 +13192,7 @@ class DiffusionBackend:
                             if state.te_releaser is not None:
                                 state.te_releaser.release()
 
-                        chunk_ticker[0] = _CompletedStepTicker(steps)
+                        chunk_ticker[0] = _CompletedStepTicker(progress_steps)
 
                         def _enter_decode_phase() -> None:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
@@ -13274,7 +13280,7 @@ class DiffusionBackend:
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
-                        steps_done[0] += steps
+                        steps_done[0] += progress_steps
                 except BaseException:
                     if previewer is not None:
                         previewer.finish()

@@ -372,7 +372,9 @@ import {
   HIRES_OFF,
   HIRES_UPSCALER_LABELS,
   hiresBaseSize,
+  hiresEngagesNegative,
   hiresFromRecipe,
+  hiresRecordUsedNegative,
   hiresNotApplied,
   hiresRequest,
   hiresSummary,
@@ -2249,8 +2251,15 @@ export function ImagesPage({
     status?.loaded && status.negative_prompt_min_guidance !== undefined
       ? status.negative_prompt_min_guidance
       : 0;
+  // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
+  const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
+  const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
+  // Hires CFG can turn CFG on for the refine pass alone; that pass then reads the negative prompt.
   const negativeEngaged =
-    negativeCapable && (negativeMinGuidance === null || effectiveGuidance > negativeMinGuidance);
+    negativeCapable &&
+    (negativeMinGuidance === null ||
+      effectiveGuidance > negativeMinGuidance ||
+      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance));
   const livePreviewUnavailable =
     !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
@@ -2275,9 +2284,6 @@ export function ImagesPage({
     [samplerChoice, samplerModelKey, samplerOptions],
   );
   const shiftControl = !external && status?.loaded ? (status.shift_control ?? null) : null;
-  // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
-  const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
-  const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
   const [shiftState, setShiftState] = useState<{ key: string; value: ShiftValue }>({
     key: "",
     value: EMPTY_SHIFT,
@@ -2832,8 +2838,10 @@ export function ImagesPage({
   // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
   const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
     const viaConnection = image.model_kind === "connection";
-    // Negative prompt only applies when guidance>0; do not restore a hidden value.
-    const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
+    // Negative prompt only applies when guidance>0 (the base pass's, or Hires CFG's for the refine pass); do not
+    // restore a hidden value.
+    const restoredNegative =
+      image.guidance > 0 || hiresRecordUsedNegative(image) ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
     if (restoredNegative) setNegativeOpen(true);
     if (!viaConnection) {

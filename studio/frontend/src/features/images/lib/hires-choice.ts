@@ -113,6 +113,23 @@ export function hiresRequest(
   };
 }
 
+/** Whether the refine pass's own guidance (Hires CFG) engages a negative prompt the base guidance leaves off. */
+export function hiresEngagesNegative(
+  choice: HiresChoice,
+  cap: HiresCapability | null | undefined,
+  workflow: string,
+  minGuidance: number | null,
+): boolean {
+  const req = hiresRequest(choice, cap, workflow);
+  if (!req || req.denoise <= 0 || req.guidance === null || req.guidance === undefined) return false;
+  return minGuidance === null || req.guidance > minGuidance;
+}
+
+/** A recorded image whose Hires CFG ran with CFG on, so its negative prompt shaped the refine pass. */
+export function hiresRecordUsedNegative(r: HiresRecord): boolean {
+  return finite(r.hires_scale) !== undefined && (finite(r.hires_guidance) ?? 0) > 0;
+}
+
 /** The Upscale workflow's `upscale_model`: only an id the status still lists (the selector shows Lanczos otherwise). */
 export function upscaleModelRequest(
   id: string | null | undefined,
