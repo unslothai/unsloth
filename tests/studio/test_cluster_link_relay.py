@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
 import pytest
@@ -1647,3 +1648,60 @@ def test_the_loopback_owner_of_a_real_connection_is_found():
     finally:
         for s in (client, conn, server):
             s.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "a shebang script stands in for ggml-rpc-server")
+def test_an_rpc_server_left_on_another_port_is_reaped_but_never_a_foreign_process(tmp_path):
+    # A killed agent (no PDEATHSIG) left its rpc-server; the next agent starts on another --rpc-port.
+    psutil = pytest.importorskip("psutil")
+    import json as _json
+
+    from studio.cluster_link import agent as agent_mod
+    from studio.cluster_link.paths import run_dir
+
+    fake = tmp_path / "fake-rpc-server"
+    fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n", encoding = "utf-8")
+    fake.chmod(0o755)
+
+    def spawn(*argv):
+        proc = subprocess.Popen(list(argv))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                if len(psutil.Process(proc.pid).cmdline()) >= 2:
+                    break
+            except psutil.Error:
+                pass
+            time.sleep(0.02)
+        return proc
+
+    def record(port, proc):
+        created = psutil.Process(proc.pid).create_time()
+        (run_dir() / f"rpc-server-{port}.json").write_text(
+            _json.dumps({"pid": proc.pid, "created": created}), encoding = "utf-8"
+        )
+
+    orphan = spawn(str(fake))
+    held = spawn(str(fake))
+    foreign = spawn(sys.executable, "-c", "import time; time.sleep(60)")
+    try:
+        record(50101, orphan)  # its agent is gone: the port lock is free
+        record(50102, held)  # a live agent still holds this port
+        record(50103, foreign)  # names a process that is not an rpc-server
+        live = agent_mod._lock_rpc_port(50102)
+        try:
+            me = SimpleNamespace(rpc_port = 50200)
+            me._record_path = lambda: run_dir() / "rpc-server-50200.json"
+            Agent._reap_stale_rpc(me)
+        finally:
+            agent_mod._unlock(live)
+        orphan.wait(5)
+        assert orphan.returncode is not None
+        assert held.poll() is None and foreign.poll() is None
+        assert not (run_dir() / "rpc-server-50101.json").exists()
+        assert (run_dir() / "rpc-server-50102.json").exists()
+    finally:
+        for proc in (orphan, held, foreign):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()

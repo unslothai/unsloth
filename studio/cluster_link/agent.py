@@ -153,6 +153,40 @@ def _unlock(fd: Optional[int]) -> None:
     os.close(fd)
 
 
+def _reap_rpc_record(path: Path) -> None:
+    """Stop the ggml-rpc-server an ownership record names, then drop the record. Only the exact
+    process recorded (pid and creation time) and only an rpc-server: never a foreign process.
+    The caller holds the record's port lock, so the agent that wrote it is gone."""
+    try:
+        record = json.loads(path.read_text(encoding = "utf-8"))
+    except Exception:
+        record = None
+    try:
+        import psutil
+
+        proc = psutil.Process(int(record["pid"]))
+        # The creation time pins the exact process: a reused pid is someone else's.
+        if abs(proc.create_time() - float(record["created"])) > 0.01:
+            return
+        if not any("rpc-server" in str(part) for part in [proc.name(), *proc.cmdline()[:2]]):
+            return
+        proc.terminate()
+        try:
+            proc.wait(3)
+        except psutil.TimeoutExpired:
+            proc.kill()
+        logger.warning(
+            "stopped ggml-rpc-server %s left by an agent that did not exit cleanly", proc.pid
+        )
+    except Exception:
+        pass
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def _listen(host: str, port: int) -> socket.socket:
     """The agent's listening socket for threaded sessions (asyncio.start_server's bind, minus asyncio)."""
     infos = socket.getaddrinfo(host or None, port, type = socket.SOCK_STREAM, flags = socket.AI_PASSIVE)
@@ -444,32 +478,25 @@ class Agent:
             pass
 
     def _reap_stale_rpc(self) -> None:
-        try:
-            record = json.loads(self._record_path().read_text(encoding = "utf-8"))
-        except Exception:
-            record = None
         # This agent holds the port lock, so the agent that wrote the record is gone.
-        try:
-            import psutil
-
-            proc = psutil.Process(int(record["pid"]))
-            # The creation time pins the exact process: a reused pid is someone else's.
-            if abs(proc.create_time() - float(record["created"])) > 0.01:
-                return
-            if not any("rpc-server" in str(part) for part in [proc.name(), *proc.cmdline()[:2]]):
-                return
-            proc.terminate()
+        _reap_rpc_record(self._record_path())
+        # A killed agent restarted on another --rpc-port: its record is named after the old port. A
+        # record whose port lock is free was left by an agent that is gone (a live one holds it).
+        for path in sorted(run_dir().glob("rpc-server-*.json")):
             try:
-                proc.wait(3)
-            except psutil.TimeoutExpired:
-                proc.kill()
-            logger.warning(
-                "stopped ggml-rpc-server %s left by an agent that did not exit cleanly", proc.pid
-            )
-        except Exception:
-            pass
-        finally:
-            self._forget_rpc()
+                port = int(path.stem[len("rpc-server-") :])
+            except ValueError:
+                continue
+            if port == self.rpc_port:
+                continue
+            try:
+                fd = _lock_rpc_port(port)
+            except (RuntimeError, OSError):
+                continue  # a live worker serves there; the record is its own
+            try:
+                _reap_rpc_record(path)
+            finally:
+                _unlock(fd)
 
     def _rpc_argv(self) -> list:
         if self.mode == "native":
