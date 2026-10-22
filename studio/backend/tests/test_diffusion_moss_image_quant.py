@@ -402,3 +402,46 @@ def test_fp8_te_cast_keeps_the_gated_delta_conv1d_in_compute_dtype():
         if isinstance(m, torch.nn.Linear) and m.weight.dtype == torch.float8_e4m3fn
     ]
     assert fp8, "the cast stored no Linear in fp8"
+
+
+def test_local_moss_pipeline_needs_its_transformer_shards(tmp_path):
+    """The manifest names MOSS's own ``pipeline_moss_image`` module for the transformer and scheduler; the in-tree port
+    reads them as diffusers components, so a config-only transformer/ (an interrupted copy) is not complete."""
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    def write(rel, text = "{}"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(text, encoding = "utf-8")
+
+    write(
+        "model_index.json",
+        json.dumps(
+            {
+                "_class_name": "MOSSImagePipeline",
+                "scheduler": ["pipeline_moss_image", "MOSSImageScheduler"],
+                "text_encoder": ["transformers", "Qwen3_5Model"],
+                "tokenizer": ["transformers", "Qwen2Tokenizer"],
+                "transformer": ["pipeline_moss_image", "MOSSImageTransformer"],
+                "vae": ["diffusers", "AutoencoderKLFlux2"],
+            }
+        ),
+    )
+    write("scheduler/scheduler_config.json")
+    write("text_encoder/config.json")
+    write("text_encoder/model.safetensors", "x")
+    write("tokenizer/tokenizer_config.json")
+    write("tokenizer/tokenizer.json")
+    write("vae/config.json")
+    write("vae/diffusion_pytorch_model.safetensors", "x")
+    write("transformer/config.json")
+    write("transformer/pipeline_moss_image.py", "# remote code")
+    assert not local_pipeline_components_are_complete(tmp_path, "model_index.json")
+    shard = "diffusion_pytorch_model-00001-of-00001.safetensors"
+    write(
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        json.dumps({"weight_map": {"w": shard}}),
+    )
+    assert not local_pipeline_components_are_complete(tmp_path, "model_index.json")
+    write(f"transformer/{shard}", "x")
+    assert local_pipeline_components_are_complete(tmp_path, "model_index.json")

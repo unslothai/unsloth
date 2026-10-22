@@ -2445,6 +2445,12 @@ def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Opt
 
 
 _CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
+# Remote-code components Studio loads through an in-tree diffusers port, judged by the layout that port reads (MOSS-Image
+# names its own ``pipeline_moss_image`` module, which would otherwise pass on any file: a config-only transformer/).
+_IN_TREE_PORT_LIBRARIES = {
+    ("pipeline_moss_image", "MOSSImageTransformer"): "diffusers",
+    ("pipeline_moss_image", "MOSSImageScheduler"): "diffusers",
+}
 # safetensors first, default variant only: the load uses variant=None, which cannot open *.fp16.safetensors.
 _LOCAL_PIPELINE_WEIGHT_FORMATS = (
     (("diffusion_pytorch_model", "model"), "safetensors"),
@@ -2513,6 +2519,7 @@ def _local_pipeline_component_is_complete(
 ) -> bool:
     if not component.is_dir():
         return False
+    library_name = _IN_TREE_PORT_LIBRARIES.get((library_name, class_name), library_name)
     if library_name not in {"diffusers", "transformers"}:
         return any(_nonempty_file(child) for child in component.iterdir())
     identity = class_name.replace("_", "").lower()
