@@ -1672,6 +1672,23 @@ def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch
     assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
 
 
+@pytest.mark.parametrize("title", ["New Chat", ""])
+def test_a_fork_of_an_untitled_chat_stays_untitled(tmp_path, monkeypatch, title):
+    """The frontend auto-titles only "New Chat", so "New Chat (1)" would never get a name."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": title})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+
+    fork = _fork("src", "f", 10)
+    assert fork["title"] == "New Chat"
+    assert fork["forkTitleBase"] is None
+    assert _fork("f", "f2", 11)["title"] == "New Chat"
+
+    # Once auto-titled, its own forks number from the new name.
+    studio_db.update_chat_thread("f", {"title": "Notes"})
+    assert _fork("f", "f3", 12)["title"] == "Notes (1)"
+
+
 def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})

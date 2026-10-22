@@ -228,6 +228,36 @@ def test_forking_a_thread_copies_its_uploaded_documents(client):
         assert copied.read() == text
 
 
+def test_a_fork_leaves_behind_documents_uploaded_after_its_fork_point(client):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    early = _upload(client, "source", "early.txt", "alpha bravo charlie " * 50)
+    time.sleep(0.01)
+    response = client.put(
+        "/api/chat/threads/source/messages/m2",
+        json = {
+            "id": "m2",
+            "threadId": "source",
+            "parentId": "m1",
+            "role": "user",
+            "createdAt": int(time.time() * 1000),
+        },
+    )
+    assert response.status_code == 200, response.text
+    time.sleep(0.01)
+    _upload(client, "source", "late.txt", "delta echo foxtrot " * 50)
+
+    _fork(client, "source", "m1", "early-fork")
+    _fork(client, "source", "m2", "tip-fork")
+
+    assert [d["filename"] for d in _thread_documents(client, "early-fork")] == ["early.txt"]
+    assert {d["filename"] for d in _thread_documents(client, "tip-fork")} == {
+        "early.txt",
+        "late.txt",
+    }
+    assert early not in {d["id"] for d in _thread_documents(client, "early-fork")}
+
+
 def _vectors(document_id):
     conn = rag_db.get_connection()
     try:

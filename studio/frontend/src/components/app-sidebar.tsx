@@ -149,7 +149,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Copy, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Copy, GitBranchIcon, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -165,6 +165,7 @@ import {
   EditProjectDialog,
   forkChatRow,
   showForkCreatedToast,
+  showForkFailedToast,
   getSidebarItemThreadIds,
   useForkInFlight,
   sandboxSessionIdsHolding,
@@ -3643,16 +3644,9 @@ export function AppSidebar() {
       const result = await forkChatRow(item);
       setActiveThreadId(result.thread.id);
       navigate({ to: "/chat", search: { thread: result.thread.id } });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
-      // A chat still generating is a refusal, not a failure: say so without the alarm.
-      if ((error as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
-        toast.info(error instanceof Error ? error.message : "Cannot fork this chat.");
-      } else {
-        toast.error("Failed to fork", {
-          description: error instanceof Error ? error.message : undefined,
-        });
-      }
+      showForkFailedToast(error);
     } finally {
       inFlight.setForking(false);
     }
@@ -5239,7 +5233,7 @@ export function AppSidebar() {
               onSelect={() => void forkChatFromRow(item)}
             >
               <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
-              <span>Fork</span>
+              <span>{t("library.chats.menu.fork")}</span>
             </P.Item>
             {/* Projects and sections in one place: both are where the chat is kept. */}
             <P.Sub>
@@ -5482,6 +5476,11 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
+              {item.isFork && (
+                <span role="img" aria-label="Forked chat" title="Forked chat" className="shrink-0 text-muted-foreground">
+                  <GitBranchIcon aria-hidden={true} strokeWidth={1.75} className="size-3.5" />
+                </span>
+              )}
             </SidebarMenuButton>
             {showWorkSpinner ? (
               // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
