@@ -2480,6 +2480,27 @@ def _unsloth_vllm_quantized(model):
     # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
     if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
         return True
+    # transformers marks every quantizer it loads (GPTQ, AWQ, HQQ, torchao, compressed-tensors, ...).
+    # A dequantize = True load removes all of these, so they only remain on a quantized model.
+    if getattr(model, "is_quantized", False) is True or getattr(model, "quantization_method", None):
+        return True
+    if getattr(model, "hf_quantizer", None) is not None:
+        return True
+    quantization_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if quantization_config:
+        dequantize = (
+            quantization_config.get("dequantize", False)
+            if isinstance(quantization_config, dict)
+            else getattr(quantization_config, "dequantize", False)
+        )
+        if not dequantize:
+            return True
+    for module in model.modules():
+        # Packed integer weights (GPTQ / AWQ qweight, HQQ W_q) are not vLLM's layout.
+        if isinstance(getattr(module, "qweight", None), torch.Tensor) or isinstance(
+            getattr(module, "W_q", None), torch.Tensor
+        ):
+            return True
     for param in model.parameters():
         if type(param).__name__ in ("Params4bit", "Int8Params"):
             return True
@@ -2504,13 +2525,101 @@ def _unsloth_vllm_sync_unsafe(model):
     return len(_unsloth_vllm_lora_layers(model)) != 0
 
 
+# LoRA layer classes whose merged weight _unsloth_vllm_merged_weight computes: one dense base weight.
+_UNSLOTH_VLLM_PLAIN_LORA = ("Linear", "Embedding", "Conv1d", "Conv2d", "Conv3d")
+# LoRA variants PEFT itself cannot merge into the base weight (they condition on the input).
+_UNSLOTH_VLLM_UNMERGEABLE_VARIANTS = ("ALora", "Arrow", "QALora")
+
+
+def _unsloth_vllm_peft_type(config):
+    peft_type = getattr(config, "peft_type", None)
+    return str(getattr(peft_type, "value", peft_type))
+
+
+def _unsloth_vllm_peft_unsupported(model):
+    """PEFT setups neither TRL's PEFT branch nor the out-of-place merge can sync: names of the culprits."""
+    problems = []
+    for name, config in (getattr(model, "peft_config", None) or {}).items():
+        if getattr(config, "is_prompt_learning", False) or getattr(config, "is_adaption_prompt", False):
+            problems.append(f"prompt learning adapter '{name}' ({_unsloth_vllm_peft_type(config)})")
+        if getattr(config, "trainable_token_indices", None):
+            problems.append(f"trainable_token_indices on adapter '{name}'")
+        if getattr(config, "alora_invocation_tokens", None):
+            problems.append(f"aLoRA adapter '{name}'")
+        if getattr(config, "arrow_config", None) is not None:
+            problems.append(f"Arrow adapter '{name}'")
+    for module_name, module in model.named_modules():
+        # trainable_token_indices: TRL pushes token_adapter.* names that do not exist in vLLM.
+        if type(module).__name__ in ("TrainableTokensWrapper", "TrainableTokensLayer"):
+            problems.append(f"trainable tokens at {module_name}")
+            break
+    for module in _unsloth_vllm_lora_layers(model):
+        for variant in (getattr(module, "lora_variant", None) or {}).values():
+            variant_name = type(variant).__name__
+            if any(variant_name.startswith(x) for x in _UNSLOTH_VLLM_UNMERGEABLE_VARIANTS):
+                problems.append(f"LoRA variant {variant_name}")
+    return list(dict.fromkeys(problems))
+
+
+def _unsloth_vllm_modules_to_save(model):
+    """(wrapper name, adapter it serves or None for original_module, all its adapter names)."""
+    wrappers = []
+    for module_name, module in model.named_modules():
+        if type(module).__name__ != "ModulesToSaveWrapper":
+            continue
+        copies = getattr(module, "modules_to_save", None) or {}
+        served = None
+        if not getattr(module, "disable_adapters", False):
+            for adapter in getattr(module, "active_adapters", None) or []:
+                if adapter in copies:
+                    served = adapter
+                    break
+        wrappers.append((module_name, served, list(copies.keys())))
+    return wrappers
+
+
+def _unsloth_vllm_plain_lora(model):
+    """True when every PEFT piece is plain LoRA that _unsloth_vllm_sync_peft_merged fully syncs."""
+    configs = getattr(model, "peft_config", None) or {}
+    if any(_unsloth_vllm_peft_type(config) != "LORA" for config in configs.values()):
+        return False
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer
+    except Exception:
+        BaseTunerLayer = ()
+    lora_layers = {id(module) for module in _unsloth_vllm_lora_layers(model)}
+    for module in model.modules():
+        is_tuner = (BaseTunerLayer != () and isinstance(module, BaseTunerLayer)) or (
+            id(module) in lora_layers
+        )
+        if not is_tuner:
+            continue
+        # ParamWrapper (target_parameters), TrainableTokensLayer, ...: not a single dense weight.
+        if id(module) not in lora_layers or type(module).__name__ not in _UNSLOTH_VLLM_PLAIN_LORA:
+            return False
+        base_layer = module.base_layer
+        if not isinstance(getattr(base_layer, "weight", None), torch.Tensor):
+            return False
+        if getattr(module, "lora_A", None) is not None and hasattr(base_layer, "base_layer"):
+            return False
+        if any((getattr(module, "lora_variant", None) or {}).values()):
+            return False
+        if any((getattr(module, "use_dora", None) or {}).values()):
+            return False
+        if any((getattr(module, "lora_bias", None) or {}).values()):
+            return False
+    return True
+
+
 def _unsloth_vllm_sync_kind(trainer):
     """How _move_model_to_vllm syncs TRL's own vLLM engine (fast_inference = False):
-    "trl" = TRL's body (dense), "peft_merged" = merged weights computed out of place,
-    "skip" = no sync (explicit opt-in only). A quantized base raises: rollouts would be frozen."""
+    "trl" = TRL's body (dense, or PEFT it merges in place), "peft_merged" = plain LoRA merged out of
+    place, "skip" = no sync (explicit opt-in only). Anything that cannot be synced raises: rollouts
+    would come from the initial weights all run."""
     model = trainer.model
+    allow_stale = os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1"
     if _unsloth_vllm_quantized(model):
-        if os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1":
+        if allow_stale:
             print(
                 "Unsloth: UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1, so vLLM weight sync is skipped for this "
                 "quantized model and every rollout uses the initial weights."
@@ -2518,8 +2627,8 @@ def _unsloth_vllm_sync_kind(trainer):
             return "skip"
         raise RuntimeError(
             "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a quantized "
-            "(bitsandbytes 4-bit / 8-bit or FP8) model into TRL's own vLLM engine, so every rollout "
-            "would come from the initial weights while the policy trains.\n"
+            "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's own vLLM engine, so every "
+            "rollout would come from the initial weights while the policy trains.\n"
             "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
             "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
         )
@@ -2530,13 +2639,30 @@ def _unsloth_vllm_sync_kind(trainer):
     sharded = getattr(trainer, "is_fsdp_enabled", False) or (
         deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
     )
-    for module in _unsloth_vllm_lora_layers(model):
-        if any(getattr(module, "use_dora", {}).values()) or any(
-            getattr(module, "lora_bias", {}).values()
-        ):
-            sharded = True
-    # Sharded params need TRL's gathers, and DoRA / lora_bias need PEFT's own merge: use TRL's body.
-    return "trl" if sharded else "peft_merged"
+    problems = _unsloth_vllm_peft_unsupported(model)
+    kind = "peft_merged" if not sharded and _unsloth_vllm_plain_lora(model) else "trl"
+    if kind == "trl":
+        # TRL strips only "modules_to_save.default.", so other adapter names reach vLLM as is.
+        for wrapper, _, adapters in _unsloth_vllm_modules_to_save(model):
+            if any(adapter != "default" for adapter in adapters):
+                problems.append(f"modules_to_save at {wrapper} for adapters {adapters}")
+    if problems:
+        if allow_stale:
+            print(
+                "Unsloth: UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1, so vLLM weight sync is skipped for this "
+                f"PEFT model ({'; '.join(problems)}) and every rollout uses the initial weights."
+            )
+            return "skip"
+        raise RuntimeError(
+            "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync this PEFT model "
+            "into TRL's own vLLM engine: " + "; ".join(problems) + ". These cannot be merged into the "
+            "base weights under vLLM's parameter names, so every rollout would come from the initial "
+            "weights while the policy trains.\n"
+            "Use a plain LoRA adapter, or set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
+        )
+    # Sharded params need TRL's gathers; non-LoRA tuners, DoRA, lora_bias, other mergeable variants
+    # and ParamWrapper (target_parameters) need PEFT's own merge_adapter: TRL's PEFT branch does both.
+    return kind
 
 
 def _unsloth_vllm_merged_weight(module, weight):
@@ -2562,6 +2688,9 @@ def _unsloth_vllm_merged_weight(module, weight):
     return (weight.float() + merged).to(weight.dtype)
 
 
+_UNSLOTH_VLLM_MODULES_TO_SAVE = re.compile(r"\.(?:modules_to_save\.[^.]+|original_module)\.")
+
+
 @torch.no_grad()
 def _unsloth_vllm_sync_peft_merged(trainer):
     """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
@@ -2571,17 +2700,26 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         weight = getattr(module.base_layer, "weight", None)
         if weight is not None:
             lora_of[id(weight)] = module
+    # modules_to_save: push the copy the active adapter trains (any adapter name), never the rest.
+    unserved = []
+    for wrapper, served, adapters in _unsloth_vllm_modules_to_save(model):
+        unserved.extend(f"{wrapper}.modules_to_save.{a}." for a in adapters if a != served)
+        if served is not None:
+            unserved.append(f"{wrapper}.original_module.")
+    unserved = tuple(unserved)
     prefix = getattr(model, "prefix", "lora_")
     mode = getattr(trainer, "vllm_mode", "server")
     is_main = getattr(trainer.accelerator, "is_main_process", True)
     llm_model = None
     if mode == "colocate":
         llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
-    for name, param in model.named_parameters():
-        name = name.removeprefix("base_model.model.").replace(".base_layer", "")
-        if prefix in name or "original_module" in name:
+    for full_name, param in model.named_parameters():
+        if unserved and full_name.startswith(unserved):
             continue
-        name = trainer._fix_param_name_to_vllm(name.replace("modules_to_save.default.", ""))
+        name = full_name.removeprefix("base_model.model.").replace(".base_layer", "")
+        if prefix in name:
+            continue
+        name = trainer._fix_param_name_to_vllm(_UNSLOTH_VLLM_MODULES_TO_SAVE.sub(".", name))
         module = lora_of.get(id(param))
         tensor = param.data if module is None else _unsloth_vllm_merged_weight(module, param)
         if mode == "server":
@@ -2619,12 +2757,12 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
     indent = body_indent.group(1)
     # Only the fast_inference engine shares weights; every other engine must get the trained weights:
     # - Dense: TRL's own body.
-    # - LoRA / PEFT on a 16-bit base: merged weights under the base-layer names, as TRL does, but
+    # - Plain LoRA on a 16-bit base: merged weights under the base-layer names, as TRL does, but
     #   computed out of place. merge_adapter + unmerge_adapter on the live model is a lossy round
     #   trip in fp16 / bf16, so the frozen base would drift every sync.
-    # - Quantized bases (bitsandbytes, 1-byte floats such as FP8): merge_adapter requantizes from the
-    #   fp32 delta (fast_lora backward then fails) or refuses FP8, and the packed weights are not
-    #   vLLM's layout, so raise instead of sampling from the initial weights all run.
+    # - Other mergeable PEFT (LoHa, LoKr, IA3, VeRA, DoRA, target_parameters, sharded): TRL's body.
+    # - Quantized bases (bitsandbytes, GPTQ, AWQ, HQQ, FP8, ...), unmergeable adapters (aLoRA, Arrow,
+    #   trainable tokens, prompt learning): raise instead of sampling from the initial weights all run.
     guard = (
         f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
         f"{indent}    return None\n"

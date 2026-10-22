@@ -26,7 +26,7 @@ _TRL_SOURCE = """
                         continue
                     if "original_module" in name:
                         continue
-                    name = self._fix_param_name_to_vllm(name)
+                    name = self._fix_param_name_to_vllm(name, extra_prefixes=["modules_to_save.default."])
                     if self.vllm_mode == "server" and self.accelerator.is_main_process:
                         self.vllm_client.update_named_param(name, param.data)
                     elif self.vllm_mode == "colocate":
@@ -50,6 +50,13 @@ _TRL_SOURCE = """
         elif self.vllm_mode == "colocate":
             self.llm.reset_prefix_cache()
 """
+
+
+def _trl_fix_param_name_to_vllm(name, extra_prefixes = None):
+    # trl 0.27.2 grpo_trainer.py GRPOTrainer._fix_param_name_to_vllm
+    for prefix in ["_checkpoint_wrapped_module."] + (extra_prefixes or []):
+        name = name.replace(prefix, "")
+    return name
 
 
 class _Recorder:
@@ -87,7 +94,7 @@ def _trainer(vllm_mode, shared_weights = False):
         model = torch.nn.Linear(2, 2),
         vllm_mode = vllm_mode,
         vllm_client = rec,
-        _fix_param_name_to_vllm = lambda name: name,
+        _fix_param_name_to_vllm = _trl_fix_param_name_to_vllm,
     )
     if vllm_mode == "colocate":
         trainer.llm = llm
@@ -283,5 +290,211 @@ def test_fp8_base_raises(monkeypatch):
         trainer.model.weight.data.to(torch.float8_e4m3fn), requires_grad = False
     )
     with pytest.raises(RuntimeError, match = "fast_inference = True"):
+        _patched_method()(trainer)
+    assert rec.loaded == [] and rec.resets == 0
+
+
+# Codex review round 2: quantizers beyond bitsandbytes, non-LoRA PEFT, unmergeable LoRA variants,
+# target_parameters, custom modules_to_save adapter names, trainable tokens.
+
+
+class _PackedLinear(torch.nn.Module):
+    # GPTQ QuantLinear / AWQ WQLinear keep int32 packed weights in a qweight buffer.
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("qweight", torch.zeros(2, 2, dtype = torch.int32))
+        self.bias = torch.nn.Parameter(torch.zeros(2))
+
+
+def _mark_hf_quantizer(model):
+    model.hf_quantizer = object()
+
+
+def _mark_quantization_method(model):
+    model.quantization_method = "hqq"
+
+
+def _mark_quantization_config(model):
+    model.config = types.SimpleNamespace(quantization_config = {"quant_method": "awq", "bits": 4})
+
+
+def _mark_packed_weight(model):
+    model.add_module("packed", _PackedLinear())
+
+
+@pytest.mark.parametrize(
+    "mark",
+    [_mark_hf_quantizer, _mark_quantization_method, _mark_quantization_config, _mark_packed_weight],
+)
+def test_gptq_awq_hqq_style_quantized_base_raises(mark, monkeypatch):
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    trainer, rec = _trainer("colocate")
+    mark(trainer.model)
+    with pytest.raises(RuntimeError, match = "quantized"):
+        _patched_method()(trainer)
+    assert rec.loaded == [] and rec.resets == 0
+
+
+def test_dequantized_config_still_syncs():
+    # A dequantize = True load leaves dense weights: it is a dense sync, not a quantized base.
+    trainer, rec = _trainer("colocate")
+    trainer.model.config = types.SimpleNamespace(
+        quantization_config = {"quant_method": "fp8", "dequantize": True}
+    )
+    _patched_method()(trainer)
+    assert rec.loaded == ["weight", "bias"]
+
+
+def _peft_trainer(model, vllm_mode = "colocate"):
+    trainer, _ = _trainer(vllm_mode)
+    rec = _WeightRecorder()
+    trainer.model = model
+    trainer.vllm_client = rec
+    if vllm_mode == "colocate":
+        trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model = rec
+        trainer.llm.reset_prefix_cache = rec.reset_prefix_cache
+    return trainer, rec
+
+
+def _perturb_trainable(model):
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                param.add_(torch.randn_like(param) * 0.3 + 0.2)
+
+
+def _merged_state(model):
+    import copy
+
+    return {k: v.clone() for k, v in copy.deepcopy(model).merge_and_unload().state_dict().items()}
+
+
+def _base_mlp():
+    torch.manual_seed(1)
+    return torch.nn.Sequential(torch.nn.Linear(16, 16, bias = False), torch.nn.Linear(16, 8))
+
+
+def _non_lora_config(kind):
+    peft = pytest.importorskip("peft")
+    if kind == "loha":
+        return peft.LoHaConfig(r = 2, target_modules = ["0"], init_weights = False)
+    if kind == "lokr":
+        return peft.LoKrConfig(r = 2, target_modules = ["0"], init_weights = False)
+    if kind == "ia3":
+        return peft.IA3Config(target_modules = ["0"], feedforward_modules = [])
+    return peft.VeraConfig(r = 2, target_modules = ["0"])
+
+
+@pytest.mark.parametrize("kind", ["loha", "lokr", "ia3", "vera"])
+def test_non_lora_peft_syncs_merged_weights_via_trl(kind):
+    # VeRA / LoHa / LoKr / IA3 have no lora_A: the out-of-place LoRA merge would push the frozen base
+    # weight. TRL's PEFT branch merges them with PEFT's own merge_adapter, so it must be used.
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(_base_mlp(), _non_lora_config(kind))
+    _perturb_trainable(model)
+    expected = _merged_state(model)
+    trainer, rec = _peft_trainer(model)
+    assert _patched_method()(trainer) is None
+    assert trainer._unsloth_vllm_sync_kind == "trl"
+    pushed = dict(rec.tensors)
+    assert sorted(pushed) == ["0.weight", "1.bias", "1.weight"]
+    assert not torch.equal(pushed["0.weight"], model.base_model.model[0].base_layer.weight)
+    torch.testing.assert_close(pushed["0.weight"], expected["0.weight"])
+    assert rec.resets == 1
+
+
+def test_alora_raises_instead_of_flattening(monkeypatch):
+    # aLoRA only applies after its invocation tokens; PEFT refuses to merge it, and a static merge
+    # would serve a different model than the one being trained.
+    peft = pytest.importorskip("peft")
+    if "alora_invocation_tokens" not in peft.LoraConfig.__dataclass_fields__:
+        pytest.skip("this PEFT has no aLoRA")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    config = peft.LoraConfig(
+        r = 2, target_modules = ["0"], alora_invocation_tokens = [5], init_lora_weights = False
+    )
+    model = peft.get_peft_model(_base_mlp(), config)
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "aLoRA"):
+        _patched_method()(trainer)
+    assert rec.loaded == [] and rec.resets == 0
+
+
+class _Experts(torch.nn.Module):
+    # Fused MoE experts as in transformers 5 (gate_up_proj is a bare 3D parameter).
+    def __init__(self):
+        super().__init__()
+        self.gate_up_proj = torch.nn.Parameter(torch.randn(4, 16, 8))
+
+    def forward(self, x):
+        return torch.einsum("bi,eio->bo", x, self.gate_up_proj)
+
+
+def test_target_parameters_param_wrapper_syncs_merged_experts():
+    # ParamWrapper has no base_layer.weight, so the out-of-place merge pushed the untrained experts.
+    peft = pytest.importorskip("peft")
+    if "target_parameters" not in peft.LoraConfig.__dataclass_fields__:
+        pytest.skip("this PEFT has no target_parameters")
+    torch.manual_seed(1)
+    base = torch.nn.Sequential(torch.nn.Linear(16, 16, bias = False))
+    base.add_module("experts", _Experts())
+    config = peft.LoraConfig(
+        r = 2, target_modules = ["0"], target_parameters = ["experts.gate_up_proj"],
+        init_lora_weights = False,
+    )
+    model = peft.get_peft_model(base, config)
+    _perturb_trainable(model)
+    expected = _merged_state(model)
+    trainer, rec = _peft_trainer(model)
+    assert _patched_method()(trainer) is None
+    assert trainer._unsloth_vllm_sync_kind == "trl"
+    pushed = dict(rec.tensors)
+    assert sorted(pushed) == ["0.weight", "experts.gate_up_proj"]
+    torch.testing.assert_close(pushed["experts.gate_up_proj"], expected["experts.gate_up_proj"])
+    torch.testing.assert_close(pushed["0.weight"], expected["0.weight"])
+
+
+@pytest.mark.parametrize("second_adapter", [False, True])
+def test_modules_to_save_custom_adapter_name(second_adapter):
+    # TRL strips only "modules_to_save.default.": a custom name reached vLLM as is and the trained
+    # head was never synced. Push the active adapter's copy under the base name, and nothing else.
+    peft = pytest.importorskip("peft")
+    config = peft.LoraConfig(
+        r = 2, target_modules = ["0"], modules_to_save = ["1"], init_lora_weights = False
+    )
+    model = peft.get_peft_model(_base_mlp(), config, adapter_name = "mine")
+    if second_adapter:
+        model.add_adapter("other", config)
+        model.set_adapter("mine")
+    _perturb_trainable(model)
+    head = model.base_model.model[1]
+    trainer, rec = _peft_trainer(model)
+    assert _patched_method()(trainer) is None
+    assert trainer._unsloth_vllm_sync_kind == "peft_merged"
+    assert sorted(rec.loaded) == ["0.weight", "1.bias", "1.weight"]
+    pushed = dict(rec.tensors)
+    assert torch.equal(pushed["1.weight"], head.modules_to_save["mine"].weight)
+    assert not torch.equal(pushed["1.weight"], head.original_module.weight)
+    layer = model.base_model.model[0]
+    delta = layer.lora_B["mine"].weight.float() @ layer.lora_A["mine"].weight.float()
+    expected = (layer.base_layer.weight.float() + delta * layer.scaling["mine"]).to(torch.float32)
+    assert torch.equal(pushed["0.weight"], expected)
+
+
+def test_trainable_token_indices_raises(monkeypatch):
+    # The trained rows live in token_adapter.trainable_tokens_delta.<adapter>; neither TRL's names
+    # nor a LoRA merge map that onto vLLM's embedding, so refuse instead of dropping the rows.
+    peft = pytest.importorskip("peft")
+    if "trainable_token_indices" not in peft.LoraConfig.__dataclass_fields__:
+        pytest.skip("this PEFT has no trainable_token_indices")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    torch.manual_seed(1)
+    base = torch.nn.Sequential(torch.nn.Embedding(32, 16), torch.nn.Linear(16, 16))
+    config = peft.LoraConfig(
+        r = 2, target_modules = ["1"], trainable_token_indices = {"0": [1, 3]}
+    )
+    model = peft.get_peft_model(base, config)
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "trainable"):
         _patched_method()(trainer)
     assert rec.loaded == [] and rec.resets == 0
