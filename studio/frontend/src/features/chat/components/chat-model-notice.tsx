@@ -56,7 +56,14 @@ export function useChatCreatedModel(
     const onHistoryUpdated = (event: Event): void => {
       const updatedThread = (event as CustomEvent<ChatHistoryUpdatedDetail>)
         .detail?.thread;
-      if (updatedThread) reader.applyUpdate(updatedThread);
+      if (updatedThread) {
+        reader.applyUpdate(updatedThread);
+        return;
+      }
+      // A change from another tab arrives with no thread, so read this one again.
+      void getStoredChatThread(threadId)
+        .then((thread) => thread && reader.applyUpdate(thread))
+        .catch(() => undefined);
     };
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
     void getStoredChatThread(threadId)
