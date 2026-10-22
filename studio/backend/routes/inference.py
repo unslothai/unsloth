@@ -23681,6 +23681,8 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     """Status of the slot serving ``model`` (the primary one by default), listing every loaded model."""
     slot = await _route_to_extra_slot(model)
     response = await _slot_status(current_subject)
+    if isinstance(response, InferenceStatusResponse) and response.is_gguf:
+        response.resident_mib = _llama_resident_mib()
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -23701,6 +23703,15 @@ async def get_status(current_subject: str, model: Optional[str] = None):
                         response.serving.append(e["id"])
                         response.serving_checkpoints.append(checkpoint)
     return response
+
+
+def _llama_resident_mib() -> Optional[int]:
+    """The routed slot's llama-server footprint; None when not loaded or unreadable."""
+    try:
+        llama = get_llama_cpp_backend()
+        return llama.resident_memory_mib() if getattr(llama, "is_loaded", False) else None
+    except Exception:  # noqa: BLE001 - optional decoration on a status read
+        return None
 
 
 def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
@@ -53362,6 +53373,9 @@ async def diffusion_status(
         owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
         visible = owner is None or owner == current_account_id()
         status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
+    if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
+        from core.inference.gpu_residency import media_owner_held_mib
+        status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

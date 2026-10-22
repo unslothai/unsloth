@@ -8865,6 +8865,22 @@ class LlamaCppBackend:
         """True if a llama-server process exists (loading or loaded)."""
         return self._process is not None
 
+    def resident_memory_mib(self) -> Optional[int]:
+        """Best-effort MiB the loaded model holds: its GPU model buffers when known, else the
+        child's RSS (CPU, and Apple unified memory where RSS covers the Metal buffers). Never raises."""
+        process = self._process
+        if process is None or process.poll() is not None:
+            return None
+        try:
+            gpu = self.reclaimable_gpu_memory_gb()
+            if gpu:
+                return int(round(sum(gpu.values()) * 1024))
+            import psutil
+
+            return int(psutil.Process(process.pid).memory_info().rss // (1024 * 1024)) or None
+        except Exception:  # noqa: BLE001 - a size is decoration, never a failed status read
+            return None
+
     def reclaimable_gpu_memory_gb(self) -> Optional[dict[int, float]]:
         """Stable GPU model buffers the disposable llama-server will release.
 
