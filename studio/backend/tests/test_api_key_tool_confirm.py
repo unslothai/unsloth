@@ -376,3 +376,43 @@ def test_owner_api_key_tool_thread_keeps_the_api_key_flag():
 )
 def test_approval_grants_host_access_matches_the_executor(name, arguments, grants):
     assert tools.approval_grants_host_access(name, arguments) is grants
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs bash here")
+@pytest.mark.parametrize("api_key", [True, False])
+def test_an_approved_api_key_terminal_call_refuses_when_the_sandbox_is_gone(monkeypatch, tmp_path, api_key):
+    """The terminal holds like python: an approved host-path command from an API key never falls back to the host."""
+    plans, fallbacks = [], []
+    monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
+    monkeypatch.setattr(tools, "_account_confinement", lambda: None)
+
+    def gone(plan):
+        plans.append(plan)
+        raise os_sandbox.SandboxUnavailableError("sandbox went away")
+
+    def safeguards(plan, reason, **_kw):
+        fallbacks.append((plan.requested_mode, reason))
+        raise os_sandbox.SandboxUnavailableError("stop before spawning")
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", gone)
+    monkeypatch.setattr(tools, "_software_safeguards_launch", safeguards)
+    token = bind_account(_API if api_key else OWNER)
+    try:
+        out = tools._bash_exec(
+            "cat /home/someone/notes.txt",
+            None,
+            60,
+            "__LOCALID_api_terminal",
+            host_access_approved = True,
+            tool_execution_mode = "auto",
+        )
+    finally:
+        reset_account(token)
+    assert "sandbox" in out.lower() or "stop before spawning" in out
+    if api_key:
+        assert [p.requested_mode for p in plans] == ["required"]
+        assert fallbacks == []
+    else:
+        # A UI request keeps its approval: software safeguards off the workdir, as before.
+        assert plans == []
+        assert fallbacks == [("auto", "user_approved_host_access")]

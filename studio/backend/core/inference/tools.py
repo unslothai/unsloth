@@ -24142,11 +24142,8 @@ def _bash_exec(
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
-        host_reach_approved = (
-            host_access_approved
-            and _reaches_host_paths("terminal", command)
-            and not _api_host_access_refused()
-        )
+        # An API-key request's approval is dropped in _prepare_tool_launch, which also moves the call to required.
+        host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
         # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
         # advertised) but runs it with software safeguards (_prepare_tool_launch).
         chosen_folder = _is_user_project_folder(session_id, workdir)
