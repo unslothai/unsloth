@@ -73,17 +73,15 @@ def _compressed_backend(
     [
         (False, False, None, False),
         (False, True, None, False),
-        # Workspace consent (shadow disabled) authorizes the library install.
         (True, True, None, True),
         (True, False, "/shadow", True),
-        # Shadow consent whose provisioning failed must not install into the Studio interpreter.
         (True, False, None, False),
     ],
 )
 def test_compressed_export_states_consent_explicitly(
     tmp_path, monkeypatch, consented, shadow_disabled, shadow_pp, expected
 ):
-    # unsloth.save defaults install_missing_dependencies to True, so an unconsented export must pass False.
+    # unsloth.save defaults install_missing_dependencies=True; must pass False.
     shadow_calls: list = []
     backend = _compressed_backend(monkeypatch, shadow_calls, shadow_disabled, shadow_pp)
 

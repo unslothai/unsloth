@@ -18,7 +18,6 @@ test("peaks use the bar count and stay within 0..1", () => {
   assert.equal(peaks.length, 50);
   assert.ok(peaks.every((peak) => peak >= 0 && peak <= 1));
   assert.equal(Math.max(...peaks), 1);
-  // Louder towards the end, as the ramp is.
   assert.ok(peaks[49] > peaks[5]);
   assert.equal(computePeaks([samples]).length, WAVEFORM_BARS);
 });
@@ -53,6 +52,14 @@ test("the waveform is neutral, keyboard-playable and static", () => {
   assert.match(source, /"text-muted-foreground"/);
   assert.match(source, /event\.key === " "/);
   assert.match(source, /aria-valuetext/);
-  // No animation, so reduced motion needs nothing extra.
   assert.doesNotMatch(source, /animate-|transition-/);
+});
+
+test("resamplePeaks max-pools down and repeats up", async () => {
+  const { resamplePeaks } = await import(
+    "../src/features/audio/components/waveform-peaks.ts"
+  );
+  assert.deepEqual(resamplePeaks([0.1, 0.9, 0.2, 0.3], 2), [0.9, 0.3]);
+  assert.deepEqual(resamplePeaks([0.4, 0.8], 4), [0.4, 0.4, 0.8, 0.8]);
+  assert.deepEqual(resamplePeaks([], 3), []);
 });

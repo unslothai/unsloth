@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The transition table for the tool-call visibility setting, the store's
-// compatibility promise, and the JSX wiring that carries both.
-//
-// The reducers and the store are plain .ts, so those claims run the code. The
-// cards are .tsx and this runner cannot execute JSX (no jsdom, no JSX loader),
-// so their claims go through the TypeScript AST, not a substring of the source:
-// a substring passes on broken code and fails on a reformat, which is backwards.
-// Rendered behaviour lives in tests/studio/playwright_tool_activity.py.
+// The .tsx cards cannot run here (no JSX loader), so their claims go through the TS AST,
+// not a source substring. Rendered behaviour: tests/studio/playwright_tool_activity.py.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -26,8 +20,6 @@ const { store } = installLocalStorageFake();
 
 const PREFERENCES_KEY = "unsloth_chat_preferences";
 
-// Preferences exactly as a Studio from before this setting existed wrote them:
-// every key the store had at the time, and no collapseToolActivityByDefault.
 // Staged before the import, because persist hydrates at store creation.
 const LEGACY_STATE = {
   confirmDeleteChats: false,
@@ -57,15 +49,10 @@ const { foldIsActive } = await import(
   "../src/features/chat/utils/display-visibility.ts"
 );
 
-/** Write `state` as a persisted record and hydrate the live store from it. */
 async function rehydrateFrom(state: unknown): Promise<void> {
   store.set(PREFERENCES_KEY, JSON.stringify({ state, version: 0 }));
   await useChatPreferencesStore.persist.rehydrate();
 }
-
-// ---------------------------------------------------------------------------
-// The store's compatibility promise, made against a real hydrate.
-// ---------------------------------------------------------------------------
 
 test("tool calls are collapsed by default and thinking follows its stream", () => {
   const initial = useChatPreferencesStore.getInitialState();
@@ -74,22 +61,18 @@ test("tool calls are collapsed by default and thinking follows its stream", () =
 });
 
 test("a record written before the setting existed inherits the collapsed default", () => {
-  // Not an opt-in: an install that never saw this setting starts collapsing tool activity the
-  // moment it upgrades. Asserted against a real hydrate so reconsidering that call is loud.
+  // Not an opt-in: existing installs start collapsing tool activity on upgrade.
   assert.equal(useChatPreferencesStore.getState().toolVisibility, "collapsed");
 });
 
 test("the old pair of switches carries over to the three-state settings", () => {
-  // LEGACY_STATE has collapseThinkingByDefault: true and no tool key, so this covers both
-  // halves: an explicit collapse survives the rename, an absent key lands on the new default.
   const state = useChatPreferencesStore.getState();
   assert.equal(state.thinkingVisibility, "collapsed");
   assert.equal(state.toolVisibility, "collapsed");
 });
 
 test("a legacy `off` becomes auto rather than always expanded", async () => {
-  // The old `false` meant "open while running, close after", which is auto. Reading it as
-  // expanded would leave every upgrading user with permanently open tool cards.
+  // The old `false` meant auto; reading it as expanded would leave tool cards permanently open.
   await rehydrateFrom({
     ...LEGACY_STATE,
     collapseThinkingByDefault: false,
@@ -102,7 +85,6 @@ test("a legacy `off` becomes auto rather than always expanded", async () => {
 });
 
 test("a stored visibility wins over the legacy boolean beside it", async () => {
-  // Both keys can coexist for one upgrade, and the new one is the one the user last set.
   await rehydrateFrom({
     ...LEGACY_STATE,
     collapseToolActivityByDefault: true,
@@ -119,16 +101,13 @@ test("a value from a newer build falls back instead of blanking the row", async 
 });
 
 test("hydrating the new keys leaves the older preferences alone", () => {
-  // merge() is a hand-maintained allowlist, so adding a field to it is exactly
-  // when one of the others goes missing.
+  // merge() is a hand-maintained allowlist.
   const state = useChatPreferencesStore.getState();
   assert.equal(state.confirmDeleteChats, false);
   assert.equal(state.alwaysDeleteChatFiles, true);
   assert.equal(state.showModelDisclaimer, true);
   assert.equal(state.showResponseModel, true);
   assert.equal(state.pastedTextMinChars, 8000);
-  // The setters have to survive too: a merge returning only the saved fields
-  // would leave a store with no way to write to it.
   assert.equal(typeof state.setToolVisibility, "function");
   assert.equal(typeof state.setThinkingVisibility, "function");
 });
@@ -170,12 +149,7 @@ test("an unreadable record leaves every default in place", async () => {
   await rehydrateFrom(LEGACY_STATE);
 });
 
-// ---------------------------------------------------------------------------
-// Fold, and the one setting it cannot coexist with.
-// ---------------------------------------------------------------------------
-
 test("folding tool calls into Thinking gives way to always expanded", () => {
-  // Honouring both would pin the calls open inside something closed, so the fold stands down.
   assert.equal(foldIsActive(true, "collapsed"), true);
   assert.equal(foldIsActive(true, "auto"), true);
   assert.equal(foldIsActive(true, "expanded"), false);
@@ -184,7 +158,6 @@ test("folding tool calls into Thinking gives way to always expanded", () => {
 });
 
 test("the fold preference is only suspended, not cleared", async () => {
-  // Settings disables the row while it cannot apply, but the stored value has to survive.
   await rehydrateFrom({
     ...LEGACY_STATE,
     foldToolActivityIntoThinking: true,
@@ -203,10 +176,6 @@ test("the fold preference is only suspended, not cleared", async () => {
   );
   await rehydrateFrom(LEGACY_STATE);
 });
-
-// ---------------------------------------------------------------------------
-// The transition table.
-// ---------------------------------------------------------------------------
 
 test("manual expansion survives updates while activity is collapsed", () => {
   assert.equal(
@@ -242,7 +211,6 @@ test("always expanded keeps a card open through running, finished and answered",
 });
 
 test("a card closed by hand stays closed under always expanded", () => {
-  // The setting says where a card starts, not where it stays.
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: false,
@@ -292,7 +260,6 @@ test("switching to auto restores automatic visibility", () => {
 });
 
 test("switching to always expanded opens a card that was collapsed and finished", () => {
-  // A call that already ran, on a message already on screen, opening because the setting did.
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: false,
@@ -306,8 +273,7 @@ test("switching to always expanded opens a card that was collapsed and finished"
 });
 
 test("changing the setting hands the card back to the automatic rules", () => {
-  // Deliberate: a setting change is an explicit action, so it resets rather than preserving a
-  // manual expansion made under the old setting. Between changes manual state is preserved.
+  // Deliberate: a setting change resets manual expansion; between changes it is preserved.
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: true,
@@ -321,8 +287,6 @@ test("changing the setting hands the card back to the automatic rules", () => {
 });
 
 test("switching to auto opens a running card on a message that already has text", () => {
-  // The call still running belongs to a message whose prose arrived first, so hasText is
-  // already true when the setting changes. Expand while running is about the call, not the text.
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: false,
@@ -334,7 +298,6 @@ test("switching to auto opens a running card on a message that already has text"
     true,
     "a running card stayed closed when the setting changed to Expand while running",
   );
-  // A finished call on the same message still opens nothing.
   assert.equal(
     resolveToolActivityOpen({
       currentOpen: false,
@@ -373,7 +336,6 @@ test("a hand-opened controlled card keeps its open when the answer starts", () =
 
 
 test("the round boundary is the call starting again", () => {
-  // The reasoning block's rule, applied here: a round starts when the activity resumes.
   assert.equal(startsNewToolRound(true, false), true);
   assert.equal(startsNewToolRound(true, true), false);
   assert.equal(startsNewToolRound(false, true), false);
@@ -381,8 +343,7 @@ test("the round boundary is the call starting again", () => {
 });
 
 test("a new round hands a controlled card back to the setting", () => {
-  // Regenerate reuses the card, so the previous round's hand-set state must not survive into
-  // the new one: the setting decides where the card starts again.
+  // Regenerate reuses the card, so the previous round's manual state must not survive.
   const rerun = (
     visibility: "collapsed" | "auto" | "expanded",
     override: boolean | null,
@@ -396,7 +357,6 @@ test("a new round hands a controlled card back to the setting", () => {
       override,
       startedNewRound: true,
     });
-  // The answer text arrived in the old round, so hasText is already true for this one too.
   assert.equal(
     rerun("auto", false),
     true,
@@ -412,8 +372,6 @@ test("a new round hands a controlled card back to the setting", () => {
 
 
 test("an uncontrolled card starts fresh when its call runs again", () => {
-  // The same regenerate reuse the controlled cards take from the hook, reached here through
-  // `active`: generic, MCP, Terminal and Python cards keep their own state through this function.
   const closedInOldRound = {
     visibility: "auto" as const,
     active: false,
@@ -436,7 +394,6 @@ test("an uncontrolled card starts fresh when its call runs again", () => {
     false,
     "a card opened in the old round stayed pinned open for the regenerated run",
   );
-  // Activity moving on its own, without the call restarting, still keeps a manual open.
   assert.equal(
     syncToolActivityPreference(
       { visibility: "auto" as const, active: true, override: true },
@@ -455,11 +412,9 @@ test("fallback cards react to live preference changes", () => {
     override: true,
   };
   const collapsed = syncToolActivityPreference(manuallyOpen, "collapsed", true);
-  // The setting change drops the manual open, so the card follows the new setting.
   assert.equal(collapsed.override, null);
   assert.equal(toolActivityOpen(collapsed), false);
   assert.equal(toolActivityOpen(syncToolActivityPreference(collapsed, "auto", true)), true);
-  // Always expanded ignores the card's own activity and opens it regardless.
   assert.equal(
     toolActivityOpen(syncToolActivityPreference(collapsed, "expanded", false)),
     true,
@@ -472,9 +427,8 @@ test("fallback cards preserve manual state until the preference changes", () => 
     active: true,
     override: true,
   };
-  // Reference identity, not deep equality: the render-phase `if (synced !==
-  // state) setState(...)` in ToolFallbackRoot and ToolGroupRoot terminates only
-  // because an unchanged preference and activity return the very same object.
+  // Reference identity: the render-phase `if (synced !== state) setState(...)` only terminates
+  // because unchanged inputs return the very same object.
   assert.equal(
     syncToolActivityPreference(manuallyOpen, "collapsed", true),
     manuallyOpen,
@@ -504,8 +458,6 @@ test("switching to auto respects a card whose call has finished", () => {
 });
 
 test("an auto card closes itself when its call stops running", () => {
-  // The gap this covers: an uncontrolled card mounted with defaultOpen={isRunning} used to open
-  // and never close again, because an unchanged setting returned the state untouched.
   const running = { visibility: "auto" as const, active: true, override: null };
   assert.equal(toolActivityOpen(running), true);
   const finished = syncToolActivityPreference(running, "auto", false);
@@ -513,7 +465,6 @@ test("an auto card closes itself when its call stops running", () => {
 });
 
 test("a hand-opened auto card survives its call finishing", () => {
-  // Activity moving on its own must not discard a manual open, only the setting may.
   const opened = { visibility: "auto" as const, active: true, override: true };
   const finished = syncToolActivityPreference(opened, "auto", false);
   assert.equal(finished.override, true);
@@ -527,14 +478,9 @@ test("a hand-closed running card stays closed while it runs", () => {
 });
 
 test("always expanded opens a card that mounted with nothing running", () => {
-  // Generic and MCP cards render with whatever their status says; expanded ignores it.
   const idle = { visibility: "expanded" as const, active: false, override: null };
   assert.equal(toolActivityOpen(idle), true);
 });
-
-// ---------------------------------------------------------------------------
-// AST helpers for the .tsx claims.
-// ---------------------------------------------------------------------------
 
 const sourceOf = async (path: string): Promise<ts.SourceFile> =>
   ts.createSourceFile(
@@ -558,7 +504,6 @@ function find(root: ts.Node, match: (node: ts.Node) => boolean): ts.Node[] {
   return hits;
 }
 
-/** The initializer of `const <name> = ...`. */
 function initializerOf(root: ts.SourceFile, name: string): ts.Expression {
   const declaration = find(
     root,
@@ -571,7 +516,6 @@ function initializerOf(root: ts.SourceFile, name: string): ts.Expression {
   return declaration.initializer;
 }
 
-/** Every identifier read anywhere under `node`. */
 function identifiersIn(node: ts.Node): Set<string> {
   const names = new Set<string>();
   walk(node, (child) => {
@@ -580,11 +524,7 @@ function identifiersIn(node: ts.Node): Set<string> {
   return names;
 }
 
-/**
- * The local name a file binds the setting to, resolved through the store
- * selector rather than assumed. Hard-coding "visibility" would make these
- * assertions fail on a rename that changes nothing.
- */
+/** Resolved through the store selector so a harmless rename does not fail these tests. */
 function preferenceBinding(
   root: ts.SourceFile,
   scope: ts.Node = root,
@@ -606,7 +546,6 @@ function preferenceBinding(
   return declaration.name.text;
 }
 
-/** The JSX element named `name` nested anywhere under `node`. */
 function jsxElement(node: ts.Node, name: string): ts.JsxElement {
   const hit = find(
     node,
@@ -619,7 +558,6 @@ function jsxElement(node: ts.Node, name: string): ts.JsxElement {
   return hit;
 }
 
-/** The JSX attribute `name` on the opening tag of `element`. */
 function jsxAttribute(
   element: ts.JsxElement,
   name: string,
@@ -629,10 +567,6 @@ function jsxAttribute(
       ts.isJsxAttribute(property) && property.name.getText() === name,
   );
 }
-
-// ---------------------------------------------------------------------------
-// The wiring.
-// ---------------------------------------------------------------------------
 
 test("the shared hook resolves through the preference and the shared policy", async () => {
   const source = await sourceOf(
@@ -665,7 +599,6 @@ test("the shared hook resolves through the preference and the shared policy", as
     "previousVisibility",
     "isRunning",
     "hasText",
-    // Without this the hook cannot clear the old round's manual state when a call re-runs.
     "startedNewRound",
   ]) {
     assert.ok(passed.has(field), `the policy is called without ${field}`);
@@ -687,8 +620,7 @@ test("every tool card that opens itself routes through the shared hook", async (
         node.expression.text === "useToolActivityOpen",
     )[0] as ts.CallExpression | undefined;
     assert.ok(call, `${file} bypasses the shared automatic visibility policy`);
-    // Both signals live, not pinned: useToolActivityOpen(true, hasText) would
-    // still route through the hook while re-opening every card unconditionally.
+    // useToolActivityOpen(true, hasText) would still route through the hook but always reopen.
     assert.equal(
       call.arguments.length,
       2,
@@ -704,10 +636,8 @@ test("every tool card that opens itself routes through the shared hook", async (
 });
 
 test("an uncontrolled fallback card takes its open state from the preference", async () => {
-  // The claim a substring cannot make: pinning `isOpen` to true for an
-  // uncontrolled card leaves every mention of the preference in this file
-  // intact, so a source-text assertion would still pass while the setting did
-  // nothing at all.
+  // Pinning `isOpen` to true leaves every mention of the preference intact, so only an AST
+  // check catches it.
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-fallback.tsx",
   );
@@ -747,10 +677,8 @@ test("an uncontrolled fallback card takes its open state from the preference", a
 });
 
 test("a card awaiting approval opens above the preference", async () => {
-  // A parked call renders its command or script inside ToolFallbackContent
-  // while Allow/Always allow/Deny render outside the card, so a collapsed card
-  // asks for a decision about something the user cannot read. Radix does not
-  // mount closed content, so it is absent rather than merely hidden.
+  // Approval buttons render outside the card, and Radix does not mount closed content, so a
+  // collapsed card would ask for a decision about something the user cannot read.
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-fallback.tsx",
   );
@@ -770,9 +698,6 @@ test("a card awaiting approval opens above the preference", async () => {
     "the visibility setting can suppress an approval prompt's context",
   );
 
-  // Every card that (a) is wrapped in withToolConfirmation and (b) can be closed by
-  // the preference. Ask permission mode gates all of these, and each renders the
-  // thing being approved -- command, script, query, code -- inside the collapsible.
   for (const file of [
     "../src/components/assistant-ui/tool-ui-terminal.tsx",
     "../src/components/assistant-ui/tool-ui-python.tsx",
@@ -805,8 +730,7 @@ test("a pending approval forces a group open regardless of the preference", asyn
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-group.tsx",
   );
-  // Scoped to ToolGroupImpl: ToolGroupRoot reads the same setting above, for its own
-  // uncontrolled state, and resolving to that binding would test the wrong component.
+  // Scoped to ToolGroupImpl: ToolGroupRoot reads the same setting for its own state.
   const preference = preferenceBinding(
     source,
     initializerOf(source, "ToolGroupImpl"),
@@ -830,8 +754,7 @@ test("a pending approval forces a group open regardless of the preference", asyn
     identifiersIn(forceOpen.right).has(preference),
     "the non-approval arm ignores the preference and forces groups open",
   );
-  // And the element still consumes it, opting out of control when it is false:
-  // a group pinned to `false` would be unopenable rather than merely closed.
+  // A group pinned to `false` would be unopenable rather than merely closed.
   const open = jsxAttribute(jsxElement(source, "ToolGroupRoot"), "open");
   assert.ok(open?.initializer, "forceOpen is computed but not applied");
   const expression = ts.isJsxExpression(open.initializer)
@@ -851,9 +774,6 @@ test("a pending approval forces a group open regardless of the preference", asyn
 });
 
 test("a mounted group follows the preference like a mounted card", async () => {
-  // ToolGroupImpl passes `undefined` whenever it is not forcing the group open,
-  // so the group's own uncontrolled state is what is on screen for most of its
-  // life. Without this it is the one disclosure the preference cannot reach.
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-group.tsx",
   );
@@ -889,8 +809,6 @@ test("a mounted group follows the preference like a mounted card", async () => {
 });
 
 test("the generic fallback card tells its root whether the call is running", async () => {
-  // Without this the root's defaultOpen stays false, so "Expand while running" could never
-  // reach an unknown or MCP tool call.
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-fallback.tsx",
   );
@@ -921,7 +839,6 @@ test("a tool group tells its root whether its own calls are running", async () =
       identifiersIn(attribute.initializer.expression).has("groupRunning"),
     "the group pins defaultOpen instead of reading its live activity",
   );
-  // Scoped to the group's own calls, not the whole message, so it goes quiet once they finish.
   const running = initializerOf(source, "groupRunning");
   const names = identifiersIn(running);
   assert.ok(
@@ -935,10 +852,8 @@ test("a tool group tells its root whether its own calls are running", async () =
 });
 
 test("the Python script cell moves inside the collapsible when tool calls are collapsed", async () => {
-  // Two renders of one cell, each guarded by the opposite value: outside the
-  // collapsible so a reopened chat still shows the script (#7165), inside it
-  // when the user asked for quiet. Two copies of the same guard would render
-  // the script twice.
+  // Two renders of one cell under opposite guards: outside the collapsible so a reopened chat
+  // shows the script, inside it for quiet mode.
   const source = await sourceOf(
     "../src/components/assistant-ui/tool-ui-python.tsx",
   );
@@ -946,7 +861,6 @@ test("the Python script cell moves inside the collapsible when tool calls are co
   const root = jsxElement(source, "ToolFallbackRoot");
   const content = jsxElement(root, "ToolFallbackContent");
 
-  /** Every `{<guard> && scriptCell}` under `scope`, as (negated, node) pairs. */
   const guardsFor = (scope: ts.Node) =>
     find(
       scope,
@@ -1016,7 +930,6 @@ test("created files stay outside the collapsible on Python and Terminal cards", 
       0,
       `${file} hid SandboxFiles inside ToolFallbackContent`,
     );
-    // No wrapper element: an empty one would sit in the DOM of every card that created nothing.
     assert.equal(files[0].parent, root, `${file} wraps SandboxFiles`);
     const cls = (files[0] as ts.JsxSelfClosingElement).attributes.properties.find(
       (property): property is ts.JsxAttribute =>
@@ -1050,7 +963,6 @@ test("a call that created files keeps its group from collapsing", async () => {
     false,
   );
 
-  // The rule lives in tool-fold-exemptions.ts; the group asks it per part.
   const group = await sourceOf(
     "../src/components/assistant-ui/tool-group.tsx",
   );

@@ -25,12 +25,10 @@ interface BlockState {
   override: boolean | null;
 }
 
-// Mirrors the component: toggle results feed straight back into the open state.
 function applyToggle(state: BlockState, open: boolean): BlockState {
   return { ...state, override: open };
 }
 
-// Mirrors the component's render-time reset when the setting moves.
 function applyPreferenceChange(
   state: BlockState,
   visibility: DisplayVisibility,
@@ -48,7 +46,6 @@ test("collapsed keeps the block shut in both phases", () => {
   const base = { visibility: "collapsed" as const, override: null };
   assert.equal(resolveReasoningOpen({ ...base, isStreaming: true }), false);
   assert.equal(resolveReasoningOpen({ ...base, isStreaming: false }), false);
-  // A hand-opened block still wins, including while it is streaming.
   assert.equal(
     resolveReasoningOpen({ ...base, isStreaming: true, override: true }),
     true,
@@ -62,9 +59,7 @@ test("collapsed keeps the block shut in both phases", () => {
 test("always expanded keeps the block open in both phases, streaming included", () => {
   const base = { visibility: "expanded" as const, override: null };
   assert.equal(resolveReasoningOpen({ ...base, isStreaming: true }), true);
-  // The case the old pair of switches could not express.
   assert.equal(resolveReasoningOpen({ ...base, isStreaming: false }), true);
-  // And it is still closable by hand.
   assert.equal(
     resolveReasoningOpen({ ...base, isStreaming: false, override: false }),
     false,
@@ -80,7 +75,6 @@ test("closing mid-stream keeps it closed for the rest of the round", () => {
   assert.equal(resolveReasoningOpen(state), true);
   state = applyToggle(state, false);
   assert.equal(resolveReasoningOpen(state), false);
-  // Still closed as the stream continues.
   assert.equal(resolveReasoningOpen({ ...state, isStreaming: true }), false);
 });
 
@@ -113,7 +107,6 @@ test("a hand-opened block closes again in every phase and every setting", () => 
 });
 
 test("changing the setting mid stream re-applies it to a block already on screen", () => {
-  // Collapsed, opened by hand while the model is thinking.
   let state: BlockState = {
     isStreaming: true,
     visibility: "collapsed",
@@ -122,12 +115,10 @@ test("changing the setting mid stream re-applies it to a block already on screen
   state = applyToggle(state, true);
   assert.equal(resolveReasoningOpen(state), true);
 
-  // Switched to always expanded mid stream: the block follows the new setting.
   state = applyPreferenceChange(state, "expanded");
   assert.equal(state.override, null);
   assert.equal(resolveReasoningOpen(state), true);
 
-  // Still closable afterwards, which a pinned override would have blocked.
   state = applyToggle(state, false);
   assert.equal(resolveReasoningOpen(state), false);
 });
@@ -145,14 +136,12 @@ test("switching to collapsed shuts a block the user had opened", () => {
 
 test("a round starts only when streaming resumes", () => {
   assert.equal(startsNewReasoningRound(true, false), true);
-  // Still the same round, so a hand-opened block stays open.
   assert.equal(startsNewReasoningRound(true, true), false);
   assert.equal(startsNewReasoningRound(false, true), false);
   assert.equal(startsNewReasoningRound(false, false), false);
 });
 
 test("regenerating drops the previous round's override", () => {
-  // Block opened by hand after the last round finished.
   let state: BlockState = {
     isStreaming: false,
     visibility: "collapsed",
@@ -160,7 +149,6 @@ test("regenerating drops the previous round's override", () => {
   };
   assert.equal(resolveReasoningOpen(state), true);
 
-  // Regenerate restarts streaming on the same component instance.
   const wasStreaming = state.isStreaming;
   state = { ...state, isStreaming: true };
   assert.equal(startsNewReasoningRound(state.isStreaming, wasStreaming), true);

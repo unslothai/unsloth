@@ -236,7 +236,7 @@ function SourceTextField({
         aria-busy={transcriber.transcribing}
         onChange={(event) => store.setSourceText(event.target.value)}
         placeholder="Type the words in the recording, or press Transcribe."
-        className="min-h-16"
+        className="min-h-16 rounded-lg"
       />
       {transcriber.error ? (
         <p role="alert" className="text-ui-11p5 leading-snug text-destructive">
