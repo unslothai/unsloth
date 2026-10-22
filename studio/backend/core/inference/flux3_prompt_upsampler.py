@@ -1071,7 +1071,11 @@ def _same_card_name(row_name: str, card_name: Optional[str]) -> bool:
     return bool(row) and bool(card) and (row == card or row in card or card in row)
 
 
-def _vulkan_row_is_another_vendor(row_name: str, torch, card_name: Optional[str] = None) -> bool:
+def _vulkan_row_is_another_vendor(
+    row_name: str,
+    torch,
+    card_name: Optional[str] = None,
+) -> bool:
     """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row is another card only when it names
     another vendor. A row naming the torch card's model, or no vendor at all, is not."""
     from core.inference.llama_cpp import LlamaCppBackend
@@ -1118,9 +1122,7 @@ def _vulkan_device_args(
                 card_name = torch.cuda.get_device_name(0)
             except Exception:  # noqa: BLE001 -- no name: decide by the row's vendor alone
                 card_name = None
-            return (
-                None if _vulkan_row_is_another_vendor(rows[0]["name"], torch, card_name) else []
-            )
+            return None if _vulkan_row_is_another_vendor(rows[0]["name"], torch, card_name) else []
     except Exception:  # noqa: BLE001
         return []
     try:

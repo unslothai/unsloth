@@ -2694,7 +2694,6 @@ def test_an_nvidia_vulkan_row_without_the_vendor_name_warm_starts(
 def test_another_vendor_needs_positive_evidence(monkeypatch, rocm, card, row, other):
     # Only a row naming a different vendor is another card; an unknown name is not evidence either way.
     from core.inference import llama_cpp
-
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda t = None: rocm)
     )
