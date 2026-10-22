@@ -39,6 +39,9 @@ export function createCompareRun(
 ): CompareRunState {
   const results: Array<GalleryImage | null> = Array.from({ length: plan.cellCount }, () => null);
   const requests: Array<DiffusionGenerateRequest | null> = Array.from({ length: plan.cellCount }, () => null);
+  // One variation seed per run, drawn up front; "Keep -1 for seeds" with an empty seed box keeps it random too.
+  const variation =
+    options.keepRandomSeeds && options.seedFieldEmpty ? undefined : Math.floor((options.rng ?? Math.random)() * 2 ** 32);
   return {
     plan,
     results,
@@ -51,6 +54,7 @@ export function createCompareRun(
         keepRandom: options.keepRandomSeeds,
         seedFieldEmpty: options.seedFieldEmpty,
         rng: options.rng,
+        variation,
       });
       requests[cell] = req;
       return req;
@@ -93,17 +97,33 @@ export function completedCells(run: CompareRunState): number {
 
 /** The value every sent cell agrees on for `key`, or none when an axis varies it or any two cells differ (a
  *  schedule a sampler fell back from, a per-cell random seed, a Seed axis). `{ value: undefined }` = every cell
- *  omitted it. */
+ *  omitted it. Cells are compared through `same` (each cell's request is built afresh, so objects by content). */
 function sharedValue(
   sent: ReadonlyArray<Readonly<Record<string, unknown>>>,
   varied: ReadonlySet<string>,
   key: string,
   axisId: string = key,
+  same: (a: unknown, b: unknown) => boolean = Object.is,
 ): { value: unknown } | null {
   if (varied.has(axisId) || sent.length === 0) return null;
   const value = sent[0][key];
-  return sent.every((r) => r[key] === value) ? { value } : null;
+  return sent.every((r) => same(r[key], value)) ? { value } : null;
 }
+
+// A ControlNet unit by every field it is sent with, the control image included.
+const sameControlNet = (a: unknown, b: unknown): boolean => {
+  const x = a as ControlNetSpecInput | undefined;
+  const y = b as ControlNetSpecInput | undefined;
+  if (!x || !y) return x === y;
+  return (
+    x.id === y.id &&
+    x.image === y.image &&
+    x.control_type === y.control_type &&
+    x.strength === y.strength &&
+    x.guidance_start === y.guidance_start &&
+    x.guidance_end === y.guidance_end
+  );
+};
 
 const scalar = (value: unknown): string | number | undefined =>
   typeof value === "string" || typeof value === "number" ? value : undefined;
@@ -149,33 +169,32 @@ export function gridRecipeFields(
     ["Size", sent.length ? (width && height ? `${width}x${height}` : undefined) : `${form.width}x${form.height}`],
     ["Model", form.model],
     // Every cell is conditioned the same way; the control image itself is not embedded.
-    ["ControlNet 0", controlNetUnit(sharedValue(sent, varied, "controlnet")?.value)],
+    ["ControlNet 0", controlNetUnit(sharedValue(sent, varied, "controlnet", "controlnet", sameControlNet)?.value)],
+    // Every cell runs with the prompt enhancer off (compare/ forces it), so a restore must not rewrite the prompt.
+    ["Prompt enhancement", sharedValue(sent, varied, "enhance_prompt")?.value === false ? "off" : undefined],
   ];
   return fields.filter(([, value]) => value !== undefined);
 }
 
-/** The grid's active LoRAs as A1111 `<lora:name:weight>` prompt tags (what the Images importer restores), at the
- *  first cell's weights; an id a tag cannot carry goes in a `LoRAs` field instead. */
-export function gridLoraTags(
+/** The grid's active LoRAs as one `LoRAs: id: weight, ...` field at the first cell's weights. Studio ids, Hub ones
+ *  included, restore exactly from it; A1111 `<lora:...>` prompt tags would match local adapters only. */
+export function gridLoraField(
   ctx: Pick<CompareContext, "loraCapable" | "loras">,
   first: DiffusionGenerateRequest | null | undefined,
-): { tags: string; field: string | null } {
-  if (!ctx.loraCapable) return { tags: "", field: null };
-  const tags: string[] = [];
-  const plain: string[] = [];
+): string | null {
+  if (!ctx.loraCapable) return null;
+  const items: string[] = [];
   for (const row of ctx.loras) {
     const id = row.id.trim();
     if (!id) continue;
-    const weight = first?.loras?.find((l) => l.id === id)?.weight ?? 0;
-    if (/[:<>]/.test(id)) plain.push(`${id}: ${weight}`);
-    else tags.push(`<lora:${id}:${weight}>`);
+    items.push(`${id}: ${first?.loras?.find((l) => l.id === id)?.weight ?? 0}`);
   }
-  return { tags: tags.join(" "), field: plain.length ? plain.join(", ") : null };
+  return items.length ? items.join(", ") : null;
 }
 
 const AXIS_NAMES = ["X", "Y", "Z"] as const;
 
-/** The grid PNG's A1111-style `parameters`: the prompt with the active LoRAs as tags, the negative prompt when any
+/** The grid PNG's A1111-style `parameters`: the prompt, the negative prompt when any
  *  cell engages it (the first cell may not), the shared recipe, then the axes. */
 export function gridParameters(
   plan: CompareGridPlan,
@@ -185,8 +204,8 @@ export function gridParameters(
 ): string {
   const fields = gridRecipeFields(plan, requests, form);
   const first = requests.find(Boolean);
-  const loras = gridLoraTags(ctx, first);
-  if (loras.field) fields.push(["LoRAs", loras.field]);
+  const loras = gridLoraField(ctx, first);
+  if (loras) fields.push(["LoRAs", loras]);
   const axes = plan.axes
     .map((a, i) => ({ a, name: AXIS_NAMES[i] }))
     .filter(({ a }) => a.def.id !== NOTHING)
@@ -198,7 +217,7 @@ export function gridParameters(
     }));
   const prompt = ctx.prompt.trim();
   return gridInfotext({
-    prompt: loras.tags ? `${prompt} ${loras.tags}` : prompt,
+    prompt,
     negativePrompt: gridNegativePrompt(plan, ctx),
     fields,
     axes,

@@ -648,7 +648,7 @@ test("numbers reject whitespace inside a literal; a space after a sign is A1111 
   assert.deepEqual(values("1e2, + 0.5", "float"), [100, 0.5]);
 });
 
-test("grid parameters: LoRA tags at the first cell's weights, negative prompt when any cell engages it", () => {
+test("grid parameters: every LoRA by exact id at the first cell's weights, negative prompt when any cell engages it", () => {
   const ctx = sdxl({
     loraCapable: true,
     loras: [
@@ -664,9 +664,11 @@ test("grid parameters: LoRA tags at the first cell's weights, negative prompt wh
   assert.equal(first.negative_prompt, undefined, "the first cell runs at CFG 1 without the negative prompt");
   const info = gridParameters(p, ctx, [first], { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false });
   const lines = info.split("\n");
-  assert.equal(lines[0], "a fox <lora:krea/Krea-2-LoRA-retro:0.8>");
+  assert.equal(lines[0], "a fox");
   assert.equal(lines[1], "Negative prompt: blurry");
-  assert.match(lines[2], /LoRAs: "hub:odd\/id: 1"/);
+  assert.match(lines[2], /LoRAs: "krea\/Krea-2-LoRA-retro: 0\.8, hub:odd\/id: 1"/);
+  // Hub ids restore from the field, not through the local-only prompt-tag matcher.
+  assert.deepEqual(parseA1111Parameters(info)?.loras, ["krea/Krea-2-LoRA-retro:0.8", "hub:odd/id:1"]);
   // No cell engages it: not recorded.
   const flat = plan([{ axisId: "steps", text: "4, 8" }], ctx);
   assert.doesNotMatch(gridParameters(flat, ctx, [first], { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false }), /Negative prompt/);
@@ -713,4 +715,62 @@ test("a compare cell refused by the memory estimate offers no Generate anyway re
   assert.match(page, /if \(offerAnyway && compare\) \{\n\s*toast\.error\(MEMORY_REFUSAL_TITLE, \{\n\s*description: [^\n]*ALLOW_OVERSIZED_LABEL/);
   const compareBranch = page.slice(page.indexOf("if (offerAnyway && compare)"), page.indexOf("} else if (offerAnyway)"));
   assert.doesNotMatch(compareBranch, /setOversizedRetryQueued/);
+});
+
+test("grid metadata, every field x shared / varied / axis / absent: written only when every cell agrees", () => {
+  const form = { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" };
+  const axesOf = (ids: string[]) => ({ axes: ids.map((id) => ({ def: { id } })) }) as unknown as CompareGridPlan;
+  const cn = (strength: number) => ({ id: "xinsir/canny", image: "data:image/png;base64,AAAA", control_type: "canny", strength });
+  // [request key, axis id, field, value a, value b, the field's text when every cell sent a, its text when absent]
+  const table: Array<[string, string, string, unknown, unknown, string | number, string | number | undefined]> = [
+    ["steps", "steps", "Steps", 20, 30, 20, undefined],
+    ["sampler", "sampler", "Sampler", "euler", "dpmpp_2m", "Euler", "Model default"],
+    ["schedule_type", "schedule", "Schedule type", "karras", "exponential", "Karras", undefined],
+    ["shift", "shift", "Shift", 3, 6, 3, undefined],
+    ["base_shift", "base_shift", "Base shift", 0.5, 0.75, 0.5, undefined],
+    ["max_shift", "max_shift", "Max shift", 1.15, 1.5, 1.15, undefined],
+    ["guidance", "guidance", "CFG scale", 6, 7, 6, undefined],
+    ["seed", "seed", "Seed", 1, 2, 1, undefined],
+    ["variation_seed", "variation_seed", "Variation seed", 5, 6, 5, undefined],
+    ["variation_strength", "variation_strength", "Variation seed strength", 0.1, 0.3, 0.1, undefined],
+    ["width", "width", "Size", 1024, 768, "1024x1024", undefined],
+    ["enhance_prompt", "enhance_prompt", "Prompt enhancement", false, true, "off", undefined],
+    // Each cell's unit is a fresh object: compared by content.
+    ["controlnet", "controlnet", "ControlNet 0", cn(0.7), cn(0.5), "Module: canny, Model: xinsir/canny, Weight: 0.7", undefined],
+  ];
+  const cell = (key: string, value: unknown): DiffusionGenerateRequest => {
+    const req: Record<string, unknown> = { prompt: "p", batch_size: 1, height: 1024, ...(key === "width" ? {} : { width: 1024 }) };
+    if (value !== undefined) req[key] = key === "controlnet" ? { ...(value as object) } : value;
+    return req as unknown as DiffusionGenerateRequest;
+  };
+  const fieldOf = (plan: CompareGridPlan, cells: DiffusionGenerateRequest[], name: string) =>
+    Object.fromEntries(gridRecipeFields(plan, cells, form))[name];
+  for (const [key, axisId, name, a, b, sharedText, absentText] of table) {
+    const none = axesOf([]);
+    assert.equal(fieldOf(none, [cell(key, a), cell(key, a), null as never, cell(key, a)], name), sharedText, `${name} shared`);
+    assert.equal(fieldOf(none, [cell(key, a), cell(key, b)], name), undefined, `${name} varied across cells`);
+    assert.equal(fieldOf(none, [cell(key, a), cell(key, undefined)], name), undefined, `${name} on some cells only`);
+    assert.equal(fieldOf(axesOf([axisId]), [cell(key, a), cell(key, a)], name), undefined, `${name} on an axis`);
+    assert.equal(fieldOf(none, [cell(key, undefined), cell(key, undefined)], name), absentText, `${name} absent`);
+  }
+});
+
+test("a Var. strength axis runs every cell on one variation seed; the grid restores the enhancer off", () => {
+  const sdControls = { clip_skip: null, cfg_rescale: null, variation_seed: true, vary_strength: 0.2 } as never;
+  const ctx = sdxl({ sdControls });
+  const p = plan([{ axisId: "variation_strength", text: "0.1, 0.3, 0.5" }], ctx);
+  let draws = 0;
+  const run = createCompareRun(p, ctx, { keepRandomSeeds: false, seedFieldEmpty: false, rng: () => (++draws, 0.25) });
+  const seeds = p.order.map((_, i) => (run.request(i, base(), 7) as unknown as Record<string, unknown>).variation_seed);
+  assert.deepEqual(seeds, [2 ** 30, 2 ** 30, 2 ** 30]);
+  assert.equal(draws, 1, "drawn once per run, not per cell");
+  // Keep -1 for seeds with an empty seed box: the variation seed stays random as well.
+  const keep = createCompareRun(p, ctx, { keepRandomSeeds: true, seedFieldEmpty: true, rng: () => 0.25 });
+  assert.equal((keep.request(0, base(), 7) as unknown as Record<string, unknown>).variation_seed, undefined);
+  // The enhancer compare/ forces off is recorded and parsed back as off.
+  const off = buildCellRequest(p, 0, base({ enhance_prompt: true }), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false });
+  assert.equal(off.enhance_prompt, false);
+  const info = gridParameters(plan([{ axisId: "steps", text: "4, 8" }]), sdxl(), [off, off], { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false });
+  assert.match(info, /Prompt enhancement: off/);
+  assert.equal(parseA1111Parameters(info)?.prompt_enhancement, "off");
 });

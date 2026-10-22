@@ -426,7 +426,8 @@ export function buildCellRequest(
   index: number,
   base: DiffusionGenerateRequest,
   ctx: CompareContext,
-  seeds: { base: number; keepRandom: boolean; seedFieldEmpty: boolean; rng?: () => number },
+  // `variation`: the run's one variation seed, for cells that set a strength without one.
+  seeds: { base: number; keepRandom: boolean; seedFieldEmpty: boolean; rng?: () => number; variation?: number },
 ): DiffusionGenerateRequest {
   const cell = cellState(plan, index);
   const rng = seeds.rng ?? Math.random;
@@ -477,6 +478,11 @@ export function buildCellRequest(
   // Variation seed without a strength means nothing to the backend: use the model's Vary strength.
   if (cell.extra.variation_seed !== undefined && cell.extra.variation_strength === undefined && !req.variation_strength) {
     req.variation_strength = ctx.sdControls?.vary_strength ?? 0.15;
+  }
+  // A strength with no variation seed draws a random one per request: fix one for the run (A1111 fix_seed on the
+  // subseed), so a Var. strength axis compares strengths over one noise source.
+  if (req.variation_strength && req.variation_seed === undefined && seeds.variation !== undefined) {
+    req.variation_seed = seeds.variation;
   }
   return req;
 }
