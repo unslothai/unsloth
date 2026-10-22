@@ -1937,11 +1937,13 @@ def _no_torch_mac_without_mlx_wheels() -> Optional[str]:
 
 
 def _no_torch_amd_node_hint() -> Optional[str]:
-    """A --no-torch host whose only trainable cards are AMD behind closed or missing nodes: the full install would restart into torch_cuda_unavailable (#14067)."""
+    """A --no-torch host whose trainable AMD cards sit behind closed or missing nodes, with no NVIDIA card to train instead: the full install would restart into torch_cuda_unavailable (#14067)."""
     devices = _devices_that_can_establish_a_mismatch(
         get_physical_gpu_inventory().get("devices") or []
     )
-    if not devices or {str(device.get("vendor")).lower() for device in devices} != {"amd"}:
+    vendors = {str(device.get("vendor")).lower() for device in devices}
+    # Only NVIDIA routes the installer elsewhere: install.sh's _intel_xpu_auto_gpu_id skips XPU when AMD is present.
+    if "amd" not in vendors or "nvidia" in vendors:
         return None
     from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
 

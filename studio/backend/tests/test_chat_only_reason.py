@@ -26,6 +26,7 @@ def _no_torch(monkeypatch):
     # not depend on which venv runs these tests.
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
     monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", None)
+    monkeypatch.setattr(hw, "_CHAT_ONLY_HINT", None)
     # detect_hardware sets these globals directly; restore them so they do not leak.
     saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
     try:
@@ -69,6 +70,7 @@ def _no_torch_apple_silicon(monkeypatch, *, mlx_on_disk: bool):
 
 _NVIDIA_CARD = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 4090"}
 _INTEL_IGPU = {"vendor": "intel", "index": 0, "name": "Intel(R) UHD Graphics 770"}
+_INTEL_ARC = {"vendor": "intel", "index": 1, "name": "Intel(R) Arc(TM) A770 Graphics"}
 
 
 def _no_torch_off_mac(
@@ -138,8 +140,9 @@ _AMD_CARD = {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX", "gfx
         ([_AMD_CARD], True, True),
         ([_AMD_CARD], False, False),
         ([_AMD_CARD, _NVIDIA_CARD], True, False),
+        ([_AMD_CARD, _INTEL_ARC], True, True),
     ],
-    ids = ["amd-closed-nodes", "amd-open-nodes", "amd-closed-beside-nvidia"],
+    ids = ["amd-closed-nodes", "amd-open-nodes", "amd-closed-beside-nvidia", "amd-closed-beside-arc"],
 )
 def test_a_no_torch_amd_host_behind_closed_nodes_gets_no_full_install_offer(
     monkeypatch, devices, nodes_closed, hinted
