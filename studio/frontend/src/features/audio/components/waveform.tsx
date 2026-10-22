@@ -20,7 +20,7 @@ import {
 import { formatSeconds, resamplePeaks } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
-const BAR_GAP_PX = 1;
+const BAR_GAP_PX = 2;
 const BAR_PITCH_PX = 2 + BAR_GAP_PX;
 // Fraction of the track height above the baseline.
 const BASELINE = 0.7;
@@ -312,7 +312,7 @@ export function WaveformBarGlyphs({
     <div
       ref={boxRef}
       aria-hidden="true"
-      className="flex size-full justify-center gap-px"
+      className="flex size-full justify-center gap-[2px]"
     >
       {Array.from({ length: count }, (_, index) => {
         const peak = levels ? (levels[index] ?? 0) : 0;
