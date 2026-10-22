@@ -4,12 +4,13 @@
 """`optim = "adamw_flash"`: FlashAdamW from databricks/flashoptim (arXiv 2602.23349).
 
 bf16 / fp16 parameters keep a 16 bit error correction term in the optimizer state, so
-the effective master weight is fp32, and the Adam moments are stored in the parameter
-dtype: about 10 bytes per parameter (with bf16 grads) instead of 16 for bf16 weights
-plus fp32 master plus fp32 moments. This default tracked fp32 master AdamW on a real
-Qwen2.5-0.5B full finetune. optim_args = "quantize=True" stores the moments in 8 bits
-(about 8 bytes per parameter; with "master_weight_bits=24", flashoptim's own default,
-about 7), but its loss curve moved measurably away from AdamW there.
+the effective master weight is fp32. The momentum is stored in the parameter dtype and the
+bf16 variance in fp32 (a bf16 variance cannot decay at beta2 = 0.999): about 12 bytes per
+parameter (with bf16 grads) instead of 16 for bf16 weights plus fp32 master plus fp32
+moments. This default tracked fp32 master AdamW on a real Qwen2.5-0.5B full finetune.
+optim_args = "quantize=True" stores the moments in 8 bits (about 8 bytes per parameter;
+with "master_weight_bits=24", flashoptim's own default, about 7), but its loss curve moved
+measurably away from AdamW there.
 fp32 parameters (LoRA adapters) have no correction term; for them only quantize=True
 saves memory. Trainable fp16 parameters need quantize=True: unquantized fp16 moments
 underflow, so the optimizer refuses them.
@@ -168,6 +169,55 @@ def _get_flash_adamw_class():
                 self.__dict__.pop("quantized_state_spec", None)
                 _refuse_unquantized_fp16()
 
+        # flashoptim keeps unquantized moments in the param dtype and its kernel stores the
+        # variance with round-to-nearest. At beta2 = 0.999 a step moves the variance by at most
+        # 0.1%, under half a bf16 ulp, so a bf16 variance can never decrease: it only ratchets up
+        # and the effective step size shrinks. The unquantized bf16 variance is kept in fp32.
+        def _ensure_state_initialized(self, p, hparams):
+            super()._ensure_state_initialized(p, hparams)
+            _widen_variance(self.state[p].get("exp_avg_sq"))
+
+        def _load_state_for_param(self, param, opt_state, hparams):
+            state = super()._load_state_for_param(param, opt_state, hparams)
+            _widen_variance(state.get("exp_avg_sq"))
+            return state
+
+        def load_state_dict(self, state_dict):
+            # torch.optim casts floating state to the param dtype before flashoptim sees it, so
+            # a saved fp32 variance is copied back after loading instead of rounded to bf16.
+            saved_ids = [i for g in state_dict.get("param_groups", []) for i in g["params"]]
+            params = dict(zip(saved_ids, (p for g in self.param_groups for p in g["params"])))
+            fp32_vars = {
+                params[i]: v
+                for i, st in state_dict.get("state", {}).items()
+                if i in params
+                and torch.is_tensor(v := st.get("exp_avg_sq"))
+                and v.dtype == torch.float32
+            }
+            super().load_state_dict(state_dict)
+            for p, v in fp32_vars.items():
+                var = getattr(self.state.get(p, {}).get("exp_avg_sq"), "_data", None)
+                v = self._get_local_tensor(v)
+                if var is not None and var.dtype == torch.float32 and var.shape == v.shape:
+                    var.copy_(v)
+
+        def _do_step(self, param, grad, errors, param_state, hparams):
+            var = getattr(param_state.get("exp_avg_sq"), "_data", None)
+            if (
+                not self._fused
+                or var is None
+                or var.dtype != torch.float32
+                or param.dtype == torch.float32
+            ):
+                return super()._do_step(param, grad, errors, param_state, hparams)
+            # The fused kernel reads the fp32 variance exactly but writes its update back rounded
+            # to the param dtype, so the same fp32 update is computed here and stored afterwards.
+            beta2 = hparams["betas"][1]
+            new_var = var.mul(beta2).addcmul_(grad, grad, value = 1 - beta2)
+            out = super()._do_step(param, grad, errors, param_state, hparams)
+            var.copy_(new_var)
+            return out
+
         # Every update goes through step_param: step() loops over it and gradient release calls
         # it per parameter. Checked there against the group's current quantize (load_state_dict
         # can restore an older group's quantize=False), so a frozen fp16 param unfrozen later is
@@ -190,6 +240,15 @@ def _get_flash_adamw_class():
 
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
     return _FLASH_ADAMW_CLASS
+
+
+def _widen_variance(state):
+    # flashoptim's _MaybeQuantizedTensor keeps unquantized data in _data with _storage_dtype;
+    # a later flashoptim without them keeps its own storage.
+    data = getattr(state, "_data", None)
+    if data is not None and data.dtype == torch.bfloat16 and hasattr(state, "_storage_dtype"):
+        state._storage_dtype = torch.float32
+        state._data = data.float()
 
 
 def _refuse_unquantized_fp16():

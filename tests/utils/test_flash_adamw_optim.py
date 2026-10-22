@@ -7,6 +7,7 @@ import types
 
 import pytest
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import unsloth  # noqa: F401  (must precede transformers/trl)
 import torch
 
@@ -517,3 +518,63 @@ def test_adamw_flash_fp16_check_covers_positional_late_and_unfrozen_groups(
     assert len(optimizer.param_groups) == 2
     fp16.grad = torch.ones(4, dtype = torch.float16)
     optimizer.step()
+
+
+def _real_flash_adamw(monkeypatch):
+    pytest.importorskip("flashoptim")
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(flash_adamw, "_FLASH_ADAMW_CLASS", None)
+    return flash_adamw._get_flash_adamw_class()
+
+
+def _train_through_a_gradient_drop(cls, device, steps = 2000, drop_at = 500, **kwargs):
+    # The gradient scale falls 10x at drop_at, as when a finetune moves past its early large
+    # gradients. An fp32 EMA follows it down; a variance that cannot decay stays at its peak.
+    torch.manual_seed(0)
+    p = torch.nn.Parameter(torch.zeros(1024, dtype = torch.bfloat16, device = device))
+    opt = cls([p], lr = 1e-4, weight_decay = 0.0, quantize = False, **kwargs)
+    ema = torch.zeros(1024, device = device)
+    for step in range(steps):
+        grad = (torch.randn(1024, device = device) * (1.0 if step < drop_at else 0.1)).to(torch.bfloat16)
+        ema.mul_(0.999).addcmul_(grad.float(), grad.float(), value = 0.001)
+        p.grad = grad
+        opt.step()
+    return opt, p, ema
+
+
+def test_adamw_flash_bf16_variance_decays_after_a_gradient_drop(monkeypatch):
+    # bf16 storage with round-to-nearest froze it near 0.39 here: at beta2 = 0.999 each step
+    # moves the variance by at most 0.1%, under half a bf16 ulp. The fp32 EMA ends near 0.096.
+    cls = _real_flash_adamw(monkeypatch)
+    opt, p, ema = _train_through_a_gradient_drop(cls, "cpu", master_weight_bits = None, fused = False)
+    var = opt.state[p]["exp_avg_sq"].materialize()
+    assert var.dtype == torch.float32
+    torch.testing.assert_close(var, ema, rtol = 1e-5, atol = 1e-8)
+    assert var.mean().item() < 0.15
+
+
+def test_adamw_flash_bf16_variance_survives_a_state_dict_round_trip(monkeypatch):
+    cls = _real_flash_adamw(monkeypatch)
+    opt, p, _ = _train_through_a_gradient_drop(
+        cls, "cpu", steps = 50, drop_at = 25, master_weight_bits = None, fused = False
+    )
+    saved = opt.state[p]["exp_avg_sq"].materialize().clone()
+    fresh = cls([p], lr = 1e-4, weight_decay = 0.0, quantize = False, master_weight_bits = None, fused = False)
+    fresh.load_state_dict(opt.state_dict())
+    loaded = fresh.state[p]["exp_avg_sq"].materialize()
+    assert loaded.dtype == torch.float32
+    torch.testing.assert_close(loaded, saved, rtol = 0, atol = 0)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "flashoptim's fused Triton step needs CUDA")
+def test_adamw_flash_fused_bf16_variance_tracks_fp32(monkeypatch):
+    # The fused kernel stores its variance update rounded to the param dtype; the fp32 copy
+    # computed beside it is what is kept.
+    cls = _real_flash_adamw(monkeypatch)
+    opt, p, ema = _train_through_a_gradient_drop(cls, "cuda", master_weight_bits = 32)
+    var = opt.state[p]["exp_avg_sq"].materialize()
+    assert var.dtype == torch.float32
+    torch.testing.assert_close(var, ema, rtol = 1e-5, atol = 1e-8)
+    assert var.mean().item() < 0.15
