@@ -23,6 +23,7 @@ import core.inference.diffusion_cuda_graph as cg  # noqa: E402
 import core.inference.diffusion_memory as dm  # noqa: E402
 import core.inference.diffusion_offload_prefetch as op  # noqa: E402
 import core.inference.diffusion_speed as ds  # noqa: E402
+import core.inference.diffusion_stable_arena as sa  # noqa: E402
 
 
 @pytest.fixture(autouse = True)
@@ -33,6 +34,7 @@ def _clean_env(monkeypatch):
         cg.OFFLOAD_CUDA_GRAPH_ENV,
         cg.CUDA_GRAPH_DISABLE_ENV,
         cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV,
+        sa.ARENA_ENV,
         cg.SPEED_CHECK_ENV,
         "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT",
         "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN",
@@ -292,9 +294,10 @@ def _model_offloaded():
     return ref, net, hook
 
 
-def test_model_offload_keeps_the_step_eager_by_default_with_the_reason():
+def test_model_offload_keeps_the_step_eager_without_the_stable_range(monkeypatch):
     _cuda()
     pytest.importorskip("accelerate")
+    monkeypatch.setenv(sa.ARENA_ENV, "0")
     _ref, net, _hook = _model_offloaded()
     placement, why = cg.offload_placement(net)
     assert placement is None and why == cg.MODEL_OFFLOAD_REASON
@@ -312,7 +315,7 @@ def test_model_offload_records_nothing_after_the_first_render(monkeypatch, opt_i
         monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")
     ref, net, hook = _model_offloaded()
     handles, reason = cg.arm_after_placement(_pipe(net))
-    assert len(handles) == (1 if opt_in else 0), reason
+    assert len(handles) == 1, reason
     dev = torch.cuda.current_device()
     later, hold = 0, []
     for render in range(4):
@@ -330,7 +333,55 @@ def test_model_offload_records_nothing_after_the_first_render(monkeypatch, opt_i
     if opt_in:
         assert later >= 1 and handles[0].stats["invalidations"] >= 1
     else:
-        assert later == 0
+        # the stable range: the step recorded on render 1 replays on every later render
+        assert later == 0 and handles[0].stats["invalidations"] == 0
+        assert handles[0].stats["replays"] >= 4 * 5 - cg.WARMUP_ITERS - 1
+
+
+def test_model_offload_replays_over_the_stable_range_and_frees_it_between_renders():
+    """low_vram: the denoiser's onloads land in one reserved VA range, so render 1's graph replays on renders 2+ with
+    no capture, bit-identical, while each offload returns the range's memory to the card for the other stages."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    from accelerate import cpu_offload_with_hook
+
+    torch.manual_seed(0)
+    ref = _Net(width = 1024).cuda()
+    torch.manual_seed(0)
+    net, hook = cpu_offload_with_hook(_Net(width = 1024), execution_device = "cuda")
+    other, other_hook = cpu_offload_with_hook(
+        torch.nn.Linear(1024, 1024), execution_device = "cuda", prev_module_hook = hook
+    )
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1 and "stable device range" in reason, reason
+    arena = sa.arena_of(net)
+    assert arena is not None
+    dev = torch.cuda.current_device()
+    weight_bytes = sum(p.numel() * p.element_size() for p in net.parameters())
+    ptrs, later = None, 0
+    for render in range(4):
+        seeds = [10 * render + i for i in range(5)]
+        before = cg.capture_generation(dev)
+        got = _run(net, seeds)
+        if render:
+            later += cg.capture_generation(dev) - before
+        now = tuple(p.data_ptr() for p in net.parameters())
+        assert ptrs is None or now == ptrs  # same addresses on every onload
+        ptrs = now
+        for a, b in zip(got, _run(ref, seeds)):
+            assert torch.equal(a, b)
+        other(torch.zeros(2, 1024))  # the next stage's pre-forward offloads the denoiser
+        assert net.proj_in.weight.device.type == "cpu"
+        assert not arena.arena.mapped  # its physical memory went back to the card
+        assert arena.arena.size >= weight_bytes
+        other_hook.offload()
+        torch.cuda.empty_cache()
+        _hold = torch.empty(4 << 20, device = "cuda")  # the freed VRAM is reused meanwhile
+        del _hold
+    assert later == 0
+    assert handles[0].stats["captures"] == 1 and handles[0].stats["invalidations"] == 0
+    assert arena.stats["onloads"] == 4 and arena.stats["unmaps"] == 4
+    cg.uninstall_all(handles)
 
 
 def test_model_offload_stops_recording_only_when_moves_outpace_replays():
