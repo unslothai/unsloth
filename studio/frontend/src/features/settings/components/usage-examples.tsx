@@ -34,7 +34,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -536,6 +535,15 @@ function canUseLocalAgentDetection(base: string): boolean {
   }
 }
 
+function isLoopbackUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    return isLoopbackHost(normalizeHost(new URL(url).hostname));
+  } catch {
+    return false;
+  }
+}
+
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
   typeof unslothLightTheme,
   typeof unslothDarkTheme,
@@ -642,9 +650,15 @@ export function UsageExamples({
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  // server_url is the bind address, which an SSH forward or reverse proxy does not expose.
   const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
   const localAgentDetection = canUseLocalAgentDetection(base);
+  const loopbackBind = isLoopbackUrl(serverUrl);
   // isServedByLlamaCpp owns which store fields count; a context length is not among them,
   // since MLX reports one too.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -905,9 +919,9 @@ export function UsageExamples({
               />
               <span className="text-ui-11 font-medium text-foreground">
                 {t("settings.apiKeys.secureHttps")}
-                {/* Only when not launched with --secure: the raw 0.0.0.0 port is
-                    still globally reachable, so point the user at --secure. */}
-                {secure ? null : (
+                {/* Only for a network bind not launched with --secure: its raw port stays
+                    reachable. A loopback bind (the default, and Desktop) exposes nothing. */}
+                {secure || loopbackBind ? null : (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       {/* Inline on the baseline, like a glyph after the label. */}
@@ -996,9 +1010,7 @@ export function UsageExamples({
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              {os === "unix" && (
-                <SegmentedPill group={`${pillId}-os`} />
-              )}
+              {os === "unix" && <SegmentedPill group={`${pillId}-os`} />}
               {t("settings.apiKeys.osUnix")}
             </button>
             <button
@@ -1015,9 +1027,7 @@ export function UsageExamples({
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              {os === "windows" && (
-                <SegmentedPill group={`${pillId}-os`} />
-              )}
+              {os === "windows" && <SegmentedPill group={`${pillId}-os`} />}
               {t("settings.apiKeys.osWindows")}
             </button>
           </div>
@@ -1121,15 +1131,15 @@ export function UsageExamples({
               {t("settings.agents.vscodeNote")}
             </span>
           )}
-          <span className="text-ui-11 leading-snug text-muted-foreground">
-            {detectedAgents.length > 0
-              ? t("settings.apiKeys.codingAgentsDetectedHint", {
-                  agents: detectedAgents
-                    .map((id) => AGENT_LABELS[id] ?? id)
-                    .join(", "),
-                })
-              : t("settings.apiKeys.codingAgentsSwap")}
-          </span>
+          {detectedAgents.length > 0 ? (
+            <span className="text-ui-11 leading-snug text-muted-foreground">
+              {t("settings.apiKeys.codingAgentsDetectedHint", {
+                agents: detectedAgents
+                  .map((id) => AGENT_LABELS[id] ?? id)
+                  .join(", "),
+              })}
+            </span>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-ui-11 text-muted-foreground">
           <span>{t("settings.apiKeys.setupDocs")}</span>

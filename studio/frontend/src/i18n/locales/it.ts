@@ -1935,6 +1935,18 @@ export const it = {
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
       },
+      fullInstall: {
+        label: "Tipo di installazione",
+        description:
+          "Solo chat (GGUF). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
+        action: "Passa all'installazione completa",
+        confirmTitle: "Passare all'installazione completa?",
+        confirmDescription:
+          "Questa installazione solo chat esegue modelli GGUF. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
+        confirmAction: "Aggiorna",
+        keywords:
+          "full install upgrade tipo di installazione installazione completa aggiorna solo chat chat only gguf add training addestramento addestrare train fine-tune pytorch torch esportazione video generazione di immagini safetensors",
+      },
       repairInstall: {
         label: "Ripara l'installazione",
         description:
@@ -1943,6 +1955,8 @@ export const it = {
         confirmTitle: "Riparare questa installazione?",
         confirmDescription:
           "Arresta il server e riesegue il programma di installazione, che reinstalla PyTorch per la GPU di questa macchina. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
+        confirmDescriptionChatOnly:
+          "Arresta il server e riesegue il programma di installazione. Questa è un'installazione solo chat, quindi il programma di installazione la porta anche all'installazione completa con PyTorch, diversi gigabyte in totale. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Ripara ora",
       },
       resetPreferences: {
@@ -3122,6 +3136,7 @@ export const it = {
       relativeNever: "mai",
       relativeJustNow: "proprio ora",
       expired: "scaduta",
+      expiredStatus: "Scaduta",
       today: "oggi",
       created: "Creato {value}",
       used: "Ultimo utilizzo: {value}",
@@ -3408,6 +3423,8 @@ export const it = {
       "Questa chat non comparirà nella cronologia e non viene salvata. Scompare quando esci.",
   },
   picker: {
+    unifiedTightFit: "Al limite",
+    unifiedTightFitHint: "Su questo Mac potrebbe caricarsi con un contesto più breve o essere più lento.",
     onDevice: "Sul dispositivo",
     huggingFace: "Hugging Face",
     retry: "Riprova",
@@ -4808,5 +4825,42 @@ export const it = {
     cantRun: "Impossibile eseguire",
     failed: "Errore {status}",
     invalidJson: "Il corpo della richiesta non è un JSON valido.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Modelli caricati",
+      countOne: "{count} modello caricato",
+      countMany: "{count} modelli caricati",
+      pillLabel: "{count}. Mostra i dettagli o trascina per spostare",
+      dragToMove: "Trascina per spostare",
+      dragHandleLabel: "Sposta i modelli caricati. I tasti freccia lo spostano leggermente.",
+      collapse: "Comprimi",
+      collapseLabel: "Comprimi i modelli caricati",
+      close: "Chiudi",
+      closeLabel: "Chiudi i modelli caricati",
+      backOnNextLoad: "Tornerà al prossimo caricamento di un modello",
+      ejectToFree: "Espelli per liberare memoria",
+      ejectLabel: "Espelli {model}",
+      openTarget: "Apri {target}",
+      rowLabel: "{model}. Apri {target}",
+      loading: "Caricamento",
+      ejecting: "Espulsione",
+      stillInMemory: "Ancora in memoria",
+      alsoServing: "Serve anche",
+      noneLoaded: "Nessun modello caricato",
+      noneLoadedDetail: "I modelli che carichi verranno mostrati qui.",
+      otherAccount: "In uso da un altro account",
+      otherAccountDetail: "La memoria è occupata da un modello che non puoi vedere",
+      toastStillResident: "“{model}” è stato caricato durante l'espulsione, quindi usa ancora memoria. Espellilo di nuovo per liberarla.",
+      toastUnverified: "È stato richiesto lo scaricamento di {model}, ma il runtime non lo ha confermato. Controlla la scheda tra un attimo.",
+      toastAlreadyFree: "{model} non era più caricato.",
+      toastReplaced: "{model} non è più caricato. “{resident}” ha preso il suo posto e non è stato toccato.",
+      toastEjected: "{model} espulso",
+      toastFailed: "Impossibile espellere {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Sposta il monitor in tempo reale. I tasti freccia lo spostano leggermente, il doppio clic lo reimposta.",
+      reconnecting: "Riconnessione...",
+    },
   },
 } as const;

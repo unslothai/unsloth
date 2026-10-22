@@ -625,6 +625,8 @@ export const ar = {
     temporaryChatDescription: "لن تظهر هذه الدردشة في سجلك ولن تُحفظ. ستختفي عند مغادرتك.",
   },
   picker: {
+    unifiedTightFit: "ملاءمة محدودة",
+    unifiedTightFitHint: "قد يُحمَّل بسياق أقصر أو يعمل بشكل أبطأ على جهاز Mac هذا.",
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
     retry: "إعادة المحاولة",
@@ -1983,6 +1985,18 @@ export const ar = {
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
       },
+      fullInstall: {
+        label: "نوع التثبيت",
+        description:
+          "دردشة فقط (GGUF). يضيف التثبيت الكامل التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور.",
+        action: "الترقية إلى التثبيت الكامل",
+        confirmTitle: "هل تريد الترقية إلى التثبيت الكامل؟",
+        confirmDescription:
+          "يشغّل تثبيت الدردشة فقط هذا نماذج GGUF. يضيف التثبيت الكامل PyTorch لوحدة معالجة الرسومات في هذا الجهاز، ما يتيح التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور. ينزّل عدة غيغابايت (5 غيغابايت على الأقل من مساحة القرص) ثم يعيد تشغيل الخادم. تُحفظ المحادثات والنماذج والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmAction: "ترقية",
+        keywords:
+          "full install upgrade نوع التثبيت التثبيت الكامل ترقية دردشة فقط chat only gguf add training تدريب train fine-tune pytorch torch تصدير فيديو توليد الصور safetensors",
+      },
       repairInstall: {
         label: "إصلاح التثبيت",
         description:
@@ -1991,6 +2005,8 @@ export const ar = {
         confirmTitle: "هل تريد إصلاح هذا التثبيت؟",
         confirmDescription:
           "يوقف الخادم ويعيد تشغيل المثبّت، الذي يعيد تثبيت PyTorch لوحدة معالجة الرسومات في هذا الجهاز. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmDescriptionChatOnly:
+          "يوقف الخادم ويعيد تشغيل المثبّت. هذا تثبيت للدردشة فقط، لذا يرقّيه المثبّت أيضًا إلى التثبيت الكامل مع PyTorch، بحجم عدة غيغابايت إجمالًا. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
         confirmAction: "إصلاح الآن",
       },
       resetPreferences: {
@@ -3169,6 +3185,7 @@ export const ar = {
       relativeNever: "لا يوجد",
       relativeJustNow: "للتوّ",
       expired: "منتهي الصلاحية",
+      expiredStatus: "منتهي الصلاحية",
       today: "اليوم",
       created: "أُنشئ {value}",
       used: "آخر استخدام: {value}",
@@ -4732,5 +4749,42 @@ export const ar = {
     cantRun: "تعذّر التشغيل",
     failed: "خطأ {status}",
     invalidJson: "نص الطلب ليس JSON صالحًا.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "النماذج المحمّلة",
+      countOne: "تم تحميل {count} نموذج",
+      countMany: "تم تحميل {count} نماذج",
+      pillLabel: "{count}. اعرض التفاصيل أو اسحب للنقل",
+      dragToMove: "اسحب للنقل",
+      dragHandleLabel: "انقل النماذج المحمّلة. مفاتيح الأسهم تحركها قليلًا.",
+      collapse: "طي",
+      collapseLabel: "طي النماذج المحمّلة",
+      close: "إغلاق",
+      closeLabel: "إغلاق النماذج المحمّلة",
+      backOnNextLoad: "تعود عند تحميل النموذج التالي",
+      ejectToFree: "أخرج لتحرير الذاكرة",
+      ejectLabel: "إخراج {model}",
+      openTarget: "فتح {target}",
+      rowLabel: "{model}. فتح {target}",
+      loading: "جارٍ التحميل",
+      ejecting: "جارٍ الإخراج",
+      stillInMemory: "لا يزال في الذاكرة",
+      alsoServing: "يخدم أيضًا",
+      noneLoaded: "لا توجد نماذج محمّلة",
+      noneLoadedDetail: "ستظهر هنا النماذج التي تحمّلها.",
+      otherAccount: "قيد الاستخدام من حساب آخر",
+      otherAccountDetail: "الذاكرة محجوزة بواسطة نموذج لا يمكنك رؤيته",
+      toastStillResident: "تم تحميل «{model}» أثناء الإخراج، لذا لا يزال يستخدم الذاكرة. أخرجه مرة أخرى لتحريرها.",
+      toastUnverified: "طُلب إلغاء تحميل {model} لكن بيئة التشغيل لم تؤكد ذلك. تحقق من البطاقة بعد قليل.",
+      toastAlreadyFree: "{model} لم يعد محمّلًا.",
+      toastReplaced: "{model} لم يعد محمّلًا. حلّ «{resident}» محله وتُرك كما هو.",
+      toastEjected: "تم إخراج {model}",
+      toastFailed: "تعذّر إخراج {model}",
+    },
+    monitor: {
+      dragHandleLabel: "انقل شاشة المراقبة المباشرة. مفاتيح الأسهم تحركها قليلًا، والنقر المزدوج يعيدها إلى مكانها.",
+      reconnecting: "جارٍ إعادة الاتصال...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

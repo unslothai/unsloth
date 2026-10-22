@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from contextvars import ContextVar
-from typing import Annotated, Any, Literal, Optional, get_args
+from typing import Annotated, Any, Literal, Optional, Union, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -1088,6 +1088,16 @@ class ModelOverridePayload(BaseModel):
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
+    # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
+    mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
+    mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
+
+    @field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")
+    @classmethod
+    def _mlx_offload_amount(cls, value: Any) -> Any:
+        from models.inference import _mlx_offload_amount
+        return _mlx_offload_amount(value)
+
     # Default-engine 16-bit load; only False is stored.
     load_in_4bit: bool = True
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -1880,15 +1890,9 @@ async def validate_systemone_settings(
 
 
 def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
-    from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
-        values = _systemone_values(payload)
-        if values:
-            try:
-                laya_runtime.ensure_can_unload()
-            except laya_runtime.Unavailable as exc:
-                raise HTTPException(status_code = 409, detail = exc.message) from None
+        _systemone_values(payload)
 
 
 @_owner_settings_router.get(
@@ -2739,6 +2743,8 @@ def update_openai_auto_switch_override(
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
                 and payload.load_in_4bit
+                # null clears just that knob, so naming one is not a forget.
+                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()
@@ -2816,7 +2822,8 @@ def update_openai_auto_switch_override(
             + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
             + (() if payload.mirrors_spec_draft_model else _drafter_fields)
         )
-        if _carried_fields and not is_removal:
+        _alias_row: dict = {}
+        if not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -2834,12 +2841,12 @@ def update_openai_auto_switch_override(
             # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
             # dormant tuning on.
             for _alias_id in _alias_ids:
-                _stored_tuning = get_model_override(_alias_id)
-                if not _stored_tuning:
+                _alias_row = get_model_override(_alias_id)
+                if not _alias_row:
                     continue
                 for name in _carried_fields:
                     if _kept_tuning[name] is None:
-                        _kept_tuning[name] = _stored_tuning.get(name)
+                        _kept_tuning[name] = _alias_row.get(name)
                 break
         removed_keys: list[str] = []
         if payload.remove is True:
@@ -2948,6 +2955,13 @@ def update_openai_auto_switch_override(
                         "engine_seed",
                         "engine_gpu_memory_utilization",
                     )
+                },
+                # Omitted keeps what the row a load reads holds, which may be an alias retired below.
+                **{
+                    field: getattr(payload, field)
+                    if field in fields_set or is_removal
+                    else (_alias_row or get_model_override(target_id)).get(field)
+                    for field in ("mlx_ple_offload", "mlx_expert_offload")
                 },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
@@ -4075,6 +4089,7 @@ class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+    suspended_by_accounts: bool = False
 
 
 class McpAccessPayload(BaseModel):
@@ -4561,6 +4576,7 @@ def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
         scope = scope,
         tools = tools,
         exposure = access_exposure(request.app.state),
+        suspended_by_accounts = policy.installation_has_managed_accounts(),
     )
 
 

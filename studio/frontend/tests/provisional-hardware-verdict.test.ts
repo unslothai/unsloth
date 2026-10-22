@@ -265,7 +265,8 @@ test("the store exposes an unknown state, not just chat-only", async () => {
   );
   assert.match(
     ENV,
-    /return !state\.fetched && !state\.detectionDeferred;/,
+    // verdictStale: the stored verdict came from a backend a repair or restart has replaced.
+    /return \(!state\.fetched \|\| state\.verdictStale\) && !state\.detectionDeferred;/,
     "the selector is not derived from `fetched`, the flag that already means " +
       "'a server-reported verdict is stored'",
   );

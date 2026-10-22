@@ -7633,6 +7633,19 @@ def test_the_retired_snapshot_path_entry_hands_over_its_launch_flags(override_st
     assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
 
 
+def test_the_retired_snapshot_path_entry_hands_over_its_mlx_offload(override_store):
+    # A client that predates the offload knobs omits them, so retiring the row a load read keeps them.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", mlx_ple_offload = 1.0)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["mlx_ple_offload"] == 1.0 and entry["max_seq_length"] == 32768
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+    # An explicit null still resets it.
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, mlx_ple_offload = None)
+    assert "mlx_ple_offload" not in resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+
+
 def test_a_standalone_gguf_save_keeps_its_filename_label_launch_flags(override_store):
     path = "/models/Qwen3-8B-Q4_K_M.gguf"
     settings.set_model_override(
@@ -9051,6 +9064,15 @@ def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatc
     assert LoadRequest(model_path = "org/m", **kwargs).mlx_int8_prefill is True
     _put("org/m", mlx_int8_prefill = False)
     assert "org/m" not in settings.get_model_overrides()
+
+
+def test_mlx_offload_is_stored_unless_auto_and_survives_a_client_that_omits_it(monkeypatch):
+    _mock_override_store(monkeypatch)
+    knobs = {"mlx_ple_offload": "off", "mlx_expert_offload": 0.5}
+    row = _put("m", **knobs).overrides["m"]
+    assert settings.model_override_load_kwargs(row, is_gguf = False) == row == knobs
+    assert _put("m", mlx_expert_offload = None).overrides["m"] == {"mlx_ple_offload": "off"}
+    assert "m" not in _put("m", mlx_ple_offload = "auto").overrides
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):

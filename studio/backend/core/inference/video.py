@@ -13544,6 +13544,7 @@ class VideoBackend:
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
+            "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
@@ -13579,6 +13580,17 @@ def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
 
 _backend: Optional[VideoBackend] = None
 _backend_lock = threading.Lock()
+
+
+def _graph_engagement(pipe: Any) -> Optional[dict]:
+    """``diffusion_cuda_graph.engagement`` for the loaded pipe; None when unreadable (never fails a status poll)."""
+    try:
+        from . import diffusion_cuda_graph
+        return diffusion_cuda_graph.engagement(
+            tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def get_video_backend() -> VideoBackend:

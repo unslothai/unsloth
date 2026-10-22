@@ -377,21 +377,31 @@ export const BUDGET = {
   // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
   // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
+  // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
   // eager providers-api chunk, not new code. Raised by that.
-  // Merged with main at fee26fe12 the build measures 6,896,931 B raw / 2,078,007 B transfer (Node 24, 99 chunks).
-  // Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Merged with main at 725455e1a the build measures 6,922,232 B raw / 2,085,011 B transfer (Node 24, 98 chunks).
+  // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
   // The chat's Unsloth Studio tools preset and the "Not in chat" note add 233 B raw / 15 B transfer (measured
   // against the MCP tab build, one machine and build, Node 24, 97 chunks), in the eager chat chunk and English
   // catalog. Raised by that.
   // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
   // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
-  // Merged with the MCP tab branch at 77eada072 the build measures 6,897,338 B raw / 2,078,176 B transfer (Node 24, 99 chunks).
-  // Raised to that plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_078_365,
-  rawBytes: 6_897_498,
+  // Merged with the MCP tab branch at b27d49b31 the build measures 6,922,638 B raw / 2,085,153 B transfer (Node 24,
+  // 98 chunks). Raised to that plus 500 B raw / 200 B transfer.
+  transferBytes: 2_085_353,
+  rawBytes: 6_923_138,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

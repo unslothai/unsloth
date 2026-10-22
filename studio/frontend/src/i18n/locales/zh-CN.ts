@@ -625,6 +625,8 @@ export const zhCN = {
     temporaryChatDescription: "此聊天不会出现在你的历史记录中，也不会被保存。离开后即消失。",
   },
   picker: {
+    unifiedTightFit: "勉强可用",
+    unifiedTightFitHint: "在这台 Mac 上可能以更短的上下文加载，或运行更慢。",
     onDevice: "本机",
     huggingFace: "Hugging Face",
     retry: "重试",
@@ -1960,6 +1962,18 @@ export const zhCN = {
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
       },
+      fullInstall: {
+        label: "安装类型",
+        description:
+          "仅聊天 (GGUF)。完整安装会添加训练、导出、视频、safetensors 模型和更多图像生成功能。",
+        action: "升级到完整安装",
+        confirmTitle: "要升级到完整安装吗？",
+        confirmDescription:
+          "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
+        confirmAction: "升级",
+        keywords:
+          "full install upgrade 安装类型 完整安装 升级 仅聊天 chat only gguf add training 训练 微调 train fine-tune pytorch torch 导出 视频 图像生成 safetensors",
+      },
       repairInstall: {
         label: "修复安装",
         description:
@@ -1968,6 +1982,8 @@ export const zhCN = {
         confirmTitle: "要修复此安装吗？",
         confirmDescription:
           "停止服务器并重新运行安装程序，为本机 GPU 重新安装 PyTorch。聊天记录和设置会保留。这可能需要几分钟。",
+        confirmDescriptionChatOnly:
+          "停止服务器并重新运行安装程序。这是仅聊天安装，因此安装程序还会将其升级为包含 PyTorch 的完整安装（共几 GB）。聊天记录和设置会保留。这可能需要几分钟。",
         confirmAction: "立即修复",
       },
       resetPreferences: {
@@ -3115,6 +3131,7 @@ export const zhCN = {
       relativeNever: "从未",
       relativeJustNow: "刚刚",
       expired: "已过期",
+      expiredStatus: "已过期",
       today: "今天",
       created: "创建于 {value}",
       used: "上次使用：{value}",
@@ -4634,5 +4651,42 @@ export const zhCN = {
     cantRun: "无法运行",
     failed: "错误 {status}",
     invalidJson: "请求体不是有效的 JSON。",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "已加载的模型",
+      countOne: "已加载 {count} 个模型",
+      countMany: "已加载 {count} 个模型",
+      pillLabel: "{count}。显示详情，或拖动以移动",
+      dragToMove: "拖动以移动",
+      dragHandleLabel: "移动已加载的模型面板。方向键可微调位置。",
+      collapse: "折叠",
+      collapseLabel: "折叠已加载的模型",
+      close: "关闭",
+      closeLabel: "关闭已加载的模型",
+      backOnNextLoad: "下次加载模型时会重新显示",
+      ejectToFree: "弹出以释放内存",
+      ejectLabel: "弹出 {model}",
+      openTarget: "打开 {target}",
+      rowLabel: "{model}。打开 {target}",
+      loading: "加载中",
+      ejecting: "弹出中",
+      stillInMemory: "仍在内存中",
+      alsoServing: "同时也在服务",
+      noneLoaded: "没有已加载的模型",
+      noneLoadedDetail: "你加载的模型会显示在这里。",
+      otherAccount: "正被其他账户使用",
+      otherAccountDetail: "内存被一个你看不到的模型占用",
+      toastStillResident: "弹出期间“{model}”被加载，因此仍在占用内存。请再次弹出以释放。",
+      toastUnverified: "已请求卸载 {model}，但运行时未确认。请稍后查看卡片。",
+      toastAlreadyFree: "{model} 已不再处于加载状态。",
+      toastReplaced: "{model} 已不再加载。“{resident}”取代了它，未做处理。",
+      toastEjected: "已弹出 {model}",
+      toastFailed: "弹出 {model} 失败",
+    },
+    monitor: {
+      dragHandleLabel: "移动实时监控。方向键可微调位置，双击可重置。",
+      reconnecting: "正在重新连接...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
