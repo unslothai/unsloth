@@ -1353,11 +1353,9 @@ async def _mlx_precision_variants_answer(
     return VariantsAnswer(response, None, cache_authorized = False)
 
 
-# Lookup-only tables (per-layer embeddings / Engram) llama.cpp streams from disk by default.
-# Priced per variant so the fit badge does not charge them as resident weights. Local copies
-# are read from their own headers; Hub-only quants of a lazily-reading architecture are
-# Range-read, bounded by a deadline and a concurrency cap, and fill a cache for the next
-# listing when they miss it. Off with UNSLOTH_LOOKUP_TABLE_REMOTE=0; 0 bytes on any failure.
+# Lookup-only tables llama.cpp streams from disk, priced per variant so the fit badge does not
+# charge them as resident: local copies from their headers, Hub-only lazy quants by bounded Range
+# reads that fill a cache. Off with UNSLOTH_LOOKUP_TABLE_REMOTE=0; 0 bytes on any failure.
 _LOOKUP_REMOTE_ENV = "UNSLOTH_LOOKUP_TABLE_REMOTE"
 _LOOKUP_DEADLINE_S = 2.0
 _LOOKUP_CONCURRENCY = 4
@@ -1365,11 +1363,9 @@ _LOOKUP_ARCH_TTL_S = 6 * 3600.0
 _LOOKUP_ARCH_FAIL_TTL_S = 600.0
 _lookup_arch_cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
 _lookup_arch_lock = threading.Lock()
-# Hub reads already submitted (architecture lookups and header reads), so a listing
-# polled while they run does not queue the same work again behind the pool.
+# Hub reads in flight, so a re-poll does not queue the same work again.
 _lookup_inflight: set = set()
-# Its own small pool: Hub header reads never queue a listing or a load behind them, and the
-# pool size is the concurrency cap. Local header scans run on the disk listing pool.
+# Its own pool (size = concurrency cap): Hub reads never queue a listing or a load behind them.
 _LOOKUP_POOL = ThreadPoolExecutor(
     max_workers = _LOOKUP_CONCURRENCY, thread_name_prefix = "gguf-lookup-tables"
 )
@@ -1399,8 +1395,7 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
         _lookup_inflight.add(key)
 
     started: list = []
-    # Set at the deadline: a worker that frees up as the cancel is still propagating to
-    # the executor sees it and skips the call instead of starting it late.
+    # Set at the deadline: a worker freeing up mid-cancel skips the call instead of running late.
     expired = threading.Event()
 
     def _run():
@@ -1412,13 +1407,11 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
                 _lookup_inflight.discard(key)
 
     task = asyncio.ensure_future(_lookup_thread(_run))
-    # Also after the deadline: the pool refusing it (shut down at exit) skips _run.
     task.add_done_callback(functools.partial(_release_unrun_lookup, started, key))
     loop = asyncio.get_running_loop()
     done, _pending = await asyncio.wait({task}, timeout = max(0.0, deadline - loop.time()))
     if task not in done:
-        # Unstarted, it is dropped (key released) rather than left in the shared queue;
-        # started, it keeps running and lands in the cache.
+        # Unstarted: dropped and its key released. Started: runs on and lands in the cache.
         expired.set()
         task.cancel()
         return None
@@ -1514,7 +1507,6 @@ def _local_variant_gguf(answer: "VariantsAnswer", repo_id: str, variant) -> Opti
     if answer.context_source:
         roots.append(answer.context_source)
     for root in roots:
-        # A direct-file source names the GGUF itself; its rows sit beside it.
         path = Path(root).expanduser()
         candidates.append(str((path.parent if path.is_file() else path) / filename))
     for candidate in candidates:
@@ -1591,8 +1583,7 @@ async def _with_lookup_tables(
             and _lookup_remote_enabled()
             and not is_local_path(repo_id)
             and _is_valid_repo_id(repo_id)
-            # A host that reads the tables resident (iGPU / APU) prices them nowhere,
-            # so it has nothing to ask the Hub for.
+            # A host that reads the tables resident (iGPU / APU) has nothing to ask the Hub for.
             and await listing_thread(True, _host_streams_lookup_tables)
         )
         if remote_ok:
@@ -1601,9 +1592,8 @@ async def _with_lookup_tables(
                 deadline = asyncio.get_running_loop().time() + _LOOKUP_DEADLINE_S
                 if arch is None:
                     known, arch = _cached_hub_repo_architecture(repo_id, hf_token)
-                    # A cold architecture is waited on within the listing's deadline only
-                    # when a row can hold a streamed table (any row under a forced "on");
-                    # a late answer lands in the cache for the next listing.
+                    # A cold architecture is awaited within the deadline only when a row can hold a
+                    # streamed table.
                     if not known and (
                         mode == "on"
                         or any(
@@ -1612,8 +1602,7 @@ async def _with_lookup_tables(
                         )
                     ):
                         arch = await _lookup_await_once(
-                            # Per credential, as the cache is: another token's lookup
-                            # answers only for that token.
+                            # Per credential, as the cache is.
                             ("arch", repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token)),
                             deadline,
                             _hub_repo_architecture,
@@ -1630,8 +1619,8 @@ async def _with_lookup_tables(
                         if cached is not None:
                             found[index] = cached[1]
                             continue
-                        # Per credential: another token's read may be one this caller
-                        # could not make, or the reverse.
+                        # Per credential: another token's read may be one this caller could not
+                        # make.
                         key = ("table", repo_id, v.filename, identity, mode, _fingerprint)
                         with _lookup_arch_lock:
                             busy = key in _lookup_inflight
@@ -1639,8 +1628,8 @@ async def _with_lookup_tables(
                                 _lookup_inflight.add(key)
                         if busy:
                             continue
-                        # Every row is queued: the pool caps concurrency, and a row the
-                        # deadline leaves unstarted is read by the next listing.
+                        # The pool caps concurrency; a row left unstarted is read by the next
+                        # listing.
 
                         started: list = []
 
@@ -1652,8 +1641,6 @@ async def _with_lookup_tables(
                         ):
                             ran.append(True)
                             try:
-                                # Past the deadline: skipped, as the cancel may not have
-                                # reached the executor before a worker freed up.
                                 if expired.is_set():
                                     return 0
                                 return _remote_lookup_bytes(repo_id, name, hf_token, ident, mode)
@@ -1667,9 +1654,8 @@ async def _with_lookup_tables(
                         )
                         tasks[task] = index
                     if tasks:
-                        # One deadline for the whole listing; started reads keep running
-                        # and land in the cache, unstarted ones are dropped (their keys
-                        # released) so a stalled Hub never leaves a queue behind.
+                        # One deadline for the listing; unstarted reads are dropped so a stalled Hub
+                        # leaves no queue.
                         done, pending = await asyncio.wait(
                             tasks,
                             timeout = max(0.0, deadline - asyncio.get_running_loop().time()),

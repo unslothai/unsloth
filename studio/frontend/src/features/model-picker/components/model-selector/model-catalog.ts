@@ -1391,8 +1391,7 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
   // projector, or a drafter `auto` promotes to. On `size_bytes` alone this starred quants that go
   // OOM once the mmproj lands beside them.
-  // Lookup tables llama.cpp streams from disk are priced apart (`streamed`): such a quant runs,
-  // but never outranks one that fits with everything resident.
+  // A `streamed` quant (tables left on disk) runs but never outranks one that fits fully resident.
   const fitOfVariant = (variant: T) =>
     classifyGgufFitWithLookupTables(fitOf, variant);
   // A listing with no size metadata reports zero (gguf_variants.py: an OSError stat-ing a local
@@ -1449,7 +1448,6 @@ export function pickDefaultQuant(
 ): QuantVariant | null {
   if (!variants || variants.length === 0) return null;
   const anyBudget = (budget.gpuGb || 0) > 0 || (budget.systemRamGb || 0) > 0;
-  // Lookup tables llama.cpp streams from disk priced apart, as in the recommendation.
   const runs = (v: QuantVariant) =>
     ggufFitRuns(
       classifyGgufFitWithLookupTables(

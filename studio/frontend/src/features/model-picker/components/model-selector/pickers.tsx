@@ -805,8 +805,7 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
     tone: ORANGE,
     hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
   },
-  // Runs only with its lookup tables (per-layer embeddings / Engram) left on disk, which is
-  // llama.cpp's default for them. Not over budget: the weights it keeps resident fit.
+  // Runs only with its lookup tables left on disk (llama.cpp's default); the resident weights fit.
   streamed: {
     label: "Fits (lookup tables streamed from disk)",
     tone: AMBER,
@@ -2156,7 +2155,6 @@ function GgufVariantExpander({
   // GGUFs the loader charges for: a vision projector, or a drafter `auto`
   // promotes to. On the bare checkpoint a vision quant could sort and badge as
   // fitting while the recommendation had already ruled it OOM.
-  // Lookup tables llama.cpp streams from disk are priced apart, as on the Hub card.
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
       classifyGgufFitWithLookupTables(getGgufFit, variant),

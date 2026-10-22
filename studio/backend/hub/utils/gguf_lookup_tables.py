@@ -154,7 +154,6 @@ def shard_names(filename: str) -> list[str]:
     match = _SPLIT_RE.match(base)
     if not match:
         return [filename]
-    # The extension as written: a case-sensitive filesystem or Hub has no .gguf for .GGUF.
     prefix, _index, total, ext = match.groups()
     return [
         f"{head}{sep}{prefix}-{i:05d}-of-{int(total):05d}{ext}" for i in range(1, int(total) + 1)
@@ -163,8 +162,7 @@ def shard_names(filename: str) -> list[str]:
 
 # Local answers, keyed on every shard's (path, size, mtime_ns).
 _LOCAL_CACHE: "OrderedDict[tuple, tuple[Optional[str], int]]" = OrderedDict()
-# Remote answers, keyed on (repo, filename, revision, identity), each with an expiry: the
-# listed size is not content identity, so a same-size re-upload is read again after it.
+# Remote answers with an expiry: the listed size is not content identity.
 _REMOTE_CACHE: "OrderedDict[tuple, tuple[tuple[Optional[str], int], float]]" = OrderedDict()
 _REMOTE_TTL_S = 6 * 3600.0
 _CACHE_LIMIT = 512
@@ -179,9 +177,8 @@ def _remember(cache: OrderedDict, key, value) -> None:
             cache.popitem(last = False)
 
 
-# Shards read per variant at most. llama.cpp's split keeps file order and the table sits
-# near the front, so a table not found by then is left unpriced (0, today's pricing)
-# rather than fanning out header reads over a long split.
+# Shards read per variant at most: the table sits near the front of a split, so one not found by
+# then is left unpriced (0).
 MAX_SHARDS_READ = 8
 
 

@@ -175,9 +175,7 @@ export function classifyGgufFitWithLookupTables(
   const full = fitOf(size);
   const table = ggufVariantLookupTableBytes(variant);
   if (table <= 0) return full;
-  // Only a load that runs at all only with the tables on disk is a tier of its own; a
-  // resident fit (even marginal or partial) keeps its verdict, as the launch reads the
-  // table resident where RAM holds it.
+  // Only a load that runs solely with the tables on disk is its own tier; a resident fit keeps its verdict.
   if (full !== "oom") return full;
   return fitOf(size - table) === "oom" ? full : "streamed";
 }
