@@ -198,14 +198,14 @@ def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out,
     )
     assert max(splits) > 1, splits
     Y, dX = _fwd(N, X, packed, scale, gs), _dx(N, G, packed, scale, gs)
-    monkeypatch.setattr(N, "_CONFIG_HOOK", lambda *a: N._fused_config(*a)[:-1] + (1,))
-    _close_to_dense(Y, _fwd(N, X, packed, scale, gs))
-    _close_to_dense(dX, _dx(N, G, packed, scale, gs))
+    # A nested context, not monkeypatch.undo(): undo would also restore the cached _fused_env.
+    with monkeypatch.context() as m:
+        m.setattr(N, "_CONFIG_HOOK", lambda *a: N._fused_config(*a)[:-1] + (1,))
+        _close_to_dense(Y, _fwd(N, X, packed, scale, gs))
+        _close_to_dense(dX, _dx(N, G, packed, scale, gs))
     W = N.nvfp4_dequantize(packed, scale, gs, dtype)
     _close_to_dense(Y, X @ W.t())
     _close_to_dense(dX, G @ W)
-    monkeypatch.undo()
-    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
     assert torch.equal(Y, _fwd(N, X, packed, scale, gs)) and torch.equal(
         dX, _dx(N, G, packed, scale, gs)
     )
