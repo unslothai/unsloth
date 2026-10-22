@@ -502,6 +502,66 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_leaves_an_explicit_is_causal_beside_a_mask_to_sdpa():
+    # transformers 4.x pairs is_causal with a mask; that pairing must reach the wrapped function.
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    allowed = torch.ones(1, 1, 24, 24, device = "cuda", dtype = torch.bool)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    assert router(_Module(), q, kv, kv, allowed, is_causal = True)[0] == "original"
+    assert calls[-1]["is_causal"] is True and LH.LARGE_HEAD_ENGAGED["calls"] == before
+    causal = _causal(24).cuda()[None, None]
+    assert router(_Module(), q, kv, kv, causal)[0] != "original"
+    assert router(_Module(), q, kv, kv, causal, is_causal = False)[0] != "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2 and len(calls) == 1
+
+
+def test_furthest_offset_counts_strided_views():
+    contiguous = torch.empty(1, 2, 17, 512, device = "meta")
+    assert LH._furthest_offset(contiguous) == contiguous.numel() - 1
+    strided = torch.empty_strided((1, 1, 17, 512), (1, 1, 2**27, 1), device = "meta")
+    assert strided.numel() == 17 * 512
+    assert LH._furthest_offset(strided) == 16 * 2**27 + 511 > LH._INT32_MAX
+    transposed = torch.empty(1, 2, 512, 17, device = "meta").transpose(-1, -2)
+    assert LH._furthest_offset(transposed) == transposed.numel() - 1
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_defers_a_view_that_addresses_past_int32():
+    if torch.cuda.mem_get_info()[0] < 6 * 1024**3:
+        pytest.skip("needs 6 GiB free for the strided view's storage")
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    q = torch.empty_strided((1, 1, 17, 512), (1, 1, 2**27, 1), device = "cuda", dtype = torch.float16)
+    kv = torch.randn(1, 1, 17, 512, device = "cuda", dtype = torch.float16)
+    assert not LH._shapes_qualify(q, kv, kv)
+    assert LH._shapes_qualify(q.contiguous(), kv, kv)
+    assert router(_Module(), q, kv, kv, None)[0] == "original" and len(calls) == 1
+    del q
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_falls_back_to_sdpa_on_mask_scan_oom(monkeypatch):
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    monkeypatch.setattr(LH, "intervals_from_mask", oom)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    before = LH.LARGE_HEAD_ENGAGED["fallback"]
+    assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
+
+
 def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
     def kernel(*args, **kwargs):
         raise AssertionError("kernel compiled on sm75")
