@@ -208,7 +208,6 @@ def _state(gguf, repo, base):
 def test_raw_passes_the_resolution_derived_mu(ids):
     from core.inference.sd_cpp_backend import _request_flow_shift
 
-    # diffusers calculate_shift over (H/16)*(W/16) tokens: 0.5 at 256, 1.15 at 6400; sd.cpp's FLUX flow shift is mu.
     assert _request_flow_shift(_state(*ids), 256, 256) == pytest.approx(0.5)
     assert _request_flow_shift(_state(*ids), 1024, 1024) == pytest.approx(0.90625)
     assert _request_flow_shift(_state(*ids), 1280, 1280) == pytest.approx(1.15)

@@ -2722,8 +2722,7 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
 
 
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
-    """The ``--flow-shift`` for one request: the family's fixed value, except Krea 2 Raw, whose mu follows the
-    output size (Turbo keeps sd.cpp's fixed Krea2 mu)."""
+    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
         state.gguf_filename,
         getattr(state, "display_repo_id", None),

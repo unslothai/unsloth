@@ -2181,16 +2181,15 @@ _KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-ba
 
 
 def krea2_raw_checkpoint(*identifiers: Optional[str]) -> bool:
-    """Whether the first identifier naming a known model names Krea 2 Raw (the undistilled base), in the same
-    precedence the generation defaults use, so a load gets Raw's schedule exactly when it gets Raw's defaults."""
+    """Whether the identifiers name Krea 2 Raw, with the same precedence as the generation defaults."""
     row = _generation_defaults_row(*identifiers)
     return row is not None and row[0] in _KREA2_RAW_KEYS
 
 
 def krea2_sd_cpp_flow_shift(width: int, height: int) -> float:
-    """sd.cpp ``--flow-shift`` matching diffusers' Krea 2 Raw schedule at ``width`` x ``height``. Raw computes mu from
-    the packed latent tokens (calculate_shift: 0.5 at 256 tokens, 1.15 at 6400) where Turbo fixes mu = 1.15, which is
-    sd.cpp's Krea2 default. sd.cpp's FLUX flow denoiser takes the shift as mu itself (e^mu / (e^mu + 1/t - 1))."""
+    """sd.cpp ``--flow-shift`` matching diffusers' Krea 2 Raw schedule. Raw computes mu from the packed latent tokens
+    (calculate_shift: 0.5 at 256 tokens, 1.15 at 6400); Turbo fixes mu = 1.15, sd.cpp's Krea2 default. sd.cpp's FLUX
+    flow denoiser takes the shift as mu itself."""
     tokens = (int(height) // 16) * (int(width) // 16)
     slope = (1.15 - 0.5) / (6400 - 256)
     return tokens * slope + (0.5 - slope * 256)
