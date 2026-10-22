@@ -302,10 +302,7 @@ export function formatMilliseconds(ms: number): string {
 
 export type HeatLevel = 0 | 1 | 2 | 3 | 4;
 
-/**
- * Upper bounds of levels 1-3: the quartiles of the active days. Relative to the peak instead,
- * one unusually busy day dropped every other day to the faintest shade.
- */
+/** Quartiles of the active days, not ratios to the peak: one outlier washed out every other day. */
 export function heatThresholds(values: readonly number[]): [number, number, number] {
   const active = values.filter((value) => value > 0).sort((a, b) => a - b);
   if (active.length === 0) return [0, 0, 0];
@@ -329,10 +326,7 @@ export function heatLevel(
 
 export type ActivityCell<Day> = { key: string; day: Day | null; value: number };
 
-/**
- * The latest `columns` Monday-started weeks, ending on the current partial one. Days after the
- * last one in the series stay `null`, so the grid ends on today rather than on next Sunday.
- */
+/** The latest `columns` Monday-started weeks; days after today stay `null`. */
 export function buildActivityColumns<Day extends { date: string }>(
   daily: readonly Day[],
   values: readonly number[],
@@ -347,7 +341,6 @@ export function buildActivityColumns<Day extends { date: string }>(
   const visible = daily.slice(start);
   const firstVisible = visible[0];
   if (!firstVisible) return [];
-  // Cumulative restarts at the window's left edge, which the description says it covers.
   const baseline = windowBaseline([...values], start, mode);
 
   const cells: ActivityCell<Day>[] = [];
@@ -374,11 +367,7 @@ function mondayIndex(dayKey: string): number {
   return (parseDayKey(dayKey).getDay() + 6) % DAYS_PER_WEEK;
 }
 
-/**
- * A month caption for the week holding that month's 1st, as a calendar reads. A month whose 1st
- * falls before the grid starts is labelled on the first column only when two clear columns
- * separate it from the next label; skipping the next one instead lost a whole month (Jan).
- */
+/** One label per shown 1st; a leading partial month yields to it, never the reverse (lost Jan). */
 export function monthLabelColumns(
   grid: ReadonlyArray<ReadonlyArray<{ day: { date: string } | null }>>,
 ): Array<{ column: number; date: string }> {

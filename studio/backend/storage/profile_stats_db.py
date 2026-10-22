@@ -262,7 +262,6 @@ def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
     for day, tokens in api.by_day.items():
         bucket = chat.by_day.setdefault(day, {"tokens": 0, "messages": 0, "threads": set()})
         bucket["tokens"] += tokens
-        # Counted apart from messages: an API-only day otherwise read "1.2M tokens, 0 messages".
         bucket["apiRequests"] = bucket.get("apiRequests", 0) + api.requests_by_day.get(day, 0)
     for model_id, api_model in api.models.items():
         model = chat.models.setdefault(

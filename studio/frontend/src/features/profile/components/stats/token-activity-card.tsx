@@ -38,7 +38,6 @@ import { StatsCard } from "./stat-primitives";
 import { roundIfSingleLine } from "@/lib/tooltip-pill";
 
 const DAYS_PER_WEEK = 7;
-// A year of weeks, the window every mode covers once the card is wide enough.
 const WINDOW_WEEKS = 53;
 const MIN_CELL = 9;
 const CELL_GAP = 3;
@@ -55,7 +54,6 @@ const MODES: ActivityMode[] = ["daily", "weekly", "cumulative"];
 
 type Cell = ActivityCell<ProfileStatsDay>;
 
-/** How many week columns fit at the smallest readable cell, up to a year. */
 function useVisibleColumns(maxColumns: number) {
   const ref = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(maxColumns);
@@ -95,7 +93,6 @@ function HeatSwatch({ level, title }: { level: HeatLevel | null; title?: string 
   );
 }
 
-/** Daily: one square per day, Monday at the top, this week on the right. */
 function DayHeatmap({
   grid,
   dateFormatter,
@@ -114,7 +111,6 @@ function DayHeatmap({
     [locale],
   );
   const months = useMemo(() => monthLabelColumns(grid), [grid]);
-  // Chat messages and API requests, whichever the day had.
   const dayActivity = (day: ProfileStatsDay) => {
     const parts: string[] = [];
     if (day.messages > 0 || !day.apiRequests) {
@@ -207,7 +203,6 @@ const WEEK_CHART_CONFIG = {
   tokens: { color: "var(--primary)" },
 } satisfies ChartConfig;
 
-/** Weekly as bars, Cumulative as a line, on labelled token and date axes. */
 function WeekChart({
   grid,
   mode,
@@ -361,7 +356,6 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   return (
     <StatsCard
       title={t("settings.profile.stats.activityTitle")}
-      // Says which dates it covers: a week count moved with the window's width and named no date.
       description={t(`settings.profile.stats.activityDescription.${mode}`, {
         total: formatProfileCount(
           summaryTotal,

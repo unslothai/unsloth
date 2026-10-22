@@ -196,7 +196,6 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
         "tokens": 175,
         "messages": 2,
         "chats": 1,
-        # The API request is its own count, so the day does not read as tokens with no messages.
         "apiRequests": 1,
     }
     assert stats["peakDay"] == {"date": today.date().isoformat(), "tokens": 175}
