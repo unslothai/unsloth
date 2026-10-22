@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -122,32 +123,69 @@ def _open_post(
     age = 0.0,
     abandoned = True,
 ):
-    token, started = object(), time.monotonic() - age
-    session.posts.open[token] = (started, "tools/call", "slow")
-    if abandoned:
-        session.abandoned_posts[token] = started
+    token, tracker = object(), session.posts
+    with tracker.lock:
+        tracker.open.add(token)
+        if abandoned:
+            tracker.abandoned[token] = time.monotonic() - age
     return token
 
 
-def test_abandoned_call_records_only_its_own_post(slow_server, cached_scope):
+def test_abandoned_call_is_bound_to_its_own_post(slow_server, cached_scope):
+    # Call A is abandoned while a later call B to the same tool is still running: only A's POST may count.
     session = _warm(slow_server, cached_scope)
     assert session.posts.installed
-    _open_post(session, age = 60, abandoned = False)  # an overlapping call sent earlier
-    assert _call(slow_server, cached_scope, 30, timeout = 0.5).startswith("Error")
-    assert all(s >= time.monotonic() - 5 for s in session.abandoned_posts.values())
+    sent, real_sent = [], session.posts._sent
+    session.posts._sent = lambda token, key: (sent.append(token), real_sent(token, key))
+    a = threading.Thread(target = _call, args = (slow_server, cached_scope, 30, 1.0))
+    a.start()
+    time.sleep(0.3)
+    b = threading.Thread(target = _call, args = (slow_server, cached_scope, 3))
+    b.start()
+    a.join()
+    time.sleep(0.3)
+    assert len(sent) == 2 and sent[1] in session.posts.open  # B is still running
+    assert set(session.posts.abandoned) <= {sent[0]}
+    b.join()
 
 
-def test_overlapping_call_is_not_mistaken_for_an_abandoned_reply(
-    slow_server, cached_scope, monkeypatch
-):
-    monkeypatch.setattr(mcp_client, "_ABANDONED_REPLY_TIMEOUT", 0.2)
+def test_retirement_deadline_starts_at_abandonment(slow_server, cached_scope, monkeypatch):
+    # A reply that ran past the deadline before it was abandoned still gets the full cleanup window.
+    monkeypatch.setattr(mcp_client, "_ABANDONED_REPLY_TIMEOUT", 0.5)
     session = _warm(slow_server, cached_scope)
-    _open_post(session, age = 60, abandoned = False)
-    assert _call(slow_server, cached_scope, 1, timeout = 0.3).startswith("Error")
-    time.sleep(1.5)  # the abandoned reply has finished on the server
+    tracker, key = session.posts, ("tools/call", "slow")
+    slot, token = tracker.expect(key), object()
+    tracker._sent(token, key)
+    time.sleep(0.6)
+    session.note_abandoned(slot)
     assert not session.abandoned_overdue()
-    assert "slept 0" in _call(slow_server, cached_scope, 0)
-    assert _cached_session(slow_server, cached_scope) is session and not session.closed.is_set()
+    time.sleep(0.6)
+    assert session.abandoned_overdue()
+    tracker._closed(token)
+    assert not session.abandoned_overdue()
+
+
+def test_abandonment_bookkeeping_is_thread_safe(slow_server, cached_scope):
+    session = _warm(slow_server, cached_scope)
+    tracker, key, errors = session.posts, ("tools/call", "slow"), []
+
+    def churn():
+        try:
+            for _ in range(2000):
+                slot, token = tracker.expect(key), object()
+                tracker._sent(token, key)
+                session.note_abandoned(slot)
+                session.abandoned_overdue()
+                tracker._closed(token)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = churn) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors and not tracker.abandoned and not tracker.waiting
 
 
 def test_overdue_abandoned_reply_retires_the_session_without_probing(
@@ -166,7 +204,7 @@ def test_overdue_abandoned_reply_retires_the_session_without_probing(
     assert "slept 0" in _call(slow_server, cached_scope, 0)
     assert stale.closed.is_set() and stale.client is None
     fresh = _cached_session(slow_server, cached_scope)
-    assert fresh is not stale and not fresh.abandoned_posts
+    assert fresh is not stale and fresh.posts.pending() is None
 
 
 def test_too_many_abandoned_replies_retire_the_session(slow_server, cached_scope, monkeypatch):
@@ -188,7 +226,7 @@ def test_reaper_closes_an_idle_session_with_an_overdue_reply(
     token = _open_post(stale)
     mcp_client._reap_idle_sessions()  # not overdue yet, and far inside the idle TTL
     assert not stale.closed.is_set()
-    stale.abandoned_posts[token] -= 1
+    stale.posts.abandoned[token] -= 1
     mcp_client._reap_idle_sessions()
     assert stale.closed.is_set()
     assert mcp_client._session_key(slow_server, None, cached_scope) not in mcp_client._mcp_sessions
@@ -200,6 +238,6 @@ def test_finished_abandoned_reply_keeps_the_session(slow_server, cached_scope, m
     session = _warm(slow_server, cached_scope)
     assert _call(slow_server, cached_scope, 1, timeout = 0.3).startswith("Error")
     time.sleep(1.5)
-    assert not session.abandoned_overdue() and not session.abandoned_posts
+    assert not session.abandoned_overdue() and session.posts.pending() is None
     assert "slept 0" in _call(slow_server, cached_scope, 0)
     assert _cached_session(slow_server, cached_scope) is session and not session.closed.is_set()
