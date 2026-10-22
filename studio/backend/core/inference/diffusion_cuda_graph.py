@@ -1681,10 +1681,11 @@ class GraphedForward:
             if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
                 pool = torch.cuda.graph_pool_handle()
             recorder = _graph_without_flush if recapture else torch.cuda.graph
-            if not recapture:
-                _RETIRED_POOL_DUE[0] = False  # torch.cuda.graph flushes on entry
             try:
                 with _capturing(), recorder(graph, pool = pool):
+                    if not recapture:
+                        # Entered: torch.cuda.graph flushed. A refusal in _capturing never gets here and keeps the flag.
+                        _RETIRED_POOL_DUE[0] = False
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
                 # A refusal is raised before the recording begins: the graph and the pool were never touched.

@@ -277,6 +277,29 @@ def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
     cg.uninstall_all(handles)
 
 
+def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeypatch):
+    """Another wrapper retired a pool; this wrapper's first capture is refused in _capturing (replica-side work still
+    held) before torch.cuda.graph flushes: the flush stays due for the next re-record."""
+    _cuda()
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    monkeypatch.setattr(cg, "_RETIRED_POOL_DUE", [True])
+    monkeypatch.setattr(cg, "capture_refused_now", lambda: False)
+
+    @__import__("contextlib").contextmanager
+    def refused():
+        raise cg.CaptureRefused("replica-side CUDA work still running; capture refused")
+        yield
+
+    monkeypatch.setattr(cg, "_capturing", refused)
+    _run(net, [0, 1])
+    assert handles[0].stats["captures"] == 0
+    assert handles[0].stats.get("capture_refusals", 0) >= 1
+    assert cg._RETIRED_POOL_DUE[0]
+    cg.uninstall_all(handles)
+
+
 def test_unpinned_host_copies_keep_the_forward_eager_with_the_reason(monkeypatch):
     _cuda()
     monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")
