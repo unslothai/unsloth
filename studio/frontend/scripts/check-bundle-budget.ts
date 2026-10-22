@@ -374,21 +374,24 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
   // eager providers-api chunk, not new code. Raised by that.
-  // Merged with main at 588e1c4ff the build measures 6,895,155 B raw / 2,077,532 B transfer (Node 24, 99 chunks).
+  // Merged with main at fee26fe12 the build measures 6,896,931 B raw / 2,078,007 B transfer (Node 24, 99 chunks).
   // Raised to that plus the same 160 B raw / 189 B transfer margin.
   // The chat's Unsloth Studio tools preset and the "Not in chat" note add 233 B raw / 15 B transfer (measured
   // against the MCP tab build, one machine and build, Node 24, 97 chunks), in the eager chat chunk and English
   // catalog. Raised by that.
   // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
   // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
-  // Merged with main at 588e1c4ff the build measures 6,895,453 B raw / 2,077,633 B transfer (Node 24, 99 chunks).
+  // Merged with the MCP tab branch at 77eada072 the build measures 6,897,338 B raw / 2,078,176 B transfer (Node 24, 99 chunks).
   // Raised to that plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_077_822,
-  rawBytes: 6_895_613,
+  transferBytes: 2_078_365,
+  rawBytes: 6_897_498,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
