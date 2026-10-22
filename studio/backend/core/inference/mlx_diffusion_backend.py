@@ -363,8 +363,9 @@ class MfluxRuntime:
         callback = _StepCallback()
         model.callbacks.register(callback)
         cancelled = False
+        image = None
         try:
-            result = model.generate_image(
+            image = model.generate_image(
                 seed = int(seed),
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -372,7 +373,7 @@ class MfluxRuntime:
                 width = int(width),
                 height = int(height),
                 guidance = guidance,
-            )
+            ).image
         except StopImageGenerationException as exc:
             # The unwound mflux frames hold the model; uncleared, it survives unload().
             drop_exception_frames(exc)
@@ -386,9 +387,12 @@ class MfluxRuntime:
                 model.callbacks.in_loop.remove(callback)
             except (AttributeError, ValueError):
                 pass
+            # Freed step and decode activations stay in MLX's buffer cache: on unified memory that is system RAM
+            # held idle between generations. Only unused buffers go; the weights are live arrays.
+            mx.clear_cache()
         if cancelled:
             raise MlxCancelled("cancelled")
-        return result.image
+        return image
 
     def cache_text_encodings(
         self,
