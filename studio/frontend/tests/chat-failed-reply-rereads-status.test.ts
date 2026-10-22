@@ -13,11 +13,16 @@ const FAILURE = ADAPTER.slice(
   ADAPTER.indexOf('toast.error("Generation failed"'),
   ADAPTER.indexOf("// An explicit Stop is an abort too"),
 );
+const SYNC_FAILURE = RUNTIME.slice(
+  RUNTIME.indexOf("export async function syncInferenceStatusToStore("),
+  RUNTIME.indexOf('toast.error("Failed to refresh models"'),
+);
 
-test("a failed local reply re-reads what the server still holds", () => {
-  assert.match(RUNTIME, /export async function syncInferenceStatusToStore\(/);
+test("a failed local reply quietly re-reads what the server still holds", () => {
   assert.match(
     FAILURE,
-    /if \(!isExternalRequest\) \{\s*void syncInferenceStatusToStore\(/,
+    /if \(!isExternalRequest\) \{\s*void syncInferenceStatusToStore\(\{[^}]*quiet: true/,
   );
+  const catchBlock = SYNC_FAILURE.slice(SYNC_FAILURE.lastIndexOf("} catch (error) {"));
+  assert.match(catchBlock, /if \(options\?\.quiet\) return;[\s\S]*setModelsError\(message\)/);
 });

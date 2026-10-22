@@ -9192,9 +9192,9 @@ export function createOpenAIStreamAdapter(
               description: msg || "Unknown error",
             });
           }
-          // A killed worker is only noticed by a status read.
+          // Only a status read tells the UI a killed worker's model is gone; quiet, as this failure has its toast.
           if (!isExternalRequest) {
-            void syncInferenceStatusToStore({ includeLoras: false });
+            void syncInferenceStatusToStore({ includeLoras: false, quiet: true });
           }
         }
         // An explicit Stop is an abort too, but it must persist its reason instead of
