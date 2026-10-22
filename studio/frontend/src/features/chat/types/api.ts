@@ -12,6 +12,20 @@ export type MmprojFallbackReason =
   | "projector_incompatible"
   | "projector_startup_failure";
 
+/** One MLX offload knob on the resident load: the fraction read from disk (null = none), as asked, and why a
+ *  request is not applied. */
+export interface MlxOffloadPart {
+  applied: number | null;
+  requested: "auto" | "off" | number | null;
+  reason: string | null;
+}
+
+export interface MlxOffloadReport {
+  ple: MlxOffloadPart;
+  experts: MlxOffloadPart;
+  disk_bytes: number | null;
+}
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -73,7 +87,12 @@ export interface LoadModelRequest {
   cache_type_kv?: string | null;
   mlx_kv_quant?: string | null;
   mlx_int8_prefill?: boolean;
-  /** "auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off"; legacy spellings accepted. */
+  /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
+  mlx_ple_offload?: "off" | number | null;
+  mlx_expert_offload?: "off" | number | null;
+  /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
+   *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
+   *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
   /** MLX only: a companion drafter, a local directory or an already-cached repo id. */
@@ -245,6 +264,7 @@ export interface LoadModelResponse {
   mlx_int8_prefill?: boolean | null;
   mlx_int8_prefill_requested?: boolean | null;
   mlx_int8_prefill_reason?: string | null;
+  mlx_offload?: MlxOffloadReport | null;
   chat_template?: string | null;
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
@@ -378,6 +398,7 @@ export interface InferenceStatusResponse {
   mlx_int8_prefill?: boolean | null;
   mlx_int8_prefill_requested?: boolean | null;
   mlx_int8_prefill_reason?: string | null;
+  mlx_offload?: MlxOffloadReport | null;
   chat_template_override?: string | null;
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;

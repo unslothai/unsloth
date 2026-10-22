@@ -586,8 +586,9 @@ class TestExtraArgsMtpDetection:
 
     def test_load_model_ranks_subsets_by_active_pin_fraction(self):
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_gpu_usable(g,pin_fraction)" in compact
-        assert "_gpu_usable(g,_vram_frac-_flat_mtp_reserve)" in compact
+        assert "usable=_gpu_usable(g,frac)" in compact
+        assert "_gpu_rank(g,pin_fraction," in compact
+        assert "_gpu_rank(g,_vram_frac-_flat_mtp_reserve," in compact
         assert "_vram_frac=_active_vram_fraction()" in compact
 
     @pytest.mark.parametrize(

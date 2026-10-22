@@ -93,6 +93,7 @@ import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
@@ -247,6 +248,7 @@ import {
   type ShortcutId,
   useShortcut,
   prefersReducedMotion,
+  FullInstallDialog,
 } from "@/features/settings";
 import type {
   SidebarNavItemId,
@@ -355,6 +357,8 @@ type NavRowDef = {
   // Capability not yet measured: rendered with a spinner, neither enabled nor greyed.
   pending?: boolean;
   pendingTooltip?: string;
+  // Greyed out but clickable: Train on an upgradable Chat only install opens the full install dialog.
+  dimmed?: boolean;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -899,6 +903,7 @@ function MoreMenuItem({
   label,
   active,
   disabled,
+  dimmed,
   tooltip,
   badge,
   spinner,
@@ -909,6 +914,7 @@ function MoreMenuItem({
   label: string;
   active: boolean;
   disabled?: boolean;
+  dimmed?: boolean;
   tooltip?: string;
   badge?: string;
   spinner?: boolean;
@@ -923,7 +929,7 @@ function MoreMenuItem({
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className={cn(active && "bg-accent/60")}
+      className={cn(active && "bg-accent/60", dimmed && "opacity-50")}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -1264,6 +1270,8 @@ export function AppSidebar() {
   // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
   const repair = useTauriRepairController();
   const canRepair = repair !== null && !repair.isExternalServer;
+  const fullInstall = useFullInstallUpgrade();
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -1280,11 +1288,12 @@ export function AppSidebar() {
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "no_torch"
-        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
-          // on Desktop the manual repair reruns the installer with PyTorch.
-          canRepair
-          ? "Training was left out of this install (Chat only). Use Repair installation in Settings to add it."
-          : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        ? // `unsloth studio update` keeps no-torch. chatOnlyHint: a Mac the MLX wheels skip.
+          chatOnlyHint
+          ? chatOnlyHint
+          : canRepair
+            ? "Training was left out of this install (Chat only). Use Upgrade to full install in Settings to add it."
+            : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
         : chatOnlyReason === "rosetta"
         ? "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
         : chatOnlyReason === "intel_mac"
@@ -3250,17 +3259,27 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured,
-      tooltip: trainDisabledHint,
+      disabled: chatOnlyMeasured && !fullInstall,
+      dimmed: chatOnlyMeasured && fullInstall !== null,
+      tooltip: fullInstall
+        ? "Training is not installed. Click to install it (at least 5 GB of disk space)."
+        : trainDisabledHint,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) return;
+        if (chatOnlyMeasured) {
+          if (fullInstall) {
+            setFullInstallOpen(true);
+            closeMobileIfOpen();
+          }
+          return;
+        }
         navigateFromRow({ to: "/studio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
+        if (chatOnlyMeasured) return;
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
@@ -5883,13 +5902,14 @@ export function AppSidebar() {
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
-                    alwaysTooltip={rowState.pending}
+                    alwaysTooltip={rowState.pending || Boolean(row.dimmed)}
                     spinner={rowState.spinner}
                     testId={`nav-row-${id}`}
                     onClick={row.onClick}
                     onIntent={row.onIntent}
                     className={cn(
                       row.className,
+                      row.dimmed && "opacity-50",
                       id === "images" && "group/images-item",
                       id === "audio" && "group/audio-item",
                     )}
@@ -6071,6 +6091,7 @@ export function AppSidebar() {
                             badge={row.badge}
                             active={row.active}
                             disabled={rowState.disabled}
+                            dimmed={row.dimmed}
                             tooltip={rowState.tooltip}
                             spinner={rowState.spinner}
                             onSelect={row.onClick}
@@ -6606,6 +6627,13 @@ export function AppSidebar() {
     </Sidebar>
     </TooltipProvider>
     <ChatSearchDialog />
+    {fullInstall && (
+      <FullInstallDialog
+        open={fullInstallOpen}
+        onOpenChange={setFullInstallOpen}
+        onConfirm={() => void fullInstall.repairInstall()}
+      />
+    )}
     {!isTauri && (
       <ShutdownDialog
         open={shutdownOpen}

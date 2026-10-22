@@ -35,6 +35,9 @@ export interface PerModelConfig {
   kvCacheDtype: string | null;
   mlxKvQuant?: MlxKvQuant | null;
   mlxInt8Prefill?: boolean;
+  /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
+  mlxPleOffload?: MlxOffload;
+  mlxExpertOffload?: MlxOffload;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** Draft-context KV dtype, independent of kvCacheDtype. Optional so older blobs parse. */
@@ -81,6 +84,8 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   kvCacheDtype: null,
   mlxKvQuant: null,
   mlxInt8Prefill: false,
+  mlxPleOffload: null,
+  mlxExpertOffload: null,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -357,7 +362,17 @@ export function normalizeMlxKvQuant(
 }
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
-// --load-mode enum in --help order. "auto" is stored as null and never sent: builds reject it.
+export type MlxOffload = "off" | number | null;
+
+export function normalizeMlxOffload(value: unknown): MlxOffload {
+  if (value === "off") return "off";
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1
+    ? value
+    : null;
+}
+
+// llama-server's --load-mode enum in --help order. "auto" is the default: the UI shows it, storage keeps null and
+// the backend emits no flag. Never sent verbatim; builds like b10360 reject "auto" as a value.
 export const LOAD_MODES = [
   "auto",
   "none",
@@ -392,9 +407,10 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 11;
+const STORAGE_SCHEMA_VERSION = 12;
+const PRE_MLX_OFFLOAD_SCHEMA_VERSION = 11;
 const PRE_MLX_DRAFTER_SCHEMA_VERSION = 10;
 const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
 const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;
@@ -440,6 +456,8 @@ const STORED_CONFIG_FIELDS = new Set([
   "kvCacheDtype",
   "mlxKvQuant",
   "mlxInt8Prefill",
+  "mlxPleOffload",
+  "mlxExpertOffload",
   "loadIn4bit",
   "speculativeType",
   "specDraftNMax",
@@ -1061,6 +1079,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     mlxInt8Prefill: partial.mlxInt8Prefill === true,
+    mlxPleOffload: normalizeMlxOffload(partial.mlxPleOffload),
+    mlxExpertOffload: normalizeMlxOffload(partial.mlxExpertOffload),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -1145,8 +1165,11 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
-  if (normalized.specDraftModel != null || mlxMode) {
+  if (normalized.mlxPleOffload != null || normalized.mlxExpertOffload != null) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.specDraftModel != null || mlxMode) {
+    return PRE_MLX_OFFLOAD_SCHEMA_VERSION;
   }
   if (normalized.tensorSplit != null) {
     return PRE_MLX_DRAFTER_SCHEMA_VERSION;
@@ -1336,6 +1359,8 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
     !config.mlxInt8Prefill &&
+    config.mlxPleOffload == null &&
+    config.mlxExpertOffload == null &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&

@@ -18,7 +18,11 @@ import { Toaster } from "@/components/ui/sonner";
 import { TitleTooltipLayer } from "@/components/ui/title-tooltip";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
-import { fetchDeviceType } from "@/config/env";
+import {
+  fetchDeviceType,
+  forgetMeasuredVerdict,
+  usePlatformStore,
+} from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
@@ -704,13 +708,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // Manual repair reruns the installer so a CPU-only venv is rebuilt; via ref since startRepair churns.
   const startRepairRef = useRef(startRepair);
   startRepairRef.current = startRepair;
+  const [upgradingToFull, setUpgradingToFull] = useState(false);
   const repairController = useMemo(
     () => ({
-      repairInstall: () => startRepairRef.current({ forceInstaller: true }),
+      repairInstall: () => {
+        setUpgradingToFull(usePlatformStore.getState().chatOnlyReason === "no_torch");
+        return startRepairRef.current({ forceInstaller: true });
+      },
       isExternalServer,
     }),
     [isExternalServer],
   );
+  if (upgradingToFull && status === "running") setUpgradingToFull(false);
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);
   const hasEnteredAppModeRef = useRef(false);
@@ -869,8 +878,20 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     };
   }, [status, desktopAuthRetry]);
 
+  // Set once a backend that already answered goes away: the next one measures its hardware again.
+  const servedRef = useRef(false);
+  const verdictStaleRef = useRef(false);
+  useEffect(() => {
+    if (status === "running") servedRef.current = true;
+    else if (servedRef.current) verdictStaleRef.current = true;
+  }, [status]);
+
   useEffect(() => {
     if (!isTauri || status !== "running" || !desktopAuthReady) return;
+    if (verdictStaleRef.current) {
+      verdictStaleRef.current = false;
+      forgetMeasuredVerdict();
+    }
     void fetchDeviceType({ force: true }).catch(() => undefined);
   }, [status, desktopAuthReady]);
 
@@ -982,6 +1003,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             progressDetail={startupProgressDetail}
             startupMessage={startupMessage}
             elevationPackages={elevationPackages}
+            upgradingToFull={upgradingToFull}
             onInstall={startInstall}
             onRetry={retry}
             onRetryInstall={retryInstall}

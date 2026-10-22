@@ -44,6 +44,7 @@ import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
 import { engineLaunchFieldsFrom } from "./engine-launch-fields";
+import { mlxOffloadStateFrom } from "./mlx-runtime-state";
 import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
@@ -226,6 +227,7 @@ export function applyActiveModelStatusToStore(
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
+  const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // A pin is one model's; clamp the chat's own level once the model is actually resident.
   const effortToClamp =
@@ -536,6 +538,17 @@ export function applyActiveModelStatusToStore(
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
             loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
+            ...incomingMlxOffload,
+            ...((hydratingExistingModel ||
+              (prevState.mlxPleOffload ?? null) ===
+                (prevState.loadedMlxPleOffloadRequested ?? null)) && {
+              mlxPleOffload: incomingMlxOffload.loadedMlxPleOffloadRequested,
+            }),
+            ...((hydratingExistingModel ||
+              (prevState.mlxExpertOffload ?? null) ===
+                (prevState.loadedMlxExpertOffloadRequested ?? null)) && {
+              mlxExpertOffload: incomingMlxOffload.loadedMlxExpertOffloadRequested,
+            }),
             ...((hydratingExistingModel ||
               (prevState.mlxKvQuant ?? null) ===
                 (prevState.loadedMlxKvQuantRequested ?? null)) && {
@@ -553,6 +566,7 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
+            ...incomingMlxOffload,
           })),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&

@@ -64,12 +64,18 @@ export function selectResidentEstimateSettings(state: ResidentState) {
   };
 }
 
-/** `mlx`: reads its window from maxSeqLength and cache width from mlxKvQuant, not nCtx. */
+/** Copy only source identity from the pending request. `mlx`: the resident is an MLX load,
+ *  which reads its window from maxSeqLength and its cache width from mlxKvQuant, not nCtx, and
+ *  is priced at the offload it applied rather than what Auto would pick now. */
 export function resolveResidentEstimateRequest(
   source: MemoryEstimateRequest | null,
   settings: ReturnType<typeof selectResidentEstimateSettings>,
   context: number | null,
-  mlx?: { kvQuant: string | null },
+  mlx?: {
+    kvQuant: string | null;
+    pleOffload?: number | null;
+    expertOffload?: number | null;
+  },
 ): MemoryEstimateRequest | null {
   if (
     !source ||
@@ -87,7 +93,12 @@ export function resolveResidentEstimateRequest(
     ...(settings ?? {}),
     nCtx: Math.floor(context),
     ...(mlx
-      ? { maxSeqLength: Math.floor(context), mlxKvQuant: mlx.kvQuant }
+      ? {
+          maxSeqLength: Math.floor(context),
+          mlxKvQuant: mlx.kvQuant,
+          mlxPleOffload: mlx.pleOffload ?? "off",
+          mlxExpertOffload: mlx.expertOffload ?? "off",
+        }
       : {}),
   };
 }

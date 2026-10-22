@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { usePlatformStore } from "@/config/env";
 import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
@@ -23,6 +24,10 @@ import { SettingsRow } from "./settings-row";
 export function DesktopRepairControl(): ReactElement | null {
   const t = useT();
   const repair = useTauriRepairController();
+  // Not useFullInstallUpgrade(): a Mac the MLX wheels skip still gets PyTorch, only not Train.
+  const upgradesToFull = usePlatformStore(
+    (s) => s.chatOnlyReason === "no_torch" && s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
   const [confirmOpen, setConfirmOpen] = useState(false);
   if (!repair || repair.isExternalServer) return null;
 
@@ -50,7 +55,11 @@ export function DesktopRepairControl(): ReactElement | null {
               {t("settings.general.repairInstall.confirmTitle")}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.general.repairInstall.confirmDescription")}
+              {t(
+                upgradesToFull
+                  ? "settings.general.repairInstall.confirmDescriptionChatOnly"
+                  : "settings.general.repairInstall.confirmDescription",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
