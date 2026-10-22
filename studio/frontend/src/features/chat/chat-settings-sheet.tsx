@@ -1732,7 +1732,7 @@ export function ChatSettingsPanel({
                 />
               </div>
             ) : null}
-            {activeModelIsLocal && !isExternalModel && currentCheckpoint ? (
+            {!isExternalModel && currentCheckpoint ? (
               <Button
                 type="button"
                 variant="outline"
