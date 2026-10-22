@@ -297,6 +297,59 @@ def _save_bare_params4bit_quant_state(model):
             handle.remove()
 
 
+def _add_bare_params4bit_quant_state(model, state_dict):
+    """A caller-supplied `state_dict` (`save_pretrained(path, state_dict = model.state_dict())`, the
+    Trainer's saves) was built before `_save_bare_params4bit_quant_state` installed its hooks, and
+    transformers writes it as given. Returns a copy with the same quant state entries added next to
+    each bare `Params4bit` it holds, or the dict itself when there is nothing to add."""
+    if not isinstance(state_dict, dict):
+        return state_dict
+    try:
+        from bitsandbytes.nn import Linear4bit, Params4bit
+    except Exception:
+        return state_dict
+    added = {}
+    for module_name, module in model.named_modules():
+        if isinstance(module, Linear4bit):
+            continue
+        for name, param in module.named_parameters(recurse = False):
+            if not isinstance(param, Params4bit) or getattr(param, "quant_state", None) is None:
+                continue
+            key = f"{module_name}.{name}" if module_name else name
+            if key not in state_dict:
+                continue
+            for entry, value in param.quant_state.as_dict(packed = True).items():
+                if f"{key}.{entry}" not in state_dict:
+                    added[f"{key}.{entry}"] = value.detach()
+    if not added:
+        return state_dict
+    out = dict(state_dict)
+    out.update(added)
+    return out
+
+
+def _with_bare_params4bit_state_dict(model, original, args, kwargs):
+    """`args`, `kwargs` of a full save, with a caller-supplied `state_dict` (keyword or positional,
+    located by binding `original`'s signature) given its bare `Params4bit` quant state."""
+    if "state_dict" in kwargs:
+        kwargs = dict(kwargs, state_dict = _add_bare_params4bit_quant_state(model, kwargs["state_dict"]))
+        return args, kwargs
+    if not args:
+        return args, kwargs
+    import inspect
+
+    try:
+        bound = inspect.signature(original).bind_partial(*args, **kwargs)
+    except (TypeError, ValueError):
+        return args, kwargs
+    if bound.arguments.get("state_dict") is None:
+        return args, kwargs
+    bound.arguments["state_dict"] = _add_bare_params4bit_quant_state(
+        model, bound.arguments["state_dict"]
+    )
+    return bound.args, bound.kwargs
+
+
 def _filter_push_to_hub_kwargs(push_fn, kwargs):
     """Keep only the keywords `push_fn` actually accepts.
 
@@ -8480,9 +8533,11 @@ def patch_saving_functions(model, vision = False):
 
         original = self.original_model_save_pretrained
         # Adapter saves never write base weights; full saves also need fused 4-bit experts' quant state.
-        quant_state = (
-            nullcontext() if isinstance(self, PeftModel) else _save_bare_params4bit_quant_state(self)
-        )
+        if isinstance(self, PeftModel):
+            quant_state = nullcontext()
+        else:
+            quant_state = _save_bare_params4bit_quant_state(self)
+            args, kwargs = _with_bare_params4bit_state_dict(self, original, args, kwargs)
         if kwargs.get("safe_serialization", True) is None:
             kwargs["safe_serialization"] = _normalize_safe_serialization(None)
         elif args:

@@ -151,3 +151,43 @@ def test_full_save_without_bare_params4bit_is_unchanged(tmp_path):
     for f in ("model.safetensors", "config.json"):
         with open(os.path.join(plain, f), "rb") as a, open(os.path.join(patched, f), "rb") as b:
             assert a.read() == b.read(), f
+
+
+@pytest.mark.parametrize("positional", [False, True])
+def test_full_save_with_a_supplied_state_dict_keeps_fused_quant_state(tmp_path, positional):
+    """`save_pretrained(path, state_dict = model.state_dict())` (and the Trainer's saves) pass a dict
+    built before the save installs its hooks, and transformers writes it as given."""
+    bnb = pytest.importorskip("bitsandbytes")
+    from unsloth.save import patch_saving_functions
+
+    model = _tiny_gpt_oss()
+    experts = model.model.layers[0].mlp.experts
+    for name in ("gate_up_proj", "down_proj"):
+        setattr(experts, name, _quantize_cpu(getattr(experts, name).data.normal_(0.0, 0.05)))
+    model.config.quantization_config = dict(BNB_QC, bnb_4bit_quant_type = "nf4")
+    patch_saving_functions(model)
+    supplied = model.state_dict()
+    keys = set(supplied)
+    out = str(tmp_path / "saved")
+    if positional:
+        model.save_pretrained(out, True, supplied)  # save_directory, is_main_process, state_dict
+    else:
+        model.save_pretrained(out, state_dict = supplied)
+
+    saved = load_file(os.path.join(out, "model.safetensors"))
+    for name in ("gate_up_proj", "down_proj"):
+        key = f"{P}.experts.{name}"
+        assert f"{key}.absmax" in saved and f"{key}.quant_state.bitsandbytes__nf4" in saved
+        stats = {k[len(key) + 1 :]: v for k, v in saved.items() if k.startswith(key + ".")}
+        restored = bnb.nn.Params4bit.from_prequantized(
+            data = saved[key], quantized_stats = stats, requires_grad = False, device = "cpu"
+        )
+        want = getattr(experts, name)
+        torch.testing.assert_close(
+            bnb.functional.dequantize_4bit(restored.data, restored.quant_state),
+            bnb.functional.dequantize_4bit(want.data, want.quant_state),
+        )
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, out) is True
+    # The augmented dict is a copy (transformers may consume the dict it is given).
+    assert not any(k.endswith(".absmax") or ".quant_state." in k for k in supplied)
