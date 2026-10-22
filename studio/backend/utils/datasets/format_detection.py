@@ -968,11 +968,7 @@ def detect_vlm_dataset_structure(dataset):
 
     def _probe_image_candidate(col, sample_value):
         """Probe whether an image candidate is reachable (True unless definitely broken).
-
-        Row values are untrusted: URLs go through the web tool's public-address guard
-        (pinned IP, every redirect re-checked), so a row cannot make the host probe
-        itself or its LAN.
-        """
+        Row URLs are untrusted, so they go through the web tool's SSRF guard."""
         import os
 
         if not isinstance(sample_value, str):

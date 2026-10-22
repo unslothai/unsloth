@@ -397,8 +397,7 @@ _ROW_IMAGE_TIMEOUT_S = 30
 
 
 def _fetch_row_image(url):
-    """Download a dataset row's image URL. Rows are untrusted, so this uses the web tool's
-    fetch: public addresses only, pinned to the resolved IP, every redirect re-checked."""
+    """Rows are untrusted: use the web tool's SSRF-guarded fetch (public IPs, redirects re-checked)."""
     import time
     from io import BytesIO
 
@@ -423,9 +422,8 @@ def _is_remote_image_path(path):
 
 
 def _guard_remote_image_feature(dataset, image_column):
-    """An Image()-typed column decodes itself on access, and a row stored as a URL with no bytes
-    is then fetched by ``datasets`` with no SSRF guard. Only for such columns, turn decoding off
-    so those rows reach _fetch_row_image; every other dataset is returned untouched."""
+    """Image() columns self-decode on access, so ``datasets`` would fetch a bytes-less URL row unguarded.
+    Turn decoding off only for columns holding such rows."""
     try:
         from datasets import Dataset
         from datasets import Image as ImageFeature
@@ -435,7 +433,6 @@ def _guard_remote_image_feature(dataset, image_column):
         feature = dataset.features.get(image_column)
         if not isinstance(feature, ImageFeature) or not feature.decode:
             return dataset
-        # Read only the path and bytes-null columns from Arrow, never the image bytes themselves.
         remote = False
         for chunk in dataset.data.column(image_column).chunks:
             paths = chunk.field("path").to_pylist()
@@ -452,8 +449,7 @@ def _guard_remote_image_feature(dataset, image_column):
 
 
 def _decode_image_cell(value):
-    """Decode an undecoded Image() cell ({"bytes", "path"}): remote paths go through the guarded
-    fetch, everything else through datasets' own decoder as before."""
+    """Remote paths via the guarded fetch, everything else via datasets' own decoder."""
     if not _is_remote_image_path(value.get("path")) or value.get("bytes"):
         from datasets import Image as ImageFeature
         return ImageFeature().decode_example(value).convert("RGB")
