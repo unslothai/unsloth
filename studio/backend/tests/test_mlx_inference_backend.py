@@ -1033,6 +1033,289 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     assert backend.models["fake/text"]["base_model"] is None
 
 
+def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch):
+    from core.inference import mlx_inference, mlx_memory
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    calls, fits = [], []
+    _install_fake_fast_mlx(monkeypatch, calls)
+    loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
+    stock, refusal = loader.from_pretrained, {"on": False}
+
+    def from_pretrained(
+        *args,
+        offload = None,
+        **kwargs,
+    ):
+        refused = refusal["on"] and isinstance(offload, dict)
+        if callable(offload):
+            offload = None if refusal["on"] else offload("/snapshot")
+        kwargs.update(
+            {"offload": {k: v for k, v in offload.items() if v is not None}} if offload else {}
+        )
+        model, tokenizer = stock(*args, **kwargs)
+        if refused:
+            raise ValueError("Unsloth: offload reads the checkpoint's tensors as stored")
+        if (offload or {}).get("experts"):  # this model has experts, no PLE table
+            model._unsloth_offload = {"experts": {"on_disk_bytes": 7}}
+        return model, tokenizer
+
+    monkeypatch.setattr(loader, "from_pretrained", staticmethod(from_pretrained))
+    monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(
+        mlx_inference,
+        "_fitted_context",
+        lambda *a, **kw: fits.append(kw.get("offload")) or (None, None),
+    )
+    planned, history = [], []  # here auto takes 0.6 of the experts
+    budget = lambda retains_history: history.append(retains_history) or 1 << 40
+    monkeypatch.setattr(mlx_inference, "mlx_memory_budget", budget)
+    monkeypatch.setattr(mlx_inference, "mlx_checkpoint_window", lambda model_dir: 32768)
+    monkeypatch.setattr(
+        mlx_memory,
+        "mlx_offload_plan",
+        lambda model_dir, **kw: planned.append((model_dir, kw))
+        or (None if kw["ple"] == "auto" else kw["ple"], 0.6),
+    )
+    config = SimpleNamespace(identifier = "fake/moe", is_vision = False, is_lora = False)
+
+    base = {"max_seq_length": 0, "load_in_4bit": False}
+
+    def load(ple, experts, *more):
+        calls.clear()
+        backend = MLXInferenceBackend()
+        backend.load_model(config, offload = (ple, experts), **{**base, **dict(*more)})
+        record = backend.models["fake/moe"]["mlx_offload"]
+        return calls[-1][1].get("offload", {}), record
+
+    sent, record = load(0.5, 0.75)
+    assert sent == {"ple": 0.5, "experts": 0.75} and fits[-1] == (None, 0.75)
+    assert record == {
+        "ple": {
+            "applied": None,
+            "requested": 0.5,
+            "reason": "the model has no PLE tables unsloth_zoo can read from disk",
+        },
+        "experts": {"applied": 0.75, "requested": 0.75, "reason": None},
+        "disk_bytes": 7,
+    }
+    sent, record = load("off", "off")
+    assert sent == {} and fits[-1] is None and record["ple"]["reason"] is None
+    assert not planned
+    sent, record = load(None, None)
+    assert sent == {"experts": 0.6} and fits[-1] == (None, 0.6) and history == [True]
+    pick = lambda *keys: tuple(planned[-1][1][key] for key in keys)
+    assert planned[-1][0] == "/snapshot" and pick("ple", "experts") == ("auto", "auto")
+    assert pick("context", "max_ctx", "kv_bits", "load_in_4bit", "vision") == (
+        None,
+        32768,
+        None,
+        False,
+        None,
+    )
+    assert (record["experts"]["applied"], record["experts"]["requested"]) == (0.6, None)
+    with monkeypatch.context() as patch:  # a speculative text load is priced on mlx-vlm
+        from core.inference import mlx_speculative
+
+        patch.setattr(mlx_speculative, "speculates_on_route", lambda *a: True)
+        patch.setattr(mlx_speculative, "speculation_refusal", lambda **k: None)
+        patch.setattr(
+            mlx_speculative,
+            "resolve_speculation",
+            lambda mode, *a, **k: mlx_speculative.SpecResolution(mode),
+        )
+        patch.setattr(mlx_speculative, "build_draft", lambda *a, **k: (None, None, None, None))
+        load(None, None)
+    assert planned[-1][1]["vision"] is True
+    load("off", None, {"max_seq_length": 8192})  # an explicit off is planned as off
+    assert pick("ple", "context", "max_ctx") == (None, 8192, 8192)
+    sent, record = load(None, None, {"dtype": "float16"})  # not priced, so not planned: off
+    assert sent == {} and len(planned) == 3 and record["experts"]["reason"] is None
+    sent, record = load(0.5, None)  # decided: the hand-set part the model lacks says so
+    assert sent == {"ple": 0.5, "experts": 0.6} and record["ple"]["reason"].startswith(
+        "the model has"
+    )
+    # Refused by unsloth_zoo for this load: loaded again without it, saying why; auto turns off.
+    refusal["on"] = True
+    sent, record = load("off", 1.0)
+    assert sent == {} and len(calls) == 2 and record["experts"]["applied"] is None
+    assert record["experts"]["reason"].startswith("Unsloth: offload reads")
+    sent, record = load(None, None)
+    assert sent == {} and not (record["experts"]["applied"] or record["experts"]["reason"])
+    # A hand-set part beside "auto" goes off with the planner unsloth_zoo never called, saying why.
+    sent, record = load(1.0, None)
+    assert (
+        sent == {}
+        and len(calls) == 1
+        and record["ple"]["reason"].startswith("unsloth_zoo cannot offload this load")
+    )
+    refusal["on"] = False
+    monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: None)
+    sent, record = load("off", 1.0)
+    assert (
+        sent == {}
+        and record["experts"]["reason"] == "the installed unsloth_zoo cannot read weights from disk"
+    )
+
+
+def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
+    from core.inference import mlx_inference as mi
+    from core.inference import mlx_memory as mm
+
+    plans = []
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(mm, "mlx_offload_plan", lambda d, **kw: plans.append(kw) or (1.0, 0.5))
+    monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 << 40)
+    monkeypatch.setattr(mi, "mlx_checkpoint_window", lambda d: 32768)
+    monkeypatch.setattr(mi, "mlx_kv_quant_is_refused", lambda d, bits: True)
+    priced = {"pinned": None, "load_in_4bit": False, "retains_history": True, "kv_bits": 2}
+    auto = lambda at, *knobs: mi.mlx_resolve_offload(at, knobs, **priced)
+    assert auto("/snap", "auto", "auto") == (1.0, 0.5) and plans[-1]["vision"] is None
+    assert (plans[-1]["budget_bytes"], plans[-1]["kv_bits"]) == (1 << 40, None)
+    mi.mlx_resolve_offload("/snap", ("auto", None), vision = True, **priced)
+    assert plans[-1]["vision"] is True
+    plans.pop()
+    assert auto("/snap", 0.5, None) == (0.5, None) and auto(None, "auto", "auto") == (None, None)
+    monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: None)
+    assert auto("/snap", "auto", "auto") == (None, None) and len(plans) == 1
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: None)
+    monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 / 0)
+    assert auto("/snap", "auto", 0.5) == (None, 0.5) and len(plans) == 1
+
+
+@pytest.mark.parametrize("decided_on_mlx_vlm", [False, True])
+def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, decided_on_mlx_vlm):
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference as mi
+    from core.inference import mlx_memory as mm
+    from core.inference import mlx_speculative
+
+    plans, applied = [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            offload = kwargs.get("offload")
+            if not kwargs["text_only"]:
+                if decided_on_mlx_vlm and callable(offload):
+                    offload("/snap")
+                raise ValueError("mlx-vlm has no such architecture")
+            applied.append(offload("/snap") if callable(offload) else offload)
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    def resolve(model_dir, knobs, **kw):
+        plans.append((knobs, kw["vision"]))
+        # A plan for the mlx-vlm route differs from the one mlx-lm needs, so a reused plan shows.
+        return (None, 0.25) if kw["vision"] else (None, 1.0)
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(mi, "mlx_resolve_offload", resolve)
+    monkeypatch.setattr(mi, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mi.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    source = mlx_speculative.DrafterSource("dflash", "/drafter", False)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+    )
+    config = SimpleNamespace(identifier = "org/moe", is_vision = False, is_lora = False)
+
+    mi.MLXInferenceBackend().load_model(config, speculative_type = "dflash")
+    assert plans[-1] == (("auto", "auto"), None)
+    assert applied == [{"ple": None, "experts": 1.0}]
+
+
+def test_offload_knobs_validate_and_reload_on_change():
+    from pydantic import ValidationError
+
+    from core.inference import orchestrator
+    from models.inference import EstimateMemoryRequest, LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    assert (
+        req(mlx_ple_offload = 1).mlx_ple_offload,
+        req(mlx_expert_offload = "off").mlx_expert_offload,
+    ) == (1.0, "off")
+    assert req(mlx_ple_offload = "auto").mlx_ple_offload == "auto"
+    for bad in (0, 1.5, -0.5, True, "on", "0.5"):
+        for model in (LoadRequest, EstimateMemoryRequest):
+            with pytest.raises(ValidationError):
+                model(
+                    model_path = "m",
+                    **({"model": "m"} if model is LoadRequest else {}),
+                    mlx_expert_offload = bad,
+                )
+    be = SimpleNamespace(active_model_name = "m", models = {"m": {"mlx_kv_quant_requested": "auto"}})
+    assert _mlx_runtime_settings_match(be, req(mlx_ple_offload = "auto", mlx_expert_offload = None))
+    assert not _mlx_runtime_settings_match(be, req(mlx_ple_offload = "off"))
+    assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
+    be.models["m"]["mlx_offload"] = {"ple": {"requested": None}, "experts": {"requested": 0.5}}
+    assert _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
+    assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.75))
+    assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5, mlx_ple_offload = 1.0))
+    import inspect
+
+    from routes import inference as routes
+
+    part = lambda applied, requested: {"applied": applied, "requested": requested}
+    info = {"mlx_offload": {"ple": part(1.0, 1.0), "experts": part(0.6, None)}}
+    assert "reads 60% of its MoE experts from disk" in routes._mlx_offload_warning(info)
+    info["mlx_offload"]["experts"]["requested"] = 0.6
+    assert routes._mlx_offload_warning(info) is None
+    assert inspect.getsource(routes).count("memory_warning = _mlx_offload_warning(") == 3
+    load = inspect.getsource(orchestrator.InferenceOrchestrator.load_model)
+    assert "mlx_offload" in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+    assert '"mlx_offload": tuple(mlx_offload)' in load  # carried to the worker
+
+
+def test_the_worker_carries_the_offload_knobs_into_the_load_and_back(monkeypatch):
+    from core.inference import worker
+
+    model = SimpleNamespace(
+        identifier = "org/moe",
+        display_name = "moe",
+        is_vision = False,
+        is_lora = False,
+        base_model = None,
+        is_audio = False,
+        audio_type = None,
+        has_audio_input = False,
+    )
+    asked, sent = {}, []
+    entry = {"mlx_offload": {"experts": {"applied": 0.75, "requested": 0.75}, "disk_bytes": 7}}
+    backend = SimpleNamespace(
+        device = "mlx",
+        active_model_name = model.identifier,
+        models = {model.identifier: entry},
+        load_model = lambda **kw: asked.update(kw) or True,
+    )
+    monkeypatch.setattr(worker, "_build_model_config", lambda config: model)
+    monkeypatch.setattr(worker, "_run_security_gates", lambda *a, **k: True)
+    monkeypatch.setattr(worker, "_resolve_lora_4bit", lambda *a: False)
+    monkeypatch.setattr(worker, "_needs_nemotron_trust", lambda *a, **k: False)
+    xet = types.ModuleType("utils.hf_xet_fallback")
+    xet.start_watchdog = lambda **k: SimpleNamespace(set = lambda: None)
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", xet)
+    queue = SimpleNamespace(put = lambda item, *a, **k: sent.append(item))
+
+    worker._handle_load(
+        backend,
+        {"model_name": model.identifier, "mlx_offload": ("off", 0.75)},
+        queue,
+    )
+    assert asked["offload"] == ("off", 0.75)
+    (loaded,) = [item for item in sent if item.get("type") == "loaded"]
+    assert {k: loaded["model_info"][k] for k in entry} == entry
+
+
 @pytest.mark.parametrize("is_lora", [False, True])
 def test_mlx_base_fusion_lifetime_and_lora_request_scope(monkeypatch, mlx_moe, is_lora):
     backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])

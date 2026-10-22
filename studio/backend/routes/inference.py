@@ -41,6 +41,7 @@ from typing import (
     TYPE_CHECKING,
     Union,
 )
+import dataclasses
 import functools
 import json
 import re
@@ -7544,6 +7545,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_int8_prefill = None,
         mlx_int8_prefill_requested = None,
         mlx_int8_prefill_reason = None,
+        mlx_offload = None,
         mlx_context_budget = None,
         spec_draft_model = None,
         chat_template_override_reason = None,
@@ -13572,20 +13574,8 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
 
 def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
     """The window this checkpoint declares, held to what a load may be asked for."""
-    from types import SimpleNamespace
-
-    from core.inference.mlx_inference import mlx_native_context_length
-    from core.inference.mlx_memory import _snapshot_config
-    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
-
-    try:
-        config = _snapshot_config(model_dir)
-    except Exception:
-        return None
-    if config is None:
-        return None
-    native = mlx_native_context_length(SimpleNamespace(config = config))
-    return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
+    from core.inference.mlx_inference import mlx_checkpoint_window
+    return mlx_checkpoint_window(model_dir)
 
 
 def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits, **route):
@@ -13610,18 +13600,98 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
     )
 
 
-def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in_4bit: bool):
-    """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
-    would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
+def _mlx_estimate_offload(
+    request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
+) -> tuple[dict, tuple]:
+    """``({"offload": (ple, experts)} or {}, offloadable parts)`` for an MLX load of *request*,
+    "auto" decided as the load does, on its route; neither if the load quantizes, which unsloth_zoo
+    refuses."""
+    from core.inference.mlx_inference import (
+        mlx_resolve_offload,
+        mlx_vlm_snapshot_store_available,
+        normalize_mlx_offload,
+    )
+    from core.inference.mlx_memory import _snapshot_config, mlx_offloadable_parts
+
+    checkpoint = _snapshot_config(model_dir) or {}
+    if load_in_4bit and not (
+        checkpoint.get("quantization") or checkpoint.get("quantization_config")
+    ):
+        return {}, ()
+    vision = True if _mlx_estimate_speculates(request, model_dir) else None
+    try:
+        parts = mlx_offloadable_parts(model_dir, vision)
+    except Exception as exc:
+        logger.info("MLX offload eligibility unknown for %s: %s", model_dir, exc)
+        parts = ()
+    offload = mlx_resolve_offload(
+        model_dir,
+        (
+            normalize_mlx_offload(request.mlx_ple_offload),
+            normalize_mlx_offload(request.mlx_expert_offload),
+        ),
+        pinned = request.max_seq_length or None,
+        load_in_4bit = load_in_4bit,
+        # As the load: any mlx-vlm route, a speculative text load included, keeps no history without the store.
+        retains_history = (
+            not (getattr(config, "is_vision", False) or vision)
+            or mlx_vlm_snapshot_store_available()
+        ),
+        kv_bits = kv_bits,
+        vision = vision,
+    )
+    return ({"offload": offload} if any(offload) else {}), parts
+
+
+def _mlx_offload_warning(info: dict) -> Optional[str]:
+    """What an MLX load tells the user when its automatic offload put weights on disk."""
+    offload = info.get("mlx_offload") or {}
+    parts = [
+        f"{round(applied * 100)}% of its {what}"
+        for part, what in (("ple", "per-layer embedding tables"), ("experts", "MoE experts"))
+        if (applied := (offload.get(part) or {}).get("applied"))
+        and offload[part]["requested"] in (None, "auto")
+    ]
+    if not parts:
+        return None
+    return (
+        f"To fit in memory, this model reads {' and '.join(parts)} from disk (automatic offload), "
+        "so it generates more slowly. Set offload to Off to keep them in memory."
+    )
+
+
+def _mlx_estimate_speculates(request, model_dir) -> bool:
     from core.inference import mlx_speculative
-    from core.inference.mlx_inference import mlx_drafter_fit, parse_mlx_kv_quant
+    from core.inference.mlx_inference import parse_mlx_kv_quant
     from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
 
     mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
     if not mlx_speculative.speculates_on_route(
         mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
     ):
+        return False
+    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
+    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
+    kv_quant = bits is not None or turboquant or legacy_bits
+    return not mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False)
+
+
+def _mlx_estimate_drafter(
+    request,
+    model_identifier,
+    model_dir,
+    ceiling,
+    load_in_4bit: bool,
+    offload_route: Optional[dict] = None,
+):
+    """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
+    would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
+    from core.inference import mlx_speculative
+    from core.inference.mlx_inference import mlx_drafter_fit
+
+    if not _mlx_estimate_speculates(request, model_dir):
         return None, None, False
+    mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
     resolution = mlx_speculative.resolve_speculation(
         request.speculative_type,
         request.spec_draft_model,
@@ -13629,11 +13699,6 @@ def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in
         target_name = model_identifier,
         allowed = _discoverable_drafters(model_identifier),
     )
-    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
-    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
-    kv_quant = bits is not None or turboquant or legacy_bits
-    if mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False):
-        return None, None, False
     for source in resolution.sources:
         attaches, fitted = mlx_drafter_fit(
             model_dir,
@@ -13642,6 +13707,7 @@ def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in
             source,
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
+            **(offload_route or {}),
         )
         if attaches:
             return (source.path, source.builtin), fitted, True
@@ -15696,7 +15762,11 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     entry = backend.models.get(backend.active_model_name, {}) or {}
     if "mlx_kv_quant_requested" not in entry:
         return True
-    from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
+    from core.inference.mlx_inference import (
+        encode_mlx_kv_quant,
+        normalize_mlx_offload,
+        parse_mlx_kv_quant,
+    )
 
     from core.inference.mlx_speculative import mlx_spec_mode
 
@@ -15707,6 +15777,13 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         == (request.chat_template_override or None)
         and bool(entry.get("mlx_int8_prefill_requested"))
         == bool(getattr(request, "mlx_int8_prefill", False))
+        and all(
+            normalize_mlx_offload(
+                ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
+            )
+            == normalize_mlx_offload(getattr(request, f"mlx_{knob}_offload", None))
+            for part, knob in (("ple", "ple"), ("experts", "expert"))
+        )
         and entry.get("speculative_type", "auto") == mlx_spec_mode(request.speculative_type)
         and entry.get("spec_draft_model") == (getattr(request, "spec_draft_model", None) or None)
         and entry.get("spec_draft_n_max") == _positive_int_or_none(request.spec_draft_n_max)
@@ -17391,7 +17468,10 @@ async def _load_model_impl(
                     mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
                     mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
                     mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
-                    # Requested value, as /status reports it: null would read as 'using the default'.
+                    mlx_offload = _model_info.get("mlx_offload"),
+                    memory_warning = _mlx_offload_warning(_model_info),
+                    # Requested, as /status reports it: a null override would read
+                    # as "using the default".
                     chat_template_override = _model_info.get("chat_template_override_requested"),
                     chat_template_override_reason = _model_info.get("chat_template_override_reason"),
                     inference = inference_config,
@@ -18043,6 +18123,7 @@ async def _load_model_impl(
                 subject = current_subject,
                 mlx_kv_quant = request.mlx_kv_quant,
                 mlx_int8_prefill = request.mlx_int8_prefill,
+                mlx_offload = (request.mlx_ple_offload, request.mlx_expert_offload),
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
                 spec_draft_model = request.spec_draft_model,
@@ -18212,7 +18293,10 @@ async def _load_model_impl(
             mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
             mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
             mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
-            # Requested value, as /status reports it: null would read as 'using the default'.
+            mlx_offload = _model_info.get("mlx_offload"),
+            memory_warning = _mlx_offload_warning(_model_info),
+            # Requested, as /status reports it: a null override would read as
+            # "using the default".
             chat_template_override = _model_info.get("chat_template_override_requested"),
             chat_template_override_reason = _model_info.get("chat_template_override_reason"),
             inference = inference_config,
@@ -19495,14 +19579,18 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
+            mlx_offload, mlx_offloadable = _mlx_estimate_offload(
+                request, config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+            )
             mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
                 request,
                 model_identifier,
                 model_dir,
                 _mlx_estimate_ceiling(model_dir),
                 mlx_load_in_4bit,
+                mlx_offload,
             )
-            mlx_route = {"vision": True} if mlx_speculates else {}
+            mlx_route = {**({"vision": True} if mlx_speculates else {}), **mlx_offload}
             if not mlx_named_ctx and mlx_drafter is None:
                 mlx_fitted_ctx = _mlx_estimate_fitted_context(
                     config, model_dir, mlx_load_in_4bit, mlx_kv_bits, **mlx_route
@@ -19523,7 +19611,7 @@ async def estimate_memory(
             return EstimateMemoryResponse(
                 **project_estimate_memory_response(
                     build_memory_estimate(
-                        mlx_breakdown,
+                        dataclasses.replace(mlx_breakdown, offloadable = mlx_offloadable),
                         quant_file_bytes = 0,
                         context_fitted = mlx_fitted_ctx,
                     )
@@ -20754,6 +20842,8 @@ async def _slot_status(current_subject: str):
             mlx_int8_prefill = model_info.get("mlx_int8_prefill"),
             mlx_int8_prefill_requested = model_info.get("mlx_int8_prefill_requested"),
             mlx_int8_prefill_reason = model_info.get("mlx_int8_prefill_reason"),
+            mlx_offload = model_info.get("mlx_offload"),
+            memory_warning = _mlx_offload_warning(model_info),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,

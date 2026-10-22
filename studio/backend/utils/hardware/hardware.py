@@ -47,7 +47,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": installed --no-torch on Apple Silicon, or on a host whose GPU inventory shows a card a PyTorch GPU build could use, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -852,6 +852,18 @@ def _installed_without_torch() -> bool:
         return recorded()
     except Exception:
         return False
+
+
+def _a_gpu_build_would_train_here() -> bool:
+    """Whether the PyTorch-free inventory shows a card the mismatch verdicts count. Blocking, so detection only. An inventory that cannot answer counts: no_gpu on a GPU host is the bug no_torch replaced."""
+    try:
+        inventory = get_physical_gpu_inventory()
+        if _devices_that_can_establish_a_mismatch(inventory.get("devices") or []):
+            return True
+        return bool(inventory.get("unknown"))
+    except Exception as e:
+        logger.debug("GPU inventory for the no_torch verdict failed: %s", e)
+        return True
 
 
 def _mlx_distribution_installed() -> bool:
@@ -1706,9 +1718,11 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
-        elif _installed_without_torch():
+        elif _installed_without_torch() and _a_gpu_build_would_train_here():
             # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            # Without such a GPU it stays no_gpu: the Desktop offers the full install on no_torch.
             CHAT_ONLY_REASON = "no_torch"
+            _record_chat_only_hint("no_torch", None)
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1868,8 +1882,48 @@ def _amd_permission_hint_for_mismatch(
     return node_hint, wheel_targets_amd
 
 
+# install_python_stack.py's _MLX_MIN_PYTHON / _MLX_MIN_MACOS_MAJOR: the pinned MLX wheels need both.
+_MLX_MIN_PYTHON = (3, 10)
+_MLX_MIN_MACOS_MAJOR = 14
+
+
+def _mlx_wheel_blocker() -> Optional[str]:
+    """Mirrors install_python_stack._mlx_pins_are_installable, which skips MLX; an unreadable macOS reads as too old."""
+    try:
+        major = int(platform.mac_ver()[0].split(".", 1)[0])
+    except (ValueError, IndexError):
+        major = 0
+    if major < _MLX_MIN_MACOS_MAJOR:
+        return f"macOS {_MLX_MIN_MACOS_MAJOR} or later"
+    if sys.version_info < _MLX_MIN_PYTHON:
+        return f"Python {_MLX_MIN_PYTHON[0]}.{_MLX_MIN_PYTHON[1]} or later"
+    return None
+
+
+def _no_torch_mac_without_mlx_wheels() -> Optional[str]:
+    return _mlx_wheel_blocker() if is_apple_silicon() else None
+
+
+def _no_torch_amd_node_hint() -> Optional[str]:
+    """A --no-torch host whose trainable AMD cards sit behind closed or missing nodes, with no NVIDIA card to train instead: the full install would restart into torch_cuda_unavailable (#14067)."""
+    devices = _devices_that_can_establish_a_mismatch(
+        get_physical_gpu_inventory().get("devices") or []
+    )
+    vendors = {str(device.get("vendor")).lower() for device in devices}
+    # Only NVIDIA routes the installer elsewhere: install.sh's _intel_xpu_auto_gpu_id skips XPU when AMD is present.
+    if "amd" not in vendors or "nvidia" in vendors:
+        return None
+    from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
+
+    return amd_node_permission_hint() if amd_closed_nodes_block_the_runtime() else None
+
+
 def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
-    """The closed-node sentence for /api/health, read from the last detection pass that recorded this verdict."""
+    """Why the fix this verdict points at cannot enable Train: a closed AMD node from the last detection pass, or a --no-torch Mac the MLX wheels skip. The Desktop offers the full install only when this is None."""
+    if reason == "no_torch":
+        blocker = _no_torch_mac_without_mlx_wheels()
+        if blocker:
+            return f"Training on this Mac needs MLX, which requires {blocker}."
     # Keyed on the reason only: the refreshed verdict can relabel the same wheel.
     stored = _CHAT_ONLY_HINT
     return stored[1] if stored is not None and stored[0] == reason else None
@@ -1879,7 +1933,12 @@ def _record_chat_only_hint(reason: Optional[str], detail: Optional[str]) -> None
     """Detection-time only: the probe stats nodes and resolves group names, which /api/health (async) must not."""
     global _CHAT_ONLY_HINT
     hint = None
-    if reason == "torch_cuda_unavailable":
+    if reason == "no_torch":
+        try:
+            hint = _no_torch_amd_node_hint()
+        except Exception as exc:
+            logger.debug("AMD device node hint for no_torch failed: %s", exc)
+    elif reason == "torch_cuda_unavailable":
         try:
             node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
             hint = node_hint if wheel_targets_amd else None
@@ -1951,8 +2010,11 @@ def export_capability() -> dict:
         )
     elif verdict[0] == "no_torch":
         reason = "no_torch"
+        blocker = _no_torch_mac_without_mlx_wheels()
         message = (
-            "This install was set up without the training stack (--no-torch), so export is "
+            f"Export on this Mac needs MLX, which requires {blocker}."
+            if blocker
+            else "This install was set up without the training stack (--no-torch), so export is "
             "disabled. Reinstall Unsloth Studio without --no-torch to enable export."
         )
     elif is_apple_silicon():
