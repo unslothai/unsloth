@@ -7562,7 +7562,6 @@ class DiffusionBackend:
                 # Why the dense quant did not engage, in the caller's terms. Threaded into `resolved` so a fallback is
                 # visible, and into the refusal so it is actionable.
                 transformer_quant_decline: Optional[str] = None
-                # auto kept a small DiT bf16 in place of INT8 (it then compiles from render 1, as INT8 did)
                 small_dit_kept_bf16 = False
                 transformer_quant_decline_status = RESOLVED_FELL_BACK
                 # A GGUF is excluded while it bakes LoRAs: only the dense build can carry them.
@@ -9200,7 +9199,6 @@ class DiffusionBackend:
                             "(quantized transformer must be compiled; eager is ~30x slower)"
                         )
                         effective_speed = SPEED_DEFAULT
-                    # Small DiT kept bf16 (instead of INT8) compiles from render 1 like INT8 did, not on the 3rd image.
                     if (
                         small_dit_kept_bf16
                         and speed_mode is None
@@ -9941,7 +9939,6 @@ class DiffusionBackend:
                     )
                     # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
-                    # both branches through one forward; declines when CFG-parallel took the slot or speed_mode=off was asked
                     install_cfg_batch(
                         pipe, offload_policy = effective_policy, speed_mode = speed_mode, logger = logger
                     )

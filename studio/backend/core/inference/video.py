@@ -9656,7 +9656,6 @@ class VideoBackend:
                 logger = logger,
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
-            # both branches through one forward; declines when CFG-parallel took the slot or speed_mode=off was asked
             install_cfg_batch(
                 pipe, offload_policy = offload_policy, speed_mode = speed_mode, logger = logger
             )

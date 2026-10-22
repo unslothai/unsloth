@@ -152,12 +152,10 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
     pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model)
     torch.testing.assert_close(got, ref)
-    # steps 1-2 plain (step 2 teaches the second branch's arguments), every later step batched
     assert router.stats["batched_steps"] == 4 and router.stats["hits"] == 4
     assert model.calls[-2:] == [2, 2]
     assert cb.cfg_batch_status(pipe)["batched_steps"] == 4
     cb.end_cfg_batch_render(pipe)
-    # CPU latents have no device timer: the trial judges without timing (even when a GPU is visible)
     assert cb.cfg_batch_status(pipe)["plain_pair_s"] is None
     assert cb.cfg_batch_status(pipe)["shape_off"] is None
 
@@ -170,7 +168,6 @@ def test_cuda_latents_time_the_step_two_pair_and_keep_the_image(monkeypatch):
     got, _ = _flux_loop(model, device = "cuda")
     torch.testing.assert_close(got, ref)
     status = cb.cfg_batch_status(pipe)
-    # step 2's pair was timed on the device; batching engages from step 3 only when the doubled call paid
     assert status["plain_pair_s"] is not None and status["batched_pair_s"] is not None
     if status["shape_off"] is None:
         assert router.stats["batched_steps"] == 4 and model.calls[-2:] == [2, 2]
@@ -199,7 +196,6 @@ def test_wan_expanded_timesteps_serve_the_second_branch(monkeypatch):
     model = Flux2Transformer2DModel()
     _pipe, router = _armed(model, monkeypatch)
     torch.testing.assert_close(loop(model), ref)
-    # steps 1-2 plain (step 2 carries the trial), steps 3-6 batched
     assert router.stats["hits"] == 4 and router.stats["misses"] == 0, router.describe()
     assert router.shape.off is None
 
@@ -252,7 +248,6 @@ def test_a_changed_second_branch_reruns_plain_and_stops_after_three_misses(monke
     _pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model, steps = 8, neg = torch.zeros(1, 5, 8), between = between)
     torch.testing.assert_close(got, ref, rtol = 0, atol = 0)
-    # step 3 (before the rewrite) hits; steps 4-6 miss, rerun plain, and the third miss turns the shape off
     assert router.stats["misses"] == 3 and router.stats["hits"] == 1
     assert router.shape.off is not None and "3 consecutive misses" in router.shape.off
 
@@ -315,7 +310,6 @@ def test_a_resident_denoiser_is_armed_by_default(monkeypatch):
     assert cb.cfg_batch_decline(resident, offload_policy = "none") is None
     assert cb.install_cfg_batch(resident, offload_policy = "none") is None
     assert cb.router_for(resident).reason == "resident denoiser"
-    # model offload swaps the forward slot between renders: render 1 would batch and later renders run plain
     assert "model offload" in cb.cfg_batch_decline(
         _Pipe(Flux2Transformer2DModel()), offload_policy = "model"
     )
@@ -339,7 +333,6 @@ class _Clock:
 def _timed(monkeypatch, cost):
     clock = _Clock(cost)
     monkeypatch.setattr(cb.time, "perf_counter", clock)
-    # fake costs are whole "seconds": keep the compute-bound gate out of the trial tests
     monkeypatch.setattr(cb, "_RESIDENT_MAX_PAIR_S", 1e9)
     monkeypatch.setattr(cb.CfgBatchRouter, "_sync", lambda self, latent: True)
 
@@ -347,7 +340,6 @@ def _timed(monkeypatch, cost):
         clock.now += clock.cost(int(k["hidden_states"].shape[0]))
         return Flux2Transformer2DModel.forward(self, *a, **k)
 
-    # same class name and module as the listed class, so the decline treats it as one
     timed = type("Flux2Transformer2DModel", (Flux2Transformer2DModel,), {"forward": forward})
     timed.__module__ = "diffusers.models.fake"
     return timed()
@@ -357,7 +349,6 @@ def _timed(monkeypatch, cost):
 def test_the_timing_trial_never_mixes_paths_and_repeats_bit_identically(
     monkeypatch, batched_cost, wins
 ):
-    # render 1 (trial) and render 2 (verdict) match bit for bit
     model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else batched_cost)
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
@@ -368,7 +359,6 @@ def test_the_timing_trial_never_mixes_paths_and_repeats_bit_identically(
     second, _ = _flux_loop(model)
     cb.end_cfg_batch_render(pipe)
     torch.testing.assert_close(first, second, rtol = 0, atol = 0)
-    # the trial (plain pair, doubled call, plain pair, doubled call; outputs discarded) ran once, in render 1's step 2
     assert calls_after_first[:10] == [1, 1, 1, 1, 1, 1, 2, 1, 1, 2]
     render2 = model.calls[len(calls_after_first) :]
     if wins:
@@ -380,12 +370,10 @@ def test_the_timing_trial_never_mixes_paths_and_repeats_bit_identically(
     if not wins:
         torch.testing.assert_close(second, ref_plain, rtol = 0, atol = 0)
     else:
-        # the batched-only path: step 1 plain, steps 2+ as one doubled call (same values on this fake)
         torch.testing.assert_close(second, ref_plain)
 
 
 def test_a_shape_that_stays_plain_records_no_prediction(monkeypatch):
-    # recording a template compares small tensors bytewise (a host sync per step): an off shape skips it
     model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else 2.0)
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
@@ -445,7 +433,6 @@ def test_compiled_denoisers_are_seen_in_every_form():
         hooks = {"group_offloading": object()}, _fn_refs = [ref]
     )
     assert "below its hooks" in cb.compiled_denoiser(hooked)
-    # resident: the doubled shape would only add a compile; offloaded: it saves an upload per step, so it batches
     assert (
         cb.cfg_batch_decline(_Pipe(marked), offload_policy = "none")
         == "the denoiser is compiled and resident"
@@ -529,7 +516,6 @@ def test_a_doubled_call_that_compiles_a_graph_turns_batching_off(monkeypatch):
 
 
 def test_a_router_traced_by_dynamo_passes_straight_through():
-    # the router's own logic must not enter a whole-module compile trace; fullgraph=True raises on any break
     model = _quiet_flux()
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
@@ -555,7 +541,6 @@ def test_a_router_traced_by_dynamo_passes_straight_through():
 
 @pytest.mark.parametrize("pair_s, gated", [(0.3, True), (0.1, False)])
 def test_a_compute_bound_resident_pair_skips_the_trial(monkeypatch, pair_s, gated):
-    # a compute-bound pair skips the trial: nothing extra runs
     model = _timed(monkeypatch, lambda b: pair_s / 2 if b == 1 else pair_s)
     monkeypatch.setattr(cb, "_RESIDENT_MAX_PAIR_S", 0.25)
     pipe = _Pipe(model)
@@ -580,7 +565,6 @@ def test_an_offloaded_pair_is_never_gated_as_compute_bound(monkeypatch):
 
 
 def test_one_slow_plain_sample_does_not_decide_the_trial(monkeypatch):
-    # the fastest of each kind decides, not one slow plain sample
     seen = {"n": 0}
 
     def cost(b):
@@ -723,7 +707,6 @@ def test_a_new_request_shape_starts_without_the_previous_shapes_template(monkeyp
 
 
 def test_the_trial_prices_the_batched_steps_preparation_and_verification(monkeypatch):
-    # A doubled call that wins on its own (1.2 s vs a 2.0 s pair) but whose snapshot + verify cost 0.7 s loses end to end.
     model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else 1.2)
     clock = cb.time.perf_counter
     real_matches = cb._matches
@@ -743,7 +726,6 @@ def test_the_trial_prices_the_batched_steps_preparation_and_verification(monkeyp
 
 @pytest.mark.parametrize("offload_policy", ["none", "group"])
 def test_an_explicit_speed_off_request_keeps_one_branch_per_call(monkeypatch, offload_policy):
-    # speed_mode="off" is the bit-identical reference path; a doubled batch can pick other GEMM / attention tiles.
     def pipe():
         model = Flux2Transformer2DModel()
         return _Pipe(_offloaded(model) if offload_policy == "group" else model)

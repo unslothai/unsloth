@@ -63,7 +63,6 @@ def _auto_static_skip_table() -> dict:
 
 AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
 
-# Tiers whose unset step cache may pick the static skip (lossy): only the opt-in max tier.
 AUTO_STATIC_SKIP_TIERS = (_TIER_MAX,)
 
 # Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).

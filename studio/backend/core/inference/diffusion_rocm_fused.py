@@ -69,9 +69,7 @@ def _is_nvidia_linux() -> bool:
 
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
-# NVIDIA bf16 eager FLUX.2-klein-4B 1024^2 (B200): 49.8 -> 40.5 ms per denoiser step, pixel-identical renders.
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
-# auto also engages these on NVIDIA CUDA (Linux); AdaLN stays ROCm-measured and opt-in everywhere.
 _AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
 
 

@@ -1291,7 +1291,6 @@ def test_an_uncompilable_family_loads_an_operators_checkpoint_under_auto(
 def test_a_compilable_family_loads_without_the_bf16_replan(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch)
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
-    # A family with no bf16-while-resident rule (the fixture family is a small DiT, which now has one).
     monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: None)
     replans = []
     monkeypatch.setattr(
@@ -1407,7 +1406,6 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("Alpha-VLLM/Lumina-Image-2.0", True),
         ("HiDream-ai/HiDream-I1-Full", True),
         ("black-forest-labs/FLUX.1-dev", False),
-        # Small DiTs stay bf16 while it fits (INT8 / FP8 move image detail at these sizes).
         ("Tongyi-MAI/Z-Image-Turbo", True),
         ("black-forest-labs/FLUX.2-klein-4B", True),
         ("black-forest-labs/FLUX.2-klein-base-4B", True),
@@ -1890,10 +1888,8 @@ def _small_dit_kept_bf16(monkeypatch, reason):
 @pytest.mark.parametrize(
     "reason, speed, expect_speed, expect_deferred",
     [
-        # a small DiT kept bf16 compiles from render 1, like the INT8 load it replaced
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
-        # every other bf16-kept family keeps the deferred profile
         ("measured: no faster", None, "off", True),
     ],
 )
@@ -1918,7 +1914,6 @@ def test_a_small_dit_kept_bf16_compiles_from_render_1(
         ("black-forest-labs/FLUX.2-klein-4B", True),
         ("black-forest-labs/FLUX.2-klein-base-4B", True),
         ("unsloth/FLUX.2-klein-4B", True),
-        # 9B variants share the family but are not small (18.2 GB bf16 transformer): the quantized default stays.
         ("black-forest-labs/FLUX.2-klein-9B", False),
         ("black-forest-labs/FLUX.2-klein-base-9B", False),
         ("unsloth/FLUX.2-klein-9B", False),

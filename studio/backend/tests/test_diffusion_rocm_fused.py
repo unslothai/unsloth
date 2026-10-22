@@ -63,7 +63,6 @@ def _nvidia(monkeypatch, platform = "linux"):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_auto_engages_rope_only_on_nvidia_linux(fake_kernels, monkeypatch, dtype):
-    # auto = the bit-identical RoPE kernel on NVIDIA too (ComfyUI fuses FLUX RoPE by default); AdaLN stays opt-in.
     _nvidia(monkeypatch)
     assert rf.install_for_pipe(_PipeLike(), dtype, "cuda") == {"rope": True, "adaln": 0}
     assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
@@ -95,7 +94,6 @@ def test_kill_switch_on_nvidia(fake_kernels, monkeypatch, value):
 
 
 def test_flux2_fp16_keeps_its_own_patch_on_nvidia(fake_kernels, monkeypatch):
-    # fp16 FLUX.2 on NVIDIA is diffusion_flux2_rope's (installed first at STAGE_LOAD); the auto RoPE never stacks on it.
     from core.inference import diffusion_flux2_rope as fr
 
     f2mod = pytest.importorskip("diffusers.models.transformers.transformer_flux2")
@@ -424,7 +422,6 @@ def test_tiny_flux2_transformer_default_on(monkeypatch):
         }
         r0 = rf.COUNTS["rope_fused"]
         got = model(**inputs)[0]
-    # 2 double blocks (image + text streams share one joint RoPE call each for q and k) + 2 single blocks
     assert rf.COUNTS["rope_fused"] - r0 == 2 * 2 + 2 * 2
     assert torch.equal(got, want)
 
@@ -467,7 +464,6 @@ def test_stock_branch_never_loses_its_previous_forward(fake_kernels, monkeypatch
 
 
 def test_a_failed_rope_launch_disables_the_fused_path_for_the_load(monkeypatch):
-    # A JIT / launch failure (unsupported arch, driver / PTX mismatch) is tried once, then the load runs stock.
     calls = []
 
     def failing_launch(x, cos, sin):
@@ -485,7 +481,6 @@ def test_a_failed_rope_launch_disables_the_fused_path_for_the_load(monkeypatch):
     for _ in range(4):
         assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), want)
     assert len(calls) == 1
-    # The next load re-arms the fast path.
     rf.uninstall()
     rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
     fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)

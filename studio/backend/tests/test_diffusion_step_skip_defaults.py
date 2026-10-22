@@ -47,7 +47,6 @@ DEV = "black-forest-labs/FLUX.1-dev"
 @pytest.mark.parametrize(
     "ids, tier, steps, want",
     [
-        # Auto skips only on the opt-in max tier: default / unset render every step (lossy, ComfyUI never skips).
         ((KREA,), "default", 28, None),
         ((KREA,), "max", 28, {"every": 3, "min_steps": 20}),
         ((KREA,), "eager", 28, None),
@@ -237,7 +236,6 @@ def _probe_plan(entry):
 @pytest.mark.parametrize(
     "speed, killed, want_static",
     [
-        # Auto static skip is lossy, so only the opt-in max tier engages it.
         ("default", False, False),
         ("max", False, True),
         ("eager", False, False),
@@ -349,7 +347,6 @@ def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
 
 
 def test_deferred_default_tier_never_auto_skips(fake_runtime, tmp_path, monkeypatch):
-    # Speed unset: the 3rd image engages `default`, which never auto skips.
     from core.inference import diffusion as dmod
 
     from .test_diffusion_backend import DiffusionBackend
@@ -492,7 +489,6 @@ def test_a_failed_deferred_profile_takes_the_auto_skip_back_off(
         backend.generate(prompt = p)
     st = backend.status()
     assert st["speed_mode"] == "off"
-    # Nothing auto-installed (the default tier never auto skips), so nothing had to be taken back off.
     assert st["transformer_cache"] is None and removed == []
     assert st["resolved"]["transformer_cache"]["value"] != "static"
     backend.unload()

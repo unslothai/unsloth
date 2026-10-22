@@ -473,7 +473,6 @@ def snapshot(entry: Callable) -> dict:
 
     patch.setattr(diffusion_flux2_rope, "_kernel", lambda: (lambda *a, **k: None))
     patch.setattr(video_wan_fused, "_kernels", lambda: {})
-    # The fixture predates the NVIDIA auto RoPE (test_diffusion_rocm_fused covers it); the gate reads the host's torch.
     from core.inference import diffusion_rocm_fused
 
     patch.setattr(diffusion_rocm_fused, "_is_nvidia_linux", lambda: False)

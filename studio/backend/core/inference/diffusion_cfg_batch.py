@@ -61,7 +61,6 @@ _PADDED_TEXT = (("encoder_hidden_states", "encoder_hidden_states_mask"),)
 
 _MEASURED_FRACTION = 0.92
 _BATCHED_SAMPLES = 2
-# Step 1 warms up and teaches the second branch; step 2 is timed and runs the trial.
 _PLAIN_STEPS = 2
 # Compute-bound resident pair: skip the trial (B200 winners 0.03-0.06 s/pair; T4 FLUX.2-klein ~4.2 s, trial +17 s).
 _RESIDENT_MAX_PAIR_S = 0.25
@@ -223,7 +222,6 @@ def cfg_batch_decline(
         return "denoiser is compiled whole"
     compiled = compiled_denoiser(denoiser)
     if compiled is not None and not _offloaded(denoiser, offload_policy):
-        # resident: two calls upload nothing, so the doubled shape would only add a compile on the first render
         return f"{compiled} and resident"
     if getattr(pipe, "_unsloth_cuda_graphs", None):
         return "the denoiser replays CUDA graphs"
@@ -267,9 +265,7 @@ class _Shape:
         self.off: Optional[str] = None
         self.off_kind: Optional[str] = None
         self.misses = 0
-        # The trial ran and batching won (or there is no device timer): later steps of this shape batch.
         self.judged = False
-        # Whether the trial ran against compiled blocks (its render compiled the doubled shape) and in which render.
         self.compiled_at_trial = False
         self.trial_render = 0
         self.render_steps = 0  # steps of this shape in the current render
@@ -390,7 +386,6 @@ class CfgBatchRouter:
         if not self.render_checked:
             # first call of a render: a request-time step cache may have hooked the blocks since install
             module = self.module_ref()
-            # a compile can land after install (deferred profile, compile below an offload hook): check per render
             self.render_off = _foreign_hook(module) if module is not None else None
             self.render_compiled = compiled_denoiser(module) if module is not None else None
             if self.render_compiled is not None:
@@ -418,7 +413,6 @@ class CfgBatchRouter:
                 if out is not None:
                     return out
             if shape.off is None and not shape.judged and shape.render_steps == _PLAIN_STEPS:
-                # the live pair the trial gate reads: this step's own two calls
                 self.pair_t0 = time.perf_counter() if self._sync(latent) else None
             if shape.off is None and not shape.judged and shape.activation_mib is None:
                 return self._measured_plain(args, kwargs, latent, shape)
@@ -514,14 +508,12 @@ class CfgBatchRouter:
         plain_s: list[float] = []
         try:
             graphs = _graph_count()
-            # interleaved, fastest of each: one slow sample cannot decide the verdict
             for _ in range(_BATCHED_SAMPLES):
                 t0 = time.perf_counter()
                 self.orig_forward(*first[0], **first[1])
                 self.orig_forward(*second[0], **second[1])
                 self._sync(latent)
                 plain_s.append(time.perf_counter() - t0)
-                # the whole batched step as _batched + _take run it: predict, merge, snapshot, forward, split, verify
                 t0 = time.perf_counter()
                 predicted = self._predict(latent) if self.template is not None else second
                 b_args, b_kwargs = merge_branches(first, predicted, batch)
@@ -533,7 +525,6 @@ class CfgBatchRouter:
                 del b_args, b_kwargs, snapshots, predicted
             shape.plain_pair_s = min(plain_s)
             if _graph_count() != graphs and self.render_compiled is None and not self.offloaded:
-                # a compiled region the markers did not show, on a resident denoiser: never again this load
                 self.disable(
                     "the doubled batch compiled a new graph (the denoiser runs compiled code)"
                 )
@@ -655,7 +646,6 @@ class CfgBatchRouter:
             self.disable(f"the doubled call failed ({type(exc).__name__}: {exc})")
             return None
         if _graph_count() != graphs and self.renders > shape.trial_render:
-            # a doubled call compiled on a follow-up render: finish this render, later renders run plain
             self.pending_disable = "the doubled batch compiled a graph after its warm-up render"
         self.kept = {
             "out": other,

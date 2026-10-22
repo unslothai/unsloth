@@ -215,7 +215,6 @@ def test_fbcache_load_still_reports_an_active_cache(loop_runtime, monkeypatch):
 
 @pytest.mark.parametrize("request_cache", [None, "auto"])
 def test_default_speed_never_auto_skips_on_wan_5b(loop_runtime, monkeypatch, request_cache):
-    # The auto static skip is lossy and opt-in: the default tier (the video default) computes every step.
     monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
     backend = VideoBackend()
     status = backend.load_pipeline(
@@ -241,7 +240,6 @@ def test_auto_installs_the_measured_static_skip_on_wan_5b(loop_runtime, monkeypa
     assert entry["value"] == "static" and entry["requested"] is None
     assert "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
     layer = loop_runtime["pipe"].transformer.__dict__["forward"]
-    # The max-tier interval, measured at 50 steps, so a shorter render computes every step.
     assert (layer.every, layer.auto, layer.min_steps) == (3, True, 50)
     # Kept graph decisions, and the generate-time FBCache toggle is never armed over it.
     assert [kw["cache_active"] for kw in seen] == [False]
@@ -606,7 +604,6 @@ def test_modular_workflow_auto_follows_the_table_and_the_kill_switch(h3_runtime,
         dcache, "AUTO_STATIC_SKIP", {"minimaxai/minimax-h3": {"default": 2, "max": 2}}
     )
     backend = VideoBackend()
-    # The default tier never auto skips (lossy, opt-in).
     status = _load_h3(backend, None)
     assert status["transformer_cache"] is None
     assert "forward" not in h3_runtime.instance.transformer.__dict__
