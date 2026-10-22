@@ -77,6 +77,25 @@ test("prefers the finish time, falls back to creation, hides while running", () 
     }),
     stoppedAt,
   );
+  assert.equal(
+    replyFinishedTimestamp({ ...done, status: { type: "requires-action" } }),
+    undefined,
+  );
+  // A later tool round that failed keeps the earlier round's responseDetails.
+  const failedAt = Date.parse("2026-10-14T05:00:00Z");
+  assert.equal(
+    replyFinishedTimestamp({
+      createdAt,
+      status: { type: "incomplete" },
+      metadata: {
+        custom: {
+          responseDetails: { finishedAt },
+          timing: { streamStartTime: failedAt - 60_000, totalStreamTime: 60_000 },
+        },
+      },
+    }),
+    failedAt,
+  );
   const researchDone = Date.parse("2026-10-14T07:30:00Z");
   const research = (completedAt: number | null) => ({
     createdAt,

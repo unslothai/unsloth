@@ -11,13 +11,14 @@ export function messageTimestamp(message: {
   return time !== undefined && Number.isFinite(time) ? time : undefined;
 }
 
-/** When a reply finished, else when it was created; none while it is still running. */
+/** When a reply finished, else when it was created; none while it is running or awaiting tool approval. */
 export function replyFinishedTimestamp(message: {
   createdAt?: Date;
   status?: { type?: string };
   metadata?: { custom?: Record<string, unknown> };
 }): number | undefined {
-  if (message.status?.type === "running") return undefined;
+  const status = message.status?.type;
+  if (status === "running" || status === "requires-action") return undefined;
   const custom = message.metadata?.custom;
   // Deep Research replies record only their run; completedAt stays null until it ends.
   const research = custom?.researchRun as { completedAt?: unknown } | undefined;
@@ -27,19 +28,19 @@ export function replyFinishedTimestamp(message: {
       : undefined;
   }
   const details = custom?.responseDetails as { finishedAt?: unknown } | undefined;
-  if (typeof details?.finishedAt === "number" && Number.isFinite(details.finishedAt)) {
-    return details.finishedAt;
-  }
-  // Stopped and failed replies persist only their stream timing, which ends where they stopped.
+  const finishedAt =
+    typeof details?.finishedAt === "number" && Number.isFinite(details.finishedAt)
+      ? details.finishedAt
+      : undefined;
   const timing = custom?.timing as
     | { streamStartTime?: unknown; totalStreamTime?: unknown }
     | undefined;
-  if (
-    typeof timing?.streamStartTime === "number" &&
-    typeof timing.totalStreamTime === "number"
-  ) {
-    const end = timing.streamStartTime + timing.totalStreamTime;
-    if (Number.isFinite(end)) return end;
-  }
-  return messageTimestamp(message);
+  const timingEnd =
+    typeof timing?.streamStartTime === "number" && typeof timing.totalStreamTime === "number"
+      ? timing.streamStartTime + timing.totalStreamTime
+      : undefined;
+  const streamEnd = timingEnd !== undefined && Number.isFinite(timingEnd) ? timingEnd : undefined;
+  // A stopped or failed reply's timing is its last round; responseDetails may be an earlier tool round's.
+  const end = status === "incomplete" ? (streamEnd ?? finishedAt) : (finishedAt ?? streamEnd);
+  return end ?? messageTimestamp(message);
 }
