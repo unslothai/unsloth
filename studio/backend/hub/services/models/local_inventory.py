@@ -7,11 +7,15 @@ from __future__ import annotations
 
 
 import asyncio
+import concurrent.futures
+import contextvars
 import os
 import re
 import stat
 import threading
+import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -44,8 +48,10 @@ from utils.hidden_models import is_hidden_model
 from utils.paths.path_utils import is_appledouble_metadata
 from utils.paths.scan_folder_health import (
     annotate_scan_folders,
+    clear_scan_slow,
     note_scan_folder_scanned,
     record_scan_failure,
+    record_scan_slow,
     refresh_failed_scan_folders,
 )
 
@@ -1107,6 +1113,85 @@ async def _scan_source(label: str, scanner, path: Path) -> List[LocalModelInfo]:
         return []
 
 
+# Own pool and budget: a folder on a hung mount must not outlast the UI's 30 s timeout or park inference's threads.
+_CUSTOM_FOLDER_SCAN_TIMEOUT_S = 10.0
+_custom_folder_executor = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "scan-folder")
+_custom_folder_scans: dict[str, tuple[float, concurrent.futures.Future]] = {}
+_custom_folder_scans_lock = threading.Lock()
+
+
+def _submit_custom_folder_scan(row_path: str, work) -> Optional[concurrent.futures.Future]:
+    """None when an earlier scan of this folder is still stuck past budget: a second thread would only stall on the same mount."""
+    with _custom_folder_scans_lock:
+        started, running = _custom_folder_scans.get(row_path, (0.0, None))
+        if (
+            running is not None
+            and not running.done()
+            and time.monotonic() - started > _CUSTOM_FOLDER_SCAN_TIMEOUT_S
+        ):
+            return None
+        future = _custom_folder_executor.submit(contextvars.copy_context().run, work)
+        _custom_folder_scans[row_path] = (time.monotonic(), future)
+        return future
+
+
+def _abandon_custom_folder_scan(row_path: str, future: concurrent.futures.Future) -> None:
+    logger.warning(
+        "Scan folder %s took over %.0fs; skipped this listing",
+        short_path_for_log(row_path),
+        _CUSTOM_FOLDER_SCAN_TIMEOUT_S,
+    )
+    record_scan_slow(row_path)
+    future.add_done_callback(lambda _f: clear_scan_slow(row_path))
+
+
+async def _run_custom_folder_bounded(row_path: str, work):
+    """``work()`` for one custom folder, or None when it was skipped for being slow."""
+    future = _submit_custom_folder_scan(row_path, work)
+    if future is None:
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(future), _CUSTOM_FOLDER_SCAN_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        _abandon_custom_folder_scan(row_path, future)
+        return None
+
+
+def run_custom_folder_bounded_sync(row_path: str, work):
+    """``_run_custom_folder_bounded`` for a caller already off the event loop."""
+    future = _submit_custom_folder_scan(row_path, work)
+    if future is None:
+        return None
+    try:
+        return future.result(timeout = _CUSTOM_FOLDER_SCAN_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        _abandon_custom_folder_scan(row_path, future)
+        return None
+
+
+def _discover_custom_folder_hf_caches(folder_path: Path) -> list[tuple[Path, Optional[list]]]:
+    try:
+        cache_dirs = hf_cache_scan.scan_folder_hf_caches(folder_path)
+    except Exception as e:
+        logger.warning(
+            "Skipping HF caches under %s: %s", short_path_for_log(folder_path), scrub_paths(e)
+        )
+        return []
+    hf_caches = []
+    for cache_dir in cache_dirs:
+        try:
+            discovered = _discover_hf_cache(cache_dir, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+        except Exception as e:
+            logger.warning(
+                "Skipping custom HF cache scan for %s: %s",
+                short_path_for_log(cache_dir),
+                scrub_paths(e),
+            )
+            discovered = []
+        hf_caches.append((cache_dir, discovered))
+    return hf_caches
+
+
 async def _collect_models_from_default_sources(
     models_root: Path,
     hf_cache_dir: Path,
@@ -1160,21 +1245,18 @@ async def _collect_models_from_default_sources(
         )
     for folder in custom_folders:
         folder_path = Path(normalize_path(folder["path"])).expanduser()
-        hf_caches = []
-        for cache_dir in await asyncio.to_thread(hf_cache_scan.scan_folder_hf_caches, folder_path):
-            discovered = await _scan_source(
-                "custom HF cache",
-                lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
-                cache_dir,
-            )
-            hf_caches.append((cache_dir, discovered))
+        # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
+        row_path = str(folder["path"])
+        hf_caches = await _run_custom_folder_bounded(
+            row_path, lambda path = folder_path: _discover_custom_folder_hf_caches(path)
+        )
+        if hf_caches is None:
+            continue
+        for cache_dir, discovered in hf_caches:
             state_repositories.extend(
                 ("model", model_id, cache_dir) for _repo, model_id, _updated in discovered
             )
-        # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
-        custom_sources.append(
-            (folder_path, hf_caches, str(folder["path"]), bool(folder.get("recursive")))
-        )
+        custom_sources.append((folder_path, hf_caches, row_path, bool(folder.get("recursive"))))
     try:
         variant_states = await asyncio.to_thread(
             download_manifest.build_variant_state_index,
@@ -1221,32 +1303,40 @@ async def _collect_models_from_default_sources(
         local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
+
+    def scan_folder(folder_path: Path, hf_caches, recursive: bool) -> List[LocalModelInfo]:
+        nested_roots = tuple(nested_scan_roots(folder_path)) if recursive else ()
+        custom_models = _scan_custom_folder(
+            folder_path,
+            hf_caches = hf_caches,
+            variant_states = variant_states,
+            active_hub_cache = hf_cache_dir,
+            nested_roots = nested_roots,
+        )
+        if _inventory_physical_identity(str(folder_path)) in hermes_identities:
+            # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
+            # the walk lists every download a second time under the same id. Anything else kept
+            # in that folder is still the user's custom row.
+            staged = {
+                _inventory_physical_identity(row.path) for row in scan_hermes_dir(folder_path)
+            }
+            custom_models = [
+                model
+                for model in custom_models
+                if _inventory_physical_identity(model.path) not in staged
+            ]
+        return custom_models
+
     for folder_path, hf_caches, row_path, recursive in custom_sources:
         try:
-            nested_roots = (
-                tuple(await asyncio.to_thread(nested_scan_roots, folder_path)) if recursive else ()
+            custom_models = await _run_custom_folder_bounded(
+                row_path,
+                lambda path = folder_path, caches = hf_caches, rec = recursive: scan_folder(
+                    path, caches, rec
+                ),
             )
-            custom_models = await asyncio.to_thread(
-                _scan_custom_folder,
-                folder_path,
-                hf_caches = hf_caches,
-                variant_states = variant_states,
-                active_hub_cache = hf_cache_dir,
-                nested_roots = nested_roots,
-            )
-            if _inventory_physical_identity(str(folder_path)) in hermes_identities:
-                # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
-                # the walk lists every download a second time under the same id. Anything else kept
-                # in that folder is still the user's custom row.
-                staged = {
-                    _inventory_physical_identity(row.path)
-                    for row in await asyncio.to_thread(scan_hermes_dir, folder_path)
-                }
-                custom_models = [
-                    model
-                    for model in custom_models
-                    if _inventory_physical_identity(model.path) not in staged
-                ]
+            if custom_models is None:
+                continue
         except Exception as e:
             logger.warning(
                 "Skipping unreadable scan folder %s: %s",
@@ -1418,9 +1508,17 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
     )
 
 
+def _list_custom_folders_with_identity() -> list[dict]:
+    # The identity is a realpath, so it is taken here, off the loop: on a hung network mount it would stall every request.
+    return [
+        {**folder, "_identity": _inventory_path_identity(str(folder.get("path", "")))}
+        for folder in list_scan_folders()
+    ]
+
+
 async def _load_custom_folders() -> list[dict]:
     try:
-        return await asyncio.to_thread(list_scan_folders)
+        return await asyncio.to_thread(_list_custom_folders_with_identity)
     except Exception as e:
         logger.warning("Could not load custom scan folders: %s", scrub_paths(e))
         return []
@@ -1674,7 +1772,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             _inventory_path_identity(models_dir),
             sources,
             tuple(
-                _inventory_path_identity(str(folder.get("path", "")))
+                (folder.get("_identity") or _inventory_path_identity(str(folder.get("path", ""))))
                 + ("\x00r" if folder.get("recursive") else "")
                 for folder in custom_folders
             ),
