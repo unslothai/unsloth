@@ -5035,17 +5035,93 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
+# gfx targets (LLVM AMDGPUUsage) that only ever shipped as discrete boards, so a card on one of them has dedicated VRAM
+# and its DRM mem_info_vram_total is the whole card. Positive list on purpose: an unlisted target may be an APU whose
+# sysfs total is only the BIOS carve-out (torch's GTT-backed total is the real one, and reading it needs a context),
+# so it reads as unknown. gfx940/941/942 are left out because MI300A (an APU) shares gfx942 with MI300X.
+_ROCM_DISCRETE_ONLY_ARCHES = frozenset(
+    {
+        "gfx803",
+        "gfx900",
+        "gfx906",
+        "gfx908",
+        "gfx90a",
+        "gfx950",
+        "gfx1010",
+        "gfx1011",
+        "gfx1012",
+        "gfx1030",
+        "gfx1031",
+        "gfx1032",
+        "gfx1034",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1200",
+        "gfx1201",
+    }
+)
+
+
+def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
+    """Linux ROCm per-device VRAM with no torch call at all, for ``no_context`` callers: KFD topology for the HIP order
+    and gfx target, DRM sysfs for used / total, joined by PCI address. Empty (nothing known) under any visibility mask
+    or GPU_DEVICE_ORDINAL, since a visible ordinal then cannot be tied to a physical card without torch, and when the
+    KFD readers disagree or two ordinals share one PCI address (a partitioned card, whose sysfs speaks for the whole
+    board). A card whose target is not in _ROCM_DISCRETE_ONLY_ARCHES, or whose sysfs files are unreadable, keeps its
+    row (so the visible count stays right) with used / total None."""
+    if platform.system() != "Linux" or _rocm_visibility_mask_active():
+        return []
+    pci_ids = _rocm_kfd_gpu_pci_ids()
+    if not pci_ids or len(set(p.lower() for p in pci_ids)) != len(pci_ids):
+        return []
+    try:
+        from . import amd
+
+        targets = amd.amd_kfd_gpu_gfx_targets()
+    except Exception as e:
+        logger.debug("KFD gfx target read failed: %s", e)
+        return []
+    if targets is None or len(targets) != len(pci_ids):
+        return []
+    vram_by_pci = _rocm_linux_sysfs_vram_by_pci_gb()
+    devices = []
+    for ordinal, (bdf, target) in enumerate(zip(pci_ids, targets)):
+        entry = vram_by_pci.get(bdf.lower()) if target in _ROCM_DISCRETE_ONLY_ARCHES else None
+        used, total = entry if entry is not None else (None, None)
+        devices.append(
+            {
+                "index": ordinal,
+                "index_kind": "physical",
+                "visible_ordinal": ordinal,
+                "gpu_utilization_pct": None,
+                "temperature_c": None,
+                "vram_used_gb": used,
+                "vram_total_gb": total,
+                "vram_utilization_pct": round((used / total) * 100, 1)
+                if used is not None and total
+                else None,
+                "power_draw_w": None,
+                "power_limit_w": None,
+                "power_utilization_pct": None,
+            }
+        )
+    return devices
+
+
 def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
-    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
-    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
+    """``no_context``: never ask torch (its per-device reading leaves a resident driver context). On CUDA the devices
+    are then empty when nvidia-smi cannot answer; on ROCm they come from KFD + DRM sysfs only
+    (_rocm_context_free_visible_devices), since the amd-smi rows need torch for the APU total and the HIP mapping."""
     device = get_device()
     if no_context and IS_ROCM and device == DeviceType.CUDA:
+        devices = _rocm_context_free_visible_devices()
         return {
-            "available": False,
+            "available": bool(devices),
             "backend": _backend_label(device),
-            "parent_visible_gpu_ids": [],
-            "devices": [],
-            "index_kind": "relative",
+            "parent_visible_gpu_ids": [d["index"] for d in devices],
+            "devices": devices,
+            "index_kind": "physical" if devices else "relative",
         }
 
     if device == DeviceType.CUDA:
