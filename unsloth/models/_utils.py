@@ -7890,7 +7890,11 @@ def _output_head_module_ids(model):
 
 
 def _block_linear_filter(
-    model, block_size, qat_scheme, skip_output_head, in_features_multiple = None
+    model,
+    block_size,
+    qat_scheme,
+    skip_output_head,
+    in_features_multiple = None,
 ):
     """Linears with both dims divisible by the scale block (in_features by in_features_multiple if given),
     optionally excluding the output head."""

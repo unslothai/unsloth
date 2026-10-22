@@ -93,9 +93,9 @@ def test_nvfp4_needs_in_features_divisible_by_32(monkeypatch, lora):
         assert type(q_proj.lora_B["default"]) is torch.nn.Linear  # K = r = 16
         return
     widths = (16, 32, 48, 64, 80, 96)
-    model = torch.nn.Sequential(
-        *(torch.nn.Linear(k, 128, bias = False) for k in widths)
-    ).to(torch.bfloat16)
+    model = torch.nn.Sequential(*(torch.nn.Linear(k, 128, bias = False) for k in widths)).to(
+        torch.bfloat16
+    )
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
         model = _prepare_model_for_qat(model, "nvfp4")
@@ -110,9 +110,9 @@ def test_nvfp4_needs_in_features_divisible_by_32(monkeypatch, lora):
 )
 def test_nvfp4_admitted_widths_run_on_gpu():
     widths = (16, 32, 48, 64, 80, 96)
-    model = torch.nn.ModuleList(
-        torch.nn.Linear(k, 128, bias = False) for k in widths
-    ).to("cuda", torch.bfloat16)
+    model = torch.nn.ModuleList(torch.nn.Linear(k, 128, bias = False) for k in widths).to(
+        "cuda", torch.bfloat16
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = _prepare_model_for_qat(model, "nvfp4")
