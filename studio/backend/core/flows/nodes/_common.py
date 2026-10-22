@@ -192,6 +192,10 @@ def _caller(ctx: Any) -> Any:
     return ctx.caller
 
 
+# A flow's prompts and JSON answers fit easily; the model's full context (262k for Qwen3) would reserve a ~36 GB KV cache.
+FLOW_CHAT_CONTEXT = 16384
+
+
 async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     from core.flows.engine import MODEL_SLOT
     from studio_mcp import loading
@@ -229,7 +233,8 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
     if slot in ("embedding",):
         return {"repo": repo, "variant": variant}
     resident = await resident_name(ctx, model_kind)
-    if resident and resident.lower() == repo.lower() and not variant:
+    # Studio reports the resident model by repo, so a named variant of the same repo counts as loaded.
+    if resident and resident.lower() == repo.lower():
         return {"repo": repo, "variant": variant}
     ctx.set_status("loading_model", f"Loading {repo}{':' + variant if variant else ''}")
     deadline = time.monotonic() + LOAD_DEADLINE_S
@@ -240,7 +245,7 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
                 None,
                 model = repo,
                 variant = variant,
-                max_seq_length = None,
+                max_seq_length = FLOW_CHAT_CONTEXT,
                 load_in_4bit = True,
                 hf_token = None,
                 kind = LOAD_KIND.get(model_kind, "llm"),
