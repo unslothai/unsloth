@@ -2720,7 +2720,7 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
 
 
 _EMBEDDED_GUIDANCE_FAMILIES = ("flux.1", "flux.1-kontext", "flux.2-dev")
-# Families whose diffusers guidance scale is standard CFG minus 1 (cond + g * (cond - uncond)).
+# diffusers computes cond + g * (cond - uncond): g is standard CFG minus 1, and any g > 0 enables guidance.
 _CFG_MINUS_ONE_FAMILIES = ("z-image", "krea-2")
 
 
@@ -2732,8 +2732,6 @@ def _map_guidance(
     if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return 1.0, (float(guidance) if guidance is not None else None)
     if fam.name in _CFG_MINUS_ONE_FAMILIES:
-        # diffusers Z-Image and Krea 2 compute pos + g * (pos - neg), so their g is standard CFG minus 1 (sd.cpp's
-        # cfg 4 == g 3), and any g > 0 enables guidance.
         return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None

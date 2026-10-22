@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native (sd.cpp) Krea 2: the single-file assets sd-cli is handed, the guidance mapping, the companion-repo
-classification, and the architecture gate that keeps a pre-Krea2 build (before master-721) off the native route."""
+"""Native (sd.cpp) Krea 2: assets, guidance mapping, companion repos, and the pre-master-721 build gate."""
 
 from __future__ import annotations
 
@@ -65,7 +64,6 @@ def test_the_vae_mirror_stays_a_loadable_pipeline():
 
 def test_guidance_follows_the_krea2_convention():
     fam = detect_family("krea/Krea-2-Turbo")
-    # diffusers Krea 2 is cond + g * (cond - uncond): standard CFG 1 + g, disabled at g = 0.
     assert _map_guidance(fam, 0.0) == (1.0, None)
     assert _map_guidance(fam, None) == (1.0, None)
     assert _map_guidance(fam, 3.5) == (4.5, None)

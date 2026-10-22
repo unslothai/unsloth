@@ -41,7 +41,6 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
     "flux.3-klein-base": ("--llm",),
-    # Krea 2 conditions on the same Qwen3-VL-4B encoder.
     "krea-2": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
