@@ -382,9 +382,14 @@ from .diffusion_comfy_block import (
     comfy_nvfp4_runtime_possible,
 )
 from .diffusion_comfy_quant import (
+    header_has_fp8_weights,
     comfy_fp8_backend,
+    comfy_fp8_storage,
     comfy_int8_backend,
     comfy_torchao_quantized,
+    fp8_storage_wanted,
+    fp8_stored_layers,
+    pipe_fp8_stored_layers,
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
@@ -2884,11 +2889,14 @@ def _denoiser_hooked(pipe: Any) -> bool:
 
 
 def _torchao_render_needs_no_grad(state: Any) -> bool:
-    """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad."""
+    """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad.
+    Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
     return bool(
-        getattr(state, "transformer_quant", None) or getattr(state, "text_encoder_quant", None)
+        getattr(state, "transformer_quant", None)
+        or getattr(state, "text_encoder_quant", None)
+        or pipe_fp8_stored_layers(getattr(state, "pipe", None))
     )
 
 
@@ -3120,6 +3128,28 @@ def _prequant_bakes_auto_accumulate(source: Any) -> bool:
         return path_in_cache(getattr(source, "location", None) or "")
     except Exception:  # noqa: BLE001
         return False
+
+
+def _single_file_fp8_upcast(single_file_path: Any, fam: Any) -> bool:
+    """Whether a single-file denoiser stores fp8 weights a widened load upcasts (~2x resident). Read from the header
+    (the basename only when it is unreadable); SDXL single-file pipelines are already bf16."""
+    if not single_file_path or getattr(fam, "single_file_is_pipeline", False):
+        return False
+    stored = header_has_fp8_weights(str(single_file_path))
+    return "fp8" in Path(single_file_path).name.lower() if stored is None else stored
+
+
+def _comfy_keep_fp32_pricing(fam: Any, target: Any) -> dict:
+    """``comfy_resident_mib`` kwargs for the DiT's ``_keep_in_fp32_modules``: never stored, fp32 on an fp16 load."""
+    import torch
+
+    from .diffusion_comfy_quant import keep_fp32_modules_for
+
+    keep = keep_fp32_modules_for(fam)
+    if not keep:
+        return {}
+    fp16 = getattr(target, "dtype", None) is torch.float16
+    return {"keep_fp32": keep, "keep_fp32_bytes": 4 if fp16 else None}
 
 
 class DiffusionBackend:
@@ -8751,7 +8781,7 @@ class DiffusionBackend:
                                 _install_gguf_dim_restore(logger)
                             if comfy_scan is not None:
                                 # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
-                                _comfy_offload = not plan_keeps_transformer_resident(plan)
+                                _comfy_offload = self._comfy_offload_for(plan, single_file_path)
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -8781,6 +8811,9 @@ class DiffusionBackend:
                                     target = target,
                                     fast_accum = transformer_quant_fast_accum,
                                     logger = logger,
+                                    fp8_storage = self._fp8_storage_for(
+                                        single_file_path, target, loras
+                                    ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                             else:
@@ -8791,7 +8824,13 @@ class DiffusionBackend:
                                     == "Krea2Transformer2DModel"
                                 ):
                                     transformer = load_original_layout_transformer(
-                                        transformer_cls, single_file_path, sf_kwargs, logger
+                                        transformer_cls,
+                                        single_file_path,
+                                        sf_kwargs,
+                                        logger,
+                                        fp8_storage = self._fp8_storage_for(
+                                            single_file_path, target, loras
+                                        ),
                                     )
                                 else:
                                     # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
@@ -10079,6 +10118,18 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 - an install hint only: the load decides on its own
             return False
 
+    def _comfy_offload_for(self, plan: Any, single_file_path: Any) -> bool:
+        """Probe the ComfyUI backends as offloaded: the plan offloads, or it was priced with the offloaded backends."""
+        priced = getattr(self, "_comfy_priced_offload", None) or {}
+        return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
+
+    def _fp8_storage_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
+        """The planner's ``fp8_storage_wanted`` pick for this file, re-checked against device / LoRA / env."""
+        picks = getattr(self, "_fp8_storage_picks", None) or {}
+        return bool(picks.get(str(single_file_path))) and comfy_fp8_storage(
+            target, lora = _has_active_lora(loras)
+        )
+
     @staticmethod
     def _comfy_single_file_resident_mib(
         single_file_path: Optional[str],
@@ -10087,8 +10138,11 @@ class DiffusionBackend:
         base: Optional[str],
         *,
         lora: bool = False,
+        fp8_storage: bool = False,
+        offload: bool = False,
     ) -> Optional[int]:
-        """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
+        """``comfy_resident_mib`` for a ComfyUI-quantized single file, else None. ``offload`` prices the backends an
+        offloaded load keeps (the loader probes them the same way)."""
         try:
             from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
             from .diffusion_transformer_quant import (
@@ -10106,8 +10160,10 @@ class DiffusionBackend:
             return comfy_resident_mib(
                 single_file_path,
                 scan,
-                keep_int8 = comfy_int8_backend(target, name, base) is not None,
-                keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+                keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
+                keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
+                fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
+                **_comfy_keep_fp32_pricing(fam, target),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
                 fp8_divisible = divisible_for_scheme(TQ_FP8),
@@ -11194,6 +11250,11 @@ class DiffusionBackend:
         pre-cast checkpoint's size, which base-repo scans never see.
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
+        single_file_fp8_stored_mib: Optional[int] = None
+        single_file_resident_at: Any = (
+            None  # (fp8_storage, offload) -> MiB, set for a single-file DiT
+        )
+        single_file_stored_at: Any = None
         device_memory = (
             device_memory_override
             if device_memory_override is not None
@@ -11312,21 +11373,46 @@ class DiffusionBackend:
                 # Planning the dense-quant candidate: the auto-policy estimate replaces the file-size derivation.
                 transformer_resident = transformer_resident_override_mib
             elif kind == "single_file":
-                # An fp8 checkpoint upcasts to bf16 on load (~2x resident); detect from the basename. SDXL single-file
-                # is already bf16.
-                fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
-                    "fp8" in Path(single_file_path).name.lower() if single_file_path else False
-                )
-                transformer_resident = estimate_safetensors_dense_mib(
-                    file_size_mib(single_file_path), fp8_upcast = fp8_upcast
-                )
-                if not getattr(fam, "single_file_is_pipeline", False):
-                    # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
-                    _comfy_mib = self._comfy_single_file_resident_mib(
-                        single_file_path, fam, target, base, lora = lora
+
+                def _single_file_resident(
+                    fp8_storage: bool, offload: bool = False
+                ) -> Optional[int]:
+                    fp8_upcast = _single_file_fp8_upcast(single_file_path, fam)
+                    if fp8_upcast and fp8_storage and fam.name == KREA2_FAMILY_NAME:
+                        # storage keeps only OCP fp8 codes; FNUZ ones still widen
+                        fp8_upcast = bool(
+                            header_has_fp8_weights(str(single_file_path), fnuz_only = True)
+                        )
+                    mib = estimate_safetensors_dense_mib(
+                        file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                     )
-                    if _comfy_mib is not None:
-                        transformer_resident = _comfy_mib
+                    if not getattr(fam, "single_file_is_pipeline", False):
+                        # Priced from the header: layers a runtime keeps at stored size, dequantized ones at 2x.
+                        _comfy_mib = self._comfy_single_file_resident_mib(
+                            single_file_path,
+                            fam,
+                            target,
+                            base,
+                            lora = lora,
+                            fp8_storage = fp8_storage,
+                            offload = offload,
+                        )
+                        if _comfy_mib is not None:
+                            mib = _comfy_mib
+                    return mib
+
+                def _stored_mib(widened: Optional[int], offload: bool = False) -> Optional[int]:
+                    if not (comfy_fp8_storage(target, lora = lora) and single_file_path):
+                        return None
+                    stored = _single_file_resident(True, offload)
+                    if stored is not None and widened is not None and stored < widened:
+                        return stored
+                    return None
+
+                transformer_resident = _single_file_resident(False)
+                single_file_fp8_stored_mib = _stored_mib(transformer_resident)
+                single_file_resident_at = _single_file_resident
+                single_file_stored_at = _stored_mib
             elif getattr(fam, "single_file_is_pipeline", False):
                 # Only the denoiser's linears stay packed; the text encoders, VAE and the rest load dense.
                 transformer_resident = whole_pipeline_gguf_resident_mib(
@@ -11424,17 +11510,62 @@ class DiffusionBackend:
         # the 1024x1024 default for PLACEMENT. generate() re-checks the real resolution against the free budget before
         # it samples (raise_on_image_activation_shortfall).
         runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = variant_hint)
-        return plan_diffusion_memory(
-            target = target,
-            device_memory = device_memory,
-            model_dense_mib = model_dense_mib,
-            companion_dense_mib = companion_mib,
-            text_encoder_dense_mib = text_encoder_mib,
-            runtime_headroom_mib = runtime_headroom,
-            requested_mode = memory_mode,
-            explicit_offload = cpu_offload,
-            calibrated_activation = _calibrated_activation(fam, target),
-        )
+
+        def _plan(model_mib: Optional[int]) -> Any:
+            return plan_diffusion_memory(
+                target = target,
+                device_memory = device_memory,
+                model_dense_mib = model_mib,
+                companion_dense_mib = companion_mib,
+                text_encoder_dense_mib = text_encoder_mib,
+                runtime_headroom_mib = runtime_headroom,
+                requested_mode = memory_mode,
+                explicit_offload = cpu_offload,
+                calibrated_activation = _calibrated_activation(fam, target),
+            )
+
+        plan = _plan(model_dense_mib)
+        if kind == "single_file" and single_file_path:
+            self.__dict__.setdefault("_comfy_priced_offload", {})[str(single_file_path)] = False
+        if (
+            single_file_resident_at is not None
+            and model_dense_mib is not None
+            and transformer_resident is not None
+            and not plan_keeps_transformer_resident(plan)
+        ):
+            # Offloaded: the loader probes the backends with offload=True (torchao fp8 does not survive the hooks), so
+            # price what that load builds, widened and fp8-stored, before choosing storage.
+            offloaded = single_file_resident_at(False, True)
+            if offloaded is not None and offloaded != transformer_resident:
+                # Smaller (the int8 / fp8 twin only offload runs): the load keeps those backends even if the new plan
+                # fits resident, else it dequantizes past the size it was planned at.
+                self.__dict__.setdefault("_comfy_priced_offload", {})[str(single_file_path)] = int(
+                    offloaded
+                ) < int(transformer_resident)
+                model_dense_mib = model_dense_mib - int(transformer_resident) + int(offloaded)
+                transformer_resident = offloaded
+                single_file_fp8_stored_mib = single_file_stored_at(offloaded, True)
+                plan = _plan(model_dense_mib)
+        if single_file_fp8_stored_mib is not None and model_dense_mib is not None:
+            # Re-plan at the fp8-stored size: a widened load that had to offload may now stay resident.
+            from .diffusion_memory import _available_system_memory_mib
+
+            store = fp8_storage_wanted(
+                target,
+                lora = lora,
+                offload = not plan_keeps_transformer_resident(plan),
+                widened_mib = transformer_resident,
+                host_available_mib = _available_system_memory_mib(),
+            )
+            picks = self.__dict__.setdefault("_fp8_storage_picks", {})
+            picks[str(single_file_path)] = store
+            if store:
+                plan = _plan(
+                    model_dense_mib - int(transformer_resident) + single_file_fp8_stored_mib
+                )
+        elif kind == "single_file" and single_file_path:
+            self.__dict__.setdefault("_fp8_storage_picks", {})[str(single_file_path)] = False
+        return plan
 
     @staticmethod
     def _from_pipe_no_recast(pipe: Any, pipe_cls: Any, **extra: Any) -> Any:
@@ -11731,6 +11862,12 @@ class DiffusionBackend:
                 "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
                 "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Unsloth then "
                 "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
+            )
+        if fp8_stored_layers(getattr(pipe, "transformer", None)):
+            raise ValueError(
+                "LoRA is not available on this load: the file's fp8 layers are stored as fp8 and widened per layer "
+                "(this GPU has no fp8 GEMM), which cannot carry adapters. Load the file with the LoRA selected "
+                "(Unsloth then widens those layers at load), or set UNSLOTH_DIFFUSION_FP8_STORAGE=0."
             )
         if not diffusion_lora.supports_lora(
             engine = "diffusers",
@@ -13449,8 +13586,10 @@ class DiffusionBackend:
             transformer_quant = state.transformer_quant,
         )
         compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
-        lora_load_ok = not _small_host_int8(state.pipe) and not comfy_block_runtime_layers(
-            getattr(state.pipe, "transformer", None)
+        lora_load_ok = (
+            not _small_host_int8(state.pipe)
+            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None))
+            and not fp8_stored_layers(getattr(state.pipe, "transformer", None))
         )
         return {
             "loaded": True,
