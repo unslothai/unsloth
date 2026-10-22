@@ -543,6 +543,52 @@ def test_slice_identity_fix_is_probe_gated_and_reversible(monkeypatch):
     assert SliceVariable.__dict__.get("get_real_python_backed_value") is stock
 
 
+class ZImageTransformer2DModel(torch.nn.Module):
+    """Z-Image's one block class runs the caption refiner (caption tokens), the noise refiner (image tokens) and the
+    main layers (caption + image), positionally as (x, attn_mask, freqs_cis); the caption is padded to 32-token buckets."""
+
+    def __init__(self):
+        super().__init__()
+        self.block = torch.compile(self._block, backend = "eager", dynamic = None)
+
+    @staticmethod
+    def _block(x, attn_mask, freqs_cis):
+        return (x * freqs_cis).masked_fill(~attn_mask[..., None], 0.0) + x
+
+    def forward(self, caption_len, image_len):
+        def run(n):
+            x = torch.randn(1, n, 8)
+            return self.block(x, torch.ones(1, n, dtype = torch.bool), torch.randn(1, n, 8))
+
+        run(caption_len)
+        run(image_len)
+        return run(caption_len + image_len)
+
+
+def test_zimage_new_caption_bucket_reuses_the_first_graphs():
+    """An automatic-dynamic Z-Image recompiled its block for each new length (caption, image, unified) inside the
+    first render, then again on the first longer prompt; armed, the first compile covers every length."""
+    from torch._dynamo.utils import counters
+
+    def graphs_per_render(install):
+        torch._dynamo.reset()
+        counters.clear()
+        m = ZImageTransformer2DModel()
+        if install:
+            assert dt.install(m)
+        seen = []
+        for caption_len, image_len in ((32, 64), (32, 64), (96, 64), (32, 48)):
+            before = counters["stats"]["unique_graphs"]
+            m(caption_len, image_len)
+            seen.append(counters["stats"]["unique_graphs"] - before)
+        dt.uninstall(m)
+        torch._dynamo.reset()
+        return seen
+
+    assert graphs_per_render(False)[0] > 1
+    assert graphs_per_render(True) == [1, 0, 0, 0]
+
+
 class FluxTransformer2DModel(torch.nn.Module):
     """FLUX.1's two compiled blocks: the double block sees the text stream beside the image tokens, the single block
     concatenates them, and the rotary tables span text + image."""
