@@ -53,6 +53,31 @@ def test_a_stuck_folder_is_skipped_marked_slow_and_recovers():
     assert local_inventory.run_custom_folder_bounded_sync("/mnt/nas", lambda: ["row"]) == ["row"]
 
 
+def test_overlapping_listings_cannot_grow_threads_on_a_hung_folder():
+    release = threading.Event()
+    started = []
+
+    def stuck():
+        started.append(1)
+        release.wait(5)
+
+    async def overlapping():
+        tasks = []
+        for _ in range(8):
+            tasks.append(
+                asyncio.create_task(local_inventory._run_custom_folder_bounded("/mnt/nas", stuck))
+            )
+            await asyncio.sleep(0.08)
+        return await asyncio.gather(*tasks)
+
+    try:
+        assert asyncio.run(overlapping()) == [None] * 8
+        # Only requests inside the first budget window start a thread; later ones see it stuck.
+        assert len(started) <= 4
+    finally:
+        release.set()
+
+
 def test_stuck_folders_cannot_starve_a_healthy_one():
     release = threading.Event()
     try:

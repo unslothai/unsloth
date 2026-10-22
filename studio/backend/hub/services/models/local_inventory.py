@@ -1148,7 +1148,9 @@ def _submit_custom_folder_scan(row_path: str, work) -> Optional[concurrent.futur
             name = "scan-folder",
             daemon = True,
         ).start()
-        _custom_folder_scans[row_path] = (time.monotonic(), future)
+        # Keep tracking the oldest scan still running: replacing it would restart the clock on a hung mount.
+        if running is None or running.done():
+            _custom_folder_scans[row_path] = (time.monotonic(), future)
         return future
 
 
