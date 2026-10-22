@@ -18,7 +18,7 @@ TREE = ast.parse(SOURCE.read_text(encoding = "utf-8"))
 FUNCS = {n.name: n for n in TREE.body if isinstance(n, ast.FunctionDef)}
 
 # The CUDA replay as shipped before ROCm support; any edit changes CUDA bytes.
-CUDA_REPLAY = '''
+CUDA_REPLAY = """
 def _row_dot_in_cuda_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
     a = tl.permute(tl.reshape(a, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
     b = tl.permute(tl.reshape(b, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
@@ -33,7 +33,7 @@ def _row_dot_in_cuda_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
     if WARPS == 4:
         acc = tl.sum(tl.reshape(acc, (ROWS, 2, 2)), axis = 1)
     return tl.sum(acc, axis = 1)
-'''
+"""
 
 
 def _calculate_settings(n):
@@ -108,7 +108,8 @@ def test_cuda_replay_body_is_the_shipped_one():
 
 def test_row_order_dispatch_is_a_compile_time_backend_switch():
     flag = next(
-        n for n in TREE.body
+        n
+        for n in TREE.body
         if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "_HIP_ROW_ORDER"
     )
     assert ast.unparse(flag.value) == "tl.constexpr(bool(torch.version.hip))"
@@ -121,12 +122,15 @@ def test_row_order_dispatch_is_a_compile_time_backend_switch():
     for name in ("_rms_layernorm_forward_rows", "_rms_backward_rows_block"):
         text = ast.unparse(FUNCS[name])
         assert "_row_dot_in_row_kernel_order(" in text
-        assert "_row_dot_in_cuda_row_order(" not in text and "_row_dot_in_hip_row_order(" not in text
+        assert (
+            "_row_dot_in_cuda_row_order(" not in text and "_row_dot_in_hip_row_order(" not in text
+        )
 
 
 def test_multirow_is_no_longer_gated_off_on_hip():
     gate = next(
-        n for n in TREE.body
+        n
+        for n in TREE.body
         if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "_MULTIROW"
     )
     assert "version.hip" not in ast.unparse(gate.value)

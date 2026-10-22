@@ -577,7 +577,12 @@ def _multirow_settings(n_cols, device = None):
         lanes = _hip_wavefront(torch.cuda.current_device() if index is None else index)
         if lanes is None:
             return None
-        return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // lanes, _MULTIROW_NUM_WARPS
+        return (
+            BLOCK_SIZE,
+            _MULTIROW_ELEMENTS // BLOCK_SIZE,
+            BLOCK_SIZE // lanes,
+            _MULTIROW_NUM_WARPS,
+        )
     return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // 32, _MULTIROW_NUM_WARPS
 
 
