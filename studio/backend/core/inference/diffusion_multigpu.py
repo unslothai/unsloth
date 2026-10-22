@@ -1306,6 +1306,15 @@ def build_replica(module: Any, device: Any) -> Any:
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
+    # A baked LoRA's scale pinned as a 0-d device tensor (diffusion._pin_baked_lora_scales) lives in a plain dict,
+    # not a buffer: the copy needs its own on ``device``.
+    for sub in module.modules():
+        scaling = sub.__dict__.get("scaling")
+        if isinstance(scaling, dict):
+            for value in scaling.values():
+                if isinstance(value, torch.Tensor) and id(value) not in memo:
+                    memo[id(value)] = value.detach().to(device)
+                    keep.append(value)
     memo[id(memo)] = keep
     replica = copy.deepcopy(module, memo)
     router = module.__dict__.get("forward")
@@ -1399,6 +1408,12 @@ def weights_fingerprint(module: Any) -> int:
     for name, sub in module.named_modules():
         for attr in _ADAPTER_ATTRS:
             value = sub.__dict__.get(attr)
+            if isinstance(value, dict):
+                # A pinned scale tensor: identity + version (an in-place write bumps it), no device read per call.
+                value = {
+                    k: (id(v), v._version) if hasattr(v, "_version") else v
+                    for k, v in value.items()
+                }
             if value is not None and not callable(value):
                 parts.append((name, attr, repr(value)))
     return hash(tuple(parts))

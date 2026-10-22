@@ -788,6 +788,84 @@ def _baked_lora_names(pipe: Any) -> list:
     return names
 
 
+# ``(module, adapter, base)`` for every baked LoRA scale held as a device tensor; ``base`` is lora_alpha / r.
+_PINNED_LORA_SCALES_ATTR = "_unsloth_pinned_lora_scales"
+
+
+def _pin_baked_lora_scales(pipe: Any, target_device: Any) -> int:
+    """Hold each baked adapter's PEFT scale as a 0-d tensor on its LoRA weights' device, so a later weight change or
+    subset switch is an in-place write instead of a new Python float.
+
+    PEFT keeps ``scaling[adapter]`` as a float and multiplies by it inside the LoRA forward. torch.compile guards on
+    that float (``self.scaling['b'] == 1.0``), and a CUDA graph records it as a kernel argument, so every new weight
+    vector recompiled and recaptured. The adapters and their shapes never change on a baked load, only the scale,
+    so a tensor read at run time serves every selection with the first prompt's graphs. Call before compile and
+    graph capture. Skipped (floats kept, the reset path stays) on an offloaded denoiser, where the LoRA weights move
+    off the scale's device, and when any LoRA weight is not yet on the target device type. Returns the count."""
+    if not getattr(pipe, "_unsloth_loras_baked", False) or getattr(
+        pipe, _PINNED_LORA_SCALES_ATTR, None
+    ):
+        return 0
+    if _denoiser_hooked(pipe):
+        return 0
+    import math
+
+    import torch
+
+    want = torch.device(str(target_device)).type
+    found = []
+    for _attr, root in denoiser_modules(pipe):
+        for module in root.modules():
+            scaling = module.__dict__.get("scaling")
+            lora_b = getattr(module, "lora_B", None)
+            if not isinstance(scaling, dict) or lora_b is None:
+                continue
+            for adapter, value in scaling.items():
+                if adapter not in lora_b or isinstance(value, torch.Tensor):
+                    continue
+                weight = lora_b[adapter].weight
+                if weight.device.type != want:
+                    return 0
+                r = module.r[adapter]
+                alpha = module.lora_alpha[adapter]
+                rslora = bool(getattr(module, "use_rslora", {}).get(adapter, False))
+                base = alpha / (math.sqrt(r) if rslora else r)
+                found.append((module, adapter, base, float(value), weight.device))
+    if not found:
+        return 0
+    pinned = []
+    # A normal tensor even when the load runs under inference_mode: an inference tensor refuses the later fill_.
+    with torch.inference_mode(False):
+        for module, adapter, base, value, device in found:
+            module.scaling[adapter] = torch.tensor(value, dtype = torch.float32, device = device)
+            pinned.append((module, adapter, base))
+    setattr(pipe, _PINNED_LORA_SCALES_ATTR, tuple(pinned))
+    return len(pinned)
+
+
+def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
+    """Write ``weights`` (adapter name -> weight, omitted = 0) into the pinned scale tensors in place. False, with the
+    pin dropped, when there is none or it no longer holds (something rewrote a scale as a float or moved the
+    weights): the caller then takes the set_adapters + graph reset path."""
+    pinned = getattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
+    if not pinned:
+        return False
+    import torch
+
+    for module, adapter, _base in pinned:
+        value = module.scaling.get(adapter)
+        if (
+            not isinstance(value, torch.Tensor)
+            or value.device != module.lora_B[adapter].weight.device
+        ):
+            setattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
+            return False
+    with torch.no_grad():
+        for module, adapter, base in pinned:
+            module.scaling[adapter].fill_(float(weights.get(adapter, 0.0)) * base)
+    return True
+
+
 def resolve_local_single_file(model_path: str) -> Optional[str]:
     """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
     diffusers pipeline (no ``model_index.json`` or FLUX.3 ``modular_model_index.json``) and holds exactly one ``.safetensors`` file, else
@@ -9801,6 +9879,14 @@ class DiffusionBackend:
                             )
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
+                    # Placed, not yet compiled or captured: a later LoRA weight / subset change then writes in place.
+                    pinned_scales = _pin_baked_lora_scales(pipe, target.device)
+                    if pinned_scales:
+                        logger.info(
+                            "diffusion.lora_bake: %d adapter scale(s) held as device tensors (weight changes "
+                            "keep the compiled graphs)",
+                            pinned_scales,
+                        )
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
                     if (
                         denoisers_pinned_resident(pipe)
@@ -11978,8 +12064,13 @@ class DiffusionBackend:
             names = [n for (n, _p, _w) in current]
             if any(w != 0 for (_n, _p, w) in current):
                 _refuse_weight_change_on_streamed_graph(state)
+                disabled = tuple((n, p, 0.0) for (n, p, _w) in current)
+                # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
+                if _set_pinned_lora_scales(pipe, {}):
+                    pipe._unsloth_loras = disabled
+                    return
                 pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
-                pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
+                pipe._unsloth_loras = disabled
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             return
@@ -12006,6 +12097,9 @@ class DiffusionBackend:
         if updated == current:
             return
         _refuse_weight_change_on_streamed_graph(state)
+        if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
+            pipe._unsloth_loras = updated
+            return
         pipe.set_adapters(
             [n for (n, _p, _w) in updated],
             adapter_weights = [w for (_n, _p, w) in updated],
