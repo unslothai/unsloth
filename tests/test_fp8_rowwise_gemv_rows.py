@@ -81,7 +81,6 @@ def test_routing(F, monkeypatch):
         assert F.can_use_fp8_rowwise_gemv(X, Wq, scale) is ok, M
     X = torch.randn(4, 1, 512, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
     assert not F.can_use_fp8_rowwise_gemv(X, Wq, scale)
-    # Block scales are not per-row: never the GEMV
     blocks = torch.ones(8, 4, device = "cuda")
     assert not F.can_use_fp8_rowwise_gemv(X.detach(), Wq, blocks)
     monkeypatch.setattr(F, "_FP8_GEMV_ROWS", False)
@@ -125,7 +124,6 @@ def test_rows_accuracy(F, monkeypatch, dtype, M, N, K, cfg):
 
 @needs_fp8_gpu
 def test_rows_through_fp8_linear_callers(F):
-    # fast_linear_forward routes q_len == 1 decode here; bsz rows land in M.
     from unsloth.kernels.utils import fast_linear_forward
 
     class P(torch.nn.Module):

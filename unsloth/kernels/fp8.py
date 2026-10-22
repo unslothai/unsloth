@@ -579,14 +579,12 @@ def _fp8_rowwise_gemv_kernel(
     tl.store(y_ptr + offs_n, y.to(y_ptr.dtype.element_ty), mask = offs_n < N)
 
 
-# Batched decode (2..16 tokens): one program per BLOCK_N outputs reads its weight tile once for every row.
-# Main's path for these sizes dequantizes the whole weight to 16 bits per call; both skip activation quant.
-# UNSLOTH_FP8_GEMV_ROWS=0 restores it.
+# Batched decode (2..16 rows): each weight tile is read once for every row, no 16-bit weight copy.
+# UNSLOTH_FP8_GEMV_ROWS=0 restores the dequantize path.
 _FP8_GEMV_MAX_ROWS = 16
 _FP8_GEMV_ROWS = os.environ.get("UNSLOTH_FP8_GEMV_ROWS", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-# M (2..16 decode rows) is runtime and unspecialized: one compiled kernel serves every batch size.
 @triton.jit(do_not_specialize = ["M"])
 def _fp8_rowwise_gemv_rows_kernel(
     x_ptr,
@@ -649,8 +647,7 @@ def _fp8_rowwise_gemv_rows_reduce(p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constex
 
 
 def _fp8_rows_config(N, K, dtype):
-    """(BLOCK_N, BLOCK_K, SPLIT_K, num_warps, num_stages), from a sweep over 8B / 1.7B / 0.6B projections.
-    Split K only when K is long or N too narrow to fill the GPU: the reduce launch costs more elsewhere."""
+    """(BLOCK_N, BLOCK_K, SPLIT_K, num_warps, num_stages) from a sweep; split K only for long K or narrow N."""
     if _FP8_ROWS_CONFIG_OVERRIDE is not None:
         return _FP8_ROWS_CONFIG_OVERRIDE
     if K >= 8192:
