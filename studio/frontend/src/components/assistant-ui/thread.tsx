@@ -3865,8 +3865,7 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
-  // assistant-ui's Escape cancels the run and prevents the key, so a sole pending tool request
-  // could never be declined from a focused composer.
+  // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
   const soleToolRequest = useChatRuntimeStore(
     (s) => Object.keys(s.toolConfirmations).length === 1,
   );
@@ -7607,8 +7606,7 @@ const ComposerRightControls: FC<{
   const chatActive = useChatActive();
   const threadRunning = useAuiState(({ thread }) => thread.isRunning);
   const controlsRef = useRef<HTMLDivElement>(null);
-  // What the Stop button runs: stop(), then ComposerPrimitive.Cancel's cancel. Claimed only while
-  // these controls are the foreground: Compare keeps this composer mounted and inert behind its own.
+  // Claimed only while foreground: Compare keeps this composer mounted and inert behind its own.
   useShortcut(
     "stopGeneration",
     () => {

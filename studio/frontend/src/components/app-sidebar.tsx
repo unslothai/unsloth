@@ -4115,7 +4115,6 @@ export function AppSidebar() {
       isSurfaceBackgrounded("#root")
     );
   };
-  // A claim, not a return in the handler: a covered press still reaches the dialog.
   const sidebarUncovered = () => !sidebarCovered();
   useShortcut(
     "archiveChat",
@@ -4276,8 +4275,7 @@ export function AppSidebar() {
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
-  // No menu item anywhere, so it says what it did and offers it back. Undo merges, so a chat that
-  // turned unread since stays unread.
+  // No menu item anywhere, so it says what it did and offers it back.
   useShortcut(
     "clearAllUnreads",
     () => {

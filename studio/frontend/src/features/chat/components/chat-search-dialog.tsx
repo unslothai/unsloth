@@ -253,8 +253,7 @@ export function ChatSearchDialog() {
     return () => clearTimeout(timer);
   }, [isOpen]);
 
-  // The composer has no Cmd-K of its own and is where focus sits on Chat. Other fields keep it: an
-  // editor there may chord on it.
+  // Only the composer passes: an editor in other fields may chord on Cmd-K.
   useShortcut("searchChats", () => useChatSearchStore.getState().open(), {
     skipInTextFields: true,
     textFieldException: COMPOSER_INPUT_SELECTOR,

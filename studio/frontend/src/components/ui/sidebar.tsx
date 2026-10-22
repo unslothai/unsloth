@@ -149,8 +149,7 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it. Not
-  // behind an open dialog (Settings leaves the app un-hidden); the open mobile drawer is itself one.
+  // Not behind an open dialog (Settings leaves the app un-hidden); the mobile drawer is itself one.
   useShortcut("toggleSidebar", toggleSidebar, {
     claims: () =>
       (isMobile && openMobile) || document.querySelector(OPEN_DIALOG_SELECTOR) === null,

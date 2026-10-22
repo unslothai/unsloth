@@ -535,8 +535,7 @@ test("no default takes a chord the browser owns without a reason", () => {
     "Mod+KeyF",
     // The command palette takes Print the same way.
     "Mod+KeyP",
-    // Rename chat. Firefox's Reader View, flagged so a web user is told, though only an article
-    // page offers Reader View at all.
+    // Rename chat: Firefox's Reader View, flagged so a web user is told.
     "Mod+Alt+KeyR",
   ]);
   for (const def of SHORTCUT_DEFS) {
@@ -1902,8 +1901,7 @@ test("a selection chord does not fall through to the open chat", async () => {
   assert.doesNotMatch(del, /withActiveChat\(/);
 });
 
-// The only action with no menu item anywhere, so a silent wipe leaves the user
-// nothing to tell it apart from a dead key, and nothing else to undo it with.
+// The only action with no menu item anywhere, so it must not wipe silently.
 test("clearing every unread says what it cleared", async () => {
   const body = sidebarShortcut("clearAllUnreads");
   // Counted before the wipe, or the toast reports zero every time. Rows, not
@@ -1911,7 +1909,6 @@ test("clearing every unread says what it cleared", async () => {
   assert.match(body, /const cleared = countUnreadRows\(state\);[\s\S]*state\.clearAllUnreads\(\)/);
   assert.match(body, /if \(state\.unreadThreadIds\.size === 0\) \{\n\s*toast\.info\(/);
   assert.match(body, /toast\.success\(/);
-  // Undo puts back the set read before the wipe, merged with anything unread since.
   assert.match(
     body,
     /const threadIds = \[\.\.\.state\.unreadThreadIds\];\n\s*const rowIds = \{ \.\.\.state\.unreadRowIds \};\n\s*state\.clearAllUnreads\(\);/,

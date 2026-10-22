@@ -276,7 +276,6 @@ test("edit project: composition blocks the save chord from the instructions fiel
   assert.equal(f.effects.filter((effect) => effect === "submit").length, 1);
 });
 
-// The save chord is the platform's own: ⌘ on macOS, Ctrl elsewhere.
 for (const modifier of ["metaKey", "ctrlKey"] as const) {
   test(`edit project: idle macOS Pinyin ${modifier} save chord from instructions submits`, () => {
     const f = fixture(

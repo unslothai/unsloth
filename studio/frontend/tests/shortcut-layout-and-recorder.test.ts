@@ -57,8 +57,7 @@ const defOf = (id: string) => {
   return def;
 };
 
-// German, Spanish, Italian, Nordic, Swiss, Portuguese and Belgian layouts type "-" on the key
-// US calls Slash, so Ctrl/Cmd and "-" reads as Mod+Slash, which opens the shortcuts list.
+// Much of Europe types "-" on the US Slash key, so Mod+"-" reads as Mod+Slash.
 test('Mod and "-" on the Slash key zooms out, not the shortcuts list', () => {
   const ownsSlash = (value: string) => value === "Mod+Slash";
   for (const [mac, mods] of [
@@ -69,7 +68,6 @@ test('Mod and "-" on the Slash key zooms out, not the shortcuts list', () => {
     assert.equal(zoomDirectionForKey(event, mac), -1);
     assert.equal(zoomChordTaken(event, -1, mac, ownsSlash), false);
     assert.equal(zoomTypedOffZoomKey(event, "Slash", mac), true);
-    // A US "/" is still the shortcut, and a real Minus binding still beats zoom.
     assert.equal(
       zoomTypedOffZoomKey(press("Slash", "/", mods), "Slash", mac),
       false,
@@ -115,7 +113,6 @@ test("stopGeneration ships on Mod+. and clashes with nothing", () => {
   }
   assert.equal(formatBindingValueLabel("Mod+Period", true), "⌘.");
   assert.equal(formatBindingValueLabel("Mod+Period", false), "Ctrl+.");
-  // Wired where the Stop button is, and free to fire from the composer.
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const at = thread.indexOf('useShortcut(\n    "stopGeneration",');
   assert.notEqual(at, -1, "stopGeneration has no handler");
@@ -123,7 +120,6 @@ test("stopGeneration ships on Mod+. and clashes with nothing", () => {
   assert.match(body, /stop\(\);/);
   assert.match(body, /composer\.cancel\(\)/);
   assert.doesNotMatch(body, /skipInTextFields/);
-  // Compare's own composer stops its panes the same way.
   assert.match(
     readSrc("features/chat/shared-composer.tsx"),
     /useShortcut\("stopGeneration", stop, \{\n\s*enabled: chatActive && busy,/,
@@ -155,7 +151,6 @@ test("tab and window chords are flagged desktop-only, per platform", () => {
         `${id} (mac=${mac})`,
       );
     }
-    // newChat's own chord works on the web; only its ⌘N alternate is desktop-only.
     assert.equal(isBrowserUnreachableBinding("Mod+Shift+KeyO", mac), false);
     assert.ok(isBrowserUnreachableBinding("Mod+KeyN", mac));
   }
@@ -177,7 +172,6 @@ test("the recorder names the AltGr or Windows key it cannot bind", () => {
   });
   assert.equal(bindingFromEvent(altGrQ, false), null);
   assert.equal(unrecordableModifier(altGrQ, false), "altGraph");
-  // A modifier on its own is still a chord being assembled, and macOS records both.
   assert.equal(
     unrecordableModifier(press("MetaLeft", "Meta", { metaKey: true }), false),
     null,
@@ -244,7 +238,6 @@ test("searching by modifier words finds the chord", () => {
   for (const q of ["ctrl", "control", "⌃", "ctrl shift p"]) {
     assert.ok(bindingMatchesQuery(ctrlShiftP, q, true), q);
   }
-  // Off macOS Mod is Ctrl, and a lone letter is the key, not any word with it in.
   assert.ok(bindingMatchesQuery(cmdShiftO, "ctrl shift o", false));
   assert.ok(bindingMatchesQuery(cmdShiftO, "control", false));
   assert.equal(bindingMatchesQuery(cmdShiftO, "cmd", false), false);
@@ -281,7 +274,6 @@ test("Mod+Enter is the platform's own modifier, and never mid-composition", () =
     isModEnter({ ...enter({ ctrlKey: true }), key: "a" }, false),
     false,
   );
-  // The event's own flag, and React's nativeEvent copy of it.
   assert.equal(
     isModEnter(enter({ ctrlKey: true }, { isComposing: true }), false),
     false,
@@ -293,7 +285,6 @@ test("Mod+Enter is the platform's own modifier, and never mid-composition", () =
     ),
     false,
   );
-  // keyCode 229 alone is idle macOS Pinyin, which still means the chord.
   assert.ok(isModEnter(enter({ metaKey: true }, { keyCode: 229 }), true));
   assert.equal(modEnterLabel(true), "⌘↵");
   assert.equal(modEnterLabel(false), "Ctrl+Enter");

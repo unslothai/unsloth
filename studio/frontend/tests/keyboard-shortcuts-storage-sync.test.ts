@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// A window before the store loads, so its module-level listener registers here.
 const stored = new Map<string, string>();
 const listeners: Array<(event: { key: string | null }) => void> = [];
 (globalThis as { window?: unknown }).window = {
@@ -33,7 +32,6 @@ test("an edit in another tab reaches this one before it writes again", () => {
   useKeyboardShortcutsStore
     .getState()
     .setBinding("searchChats", "primary", "Mod+KeyJ");
-  // The other tab rebinds a different row and writes the whole object.
   stored.set(
     KEYBOARD_SHORTCUTS_STORAGE_KEY,
     JSON.stringify({ openSettings: { primary: "Mod+Alt+Comma" } }),
@@ -42,7 +40,6 @@ test("an edit in another tab reaches this one before it writes again", () => {
   assert.deepEqual(useKeyboardShortcutsStore.getState().overrides, {
     openSettings: { primary: "Mod+Alt+Comma" },
   });
-  // So this tab's next edit keeps it rather than writing its stale copy back.
   useKeyboardShortcutsStore
     .getState()
     .setBinding("renameChat", "primary", "Mod+Alt+KeyT");

@@ -252,7 +252,6 @@ export function useShortcut(
       if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
-      // Zoom keeps the "-" or "+" the user typed, whatever key their layout puts it on.
       if (zoomTypedOffZoomKey(event, hit.code, isMacPlatform())) return;
       // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
       // Enter or a letter, the same pass would deny the request as the user edits the prompt.

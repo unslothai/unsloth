@@ -154,17 +154,13 @@ export function ToolConfirmationControls({
   useShortcut("approveToolRequest", () => void resolve("allow"), {
     enabled: keyboardReady,
     claims: chatUncovered,
-    // Enter belongs to the composer while it has focus.
     skipInTextFields: true,
   });
   useShortcut("declineToolRequest", () => void resolve("deny"), {
     enabled: keyboardReady,
     claims: chatUncovered,
     skipInTextFields: true,
-    // A request usually arrives with the composer still focused from the prompt that caused it,
-    // and Escape types nothing there, so the gate would hold the decline back at the one moment
-    // it is most wanted. Enter above gets no such pass: that key sends. Every other field keeps
-    // its Escape, the queued-prompt editor and the settings search included.
+    // Escape passes the gate from the composer (it types nothing there); Enter does not: it sends.
     textFieldException: COMPOSER_INPUT_SELECTOR,
   });
 

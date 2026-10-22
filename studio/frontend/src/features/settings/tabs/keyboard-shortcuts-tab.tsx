@@ -144,7 +144,6 @@ export function KeyboardShortcutsTab() {
   const [recording, setRecording] = useState<RecordingTarget | null>(null);
   // Shown under the row being recorded when the pressed chord is rejected.
   const [recordingError, setRecordingError] = useState<string | null>(null);
-  // The slot just recorded, so a chord the browser keeps gets said under its row, not only on hover.
   const [justRecorded, setJustRecorded] = useState<RecordingTarget | null>(
     null,
   );
@@ -196,8 +195,7 @@ export function KeyboardShortcutsTab() {
       }
       const binding = bindingFromEvent(event);
       if (!binding) {
-        // A real key with the Windows key or AltGr, which cannot be bound; otherwise a modifier held
-        // on its own, and the user is still assembling the chord.
+        // A real key with the Windows key or AltGr, which cannot be bound; else still assembling.
         const refused = unrecordableModifier(event);
         if (refused) {
           setRecordingError(
@@ -352,7 +350,6 @@ export function KeyboardShortcutsTab() {
         ? "settings.keyboardShortcuts.primarySlot"
         : "settings.keyboardShortcuts.alternateSlot",
     );
-    // The warning rides the cap's tooltip, not a third line of description, until it is just recorded.
     const reserved =
       !isTauri && !isRecording && isBrowserReservedBinding(value);
     const desktopOnly =
@@ -422,9 +419,7 @@ export function KeyboardShortcutsTab() {
         const value = resolveBinding(overrides, def.id, slot);
         return !value || shortcutOwningBinding(overrides, value) !== def.id;
       });
-    // Name the other side, so the user knows which row to change.
     const clashesWith = conflicted ? conflictingLabels(def.id) : "";
-    // Only for the slot just set: a default on a browser chord keeps to the tooltip.
     const recordedValue =
       justRecorded?.id === def.id && !isRecording
         ? resolveBinding(overrides, def.id, justRecorded.slot)

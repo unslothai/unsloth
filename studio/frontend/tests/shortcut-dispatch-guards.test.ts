@@ -359,7 +359,6 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
     const at = APP_SIDEBAR.indexOf(`useShortcut(\n    "${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
     const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  );", at));
-    // A claim, so a covered press is left to the dialog rather than swallowed.
     assert.match(
       body,
       /\{ claims: sidebarUncovered \}/,
@@ -493,7 +492,6 @@ test("a tool call cannot be answered from behind a dialog", async () => {
   for (const id of ["approveToolRequest", "declineToolRequest"]) {
     const at = source.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
-    // A claim, so the press is asked before the key is consumed.
     assert.match(
       source.slice(at, source.indexOf("\n  });", at)),
       /claims: chatUncovered,/,

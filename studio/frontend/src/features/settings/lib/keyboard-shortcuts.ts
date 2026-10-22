@@ -793,11 +793,9 @@ export function bindingMatchesQuery(
 ): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return false;
-  // The label as typed, as the search always matched it ("ctrl+shift+n", "⇧⌘o").
   if (formatBindingLabel(binding, mac).toLowerCase().includes(q)) return true;
   const text = bindingSearchText(binding, mac);
   const key = formatCode(binding.code, mac).toLowerCase();
-  // Glyphs typed run together ("⌥⌘r"), so each one stands as its own word.
   const words = q
     .replace(/[⌘⌃⌥⇧]/g, (glyph) => ` ${glyph} `)
     .split(/[\s+]+/)
