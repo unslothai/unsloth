@@ -956,6 +956,30 @@ def test_offload_torch_hooks_are_stripped_from_the_replica():
     assert calls == []
 
 
+def test_the_conditioning_block_cache_stays_with_the_source():
+    """FLUX.3's conditioning-block cache lives in the source's __dict__ and holds source-card tensors; the replica gets
+    the states through the forwarded call, so a copy would stay on the source card and never be cleared."""
+    dit = _Dit()
+    states = {"temb": torch.ones(2, 4)}
+    dit.__dict__["_unsloth_cond_cache"] = {("key",): states}
+    replica = mg.build_replica(dit, torch.device("cpu"))
+    assert "_unsloth_cond_cache" not in replica.__dict__
+    assert dit.__dict__["_unsloth_cond_cache"] == {("key",): states}
+    out = replica(
+        hidden_states = torch.ones(1, 4),
+        timestep = torch.tensor(1.0),
+        encoder_hidden_states = torch.ones(1, 4),
+    )[0]
+    assert torch.equal(
+        out,
+        dit(
+            hidden_states = torch.ones(1, 4),
+            timestep = torch.tensor(1.0),
+            encoder_hidden_states = torch.ones(1, 4),
+        )[0],
+    )
+
+
 def test_predicted_branch_hits_and_stays_exact():
     torch.manual_seed(0)
     dit = _Dit()

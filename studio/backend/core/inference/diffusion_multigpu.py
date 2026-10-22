@@ -1310,8 +1310,13 @@ def _copy_module(module: Any, device: Any) -> Any:
     for sub in module.modules():
         offload_keys = set(_offload_attr_keys(sub))
         for key, value in sub.__dict__.items():
-            if isinstance(value, CfgParallelRouter) or key in offload_keys:
-                # never traversed: offload state holds pinned host copies a deepcopy would duplicate
+            if (
+                isinstance(value, CfgParallelRouter)
+                or key in offload_keys
+                or key in _SOURCE_ONLY_ATTRS
+            ):
+                # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
+                # source-only cache holds source-card tensors
                 memo[id(value)] = _DROP
         for attr in ("_forward_hooks", "_forward_pre_hooks"):
             for hook in (getattr(sub, attr, None) or {}).values():
@@ -1372,6 +1377,9 @@ def _copy_module(module: Any, device: Any) -> Any:
 
 
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
+# Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
+# forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
+_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache"})
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:
