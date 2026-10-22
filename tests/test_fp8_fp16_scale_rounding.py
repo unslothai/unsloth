@@ -72,7 +72,9 @@ def test_other_dtypes_keep_native_expression(F, dtype, layout):
     torch.manual_seed(1)
     w = torch.randn(32, 48) * torch.linspace(1e-4, 1.0, 32)[:, None]
     # fp64 must not pass through an fp32 scale: give it bits fp32 cannot hold.
-    s = (w.abs().amax(1, keepdim = True) / 448).to(torch.float64 if dtype == torch.float64 else torch.float32)
+    s = (w.abs().amax(1, keepdim = True) / 448).to(
+        torch.float64 if dtype == torch.float64 else torch.float32
+    )
     if dtype == torch.float64:
         s = s * (1 + 2**-40)
     q = (w / s).to(torch.float8_e4m3fn)
