@@ -147,7 +147,8 @@ export function reduceEvents(
         node.finishedAt = null;
       }
       if (status === "failed")
-        node.error = (data.message as string) ?? "Failed";
+        node.error =
+          (data.error as string) ?? (data.message as string) ?? "Failed";
       if (
         status === "done" ||
         status === "cached" ||

@@ -10,7 +10,7 @@ import secrets
 import time
 from typing import Any
 
-from core.flows.nodes._common import as_text, strip_think
+from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, strip_think
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 POLL_S = 5.0
@@ -175,7 +175,7 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
             None,
             model = trained.ref,
             variant = None,
-            max_seq_length = None,
+            max_seq_length = FLOW_CHAT_CONTEXT,
             load_in_4bit = True,
             hf_token = None,
             kind = "llm",

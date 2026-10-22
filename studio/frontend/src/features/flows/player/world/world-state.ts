@@ -4,6 +4,7 @@
 // The world's game state outside the renderer: inventory, quests, variables, conversations and save data.
 // Phaser owns positions frame to frame; this owns everything a save slot or an NPC needs to know.
 
+import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
 import type { Point } from "./procgen";
 
@@ -121,8 +122,15 @@ export function applyReply(
     quest.giver === npcId &&
     !st.completedQuests.includes(quest.id)
   ) {
+    let vars = st.vars;
+    try {
+      vars = applySets(quest.set, st.vars);
+    } catch {
+      // A quest effect that does not evaluate leaves the variables as they were.
+    }
     st = {
       ...st,
+      vars,
       completedQuests: [...st.completedQuests, quest.id],
       activeQuests: st.activeQuests.filter((q) => q !== quest.id),
     };

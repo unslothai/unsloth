@@ -79,10 +79,10 @@ function EditorBody({
           void flushSave().finally(() => void navigate({ to: "/flows" }))
         }
         onPlay={() =>
-          void flushSave().then(
-            () =>
-              void navigate({ to: "/flows/$flowId/play", params: { flowId } }),
-          )
+          void flushSave().then((saved) => {
+            if (saved)
+              void navigate({ to: "/flows/$flowId/play", params: { flowId } });
+          })
         }
       />
       {readOnly && (

@@ -154,6 +154,9 @@ async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[byte
     files: dict[str, tuple[bytes, str]] = {}
     for node in doc.get("nodes", []):
         node["params"] = await _embed(node.get("params") or {}, read_media, files)
+    # Flow inputs can default to an image or clip too.
+    if doc.get("params"):
+        doc["params"] = await _embed(doc["params"], read_media, files)
     if mode == "baked":
         doc["baked"] = await _embed(doc.get("baked") or {}, read_media, files)
     else:

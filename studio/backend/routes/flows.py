@@ -378,7 +378,11 @@ def put_flow(flow_id: str, body: FlowBody) -> dict:
 
 
 @router.delete("/{flow_id}", status_code = 204)
-def delete_flow(flow_id: str) -> Response:
+async def delete_flow(flow_id: str) -> Response:
+    # A running flow would keep training or generating with no page left to stop it.
+    engine = get_engine()
+    for run_id in [rs.id for rs in list(engine.runs.values()) if rs.flow_id == flow_id]:
+        await engine.cancel(run_id)
     flows_db.delete_flow(flow_id)
     return Response(status_code = 204)
 

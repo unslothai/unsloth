@@ -203,6 +203,10 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     return name
 
 
+# Studio's status names a GGUF by repo only, so the variant Flows last loaded per slot is kept here.
+_LOADED_VARIANT: dict[str, tuple[str, str]] = {}
+
+
 async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Optional[dict]:
     """Load ``choice`` into its slot unless it is already resident; None keeps what is loaded."""
     from core.flows.engine import LOAD_KIND, MODEL_SLOT
@@ -223,8 +227,12 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
     if slot in ("embedding",):
         return {"repo": repo, "variant": variant}
     resident = await resident_name(ctx, model_kind)
-    # Studio reports the resident model by repo, so a named variant of the same repo counts as loaded.
-    if resident and resident.lower() == repo.lower():
+    wanted = (repo.lower(), (variant or "").lower())
+    if (
+        resident
+        and resident.lower() == repo.lower()
+        and (not variant or _LOADED_VARIANT.get(slot) == wanted)
+    ):
         return {"repo": repo, "variant": variant}
     ctx.set_status("loading_model", f"Loading {repo}{':' + variant if variant else ''}")
     deadline = time.monotonic() + LOAD_DEADLINE_S
@@ -260,6 +268,7 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
     # Another slot's model may have been evicted; read them again next time.
     ctx.resident.clear()
     ctx.resident[slot] = repo
+    _LOADED_VARIANT[slot] = wanted
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
 

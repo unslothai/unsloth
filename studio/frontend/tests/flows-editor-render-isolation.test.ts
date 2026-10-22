@@ -182,3 +182,21 @@ test("positions reach the document only when a drag is committed", () => {
   assert.equal(useDocStore.getState().version, version + 1);
   assert.deepEqual(useDocStore.getState().graph.nodes.a.pos, [99, 99]);
 });
+
+test("a failed node keeps the backend's error text", () => {
+  const base = {
+    runId: "r1",
+    runStatus: "running" as const,
+    runError: null,
+    lastSeq: 0,
+    nodes: {},
+    logs: [],
+  };
+  const next = reduceEvents(base, [
+    ev(1, "node.status", "a", {
+      status: "failed",
+      error: "No chat model is loaded",
+    }),
+  ]);
+  assert.equal(next.nodes.a.error, "No chat model is loaded");
+});

@@ -4,6 +4,7 @@
 """The /api/flows routes over a bare app: CRUD and conflicts, validation, runs with SSE replay, sessions, import,
 assets and examples, and account isolation."""
 
+import asyncio
 import hashlib
 import json
 import time
@@ -268,3 +269,20 @@ def test_event_replay_pages_past_one_stored_page(client, monkeypatch):
     replay = _events(client.post(f"/api/flows/runs/{run_id}/events", params = {"after": 0}).text)
     assert [e["seq"] for e in replay] == list(range(1, len(replay) + 1))
     assert replay[-1]["type"] == "run.completed" and len(replay) > 2
+
+
+def test_deleting_a_flow_stops_its_run(client):
+    async def slow(ctx):
+        for _ in range(3000):
+            await asyncio.sleep(0.01)
+            ctx.check_cancelled()
+        return {"text": "late"}
+
+    engine_mod.ENGINE.handlers["input.text"] = slow
+    client.post("/api/flows", json = {"doc": _simple()})
+    run_id = client.post("/api/flows/flow1/runs", json = {}).json()["run_id"]
+    # Another account deleting its own flow with the same id leaves this run alone.
+    assert client.delete("/api/flows/flow1", headers = {"x-test-account": "bob"}).status_code == 204
+    assert client.get(f"/api/flows/runs/{run_id}").json()["run"]["status"] in ("queued", "running")
+    assert client.delete("/api/flows/flow1").status_code == 204
+    assert _wait_terminal(client, run_id)["run"]["status"] == "cancelled"

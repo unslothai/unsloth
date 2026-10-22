@@ -81,6 +81,17 @@ def _derive_seed(
 _IN_CANCEL_HOOK: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "flows_in_cancel_hook", default = False
 )
+_LATE_HOOKS: set[asyncio.Task] = set()
+
+
+async def _run_cancel_hook(fn: Callable[[], Awaitable[None]]) -> None:
+    token = _IN_CANCEL_HOOK.set(True)
+    try:
+        await asyncio.wait_for(fn(), timeout = 15)
+    except Exception:
+        logger.debug("flows: cancel hook failed", exc_info = True)
+    finally:
+        _IN_CANCEL_HOOK.reset(token)
 
 
 def _clamp(spec_param: dict, value: Any) -> Any:
@@ -450,6 +461,12 @@ class NodeContextImpl:
             raise FlowCancelled()
 
     def on_cancel(self, fn: Callable[[], Awaitable[None]]) -> None:
+        if self._rs.cancelled:
+            # The run was cancelled while the job was being started: stop the job now.
+            task = asyncio.get_running_loop().create_task(_run_cancel_hook(fn))
+            _LATE_HOOKS.add(task)
+            task.add_done_callback(_LATE_HOOKS.discard)
+            return
         self._rs.cancel_hooks.setdefault(self.node_id, []).append(fn)
 
     @property
@@ -674,15 +691,8 @@ class FlowEngine:
     async def _fire_cancel_hooks(self, rs: RunState) -> None:
         hooks = [fn for fns in rs.cancel_hooks.values() for fn in fns]
         rs.cancel_hooks.clear()
-        token = _IN_CANCEL_HOOK.set(True)
-        try:
-            for fn in hooks:
-                try:
-                    await asyncio.wait_for(fn(), timeout = 15)
-                except Exception:
-                    logger.debug("flows: cancel hook failed", exc_info = True)
-        finally:
-            _IN_CANCEL_HOOK.reset(token)
+        for fn in hooks:
+            await _run_cancel_hook(fn)
 
         async def hard_stop() -> None:
             await asyncio.sleep(CANCEL_GRACE_S)
@@ -1047,7 +1057,14 @@ class FlowEngine:
             return SKIPPED
 
         if parallel:
-            gathered = await asyncio.gather(*(one(i, item) for i, item in enumerate(items)))
+            # Each iteration has its own scope, so the CPU limit is applied across iterations here.
+            gate = asyncio.Semaphore(CPU_CONCURRENCY)
+
+            async def bounded(index: int, item: Any) -> Any:
+                async with gate:
+                    return await one(index, item)
+
+            gathered = await asyncio.gather(*(bounded(i, item) for i, item in enumerate(items)))
         else:
             gathered = []
             for i, item in enumerate(items):

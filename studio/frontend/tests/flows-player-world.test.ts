@@ -152,3 +152,16 @@ test("world state: pick up, give, quests and save round-trip", () => {
   assert.deepEqual(W.deserialize(s, JSON.parse(JSON.stringify(saved))), after);
   assert.equal(W.deserialize(s, { v: 99 }), null);
 });
+
+test("world state: completing a quest applies its effects", () => {
+  const s = spec(1, "meadow");
+  s.quests[0].set = { helped: true };
+  s.vars = { helped: false };
+  let st = W.initialWorldState(s);
+  st = W.startQuestsOf(s, W.pickUp(st, "i0"), "n0");
+  const { state } = W.applyReply(s, st, "n0", {
+    text: "Thanks!",
+    complete_quest: "q",
+  });
+  assert.equal(state.vars.helped, true);
+});

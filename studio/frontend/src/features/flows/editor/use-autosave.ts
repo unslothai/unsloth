@@ -76,23 +76,24 @@ async function saveClosing(
   }
 }
 
-async function performSave(force = false): Promise<void> {
+/** True once the server holds the document on screen. */
+async function performSave(force = false): Promise<boolean> {
   const current = session;
-  if (!current) return;
+  if (!current) return true;
   const state = useDocStore.getState();
-  if (state.flowId !== current.flowId) return;
+  if (state.flowId !== current.flowId) return true;
   const doc = documentFromState(state);
   const signature = documentSignature(doc);
   if (signature === current.savedSignature) {
     useUiStore.getState().setSaveState("saved");
-    return;
+    return true;
   }
   // A signature that just failed is not retried until it changes or the user saves explicitly.
-  if (!force && signature === current.failedSignature) return;
+  if (!force && signature === current.failedSignature) return false;
   useUiStore.getState().setSaveState("saving");
   try {
     const record = await saveFlow(current.flowId, doc, current.baseUpdatedAt);
-    if (session !== current) return;
+    if (session !== current) return true;
     current.baseUpdatedAt = record.updatedAt;
     current.savedSignature = signature;
     current.failedSignature = null;
@@ -101,8 +102,9 @@ async function performSave(force = false): Promise<void> {
       .getState()
       .setSaveState(latest === signature ? "saved" : "dirty");
     if (latest !== signature) scheduleSave();
+    return true;
   } catch (error) {
-    if (session !== current) return;
+    if (session !== current) return false;
     current.failedSignature = signature;
     if (error instanceof FlowsApiError && error.status === 409) {
       useUiStore.getState().setSaveState("conflict");
@@ -132,12 +134,13 @@ async function performSave(force = false): Promise<void> {
           },
         },
       });
-      return;
+      return false;
     }
     useUiStore.getState().setSaveState("error");
     toast.error(
       error instanceof Error ? error.message : "Could not save the flow",
     );
+    return false;
   }
 }
 
@@ -147,24 +150,27 @@ function scheduleSave(): void {
   if (current.timer) clearTimeout(current.timer);
   current.timer = setTimeout(() => {
     current.timer = null;
-    current.inflight = (current.inflight ?? Promise.resolve()).then(() =>
-      performSave(),
+    current.inflight = (current.inflight ?? Promise.resolve()).then(
+      async () => {
+        await performSave();
+      },
     );
   }, SAVE_DEBOUNCE_MS);
 }
 
-/** Save now (Ctrl+S, before playing); resolves once the document on the server is current. */
-export async function flushSave(): Promise<void> {
+/** Save now (Ctrl+S, before playing); resolves to false when the save failed or conflicted. */
+export async function flushSave(): Promise<boolean> {
   const current = session;
-  if (!current) return;
+  if (!current) return true;
   if (current.timer) {
     clearTimeout(current.timer);
     current.timer = null;
   }
-  current.inflight = (current.inflight ?? Promise.resolve()).then(() =>
+  const saved = (current.inflight ?? Promise.resolve()).then(() =>
     performSave(true),
   );
-  await current.inflight;
+  current.inflight = saved.then(() => undefined);
+  return saved;
 }
 
 export function useAutosave(enabled: boolean): void {

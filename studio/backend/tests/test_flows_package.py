@@ -211,3 +211,20 @@ def test_import_records_lineage_and_export_sets_license():
     meta = json.loads(data)["meta"]
     assert meta["license"] == package.DEFAULT_LICENSE
     assert meta["ai_generated"] is False
+
+
+@run_async
+async def test_export_embeds_media_defaults_of_flow_inputs():
+    gallery = {"kind": "image", "ref": "image:abc", "url": "/api/inference/images/gallery/abc/file"}
+    d = doc(
+        [node("a", "input.text", value = "hi")],
+        params = [{"id": "photo", "type": "image", "default": gallery}],
+    )
+
+    async def read_media(media):
+        return PNG, "image/png"
+
+    data, _, _ = await package.export_flow(d, "package", read_media)
+    parsed, files, _ = read_package(data)
+    assert set(files) == {PNG_SHA}
+    assert parsed["params"][0]["default"]["ref"] == f"sha256:{PNG_SHA}"

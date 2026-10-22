@@ -314,3 +314,65 @@ async def test_use_the_loaded_model_is_never_cached():
     named = {"repo": "unsloth/x-GGUF", "variant": "Q4_K_M"}
     await _run(eng, flow(named))
     assert _status(await _run(eng, flow(named)), "g") == "cached"
+
+
+@run_async
+async def test_a_hook_registered_after_cancel_still_fires():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    fired = []
+
+    async def starts_a_job(ctx):
+        started.set()
+        await release.wait()  # the job start request is still in flight when Stop is pressed
+
+        async def hook():
+            fired.append(ctx.node_id)
+
+        ctx.on_cancel(hook)
+        await asyncio.sleep(0.05)
+        ctx.check_cancelled()
+        return {"text": "x"}
+
+    eng = _engine({**BASE, "llm.generate": starts_a_job})
+    d = doc(
+        [node("a", "input.text", value = "p"), node("g", "llm.generate")],
+        [edge("a", "text", "g", "prompt")],
+    )
+    parsed, _ = parse_document(d)
+    rs = await eng.start_run(app = None, flow_id = "f1", doc = parsed, options = {})
+    await asyncio.wait_for(started.wait(), 60)
+    await eng.cancel(rs.id)
+    release.set()
+    await asyncio.wait_for(rs.task, 60)
+    await asyncio.sleep(0.05)
+    assert rs.status == "cancelled" and fired == ["g"]
+
+
+@run_async
+async def test_parallel_for_each_keeps_the_cpu_limit():
+    live = 0
+    peak = 0
+
+    async def slow(ctx):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        await asyncio.sleep(0.02)
+        live -= 1
+        return {"text": "ok"}
+
+    eng = _engine(
+        {**BASE, "input.list": lambda ctx: _ret({"items": list(range(12))}), "text.template": slow}
+    )
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each", parallel = True),
+            node("t", "text.template", group = "fe"),
+        ],
+        [edge("l", "items", "fe", "items"), edge("fe", "item", "t", "values")],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed", rs.error
+    assert 1 < peak <= engine_mod.CPU_CONCURRENCY

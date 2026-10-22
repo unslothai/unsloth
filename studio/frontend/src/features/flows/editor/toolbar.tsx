@@ -197,7 +197,9 @@ function ToolbarImpl({
         <IconButton
           icon={Share08Icon}
           label="Share"
-          onClick={() => void flushSave().then(() => setDialog("share"))}
+          onClick={() =>
+            void flushSave().then((saved) => saved && setDialog("share"))
+          }
         />
         {(kind === "story" || kind === "world") && (
           <button
