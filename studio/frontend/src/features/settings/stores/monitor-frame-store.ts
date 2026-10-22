@@ -63,3 +63,19 @@ export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
       return { frames };
     }),
 }));
+
+/**
+ * The Loaded models card's box while it rests in the bottom-right corner, which is also the Live
+ * monitor's default spot. Only the monitor reads it, to rest above the card while it sits at its
+ * default anchor; the card and the rest of the stack stay where CSS puts them.
+ */
+interface CornerCardFrameState {
+  frame: MonitorFrame | null;
+  setFrame: (frame: MonitorFrame | null) => void;
+}
+
+export const useCornerCardFrameStore = create<CornerCardFrameState>((set) => ({
+  frame: null,
+  setFrame: (frame) =>
+    set((state) => (sameFrame(state.frame, frame) ? state : { frame })),
+}));

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -11,6 +12,8 @@ import { ejectLoadedModel, readLoadedModels } from "./loaded-models-api";
 import {
   type LoadedModelEntry,
   type LoadedModelSource,
+  loadedModelLabel,
+  sameLoadedModels,
   shortModelLabel,
   withPendingLoads,
 } from "./loaded-models-sources";
@@ -20,7 +23,13 @@ const POLL_INTERVAL_MS = 5000;
 
 const NO_ENTRIES: LoadedModelEntry[] = [];
 
-const ALL_SOURCES: LoadedModelSource[] = ["chat", "image", "video", "stt"];
+const ALL_SOURCES: LoadedModelSource[] = [
+  "chat",
+  "image",
+  "video",
+  "stt",
+  "embedding",
+];
 
 // A TTS load takes the chat slot and the chat unload releases it, so it folds into that
 // row rather than adding one.
@@ -36,6 +45,8 @@ export type UseLoadedModels = {
   polledEntries: LoadedModelEntry[];
   /** Row ids with an eject in flight. */
   ejecting: ReadonlySet<string>;
+  /** Another account's model holds a runtime this account cannot see into. */
+  heldByOther: boolean;
   eject: (entry: LoadedModelEntry) => Promise<void>;
   refresh: () => void;
 };
@@ -53,7 +64,9 @@ export function useLoadedModels(
   enabled: boolean,
   track: boolean = enabled,
 ): UseLoadedModels {
+  const t = useT();
   const [polled, setEntries] = useState<LoadedModelEntry[]>([]);
+  const [heldByOther, setHeldByOther] = useState(false);
   // Mirrored for the read below, which needs the last rows without taking a
   // dependency that would rebuild `refresh` on every poll.
   const polledRef = useRef<LoadedModelEntry[]>(NO_ENTRIES);
@@ -131,7 +144,11 @@ export function useLoadedModels(
       .then((next) => {
         unreadable = next.unreadable;
         if (mountedRef.current && generation === generationRef.current) {
-          setEntries(next.entries);
+          // Same rows keep the same array, so an idle card does not re-render every poll.
+          setEntries((prev) =>
+            sameLoadedModels(prev, next.entries) ? prev : next.entries,
+          );
+          setHeldByOther(next.heldByOther);
         }
       })
       .catch(() => {
@@ -213,24 +230,28 @@ export function useLoadedModels(
   const eject = useCallback(
     async (entry: LoadedModelEntry) => {
       setEjecting((prev) => new Set(prev).add(entry.id));
-      const label = shortModelLabel(entry.name);
+      const label = loadedModelLabel(entry);
       try {
         const outcome = await ejectLoadedModel(entry);
         if (outcome.status === "declined") return;
         if (outcome.status === "stillResident") {
           toast.warning(
-            `"${shortModelLabel(outcome.model)}" was loaded while ejecting, so it is still using memory. Eject again to release it.`,
+            t("floatingPanels.loadedModels.toastStillResident", {
+              model: shortModelLabel(outcome.model),
+            }),
           );
         } else if (outcome.status === "unverified") {
           // Neither success nor failure: say so, and leave the row for the poll
           // to settle rather than claiming work that was not confirmed.
           toast.warning(
-            `${label} was asked to unload, but its runtime did not confirm. Check the card in a moment.`,
+            t("floatingPanels.loadedModels.toastUnverified", { model: label }),
           );
         } else if (outcome.status === "alreadyFree") {
           // The row was stale and nothing was unloaded, so say that rather than
           // report an eject. The row still goes: its memory is free either way.
-          toast.info(`${label} was no longer loaded.`);
+          toast.info(
+            t("floatingPanels.loadedModels.toastAlreadyFree", { model: label }),
+          );
           generationRef.current += 1;
           if (mountedRef.current) {
             setEntries((prev) => prev.filter((row) => row.id !== entry.id));
@@ -239,10 +260,15 @@ export function useLoadedModels(
           // Nothing was unloaded: this runtime holds something else now, and
           // releasing that is not what the click asked for.
           toast.info(
-            `${label} is no longer loaded. "${shortModelLabel(outcome.resident)}" took its place and was left alone.`,
+            t("floatingPanels.loadedModels.toastReplaced", {
+              model: label,
+              resident: shortModelLabel(outcome.resident),
+            }),
           );
         } else {
-          toast.success(`Ejected ${label}`);
+          toast.success(
+            t("floatingPanels.loadedModels.toastEjected", { model: label }),
+          );
           // Drop the row now, rather than offering to eject it again until the next poll. Any read
           // already in flight predates this and would put the row back, so retire it.
           generationRef.current += 1;
@@ -252,7 +278,9 @@ export function useLoadedModels(
         }
       } catch (error: unknown) {
         toast.error(
-          error instanceof Error ? error.message : `Failed to eject ${label}`,
+          error instanceof Error
+            ? error.message
+            : t("floatingPanels.loadedModels.toastFailed", { model: label }),
         );
       } finally {
         if (mountedRef.current) {
@@ -265,8 +293,15 @@ export function useLoadedModels(
         refresh();
       }
     },
-    [refresh],
+    [refresh, t],
   );
 
-  return { entries, polledEntries: polled, ejecting, eject, refresh };
+  return {
+    entries,
+    polledEntries: polled,
+    ejecting,
+    heldByOther: enabled && heldByOther,
+    eject,
+    refresh,
+  };
 }

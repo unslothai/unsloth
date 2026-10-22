@@ -4716,4 +4716,45 @@ export const en = {
     failed: "Error {status}",
     invalidJson: "The request body is not valid JSON.",
   },
+  floatingPanels: {
+    loadedModels: {
+      title: "Loaded models",
+      countOne: "{count} model loaded",
+      countMany: "{count} models loaded",
+      pillLabel: "{count}. Show details, or drag to move",
+      dragToMove: "Drag to move",
+      dragHandleLabel: "Move loaded models. Arrow keys nudge it.",
+      collapse: "Collapse",
+      collapseLabel: "Collapse loaded models",
+      close: "Close",
+      closeLabel: "Close loaded models",
+      backOnNextLoad: "Back on the next model load",
+      ejectToFree: "Eject to free memory",
+      ejectLabel: "Eject {model}",
+      openTarget: "Open {target}",
+      rowLabel: "{model}. Open {target}",
+      loading: "Loading",
+      ejecting: "Ejecting",
+      stillInMemory: "Still in memory",
+      alsoServing: "Also serving",
+      noneLoaded: "No models loaded",
+      noneLoadedDetail: "Models you load will show here.",
+      otherAccount: "In use by another account",
+      otherAccountDetail: "Memory is held by a model you cannot see",
+      toastStillResident:
+        "\"{model}\" was loaded while ejecting, so it is still using memory. Eject again to release it.",
+      toastUnverified:
+        "{model} was asked to unload, but its runtime did not confirm. Check the card in a moment.",
+      toastAlreadyFree: "{model} was no longer loaded.",
+      toastReplaced:
+        "{model} is no longer loaded. \"{resident}\" took its place and was left alone.",
+      toastEjected: "Ejected {model}",
+      toastFailed: "Failed to eject {model}",
+    },
+    monitor: {
+      dragHandleLabel:
+        "Move the live monitor. Arrow keys nudge it, double-click resets it.",
+      reconnecting: "Reconnecting...",
+    },
+  },
 } as const;

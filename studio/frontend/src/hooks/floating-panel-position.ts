@@ -45,3 +45,67 @@ export function placeAxis(intent: number | null, max: number): number {
 export function isDegenerateBox(box: { width: number; height: number }): boolean {
   return !(box.width > 0 && box.height > 0);
 }
+
+export function clearPanelIntent(key: string | undefined): void {
+  if (!key) return;
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // storage unavailable
+  }
+}
+
+/** Arrow-key nudge for a focused drag handle: 8 px, 32 with Shift; null for any other key. */
+export function nudgeDelta(
+  key: string,
+  shift: boolean,
+): { dx: number; dy: number } | null {
+  const step = shift ? 32 : 8;
+  switch (key) {
+    case "ArrowLeft":
+      return { dx: -step, dy: 0 };
+    case "ArrowRight":
+      return { dx: step, dy: 0 };
+    case "ArrowUp":
+      return { dx: 0, dy: -step };
+    case "ArrowDown":
+      return { dx: 0, dy: step };
+    default:
+      return null;
+  }
+}
+
+export type FrameBox = { left: number; top: number; right: number; bottom: number };
+
+/**
+ * The viewport top that rests `panel` just above `obstacle`, or null when they do not
+ * overlap (counting `gap` above the obstacle). Used for the Live monitor's default corner,
+ * which the Loaded models card shares.
+ */
+export function liftAboveObstacle(
+  panel: { left: number; top: number; width: number; height: number },
+  obstacle: FrameBox | null | undefined,
+  gap: number,
+): number | null {
+  if (!obstacle) return null;
+  const overlapsX =
+    panel.left < obstacle.right && panel.left + panel.width > obstacle.left;
+  const overlapsY =
+    panel.top < obstacle.bottom && panel.top + panel.height > obstacle.top - gap;
+  return overlapsX && overlapsY ? obstacle.top - gap - panel.height : null;
+}
+
+/** A drop this close to the resting corner (or the anchored far corner) re-anchors the panel. */
+export const ANCHOR_SNAP_PX = 16;
+
+export function snapsToAnchor(
+  drop: { left: number; top: number },
+  rest: { left: number; top: number },
+  max: { left: number; top: number },
+  threshold: number = ANCHOR_SNAP_PX,
+): boolean {
+  const near = (a: { left: number; top: number }) =>
+    Math.abs(drop.left - a.left) <= threshold &&
+    Math.abs(drop.top - a.top) <= threshold;
+  return near(rest) || near(max);
+}

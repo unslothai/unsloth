@@ -113,7 +113,10 @@ test("the dismissal key is cleared by Reset all local preferences", () => {
 });
 
 test("the card carries a close button, and a load brings it back", () => {
-  assert.match(LOADED_MODELS_INDICATOR, /aria-label="Close loaded models"/);
+  assert.match(
+    LOADED_MODELS_INDICATOR,
+    /aria-label=\{t\("floatingPanels\.loadedModels\.closeLabel"\)\}/,
+  );
   assert.match(
     LOADED_MODELS_INDICATOR,
     /onClick=\{\(\) => setLoadedModelsDismissed\(true\)\}/,
@@ -149,7 +152,7 @@ test("a row ejects with the eject glyph, the header closes with an X", () => {
   assert.doesNotMatch(row, /icon=\{Cancel01Icon\}/);
   // The close button keeps the X, as the Live monitor's does.
   const header = LOADED_MODELS_INDICATOR.slice(
-    LOADED_MODELS_INDICATOR.indexOf('aria-label="Close loaded models"'),
+    LOADED_MODELS_INDICATOR.indexOf("floatingPanels.loadedModels.closeLabel"),
   );
   assert.match(header, /icon=\{Cancel01Icon\}/);
 });
@@ -183,4 +186,19 @@ test("recording follows the route and auth gate, but not the dismissal", () => {
   );
   // And dismissal stays out of it, or a closed card could never reopen itself.
   assert.doesNotMatch(call, /dismissed/);
+});
+
+// Switching the card on in Settings is asking to see it, so an older X must not keep it hidden.
+test("switching the setting on clears an earlier dismissal", () => {
+  reset();
+  setLoadedModelsDismissed(true);
+  setShowLoadedModels(true);
+  assert.equal(getLoadedModelsDismissed(), false);
+  setLoadedModelsDismissed(true);
+  setShowLoadedModels(false);
+  assert.equal(
+    getLoadedModelsDismissed(),
+    true,
+    "switching off leaves it alone",
+  );
 });
