@@ -13,6 +13,7 @@ const KEYS_API = readSrc("features/settings/api/api-keys.ts");
 const ROW = readSrc("features/settings/components/api-key-row.tsx");
 const EXAMPLES = readSrc("features/settings/components/usage-examples.tsx");
 const AUDIO = readSrc("features/settings/components/audio-api-examples.tsx");
+const MEDIA = readSrc("features/settings/components/media-api-examples.tsx");
 const KEYLESS_API = readSrc("features/settings/api/keyless-api-access.ts");
 const KEYLESS = readSrc(
   "features/settings/components/keyless-api-access-section.tsx",
@@ -38,7 +39,7 @@ test("token rows say Expired, count whole days and show minutes", () => {
 });
 
 test("browser examples use the address the browser reached", () => {
-  for (const source of [EXAMPLES, AUDIO]) {
+  for (const source of [EXAMPLES, AUDIO, MEDIA]) {
     assert.match(
       source,
       /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*isTauri\s*\?\s*\(serverUrl \?\? origin\)\s*:\s*origin/,
