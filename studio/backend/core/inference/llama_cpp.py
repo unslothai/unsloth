@@ -11757,6 +11757,12 @@ class LlamaCppBackend:
             return probe_discount
 
         def _resident_fits(table_bytes: int) -> Optional[bool]:
+            # An inherited projector is unpriced here (the discrete fit abstains on it too).
+            if any(
+                str(source_env.get(name) or "").strip()
+                for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
+            ):
+                return None
             avail = self._available_system_memory_mib()
             prompt = _prompt_cache_host_bytes(
                 cache_ram,

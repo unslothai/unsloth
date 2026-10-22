@@ -664,3 +664,23 @@ def test_a_metal_override_onto_the_gpu_keeps_the_probe_answer():
 
 def test_module_table_names_deepseek41():
     assert "deepseek41" in llama_cpp_module._LAZY_READ_TENSORS
+
+
+@pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
+def test_an_inherited_projector_on_a_mac_keeps_the_table_streamed(name):
+    """The projector the env names is unpriced in the Metal footprint, so the 128 GB Mac
+    that would read Flash-Next's table resident leaves it to lazy auto instead."""
+    backend = _apple_backend("qwen4exp", {PLE: FLASH_NEXT_PLE}, avail_gib = 119)
+    got = backend._apple_lookup_table_discount(
+        0,
+        "/m.gguf",
+        caps = dict(_CAPS),
+        extra_args = [],
+        model_size_fit = FLASH_NEXT_TOTAL,
+        need_at_ctx = GIB,
+        budget_mib = 96 * 1024,
+        cache_ram = None,
+        env = {name: "/p/mmproj.gguf"},
+    )
+    assert backend._apple_lazy_flags == []
+    assert got == FLASH_NEXT_PLE
