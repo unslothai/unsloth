@@ -48,7 +48,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -150,6 +150,31 @@ def _backend_label(device: DeviceType) -> str:
 def is_apple_silicon() -> bool:
     """True on Apple Silicon (pure platform check, no ML imports)."""
     return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+_ROSETTA: Optional[bool] = None
+
+
+def _running_under_rosetta() -> bool:
+    """True for an x86_64 Python on an Apple Silicon Mac (``hw.optional.arm64``, as install.sh). Cached; never raises."""
+    global _ROSETTA
+    if _ROSETTA is None:
+        answer = False
+        if platform.system() == "Darwin" and platform.machine() == "x86_64":
+            try:
+                out = subprocess.run(
+                    ["sysctl", "-n", "hw.optional.arm64"],
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = 2,
+                )
+                answer = out.returncode == 0 and out.stdout.strip() == "1"
+            except Exception:
+                answer = False
+        _ROSETTA = answer
+    return _ROSETTA
 
 
 # Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
@@ -856,7 +881,9 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     recorded, pinned = _recorded_install_flavor()
     if recorded == "cpu" and not pinned:
         # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
-        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair. A stated GPU index wins.
+        if _stated_torch_index_source():
+            return False
         from utils.tegra import tegra_before_cuda13
         return tegra_before_cuda13()
     return recorded == "cpu" and pinned
@@ -1538,6 +1565,12 @@ def _detect_hardware_locked() -> DeviceType:
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
         force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
+        # cuInit off the GIL first: torch's probe below holds it for the whole driver init.
+        try:
+            from utils.cuda_driver_prime import prime_cuda_driver
+            prime_cuda_driver(torch)
+        except Exception:  # noqa: BLE001 - never fatal (also loaded standalone, without the package)
+            pass
         try:
             cuda_unavailable = not torch.cuda.is_available()
         except Exception:
@@ -1661,6 +1694,9 @@ def _detect_hardware_locked() -> DeviceType:
         _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
         if _build_reason is not None:
             CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        # MLX needs a native arm64 Python; "Intel Mac" would be wrong.
+        CHAT_ONLY_REASON = "rosetta"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
@@ -1947,6 +1983,12 @@ def export_capability() -> dict:
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
             "`unsloth studio update` to restore MLX and enable export."
         )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Unsloth is running under Rosetta (x86_64 Python), so export is disabled. Re-run the installer from a "
+            "native arm64 terminal to enable export."
+        )
     elif _gpu_present_but_unusable_message("export", verdict) is not None:
         # BEFORE _has_torch(), which reports an unimportable wheel as absent while re-running the seconds-long import that already failed.
         reason = verdict[0]
@@ -2042,6 +2084,12 @@ def _video_capability_verdict() -> dict:
                 "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
                 "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
             )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Unsloth is running under Rosetta (x86_64 Python), which has no Metal (MPS) device for the "
+            "video pipelines. Re-run the installer from a native arm64 terminal to enable video generation."
+        )
     elif platform.system() == "Darwin":
         # Ahead of the torch/GPU branches below: neither installing torch nor adding a GPU enables video on an Intel Mac, so it must not be told to try either.
         reason = "macos_unsupported"
@@ -2759,7 +2807,24 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 
 
 # APU architectures that are unified memory but sit outside the shared classifier's positive set, which names anything else from hipDeviceProp_t::integrated. clr never assigned deviceProps.integrated before rocm-6.2.0 and the legacy R0000 property ABI still does not, while paldevice.cpp inflates globalMemSize_ off settings().apuSystem_ in both cases -- harmless for the cap and the total, wrong for a NUMERATOR. gfx1103 Phoenix / Hawk Point never shipped as a discrete board, so naming it here can only upgrade a part whose props.total_memory really does span host memory.
-_ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
+# The rest of LLVM's AMDGPUUsage processor table rows typed APU are named here on the same footing (none ever shipped as a
+# discrete board): gfx1153 Krackan Point 2 (Windows-supported), gfx1033 Van Gogh, gfx1035 Rembrandt, gfx1036 Raphael /
+# Granite Ridge iGPU, gfx1013 Cyan Skillfish, gfx90c / gfx902 / gfx909 Renoir / Raven, gfx801 / gfx810 Carrizo / Stoney.
+_ROCM_UNNAMED_APU_ARCHES = frozenset(
+    {
+        "gfx801",
+        "gfx810",
+        "gfx902",
+        "gfx909",
+        "gfx90c",
+        "gfx1013",
+        "gfx1033",
+        "gfx1035",
+        "gfx1036",
+        "gfx1103",
+        "gfx1153",
+    }
+)
 
 
 def _rocm_props_unified_status(props: Any) -> Optional[bool]:

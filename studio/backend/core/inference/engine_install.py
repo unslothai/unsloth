@@ -871,7 +871,7 @@ def _rocm_reason(
     # HIP opens /dev/kfd and an AMD render node; a container mapping only one initialises no GPU.
     if not os.access("/dev/kfd", os.R_OK | os.W_OK) or amd_closed_nodes_block_the_runtime():
         return amd_node_permission_hint() or (
-            "Studio cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). Add your user "
+            "Unsloth cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). Add your user "
             "to the render and video groups, then sign in again."
         )
 
@@ -938,7 +938,7 @@ def engine_lease(
             except BlockingIOError:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(
-                        "This engine is running or being changed in another Studio instance."
+                        "This engine is running or being changed in another Unsloth instance."
                     ) from None
                 time.sleep(0.05)
         try:
@@ -1208,7 +1208,7 @@ def _run(
     if (engine_root() / f"{engine}.cancel").exists():
         cancel.set()
     if cancel.is_set() or is_process_shutting_down():
-        raise RuntimeError("Installation cancelled or Studio is shutting down.")
+        raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
     proc = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             argv,
@@ -1260,7 +1260,7 @@ def _run(
     try:
         # A shutdown sweep may have finished between spawn and adoption; recheck even on clean exit.
         if is_process_shutting_down() or cancel.is_set():
-            raise RuntimeError("Installation cancelled or Studio is shutting down.")
+            raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
         reader.start()
         while proc.poll() is None:
             if (engine_root() / f"{engine}.cancel").exists():
@@ -1275,7 +1275,7 @@ def _run(
                 )
         reader.join(timeout = 2)
         if cancel.is_set() or is_process_shutting_down():
-            raise RuntimeError("Installation cancelled or Studio is shutting down.")
+            raise RuntimeError("Installation cancelled or Unsloth is shutting down.")
         if proc.returncode:
             raise RuntimeError("Engine installation failed. " + "\n".join(tail))
         return "\n".join(tail)
@@ -1348,7 +1348,7 @@ def _install(
                 return
             uv = shutil.which("uv")
             if uv is None:
-                raise RuntimeError("uv is unavailable. Repair the Studio installation and retry.")
+                raise RuntimeError("uv is unavailable. Repair the Unsloth installation and retry.")
             root = engine_root() / engine
             if root.is_symlink():
                 raise RuntimeError("Engine directory must not be a symbolic link.")
@@ -1359,7 +1359,7 @@ def _install(
             _update(
                 engine,
                 phase = "creating",
-                message = "Preparing an engine environment on Studio's PyTorch"
+                message = "Preparing an engine environment on Unsloth's PyTorch"
                 if plan["shared"]
                 else "Preparing an isolated Python environment",
             )
@@ -1426,7 +1426,7 @@ def _install(
             prior = installed(engine)
             if profile_digest(engine) != digest:
                 raise RuntimeError(
-                    "Studio's engine profile changed during installation. Retry to use the updated profile."
+                    "Unsloth's engine profile changed during installation. Retry to use the updated profile."
                 )
             _atomic_json(
                 root / "active.json",
@@ -1602,7 +1602,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
             raise RuntimeError("Installation cancelled.")
         if profile_digest(engine) != digest:
             raise RuntimeError(
-                "Studio's engine profile changed during installation. Retry to use the updated profile."
+                "Unsloth's engine profile changed during installation. Retry to use the updated profile."
             )
         prior = installed(engine)
         _atomic_json(
@@ -1659,7 +1659,7 @@ def _install_wsl_rocm(engine: str, guest_run, progress, cancel: threading.Event)
     key = wsl_host.ROCM_APT_KEY
     if wsl_host._sha256(key) != wsl_host.ROCM_APT_KEY_SHA256:
         raise RuntimeError(
-            "Studio's copy of AMD's ROCm repository key is damaged. Reinstall Studio."
+            "Unsloth's copy of AMD's ROCm repository key is damaged. Reinstall Unsloth."
         )
     packages = [
         wsl_host.download(spec, spec["url"].rsplit("/", 1)[1], progress, cancel)
@@ -1760,7 +1760,7 @@ def remove_wsl_environment() -> list[dict]:
     from . import wsl_host
 
     if not wsl_host.active():
-        raise RuntimeError("Studio only creates a WSL environment on Windows.")
+        raise RuntimeError("Unsloth only creates a WSL environment on Windows.")
     with ExitStack() as stack:
         for engine in PROFILES:
             stack.enter_context(engine_lease(engine, exclusive = True))
@@ -1807,7 +1807,7 @@ def rollback(engine: str) -> dict:
             )
         if stale(previous):
             raise RuntimeError(
-                "The previous engine installation was built on packages Studio no longer has. Repair the engine instead."
+                "The previous engine installation was built on packages Unsloth no longer has. Repair the engine instead."
             )
         if not built_for_this_gpu(engine, previous):
             raise RuntimeError(

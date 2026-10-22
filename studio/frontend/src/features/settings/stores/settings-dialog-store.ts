@@ -34,6 +34,7 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number];
 export type SettingsScrollTarget =
   | "about-updates"
   | "api-keys-audio-api"
+  | "api-keys-media-api"
   | "api-keys-decision-api"
   | "appearance-sidebar-nav"
   | "chat-composer"
@@ -57,6 +58,11 @@ export interface AudioApiRequest {
     | "music"
     | "separate"
     | "transcribe";
+  model: string | null;
+}
+
+export interface MediaApiRequest {
+  kind: "images" | "video";
   model: string | null;
 }
 
@@ -92,6 +98,7 @@ interface SettingsDialogState {
   // The Audio API card applies it, then clears it. Same lifetime as archivedRequested.
   audioApiRequested: AudioApiRequest | null;
   decisionTryRequested: string | null;
+  mediaApiRequested: MediaApiRequest | null;
   // A key just created on the API tab, so the MCP tab's setup snippet can use it. Memory
   // only; cleared when the key card is dismissed or the dialog closes.
   newApiKey: string | null;
@@ -109,6 +116,8 @@ interface SettingsDialogState {
   consumeConnectionRequest: () => void;
   openDecisionTry: (model: string) => void;
   consumeDecisionTryRequest: () => void;
+  openMediaApi: (request: MediaApiRequest) => void;
+  consumeMediaApiRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
@@ -167,6 +176,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
   "about-updates": "about",
   "api-keys-audio-api": "api-keys",
+  "api-keys-media-api": "api-keys",
   "api-keys-decision-api": "api-keys",
   "appearance-sidebar-nav": "appearance",
   "browser-html-network": "browser",
@@ -242,6 +252,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   connectionRequested: null,
   audioApiRequested: null,
   decisionTryRequested: null,
+  mediaApiRequested: null,
   newApiKey: null,
   setNewApiKey: (key) => set({ newApiKey: key }),
   openDialog: (requestedTab, options) =>
@@ -341,6 +352,20 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       ...focusForOpen(state),
     })),
   consumeDecisionTryRequest: () => set({ decisionTryRequested: null }),
+  openMediaApi: (request) =>
+    set((state) => ({
+      open: true,
+      activeTab: "api-keys",
+      scrollTarget: "api-keys-media-api",
+      archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
+      connectionRequested: null,
+      audioApiRequested: null,
+      mediaApiRequested: request,
+      ...focusForOpen(state),
+    })),
+  consumeMediaApiRequest: () => set({ mediaApiRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
@@ -358,6 +383,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       connectionRequested: null,
       audioApiRequested: null,
       decisionTryRequested: null,
+      mediaApiRequested: null,
       newApiKey: null,
     }),
   setActiveTab: (tab) => {

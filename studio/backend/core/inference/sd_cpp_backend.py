@@ -748,8 +748,13 @@ def sd_cpp_vulkan_device_is_uma(
 _GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
 
 
+_TRADEMARK_RE = re.compile(r"\((?:tm|r)\)|[\u2122\u00ae]", re.IGNORECASE)
+
+
 def _normalized_card_name(text: str) -> str:
-    """Letters and digits only, lowercased: `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    """Letters and digits only, lowercased, trademark marks dropped (HIP's `AMD Radeon(TM) Graphics` is RADV's
+    `AMD Radeon Graphics`): `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    text = _TRADEMARK_RE.sub(" ", text)
     return "".join(character for character in text.lower() if character.isalnum())
 
 
@@ -794,19 +799,26 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     source = os.environ if env is None else env
     # Windows HIP has no ROCr layer, so a leftover ROCR_VISIBLE_DEVICES masks nothing there.
     rocr = None if sys.platform == "win32" else source.get(_ROCR_MASK_VAR)
-    hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
+    # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one does not shadow it.
+    present = [source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None]
+    hip = next((raw for raw in present if raw.strip()), present[0] if present else None)
     opaque = source.get(_OPAQUE_MASK_VAR)
     if rocr is None and hip is None and opaque is None:
         return ordinal, False
     if opaque is not None:
         return None, True
     visible: "Optional[list[int]]" = None
-    for raw in (rocr, hip):
+    for is_hip, raw in ((False, rocr), (True, hip)):
         if raw is None:
             continue
         entries = _mask_entries(raw)
         if entries is None:
             return None, True
+        # clr keeps the first of a repeated HIP entry; ROCr stops at one (utils/hardware/amd.py).
+        if is_hip:
+            entries = list(dict.fromkeys(entries))
+        elif len(set(entries)) < len(entries):
+            entries = entries[: next(i for i, e in enumerate(entries) if e in entries[:i])]
         if visible is None:
             visible = entries
         else:
@@ -928,17 +940,19 @@ def sd_cpp_device_named(
     card_name: Optional[str],
     *,
     position: Optional[int] = None,
+    listing: Optional[str] = None,
 ) -> Optional[str]:
     """The ggml device that IS *card_name*, when exactly one of them is. The Vulkan build names its
     devices in its own namespace, so a physical ordinal names nothing in it. ``position`` breaks a
     tie on the ASSUMPTION that RADV and HIP walk one vendor's GPUs in the same order -- unreadable
-    here, so only among devices already agreed to be the right MODEL."""
+    here, so only among devices already agreed to be the right MODEL. ``listing``: tab-separated name and
+    description lines read elsewhere, instead of running ``binary --list-devices``."""
     if not binary or not card_name:
         return None
     wanted = _normalized_card_name(card_name)
     if not wanted:
         return None
-    text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = listing if listing is not None else _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
         return None
     # Both readings: containment cannot tell `RX 7600` from `RX 7600 XT`, equality cannot see through a driver tag.
@@ -2870,6 +2884,8 @@ _UNREAD_LOADING_CARD = object()
 class SdCppDiffusionBackend:
     """Native sd.cpp backend with the diffusers ``DiffusionBackend`` method surface."""
 
+    # sd.cpp parses A1111 attention syntax ((word:1.2), [word]) in every prompt; it cannot be turned off.
+    parses_prompt_attention = True
     # Class-level defaults so an instance built with ``__new__`` answers before any load ran.
     _loading_cards = None
     _committed_loading_card: Optional[str] = None
@@ -3182,6 +3198,8 @@ class SdCppDiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
+        # Accepted for parity; native never raises the unified-memory refusal.
+        allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.

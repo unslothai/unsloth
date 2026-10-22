@@ -52,14 +52,19 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
     apply_attention_backend,
+    attention_status_reason,
     install_hunyuan_attention_trim,
     sdpa_math_only,
+    begin_attention_run,
+    report_attention_run,
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
+    fp8_storage_wanted,
+    pipe_fp8_stored_layers,
     comfy_resident_mib,
     load_comfy_quant_transformer,
     refuse_comfy_quant,
@@ -70,6 +75,7 @@ from .video_moe_pair import moe_expert_of, moe_partner_filename, moe_pick_pairs
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
+    TC_FBCACHE,
     TC_STATIC,
     apply_step_cache,
     auto_static_skip_entry,
@@ -136,6 +142,8 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_keeps_transformer_resident,
     raise_on_unified_memory_shortfall,
+    scoped_allow_oversized_load,
+    unified_memory_refusal_code,
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
@@ -161,6 +169,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    engage_pinned_denoisers,
     rocm_probe_load_scoped,
     resolve_speed_mode,
     restore_backend_flags,
@@ -200,9 +209,19 @@ from .diffusion_transformer_quant import (
     stored_denoiser_precision,
     transformer_is_quantised,
 )
-from .diffusion import _family_override_resolved, _memory_request_forces_offload
+from .diffusion import (
+    _comfy_keep_fp32_pricing,
+    _family_override_resolved,
+    _companion_split_expected,
+    _layer_split_expected,
+    _memory_request_forces_offload,
+    _native_quant_needs_compile,
+    _restore_step_cache_after_layer_split,
+    _step_cache_dropped_by_layer_split,
+)
 from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
+from .diffusion_block_graph import compile_pipe_below_offload_hooks
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -274,6 +293,7 @@ from .video_minimax_h3_te import (
 )
 from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
+from .video_stream_encode import claim_stream, offer_stream, open_stream_encode
 from utils.hardware import clear_gpu_cache
 
 # Shared with the image backend so both pin every loader call to the same live cache root
@@ -431,6 +451,15 @@ def _video_comfy_key_map(fam: Any) -> Any:
     return None
 
 
+def _h3_pdd_default_steps(fam: Any, pipe: Any, default_steps: int) -> int:
+    """ComfyUI's 8 steps for a loaded MiniMax-H3 PDD head bank whatever the file is called, else ``default_steps``."""
+    if getattr(fam, "name", None) != "minimax-h3" or pipe is None:
+        return default_steps
+    from .video_minimax_h3_pdd import H3_PDD_DEFAULT_STEPS, pipe_h3_pdd_heads
+
+    return H3_PDD_DEFAULT_STEPS if pipe_h3_pdd_heads(pipe) else default_steps
+
+
 def _h3_single_file_task(
     fam: Any, kind: str, gguf_filename: Optional[str], h3_task: Optional[str]
 ) -> Optional[str]:
@@ -455,18 +484,58 @@ def _video_comfy_backends(
     bf16_plan: Any = None,
     *,
     keep: bool = True,
+    priced_offload: bool = False,
+    widened_mib: Optional[int] = None,
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
-    resident only). ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
+    resident only; else fp8 storage under offload). ``priced_offload``: the plan was sized with the offloaded
+    backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the planned
+    DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
+    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
-        return {"int8_backend": None, "fp8_backend": None}
-    offload = not _video_comfy_resident(plan, bf16_plan)
+        return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
+    offload = priced_offload or not _video_comfy_resident(plan, bf16_plan)
     name = getattr(fam, "name", None)
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
+        "fp8_storage": _video_fp8_storage(fam, target, offload, widened_mib = widened_mib),
     }
+
+
+def _video_offload_reprice(
+    fam: Any, transformer_mib: Optional[int], offload_mib: Optional[int]
+) -> tuple[Optional[int], bool]:
+    """``(transformer_mib, priced_offload)`` once an offloaded plan re-prices the DiT with the offloaded backends.
+    Larger: re-plan at it. Smaller (fp8 stored, the int8 twin where only it runs): re-plan at it too, and the load must
+    then keep those backends even if the new plan fits resident, else it widens past the size it was planned at.
+    H3 keeps its resident torchao path, so only a larger price moves it."""
+    if offload_mib is None or transformer_mib is None or offload_mib == transformer_mib:
+        return transformer_mib, False
+    if offload_mib < transformer_mib and getattr(fam, "name", None) == "minimax-h3":
+        return transformer_mib, False
+    return offload_mib, offload_mib < transformer_mib
+
+
+def _video_fp8_storage(
+    fam: Any,
+    target: Any,
+    offload: bool,
+    *,
+    widened_mib: Optional[int] = None,
+) -> bool:
+    """``fp8_storage_wanted`` for a video DiT, with the host RAM the load would widen into when ``widened_mib`` is
+    known. H3 is excluded: its pin / stream / residency path is built on torchao weights."""
+    if getattr(fam, "name", None) == "minimax-h3":
+        return False
+    available = None
+    if widened_mib is not None and not offload:
+        from .diffusion_small_host import host_ram_mib
+        available = host_ram_mib()[1]
+    return fp8_storage_wanted(
+        target, offload = offload, widened_mib = widened_mib, host_available_mib = available
+    )
 
 
 def _video_comfy_resident_mib(
@@ -484,7 +553,7 @@ def _video_comfy_resident_mib(
     int8 runtime runs here, fp8 layers as fp8 when the resident fp8 path does, the rest at bf16 (a dequantized fp8
     file is twice its size on disk). ``offload`` prices what an offloaded load keeps instead."""
     name = getattr(fam, "name", None)
-    keep_int8 = keep_fp8 = False
+    keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
     filters: dict = {}
     if keep:
@@ -504,15 +573,18 @@ def _video_comfy_resident_mib(
         # Only a resident runtime keeps codes in a resident plan; an offloaded plan is re-priced.
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
+        fp8_stored = _video_fp8_storage(fam, target, offload)
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
+        fp8_stored = fp8_stored,
         keep_key = keep_key,
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),
         **filters,
+        **_comfy_keep_fp32_pricing(fam, target),
     )
 
 
@@ -1405,6 +1477,9 @@ class _VideoLoadState:
     # resolves a bare device. Mirrors the image backend.
     placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
+    # The repo the load actually read ``base_repo`` from (the unsloth mirror on a fresh install): the learned-peak key
+    # names it. None: no load decision (the key falls back to the mirror when the upstream is not cached).
+    fetch_base: Optional[str] = None
     # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
     variant_id: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
@@ -1472,6 +1547,7 @@ class _VideoLoadingState:
     base_repo: str
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3 GGUF and component
     # repos). Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
@@ -2991,9 +3067,12 @@ def _video_seed_stays_resident(
 
 
 def _render_under_no_grad(state: Any) -> bool:
-    """Render under no_grad: torchao weight subclasses fail an offload hook's in-place swap under inference_mode."""
+    """Render under no_grad: torchao weight subclasses fail an offload hook's in-place swap under inference_mode.
+    Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if not getattr(state, "transformer_quant", None):
-        return False
+        return getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and bool(
+            pipe_fp8_stored_layers(getattr(state, "pipe", None))
+        )
     if getattr(state, "denoiser_streamed", False):
         return True
     family = getattr(state, "family", None)
@@ -3420,6 +3499,11 @@ def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
     """``((ordinal, resident MiB, runs the decode), ...)`` for a pipeline split across cards, else None. A split plan
     reports no offload policy, so the offload floor is None and the request guard would be skipped; this records what
     each card holds so the guard can run per card."""
+    from .diffusion_layer_split_plan import layer_split_card_floors
+
+    layered = layer_split_card_floors(pipe)
+    if layered is not None:
+        return layered
     status = multigpu_placement_status(pipe) if multigpu_is_split(pipe) else None
     placement = (status or {}).get("placement") or {}
     if not placement:
@@ -3475,16 +3559,39 @@ def video_split_shortfall_message(
     width: Optional[int] = None,
     height: Optional[int] = None,
     frames: Optional[int] = None,
+    planned_shape: Optional[tuple] = None,
 ) -> Optional[str]:
     """The offload guard run on every card of a split: each card's resident weights plus the base headroom, the
     decoded-clip share on the card that runs the VAE decode, and on the denoiser's card, when the decode ran
-    elsewhere, the larger of the denoise activations and the decoded frames (fp32) copied back. The first refusal,
-    else None."""
+    elsewhere, the larger of the denoise activations and the decoded frames (fp32) copied back. A layer split's
+    block-only card (a sixth field: the headroom its plan reserved at ``planned_shape`` = (width, height, frames))
+    is charged that headroom, scaled by how many more tokens this request carries, plus its fixed reserve (a seventh
+    field, unscaled). The first refusal, else None."""
     for card in cards:
         ordinal, floor_mib, decodes = card[:3]
         home = len(card) > 3 and bool(card[3])
         denoises = bool(card[4]) if len(card) > 4 else home
         shaped = bool(width and height and frames)
+        block_headroom = card[5] if len(card) > 5 else None
+        block_reserve = int(card[6] or 0) if len(card) > 6 else 0
+        if block_headroom is not None and not home and not decodes:
+            scale = 1.0
+            if shaped and planned_shape and all(planned_shape):
+                planned = int(planned_shape[0]) * int(planned_shape[1]) * int(planned_shape[2])
+                scale = max(1.0, int(width) * int(height) * int(frames) / float(planned))
+            headroom = int(int(block_headroom) * scale) + block_reserve
+            required = int(floor_mib) + headroom
+            available = int(available_mib(int(ordinal)))
+            if available < required:
+                shape = f" for {width}x{height} at {frames} frames" if shaped else ""
+                return (
+                    f"{family} needs about {required / 1024:.1f} GiB of available VRAM{shape} under this load's "
+                    f"placement (split across GPUs, cuda:{int(ordinal)}: {int(floor_mib) / 1024:.1f} GiB of model "
+                    f"blocks plus {headroom / 1024:.1f} GiB for their activations); {available / 1024:.1f} GiB is "
+                    "available. Free VRAM held by other processes, generate a shorter or smaller clip, or set the "
+                    "DiT precision lower."
+                )
+            continue
         frames_mib = (
             -(-int(width) * int(height) * int(frames) * 3 * 4 // (1 << 20)) if shaped else 0
         )
@@ -3598,6 +3705,7 @@ def _calibration_revision(state: Any) -> Optional[str]:
         getattr(state, "gguf_filename", None),
         getattr(state, "kind", None),
         getattr(state, "base_repo", None),
+        getattr(state, "fetch_base", None),
     )
     try:
         pipe._unsloth_calibration_revision = revision or ""
@@ -4195,7 +4303,7 @@ class VideoBackend:
             raise ValueError(
                 f"'{fam.name}' is a dual-expert model: a single {kind} file covers only "
                 f"one of its two transformers. Pick one expert of a high_noise / low_noise pair "
-                f"(Studio loads its partner from the same folder), or load the diffusers "
+                f"(Unsloth loads its partner from the same folder), or load the diffusers "
                 f"pipeline repo ('{fam.base_repo}')."
             )
         # A missing local checkpoint must fail HERE, before the route evicts a resident model.
@@ -4283,6 +4391,7 @@ class VideoBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
+        allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -4406,6 +4515,7 @@ class VideoBackend:
                 model_kind = model_kind,
                 h3_task = h3_task,
                 gpu_ordinal = gpu_ordinal,
+                allow_oversized_load = bool(allow_oversized_load),
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
@@ -4414,6 +4524,7 @@ class VideoBackend:
         ).start()
         return self.status()
 
+    @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
     @scoped_local_files_only
@@ -4906,6 +5017,7 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = modelscope_missing(exc) or redact_native_paths(str(exc))
+                    self._loading.error_code = unified_memory_refusal_code(exc)
 
     def _run_load_h3_native(
         self,
@@ -7641,7 +7753,7 @@ class VideoBackend:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
         loading = self._loading
         if loading is not None and loading.error:
-            return _progress("error", error = loading.error)
+            return _progress("error", error = loading.error, error_code = loading.error_code)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
         # The load's own plan, settled once at estimate time by the worker that owns this state: the repo + revision
@@ -7721,6 +7833,7 @@ class VideoBackend:
             raise RuntimeError("Video load was cancelled or superseded.")
 
     @_invalidates_gpu_memory("video load")
+    @scoped_allow_oversized_load
     @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(
@@ -7743,6 +7856,8 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        # Read by ``scoped_allow_oversized_load``.
+        allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _base_fetch_repo: Optional[str] = None,
@@ -8326,6 +8441,7 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        comfy_priced_offload = False
         if comfy_scan is not None and not _video_comfy_resident(plan, bf16_plan):
             # Offloaded, fp8 layers dequantize on NVIDIA: price the DiT the load will actually build.
             offload_mib = _video_comfy_resident_mib(
@@ -8355,9 +8471,14 @@ class VideoBackend:
                 )
             if offload_mib is not None and transformer_mib is not None:
                 offload_mib = int(offload_mib * dtype_scale)
-                if offload_mib > transformer_mib:
-                    transformer_mib = offload_mib
+                repriced, comfy_priced_offload = _video_offload_reprice(
+                    fam, transformer_mib, offload_mib
+                )
+                if repriced != transformer_mib:
+                    transformer_mib = repriced
                     plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        # The DiT as planned: a resident load that would widen it into under the host reserve stores fp8 instead.
+        comfy_widened_mib = transformer_mib if comfy_scan is not None else None
         settled_te_scale = te_scale
 
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no offload tier left to fall
@@ -8591,7 +8712,14 @@ class VideoBackend:
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
                         **_video_comfy_backends(
-                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                            fam,
+                            base,
+                            target,
+                            plan,
+                            bf16_plan,
+                            keep = comfy_keep,
+                            priced_offload = comfy_priced_offload,
+                            widened_mib = comfy_widened_mib,
                         ),
                         family = fam.name,
                         target = target,
@@ -8707,7 +8835,14 @@ class VideoBackend:
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
                         **_video_comfy_backends(
-                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                            fam,
+                            base,
+                            target,
+                            plan,
+                            bf16_plan,
+                            keep = comfy_keep,
+                            priced_offload = comfy_priced_offload,
+                            widened_mib = comfy_widened_mib,
                         ),
                         family = fam.name,
                         target = target,
@@ -8757,7 +8892,14 @@ class VideoBackend:
                             scan,
                             kwargs,
                             **_video_comfy_backends(
-                                fam, base, target, plan, bf16_plan, keep = comfy_keep
+                                fam,
+                                base,
+                                target,
+                                plan,
+                                bf16_plan,
+                                keep = comfy_keep,
+                                priced_offload = comfy_priced_offload,
+                                widened_mib = comfy_widened_mib,
                             ),
                             family = fam.name,
                             target = target,
@@ -8945,7 +9087,7 @@ class VideoBackend:
             transformer_quant_decline = (
                 f"this GPU's memory plan moves the DiT ({_video_plan_label(plan)}), and "
                 f"'{normalize_transformer_quant(transformer_quant)}' is built as torchao weights here, "
-                "which Studio keeps on a resident DiT only; int8 runs torchao-free under offload. Pick "
+                "which Unsloth keeps on a resident DiT only; int8 runs torchao-free under offload. Pick "
                 "int8, or a resident memory mode (Fast) on a card that holds the quantised DiT"
             )
         elif (
@@ -9102,13 +9244,20 @@ class VideoBackend:
         effective_speed = resolve_speed_mode(
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
-        # A torchao-quantised DiT must be compiled (eager is ~30x slower), so force the regional profile when quant
-        # engaged but speed was off.
-        if (
-            transformer_quant_engaged is not None
-            and native_scheme is None
-            and effective_speed == SPEED_OFF
-        ):
+        video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
+        split_expected = _layer_split_expected(pipe, plan, video_refine)
+        # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower.
+        quant_forces_compile = transformer_quant_engaged is not None and (
+            native_scheme is None
+            or _native_quant_needs_compile(
+                target,
+                native_scheme,
+                split_expected
+                or plan.offload_policy == "none"
+                or _companion_split_expected(pipe, plan, video_refine),
+            )
+        )
+        if quant_forces_compile and effective_speed == SPEED_OFF:
             logger.info(
                 "video.transformer_quant: forcing speed_mode=default "
                 "(quantized transformer must be compiled; eager is ~30x slower)"
@@ -9255,6 +9404,7 @@ class VideoBackend:
             from .video_hv15_vae import install_vectorised_causal_mask
             hv15_mask_engaged = install_vectorised_causal_mask(pipe, logger = logger) > 0
         speed_optims: tuple = ()
+        speed_offload = plan.offload_policy != "none" and not split_expected
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first).
             # is_gguf needs kind==gguf AND no quant engaged.
@@ -9282,7 +9432,7 @@ class VideoBackend:
                 backend = "video",
                 speed_mode = effective_speed,
                 is_gguf = gguf_transformer,
-                offload_active = plan.offload_policy != "none",
+                offload_active = speed_offload,
                 audit = load_audit,
                 apply = lambda family, log, view = view: apply_speed_optims(
                     view,
@@ -9293,7 +9443,7 @@ class VideoBackend:
                     # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled
                     # DiT crashes)
                     cache_active = cache_graph_break or cache_may_toggle,
-                    offload_active = plan.offload_policy != "none",
+                    offload_active = speed_offload,
                     cuda_graph_default = False,
                     logger = log,
                 ),
@@ -9350,7 +9500,21 @@ class VideoBackend:
             # a transient OOM during setup may have re-planned to lower residency
             planned = plan
             plan = applied_plan(pipe, plan)
-            if getattr(planned, "secondary_ordinal", None) is not None and plan is not planned:
+            if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
+                cache_engaged = _restore_step_cache_after_layer_split(
+                    pipe,
+                    views,
+                    threshold = transformer_cache_threshold,
+                    quant_active = cache_quant_active,
+                    logger = logger,
+                )
+                if cache_engaged is None and getattr(plan, "layer_split", None) is not None:
+                    cache_may_toggle = False
+                    cache_reason = "off: the step cache declined the denoiser split across cards"
+            if (
+                getattr(planned, "secondary_ordinal", None) is not None
+                or getattr(planned, "layer_split", None) is not None
+            ) and plan is not planned:
                 vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
             ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
             if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
@@ -9405,6 +9569,11 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
+            if _video_denoiser_hooked(pipe):
+                # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split
+                # fell back to a hooked placement: compiled through them, each block splits at the hook's
+                # torch.compiler.disable'd pre / post forward.
+                compile_pipe_below_offload_hooks(pipe, logger)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(
                 pipe, {"cuda_graph": "cuda_graph" in speed_optims}, logger
@@ -9413,11 +9582,40 @@ class VideoBackend:
                 speed_optims += ("cuda_graph",)
             elif not graph_applied.get("cuda_graph"):
                 speed_optims = tuple(o for o in speed_optims if o != "cuda_graph")
+            if getattr(plan, "layer_split", None) is not None:
+                split_applied = {k: True for k in speed_optims}
+                engage_pinned_denoisers(pipe, split_applied, logger)
+                from . import diffusion_cuda_graph
+
+                diffusion_cuda_graph.arm_block_graphs(
+                    pipe,
+                    split_applied,
+                    target = target,
+                    family = fam,
+                    hooked = _video_denoiser_hooked(pipe),
+                    cache_engaged = bool(cache_graph_break),
+                    speed_mode = effective_speed,
+                    family_default = False,
+                    logger = logger,
+                )
+                for key in ("int8_gemm", "cuda_graph"):
+                    if split_applied.get(key) and key not in speed_optims:
+                        speed_optims += (key,)
+                    elif not split_applied.get(key):
+                        speed_optims = tuple(o for o in speed_optims if o != key)
             # Last, so the bf16 entry wraps whatever decode path the steps above installed. Not on SPEED_OFF.
             if getattr(fam, "vae_force_fp32", False) and effective_speed != SPEED_OFF:
                 vae_bf16_mode = install_rocm_vae_bf16_decode(pipe, target, logger = logger)
                 if vae_bf16_mode:
                     speed_optims += ("vae_bf16_decode", f"vae_bf16_{vae_bf16_mode}")
+            # Offload-first retry on a decode OOM, installed last: its decode scope is the outermost decode layer
+            # (one recovery session per logical decode) and every inner wrapper that falls back on an OOM (wide
+            # tiles, untiled-when-fits) frees the card through it first (diffusion_vae_oom.free_first).
+            try:
+                from .diffusion_vae_oom import install as install_vae_oom_retry
+                install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
+            except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+                logger.warning("video.vae_oom: not installed: %s", exc)
 
             resolved = build_resolved_record(
                 {
@@ -9427,7 +9625,7 @@ class VideoBackend:
                         speed_mode,
                         effective_speed,
                         "quantized transformer requires compile"
-                        if transformer_quant_engaged is not None and native_scheme is None
+                        if quant_forces_compile
                         else "clip denoises amortise the one-time compile within a single run"
                         if speed_mode is None
                         else "requested",
@@ -9435,7 +9633,7 @@ class VideoBackend:
                     "attention_backend": (
                         attention_backend,
                         attention_engaged or "native",
-                        "cuDNN fused attention on NVIDIA when a speed profile is active",
+                        attention_status_reason(attention_backend, attention_engaged),
                     ),
                     "transformer_cache": (
                         None if cache_auto else transformer_cache,
@@ -9534,8 +9732,9 @@ class VideoBackend:
                 logger = logger,
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
-            # both branches through one offloaded forward; declines when CFG-parallel took the slot
-            install_cfg_batch(pipe, offload_policy = offload_policy, logger = logger)
+            install_cfg_batch(
+                pipe, offload_policy = offload_policy, speed_mode = speed_mode, logger = logger
+            )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
@@ -9574,6 +9773,7 @@ class VideoBackend:
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
                     base_repo = base,
+                    fetch_base = fetch_base,
                     device = device,
                     gpu_ordinal = target.ordinal,
                     placed_ordinal = placed_cuda_ordinal(target),
@@ -9894,7 +10094,7 @@ class VideoBackend:
                 and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
             ):
                 raise RuntimeError(
-                    f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
+                    f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
                     f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "
                     f"Load '{fam.base_repo}' instead."
                 )
@@ -9920,7 +10120,7 @@ class VideoBackend:
             if engaged is None and comfy_scheme is not None and not dense_pin:
                 del transformer
                 raise RuntimeError(
-                    f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
+                    f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
                     f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "
                     f"Load '{fam.base_repo}' instead."
                 )
@@ -10639,6 +10839,12 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        # the H3 VAE speedups rewrap vae.decode: the OOM retry's scope (when installed) goes back on top
+        try:
+            from .diffusion_vae_oom import ensure_outermost
+            ensure_outermost(getattr(pipe, "vae", None), logger)
+        except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+            logger.warning("video.vae_oom: scope not restored after the H3 VAE speedups: %s", exc)
         if "cudnn_benchmark" in speed_optims:
             try:
                 from .video_minimax_h3_vae import install_audio_vae_without_cudnn_benchmark
@@ -10737,7 +10943,7 @@ class VideoBackend:
                 "attention_backend": (
                     attention_backend,
                     attention_engaged or "native",
-                    "cuDNN fused attention on NVIDIA when a speed profile is active",
+                    attention_status_reason(attention_backend, attention_engaged),
                 ),
                 "transformer_cache": (
                     (
@@ -10815,6 +11021,7 @@ class VideoBackend:
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,
                 base_repo = base,
+                fetch_base = fetch_base,
                 device = device,
                 gpu_ordinal = umem_target.ordinal,
                 placed_ordinal = placed_cuda_ordinal(umem_target),
@@ -11422,6 +11629,7 @@ class VideoBackend:
                 if _resolved_inputs is not None and _resolved_inputs.state is not state:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
+                begin_attention_run(state)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
@@ -11433,6 +11641,8 @@ class VideoBackend:
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
             # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
             i2v_swap = contextlib.ExitStack()
+            # Encodes Wan chunks while the VAE decodes; closed in the finally on cancel or failure.
+            stream_session = None
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
@@ -11491,6 +11701,7 @@ class VideoBackend:
                     fallback = (fam.default_steps, fam.default_guidance),
                     family = fam.name,
                 )
+                default_steps = _h3_pdd_default_steps(fam, state.pipe, default_steps)
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
                 # A guidance-free family (supports_cfg=False, MiniMax-H3) forwards no CFG control to either engine: the
@@ -11644,6 +11855,13 @@ class VideoBackend:
                         width = width,
                         height = height,
                         frames = frames,
+                        planned_shape = (
+                            fam.resolution_presets[0][0],
+                            fam.resolution_presets[0][1],
+                            fam.default_num_frames,
+                        )
+                        if getattr(fam, "resolution_presets", None)
+                        else None,
                     )
                     if shortfall is not None:
                         raise RuntimeError(shortfall)
@@ -11890,6 +12108,18 @@ class VideoBackend:
                     setter = getattr(getattr(pipe, component, None), "set_shift", None)
                     if callable(setter) and value is not None:
                         setter(float(value))
+                if fam.name == "minimax-h3":
+                    from .video_minimax_h3_pdd import (
+                        bind_h3_pdd_render,
+                        h3_pdd_num_inference_steps,
+                    )
+
+                    # A PDD head bank reads each step's (sigma, sigma_next) off this render's video schedule. The
+                    # H3 scheduler's grid holds the terminal 0, so `steps` model evaluations (ComfyUI's count, which
+                    # the bank's 8-step partition is distilled for) is a grid of steps + 1.
+                    if bind_h3_pdd_render(pipe, shift, audio_shift):
+                        kwargs["num_inference_steps"] = h3_pdd_num_inference_steps(steps)
+                        request_shape["pdd"] = True
 
                 # What the clip records; LTX-2.5's two-stage render reports its stage-2 steps in the progress below.
                 recorded_steps = steps
@@ -12078,6 +12308,8 @@ class VideoBackend:
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
+                        if stream_session is not None:
+                            stack.enter_context(stream_session.hooks())
                         stack.enter_context(_completed_step_poller(_pump))
                         yield
 
@@ -12114,6 +12346,13 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
+                # A step cache keys residuals on cond / uncond context, invisible to a graph key: graphs armed with the cache off run eager.
+                graph_handles = tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
+                if graph_handles:
+                    from . import diffusion_cuda_graph
+                    diffusion_cuda_graph.set_bypass(
+                        graph_handles, cache_breaks_graph(state.transformer_cache)
+                    )
                 if static_skip:
                     # Auto skip was measured on text-to-video only.
                     conditioned = bool(first_pil is not None or last_pil is not None or references)
@@ -12135,6 +12374,14 @@ class VideoBackend:
                     else torch.inference_mode()
                     if not _render_under_no_grad(state)
                     else torch.no_grad()
+                )
+                stream_session = open_stream_encode(
+                    pipe,
+                    out_fps,
+                    engage = not fam.modular_workflow
+                    and not fam.has_audio
+                    and ltx25_render_call is None,
+                    logger = logger,
                 )
                 previewer = LatentPreviewer.create(
                     family = fam.name,
@@ -12195,21 +12442,25 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
-                if audio_sample_rate is None:
-                    mp4_bytes = self._encode_mp4(
-                        video_frames, out_fps, audio_track, pipe if fam.has_audio else None
-                    )
-                else:
-                    mp4_bytes = self._encode_mp4(
-                        video_frames,
-                        out_fps,
-                        audio_track,
-                        pipe if fam.has_audio else None,
-                        audio_sample_rate = int(audio_sample_rate),
-                    )
+                # Encoded during the decode when its frames are exactly these (_encode_mp4 claims it).
+                with offer_stream(stream_session if audio_track is None else None):
+                    if audio_sample_rate is None:
+                        mp4_bytes = self._encode_mp4(
+                            video_frames, out_fps, audio_track, pipe if fam.has_audio else None
+                        )
+                    else:
+                        mp4_bytes = self._encode_mp4(
+                            video_frames,
+                            out_fps,
+                            audio_track,
+                            pipe if fam.has_audio else None,
+                            audio_sample_rate = int(audio_sample_rate),
+                        )
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                # The status badge reports the attention routes this run took (report only, keys are unchanged).
+                report_attention_run(state)
                 if len(video_frames) and not fam.modular_workflow:
                     from . import video_stream_residency
 
@@ -12274,6 +12525,8 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                if stream_session is not None:
+                    stream_session.close()
                 end_cfg_render(getattr(state, "pipe", None))
                 end_cfg_batch_render(getattr(state, "pipe", None))
                 try:
@@ -12938,6 +13191,10 @@ class VideoBackend:
         """Encode frames (+ optional audio) to H.264 MP4 bytes via diffusers' PyAV
         exporter. A temp file bridges the exporter's path-based API; the bytes are
         what the gallery persists."""
+        if audio is None:
+            streamed = claim_stream(video_frames, fps)
+            if streamed is not None:
+                return streamed
         from diffusers.utils.export_utils import encode_video
 
         tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
@@ -13206,6 +13463,7 @@ class VideoBackend:
             fallback = (fam.default_steps, fam.default_guidance),
             family = fam.name,
         )
+        default_steps = _h3_pdd_default_steps(fam, getattr(state, "pipe", None), default_steps)
         return {
             "loaded": True,
             "repo_id": state.repo_id,

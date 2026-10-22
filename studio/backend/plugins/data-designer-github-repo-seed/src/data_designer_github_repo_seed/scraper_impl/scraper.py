@@ -52,6 +52,8 @@ class RepoScraper:
         # light=True uses trimmed GraphQL queries so PR pages can be larger without hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
+        if not self.repo_dir.resolve().is_relative_to(base_dir.resolve()):
+            raise ValueError(f"Repository {owner}/{name} would be scraped outside {base_dir}")
         self.repo_dir.mkdir(parents = True, exist_ok = True)
         self.state = StateStore(base_dir / "state" / f"{owner}__{name}.json")
 

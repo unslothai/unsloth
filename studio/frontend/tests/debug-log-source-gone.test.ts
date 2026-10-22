@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A source id stops being enumerated once the file is removed or pushed out of
-// the per-family window. The backend answers that with a 404 (every other state
-// is a 200 with a status) so the picker can rebuild itself, which only works if
-// the status survives the client.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -30,7 +25,6 @@ test("every other failure is reported rather than retried", () => {
       false,
     );
   }
-  // A plain Error is what the sources call and anything unexpected throws.
   assert.equal(isLogSourceGone(new Error("Could not read the log.")), false);
   assert.equal(isLogSourceGone(undefined), false);
   assert.equal(isLogSourceGone(null), false);
@@ -43,6 +37,5 @@ test("an aborted poll is not a failure at all", () => {
   assert.equal(isAbort(abort), true);
   assert.equal(isAbort(new Error("nope")), false);
   assert.equal(isAbort(undefined), false);
-  // Unmounting the tab must not be reported as a log-source problem.
   assert.equal(isLogSourceGone(abort), false);
 });

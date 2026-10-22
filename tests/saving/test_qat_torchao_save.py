@@ -335,3 +335,44 @@ def test_phone_deployment_config_only_where_it_applies(monkeypatch, tmp_path, ca
         assert "optimum-executorch" in printed and "group size 32" in printed
     else:
         assert "group_size=32" in printed
+
+
+class _TokenizerStub:
+    def save_pretrained(self, save_directory, **kwargs):
+        os.makedirs(save_directory, exist_ok = True)
+
+
+def test_full_finetune_qat_save_reloads_quantized(tmp_path):
+    # Full finetuning converts in place; transformers 5 refused the torchao subclasses without an hf_quantizer.
+    from transformers import AutoModelForCausalLM, LlamaConfig
+
+    config = LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 128,
+        intermediate_size = 256,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        tie_word_embeddings = False,
+    )
+    torch.manual_seed(0)
+    model = AutoModelForCausalLM.from_config(config).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, _int8_qat_config())
+    save_mod._unsloth_save_torchao_with_attached_config(model, str(tmp_path), _TokenizerStub())
+    assert getattr(model, "hf_quantizer", None) is None
+
+    reloaded = AutoModelForCausalLM.from_pretrained(str(tmp_path), dtype = torch.bfloat16)
+    assert reloaded.config.quantization_config is not None
+    ours = dict(model.named_modules())
+    n_quantized = 0
+    for name, module in reloaded.named_modules():
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        before, after = ours[name].weight, module.weight
+        assert type(after) is type(before), name
+        if _is_quantized(before):
+            n_quantized += 1
+            assert torch.equal(after.dequantize(), before.dequantize()), name
+        else:
+            assert torch.equal(after, before), name
+    assert n_quantized == 8

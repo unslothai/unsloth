@@ -60,6 +60,9 @@ def _frame_geometry(
             "format=duration",
             "-of",
             "json",
+            # A probed playlist would otherwise open the URLs it names.
+            "-protocol_whitelist",
+            "file",
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
@@ -106,6 +109,8 @@ def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
             "packet=pts_time,duration_time",
             "-of",
             "json",
+            "-protocol_whitelist",
+            "file",
             str(clip),
         ],
         _PROBE_TIMEOUT_S,
@@ -203,6 +208,10 @@ def shrink_video_for_llama(
         raw = base64.b64decode(video_b64)
     except (binascii.Error, ValueError):
         return video_b64
+    from utils.media_playlist import refuse_playlist
+
+    # `-protocol_whitelist file` still lets a playlist read local files: refuse one outright.
+    refuse_playlist(raw)
     try:
         with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
             source = Path(tmp) / "clip"
@@ -225,6 +234,8 @@ def shrink_video_for_llama(
                     "-hide_banner",
                     "-loglevel",
                     "error",
+                    "-protocol_whitelist",
+                    "file",
                     "-i",
                     str(source),
                     "-map",

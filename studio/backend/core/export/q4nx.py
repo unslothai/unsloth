@@ -97,8 +97,9 @@ def staged_output(out_dir: Path):
         out_dir.mkdir(exist_ok = True)
         # Again at publish: the conversion is long enough for the folder to be swapped.
         refuse_symlink()
-        # The last model's companions must not survive beside the new weights.
-        for name in ("model.q4nx", "config.json", *TOKENIZER_FILES):
+        # The last model's companions must not survive beside the new weights (REAP's report
+        # included: a pruned conversion stages a fresh one).
+        for name in ("model.q4nx", "config.json", "reap_report.json", *TOKENIZER_FILES):
             (out_dir / name).unlink(missing_ok = True)
         for path in staging.iterdir():
             os.replace(path, out_dir / path.name)

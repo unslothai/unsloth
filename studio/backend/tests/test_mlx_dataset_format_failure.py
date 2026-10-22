@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MLX text path must react to a dataset format failure the way the GPU trainer does.
-
-format_and_template_dataset returns success=False when the chat template raised on every
-row. Ignoring that leaves the raw, untemplated dataset in place and trains on it.
-"""
+"""Ignoring format_and_template_dataset's success=False would train on the raw, untemplated dataset."""
 
 import ast
 import inspect
@@ -36,11 +32,7 @@ def _run(
     eval_warning = None,
     formatted_eval = "FORMATTED_EVAL",
 ):
-    """Execute the real block from _run_mlx_training and report what it did.
-
-    _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
-    directly, the same technique test_mlx_training_worker_config.py uses.
-    """
+    """Runs the real block lifted from _run_mlx_training, which runs only on Apple Silicon."""
     block = compile(ast.Module(body = _format_block().body, type_ignores = []), "<fmt>", "exec")
     events = []
     calls = {"n": 0}

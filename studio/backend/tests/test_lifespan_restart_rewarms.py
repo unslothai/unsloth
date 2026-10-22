@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A second lifespan in one process must re-detect and re-warm, not inherit.
-
-Shutdown clears hardware.DEVICE, so after it the process holds no measured device. Two
-pieces of bookkeeping have to be cleared with it or the next lifespan disagrees with
-reality:
-
-  * DETECTION_COMPLETE. /api/health takes a set event as "DEVICE is authoritative", so left
-    set over a cleared DEVICE it publishes a device that is gone.
-  * torch_warmup's one-warm-per-process latch. A finished thread left in place makes the
-    second lifespan's start_background_warm() a no-op, so the stack stays cold.
-
-Reachable through repeated ASGI lifespan contexts and an embedded restart, both of
-which reuse the app object in one interpreter.
-"""
+"""Shutdown clears the device, so DETECTION_COMPLETE and the warm latch must also be reset."""
 
 from __future__ import annotations
 
@@ -90,12 +77,7 @@ def _restore(monkeypatch) -> None:
 
 
 def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
-    """Both restart paths must re-warm, not just the one that got a clean reset.
-
-    reset_background_warm() declines while a warm is alive, the normal case for a shutdown
-    landing mid-warm. If that warm then finishes its thread object is left behind, and
-    treating it as "already started" would skip the second lifespan's warm entirely, over
-    hardware state the same shutdown just cleared."""
+    """A warm that survives shutdown leaves its thread behind, which must not block the next warm."""
     _restore(monkeypatch)
     runs: list[int] = []
     monkeypatch.setattr(warmup, "_warm", lambda *_: runs.append(1))
@@ -103,15 +85,11 @@ def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
     assert warmup.start_background_warm() is True
     assert warmup.join_background_warm(30) is True
 
-    # Path one: shutdown reset cleanly, the next lifespan warms.
     assert warmup.reset_background_warm() is True
     assert warmup.start_background_warm() is True
     assert warmup.join_background_warm(30) is True
     assert runs == [1, 1], "the second lifespan did not run the warm again"
 
-    # Path two: no reset ran, because the warm outlived the shutdown that tried.
-    # The finished thread must not still hold the latch. Retire the epoch first, as
-    # run_lifespan_shutdown does: that is what makes the leftover thread stale.
     from utils.hardware import hardware as hw
 
     hw.invalidate_detection()

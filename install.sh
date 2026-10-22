@@ -6671,6 +6671,14 @@ _radeon_torch_compiles_for_pytag() {
 
 # ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
 # Idempotent, no-op without librocdxg, best-effort; sudo-tee when not root.
+_rocm_wsl_dropin_stale() {
+    grep -qF 'lib:${LD_LIBRARY_PATH:-}' /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null
+}
+# The helper pinned by _ROCM_WSL_HELPER_REF can predate the fix and leave the old line in ~/.bashrc.
+_repair_rocm_wsl_bashrc() {
+    [ -n "${HOME:-}" ] && grep -qF 'lib:${LD_LIBRARY_PATH:-}' "${HOME}/.bashrc" 2>/dev/null || return 0
+    sed --follow-symlinks -i '/^# >>> Unsloth ROCm-on-WSL/,/^# <<< Unsloth ROCm-on-WSL/ s#lib:\${LD_LIBRARY_PATH:-}#lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}#' "${HOME}/.bashrc" 2>/dev/null || true
+}
 _persist_rocm_wsl_dropin() {
     [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
     _rw_rocm=/opt/rocm
@@ -6679,13 +6687,23 @@ _persist_rocm_wsl_dropin() {
         *":${_rw_rocm}/bin:"*) ;;
         *) export PATH="${_rw_rocm}/bin:${PATH}" ;;
     esac
-    export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
-    [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && return 0
+    export LD_LIBRARY_PATH="${_rw_rocm}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+        _rocm_wsl_dropin_stale || return 0
+        # An older drop-in left a trailing ':' (the cwd) on an empty LD_LIBRARY_PATH: fix that line, keep the rest.
+        _rw_fix='s#lib:\${LD_LIBRARY_PATH:-}#lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}#'
+        if [ "$(id -u)" = "0" ]; then
+            sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+        fi
+        return 0
+    fi
     _rw_dropin="$(
         printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
         printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
         printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
-        printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
+        printf 'export LD_LIBRARY_PATH="%s/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"\n' "${_rw_rocm}"
         printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
     )"
     if [ "$(id -u)" = "0" ]; then
@@ -6705,6 +6723,7 @@ _maybe_bootstrap_rocm_wsl() {
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/ && !/generic/{found=1} END{exit !found}'; then
         _persist_rocm_wsl_dropin
+        _repair_rocm_wsl_bashrc
         return 0
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
@@ -6717,13 +6736,14 @@ _maybe_bootstrap_rocm_wsl() {
     command -v bash >/dev/null 2>&1 || return 0
 
     if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
-        if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+        if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && ! _rocm_wsl_dropin_stale; then
             # shellcheck disable=SC1091
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
-            # librocdxg present but the env drop-in is gone (uninstall dropped it).
+            # librocdxg present but the env drop-in is gone (uninstall dropped it) or stale.
             _persist_rocm_wsl_dropin
         fi
+        _repair_rocm_wsl_bashrc
         return 0
     fi
 
@@ -6734,7 +6754,7 @@ _maybe_bootstrap_rocm_wsl() {
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
     # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local copy counts only for a --local checkout run, since this executes with no prompt and _REPO_ROOT may otherwise be the caller's cwd. PINNED, never a branch: this runs unattended and installs with sudo, so a moving ref would turn any rewrite of that branch into root code on every affected WSL box. Bump it whenever the helper changes; lagging only means an older helper, and the gate below rejects one too old to be safe.
-    _ROCM_WSL_HELPER_REF="b1d829182f8c490a326cf7690f156d2de06381f2"
+    _ROCM_WSL_HELPER_REF="8f3d1c01e6c543f45f9a698f45bc48b5a262c928"
     # librocdxg pin (v1.2.2), forwarded to the helper. The ref IS the commit, so an older helper that ignores the SHA still resolves this exact revision: its `--branch <sha>` attempt fails and the full clone plus checkout land on it. Kept equal to the helper's defaults; a test enforces that. A user-set ref wins and, with no SHA of its own, turns the helper's check off rather than failing against our pin.
     _rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"
     _rw_dxg_sha="${UNSLOTH_LIBROCDXG_SHA:-}"
@@ -6784,10 +6804,14 @@ _maybe_bootstrap_rocm_wsl() {
            UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha" \
            bash "$_rw_helper"; then
             # Pull the helper's persisted env into THIS shell so detection (rocminfo) now enumerates the GPU and routes to gfx1151.
-            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && ! _rocm_wsl_dropin_stale; then
                 # shellcheck disable=SC1091
                 . /etc/profile.d/unsloth-rocm-wsl.sh || true
+            else
+                # The pinned helper may write the old drop-in: rewrite it (and export) here.
+                _persist_rocm_wsl_dropin
             fi
+            _repair_rocm_wsl_bashrc
             substep "ROCm-on-WSL ready; continuing with GPU install." "$C_OK"
         else
             substep "ROCm-on-WSL setup did not complete; falling back to CPU-only." "$C_WARN"
@@ -7677,11 +7701,19 @@ case "$TORCH_INDEX_URL" in
                 substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."
             elif { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
                  _tegra_note_cuda=$(_nvidia_driver_cuda_version 2>/dev/null || true) && \
-                 { [ -z "$_tegra_note_cuda" ] || [ "${_tegra_note_cuda%%.*}" -lt 13 ]; }; then
+                 if [ -n "$_tegra_note_cuda" ]; then [ "${_tegra_note_cuda%%.*}" -lt 13 ]
+                 else
+                     # No driver answer (GPU-less container): L4T R38+ or Thor (tegra264) is JetPack 7, as utils/tegra.py.
+                     case "$(head -n 1 /etc/nv_tegra_release 2>/dev/null)" in
+                         "# R"[1-9][0-9][0-9]* | "# R"[4-9][0-9]* | "# R3"[89]*) false ;;
+                         "# R"[0-9]*) true ;;
+                         *) ! grep -qa 'nvidia,tegra264' /proc/device-tree/compatible 2>/dev/null ;;
+                     esac
+                 fi; then
                 # Re-detected: get_torch_index_url ran in a subshell. Thor (CUDA 13) is not on this route.
                 _tegra_cpu_route=true
                 substep "NVIDIA Jetson detected -- CPU-only PyTorch: the generic aarch64 CUDA wheels do not run on Tegra." "$C_WARN"
-                substep "Training runs on the CPU. A JetPack PyTorch build for this venv's Python is kept if you install one;" "$C_WARN"
+                substep "Training runs on the CPU. A JetPack PyTorch build for this venv's Python, if you install one, is kept by updates;" "$C_WARN"
                 substep "  NVIDIA's own wheels target JetPack's system Python: https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/" "$C_WARN"
             elif _has_amd_rocm_gpu; then
                 # A generation ROCm never covered is not a missing SDK (#8529). Unlike the arm in get_torch_index_url, this one runs even when the arch read fine, so it needs its own peer guard: an RX 5700 beside an RX 7900 lands here whenever the 7900's ROCm is too old, and blaming the 5700 would replace the upgrade advice with advice that is false for the card that caused the fallback. _infer_linux_amd_gfx_arch scans every display adapter, so a covered answer clears this one.

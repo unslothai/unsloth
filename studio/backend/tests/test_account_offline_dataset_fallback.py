@@ -36,7 +36,6 @@ def shared_cache(monkeypatch, tmp_path):
         "repo_is_public",
         lambda repo_id, repo_type = "model": not repo_id.startswith("private/"),
     )
-    # Bob already downloaded both; the cache lookup finds them for anyone.
     monkeypatch.setattr(
         dataset_cache,
         "training_dataset_cache_pin",
@@ -45,7 +44,6 @@ def shared_cache(monkeypatch, tmp_path):
             "rev",
         ),
     )
-    # No Hub: only the offline fallback can answer.
     monkeypatch.setattr(training, "hf_env_offline", lambda: True)
     monkeypatch.setattr(training, "_hub_unreachable", lambda: True)
     return cache
