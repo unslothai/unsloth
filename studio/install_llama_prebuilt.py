@@ -10530,6 +10530,21 @@ print(json.dumps(devices))
 """
 # VK_DRIVER_ID_GOOGLE_SWIFTSHADER, _MESA_LLVMPIPE (software), _MESA_DOZEN (Vulkan over D3D12).
 _VULKAN_SKIPPED_DRIVER_IDS = frozenset({10, 13, 23})
+# Qualcomm Adreno: llama.cpp's Vulkan backend was reported to produce garbage on Snapdragon X Elite
+# (ggml-org/llama.cpp#28290, closed stale with no fix) and the fork keeps that bundle opt-in, so the
+# automatic route leaves these to UNSLOTH_LLAMA_CPP_BACKEND=vulkan until a Snapdragon X check passes.
+_VULKAN_AUTO_OPT_IN_VENDORS = frozenset({0x5143})
+
+
+class _VulkanGpuName(str):
+    """A Vulkan device name that also carries its vendor id (``vendor`` is None when unknown)."""
+
+    vendor = None
+
+    def __new__(cls, name, vendor = None):
+        self = super().__new__(cls, name)
+        self.vendor = vendor
+        return self
 
 
 @functools.lru_cache(maxsize = 1)
@@ -10568,10 +10583,23 @@ def _vulkan_gpu_devices() -> tuple[str, ...]:
                 and device["driver"] not in _VULKAN_SKIPPED_DRIVER_IDS
                 and device["vendor"] not in hidden_vendors
             ):
-                names.append(str(device["name"]))
+                names.append(_VulkanGpuName(str(device["name"]), device["vendor"]))
         except (KeyError, TypeError):
             continue
     return tuple(names)
+
+
+def _vulkan_auto_gpu_devices() -> tuple[str, ...]:
+    """The GPUs the automatic route may pick: every accepted one except opt-in-only vendors."""
+    devices = _vulkan_gpu_devices()
+    auto = tuple(d for d in devices if getattr(d, "vendor", None) not in _VULKAN_AUTO_OPT_IN_VENDORS)
+    if devices and not auto:
+        log(
+            f"Vulkan GPU found ({', '.join(dict.fromkeys(devices))}) but llama.cpp's Vulkan backend "
+            "is unverified there, so the CPU llama.cpp prebuilt is used. Set "
+            "UNSLOTH_LLAMA_CPP_BACKEND=vulkan to install the Vulkan prebuilt instead."
+        )
+    return auto
 
 
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
@@ -11155,7 +11183,8 @@ def _route_to_vulkan_prebuilt(
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
         has_intel_gpu probe;
       * any other non-macOS host that would get the CPU bundle, when the Vulkan loader
-        enumerates a GPU llama.cpp accepts (Snapdragon X, Linux arm64 GPUs, nouveau).
+        enumerates a GPU llama.cpp accepts (Linux arm64 GPUs, nouveau); Qualcomm Adreno
+        (Snapdragon X) stays behind the explicit request above.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
     available" answer matches what actually gets installed.
 
@@ -11194,7 +11223,7 @@ def _route_to_vulkan_prebuilt(
         and not host.has_rocm
         and not (host.is_x86_64 and host.has_amd_gpu_without_rocm)
         and not _vulkan_visible_device_mask_set()
-        and bool(_vulkan_gpu_devices())
+        and bool(_vulkan_auto_gpu_devices())
     )
     if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu or auto_device):
         return host, published_repo, published_release_tag, None
@@ -11244,7 +11273,7 @@ def _route_to_vulkan_prebuilt(
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
     else:
-        names = ", ".join(dict.fromkeys(_vulkan_gpu_devices()))
+        names = ", ".join(dict.fromkeys(_vulkan_auto_gpu_devices()))
         log(
             f"Vulkan GPU found ({names}); installing the Vulkan llama.cpp prebuilt, "
             "with the CPU bundle as fallback"
