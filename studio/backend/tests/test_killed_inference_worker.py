@@ -38,7 +38,9 @@ def _orchestrator(killed = True):
 @pytest.fixture
 def released(monkeypatch):
     calls = []
-    monkeypatch.setattr(inference_route, "release_chat_gpu_claim", lambda: calls.append("release"))
+    monkeypatch.setattr(
+        inference_route, "release_chat_gpu_claim", lambda: calls.append("release") or True
+    )
     monkeypatch.setattr(inference_route.account_access, "clear_resident", calls.append)
     return calls
 
