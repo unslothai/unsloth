@@ -438,9 +438,13 @@ def test_offload_hook_on_unselected_embedding_is_not_refused(qat_scheme):
     pytest.importorskip("accelerate.hooks")
     model = _offload_embedding(_tiny_gemma3(), place_submodules = True)
     original = model.get_input_embeddings()
-    model = _prepare_model_for_qat(model, qat_scheme)  # Linear-only recipes never touch the embedding
+    model = _prepare_model_for_qat(
+        model, qat_scheme
+    )  # Linear-only recipes never touch the embedding
     assert model.get_input_embeddings() is original
-    assert _is_fake_quantized(model.model.layers[0].mlp.down_proj)  # in_features 128 fits int4's group
+    assert _is_fake_quantized(
+        model.model.layers[0].mlp.down_proj
+    )  # in_features 128 fits int4's group
 
 
 @pytest.mark.parametrize("convert", ["unsloth", "strip"])
@@ -458,7 +462,10 @@ def test_offloaded_embedding_with_offloaded_buffers_converts(convert):
     scale = emb.embed_scale.detach().clone()
     emb.register_buffer("embed_scale", scale.clone(), persistent = True)
     prefix = "model.embed_tokens."
-    weights = {prefix + "weight": emb.weight.detach().clone(), prefix + "embed_scale": scale.clone()}
+    weights = {
+        prefix + "weight": emb.weight.detach().clone(),
+        prefix + "embed_scale": scale.clone(),
+    }
     emb.to("meta")
     add_hook_to_module(
         emb,
@@ -472,7 +479,9 @@ def test_offloaded_embedding_with_offloaded_buffers_converts(convert):
     assert emb.embed_scale.device.type == "meta"
     model = _prepare_model_for_qat(model, "int8-int4")
     with torch.no_grad():  # the hook still serves forward from weights_map
-        torch.testing.assert_close(model.get_input_embeddings()(ids), reference.get_input_embeddings()(ids))
+        torch.testing.assert_close(
+            model.get_input_embeddings()(ids), reference.get_input_embeddings()(ids)
+        )
     if convert == "unsloth":
         _convert_torchao_model(reference)
         _convert_torchao_model(model)
@@ -498,28 +507,31 @@ def _delegating_override(self, input_ids):
 
 def _install_override(emb, kind):
     import types
-
     if kind == "direct_weight":
         emb.forward = types.MethodType(_direct_weight_override, emb)
     elif kind == "delegating":
         emb.forward = types.MethodType(_delegating_override, emb)
     elif kind == "accelerate_over_override":
         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
         emb.forward = types.MethodType(_delegating_override, emb)
         add_hook_to_module(emb, AlignDevicesHook(execution_device = "cpu", io_same_device = True))
     elif kind == "forward_hook":
         return emb.register_forward_hook(lambda m, a, out: out * 2)
     elif kind == "unsloth_offload_hooks":
         from unsloth.models.vision import _install_offload_embedding_hooks
-
         assert _install_offload_embedding_hooks(emb, None, torch.device("cpu"))
     return None
 
 
 @pytest.mark.parametrize(
     "kind",
-    ["direct_weight", "delegating", "accelerate_over_override", "forward_hook", "unsloth_offload_hooks"],
+    [
+        "direct_weight",
+        "delegating",
+        "accelerate_over_override",
+        "forward_hook",
+        "unsloth_offload_hooks",
+    ],
 )
 @pytest.mark.parametrize("convert", ["unsloth", "strip"])
 def test_embedding_with_instance_forward_or_hooks_is_left_out_of_qat(kind, convert):
@@ -540,7 +552,9 @@ def test_embedding_with_instance_forward_or_hooks_is_left_out_of_qat(kind, conve
     emb = model.get_input_embeddings()
     assert emb is original and not _is_fake_quantized(emb)
     assert sum("leaves these embeddings in full precision" in str(w.message) for w in caught) == 1
-    assert _is_fake_quantized(model.model.layers[0].self_attn.q_proj)  # the rest of the recipe still applies
+    assert _is_fake_quantized(
+        model.model.layers[0].self_attn.q_proj
+    )  # the rest of the recipe still applies
     with torch.no_grad():
         torch.testing.assert_close(emb(ids), before)
     if handle is not None:
@@ -570,7 +584,9 @@ def test_sequential_hook_with_align_devices_hook_is_supported(offload):
     kwargs = {"execution_device": "cpu", "offload": offload}
     if offload:
         prefix = "model.embed_tokens."
-        kwargs["weights_map"] = PrefixedDataset({prefix + "weight": emb.weight.detach().clone()}, prefix)
+        kwargs["weights_map"] = PrefixedDataset(
+            {prefix + "weight": emb.weight.detach().clone()}, prefix
+        )
     accelerate_hooks.add_hook_to_module(emb, accelerate_hooks.AlignDevicesHook(**kwargs))
     accelerate_hooks.add_hook_to_module(emb, accelerate_hooks.ModelHook(), append = True)
     assert type(emb._hf_hook).__name__ == "SequentialHook"
@@ -620,7 +636,10 @@ def test_plain_embedding_keeps_its_accelerate_hook(offload):
     emb = model.get_input_embeddings()
     assert type(emb) is torch.nn.Embedding
     accelerate_hooks.add_hook_to_module(
-        emb, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", offload = offload, io_same_device = True)
+        emb,
+        accelerate_hooks.AlignDevicesHook(
+            execution_device = "cpu", offload = offload, io_same_device = True
+        ),
     )
     model = _prepare_model_for_qat(model, "int8-int4")
     emb = model.get_input_embeddings()

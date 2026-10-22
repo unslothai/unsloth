@@ -196,7 +196,10 @@ def test_prepare_trims_then_truncates_and_is_idempotent():
     ds = Dataset.from_dict({"input_ids": [[0, 0, 4, 5, 6]], "attention_mask": [[0, 0, 1, 1, 1]]})
     once = prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100)
     assert once.to_dict() == {"input_ids": [[4, 5]], "attention_mask": [[1, 1]]}
-    assert prepare_pretokenized_dataset(once, max_seq_length = 2, vocab_size = 100).to_dict() == once.to_dict()
+    assert (
+        prepare_pretokenized_dataset(once, max_seq_length = 2, vocab_size = 100).to_dict()
+        == once.to_dict()
+    )
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -209,7 +212,9 @@ def test_prepare_trims_then_truncates_and_is_idempotent():
     ],
 )
 def test_prepare_refuses_masks_it_cannot_trim(mask, match, streaming):
-    ds = Dataset.from_dict({"input_ids": [[1, 2, 3, 4]] * 2, "attention_mask": [[1, 1, 1, 1], mask]})
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]] * 2, "attention_mask": [[1, 1, 1, 1], mask]}
+    )
     if streaming:
         ds = ds.to_iterable_dataset()
     with pytest.raises(ValueError, match = match):
@@ -248,11 +253,17 @@ def test_trl_collator_never_attends_or_trains_masked_padding():
     ids = [[0, 0, 4, 5], [2, 3, 5, 0], [0, 4, 2, 5]]
     masks = [[0, 0, 1, 1], [1, 1, 1, 0], [0, 1, 1, 1]]
     ds = prepare_pretokenized_dataset(
-        Dataset.from_dict({"input_ids": ids, "attention_mask": masks}), max_seq_length = 8, vocab_size = 6
+        Dataset.from_dict({"input_ids": ids, "attention_mask": masks}),
+        max_seq_length = 8,
+        vocab_size = 6,
     )
     batch = collator_cls(pad_token_id = 0)([ds[i] for i in range(len(ds))])
     for r, (row, mask) in enumerate(zip(ids, masks)):
         real = [t for t, m in zip(row, mask) if m]
-        attended = [t for t, m in zip(batch["input_ids"][r].tolist(), batch["attention_mask"][r].tolist()) if m]
+        attended = [
+            t
+            for t, m in zip(batch["input_ids"][r].tolist(), batch["attention_mask"][r].tolist())
+            if m
+        ]
         assert attended == real
         assert [x for x in batch["labels"][r].tolist() if x != -100] == real

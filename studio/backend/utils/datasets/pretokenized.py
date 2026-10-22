@@ -78,9 +78,10 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
     else:
         needs_trimming = False
     for column in ("labels", "attention_mask") if needs_trimming else ("labels",):
-        if column in table.column_names and not pc.all(
-            pc.equal(lengths, pc.list_value_length(table.column(column)))
-        ).as_py():
+        if (
+            column in table.column_names
+            and not pc.all(pc.equal(lengths, pc.list_value_length(table.column(column)))).as_py()
+        ):
             raise ValueError(
                 f"Pre-tokenized dataset: '{column}' must have the same length as 'input_ids' in every row."
             )
@@ -163,17 +164,25 @@ def prepare_pretokenized_dataset(
         def _trim(batch, indices):
             out = {c: list(batch[c]) for c in columns}
             for i, row_index in enumerate(indices):
-                trimmed = _trim_row(row_index, out["attention_mask"][i], [out[c][i] for c in columns])
+                trimmed = _trim_row(
+                    row_index, out["attention_mask"][i], [out[c][i] for c in columns]
+                )
                 for c, v in zip(columns, trimmed):
                     out[c][i] = v
             return out
 
         fmt = dataset.format
         dataset = dataset.with_format(None).map(
-            _trim, batched = True, with_indices = True, desc = "Trimming masked padding from pre-tokenized rows"
+            _trim,
+            batched = True,
+            with_indices = True,
+            desc = "Trimming masked padding from pre-tokenized rows",
         )
         dataset = dataset.with_format(
-            fmt["type"], columns = fmt["columns"], output_all_columns = fmt["output_all_columns"], **fmt["format_kwargs"]
+            fmt["type"],
+            columns = fmt["columns"],
+            output_all_columns = fmt["output_all_columns"],
+            **fmt["format_kwargs"],
         )
     if not needs_truncation or not max_seq_length:
         return dataset
