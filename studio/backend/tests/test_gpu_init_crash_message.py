@@ -109,6 +109,7 @@ def _run_cpu_fallback_load(
     sink = None,
     stall_launches = (),
     stall_kind = "no_progress",
+    gpu_memory = None,
 ):
     """``stall_launches``: 0-based launch indexes whose child stays alive while the
     health wait reports a startup stall (a hung driver rather than a crash), ended
@@ -127,7 +128,11 @@ def _run_cpu_fallback_load(
     mmproj.write_bytes(b"projector")
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_memory = (
+        (lambda _binary = None, **_kw: [])
+        if gpu_memory is None
+        else (lambda _binary = None, **_kw: gpu_memory(backend, _binary, **_kw))
+    )
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False

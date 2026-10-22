@@ -571,7 +571,118 @@ def test_a_reload_after_a_zero_device_probe_asks_again(
     monkeypatch.setattr(
         LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary: list(probe_rows))
     )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_vulkan_probe_outcome",
+        staticmethod(lambda _binary = None: "devices" if probe_rows else "none"),
+    )
     intent = GgufLoadIntent(
         model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096, gpu_memory_mode = "auto"
     )
     assert backend._preserve_cpu_fallback_intent(intent).cpu_fallback is stays_cpu
+
+
+def test_a_stalled_text_only_retry_after_a_timed_out_probe_replays_on_cpu(monkeypatch, tmp_path):
+    """The stall rule follows every bounded retry, not only the first launch."""
+    _route_env(monkeypatch, "timeout")
+    sink = {}
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, None, None],
+        first_output = "projector-incompatible",
+        mmproj_from_argv = True,
+        stall_launches = (1,),
+        sink = sink,
+    )
+    assert loaded is True
+    assert launches[-1][0][0] == "/staged/llama-server"
+    assert len(fallback_sources) == 1
+    assert backend._cpu_fallback_reason == "vulkan_startup_stall"
+
+
+def test_a_stalled_text_only_retry_after_a_listed_device_fails_with_advice(monkeypatch, tmp_path):
+    _route_env(monkeypatch, "devices")
+    with pytest.raises(RuntimeError, match = "Settings > GGUF inference engine"):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [1, None, None],
+            first_output = "projector-incompatible",
+            mmproj_from_argv = True,
+            stall_launches = (1,),
+        )
+
+
+@pytest.mark.parametrize(
+    "outcome, stays_cpu",
+    [("none", True), ("timeout", False), ("crashed", False), ("error", False), ("devices", False)],
+)
+def test_a_stall_reload_launches_vulkan_unless_the_probe_says_none(
+    monkeypatch, tmp_path, outcome, stays_cpu
+):
+    """A timed-out or faulted reprobe is suspect evidence, not a reason to stay on CPU."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    backend = LlamaCppBackend()
+    backend._process = SimpleNamespace(poll = lambda: None)
+    backend._healthy = True
+    backend._model_identifier = "owner/model"
+    backend._gguf_path = str(gguf)
+    backend._cpu_fallback_reason = "vulkan_startup_stall"
+    monkeypatch.setattr(LlamaCppBackend, "matches_load_source", lambda self, intent: True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/fake/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(lambda _binary = None: outcome)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary: []))
+    intent = GgufLoadIntent(
+        model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096, gpu_memory_mode = "auto"
+    )
+    assert backend._preserve_cpu_fallback_intent(intent).cpu_fallback is stays_cpu
+    # Probing for the reload never leaves this thread's load memo armed.
+    assert llama_cpp._load_probe_memo_armed() is False
+
+
+def test_one_vulkan_probe_per_load(monkeypatch, tmp_path):
+    """Placement and the launch's outcome read share one answer (a hung probe costs one timeout)."""
+    probes = []
+
+    def _probe(binary):
+        probes.append(binary)
+        llama_cpp._load_probe_memo_put("vulkan_outcome", binary, "timeout")
+        llama_cpp._load_probe_memo_put("vulkan", binary, [])
+        return []
+
+    real_outcome = LlamaCppBackend._vulkan_probe_outcome
+    monkeypatch.setattr(LlamaCppBackend, "_binary_revision", staticmethod(lambda _b: ("rev", 1)))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cpu_isolated_binary", lambda self, _binary: "/staged/llama-server"
+    )
+
+    def _memo_probe(binary):
+        memo = llama_cpp._load_probe_memo_get("vulkan", binary)
+        return memo if memo is not None else _probe(binary)
+
+    monkeypatch.setattr(LlamaCppBackend, "_run_vulkan_probe", staticmethod(_memo_probe))
+    monkeypatch.setattr(LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(real_outcome))
+    sink = {}
+
+    def _placement_probe(self, binary = None, **_kw):
+        LlamaCppBackend._run_vulkan_probe(binary or "/fake/llama-server")
+        return []
+
+    with llama_cpp._load_probe_memo_scope():
+        backend, loaded, launches, _ = _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [None],
+            sink = sink,
+            gpu_memory = _placement_probe,
+        )
+    assert loaded is True
+    assert probes == ["/fake/llama-server"]

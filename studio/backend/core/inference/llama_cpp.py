@@ -8135,8 +8135,23 @@ def _arm_load_probe_memo() -> None:
     against VRAM that has since been allocated. `_load_probe_memo_scope` on the load
     call owns the lifetime, so this never has to be unwound by hand.
     """
+    # Already armed by an earlier placement step of this load: keep its rows, so the
+    # launch reuses that answer instead of asking the subprocess a second time.
+    if _load_probe_memo_armed():
+        return
     _LOAD_PROBE_STATE.armed = True
     _LOAD_PROBE_STATE.rows = {}
+
+
+def _vulkan_probe_outcome_unmemoised(binary: str) -> str:
+    """The Vulkan probe's outcome on its own, before this load's memo is armed. The memo
+    is left as found, so rows taken before a download never price the later fit."""
+    armed, rows = _load_probe_memo_armed(), getattr(_LOAD_PROBE_STATE, "rows", None)
+    _LOAD_PROBE_STATE.armed, _LOAD_PROBE_STATE.rows = True, {}
+    try:
+        return LlamaCppBackend._vulkan_probe_outcome(binary)
+    finally:
+        _LOAD_PROBE_STATE.armed, _LOAD_PROBE_STATE.rows = armed, rows
 
 
 @contextlib.contextmanager
@@ -24934,13 +24949,15 @@ class LlamaCppBackend:
             return intent
         if not source_matches and not self.matches_load_source(intent):
             return intent
-        # A reload after a zero-device probe or a stall replay asks again: a device that answers now runs on it.
+        # A reload after a zero-device probe or a stall replay asks again. Only a conclusive
+        # zero-device answer keeps the CPU route; devices, a timeout or a fault launch Vulkan
+        # again, where a timed-out probe is suspect evidence the stall rule then judges.
         if not source_matches and self._cpu_fallback_reason in (
             "vulkan_no_device",
             "vulkan_startup_stall",
         ):
             binary = self._find_llama_server_binary()
-            if binary and LlamaCppBackend._run_vulkan_probe(binary):
+            if binary and _vulkan_probe_outcome_unmemoised(binary) != "none":
                 return intent
         extras = list(intent.extra_args) if intent.extra_args is not None else None
         # Judge the env the replay runs with, not this process's: _cpu_isolated_replay
@@ -26954,6 +26971,10 @@ class LlamaCppBackend:
                     # `--fit on`, yet `gpu_indices` is restored from `gpu_ids` below
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
+                    # After the download, so the rows are fresh: the launch below reads the
+                    # same Vulkan answer instead of probing (up to 15 s) a second time.
+                    if self._is_vulkan_backend(binary):
+                        _arm_load_probe_memo()
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
                     _held_by_others = self._other_planned_vram_mib()
                     _shared_gpus = frozenset(_held_by_others)
@@ -33447,6 +33468,31 @@ class LlamaCppBackend:
                     self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
+                def _recover_vulkan_stall(stalled_cmd: list[str]) -> bool:
+                    """The stall rule for any auto-Vulkan health wait (#142), the first launch or a
+                    later bounded retry. A probe that could not enumerate (timed out or faulted)
+                    plus a child that did no loading work replays this load on CPU: True once up,
+                    False if that replay could not start. Any other stall fails with advice."""
+                    if (
+                        _vulkan_suspect
+                        and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
+                    ):
+                        return _try_auto_vulkan_cpu_fallback(stalled_cmd, None, stalled = True)
+                    _raise_terminal_load_failure(
+                        "llama-server did not finish starting on the auto-selected Vulkan "
+                        "backend (no loading progress). If this keeps happening, choose CPU "
+                        "in Settings > GGUF inference engine to run models without the "
+                        "Vulkan driver."
+                    )
+
+                def _vulkan_stall_pending() -> bool:
+                    return (
+                        getattr(self, "_health_wait_stalled", False)
+                        and _cpu_fallback_eligible
+                        and not intent.cpu_fallback
+                        and not _load_cancelled()
+                    )
+
                 def _cleanup_cancelled_load(message: str) -> None:
                     logger.info(message)
                     self._cleanup_failed_cpu_fallback()
@@ -33864,32 +33910,15 @@ class LlamaCppBackend:
                 # GPU unusable: only a probe that could not enumerate (timed out or faulted)
                 # plus a child that did no loading work for the whole window replays this
                 # load on CPU. A probe that listed a device fails with advice instead.
-                if (
-                    not healthy
-                    and getattr(self, "_health_wait_stalled", False)
-                    and _cpu_fallback_eligible
-                    and not intent.cpu_fallback
-                    and not _load_cancelled()
-                ):
+                if not healthy and _vulkan_stall_pending():
                     _stalled_cmd = list(_last_spawn_cmd)
                     self._kill_process()
-                    if (
-                        _vulkan_suspect
-                        and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
+                    if _recover_vulkan_stall(_stalled_cmd):
+                        healthy = True
+                    elif _finish_cancelled_health_wait(
+                        "Load cancelled during the CPU replay health wait"
                     ):
-                        if _try_auto_vulkan_cpu_fallback(_stalled_cmd, None, stalled = True):
-                            healthy = True
-                        elif _finish_cancelled_health_wait(
-                            "Load cancelled during the CPU replay health wait"
-                        ):
-                            return False
-                    else:
-                        _raise_terminal_load_failure(
-                            "llama-server did not finish starting on the auto-selected Vulkan "
-                            "backend (no loading progress). If this keeps happening, choose CPU "
-                            "in Settings > GGUF inference engine to run models without the "
-                            "Vulkan driver."
-                        )
+                        return False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -34735,6 +34764,18 @@ class LlamaCppBackend:
                             )
                             extra_args = _fb_stripped_extras
 
+                # A later bounded retry (no-flash, drafterless, ...) that stalled gets the same
+                # rule as the first launch: a live child has no exit code for the crash gate.
+                if not healthy and _vulkan_stall_pending():
+                    _stalled_cmd = list(_last_spawn_cmd)
+                    self._kill_process()
+                    if _recover_vulkan_stall(_stalled_cmd):
+                        healthy = True
+                    elif _finish_cancelled_health_wait(
+                        "Load cancelled during the CPU replay health wait"
+                    ):
+                        return False
+
                 # Keep a multimodal model multimodal when only its GPU projector
                 # placement fails. llama.cpp owns mmproj offload separately from
                 # --gpu-layers, so retry it on CPU before removing --mmproj.
@@ -34937,10 +34978,20 @@ class LlamaCppBackend:
                                     "Load cancelled during the text-only retry health wait"
                                 ):
                                     return False
+                                # A stalled text-only retry: the same stall rule as every launch.
+                                if _vulkan_stall_pending():
+                                    if _recover_vulkan_stall(
+                                        _last_spawn_cmd if _projector_msg else _vision_gpu_cmd
+                                    ):
+                                        healthy = True
+                                    elif _finish_cancelled_health_wait(
+                                        "Load cancelled during the CPU replay health wait"
+                                    ):
+                                        return False
                                 # A text-only signal crash is independent evidence of a GPU
                                 # startup fault. Keep a confirmed bad projector out of the
                                 # replay; a guessed one still gets a CPU try with vision.
-                                if self._is_signal_crash(_retry_rc):
+                                if not healthy and self._is_signal_crash(_retry_rc):
                                     _cpu_replay_cmd = (
                                         _last_spawn_cmd if _projector_msg else _vision_gpu_cmd
                                     )
