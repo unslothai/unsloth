@@ -721,6 +721,23 @@ def _denoiser_dtype(module: Any) -> Any:
         return None
 
 
+def _attention_dtype(module: Any) -> Any:
+    """The dtype attention computes in, read off the first attention module (``to_q``, or a fused ``to_qkv``): its first
+    fp16 / bf16 / fp32 parameter (a bias or norm when the projection weight is quantized storage). The module's first
+    parameter can be a stem kept in fp32 (MiniMax-H3's ``proj_in``) while the blocks, and their attention, run in bf16.
+    None when no attention module carries one."""
+    try:
+        for sub in module.modules():
+            if getattr(sub, "to_q", None) is None and getattr(sub, "to_qkv", None) is None:
+                continue
+            for param in sub.parameters():
+                if str(param.dtype) in _PROBE_DTYPES:
+                    return param.dtype
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _rocm_flash_runs_on(ordinal: int, dtype: Any) -> bool:
     try:
         from types import SimpleNamespace
@@ -740,32 +757,39 @@ _PROBE_DTYPES = ("torch.float16", "torch.bfloat16", "torch.float32")
 
 
 def _rocm_attention_dtype(pipe: Any) -> Any:
-    """The compute dtype the SDPA probe should run at: the denoiser's, else the pipeline's; None (the probe's fp16
-    default) when only a quantized storage dtype is readable."""
+    """The compute dtype the SDPA probe should run at: the denoiser's attention dtype, else its first parameter's, else
+    the pipeline's; None (the probe's fp16 default) when only a quantized storage dtype is readable."""
     from . import diffusion_multigpu as mg
 
     for name in mg.DENOISER_ATTRS:
         module = getattr(pipe, name, None)
         if module is not None:
-            dtype = _denoiser_dtype(module)
+            dtype = _attention_dtype(module) or _denoiser_dtype(module)
             if str(dtype) in _PROBE_DTYPES:
                 return dtype
     dtype = getattr(pipe, "dtype", None)
     return dtype if str(dtype) in _PROBE_DTYPES else None
 
 
-def _rocm_sdpa_math_only(ordinal: int, dtype: Any) -> bool:
+def _rocm_sdpa_math_only(
+    ordinal: int,
+    dtype: Any,
+    *,
+    read_only: bool = False,
+) -> bool:
     """diffusion_attention's per-device SDPA probe: True only when math ran and every fused kernel refused on this
-    card at this dtype (an unanswered probe is False)."""
+    card at this dtype (an unanswered probe is False). ``read_only`` (a candidate secondary) leaves the process-wide
+    SDPA switches alone: they also drive the primary, so a rejected card must not turn its fused kernels off."""
     try:
         from types import SimpleNamespace
 
-        from .diffusion_attention import sdpa_math_only
-        return bool(
-            sdpa_math_only(
-                SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype)
+        from .diffusion_attention import read_only_sdpa_probe, sdpa_math_only
+        with read_only_sdpa_probe() if read_only else contextlib.nullcontext():
+            return bool(
+                sdpa_math_only(
+                    SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype)
+                )
             )
-        )
     except Exception:  # noqa: BLE001
         return False
 
@@ -784,7 +808,7 @@ def _rocm_drop_math_only(
     dtype = _rocm_attention_dtype(pipe)
     if _rocm_sdpa_math_only(primary, dtype):
         return cards
-    dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype))
+    dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype, read_only = True))
     if dropped and logger is not None:
         logger.info(
             "diffusion.multigpu: layer split skips %s (%s at %s)",
@@ -834,7 +858,7 @@ def _rocm_backend_cards(
         return (), backend
     kept = tuple(o for o in cards if _rocm_gfx(o) == need)
     if backend == "flash":
-        dtype = _denoiser_dtype(module)
+        dtype = _attention_dtype(module) or _denoiser_dtype(module)
         kept = tuple(o for o in kept if _rocm_flash_runs_on(o, dtype))
     return kept, backend
 

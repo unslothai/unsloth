@@ -35,6 +35,8 @@ Best-effort: an unavailable backend falls back to the diffusers default. torch/d
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import os
 import re
@@ -148,6 +150,23 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
 
+# Set while a card is only being asked about (a layer-split candidate): its answer must not touch the process-wide
+# torch.backends.cuda SDPA switches, which also govern the card the model already runs on.
+_SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_sdpa_probe_read_only", default = False
+)
+
+
+@contextlib.contextmanager
+def read_only_sdpa_probe():
+    """Capability checks inside report what a card runs without applying the ROCm fused-SDPA guard. The answer is
+    still cached, and ``guard_rocm_fused_sdpa`` applies it if that card is later loaded onto."""
+    token = _SDPA_PROBE_READ_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _SDPA_PROBE_READ_ONLY.reset(token)
+
 
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import time
@@ -159,8 +178,12 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # Whichever check completes the probe applies its answer; fp32 never runs fused kernels.
-        if _rocm_guard_allowed() and str(dtype) in ("torch.float16", "torch.bfloat16"):
+        # Whichever check completes the probe applies its answer, unless it only asked; fp32 never runs fused kernels.
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and _rocm_guard_allowed()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+        ):
             try:
                 _apply_rocm_guard(available)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
