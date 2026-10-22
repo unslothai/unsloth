@@ -16,6 +16,7 @@ trains as it would alone.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 from dataclasses import dataclass
@@ -276,7 +277,7 @@ def _seg_mm(
     BLOCK_N = _block(N, 16, 128)
     BLOCK_K = _block(K, 16, 64 if BLOCK_N > 32 else 128)
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), batch.num_adapters)
-    with torch.cuda.device(inp.device) if inp.device.type == "cuda" else _nullcontext():
+    with _device_guard(inp.device):
         _seg_mm_kernel[grid](
             inp,
             W,
@@ -315,7 +316,7 @@ def _seg_wgrad(
     BLOCK_I = _block(I, 16, 64)
     BLOCK_J = _block(J, 16, 64)
     grid = (triton.cdiv(I, BLOCK_I) * triton.cdiv(J, BLOCK_J), batch.num_adapters)
-    with torch.cuda.device(P.device) if P.device.type == "cuda" else _nullcontext():
+    with _device_guard(P.device):
         _seg_wgrad_kernel[grid](
             P,
             Q,
@@ -342,12 +343,13 @@ def _seg_wgrad(
     return out
 
 
-class _nullcontext:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
+def _device_guard(device: torch.device):
+    # Triton launches on the current device: make it the tensors' one.
+    if device.type == "cuda":
+        return torch.cuda.device(device)
+    if device.type == "xpu":
+        return torch.xpu.device(device)
+    return contextlib.nullcontext()
 
 
 def _shrink(
@@ -527,6 +529,7 @@ class MultiLoraLinear(nn.Module):
         self.register_buffer("scales", torch.tensor(scales, dtype = torch.float32, device = device))
         self.reset_parameters()
         self.batch: Optional[MultiLoraBatch] = None
+        self.seen: Optional[torch.Tensor] = None
 
     @torch.no_grad()
     def reset_parameters(self):
@@ -609,22 +612,34 @@ def set_multi_lora_batch(
                 adapter_ids.to(device), layer.num_adapters, seq_len
             )
         layer.batch = by_device[device]
+        # Adapters seen since the last optimizer step: gradient accumulation spans several batches.
+        seg = layer.batch.seg_start
+        present = (seg[1:] - seg[:-1]) > 0
+        layer.seen = present if layer.seen is None else layer.seen | present
     return next(iter(by_device.values()))
+
+
+def _distributed() -> bool:
+    return torch.distributed.is_available() and torch.distributed.is_initialized()
 
 
 @torch.no_grad()
 def drop_absent_adapter_grads_(model: nn.Module) -> list[int]:
-    """Clear the gradients of adapters with no tokens in the current batch; call before ``optimizer.step()``.
+    """Clear the gradients of adapters with no tokens since the last step; call before ``optimizer.step()``.
 
-    PyTorch optimizers skip a parameter whose ``grad`` is None, so an absent adapter keeps its weights,
-    moments and step count, exactly as if it had not trained this step. Returns the absent adapters.
+    Presence is the union over every batch routed since the previous call (gradient accumulation) and over
+    data-parallel ranks. PyTorch optimizers skip a parameter whose ``grad`` is None, so an absent adapter
+    keeps its weights, moments and step count, exactly as if it had not trained this step.
     """
     layers = _layers(model)
-    if not layers or layers[0][1].batch is None:
+    if not layers or layers[0][1].seen is None:
         return []
-    seg = layers[0][1].batch.seg_start
-    absent = [u for u, n in enumerate((seg[1:] - seg[:-1]).tolist()) if n == 0]
+    seen = layers[0][1].seen.to(torch.int32)
+    if _distributed():
+        torch.distributed.all_reduce(seen, op = torch.distributed.ReduceOp.MAX)
+    absent = [u for u, s in enumerate(seen.tolist()) if s == 0]
     for _, layer in layers:
+        layer.seen = None
         for u in absent:
             layer.lora_A[u].grad = None
             layer.lora_B[u].grad = None
@@ -641,7 +656,8 @@ def per_adapter_loss(
     """Causal LM loss averaged within each adapter, summed over adapters.
 
     Each adapter's parameters only see its own rows, so the gradient of the sum is, per adapter, the
-    gradient of its own mean loss: the same as training it alone. Returns (total, per-adapter losses).
+    gradient of its own mean loss: the same as training it alone. Returns (total, this rank's per-adapter
+    losses).
     """
     shift_logits = logits[:, :-1].float()
     shift_labels = labels[:, 1:]
@@ -661,7 +677,14 @@ def per_adapter_loss(
         0, ids[keep], valid.sum(1)[keep]
     )
     losses = sums / counts.clamp_min(1)
-    return losses.sum(), losses.detach()
+    if not _distributed():
+        return losses.sum(), losses.detach()
+    # DDP / FSDP average gradients over ranks: divide by every rank's tokens and undo that average, so each
+    # adapter's gradient is its mean over the global batch.
+    total = counts.detach().clone()
+    torch.distributed.all_reduce(total)
+    world = torch.distributed.get_world_size()
+    return (sums / total.clamp_min(1)).sum() * world, losses.detach()
 
 
 def _adapter_grads(model: nn.Module) -> list[list[torch.Tensor]]:

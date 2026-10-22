@@ -274,3 +274,38 @@ def test_triton_kernels_match_fp64_on_gpu(dtype, shape):
         rel = (a.double() - b).norm() / b.norm().clamp_min(1e-12)
         assert rel <= tol, (name, rel.item())
     assert got[2][U - 1].abs().max() == 0 and got[3][U - 1].abs().max() == 0
+
+
+def test_presence_spans_gradient_accumulation_and_resets_after_a_step():
+    model = _tiny_model(3)
+    for ids in (torch.tensor([0, 0]), torch.tensor([2, 2])):
+        ml.set_multi_lora_batch(model, ids)
+        model(torch.randn(2, 16, dtype = torch.float64)).sum().backward()
+    # Adapter 0 trained in the first microbatch: its accumulated gradient survives.
+    assert ml.drop_absent_adapter_grads_(model) == [1]
+    layer = ml._layers(model)[0][1]
+    assert layer.lora_B[0].grad is not None and layer.lora_B[1].grad is None
+    assert layer.seen is None
+
+
+def test_presence_and_loss_means_are_global_across_ranks(monkeypatch):
+    # A second rank that saw adapter 1 (10 valid tokens) and no adapter 0.
+    other = {"seen": torch.tensor([0, 1], dtype = torch.int32), "counts": torch.tensor([0.0, 10.0])}
+
+    def all_reduce(t, op = None):
+        key = "seen" if t.dtype == torch.int32 else "counts"
+        t.copy_(torch.maximum(t, other[key]) if key == "seen" else t + other[key])
+
+    monkeypatch.setattr(ml, "_distributed", lambda: True)
+    monkeypatch.setattr(torch.distributed, "all_reduce", all_reduce)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    model = _tiny_model(2)
+    ml.set_multi_lora_batch(model, torch.tensor([0]))
+    model(torch.randn(1, 16, dtype = torch.float64)).sum().backward()
+    assert ml.drop_absent_adapter_grads_(model) == []
+
+    logits = torch.randn(2, 6, 7)
+    labels = torch.randint(0, 7, (2, 6))
+    total, local = ml.per_adapter_loss(logits, labels, torch.tensor([0, 1]), 2)
+    # This rank: 5 tokens per adapter. Adapter 1 also has 10 on the other rank, so it weighs 5/15 here.
+    torch.testing.assert_close(total, (local[0] * 5 / 5 + local[1] * 5 / 15) * 2)
