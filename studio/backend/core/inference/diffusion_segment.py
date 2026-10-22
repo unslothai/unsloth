@@ -1410,12 +1410,10 @@ class MaskSegmenter:
         self._path = self._weights_key = self.device = self._dtype = None
         self.precision = self.precision_reason = self.weights_file = None
         del model
-        # No gc.collect (what _free_device_cache adds): the weight storages were emptied in place, and on a large heap
-        # a full collection can cost more than the park itself.
-        with suppress(Exception):
-            import torch
-            with torch.cuda.device(device):
-                torch.cuda.empty_cache()
+        # The emptied storage stays in this process's CUDA cache, so the image model's next forward takes it straight
+        # back, and the render's memory check counts it as free (diffusion_memory.reclaimable_snapshot_device_memory).
+        # Neither gc.collect nor empty_cache: on a busy card the flush alone took minutes, and the next forward would
+        # then cudaMalloc it all again. A GPU handover still releases everything (release() without park).
         self._arm_park_timer()
         logger.info(
             "images.segment: parked in host RAM from %s in %.2fs (copy %.2fs) (%s)",
@@ -1430,11 +1428,11 @@ class MaskSegmenter:
         self._cancel_park_timer()
         if self._parked is None:
             return False
+        device = self._parked.get("device")
         self._parked = None
         self._host = None
-        import gc
-
-        gc.collect()
+        # Park left the emptied weight storage in the CUDA cache; a full release hands it back to the driver too.
+        _free_device_cache(device)
         logger.info("images.segment: dropped the host RAM copy (%s)", reason)
         return True
 
