@@ -4,6 +4,11 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
+import type { CompareContext, CompareSdControls } from "./compare/compare-axes";
+import type { CompareRun } from "./compare/compare-run";
+// Statically imported: this page is already its own lazy chunk, and a nested import() of the panel split modules
+// the startup set shares out of their eager chunks (+3 startup chunks, measured with bundle:check).
+import ComparePanel from "./compare/compare-panel";
 import {
   type DragEvent,
   type ReactNode,
@@ -266,6 +271,7 @@ import {
   type ControlNetSpecInput,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
+  type DiffusionGenerateRequest,
   type DiffusionGenerateResponse,
   type DiffusionLoadProgress,
   type DiffusionLoadRequest,
@@ -803,6 +809,17 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
 
 // What the load toast shows while the backend saves the chat model's context ahead of this load.
 const SAVING_PROGRESS: DiffusionLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
+
+
+// The request one Generate run sends: a compare cell's own, else the form's.
+function compareRequest(
+  run: CompareRun | null,
+  i: number,
+  baseSeed: number,
+  body: DiffusionGenerateRequest,
+): DiffusionGenerateRequest {
+  return run ? run.request(i, body, baseSeed) : body;
+}
 
 // One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one
 // control.
@@ -1795,6 +1812,8 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
+  // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
+  const compareOnce = useRef<CompareRun | null>(null);
   // Set only around a confirmed Load anyway retry.
   const oversizedLoadOnce = useRef(false);
   const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
@@ -5207,6 +5226,9 @@ export function ImagesPage({
     // A large run count is legitimate, so no upper cap: floor at 1 and ignore non-numeric input.
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
+    // A compare grid sends one request per cell, in the order compare/ chose.
+    const compare = compareOnce.current;
+    const runTotal = compare ? compare.cellCount : runs;
 
     // An explicit seed near the 2**53-1 backend cap can overflow once the per-run and in-batch
     // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work.
@@ -5263,7 +5285,7 @@ export function ImagesPage({
     // arrive: settleLostGeneration proves a lost POST landed by finding a record outside it.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
-      for (let i = 0; i < runs; i++) {
+      for (let i = 0; i < runTotal; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
         // cancel only reaches the denoise in flight, so a count > 1 request would run on.
         if (
@@ -5286,7 +5308,7 @@ export function ImagesPage({
         const runBaseSeed = baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage({
+          res = await generateDiffusionImage(compareRequest(compare, i, baseSeed, {
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
             negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
@@ -5329,7 +5351,7 @@ export function ImagesPage({
                   }
                 : undefined,
             ...(external && { provider_id: external.providerId, model: external.modelId }),
-          });
+          }));
         } catch (err) {
           // The POST response was lost while the backend kept generating (the secure-mode tunnel caps
           // the response near 100s). Retrying would duplicate the work, so wait the run out.
@@ -5364,6 +5386,7 @@ export function ImagesPage({
           if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
         }
         res.images.forEach((image) => void ensureSrc(image));
+        compare?.onImages(i, res.images);
         setGenDone(i + 1);
       }
     } catch (err) {
@@ -5438,6 +5461,51 @@ export function ImagesPage({
       if (cancelAbort.current === abort) cancelAbort.current = null;
     }
   }, []);
+
+  // Compare grid: handleGenerate reads the run from compareOnce, so a grid shares Stop, progress and the gallery
+  // merge with Generate. Text-to-image on a loaded local model only.
+  const [compareRun, setCompareRun] = useState<CompareRun | null>(null);
+  const runCompare = useCallback(
+    async (run: CompareRun) => {
+      if (busy !== null) return;
+      compareOnce.current = run;
+      setCompareRun(run);
+      try {
+        await handleGenerate();
+      } finally {
+        compareOnce.current = null;
+        setCompareRun(null);
+      }
+    },
+    [busy, handleGenerate],
+  );
+  const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
+  const compareSdControls = (status as { sd_controls?: CompareSdControls | null } | null)?.sd_controls ?? null;
+  const compareContext = useMemo<CompareContext>(
+    () => ({
+      prompt,
+      negativePrompt,
+      negativeCapable,
+      negativeMinGuidance,
+      guidanceFixed,
+      samplers: samplerOptions,
+      samplerChoice,
+      shift: shiftControl,
+      loraCapable,
+      loras: loras
+        .filter((l) => l.id.trim())
+        .map((l) => ({
+          id: l.id,
+          weight: l.weight,
+          label: availableLoras.find((a) => a.id === l.id)?.display_name ?? l.id.split(/[\\/]/).pop() ?? l.id,
+        })),
+      sdControls: compareSdControls,
+      controlnetEngaged: Boolean(controlnetCapable && controlnetId && controlImage),
+    }),
+    // samplerChoice is rebuilt every render; its two fields are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetCapable, controlnetId, controlImage],
+  );
 
   const handleGenerateWithRecall = useCallback(async () => {
     if (busy !== null || !imagePresets.hydrated) return;
@@ -6804,6 +6872,20 @@ export function ImagesPage({
                   </div>
                 </Field>
 
+                {compareAvailable && (
+                  <ComparePanel
+                    context={compareContext}
+                    busy={busy !== null || compareRun !== null}
+                    seedFieldEmpty={!seed.trim()}
+                    modelName={status?.repo_id ?? null}
+                    width={width}
+                    height={height}
+                    steps={steps}
+                    guidance={effectiveGuidance}
+                    onRun={runCompare}
+                  />
+                )}
+
                 <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
                   {advancedControls}
                 </AdvancedDisclosure>
@@ -7072,9 +7154,11 @@ export function ImagesPage({
                     // Drop the chat min-height: this floating card has no layout to stabilise.
                     className="min-h-0"
                     title={
-                      genDone != null && count > 1
-                        ? `Run ${genDone + 1}/${count}`
-                        : null
+                      compareRun && genDone != null
+                        ? compareRun.title(genDone)
+                        : genDone != null && count > 1
+                          ? `Run ${genDone + 1}/${count}`
+                          : null
                     }
                     message="Starting…"
                     progressPercent={genStep ? genStep.fraction * 100 : null}
