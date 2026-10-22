@@ -413,6 +413,40 @@ def test_a_reset_master_gets_a_new_relay_manager(monkeypatch):
     assert second.identity.fingerprint == "2" * 64
 
 
+def test_concurrent_first_callers_share_one_relay_manager(monkeypatch):
+    # A status poll (event loop) and a load (worker thread) can both be first: one manager, ever.
+    import threading
+    import time as _time
+
+    import studio.cluster_link.relay as relay_mod
+
+    made = []
+
+    class Manager:
+        def __init__(self, identity, authorize):
+            self.identity = identity
+            _time.sleep(0.05)  # widen the check-then-create window
+            made.append(self)
+
+        def stop(self):
+            pass
+
+    master = SimpleNamespace(fingerprint = "1" * 64)
+    monkeypatch.setattr(relay_mod, "RelayManager", Manager)
+    monkeypatch.setattr(
+        cs,
+        "_link_identity",
+        lambda: SimpleNamespace(master_identity = lambda create = False: master, Registry = FakeRegistry),
+    )
+    got = []
+    threads = [threading.Thread(target = lambda: got.append(REAL_RELAYS())) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(made) == 1 and all(g is made[0] for g in got)
+
+
 def test_a_status_read_does_not_check_workers_over_the_network(monkeypatch, relays):
     # status() runs on Studio's event loop: listing paired workers must not wait on any of them.
     asked = []

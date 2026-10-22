@@ -968,6 +968,8 @@ def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
 # Paired workers: reached via a loopback relay carrying RPC over mutual TLS. Process-wide.
 _RELAYS: Any = None
 _LISTENER: Any = None
+# Status polls (event loop) and loads (worker threads) both reach these: one creator each, ever.
+_LINKS_LOCK = threading.RLock()
 _LINK_ENDPOINTS: Dict[str, str] = {}  # relay or tls:// endpoint -> node_id
 # node_id -> the native port its agent granted on the last planning pass (status reads reuse it).
 _NATIVE: Dict[str, int] = {}
@@ -1026,6 +1028,11 @@ def _paired_workers() -> List[Any]:
 
 
 def _relays() -> Optional[Any]:
+    with _LINKS_LOCK:
+        return _relays_locked()
+
+
+def _relays_locked() -> Optional[Any]:
     global _RELAYS
     identity = _link_identity()
     master = identity.master_identity(create = False) if identity is not None else None
@@ -1068,11 +1075,13 @@ _UNVERIFIED: set = set()
 def _sightings() -> Dict[str, Any]:
     global _LISTENER, _LISTENER_STARTED
     try:
-        if _LISTENER is None:
-            from studio.cluster_link.discovery import Listener
-            _LISTENER = Listener(accept = _paired_announcement).start()
-            _LISTENER_STARTED = time.monotonic()
-        return _LISTENER.latest()
+        with _LINKS_LOCK:
+            if _LISTENER is None:
+                from studio.cluster_link.discovery import Listener
+                _LISTENER = Listener(accept = _paired_announcement).start()
+                _LISTENER_STARTED = time.monotonic()
+            listener = _LISTENER
+        return listener.latest()
     except Exception:
         return {}
 
@@ -1380,13 +1389,14 @@ def link_status(node_id: str, timeout: float) -> Tuple[Optional[Dict[str, Any]],
 
 def _stop_links() -> None:
     global _RELAYS, _LISTENER
-    for thing in (_RELAYS, _LISTENER):
+    with _LINKS_LOCK:
+        things, _RELAYS, _LISTENER = (_RELAYS, _LISTENER), None, None
+    for thing in things:
         try:
             if thing is not None:
                 thing.stop()
         except Exception:
             pass
-    _RELAYS = _LISTENER = None
     _UNVERIFIED.clear()
     _LINK_ENDPOINTS.clear()
     _NATIVE.clear()
