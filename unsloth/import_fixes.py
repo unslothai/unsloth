@@ -9544,13 +9544,8 @@ def patch_peft_float8_adapter_upcast():
 
 
 def patch_peft_shared_active_adapter():
-    """Keep one active adapter as the shared name string LoRA layers are created with.
-
-    peft's `BaseTunerLayer.set_adapter` gives every layer its own `[name]` list. TRL's DPO switches to
-    its "ref" adapter and back between the policy forward and its backward, and compiled layers guard
-    on those objects being shared, so a non-reentrant checkpoint recompute retraces and saves other
-    tensors (`CheckpointError`, Gemma 4 E2B / E4B DPO).
-    """
+    """peft's set_adapter gives each layer its own `[name]` list; compiled layers guard on it being shared, so TRL
+    DPO's ref / default switch retraced inside the checkpoint recompute (Gemma 4 E2B / E4B `CheckpointError`)."""
     try:
         import peft.tuners.tuners_utils as tu
     except Exception:

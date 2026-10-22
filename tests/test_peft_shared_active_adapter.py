@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""TRL's DPO switches to its "ref" adapter and back between a forward and its backward; that round
-trip must not invalidate compiled LoRA graphs (Gemma 4 E2B DPO CheckpointError)."""
+"""TRL DPO's ref / default adapter round trip must not invalidate compiled LoRA graphs (Gemma 4 E2B DPO)."""
 
 import ast
 import functools
