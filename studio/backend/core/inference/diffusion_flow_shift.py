@@ -19,6 +19,10 @@ def comfy_sigmas_enabled() -> bool:
     return os.environ.get(COMFY_SIGMAS_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+# |mu| bound keeping e^mu (and 1 / e^mu) a normal float32, so the sigmas stay finite.
+FLUX_MU_LIMIT = 80.0
+
+
 def flux_mu_shift(mu: float) -> float:
     """Static shift equal to ComfyUI's ModelSamplingFlux at a fixed ``mu``:
     e^mu / (e^mu + 1/t - 1) == s*t / (1 + (s - 1)*t) for s = e^mu, at every resolution."""
@@ -215,7 +219,14 @@ def requested_flow_shift(
             raise ValueError(f"Base and max shift must be between 0 and {SHIFT_MAX:g}.")
     if not width or not height:
         raise ValueError("Base / max shift needs the output width and height.")
-    return flux_mu_shift(comfy_model_sampling_flux_mu(hi, lo, int(width), int(height)))
+    mu = comfy_model_sampling_flux_mu(hi, lo, int(width), int(height))
+    # The scheduler builds its sigmas in float32: e^mu past its range turns every sigma into NaN.
+    if not abs(mu) <= FLUX_MU_LIMIT:
+        raise ValueError(
+            f"Base {lo:g} / max shift {hi:g} at {int(width)}x{int(height)} gives no usable noise "
+            "schedule; bring them closer to the defaults (0.5 / 1.15)."
+        )
+    return flux_mu_shift(mu)
 
 
 def scheduler_with_flow_shift(scheduler: Any, shift: float) -> Any:

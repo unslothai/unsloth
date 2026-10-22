@@ -142,11 +142,30 @@ def test_flux_node_resolves_mu_at_the_output_size():
         (SHIFT_NODE_SD3, {"shift": float("nan")}, "above 0"),
         (SHIFT_NODE_FLUX, {"shift": 3.0}, "base / max"),
         (SHIFT_NODE_FLUX, {"max_shift": -1.0}, "between 0"),
+        (SHIFT_NODE_FLUX, {"base_shift": 89.0, "max_shift": 89.0}, "no usable"),
+        (SHIFT_NODE_FLUX, {"base_shift": 0.0, "max_shift": 100.0}, "no usable"),
     ],
 )
 def test_invalid_requests_are_refused(node, kwargs, needle):
     with pytest.raises(ValueError, match = needle):
         requested_flow_shift(node, width = 1024, height = 1024, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "hi, lo, side", [(80.0, 80.0, 1024), (100.0, 0.0, 4096), (100.0, 0.0, 512)]
+)
+def test_extreme_flux_shift_never_builds_nan_sigmas(hi, lo, side):
+    resident = _flow_euler(shift = 3.0, use_dynamic_shifting = True, base_shift = 0.5, max_shift = 1.15)
+    try:
+        shift = requested_flow_shift(
+            SHIFT_NODE_FLUX, base_shift = lo, max_shift = hi, width = side, height = side
+        )
+    except ValueError as exc:
+        assert "no usable" in str(exc)
+        return
+    built = scheduler_with_flow_shift(resident, shift)
+    built.set_timesteps(5, device = "cpu")
+    assert all(math.isfinite(x) for x in built.sigmas.tolist())
 
 
 def _flow_euler(**config):
