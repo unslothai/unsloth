@@ -128,7 +128,6 @@ export function remoteAccessSelfStopPoll(
   return { expectingDisconnect: true, apply: next.state !== "stopping" };
 }
 
-// The server's error codes name internals; say what the user can do about each.
 export function remoteAccessErrorMessage(
   error: string | null | undefined,
 ): string | null {

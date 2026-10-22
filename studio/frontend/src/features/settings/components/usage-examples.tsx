@@ -650,8 +650,7 @@ export function UsageExamples({
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  // A browser already reached the server at origin; server_url is its own bind, which an SSH
-  // forward or reverse proxy does not expose.
+  // server_url is the bind address, which an SSH forward or reverse proxy does not expose.
   const base =
     useTunnel && cloudflareUrl
       ? cloudflareUrl

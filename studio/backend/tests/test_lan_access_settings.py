@@ -726,13 +726,11 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 
 
 def test_a_wildcard_launch_in_a_container_advertises_no_bridge_address(monkeypatch):
-    # docker/studio_run.sh binds 0.0.0.0 inside the container; 172.17.0.x reaches nothing outside it.
     monkeypatch.setattr(file_manager, "_in_container", lambda: True)
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.17.0.2"])
     state = _app(lan_access_launch_managed = True, lan_access_wildcard_bind = True)
     assert lan_settings.lan_access_status(state)["urls"] == []
 
-    # --network host sees the host's own interfaces, which peers do reach.
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     assert lan_settings.lan_access_status(state)["urls"] == ["http://192.168.1.24:8888"]
 

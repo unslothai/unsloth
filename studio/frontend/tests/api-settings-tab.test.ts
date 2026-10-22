@@ -14,7 +14,6 @@ test("the API tab shows Remote & LAN as a status line, not a second set of polli
   assert.doesNotMatch(TAB, /<RemoteAccessSection|<LanAccessSection/);
   assert.match(TAB, /<RemoteLanSummary \/>/);
   assert.doesNotMatch(SUMMARY, /setInterval/);
-  // It re-reads only while a Start or Stop is still settling, never as a steady poll.
   assert.match(
     SUMMARY,
     /next\.state === "starting" \|\| next\.state === "stopping"\) \{\s*timer = window\.setTimeout/,

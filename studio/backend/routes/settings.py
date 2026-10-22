@@ -4070,7 +4070,6 @@ class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
-    # A managed account turns keyless admission off install-wide whatever the saved scope says.
     suspended_by_accounts: bool = False
 
 

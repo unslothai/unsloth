@@ -412,8 +412,7 @@ def _launch_urls(app_state) -> list[str]:
                 if address not in addresses:
                     addresses.append(address)
         if _in_container():
-            # A bridged container's own IP (Docker 172.16/12, Podman 10.88/16) reaches nothing outside it;
-            # host networking shows the host's real addresses, which stay.
+            # A bridged container's own IP reaches nothing outside it; host networking's addresses stay.
             addresses = [a for a in addresses if not _container_network_address(a)]
         return _listener_urls(
             addresses,

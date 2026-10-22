@@ -95,7 +95,6 @@ _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
-# A provider base URL may carry user:password; httpx errors quote the full URL.
 _URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"]+@")
 _EXCLUDED_PATHS = {
     "/api/train/status",

@@ -19,7 +19,6 @@ const KEYLESS = readSrc(
 );
 
 test("a failed create or revoke keeps the token list and says why", () => {
-  // A reserved name used to replace the whole list with a bare "Couldn't create".
   assert.match(TAB, /onError=\{setActionError\}/);
   assert.match(TAB, /\{actionError \? \([\s\S]*?\{error \? \(/);
   assert.match(
@@ -39,7 +38,6 @@ test("token rows say Expired, count whole days and show minutes", () => {
 });
 
 test("browser examples use the address the browser reached", () => {
-  // server_url is the bind address, which an SSH forward or proxy does not expose.
   for (const source of [EXAMPLES, AUDIO]) {
     assert.match(
       source,

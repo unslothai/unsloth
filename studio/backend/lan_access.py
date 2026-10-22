@@ -230,8 +230,7 @@ def _already_served(address: str, port: int) -> bool:
 def _bind_listener(address: str, port: int) -> socket.socket:
     """A listening socket on exactly ``address:port``."""
     if sys.platform == "darwin" and _already_served(address, port):
-        # BSD lets SO_REUSEADDR bind an exact address under another app's 0.0.0.0 listener and steal
-        # its LAN traffic (Jupyter on 8888); refuse so the port fallback moves on instead.
+        # BSD SO_REUSEADDR binds under another app's 0.0.0.0 listener and steals its LAN traffic.
         raise OSError(errno.EADDRINUSE, f"{address}:{port} is already served")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
