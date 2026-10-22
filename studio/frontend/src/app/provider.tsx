@@ -722,7 +722,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // Through a ref, not a dependency: startRepair is rebuilt on every render.
   const startRepairRef = useRef(startRepair);
   startRepairRef.current = startRepair;
-  // On a Chat only install that rerun is the multi-GB upgrade, so the progress screen says so.
   const [upgradingToFull, setUpgradingToFull] = useState(false);
   const repairController = useMemo(
     () => ({
