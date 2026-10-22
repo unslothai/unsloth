@@ -2038,7 +2038,7 @@ class TestLegacyBuildLatchIsBinaryWide:
         silently collapsing a multi-GPU request onto one card -- the same reason
         the adjacent split-axis skip raises it."""
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # The downgrade gate, not the auto split policy's up-front check of the same latch.
+        # The downgrade gate, not the auto policy's earlier check.
         gate = load.find("tensor_parallelandself._tensor_quant_kv_unsupported_binary(")
         assert gate != -1
         # The bump sits inside this skip's own body, before the next gate.

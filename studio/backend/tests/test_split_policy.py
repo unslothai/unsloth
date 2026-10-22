@@ -23,13 +23,11 @@ if _TESTS_DIR not in sys.path:
 
 import pytest  # noqa: E402
 
-# First: without structlog it stubs structlog and keeps the real loggers package, which the
-# bare loggers stub the MTP helpers install would shadow (routes/inference.py needs the package).
+# First: the real loggers package must not be shadowed by the bare stub (routes/inference.py needs it).
 from test_tp_vision_regression import _load_inference_routes_module  # noqa: E402
 from test_llama_cpp_mtp_detection import _MTP_MODEL, _flags_dict, _resolver_backend  # noqa: E402
 
-# A fake llama-server pid above the kernel's pid_max (4194304 by default, 2**22 at most on 64-bit),
-# so any real os.kill / killpg a code path sends to it fails with ESRCH instead of reaching a live process.
+# Above pid_max, so a stray os.kill / killpg fails with ESRCH.
 _FAKE_SERVER_PID = 2**31 - 1
 from test_llama_cpp_placement import _REAL_POPEN, _backend, _launch  # noqa: E402
 
@@ -63,9 +61,7 @@ def _decide(**kw):
     return sp.choose_split_mode(**args)
 
 
-# --------------------------------------------------------------------------
 # 1. Decision table
-# --------------------------------------------------------------------------
 
 
 def test_dense_on_two_matching_gpus_is_tensor():
@@ -238,9 +234,7 @@ def test_binary_capability_probe(caps, ok):
     assert sp.binary_supports_tensor_split(caps) is ok
 
 
-# --------------------------------------------------------------------------
 # 2. MTP depth table
-# --------------------------------------------------------------------------
 
 
 def test_depth_table():
@@ -299,9 +293,7 @@ def test_user_depth_wins_over_the_table(monkeypatch):
     )
 
 
-# --------------------------------------------------------------------------
-# 3. Wiring through load_model (faked GPUs, fake llama-server)
-# --------------------------------------------------------------------------
+# 3. Wiring through load_model
 
 _TP_HELP = {
     "--split-mode": "how to split the model across multiple GPUs, one of: none, layer, row, tensor"
@@ -321,7 +313,6 @@ def _wired_backend(
 
     import core.inference.llama_cpp as llama_cpp_module
 
-    # Earlier tests' backends stay alive (atexit holds them) and active: each test sees only its own.
     monkeypatch.setattr(llama_cpp_module, "_owned_backends", weakref.WeakSet())
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
     backend._can_estimate_kv = lambda: True
@@ -330,14 +321,12 @@ def _wired_backend(
     backend._get_gguf_size_bytes = lambda _path: int(model_gib * GIB)
     backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
     backend._gpu_names_by_physical_id = lambda: dict(names)
-    # The measured platform (Linux + NVIDIA CUDA) and no utilisation reading, unless a cell says otherwise.
     backend._auto_tensor_platform_reason = lambda: None
     backend._gpu_utilization_by_physical_id = lambda: {}
     real_probe = LlamaCppBackend.probe_server_capabilities
 
     def probe(binary = None):
-        # Always the fake binary: a no-argument probe (the duplicate-load matcher) must
-        # not read whatever llama-server this host has installed.
+        # A no-argument probe must not read this host's real llama-server.
         caps = dict(real_probe(binary or "/fake/llama-server"))
         caps["flags"] = dict(caps.get("flags") or {}, **(_TP_HELP if tensor_help else {}))
         return caps
@@ -346,10 +335,7 @@ def _wired_backend(
     monkeypatch.delenv("LLAMA_ARG_SPLIT_MODE", raising = False)
     monkeypatch.delenv("LLAMA_ARG_TENSOR_SPLIT", raising = False)
     monkeypatch.delenv(sp.AUTO_TENSOR_SPLIT_ENV, raising = False)
-    # The spawned llama-server is a stand-in whose pid names no child of ours. Stopping it must
-    # never walk this host's real process table: with pid 1 that walk was every process the
-    # user owned, and the unload SIGTERMed all of them. The group kill and the survivor
-    # tree kill are stubbed for the same reason.
+    # Stand-in pid: stopping it must never walk the real process table (pid 1 once SIGTERMed everything).
     backend._collect_descendants = lambda _pid: ([], True)
     backend._leading_process_group = lambda _pid: None
     backend._tree_kill_surviving_process = lambda _pid: True
@@ -469,7 +455,6 @@ def test_wired_moe_with_mtp_head_resident_is_tensor(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
     )
-    # The head must really run: a binary with draft-mtp, so the launch emits it.
     _with_mtp_caps(backend)
     monkeypatch.setattr(LlamaCppBackend, "n_moe_layers", property(lambda self: 40))
     cmd = _launch(backend, gguf, model_identifier = _MTP_MODEL, gpu_memory_mode = "auto", n_ctx = 4096)[
@@ -480,9 +465,7 @@ def test_wired_moe_with_mtp_head_resident_is_tensor(tmp_path, monkeypatch):
     assert "MoE" in backend._auto_split_decision.reason
 
 
-# --------------------------------------------------------------------------
-# 4. Risk gates: idle measurement, the 2-GPU cap, capability probe, platform, P2P
-# --------------------------------------------------------------------------
+# 4. Risk gates
 
 
 def test_busy_by_utilisation_blocks_the_pair():
@@ -598,7 +581,6 @@ def test_wired_other_studio_model_on_gpu1_blocks_the_pair(tmp_path, monkeypatch)
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
-    # A small model another Studio backend serves on GPU 1: below the free-memory bar on its own.
     backend._other_planned_vram_mib = lambda: {1: 100}
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     assert _split_flag(cmd) != "tensor"
@@ -650,13 +632,10 @@ def test_wired_p2p_veto_still_gates_ggml_cuda_p2p_on_an_auto_tensor_pair(
     got = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
     assert _split_flag(got["cmd"]) == "tensor"
     assert got["env"].get("GGML_CUDA_P2P") == p2p
-    # The launch gate ran on the auto pair itself.
     assert [0, 1] in seen
 
 
-# --------------------------------------------------------------------------
-# 5. Auto only engages or leaves the load as it was: review regressions
-# --------------------------------------------------------------------------
+# 5. Auto only engages or leaves the load as it was
 
 
 def _with_mtp_caps(backend):
@@ -729,7 +708,6 @@ def _placement(launched):
     ["_tensor_quant_kv_unsupported_binary", "_tensor_split_aborts"],
 )
 def test_wired_known_tensor_refusal_leaves_the_load_as_it_was(tmp_path, monkeypatch, latch):
-    # A model that fits one T4: a recorded tensor refusal / abort must not force it onto two GPUs.
     def setup(backend):
         setattr(backend, latch, lambda *a, **k: True)
 
@@ -749,7 +727,6 @@ def test_wired_known_tensor_refusal_leaves_the_load_as_it_was(tmp_path, monkeypa
 
 
 def test_wired_latch_tripping_after_the_decision_restores_the_pool(tmp_path, monkeypatch):
-    # Defence in depth: a downgrade that fires after auto chose tensor puts the pool back.
     def setup(backend):
         calls = []
 
@@ -806,7 +783,6 @@ def test_wired_tensor_buffer_reserve_too_big_leaves_the_load_as_it_was(tmp_path,
 
 @pytest.mark.parametrize("model_gib", [26.0, 27.0, 28.4])
 def test_wired_four_gpus_never_lose_the_cards_a_layer_split_used(tmp_path, monkeypatch, model_gib):
-    # Pricing the pair below the tensor budget must not leave a 3-GPU layer fit on 2 GPUs + CPU.
     mem = [(i, 15_360, 15_360) for i in range(4)]
     off, on, _backend_on = _launch_off_vs_on(
         tmp_path,
@@ -835,7 +811,6 @@ def test_wired_four_gpus_never_lose_the_cards_a_layer_split_used(tmp_path, monke
         ["-ot", "blk\\.1\\.=CPU"],
         ["--cpu-moe"],
         ["--n-cpu-moe", "4"],
-        # Companion devices and the MoE cache.
         ["--mmproj-device", "CUDA1"],
         ["--device-draft", "CUDA1"],
         ["--moe-cache-mib", "2048"],
@@ -881,7 +856,6 @@ def test_wired_extras_dflash_keeps_layer(tmp_path, monkeypatch):
     )
     drafter = tmp_path / "dflash.gguf"
     drafter.write_bytes(b"GGUF")
-    # A small drafter, so the pooled tensor budget is not what keeps the layer split.
     backend._get_gguf_size_bytes = lambda path: GIB // 4 if "dflash" in str(path) else 20 * GIB
     cmd = _launch(
         backend,
@@ -924,7 +898,6 @@ def test_wired_moe_with_an_mtp_head_that_does_not_run_stays_layer(
 
 
 def test_wired_unloaded_nextn_weights_are_not_priced(tmp_path, monkeypatch):
-    # 16 GiB on disk, 8 GiB of it NextN blocks llama.cpp skips without draft-mtp: fits one T4.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 16, names = TWO_T4_NAMES
     )
@@ -935,7 +908,6 @@ def test_wired_unloaded_nextn_weights_are_not_priced(tmp_path, monkeypatch):
 
 
 def test_wired_p2p_diagnostic_reads_the_pair_that_runs(tmp_path, monkeypatch):
-    # GPUs 2 and 3 have the most free memory: the diagnostic asks about them, not all four.
     mem = [(0, 13_000, 15_360), (1, 13_000, 15_360), (2, 15_360, 15_360), (3, 15_360, 15_360)]
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = mem, model_gib = 20, names = {i: T4 for i in range(4)}
@@ -997,7 +969,6 @@ def test_wired_identical_repeat_request_reuses_an_auto_tensor_server(tmp_path, m
     assert backend.tensor_parallel
     intent = backend._last_load_intent
     assert backend._runtime_matches_intent(intent, intent.extra_args)
-    # A request that now asks for something else is still a different load.
     assert not backend._runtime_matches_intent(
         dataclasses.replace(intent, extra_args = ["--split-mode", "layer"]), ["--split-mode", "layer"]
     )
@@ -1065,7 +1036,6 @@ def test_wired_auto_tensor_start_failure_retries_with_layer(tmp_path, monkeypatc
     assert [_split_flag(c["cmd"]) for c in cmds][0] == "tensor"
     assert _split_flag(cmds[-1]["cmd"]) != "tensor"
     assert not backend.tensor_parallel
-    # The retry is the load without the policy, and no attempt state outlives the call.
     assert backend._auto_split_attempt is None
     assert not backend._auto_tensor_live
 
@@ -1123,9 +1093,7 @@ def test_gpu_names_use_nvidia_smi_indices_when_the_planner_does(monkeypatch):
     }
 
 
-# --------------------------------------------------------------------------
-# 6. Every fallback / retry / recovery runs with the policy off (round 2)
-# --------------------------------------------------------------------------
+# 6. Every fallback / retry / recovery runs with the policy off
 
 
 def _launch_scripted(backend, gguf, behave, **load_kwargs):
@@ -1204,8 +1172,7 @@ def _assert_no_split_state(backend):
 
 
 def test_wired_auto_tensor_post_health_failure_is_not_retried(tmp_path, monkeypatch):
-    # A healthy tensor server whose load then fails (audio codec setup) is not a tensor
-    # failure: relaunching on layer would kill the healthy server for nothing.
+    # A healthy tensor server whose load then fails is not a tensor failure.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
     )
@@ -1249,13 +1216,11 @@ def test_wired_abandoned_auto_tensor_warns_once(tmp_path, monkeypatch):
     assert result is True
     assert [_split_flag(c) for c in spawns][0] == "tensor"
     assert len([w for w in warnings if "loading without it" in w]) == 1
-    # The rungs of the abandoned attempt never run, so none is announced.
     assert not [w for w in warnings if "--fit on" in w]
 
 
 def test_wired_scheduler_abort_on_auto_tensor_does_not_block_the_layer_load(tmp_path, monkeypatch):
-    # The reviewers' reproduction: the graph-scheduler abort memo keyed the unchanged
-    # request, so the layer reload was refused before it spawned.
+    # The scheduler-abort memo keyed the unchanged request and refused the layer reload.
     monkeypatch.setattr(LlamaCppBackend, "_sched_reserve_abort_keys", set())
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
@@ -1279,8 +1244,6 @@ def test_wired_scheduler_abort_on_auto_tensor_does_not_block_the_layer_load(tmp_
 def test_wired_auto_tensor_kernel_crash_reloads_without_the_policy(tmp_path, monkeypatch):
     import core.inference.llama_cpp as llama_cpp_module
 
-    # The arch-crash rung would narrow the auto pair to one GPU and keep stale auto state.
-    # Dirs named as _norm_cmd masks them, so the two argvs compare.
     (tmp_path / "auto_None").mkdir()
     (tmp_path / "auto_0").mkdir()
     backend, gguf = _wired_backend(
@@ -1292,7 +1255,6 @@ def test_wired_auto_tensor_kernel_crash_reloads_without_the_policy(tmp_path, mon
     monkeypatch.setenv(sp.AUTO_TENSOR_SPLIT_ENV, "0")
     off = _launch(off_backend, off_gguf, gpu_memory_mode = "auto", n_ctx = 4096)
     monkeypatch.delenv(sp.AUTO_TENSOR_SPLIT_ENV)
-    # Only the reference argv: its still-live stand-in server is not a resident here.
     llama_cpp_module._owned_backends.discard(off_backend)
     result, spawns = _launch_scripted(
         backend,
@@ -1310,8 +1272,6 @@ def test_wired_auto_tensor_kernel_crash_reloads_without_the_policy(tmp_path, mon
 
 
 def test_wired_auto_tensor_mtp_decode_failure_keeps_mtp_on_layer(tmp_path, monkeypatch):
-    # The tensor-only first-decode probe fails: main's recovery would drop MTP and keep a MoE
-    # model on tensor without it, which the policy itself never chooses.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
     )
@@ -1421,8 +1381,7 @@ def _kv_per_token(backend, kib):
     [{"n_ctx": 65536}, {"n_ctx": 0, "extra_args": ["--ctx-size", "65536"]}],
 )
 def test_wired_pair_must_hold_the_requested_context(tmp_path, monkeypatch, load_kwargs):
-    # The reviewers' reproduction: 4x 15 GiB, 20 GiB weights, 256 KiB/token KV. The weights fit
-    # a pair, the requested 65536 context needs a third card, which main's layer split adds.
+    # Weights fit a pair; the requested 65536 context needs a third card, which layer split adds.
     mem = [(i, 15_360, 15_360) for i in range(4)]
     off, on, backend = _launch_off_vs_on(
         tmp_path,
@@ -1464,8 +1423,6 @@ def test_wired_explicit_tensor_toggle_after_an_auto_load_reloads(tmp_path, monke
 
 
 def test_live_auto_state_follows_the_tensor_state_every_reset_clears(tmp_path, monkeypatch):
-    # CPU fallback, the arch gates, Phase 3 and unload all clear _tensor_parallel; none needs
-    # to know about the auto policy.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
@@ -1495,9 +1452,7 @@ def test_gpu_names_fall_back_to_the_nvml_inventory(monkeypatch):
     assert LlamaCppBackend._gpu_names_by_physical_id() == {0: "Tesla T4", 1: "Tesla T4"}
 
 
-# --------------------------------------------------------------------------
-# 7. Admission prices what the tensor planner charges (round 3)
-# --------------------------------------------------------------------------
+# 7. Admission prices what the tensor planner charges
 
 
 def _native_ctx(backend, n):
@@ -1597,7 +1552,6 @@ def test_wired_unsized_drafter_kv_is_priced_like_the_planner(tmp_path, monkeypat
 
 
 def test_wired_measured_mtp_reserve_is_not_overcharged(tmp_path, monkeypatch):
-    # A byte-accurate 256 MiB reserve, which a forced tensor load fits.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 26.2, names = TWO_T4_NAMES
     )
@@ -1614,7 +1568,6 @@ def test_wired_measured_mtp_reserve_is_not_overcharged(tmp_path, monkeypatch):
 
 
 def test_wired_cpu_drafter_is_not_priced_on_the_gpu(tmp_path, monkeypatch):
-    # -ngld 0 puts a 4 GiB sidecar drafter in host memory; a forced tensor load fits.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 25.5, names = TWO_T4_NAMES
     )
@@ -1664,8 +1617,6 @@ def test_wired_auto_context_keeps_the_auto_drafter_drop(tmp_path, monkeypatch):
 
 
 def test_wired_auto_context_mtp_short_of_native_runs_mains_load(tmp_path, monkeypatch):
-    # The round-4 case: the pair fits 5123 with the drafter, 5267 without it, while main's
-    # layer load keeps the drafter at 8192. Falling back is main's load, not a loss.
     def setup(b):
         _kv_per_token(b, 2048)
         _mtp_reserve(b, flat = 64 * 1024**2)
@@ -1694,8 +1645,7 @@ def test_wired_advisor_load_avoids_a_serving_models_gpu(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
-    # An unregistered helper backend: the serving model on GPU 1 is not netted from its
-    # placement, but the pair must still avoid that card.
+    # Unregistered helper: the pair must still avoid the serving model's card.
     serving = types.SimpleNamespace(
         is_active = True, _planned_vram_mib = {1: 1024}, _child_gpu_physical_ids = (1,)
     )
@@ -1711,7 +1661,6 @@ def test_wired_advisor_load_avoids_a_resident_media_models_gpu(tmp_path, monkeyp
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
-    # An unregistered helper beside a resident image model reserving GPU 1.
     monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [])
     monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {1: 2048})
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
@@ -1799,9 +1748,7 @@ def test_diffusion_start_drops_the_chat_split_decision(monkeypatch, tmp_path):
     _assert_no_split_state(backend)
 
 
-# --------------------------------------------------------------------------
-# 8. A load that ends with no healthy server leaves no split state (round 6)
-# --------------------------------------------------------------------------
+# 8. A load with no healthy server leaves no split state
 
 
 def _frames(exc):
@@ -1817,7 +1764,6 @@ def _always_crashes(rc = 1):
 
 
 def test_failed_explicit_tensor_load_keeps_no_split_state(tmp_path, monkeypatch):
-    # Unengaged first attempt (the user asked for tensor) that raises or returns False.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
     )
@@ -1849,7 +1795,6 @@ def test_failed_layer_retry_after_an_abandoned_auto_tensor_keeps_no_split_state(
 
 
 def test_terminal_load_failure_keeps_no_split_state(tmp_path, monkeypatch):
-    # A MoE model without a head: the policy decides layer, and every start crashes.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
     )
@@ -1880,9 +1825,7 @@ def test_failed_cpu_replay_keeps_no_split_state(tmp_path, monkeypatch):
     _assert_no_split_state(backend)
 
 
-# --------------------------------------------------------------------------
-# 9. Round 8: unload before the retry, Manual residents, flash attention off
-# --------------------------------------------------------------------------
+# 9. Unload before the retry, Manual residents, flash attention off
 
 
 def test_unload_before_the_layer_retry_cancels_it(tmp_path, monkeypatch):
@@ -1894,7 +1837,6 @@ def test_unload_before_the_layer_retry_cancels_it(tmp_path, monkeypatch):
     real = llama_cpp_module.logger.warning
 
     def warn(msg, *a, **k):
-        # Between the retry's cancellation check and the retry itself.
         if "Auto tensor split abandoned" in str(msg):
             backend.unload_model()
         return real(msg, *a, **k)
@@ -1916,7 +1858,6 @@ def test_wired_auto_pair_avoids_a_manual_residents_gpu(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
-    # A Manual (-ngl N) resident publishes no plan; its child still runs on GPU 1.
     resident = types.SimpleNamespace(
         is_active = True, _planned_vram_mib = {}, _child_gpu_physical_ids = (1,)
     )
@@ -1948,7 +1889,6 @@ def test_wired_auto_pair_avoids_a_residents_companion_gpu(tmp_path, monkeypatch)
         model_gib = 6,
         names = {i: T4 for i in range(4)},
     )
-    # Planned on GPU 2, with its drafter widened onto GPU 0.
     resident = types.SimpleNamespace(
         is_active = True, _planned_vram_mib = {2: 1024}, _child_gpu_physical_ids = (2, 0)
     )
@@ -1977,10 +1917,8 @@ def test_wired_resident_with_unknown_gpus_keeps_layer(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "sidecar, tensor",
     [
-        # whisper.cpp on a GPU: STT publishes no GPU ids, so it may hold either card.
         (dict(loaded_model = "small", device = "whisper.cpp", _forced_cpu = False), False),
         (dict(loaded_model = None, device = None, loading = True), False),
-        # Known CPU-only sidecars hold no card.
         (dict(loaded_model = "small", device = "whisper.cpp", _forced_cpu = True), True),
         (dict(loaded_model = "small", device = "cpu"), True),
         (dict(loaded_model = "small", device = "llama.cpp", _gpu_disabled = True), True),
@@ -2008,8 +1946,7 @@ def test_wired_resident_dictation_gpu_keeps_layer(tmp_path, monkeypatch, sidecar
 
 
 def test_wired_fits_one_probe_prefers_discrete_gpus_like_the_placement(tmp_path, monkeypatch):
-    # A unified-memory GPU 0 holds the MoE alone, but the placement runs it on the discrete pair
-    # (discrete first), so the single-card probe must not report it fits one card.
+    # Unified-memory GPU 0 fits the MoE alone, but placement runs it on the discrete pair.
     backend, gguf = _wired_backend(
         tmp_path,
         monkeypatch,
@@ -2041,14 +1978,12 @@ def _orchestrator(
 @pytest.mark.parametrize(
     "where, orchestrator, tensor",
     [
-        # A transformers model publishes no GPU ids, so loaded or loading it may hold either card.
         ("primary", _orchestrator(active = "org/small"), False),
         ("primary", _orchestrator(loading = ["org/small"]), False),
         ("slot", _orchestrator(active = "org/small"), False),
         ("slot", _orchestrator(loading = ["org/small"]), False),
         ("filling", _orchestrator(loading = ["org/small"]), False),
         ("stuck", _orchestrator(alive = True), False),
-        # An idle orchestrator holds no card.
         ("primary", _orchestrator(), True),
         ("slot", _orchestrator(), True),
     ],
@@ -2074,8 +2009,7 @@ def test_wired_transformers_model_keeps_layer(tmp_path, monkeypatch, where, orch
 
 
 def test_module_keeps_the_real_loggers_package_without_structlog():
-    # conftest cannot settle loggers when structlog is missing; this module's own imports must
-    # then leave a package there, or routes/inference.py dies on loggers.media_progress.
+    # Without structlog, this module's imports must leave a loggers package in place.
     code = (
         "import importlib.abc, sys\n"
         "class Block(importlib.abc.MetaPathFinder):\n"
@@ -2094,8 +2028,7 @@ def test_module_keeps_the_real_loggers_package_without_structlog():
 
 
 def test_wired_fits_one_probe_prices_the_runtime_footprint(tmp_path, monkeypatch):
-    # 13.2 GiB of weights fit one T4's usable budget bare, but not with the CUDA context and the
-    # drafter's reserves, so the MoE needs the pair; the probe must not call it a one-card fit.
+    # Fits one T4 bare, but not with CUDA context and drafter reserves.
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 13.2, names = TWO_T4_NAMES
     )
@@ -2202,31 +2135,25 @@ def _worker(module, attr, **state):
 @pytest.mark.parametrize(
     "setup, tensor",
     [
-        # Image/video/decision residents the arbiter tracks: unknown ids may be either card, and
-        # known ones are off limits even when their price is empty (Off, or no estimate).
+        # Arbiter residents: unknown ids may be either card; known ones are off limits even unpriced.
         pytest.param(_arbiter({"diffusion": None}), False, id = "media-unknown-gpus"),
         pytest.param(_arbiter({"decisions": None}), False, id = "decisions-unknown-gpus"),
         pytest.param(_arbiter({"video": frozenset({1})}), False, id = "media-on-gpu1"),
         pytest.param(_arbiter({"chat": None}), True, id = "chat-claim-alone"),
-        # Transformers side: a managed engine whose stop failed, a worker that survived its model.
         pytest.param(_primary(_managed_engine = object()), False, id = "managed-engine"),
         pytest.param(_primary(alive = True), False, id = "primary-worker-alive"),
         pytest.param(_slot_worker, False, id = "kept-slot-worker-alive"),
-        # RAG embedders, loaded or loading off the CPU.
         pytest.param(_st_embedder("cuda:0"), False, id = "st-embedder-gpu"),
         pytest.param(_st_embedder("cpu"), True, id = "st-embedder-cpu"),
         pytest.param(_gguf_embedder(True), False, id = "gguf-embedder-gpu"),
         pytest.param(_gguf_embedder(False, starting = True), False, id = "gguf-embedder-starting"),
         pytest.param(_gguf_embedder(False), True, id = "gguf-embedder-cpu"),
         pytest.param(_embedder_loading, False, id = "embedder-loading"),
-        # The PyTorch decision worker the arbiter does not track.
         pytest.param(_decision_worker("cuda"), False, id = "decision-worker-gpu"),
         pytest.param(_decision_worker("cpu"), True, id = "decision-worker-cpu"),
-        # The Images mask segmenter, resident or mid-call on a GPU.
         pytest.param(_segmenter(True), False, id = "segmenter-gpu"),
         pytest.param(_segmenter(False, "cuda:0"), False, id = "segmenter-call-on-gpu"),
         pytest.param(_segmenter(False, "cpu"), True, id = "segmenter-cpu"),
-        # LLM and diffusion training and export workers, starting or running.
         pytest.param(
             _worker("core.training.training", "_training_backend", is_training_active = True),
             False,
@@ -2291,10 +2218,8 @@ def test_wired_any_resident_without_gpu_ids_keeps_layer(tmp_path, monkeypatch, s
 @pytest.mark.parametrize(
     "lines, rc, when",
     [
-        # The split-axis abort and the quantized-KV refusal, cancelled while their exit kills the child.
         (["GGML_ASSERT(split_axis == GGML_BACKEND_SPLIT_AXIS_0) failed"], -6, "kill"),
         (["split_mode_tensor and kv cache quantization not implemented"], 1, "kill"),
-        # Any other unhealthy start, cancelled after its health wait returned.
         (["boom"], 1, "health"),
     ],
     ids = ["split-axis-abort", "quantized-kv-refusal", "unhealthy-start"],
@@ -2322,7 +2247,6 @@ def test_wired_auto_tensor_exit_cancelled_reports_a_cancelled_load(
         crash = _tensor_crashes(lines, rc = rc)
 
         def behave(cmd):
-            # Set before the attempt reads its health result.
             backend._cancel_event.set()
             return crash(cmd)
 
@@ -2341,8 +2265,7 @@ def test_wired_auto_tensor_exit_cancelled_reports_a_cancelled_load(
     ],
 )
 def test_wired_resident_source_that_cannot_import_holds_nothing(tmp_path, monkeypatch, blocked):
-    # A minimal install (no FastAPI) cannot import model_slots: nothing it tracks can be loaded, so
-    # the idle pair still runs tensor rather than reading as unknown.
+    # Minimal install without FastAPI: model_slots cannot import, so nothing it tracks is loaded.
     import core.inference as inference_package
 
     backend, gguf = _wired_backend(
@@ -2357,7 +2280,6 @@ def test_wired_resident_source_that_cannot_import_holds_nothing(tmp_path, monkey
 
 @pytest.mark.parametrize("child", [(1,), None])
 def test_wired_unregistered_helper_backend_keeps_its_gpus(tmp_path, monkeypatch, child):
-    # A helper load (Hub advisor, dataset assistant) owns a child but never registers to serve.
     import core.inference.llama_cpp as llama_cpp_module
 
     backend, gguf = _wired_backend(
@@ -2367,7 +2289,6 @@ def test_wired_unregistered_helper_backend_keeps_its_gpus(tmp_path, monkeypatch,
         model_gib = 6,
         names = {i: T4 for i in range(3)},
     )
-    # Every process-owning backend is tracked from construction.
     assert backend in llama_cpp_module._owned_backends_snapshot()
     helper = types.SimpleNamespace(
         is_active = True, _planned_vram_mib = {}, _child_gpu_physical_ids = child
@@ -2377,7 +2298,6 @@ def test_wired_unregistered_helper_backend_keeps_its_gpus(tmp_path, monkeypatch,
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     decision = backend._auto_split_decision
     if child is None:
-        # Unpinned: it may hold any card.
         assert _split_flag(cmd) != "tensor" and "unknown" in decision.reason
     else:
         assert _split_flag(cmd) == "tensor" and tuple(decision.gpu_indices) == (0, 2)

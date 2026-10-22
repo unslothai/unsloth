@@ -73,7 +73,7 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _loader_pa
 import core.inference.llama_cpp as llama_cpp_module
 
 _REAL_POPEN = subprocess.Popen
-# Above pid_max, so a fake server reaching real kill / cleanup paths names no process.
+# Above pid_max: never a real process.
 _FAKE_SERVER_PID = 2**31 - 1
 
 
@@ -111,7 +111,6 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._apply_detected_audio = lambda _detected: True
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
-    # Stand-in servers are no process of ours: stopping one must never reach a real tree.
     backend._collect_descendants = lambda _pid: ([], True)
     backend._leading_process_group = lambda _pid: None
     backend._tree_kill_surviving_process = lambda _pid: True

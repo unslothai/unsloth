@@ -8847,9 +8847,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
             )
         ),
     )
-    # The UI seeds its standing Tensor Parallelism toggle from this field. A tensor split
-    # the auto policy chose was never asked for, so report the toggle state (off): echoing
-    # it on would turn the next load into an explicit request that skips the auto gates.
+    # The UI seeds its toggle from this; echoing an auto split as on would skip the auto gates next load.
     if getattr(llama_backend, "_auto_tensor_live", False) is True:
         fields["tensor_parallel"] = False
     unresolved = (

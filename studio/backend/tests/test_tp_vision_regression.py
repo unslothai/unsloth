@@ -75,10 +75,7 @@ except ImportError:
         },
     )
 
-    # Any other name (AsyncClient, Request, Limits, WriteError, ...) that a module routes/inference.py
-    # loads reads at import time, in an annotation, an except tuple or a constant: an exception type
-    # that takes any arguments, so it serves as a placeholder class and an except target alike.
-    # Cached on first read, so every module sees the same type.
+    # Any other httpx name: a cached Exception subclass, usable as a class and an except target.
     def _httpx_placeholder(name):
         if name.startswith("__"):
             raise AttributeError(name)
@@ -234,7 +231,7 @@ def test_tensor_split_gate_is_self_healing_not_blanket():
 def test_tensor_split_skip_documents_layer_split_fallback():
     """When the skip fires (known-bad binary+model), it states the fallback."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    # The downgrade gate itself, not the auto split policy's up-front check of the same latch.
+    # The downgrade gate, not the auto policy's earlier check.
     gate = src.find("tensor_parallel and self._tensor_split_aborts(")
     assert gate != -1
     block = src[gate : gate + 600]

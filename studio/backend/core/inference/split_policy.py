@@ -3,13 +3,8 @@
 
 """Automatic llama-server split mode (layer vs tensor) and the MTP draft depth per split mode.
 
-Pure functions and constants only (no torch, no FastAPI), so the decision table is unit-tested without a GPU.
-
-Explicit choices always win and never reach this module's decision: the Tensor Parallelism toggle (True),
-``--split-mode`` / ``-sm`` / ``--tensor-split`` in the advanced arguments, and an inherited
-``LLAMA_ARG_SPLIT_MODE`` / ``LLAMA_ARG_TENSOR_SPLIT``. The UI always sends ``tensor_parallel = false``, so False
-is read as "not chosen"; a user who wants layer split passes ``--split-mode layer`` or sets
-``UNSLOTH_STUDIO_AUTO_TENSOR_SPLIT=0``.
+Explicit choices (toggle on, --split-mode / -sm / --tensor-split, LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_TENSOR_SPLIT)
+always win. The UI always sends tensor_parallel = false, so False means "not chosen".
 """
 
 from __future__ import annotations
@@ -19,84 +14,60 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence
 
-# Single switch for the auto policy. False = today's behaviour (layer split unless the user asks for tensor).
 AUTO_TENSOR_SPLIT_DEFAULT = True
-# Kill switch / opt-in env: "0" keeps today's behaviour, "1" enables the policy when the default is off.
 AUTO_TENSOR_SPLIT_ENV = "UNSLOTH_STUDIO_AUTO_TENSOR_SPLIT"
-# Whether a dense model that fits one GPU is widened onto two matching idle GPUs for tensor split. Measured on
-# Kaggle 2x T4 (plans/multi_gpu_dense.md): Qwen3.5-9B Q8_0 decode 18.8 -> 41.5 tok/s (one GPU -> tensor over two),
-# 2k prompt 934 -> 1388 tok/s. Only idle cards are taken (SPLIT_POLICY.min_free_frac / refuse_shared_gpus).
+# Widen a dense model that fits one GPU onto two idle ones: 2x T4 Qwen3.5-9B Q8_0 decode 18.8 -> 41.5 tok/s.
 TP_WIDEN_FITS_ONE_GPU = True
-# Hard ceiling on the GPUs an AUTO tensor split asks for, whatever the thresholds say: the internal AllReduce in the
-# shipped prebuilt (no NCCL) covers exactly 2 GPUs. An explicit toggle / --split-mode tensor is not capped here.
+# The prebuilt's internal AllReduce (no NCCL) covers exactly 2 GPUs; explicit tensor requests are not capped.
 AUTO_TENSOR_MAX_GPUS = 2
 
 
 @dataclass(frozen = True)
 class SplitPolicyThresholds:
-    """Data-driven gates for the auto tensor split. Provisional values; the measured table replaces them."""
+    """Gates for the auto tensor split."""
 
-    # MoE models stay on layer split, except (moe_resident_with_mtp) a model whose weights all fit the GPU pair while
-    # an MTP / draft head runs: there tensor decode was +14..+21% and the prompt within -1..+4% (2k / 8k) on 2x T4
-    # (Qwen3.6-35B-A3B UD-Q4_K_XL, depth 2). Without a draft the prompt cost -10..-17% (2k / 8k) against +15%
-    # decode, and expert offload / the MoE cache are layer-split only.
+    # MoE: tensor only when resident on the pair with a draft head (2x T4: decode +14..+21%, prompt -1..+4%);
+    # without a draft the prompt lost 10..17%.
     dense_only: bool = True
     moe_resident_with_mtp: bool = True
-    # Smallest GPU count a tensor split is chosen for.
     min_gpus: int = 2
-    # Largest: the internal AllReduce (the only one in the prebuilt, which does not link NCCL) covers exactly 2
-    # GPUs; with more, llama.cpp falls back to the meta backend's generic AllReduce, which was not measured.
     max_gpus: int = 2
-    # Every selected GPU must report the same device name ...
     require_same_name: bool = True
-    # ... and the same total memory within this fraction of the largest card.
     total_mem_match_frac: float = 0.02
-    # Each GPU must have at least this fraction of its total memory free (idle enough: tensor split synchronises
-    # every layer, so one busy card stalls all of them). 0 disables the check.
+    # Tensor split syncs every layer, so one busy card stalls all. 0 / None disables a check.
     min_free_frac: float = 0.80
-    # ... and, when the driver reports it, at most this compute utilisation (percent, the max over a short sample
-    # window). Catches a card running someone else's job whose memory footprint is small. None disables the check.
     max_util_pct: Optional[float] = 10.0
-    # Cards another loaded model already runs on are not idle.
     refuse_shared_gpus: bool = True
 
 
 SPLIT_POLICY = SplitPolicyThresholds()
 
-# MTP draft depth (--spec-draft-n-max) Studio picks by itself, per split mode. "none" = one GPU / no split: None
-# keeps today's platform default (2 on a GPU, 3 on CPU, PR #5582). Never applied over a user value, a trained
-# head's depth or DSpark's fixed 3. Measured on 2x T4 (plans/multi_gpu_dense.md): depth 2 beat depth 4 under layer split
-# everywhere (+4..+40%); under tensor split depth 2 won for Qwen3.6-35B-A3B and was mixed for Qwen3.5-9B / Qwen3.6-27B,
-# so both stay at 2.
+# Default --spec-draft-n-max per split; None keeps the platform default. 2 beat 4 on 2x T4 under both splits.
 MTP_DRAFT_DEPTH_BY_SPLIT: dict[str, Optional[int]] = {"layer": 2, "tensor": 2, "none": None}
 
 
 @dataclass(frozen = True)
 class GpuInfo:
-    """One candidate GPU: physical index, device name (lowercased or not), total and free memory in MiB."""
+    """One candidate GPU; memory in MiB."""
 
     index: int
     name: Optional[str]
     total_mib: int
     free_mib: int
-    # Compute utilisation in percent, None when unknown (the memory check still applies).
     util_pct: Optional[float] = None
 
 
 @dataclass(frozen = True)
 class SplitDecision:
-    """``mode``: "tensor", "layer" or "none" (single GPU). ``auto``: whether this module chose it (False when an
-    explicit user choice or a precondition left today's behaviour in place). ``reason``: one line for the log."""
+    """``mode``: "tensor", "layer" or "none"; ``auto``: chosen by this policy, not the user or a precondition."""
 
     mode: str
     auto: bool
     reason: str
-    # The GPUs a tensor split runs on (physical indices), None = the caller's selection unchanged.
     gpu_indices: Optional[tuple] = None
 
 
 def auto_tensor_split_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
-    """AUTO_TENSOR_SPLIT_DEFAULT, overridden by UNSLOTH_STUDIO_AUTO_TENSOR_SPLIT (0/false/off or 1/true/on)."""
     value = (env if env is not None else os.environ).get(AUTO_TENSOR_SPLIT_ENV)
     if value is None or not str(value).strip():
         return AUTO_TENSOR_SPLIT_DEFAULT
@@ -104,8 +75,7 @@ def auto_tensor_split_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
 
 
 def binary_supports_tensor_split(caps: Optional[Mapping[str, object]]) -> bool:
-    """Whether the llama-server ``--help`` (as parsed by probe_server_capabilities into ``caps["flags"]``) lists
-    ``tensor`` among the ``--split-mode`` values. Fails closed on a failed or missing probe."""
+    """Whether ``--split-mode`` lists ``tensor`` in the probed help. Fails closed."""
     if not caps:
         return False
     flags = caps.get("flags")
@@ -117,7 +87,6 @@ def binary_supports_tensor_split(caps: Optional[Mapping[str, object]]) -> bool:
 
 
 def _gpus_match(gpus: Sequence[GpuInfo], thresholds: SplitPolicyThresholds) -> Optional[str]:
-    """None when every GPU matches, else why not."""
     if thresholds.require_same_name:
         names = {(g.name or "").strip().lower() for g in gpus}
         if "" in names:
@@ -153,18 +122,12 @@ def choose_split_mode(
 ) -> SplitDecision:
     """Decide the split mode for an Auto GPU placement.
 
-    ``gpus``: the candidate GPUs the placement may use (after any GPU picker filter). ``fits_one_gpu``: the
-    fewest-GPUs selection would put the model on one card. ``p2p_veto``: _p2p_veto_reason's answer; it does NOT
-    block tensor (the internal AllReduce stages through pinned host memory and NCCL picks its own transport), it is
-    only recorded in the reason; the GGML_CUDA_P2P gate at launch still uses it. ``draft_active``: a draft model /
-    MTP head will run. ``platform_reason``: why this host is outside the measured platform (Linux + NVIDIA CUDA), None
-    when inside; the auto policy then keeps today's behaviour.
+    ``p2p_veto`` does NOT block tensor (the AllReduce stages through host memory); it is only logged.
     """
     env = env if env is not None else os.environ
     n = len(gpus)
     single = "none" if n <= 1 else "layer"
 
-    # Explicit choices first: never auto.
     if user_tensor_parallel:
         return SplitDecision("tensor", False, "Tensor Parallelism toggle is on")
     if split_mode_override is not None:
@@ -250,8 +213,7 @@ def choose_split_mode(
 def _pick_pair(
     gpus: Sequence[GpuInfo], thresholds: SplitPolicyThresholds, shared_gpus: frozenset
 ) -> tuple[Optional[list], str]:
-    """The tensor-split GPUs: up to thresholds.max_gpus idle cards of one model (same name, total within
-    total_mem_match_frac), the group with the most free memory first. (None, why) when no such pair exists."""
+    """Up to max_gpus matching idle cards with the most free memory, else (None, why)."""
     idle = []
     busy = []
     for g in gpus:
@@ -303,8 +265,6 @@ def _pick_pair(
 
 
 def mtp_draft_depth_for_split(split_mode: Optional[str], default: int) -> int:
-    """Studio's own MTP draft depth for a split mode: the table entry for "layer" / "tensor" / "none", else
-    ``default`` (today's platform rule). Callers apply it only when the user set no depth."""
     if split_mode is None:
         return default
     depth = MTP_DRAFT_DEPTH_BY_SPLIT.get(str(split_mode).strip().lower())
