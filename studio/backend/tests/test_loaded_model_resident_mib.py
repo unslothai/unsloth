@@ -47,6 +47,7 @@ def test_gpu_model_buffers_win_over_rss():
 
 
 def test_cpu_load_reports_child_rss():
+    pytest.importorskip("psutil")
     backend = _backend(_Alive())
     fake = SimpleNamespace(memory_info = lambda: SimpleNamespace(rss = 3 * 1024 * 1024 * 1024))
     with (
@@ -58,7 +59,7 @@ def test_cpu_load_reports_child_rss():
 
 
 def test_unreadable_child_is_none_not_an_error():
-    import psutil
+    psutil = pytest.importorskip("psutil")
     backend = _backend(_Alive())
     with (
         patch.object(backend, "reclaimable_gpu_memory_gb", return_value = None),
