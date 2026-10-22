@@ -507,7 +507,12 @@ export function useFloatingPanelLayout(
       0,
       Math.max(0, constraintsBox.height - monitorBox.height),
     );
-    intentRef.current = { left, top };
+    // Only the moved axis becomes absolute: a null axis stays anchored to the far edge, as after a drag.
+    const previous = intentRef.current;
+    intentRef.current = {
+      left: delta.dx !== 0 ? left : previous.left,
+      top: delta.dy !== 0 ? top : previous.top,
+    };
     storePanelIntent(storageKey, intentRef.current);
     commitPosition(left, top, constraintsBox);
     return true;

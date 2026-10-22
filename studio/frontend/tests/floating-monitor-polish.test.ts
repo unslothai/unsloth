@@ -72,3 +72,13 @@ test("arrow keys nudge by 8 px, 32 with Shift, and nothing else moves it", () =>
   assert.equal(nudgeDelta("Enter", false), null);
   assert.equal(nudgeDelta("Escape", false), null);
 });
+
+test("a nudge makes only the moved axis absolute, so the other stays anchored", async () => {
+  const { readFileSync } = await import("node:fs");
+  const layout = readFileSync(
+    new URL("../src/hooks/use-floating-panel-layout.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(layout, /left: delta\.dx !== 0 \? left : previous\.left/);
+  assert.match(layout, /top: delta\.dy !== 0 \? top : previous\.top/);
+});
