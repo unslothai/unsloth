@@ -30380,7 +30380,8 @@ def _fit_external_context(
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    # No archive to search here, so a checkpoint reset may not start and the fit stays rolling.
+    # Evicted turns are archived below, but nothing on this path recalls them on the turn that
+    # resets, so a checkpoint reset may not start and the fit stays rolling.
     sticky, sticky_is_checkpoint = _sticky_compaction_state(
         thread_id,
         messages,
@@ -30402,7 +30403,33 @@ def _fit_external_context(
     )
     if truncation and _records_boundary(truncation):
         truncation = {**truncation, **_boundary_metadata(fitted, messages, ratio)}
+    if truncation and truncation.get("dropped_messages"):
+        _archive_external_eviction(thread_id, messages, fitted)
     return fitted, truncation, max_tokens
+
+
+def _archive_external_eviction(thread_id, before: list[dict], fitted: list[dict]) -> None:
+    """Index the turns an external fit dropped into the thread's conversation archive.
+
+    The local paths archive what their fit evicts, which is what puts search_conversation and
+    the compaction nudge in front of the model on later turns. Without this an API-connected
+    chat lost every evicted turn outright, attached documents included, and the model was never
+    told the conversation had been compacted. Never raises: a chat that cannot archive still
+    gets its reply.
+    """
+    if not thread_id:
+        return
+    try:
+        from core.inference.context_window import evicted_messages
+        from core.rag import conversation_archive
+
+        gone = evicted_messages(before, fitted)
+        if gone:
+            conversation_archive.archive_turns(
+                str(thread_id), gone, live = fitted, branch = before
+            )
+    except Exception as exc:  # noqa: BLE001 -- archiving is best-effort
+        logger.warning("Could not archive turns evicted for an external provider: %s", exc)
 
 
 def _is_compaction_block_sse(line: str) -> bool:
@@ -31193,6 +31220,12 @@ async def _proxy_to_external_provider(
             model_name = model,
             full_access = bool(payload.bypass_permissions),
             full_access_only = True,
+        )
+        # The compaction nudge is not part of the general nudge: once the thread has an archive
+        # the catalogue carries search_conversation, and without this the model is never told
+        # that turns it cannot see exist, so it answers that it has no record of them.
+        _external_nudge = _apply_compaction_nudge(
+            _external_nudge, external_studio_tools, payload = payload
         )
     _served_template = None
     if (
