@@ -8884,7 +8884,7 @@ export function createOpenAIStreamAdapter(
             void syncInferenceStatusToStore({ includeLoras: false, quiet: true });
           }
         }
-        // An explicit Stop must persist its latched "cancelled" reason via the replacement yield below.
+        // An explicit Stop is an abort too, but must persist its latched "cancelled" reason via the replacement yield below.
         if (!abortSignal.aborted || generationStopRequested) {
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
