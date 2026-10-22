@@ -53,6 +53,21 @@ def test_a_stuck_folder_is_skipped_marked_slow_and_recovers():
     assert local_inventory.run_custom_folder_bounded_sync("/mnt/nas", lambda: ["row"]) == ["row"]
 
 
+def test_stuck_folders_cannot_starve_a_healthy_one():
+    release = threading.Event()
+    try:
+        for index in range(6):
+            assert (
+                local_inventory.run_custom_folder_bounded_sync(
+                    f"/mnt/stuck{index}", lambda: release.wait(5)
+                )
+                is None
+            )
+        assert local_inventory.run_custom_folder_bounded_sync("/models", lambda: ["m"]) == ["m"]
+    finally:
+        release.set()
+
+
 def test_healthy_folders_scan_concurrently_and_raise_as_before():
     async def both():
         return await asyncio.gather(

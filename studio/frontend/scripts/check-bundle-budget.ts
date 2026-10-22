@@ -353,8 +353,11 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  transferBytes: 2_072_012,
-  rawBytes: 6_879_589,
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that growth.
+  transferBytes: 2_072_639,
+  rawBytes: 6_880_146,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

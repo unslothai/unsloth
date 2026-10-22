@@ -123,6 +123,14 @@ export function OnDeviceFoldersDialog({
     [folders, localModels.ready, localModels.rows],
   );
 
+  // A finished inventory scan is what records a folder as slow or unreadable.
+  const scannedAt = localModels.refreshedAt;
+  useEffect(() => {
+    if (open && scannedAt !== null) {
+      void refreshScanFolders().catch(() => undefined);
+    }
+  }, [open, scannedAt]);
+
   useEffect(() => {
     if (!open) return;
     setInputError(null);

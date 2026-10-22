@@ -15,7 +15,6 @@ import stat
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -1113,15 +1112,27 @@ async def _scan_source(label: str, scanner, path: Path) -> List[LocalModelInfo]:
         return []
 
 
-# Own pool and budget: a folder on a hung mount must not outlast the UI's 30 s timeout or park inference's threads.
+# A thread per scan, under a budget: a folder on a hung mount must not outlast the UI's 30 s timeout or
+# park inference's threads, and a fixed pool would let a few stuck folders starve every healthy one.
 _CUSTOM_FOLDER_SCAN_TIMEOUT_S = 10.0
-_custom_folder_executor = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "scan-folder")
 _custom_folder_scans: dict[str, tuple[float, concurrent.futures.Future]] = {}
 _custom_folder_scans_lock = threading.Lock()
 
 
+def _run_into(future: concurrent.futures.Future, context: contextvars.Context, work) -> None:
+    if not future.set_running_or_notify_cancel():
+        return
+    try:
+        result = context.run(work)
+    except BaseException as e:  # noqa: BLE001 -- handed to the waiter
+        future.set_exception(e)
+    else:
+        future.set_result(result)
+
+
 def _submit_custom_folder_scan(row_path: str, work) -> Optional[concurrent.futures.Future]:
-    """None when an earlier scan of this folder is still stuck past budget: a second thread would only stall on the same mount."""
+    """None when an earlier scan of this folder is still stuck past budget: a second thread would only stall on
+    the same mount. So stuck threads stay at one per folder."""
     with _custom_folder_scans_lock:
         started, running = _custom_folder_scans.get(row_path, (0.0, None))
         if (
@@ -1130,7 +1141,13 @@ def _submit_custom_folder_scan(row_path: str, work) -> Optional[concurrent.futur
             and time.monotonic() - started > _CUSTOM_FOLDER_SCAN_TIMEOUT_S
         ):
             return None
-        future = _custom_folder_executor.submit(contextvars.copy_context().run, work)
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        threading.Thread(
+            target = _run_into,
+            args = (future, contextvars.copy_context(), work),
+            name = "scan-folder",
+            daemon = True,
+        ).start()
         _custom_folder_scans[row_path] = (time.monotonic(), future)
         return future
 

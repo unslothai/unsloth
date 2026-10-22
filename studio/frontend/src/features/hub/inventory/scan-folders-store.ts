@@ -2,10 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useSyncExternalStore } from "react";
-import {
-  getInventoryVersion,
-  subscribeInventory,
-} from "../stores/inventory-events";
+import { subscribeInventory } from "../stores/inventory-events";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -30,7 +27,6 @@ const EMPTY_STATE: ScanFoldersState = {
 };
 
 let state = EMPTY_STATE;
-let loadedAtVersion = -1;
 let inFlight: Promise<ScanFolderInfo[]> | null = null;
 // Bumped by every local mutation, so a list fetched before it cannot overwrite its result.
 let mutationSeq = 0;
@@ -59,15 +55,14 @@ export function subscribeScanFolders(listener: () => void): () => void {
 /** Concurrent callers share one request. */
 export function refreshScanFolders(): Promise<ScanFolderInfo[]> {
   if (inFlight) return inFlight;
-  const version = getInventoryVersion();
   const seq = mutationSeq;
+  let superseded = false;
   setState({ loading: true });
   const request = listScanFolders()
     .then((folders) => {
-      if (seq === mutationSeq) {
-        loadedAtVersion = version;
-        setState({ folders, loaded: true, error: null });
-      }
+      // A mutation landed meanwhile, so this list may predate it: read it again rather than drop it.
+      superseded = seq !== mutationSeq;
+      if (!superseded) setState({ folders, loaded: true, error: null });
       return state.folders;
     })
     .catch((error: unknown) => {
@@ -77,15 +72,14 @@ export function refreshScanFolders(): Promise<ScanFolderInfo[]> {
     .finally(() => {
       inFlight = null;
       setState({ loading: false });
+      if (superseded) void refreshScanFolders().catch(() => undefined);
     });
   inFlight = request;
   return request;
 }
 
-/** Once per inventory version, so a bump from any tab refreshes the problem badges. */
-export function ensureScanFolders(): void {
+function revalidateScanFolders(): void {
   if (inFlight || mutating > 0) return;
-  if (state.loaded && loadedAtVersion === getInventoryVersion()) return;
   void refreshScanFolders().catch(() => undefined);
 }
 
@@ -100,9 +94,8 @@ async function mutate<T>(request: () => Promise<T>): Promise<T> {
 
 function upsert(folder: ScanFolderInfo): void {
   mutationSeq += 1;
-  loadedAtVersion = getInventoryVersion();
   const rest = state.folders.filter((row) => row.id !== folder.id);
-  setState({ folders: [...rest, folder], loaded: true });
+  setState({ folders: [...rest, folder] });
 }
 
 export interface AddScanFolderResult {
@@ -138,7 +131,6 @@ export async function setScanFolderRecursive(
 export async function removeScanFolderFromStore(id: number): Promise<void> {
   await mutate(() => removeScanFolder(id));
   mutationSeq += 1;
-  loadedAtVersion = getInventoryVersion();
   setState({ folders: state.folders.filter((row) => row.id !== id) });
 }
 
@@ -148,17 +140,18 @@ export function useScanFolders(enabled = true): ScanFoldersState {
     getScanFoldersState,
     getScanFoldersState,
   );
+  // Read on every open: a folder's health changes without an inventory bump (a scan finishing,
+  // a permission fixed outside Studio).
   useEffect(() => {
     if (!enabled) return;
-    ensureScanFolders();
-    return subscribeInventory(ensureScanFolders);
+    revalidateScanFolders();
+    return subscribeInventory(revalidateScanFolders);
   }, [enabled]);
   return snapshot;
 }
 
 export function resetScanFoldersStoreForTests(): void {
   state = EMPTY_STATE;
-  loadedAtVersion = -1;
   inFlight = null;
   mutationSeq = 0;
   mutating = 0;
