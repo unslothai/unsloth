@@ -5666,6 +5666,12 @@ class DiffusionStatusResponse(BaseModel):
         "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
         "everything on its primary card reports why it declined.",
     )
+    graph_engagement: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Compile / CUDA-graph engagement counters: this load's graph captures, replays and ungraphed "
+        "denoiser calls (whole-step, per block, per-card segments, and the per-block graphs a whole-step graph falls "
+        "back to), and the process's dynamo frame and graph-break totals; null when nothing is loaded.",
+    )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
         default_factory = list,
@@ -7309,6 +7315,12 @@ class VideoStatusResponse(BaseModel):
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
         "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
         "everything on its primary card reports why it declined.",
+    )
+    graph_engagement: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Compile / CUDA-graph engagement counters: this load's graph captures, replays and ungraphed "
+        "denoiser calls (whole-step, per block, per-card segments, and the per-block graphs a whole-step graph falls "
+        "back to), and the process's dynamo frame and graph-break totals; null when nothing is loaded.",
     )
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     evicted: List[str] = Field(

@@ -1702,3 +1702,37 @@ def test_engagement_reports_captures_replays_and_per_card_segments():
     assert out["eager_calls"] == 2 and out["segment_captures"] == 2 and out["segment_replays"] == 30
     assert set(out) >= {"dynamo_frames", "graph_breaks"}
     assert cg.engagement(())["captures"] == 0
+
+
+def test_engagement_counts_the_per_block_graphs_a_whole_step_graph_fell_back_to():
+    import types as _types
+
+    seg = _types.SimpleNamespace(stats = {"segment_captures": 1, "segment_replays": 12})
+    blocks = _types.SimpleNamespace(
+        cache = {1: None, 2: None},
+        stats = {"captures": 5, "replays": 40},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+        segments = [seg],
+    )
+    step = _types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 1, "replays": 2, "eager_calls": 3, "fallbacks": 1},
+        placement = None,
+        poisoned = True,
+        capture_error = None,
+        fallback_handle = blocks,
+    )
+    out = cg.engagement((step,))
+    assert out["graphs"] == 2 and out["captures"] == 6 and out["replays"] == 42
+    assert out["fallbacks"] == 1 and out["segment_captures"] == 1 and out["segment_replays"] == 12
+
+
+def test_status_response_models_keep_graph_engagement():
+    from models.inference import DiffusionStatusResponse, VideoStatusResponse
+    counters = {"graphs": 1, "captures": 1, "replays": 7, "eager_calls": 0}
+    for model in (DiffusionStatusResponse, VideoStatusResponse):
+        dumped = model.model_validate({"graph_engagement": counters}).model_dump()
+        assert dumped["graph_engagement"] == counters
+        assert model.model_validate({}).model_dump()["graph_engagement"] is None
