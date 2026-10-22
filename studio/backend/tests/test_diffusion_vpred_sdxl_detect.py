@@ -185,8 +185,9 @@ def test_fetch_reads_header_then_detection_is_offline(hub_cache, monkeypatch):
     evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
     assert calls == [(NOOB, NOOB_FILE)]
     assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
-    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
-    assert calls == [(NOOB, NOOB_FILE)]  # answered from the remembered verdict
+    # Validation after the prefetch answers from the remembered header, with no further read.
+    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+    assert calls == [(NOOB, NOOB_FILE)]
 
 
 def test_fetch_falls_back_to_the_index_for_a_pipeline_pick(hub_cache, monkeypatch):
@@ -319,3 +320,145 @@ def test_apply_rebuilds_a_real_scheduler(tmp_path):
     )
     assert apply_pipeline_prediction_type(eps, str(eps_root)) is False
     assert eps.scheduler.config.prediction_type == "epsilon"
+
+
+# ---- review follow-ups -------------------------------------------------------------------------
+
+SDXL_DIFFUSERS_UNET_ONLY_KEYS = [
+    "conv_in.weight",
+    "time_embedding.linear_1.weight",
+    "add_embedding.linear_1.weight",
+    "down_blocks.0.resnets.0.conv1.weight",
+    "mid_block.resnets.0.conv1.weight",
+    "up_blocks.0.resnets.0.conv1.weight",
+]
+
+
+def _stub_header(monkeypatch, keys_by_call):
+    import huggingface_hub
+
+    calls = []
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        keys = keys_by_call[min(len(calls), len(keys_by_call) - 1)]
+        calls.append((repo_id, filename))
+        return types.SimpleNamespace(
+            tensors = {k: types.SimpleNamespace(shape = [0]) for k in keys}, metadata = {}
+        )
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    return calls
+
+
+def test_a_denoiser_only_unet_is_not_evidence_for_a_whole_pipeline_family(hub_cache, monkeypatch):
+    import huggingface_hub
+
+    _stub_header(monkeypatch, [SDXL_DIFFUSERS_UNET_ONLY_KEYS])
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *a, **k: pytest.fail("header read")
+    )
+    evidence.prefetch_for_pick(NOOB, "unet.safetensors", None, None)
+    assert detect_family_for_pick(NOOB, "unet.safetensors") is None
+    hub_cache.put(ILLU, "unet.safetensors", keys = SDXL_DIFFUSERS_UNET_ONLY_KEYS)
+    assert detect_family_for_pick(ILLU, "unet.safetensors") is None
+
+
+def test_each_prefetch_rereads_a_replaced_header(hub_cache, monkeypatch):
+    calls = _stub_header(monkeypatch, [SD15_UNET_KEYS, SDXL_UNET_KEYS + ["v_pred"]])
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    assert detect_family_for_pick(NOOB, NOOB_FILE) is None
+    # The repo replaced the file with an SDXL checkpoint: the next request judges the new header.
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    assert len(calls) == 2
+    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+
+
+def test_a_remembered_header_expires(hub_cache, monkeypatch):
+    _stub_header(monkeypatch, [SDXL_UNET_KEYS])
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+    now = evidence.time.monotonic()
+    monkeypatch.setattr(evidence.time, "monotonic", lambda: now + evidence._VERDICT_TTL_S + 1)
+    assert detect_family_for_pick(NOOB, NOOB_FILE) is None
+
+
+def test_the_index_fetch_records_the_credential_it_used(hub_cache, monkeypatch):
+    import contextlib
+
+    import huggingface_hub
+
+    import hub.utils.hf_tokens as hf_tokens
+
+    events = []
+
+    @contextlib.contextmanager
+    def recording(
+        token,
+        repo_id,
+        repo_type = "model",
+    ):
+        events.append(("enter", token, repo_id, repo_type))
+        yield
+        events.append(("exit",))
+
+    def download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        **kw,
+    ):
+        events.append(("download", repo_id, filename))
+        return str(hub_cache.put(repo_id, filename, payload = SDXL_INDEX))
+
+    monkeypatch.setattr(hf_tokens, "recording_a_request_token_fetch", recording)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    evidence.prefetch_for_pick(NOOB, None, None, "hf_private")
+    assert events == [
+        ("enter", "hf_private", NOOB, "model"),
+        ("download", NOOB, "model_index.json"),
+        ("exit",),
+    ]
+    assert _name(detect_family_for_pick(NOOB)) == "sdxl"
+
+
+def test_a_cache_only_prefetch_never_touches_the_hub(hub_cache, monkeypatch):
+    import huggingface_hub
+
+    def boom(*a, **k):
+        raise AssertionError("an automatic load is cache-only")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", boom)
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None, allow_network = False)
+    evidence.prefetch_for_pick(NOOB, None, None, None, allow_network = False)
+    assert detect_family_for_pick(NOOB, NOOB_FILE) is None
+
+
+def test_the_load_route_passes_user_initiated_to_the_prefetch():
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text()
+    tree = ast.parse(source)
+    route = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "load_diffusion_model_gated"
+    )
+    calls = [
+        c
+        for c in ast.walk(route)
+        if isinstance(c, ast.Call)
+        and any(isinstance(a, ast.Name) and a.id == "prefetch_for_pick" for a in c.args)
+    ]
+    assert len(calls) == 1
+    passed = [a.id for a in calls[0].args if isinstance(a, ast.Name)] + [
+        k.value.id for k in calls[0].keywords if isinstance(k.value, ast.Name)
+    ]
+    assert "user_initiated" in passed

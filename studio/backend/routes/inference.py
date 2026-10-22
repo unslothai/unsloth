@@ -51627,6 +51627,8 @@ async def load_diffusion_model_gated(
             request.gguf_filename,
             request.family_override,
             request.hf_token,
+            # An automatic (API auto-switch) load is cache-only, like the rest of this path.
+            user_initiated,
         )
         # Validate cheaply BEFORE touching the GPU: an unloadable pick must not evict a working chat model and then 400. The family also drives engine selection.
         fam = await asyncio.to_thread(
