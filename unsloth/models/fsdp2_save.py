@@ -496,11 +496,15 @@ def _restore_quant_state(model, state_dict, options):
     if not isinstance(state_dict, dict):
         state_dict = {}
     if broadcast:
-        has = torch.tensor([int(any(
-            k.startswith(prefix + "weight.") for prefix, _ in entries for k in state_dict
-        ))])
-        dist.broadcast(has, src = 0)
-        if not int(has.item()):
+        # An object broadcast, not a tensor one: a CPU tensor cannot go through an NCCL group, and
+        # broadcast_object_list stages on whatever device the group's backend needs.
+        has = [any(
+            k == prefix + "weight" or k.startswith(prefix + "weight.")
+            for prefix, _ in entries
+            for k in state_dict
+        )]
+        dist.broadcast_object_list(has, src = 0)
+        if not has[0]:
             return
     from bitsandbytes.functional import QuantState
 
@@ -512,11 +516,20 @@ def _restore_quant_state(model, state_dict, options):
             for k, v in state_dict.items()
             if k.startswith(head) and isinstance(v, torch.Tensor)
         }
+        loads_weight = head[:-1] in state_dict
         if broadcast:
-            payload = [{k: v.detach().cpu() for k, v in saved.items()}]
+            payload = [(loads_weight, {k: v.detach().cpu() for k, v in saved.items()})]
             dist.broadcast_object_list(payload, src = 0)
-            saved = payload[0]
+            loads_weight, saved = payload[0]
         if not saved:
+            if loads_weight:
+                # The packed bytes would be loaded and dequantized with the live model's scales.
+                raise ValueError(
+                    f"Unsloth: the checkpoint holds the 4-bit weight `{head[:-1]}` but none of its "
+                    "quantization state (`weight.absmax`, `weight.quant_state.*`), so its packed bytes "
+                    "cannot be dequantized correctly. Save the full state dict again with Unsloth, or "
+                    "load it without the frozen 4-bit base weights."
+                )
             continue
         expected = set(live.as_dict(packed = True))
         if set(saved) != expected:
