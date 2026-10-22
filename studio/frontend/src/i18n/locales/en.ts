@@ -1143,6 +1143,10 @@ export const en = {
       alternateSlot: "Alternate shortcut",
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
+      metaUnsupported: "The Windows key can't be used in shortcuts.",
+      altGraphUnsupported: "AltGr chords can't be used as shortcuts.",
+      desktopOnly: "Desktop app only",
+      builtInKey: "Built in: {key}",
       actions: {
         findInPage: {
           label: "Find in page",
@@ -1343,6 +1347,10 @@ export const en = {
         steerMessage: {
           label: "Steer response",
           description: "Stop the current response and send the draft next",
+        },
+        stopGeneration: {
+          label: "Stop generating",
+          description: "Stop the response being written",
         },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",

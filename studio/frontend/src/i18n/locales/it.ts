@@ -993,6 +993,10 @@ export const it = {
       alternateSlot: "Scorciatoia alternativa",
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
+      metaUnsupported: "Il tasto Windows non può essere usato nelle scorciatoie.",
+      altGraphUnsupported: "Le combinazioni con AltGr non possono essere usate come scorciatoie.",
+      desktopOnly: "Solo nell'app desktop",
+      builtInKey: "Integrato: {key}",
       actions: {
         findInPage: {
           label: "Trova nella pagina",
@@ -1193,6 +1197,10 @@ export const it = {
         steerMessage: {
           label: "Reindirizza la risposta",
           description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
+        stopGeneration: {
+          label: "Interrompi generazione",
+          description: "Interrompi la risposta in corso",
         },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",

@@ -1089,6 +1089,10 @@ export const hi = {
       alternateSlot: "वैकल्पिक शॉर्टकट",
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
+      metaUnsupported: "Windows कुंजी का उपयोग शॉर्टकट में नहीं किया जा सकता।",
+      altGraphUnsupported: "AltGr संयोजनों को शॉर्टकट के रूप में उपयोग नहीं किया जा सकता।",
+      desktopOnly: "केवल डेस्कटॉप ऐप में",
+      builtInKey: "अंतर्निहित: {key}",
       actions: {
         findInPage: {
           label: "पेज में खोजें",
@@ -1289,6 +1293,10 @@ export const hi = {
         steerMessage: {
           label: "उत्तर बदलें",
           description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
+        stopGeneration: {
+          label: "जनरेशन रोकें",
+          description: "लिखा जा रहा जवाब रोकें",
         },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
