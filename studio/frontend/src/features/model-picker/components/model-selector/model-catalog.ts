@@ -288,6 +288,44 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // MOSS-Image SFT: text to image, 5.1B single-stream DiT + Qwen3.5-9B encoder + FLUX.2 small VAE. The bf16 row
+    // keeps the OpenMOSS id; the backend fetches every component from unsloth/MOSS-Image-SFT-FP8 (the upstream
+    // diffusers folders byte-identical beside the FP8 / INT8 files). The GGUFs run through stable-diffusion.cpp only
+    // and pair with the same repo for the VAE and tokenizer.
+    canonicalId: "OpenMOSS-Team/MOSS-Image-SFT",
+    displayName: "MOSS-Image",
+    description: "Text-to-image",
+    scope: "image",
+    aliases: ["unsloth/MOSS-Image-SFT-FP8"],
+    artifacts: [
+      // Resident bf16 GiB, as the fit rule reads it: 9.47 DiT + 15.63 Qwen3.5-9B + 0.23 VAE.
+      bf16Pipeline("OpenMOSS-Team/MOSS-Image-SFT", 25.33, {
+        totalParams: 5082308624,
+        prequantRepo: "unsloth/MOSS-Image-SFT-FP8",
+        fetchedFrom: "unsloth/MOSS-Image-SFT-FP8",
+        prequantSizeGb: { fp8: 5.04, int8: 5.04 },
+      }),
+      gguf("unsloth/MOSS-Image-SFT-GGUF"),
+    ],
+  },
+  {
+    // The pre-SFT checkpoint, laid out the same way from its own FP8 repo.
+    canonicalId: "OpenMOSS-Team/MOSS-Image-Base",
+    displayName: "MOSS-Image Base",
+    description: "Text-to-image",
+    scope: "image",
+    aliases: ["unsloth/MOSS-Image-Base-FP8"],
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-Image-Base", 25.33, {
+        totalParams: 5082308624,
+        prequantRepo: "unsloth/MOSS-Image-Base-FP8",
+        fetchedFrom: "unsloth/MOSS-Image-Base-FP8",
+        prequantSizeGb: { fp8: 5.04, int8: 5.04 },
+      }),
+      gguf("unsloth/MOSS-Image-Base-GGUF"),
+    ],
+  },
+  {
     canonicalId: "unsloth/Qwen-Image-2.1",
     displayName: "Qwen-Image 2.1",
     // One pipeline for text-to-image and editing (`unified_edit`); the Images page follows the engine's status.

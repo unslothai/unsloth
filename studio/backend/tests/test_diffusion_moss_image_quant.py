@@ -355,3 +355,49 @@ def test_measured_peak_seeds_the_quantised_placement():
     assert measured_image_runtime_mib("moss-image", "default") == 3584
     assert measured_image_runtime_mib("moss-image", "max") == 3584
     assert measured_image_runtime_mib("moss-image", "off", dense_transformer_mib = 9800) is None
+
+
+def test_moss_denies_nvfp4():
+    # NVFP4 W4A4 scored LPIPS 0.383 against bf16 (SFT, 12 prompts); INT8-ConvRot 0.058.
+    for repo in (SFT, BASE):
+        assert "nvfp4" in _fam(repo).profile.scheme_deny
+
+
+def test_fp8_te_cast_keeps_the_gated_delta_conv1d_in_compute_dtype():
+    """Qwen3.5's gated-delta layers hand ``linear_attn.conv1d.weight`` straight to the causal-conv kernel without
+    calling the module, so the layerwise upcast hook never runs: the cast must leave conv1d out."""
+    import torch
+
+    try:
+        from transformers import Qwen3_5TextConfig, Qwen3_5TextModel
+    except ImportError:
+        pytest.skip("transformers without Qwen3.5 (MOSS-Image needs >= 5.3)")
+    from core.inference.diffusion_precision import _cast_fp8
+
+    cfg = Qwen3_5TextConfig(
+        vocab_size = 128,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        layer_types = ["linear_attention", "full_attention"],
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 32,
+        linear_num_key_heads = 1,
+        linear_num_value_heads = 2,
+        linear_key_head_dim = 16,
+        linear_value_head_dim = 16,
+        linear_conv_kernel_dim = 4,
+    )
+    encoder = Qwen3_5TextModel(cfg).to(torch.bfloat16)
+    _cast_fp8(encoder, SimpleNamespace(dtype = torch.bfloat16))
+
+    convs = [m for n, m in encoder.named_modules() if n.endswith("linear_attn.conv1d")]
+    assert convs, "the tiny config built no gated-delta layer"
+    assert all(m.weight.dtype == torch.bfloat16 for m in convs)
+    fp8 = [
+        m
+        for m in encoder.modules()
+        if isinstance(m, torch.nn.Linear) and m.weight.dtype == torch.float8_e4m3fn
+    ]
+    assert fp8, "the cast stored no Linear in fp8"

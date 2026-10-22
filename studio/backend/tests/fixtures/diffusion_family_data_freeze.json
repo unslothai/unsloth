@@ -3641,6 +3641,12 @@
    "flux.3-klein-base": [
     "nvfp4"
    ],
+   "moss-image": [
+    "nvfp4"
+   ],
+   "moss-image-base": [
+    "nvfp4"
+   ],
    "qwen-image": [
     "mxfp8",
     "nvfp4"
