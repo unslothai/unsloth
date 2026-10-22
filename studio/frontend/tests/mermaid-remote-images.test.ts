@@ -59,6 +59,8 @@ const ORDINARY = [
   'flowchart LR\n  A["Style transfer\\nmodel"] --> B',
   'flowchart LR\n  A["see; style C:\\temp"] --> B',
   "flowchart LR\n  A(style url(x)) --> B",
+  "flowchart LR\n  A -->|style url(x)| B",
+  "sequenceDiagram\n  Alice->>Bob: apply style from url(parameter)",
 ];
 
 for (const source of ORDINARY) {
@@ -85,12 +87,21 @@ test("a style statement after a semicolon cannot fetch either", () => {
     [`stateDiagram-v2\n  A --> B classDef x fill:${url}\n  class A x`, "stateDiagram-v2\n  A --> B \n  class A x"],
     [`stateDiagram-v2\n  [*] --> A\tclassDef x mask:${url}\n  class A x`, "stateDiagram-v2\n  [*] --> A\t\n  class A x"],
     // A statement after a label that mentions the word is still caught.
-    [`stateDiagram-v2\n  state "a style \\x" as A\n  A --> B classDef x fill:${url}`, 'stateDiagram-v2\n  state "a style \\x" as A\n  A --> B '],
+    [`stateDiagram-v2\n  state "a style x" as A\n  A --> B classDef x fill:${url}`, 'stateDiagram-v2\n  state "a style x" as A\n  A --> B '],
+    // State ids may hold brackets; they are not labels there.
+    [`stateDiagram-v2\n  A( --> B classDef x fill:${url}\n  class B x`, "stateDiagram-v2\n  A( --> B \n  class B x"],
   ]) {
     const out = stripRemoteDiagramImages(source);
     assert.equal(out, kept);
     assert.equal(stripRemoteDiagramImages(out), out);
   }
+});
+
+test("a long line of style words is scanned in linear time", () => {
+  const line = `flowchart LR\n  A["${"style ".repeat(20000)}"] --> B; style A fill:url(https://attacker.example/x)`;
+  const started = performance.now();
+  assert.equal(stripRemoteDiagramImages(line), `flowchart LR\n  A["${"style ".repeat(20000)}"] --> B;`);
+  assert.ok(performance.now() - started < 1000);
 });
 
 test("every surface that draws a diagram uses the guarded plugin", () => {
