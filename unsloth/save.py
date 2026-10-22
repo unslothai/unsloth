@@ -6416,10 +6416,12 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     return include
 
 
-def _fsdp2_collective_save(trainable_only, offload_to_cpu = None):
+def _fsdp2_collective_save(trainable_only, offload_to_cpu = None, offload_4bit = False):
     """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
     return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough;
     `offload_to_cpu(self, args, kwargs)` (default True) whether gathered weights go to the CPU.
+    `offload_4bit`: the save only writes packed 4-bit weights (never merges them), so they go to
+    the CPU too.
     A model FSDP2 does not shard, or a call that brings its own `state_dict`, is passed through."""
 
     def decorate(fn):
@@ -6442,7 +6444,11 @@ def _fsdp2_collective_save(trainable_only, offload_to_cpu = None):
                 )
             offload = True if offload_to_cpu is None else offload_to_cpu(self, args, kwargs)
             with fsdp2_gathered(
-                self, trainable_only = only, include = include, offload_to_cpu = offload
+                self,
+                trainable_only = only,
+                include = include,
+                offload_to_cpu = offload,
+                offload_4bit = offload_4bit,
             ) as writer:
                 if writer is False:
                     return None
@@ -8410,10 +8416,13 @@ def patch_saving_functions(model, vision = False):
     # Under FSDP2 every rank calls push_to_hub: the shards are gathered and rank 0 uploads. Inside,
     # the wrapped save_pretrained sees the gather already active and writes directly.
     globals()["unsloth_push_to_hub"] = _fsdp2_collective_save(
-        lambda self, args, kwargs: isinstance(self, PeftModel)
+        lambda self, args, kwargs: isinstance(self, PeftModel),
+        offload_4bit = True,
     )(globals()["unsloth_push_to_hub"])
 
-    @_fsdp2_collective_save(lambda self, args, kwargs: isinstance(self, PeftModel))
+    @_fsdp2_collective_save(
+        lambda self, args, kwargs: isinstance(self, PeftModel), offload_4bit = True
+    )
     def unsloth_model_save_pretrained(self, *args, **kwargs):
         """`safe_serialization = None` means the safetensors default, not a pickle.
 

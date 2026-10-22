@@ -93,3 +93,30 @@ def test_refusal_passes_through_without_fsdp2(monkeypatch):
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [])
     export = unsloth_save._fsdp2_refuses_save("save_pretrained_gguf")(lambda self, x: ("ran", x))
     assert export(object(), 1) == ("ran", 1)
+
+
+def test_only_saves_that_write_packed_bytes_stage_4bit_on_the_cpu(monkeypatch):
+    """save_pretrained / push_to_hub write the packed 4-bit bytes as they are, so the gather may put
+    them on the CPU; a merged save dequantizes them where they are and keeps them there."""
+    seen = []
+
+    @contextlib.contextmanager
+    def gathered(model, **kwargs):
+        seen.append(kwargs.get("offload_4bit", False))
+        yield False
+
+    monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: False)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gathered", gathered)
+    model = unsloth_save.patch_saving_functions(_tiny_llama())
+    assert model.save_pretrained("out") is None
+    assert model.push_to_hub("user/repo") is None
+    assert unsloth_save.unsloth_generic_save_pretrained_merged(model, "out", None) is None
+    assert (
+        unsloth_save.unsloth_generic_save_pretrained_merged(
+            model, "out", None, save_method = "merged_4bit"
+        )
+        is None
+    )
+    assert unsloth_save.unsloth_generic_push_to_hub_merged(model, "user/repo", None) is None
+    assert seen == [True, True, False, False, False], seen

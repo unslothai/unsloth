@@ -471,6 +471,139 @@ def _case_dcp_bnb(rank, world_size, m):
     return out
 
 
+def _nf4_model(nested = False):
+    bnb = pytest.importorskip("bitsandbytes")
+
+    def lin(seed):
+        torch.manual_seed(seed)
+        layer = bnb.nn.Linear4bit(
+            128,
+            96,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            compress_statistics = nested,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        layer.weight = bnb.nn.Params4bit(
+            torch.randn(96, 128) * 0.05,
+            requires_grad = False,
+            compress_statistics = nested,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            module = layer,
+        )
+        return layer.to("cpu")
+
+    return torch.nn.Sequential(lin(0), lin(1))
+
+
+def _case_gather_4bit_offload(rank, world_size, m):
+    """A save that only writes the packed 4-bit bytes (`offload_4bit`) gets them and a copy of their
+    QuantState on the CPU; the merge path (default) keeps them where they are. On CPU ranks `.cpu()`
+    is a no-op, so the calls are recorded."""
+    q = _load("fsdp2_qlora")
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    model = _nf4_model()
+    reference = {k: v.clone() for k, v in model.state_dict().items()}
+    q.prepare_fsdp2_qlora(model)
+    mesh = init_device_mesh("cpu", (world_size,))
+    for layer in model:
+        fully_shard(layer, mesh = mesh)
+    fully_shard(model, mesh = mesh)
+    live = [layer.weight.quant_state for layer in model]
+    live_absmax = [s.absmax for s in live]
+    original_cpu = torch.Tensor.cpu
+    moved = []
+
+    def recording_cpu(self, *args, **kwargs):
+        moved.append((tuple(self.shape), self.dtype))
+        return original_cpu(self, *args, **kwargs)
+
+    out = {}
+    for offload_4bit in (False, True):
+        moved.clear()
+        torch.Tensor.cpu = recording_cpu
+        try:
+            kwargs = {"offload_4bit": True} if offload_4bit else {}
+            with m.fsdp2_gathered(model, **kwargs) as writer:
+                torch.Tensor.cpu = original_cpu
+                if writer:
+                    states = [layer.weight.quant_state for layer in model]
+                    sd = model.state_dict()
+                    out[offload_4bit] = dict(
+                        # The packed bytes are the only (n, 1) tensors gathered here.
+                        packed_moved = sum(len(shape) == 2 and shape[-1] == 1 for shape, _ in moved),
+                        own_state = [s is not l for s, l in zip(states, live)],
+                        state_cpu = [s.absmax.device.type == "cpu" for s in states],
+                        same_keys = sorted(sd) == sorted(reference),
+                        same_bytes = all(
+                            torch.equal(
+                                sd[k].reshape(-1).view(torch.uint8),
+                                reference[k].reshape(-1).view(torch.uint8),
+                            )
+                            if isinstance(sd[k], torch.Tensor)
+                            else sd[k] == reference[k]
+                            for k in reference
+                        ),
+                    )
+        finally:
+            torch.Tensor.cpu = original_cpu
+    # The live QuantState is untouched (same object, same tensors).
+    out["live_kept"] = all(
+        layer.weight.quant_state is s and s.absmax is a
+        for layer, s, a in zip(model, live, live_absmax)
+    )
+    return out
+
+
+def _case_dcp_quant_state(rank, world_size, m):
+    """A full DCP load restores the QuantState it saved, not just the packed bytes, and refuses one
+    that does not fit the model."""
+    q = _load("fsdp2_qlora")
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    out = {}
+    for nested in (False, True):
+        model = _nf4_model(nested)
+        q.prepare_fsdp2_qlora(model)
+        mesh = init_device_mesh("cpu", (world_size,))
+        for layer in model:
+            fully_shard(layer, mesh = mesh)
+        fully_shard(model, mesh = mesh)
+        m.install_dcp_bnb_state_dict()
+        save_opts = StateDictOptions(full_state_dict = True)  # every rank gets the full dict
+        saved = {k: v.clone() for k, v in dcp.get_model_state_dict(model, options = save_opts).items()}
+        states = [layer.weight.quant_state for layer in model]
+        before = [s.absmax.clone() for s in states]
+        results = {}
+        for broadcast in (False, True):
+            for s in states:
+                s.absmax.mul_(2)  # a requantized / differently initialized base
+            options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = broadcast)
+            payload = saved if (rank == 0 or not broadcast) else {}
+            dcp.set_model_state_dict(model, payload, options = options)
+            results[broadcast] = all(torch.equal(s.absmax, b) for s, b in zip(states, before))
+        out[f"restored_nested_{nested}"] = results
+        bad = dict(saved)
+        key = next(k for k in bad if k.endswith("weight.absmax"))
+        bad[key] = bad[key][:-1].clone()
+        try:
+            dcp.set_model_state_dict(
+                model, bad, options = StateDictOptions(full_state_dict = True)
+            )
+            out[f"mismatch_nested_{nested}"] = "loaded"
+        except ValueError as error:
+            out[f"mismatch_nested_{nested}"] = "ValueError" if "4-bit" in str(error) else str(error)
+    return out
+
+
 def _case_fp16_reduce(rank, world_size, m):
     """An fp16 trainable parameter FSDP2 does not manage: its gradient mean must not overflow."""
 
@@ -526,6 +659,10 @@ def _worker(rank, world_size, port, case, queue):
             result = _case_merge_offload(rank, world_size, m)
         elif case == "gather_4bit":
             result = _case_gather_4bit(rank, world_size, m)
+        elif case == "gather_4bit_offload":
+            result = _case_gather_4bit_offload(rank, world_size, m)
+        elif case == "dcp_quant_state":
+            result = _case_dcp_quant_state(rank, world_size, m)
         elif case.startswith("replicated"):
             result = _case_replicated(rank, world_size, m, hooked = case.endswith("hooked"))
         else:
@@ -665,3 +802,30 @@ def test_merge_offload_keeps_4bit_adapters_after_an_eval_forward():
             expected[f"layers.{i}.{part}.default.weight"] = i == 1  # layer 1 is not 4-bit
         expected[f"layers.{i}.base_layer.weight"] = True
     assert decisions == expected, decisions
+
+
+def test_packed_4bit_save_stages_bytes_and_quant_state_on_the_cpu():
+    """A full save of a sharded NF4 model kept every gathered packed weight on rank 0's accelerator,
+    so the whole quantized base had to fit on one GPU. Saves that only write the bytes now get them
+    on the CPU, with a CPU copy of the QuantState; the merge path is unchanged and the written state
+    dict is byte for byte the same."""
+    pytest.importorskip("bitsandbytes")
+    r0 = _run("gather_4bit_offload")[0]
+    kept, staged = r0[False], r0[True]
+    assert kept["packed_moved"] == 0 and kept["own_state"] == [False, False], kept
+    assert staged["packed_moved"] == 2, staged
+    assert staged["own_state"] == [True, True] and all(staged["state_cpu"]), staged
+    for r in (kept, staged):
+        assert r["same_keys"] and r["same_bytes"], r
+    assert r0["live_kept"], r0
+
+
+def test_full_dcp_load_restores_the_saved_quant_state():
+    """A full DCP load dropped the saved QuantState entries, so the packed bytes were silently paired
+    with whatever scales the live model had."""
+    pytest.importorskip("bitsandbytes")
+    results = _run("dcp_quant_state")
+    for r in results.values():
+        for nested in (False, True):
+            assert r[f"restored_nested_{nested}"] == {False: True, True: True}, r
+            assert r[f"mismatch_nested_{nested}"] == "ValueError", r

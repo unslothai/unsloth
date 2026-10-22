@@ -16,6 +16,7 @@ __all__ = [
 ]
 
 import contextlib
+import copy
 import datetime
 import functools
 import os
@@ -130,6 +131,18 @@ def _gather_full(param, DTensor):
     return gathered.view(param.dtype)
 
 
+def _quant_state_on_cpu(quant_state):
+    """A CPU copy of a bitsandbytes QuantState. `QuantState.to` moves in place (its nested state
+    too), and the live one must stay where the sharded weight computes with it."""
+    if not hasattr(quant_state, "to"):
+        return quant_state
+    state = copy.copy(quant_state)
+    if getattr(state, "state2", None) is not None:
+        state.state2 = copy.copy(state.state2)
+    state.to("cpu")
+    return state
+
+
 def _rebuild(param, full, module):
     """A full parameter that looks like the one FSDP2 sharded (Params4bit keeps its QuantState)."""
     quant_state = getattr(param, "quant_state", None)
@@ -172,13 +185,16 @@ def fsdp2_gathered(
     trainable_only = False,
     offload_to_cpu = True,
     include = None,
+    offload_4bit = False,
 ):
     """Yields None for a model FSDP2 does not shard (nothing happens). Otherwise every rank must
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
     not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
     plus those `include(name, param)` selects (frozen ones the save still writes).
     `offload_to_cpu` may be a predicate `(name, param) -> bool`.
-    Packed 4-bit weights stay on their device: the merge dequantizes them there."""
+    Packed 4-bit weights stay on their device (a merge dequantizes them there) unless `offload_4bit`:
+    a save that only writes the packed bytes then gets them, with a CPU copy of their QuantState, on
+    the CPU, so rank 0 never holds the whole quantized base on its accelerator."""
     if _ACTIVE:
         yield _ACTIVE[-1]
         return
@@ -222,9 +238,16 @@ def fsdp2_gathered(
                 continue
             module = owners[id(param)][0][0]
             offload = offload_to_cpu(name, param) if callable(offload_to_cpu) else offload_to_cpu
-            if offload and getattr(param, "quant_state", None) is None:
+            quant_state = getattr(param, "quant_state", None)
+            if offload and quant_state is None:
                 full = full.cpu()
-            replaced[id(param)] = (param, _rebuild(param, full.detach(), module))
+            elif offload and offload_4bit:
+                full = full.cpu()
+                quant_state = _quant_state_on_cpu(quant_state)
+            rebuilt = _rebuild(param, full.detach(), module)
+            if quant_state is not None and rebuilt.quant_state is not quant_state:
+                rebuilt.quant_state = quant_state
+            replaced[id(param)] = (param, rebuilt)
         if writer:
             for key, (old, new) in replaced.items():
                 for module, name in owners[key]:
@@ -459,9 +482,81 @@ def _add_quant_state_entries(model, state_dict, options):
             state_dict[prefix + "weight." + key] = value.cpu() if cpu else value
 
 
+def _restore_quant_state(model, state_dict, options):
+    """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
+    copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
+    scales they were saved with. A saved QuantState that does not fit the live one (other shape,
+    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. With
+    `broadcast_from_rank0` only rank 0 holds the entries and sends them to the others."""
+    entries = _linear4bit_entries(model)
+    if not entries:
+        return
+    dist = _dist()
+    broadcast = dist is not None and bool(getattr(options, "broadcast_from_rank0", False))
+    if not isinstance(state_dict, dict):
+        state_dict = {}
+    if broadcast:
+        has = torch.tensor([int(any(
+            k.startswith(prefix + "weight.") for prefix, _ in entries for k in state_dict
+        ))])
+        dist.broadcast(has, src = 0)
+        if not int(has.item()):
+            return
+    from bitsandbytes.functional import QuantState
+
+    for prefix, module in entries:
+        live = module.weight.quant_state
+        head = prefix + "weight."
+        saved = {
+            k[len(head) :]: v
+            for k, v in state_dict.items()
+            if k.startswith(head) and isinstance(v, torch.Tensor)
+        }
+        if broadcast:
+            payload = [{k: v.detach().cpu() for k, v in saved.items()}]
+            dist.broadcast_object_list(payload, src = 0)
+            saved = payload[0]
+        if not saved:
+            continue
+        expected = set(live.as_dict(packed = True))
+        if set(saved) != expected:
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` has entries "
+                f"{sorted(saved)}, the model's has {sorted(expected)}."
+            )
+        loaded = QuantState.from_dict(saved, device = live.absmax.device)
+        pairs = [("absmax", loaded.absmax, live.absmax), ("code", loaded.code, live.code)]
+        if live.nested:
+            pairs += [
+                ("offset", loaded.offset, live.offset),
+                ("state2.absmax", loaded.state2.absmax, live.state2.absmax),
+                ("state2.code", loaded.state2.code, live.state2.code),
+            ]
+        same = (
+            loaded.quant_type == live.quant_type
+            and loaded.blocksize == live.blocksize
+            and loaded.nested == live.nested
+            and tuple(loaded.shape) == tuple(live.shape)
+            and loaded.dtype == live.dtype
+            and (not live.nested or loaded.state2.blocksize == live.state2.blocksize)
+            and all(
+                isinstance(a, torch.Tensor) and a.shape == b.shape and a.dtype == b.dtype
+                for _, a, b in pairs
+            )
+        )
+        if not same:
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` does not "
+                "match the model's (shape, blocksize, quant type or nesting differ)."
+            )
+        with torch.no_grad():
+            for _, a, b in pairs:
+                b.copy_(a.to(b.device))
+
+
 def _without_quant_state_entries(name, args, kwargs):
-    """Loading: drop the entries `_add_quant_state_entries` wrote (DCP would reject them as unexpected
-    keys); the QuantState is rebuilt identically when the 4-bit model is loaded again."""
+    """Loading: the entries `_add_quant_state_entries` wrote are restored into the live QuantState
+    (`_restore_quant_state`) and then dropped, as DCP would reject them as unexpected keys."""
     model = args[0] if args else kwargs.get("model")
     if not isinstance(model, torch.nn.Module):
         return args, kwargs
@@ -472,6 +567,12 @@ def _without_quant_state_entries(name, args, kwargs):
         )
     if not drop:
         return args, kwargs
+    if name == "set_model_state_dict" and len(args) > 1:
+        loading = args[1]
+    else:
+        loading = kwargs.get("model_state_dict")
+    if name in ("set_model_state_dict", "set_state_dict"):
+        _restore_quant_state(model, loading, kwargs.get("options", None))
 
     def strip(state_dict):
         if not isinstance(state_dict, dict) or not drop.intersection(state_dict):
