@@ -139,15 +139,13 @@ def set_mcp_settings(
             if not all(isinstance(k, str) and isinstance(v, bool) for k, v in tool_states.items()):
                 raise ValueError("tool_states maps tool names to true or false.")
             _check_names(tool_states)
-            stored = _read_from_db()[1]
-            if stored is None:
-                raise ValueError(
-                    "The stored MCP tool list could not be read; send the whole list instead."
-                )
             from mcp_server import tool_names
 
-            # A name this build no longer serves is dropped, as a whole-list save drops it.
-            stored = stored & set(tool_names())
+            known = set(tool_names())
+            stored = _read_from_db()[1]
+            # Unreadable reads as every tool off, as the GET shows it, so a toggle writes a valid list again. A
+            # name this build no longer serves is dropped, as a whole-list save drops it.
+            stored = known if stored is None else stored & known
             disabled_tools = (stored - {n for n, on in tool_states.items() if on}) | {
                 n for n, on in tool_states.items() if not on
             }

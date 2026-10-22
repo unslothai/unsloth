@@ -4651,9 +4651,6 @@ def update_mcp_access(
         )
     except UnknownMcpToolError as exc:
         raise HTTPException(status_code = 422, detail = str(exc))
-    except ValueError as exc:
-        # tool_states needs the stored list, which could not be read.
-        raise HTTPException(status_code = 409, detail = str(exc))
     response = _mcp_access_response(request)
     logger.info(
         "settings.mcp_access_updated subject=%s enabled=%s disabled=%s",
