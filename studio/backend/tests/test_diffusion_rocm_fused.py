@@ -485,3 +485,32 @@ def test_a_failed_rope_launch_disables_the_fused_path_for_the_load(monkeypatch):
     rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
     fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
     assert len(calls) == 2
+
+
+def test_a_failed_adaln_launch_disables_the_fused_path_for_the_load(monkeypatch):
+    calls = []
+
+    def failing_launch(x, scale, shift, eps):
+        calls.append(1)
+        raise RuntimeError("PTX JIT compilation failed")
+
+    monkeypatch.setattr(rf, "_adaln_kernel", lambda: failing_launch)
+    monkeypatch.setattr(rf, "_rope_kernel", lambda: (lambda x, cos, sin: None))
+    monkeypatch.setattr(rf, "_adaln_eligible", lambda norm, x, scale, shift: float(norm.eps))
+    monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")["adaln"] == 3
+    torch.manual_seed(0)
+    norm = nm.AdaLayerNormContinuous(8, 8, elementwise_affine = False, eps = 1e-6)
+    x = torch.randn(2, 5, 8)
+    cond = torch.randn(2, 8)
+    with torch.no_grad():
+        want = _STOCK_FWD["AdaLayerNormContinuous"](norm, x, cond)
+        for _ in range(4):
+            assert torch.equal(norm(x, cond), want)
+    assert len(calls) == 1
+    rf.uninstall()
+    rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
+    with torch.no_grad():
+        norm(x, cond)
+    assert len(calls) == 2
