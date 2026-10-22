@@ -222,9 +222,13 @@ test("the automatic switch runs once per chat open", () => {
   // With Keep models loaded off, picking another model unloads the selected one.
   assert.match(body, /createdModel && !resident && keepModelsLoaded\s*\?/);
   // A cross-tab revision carries no thread, so the saved model is read again rather than kept stale.
+  // Only the plain cross-tab Event re-reads (streamed chunks are CustomEvents), and a slower read
+  // never lands over a newer answer.
+  assert.match(notice, /if \(event instanceof CustomEvent\) return;\s*const generation = \+\+readGeneration;/);
+  assert.match(notice, /if \(updatedThread\.id === threadId\) readGeneration \+= 1;/);
   assert.match(
     notice,
-    /if \(updatedThread\) \{\s*reader\.applyUpdate\(updatedThread\);\s*return;\s*\}[\s\S]*?getStoredChatThread\(threadId\)\s*\.then\(\(thread\) => thread && reader\.applyUpdate\(thread\)\)/,
+    /getStoredChatThread\(threadId\)\s*\.then\(\(thread\) => \{\s*if \(thread && generation === readGeneration\) reader\.applyUpdate\(thread\);/,
   );
   // Unmounting ends the open, so a pending switch's check turns false.
   assert.match(body, /useEffect\(\s*\(\) => \(\) => \{\s*autoSwitchRef\.current = \{ settled: false \};\s*\},\s*\[\],\s*\);/);

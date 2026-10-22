@@ -53,16 +53,24 @@ export function useChatCreatedModel(
     const reader = createChatModelHistoryReader(threadId, (model) =>
       setRead({ threadId, model }),
     );
+    // Bumped by every newer answer, so a slower re-read never lands over it.
+    let readGeneration = 0;
     const onHistoryUpdated = (event: Event): void => {
       const updatedThread = (event as CustomEvent<ChatHistoryUpdatedDetail>)
         .detail?.thread;
       if (updatedThread) {
+        if (updatedThread.id === threadId) readGeneration += 1;
         reader.applyUpdate(updatedThread);
         return;
       }
-      // A change from another tab arrives with no thread, so read this one again.
+      // Another tab's change is re-raised as a plain Event with no thread. This tab's own
+      // thread-less events (streamed chunks) are CustomEvents and move no model.
+      if (event instanceof CustomEvent) return;
+      const generation = ++readGeneration;
       void getStoredChatThread(threadId)
-        .then((thread) => thread && reader.applyUpdate(thread))
+        .then((thread) => {
+          if (thread && generation === readGeneration) reader.applyUpdate(thread);
+        })
         .catch(() => undefined);
     };
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
