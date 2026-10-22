@@ -87,9 +87,15 @@ def _helper(name):
     import torch
 
     tree = ast.parse(VISION_PATH.read_text(encoding = "utf-8"))
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    wanted = {name, "_is_audio_head_model", "_AUDIO_HEAD_SUFFIXES"}
+    nodes = [
+        n
+        for n in tree.body
+        if (isinstance(n, ast.FunctionDef) and n.name in wanted)
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in wanted for t in n.targets))
+    ]
     ns = {"torch": torch}
-    exec(compile(ast.Module([node], []), str(VISION_PATH), "exec"), ns)
+    exec(compile(ast.Module(nodes, []), str(VISION_PATH), "exec"), ns)
     return ns[name]
 
 
@@ -112,6 +118,30 @@ def test_ctc_and_classifier_heads_are_trained_and_saved():
     assert heads(classifier) == ["classifier"]
     assert heads(transformers.ASTModel(config)) == []  # a bare encoder is its own backbone
 
+    whisper = transformers.WhisperConfig(
+        vocab_size = 64,
+        d_model = 16,
+        encoder_layers = 1,
+        decoder_layers = 1,
+        encoder_attention_heads = 2,
+        decoder_attention_heads = 2,
+        encoder_ffn_dim = 32,
+        decoder_ffn_dim = 32,
+        num_mel_bins = 8,
+        max_source_positions = 8,
+        num_labels = 3,
+    )
+    # backbone under `encoder`, not base_model_prefix
+    assert heads(transformers.WhisperForAudioClassification(whisper)) == ["projector", "classifier"]
+
+    xvector = _tiny_ctc().config
+    xvector.tdnn_dim, xvector.tdnn_kernel, xvector.tdnn_dilation = (8, 8), (3, 1), (1, 1)
+    xvector.xvector_output_dim = 8
+    names = heads(transformers.Wav2Vec2ForXVector(xvector))
+    assert (
+        "feature_extractor" not in names and "classifier" in names
+    )  # PEFT would also match wav2vec2.feature_extractor
+
     model = peft.get_peft_model(
         _tiny_ctc(),
         peft.LoraConfig(r = 4, target_modules = r".*\.attention\.q_proj", modules_to_save = ["lm_head"]),
@@ -120,6 +150,9 @@ def test_ctc_and_classifier_heads_are_trained_and_saved():
     assert any("lm_head" in n for n in trainable)
     source = _get_peft_model_source()
     assert "modules_to_save = _trainable_head_modules(model) or None" in source
+    assert (
+        "_cannot_generate or _is_audio_head_model(model)" in source
+    )  # ParakeetForCTC can generate
     assert "type(model) is PeftModel" in source  # a generic PeftModel is not wrapped twice
 
 

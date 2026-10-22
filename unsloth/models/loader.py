@@ -764,6 +764,7 @@ def _resolve_speech_seq2seq_auto_model(
 
 _AUDIO_HEAD_AUTO_CLASS_NAMES = (
     "AutoModelForCTC",
+    "AutoModelForTDT",
     "AutoModelForAudioClassification",
     "AutoModelForAudioFrameClassification",
     "AutoModelForAudioXVector",

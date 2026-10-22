@@ -91,6 +91,7 @@ def _is_text_seq2seq_config(config):
 _AUDIO_AUTO_CLASS_NAMES = (
     "AutoModelForSpeechSeq2Seq",
     "AutoModelForCTC",
+    "AutoModelForTDT",
     "AutoModelForAudioClassification",
     "AutoModelForAudioFrameClassification",
     "AutoModelForAudioXVector",
@@ -2081,15 +2082,42 @@ def _missing_torchvision_error(error = None):
     return False
 
 
+_AUDIO_HEAD_SUFFIXES = (
+    "ForCTC",
+    "ForTDT",
+    "ForAudioClassification",
+    "ForSequenceClassification",
+    "ForAudioFrameClassification",
+    "ForXVector",
+)
+
+
+def _is_audio_head_model(model):
+    """A CTC / TDT / audio classification task model, whose head is usually freshly initialized."""
+    return type(model).__name__.endswith(_AUDIO_HEAD_SUFFIXES)
+
+
 def _trainable_head_modules(model):
-    """Top-level heads beside the backbone (CTC lm_head, audio classifier / projector) that hold unquantized weights."""
+    """Top-level heads beside the backbone (CTC lm_head / ctc_head, audio classifier / projector) that hold
+    unquantized weights. PEFT suffix-matches modules_to_save, so a name the backbone also uses is left out."""
     prefix = getattr(model, "base_model_prefix", None)
     backbone = getattr(model, prefix, None) if prefix else None
-    if backbone is None:  # a bare encoder (WavLMModel) is its own backbone: LoRA only
-        return []
+    children = [(n, c) for n, c in model.named_children() if next(c.parameters(), None) is not None]
+    if backbone is None:
+        if not _is_audio_head_model(
+            model
+        ):  # a bare encoder (WavLMModel) is its own backbone: LoRA only
+            return []
+        # WhisperForAudioClassification keeps its backbone (a PreTrainedModel) under `encoder`, not base_model_prefix.
+        from transformers import PreTrainedModel
+
+        backbone = next((c for _, c in children if isinstance(c, PreTrainedModel)), None)
+        if backbone is None:
+            return []
+    backbone_names = {n.rsplit(".", 1)[-1] for n, _ in backbone.named_modules() if n}
     heads = []
-    for name, child in model.named_children():
-        if child is backbone or next(child.parameters(), None) is None:
+    for name, child in children:
+        if child is backbone or name in backbone_names:
             continue
         if any(type(m).__name__ in ("Linear4bit", "Linear8bitLt") for m in child.modules()):
             continue
@@ -4779,7 +4807,7 @@ class FastBaseModel:
             # Speech / CTC / audio classification models: the task wrappers pass input_ids = None (it reaches
             # Whisper's decoder twice), and PeftModelForCausalLM reads prepare_inputs_for_generation in __init__.
             task_type = None
-            if _cannot_generate and modules_to_save is None:
+            if (_cannot_generate or _is_audio_head_model(model)) and modules_to_save is None:
                 # The generic PeftModel neither trains nor saves the (often freshly initialized) head.
                 modules_to_save = _trainable_head_modules(model) or None
         if _is_text_seq2seq_config(getattr(model, "config", None)):
