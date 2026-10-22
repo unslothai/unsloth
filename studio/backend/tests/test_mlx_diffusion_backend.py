@@ -564,6 +564,88 @@ def test_policy_helpers(monkeypatch):
     assert mb.compute_precision_name("Apple M1") == "bfloat16"
 
 
+_GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    "side, free_gib, tiled",
+    [
+        # 16 GB Mac (10.67 GiB working set) holding Z-Image Q4_0 + an 8-bit text encoder (8.65 GiB): 2 GiB left.
+        (1024, 2.0, True),
+        (512, 2.0, False),
+        # 64 GB Mac: the untiled 1024 decode (about 6.6 GiB) fits, so it stays untiled, bit for bit as before.
+        (1024, 38.0, False),
+        (2048, 38.0, False),
+        (2048, 20.0, True),
+    ],
+)
+def test_vae_tiling_engages_only_when_the_untiled_decode_does_not_fit(monkeypatch, side, free_gib, tiled):
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    assert mb.vae_tiling_needed(side, side, int(free_gib * _GIB)) is tiled
+
+
+def test_vae_tiling_env_and_unknown_budget(monkeypatch):
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    assert mb.vae_tiling_needed(4096, 4096, None) is False
+    monkeypatch.setenv(mb.VAE_TILING_ENV, "1")
+    assert mb.vae_tiling_needed(256, 256, 64 * _GIB) is True
+    monkeypatch.setenv(mb.VAE_TILING_ENV, "0")
+    assert mb.vae_tiling_needed(4096, 4096, 0) is False
+
+
+def test_untiled_decode_estimate_matches_the_metal_measurements():
+    # mflux Z-Image VAE, bf16, Apple M1 (Virtual) via Metal: 1.99 GiB at 512 and 6.64 GiB at 1024 above the weights.
+    assert abs(mb.untiled_decode_bytes(512, 512) / _GIB - 1.99) < 0.05
+    assert abs(mb.untiled_decode_bytes(1024, 1024) / _GIB - 6.64) < 0.05
+
+
+@pytest.mark.parametrize("free_gib, implicit, expected", [(2.0, True, True), (40.0, True, False), (2.0, False, False)])
+def test_the_runtime_sets_mfluxs_tiling_config_per_generation(monkeypatch, free_gib, implicit, expected):
+    pytest.importorskip("mlx.core")
+    tiling = pytest.importorskip("mflux.models.common.vae.tiling_config")
+    pytest.importorskip("mflux.utils.exceptions")
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+
+    seen = {}
+
+    class _Registry:
+        def __init__(self):
+            self.in_loop = []
+
+        def register(self, callback):
+            self.in_loop.append(callback)
+
+    class _Vae:
+        supports_implicit_tiling = implicit
+
+    class _Model:
+        callbacks = _Registry()
+        vae = _Vae()
+        tiling_config = None
+
+        def generate_image(self, **kwargs):
+            seen["tiling_config"] = self.tiling_config
+            return type("R", (), {"image": "png"})()
+
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(runtime, "free_working_set_bytes", lambda: int(free_gib * _GIB))
+    model = _Model()
+    image = runtime.generate(
+        model,
+        prompt = "p",
+        negative_prompt = None,
+        seed = 1,
+        steps = 1,
+        width = 1024,
+        height = 1024,
+        guidance = None,
+        on_step = lambda done: None,
+    )
+    assert image == "png"
+    assert isinstance(seen["tiling_config"], tiling.TilingConfig) is expected
+    assert runtime.vae_tiled() is expected
+
+
 def test_importing_the_engine_does_not_import_mlx():
     import subprocess
     import sys
