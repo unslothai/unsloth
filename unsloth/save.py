@@ -6477,7 +6477,9 @@ def _fsdp2_merged_offload(model, args, kwargs):
 
 
 def _fsdp2_merged_adapter_only(model, args, kwargs):
-    return isinstance(model, PeftModel) and _is_adapter_save_method(_merged_save_method(args, kwargs))
+    return isinstance(model, PeftModel) and _is_adapter_save_method(
+        _merged_save_method(args, kwargs)
+    )
 
 
 # merged_4bit merges with PEFT where the packed 4-bit weights stay (on the GPU), so those layers'
