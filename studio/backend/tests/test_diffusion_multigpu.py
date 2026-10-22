@@ -2369,8 +2369,7 @@ def test_replica_blocks_get_their_own_compile_guard():
 
 
 def test_replica_builds_inside_inference_mode_from_torchao_int8_weights():
-    # The router builds on the first guided step, inside the render's inference_mode: detaching a torchao weight made
-    # outside it raised "Cannot set version_counter for inference tensor", so CFG-parallel never engaged on int8.
+    # Regression: building inside inference_mode raised "Cannot set version_counter" on torchao int8 weights.
     pytest.importorskip("torchao")
     from torchao.quantization import quantize_
 
@@ -2413,7 +2412,6 @@ def test_probe_sees_an_in_place_edit_of_an_inference_tensor():
     # no version counter on an inference tensor: the fingerprint cannot see the edit, the probe does
     assert mg.weights_fingerprint(dit) == fp
     assert probe is not None and mg.weights_probe(dit) != probe
-    # ordinary weights carry a version counter: nothing to probe, nothing read back
     assert mg.weights_probe(_Dit()) is None
 
 

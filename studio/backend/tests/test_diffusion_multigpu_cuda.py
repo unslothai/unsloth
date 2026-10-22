@@ -239,8 +239,7 @@ def _int8_dit(load_under_inference_mode):
 
 @pytest.mark.parametrize("load_under_inference_mode", [False, True])
 def test_int8_replica_builds_inside_inference_mode_on_the_second_card(load_under_inference_mode):
-    # Studio renders under inference_mode, so the router builds the replica there. Weights loaded outside it raised
-    # "Cannot set version_counter for inference tensor"; weights loaded inside it left the "replica" on cuda:0.
+    # Inside inference_mode: outside-made weights raised "Cannot set version_counter"; inside-made stayed on cuda:0.
     dit = _int8_dit(load_under_inference_mode)
     latents = torch.randn(4, 128, device = "cuda:0", dtype = torch.bfloat16)
     cond = torch.randn(3, 128, device = "cuda:0", dtype = torch.bfloat16)

@@ -1268,11 +1268,8 @@ def build_replica(module: Any, device: Any) -> Any:
     """A copy of ``module`` whose parameters and buffers are created directly on ``device`` (never staged on the
     source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built.
 
-    Built outside inference mode: the router builds on the first guided step, inside the render's
-    ``torch.inference_mode()``, where detaching a torchao weight subclass (int8 / fp8 / NVFP4 / MX) made outside it
-    raises "Cannot set version_counter for inference tensor", and copying one made inside it silently left the copy
-    on the source card. Outside it every weight kind copies to ``device``; the copy holds ordinary tensors, which the
-    replica's inference-mode calls read the same way."""
+    Built outside inference mode: inside it, torchao weights made outside raise "Cannot set version_counter for
+    inference tensor" and ones made inside silently stay on the source card."""
     torch = _torch()
     device = torch.device(device)
     with torch.inference_mode(False), torch.no_grad():
@@ -1447,11 +1444,8 @@ def _dense_leaves(t: Any, depth: int = 0) -> Iterator[Any]:
 
 
 def weights_probe(module: Any, index_cache: Optional[dict] = None) -> Optional[bytes]:
-    """A sample of the values of every weight :func:`weights_fingerprint` cannot watch: an inference tensor (made under
-    ``torch.inference_mode()``) has no version counter, so an in-place edit of one (``mul_``, ``copy_``, a manual LoRA
-    fuse) leaves the fingerprint unchanged. ``_PROBE_SAMPLES`` evenly spaced bytes of each such tensor, gathered on
-    the device and read back in ONE host sync; None when every weight has a version counter (nothing to probe).
-    An edit that touches none of the sampled bytes is not seen; whole-tensor edits (scale, fuse, reload) are."""
+    """Sampled bytes of every inference tensor (no version counter, so invisible to :func:`weights_fingerprint`),
+    read back in one host sync; None when there are none. Edits missing every sampled byte go unseen."""
     torch = _torch()
     cache = {} if index_cache is None else index_cache
     by_device: dict = {}
@@ -1899,7 +1893,6 @@ class CfgParallelRouter:
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
-        # Values sampled from the weights the fingerprint cannot watch (inference tensors), checked once per render.
         self.probe: Optional[bytes] = None
         self.probe_index: dict = {}
         self.probed_this_render = False
@@ -1955,7 +1948,6 @@ class CfgParallelRouter:
         # the next render shows its own guidance shape: no speculative branch before its first odd call
         self.cfg_seen = False
         self.singles = 0
-        # weights may be edited between renders: the next one re-reads the probe
         self.probed_this_render = False
 
     def _note_refusal(self, exc: BaseException) -> None:
