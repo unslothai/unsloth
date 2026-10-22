@@ -2086,6 +2086,9 @@ def _drop_fp8_dequantize_conversions(model):
         if not _has_dequant(conversion):
             kept.append(conversion)
             continue
+        if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+            # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
+            model._unsloth_fp8_dequantized = True
         if all(isinstance(op, Fp8Dequantize) for op in operations):
             # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
             changed += 1
@@ -2127,6 +2130,17 @@ def _drop_fp8_dequantize_conversions(model):
     if changed:
         model._weight_conversions = kept
     return changed
+
+
+def _loaded_quant_method(config):
+    """quant_method of `config.quantization_config` as a lower-case string, dict or config object, else None."""
+    qc = getattr(config, "quantization_config", None)
+    if qc is None:
+        return None
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    if method is None:
+        return None
+    return str(getattr(method, "value", method)).lower()
 
 
 def _fp8_dequantize_quantization_config(model_config):
