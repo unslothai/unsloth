@@ -72,7 +72,7 @@ def _norm_rope_fwd_block(
     tl.store(y_ptr + HALF, y1 * cos1[None, :] + y0 * sin1[None, :], mask = mask)
 
 
-@triton.jit(do_not_specialize = ("seqlen",))
+@triton.jit
 def _qk_norm_rope_forward(
     Qo,
     Q,
@@ -180,7 +180,7 @@ def _norm_rope_bwd_block(
     tl.store(dx_ptr + HALF, scale * (HEAD_DIM * g1 - n1 * rowsum[:, None]), mask = mask)
 
 
-@triton.jit(do_not_specialize = ("seqlen",))
+@triton.jit
 def _qk_norm_rope_backward(
     dQ,
     dQo,
