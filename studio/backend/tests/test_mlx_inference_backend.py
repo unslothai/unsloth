@@ -3258,39 +3258,57 @@ def test_mlx_batch_releases_an_over_budget_cache_while_another_row_decodes(monke
     _install_fake_prompt_cache_api(monkeypatch)
 
     history = _MLXPromptCacheHistory(6, 1000)
-    session = object.__new__(_TextBatchSession)
-    session.backend = SimpleNamespace(_prompt_cache_history = history)
-    session._settled = {}
-    stream = SimpleNamespace(settle = lambda: [], drain = lambda cancelled: [])
-    rows = {
-        handle: SimpleNamespace(
-            handle = handle,
-            uid = handle,
-            plan = SimpleNamespace(stream = stream),
-            ready_at = None,
-            processing_at = None,
-            prompt_len = 1,
-            generated = 1,
-            cached = 0,
-            reason = "stop",
-        )
-        for handle in ("long", "other")
-    }
-    session._rows, session._by_uid = dict(rows), dict(rows)
     turn = list(range(50))
     long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+    banked = {"long": (turn, long_cache), "short": ([7, 8, 9], [_FakeCacheEntry(offset = 3)])}
+    session = object.__new__(_TextBatchSession)
+    session.backend = SimpleNamespace(
+        _prompt_cache_history = history,
+        _bank_row_cache = lambda key, *_: history.insert("key", *banked[key]),
+    )
+    session._settled = {}
+    stream = SimpleNamespace(settle = lambda: [], drain = lambda cancelled: [])
 
-    history.insert("key", turn, long_cache)
-    list(session._retire(rows["long"], cancelled = False))
-    cache, rest = history.fetch(object(), "key", turn + [50])
-    assert cache is not long_cache
-    assert rest == turn + [50]
+    def feed(row, event):
+        if event.finish_reason is not None:
+            session.backend._bank_row_cache(row.cache_key)
+            yield from session._retire(row, cancelled = False)
 
-    history.insert("key", turn, long_cache)
-    list(session._retire(rows["other"], cancelled = True))
-    cache, rest = history.fetch(object(), "key", turn + [50])
-    assert cache is long_cache
-    assert rest == [50]
+    session._feed = feed
+
+    def held_after(ended, withdraw = False):
+        rows = {
+            handle: SimpleNamespace(
+                handle = handle,
+                uid = handle,
+                cache_key = handle,
+                all_tokens = [],
+                plan = SimpleNamespace(stream = stream),
+                ready_at = None,
+                processing_at = None,
+                prompt_len = 1,
+                generated = 1,
+                cached = 0,
+                reason = "stop",
+            )
+            for handle in banked
+        }
+        session._rows, session._by_uid = rows, dict(rows)
+        events = [
+            SimpleNamespace(uid = handle, finish_reason = "stop" if handle in ended else None)
+            for handle in banked
+        ]
+        session.generator = SimpleNamespace(
+            next = lambda: ([], events),
+            remove = lambda uids, return_prompt_caches: {},
+        )
+        list(session.withdraw(ended) if withdraw else session.step())
+        return history.fetch(object(), "key", turn + [50])[0] is long_cache
+
+    assert not held_after(["long"])
+    assert held_after(["long", "short"])
+    assert not held_after(["long"], withdraw = True)
+    assert held_after(["long", "short"], withdraw = True)
 
 
 def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):

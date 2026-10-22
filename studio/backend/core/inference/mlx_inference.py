@@ -3901,6 +3901,7 @@ class _TextBatchSession:
             if row.ready_at is None:
                 row.ready_at = now
             yield from self._feed(row, event)
+        self._release_held_cache_beside_live_rows()
 
     def _feed(self, row, event):
         stream = row.plan.stream
@@ -3951,14 +3952,18 @@ class _TextBatchSession:
                 row.plan.stream,
             )
             yield from self._retire(row, cancelled = True)
+        self._release_held_cache_beside_live_rows()
+
+    def _release_held_cache_beside_live_rows(self):
+        # Decided once every row that ended together is retired: holding it beside a row still
+        # decoding would raise peak memory.
+        history = self.backend._prompt_cache_history
+        if self._rows and history is not None:
+            history.release_oversized()
 
     def _retire(self, row, *, cancelled):
         self._rows.pop(row.handle, None)
         self._by_uid.pop(row.uid, None)
-        history = self.backend._prompt_cache_history
-        if self._rows and history is not None:
-            # Holding it beside a row still decoding would raise peak memory.
-            history.release_oversized()
         stream = row.plan.stream
         yield from ((row.handle, snap) for snap in stream.settle())
         yield from ((row.handle, snap) for snap in stream.drain(cancelled = cancelled))
