@@ -541,3 +541,33 @@ def test_slice_identity_fix_is_probe_gated_and_reversible(monkeypatch):
     finally:
         dt.uninstall_slice_identity_fix()
     assert SliceVariable.__dict__.get("get_real_python_backed_value") is stock
+
+
+class Float8Tensor(torch.Tensor):
+    """Stands in for torchao's float8 weight subclass (only the class name is read)."""
+
+
+def _h3_with_float8_weight():
+    m = MiniMaxH3Transformer3DModel()
+    m.proj = torch.nn.Linear(8, 8)
+    m.proj.weight = torch.nn.Parameter(
+        torch.Tensor._make_subclass(Float8Tensor, torch.zeros(8, 8)), requires_grad = False
+    )
+    assert type(m.proj.weight).__name__ == "Float8Tensor"
+    return m
+
+
+def test_minimax_h3_float8_weights_keep_temb_backed_dynamic():
+    """torchao float8 activation quantisation guards on the row count, so an unbacked temb failed the compile."""
+    if not dt.unbacked_supported():
+        pytest.skip("torch lacks compiler.config.unbacked_sources")
+    m = _h3_with_float8_weight()
+    assert dt.unbacked_sources_for(m) == ()
+    assert "L['temb']" in dt.sources_for(m)
+    assert dt.install(m) is True
+    m(12, 2)
+    assert "L['temb']" in m.seen.split(",")
+    assert "L['temb']" not in (m.seen_unbacked or "").split(",")
+    dt.uninstall(m)
+    # a plain (bf16 / int8) H3 keeps the unbacked temb
+    assert dt.unbacked_sources_for(MiniMaxH3Transformer3DModel()) == ("L['temb']",)

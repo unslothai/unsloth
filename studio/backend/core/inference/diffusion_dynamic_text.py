@@ -174,10 +174,36 @@ def unbacked_supported() -> bool:
     return callable(getattr(builder, "is_unbacked_source", None))
 
 
+def _torchao_float8_weights(transformer: Any) -> bool:
+    """Whether a torchao float8 tensor holds any of ``transformer``'s weights."""
+    parameters = getattr(transformer, "parameters", None)
+    if not callable(parameters):
+        return False
+    try:
+        for p in parameters():
+            if "float8" in type(p).__name__.lower():
+                return True
+            layout = getattr(
+                p, "_layout", None
+            )  # torchao < 0.12: AffineQuantizedTensor + Float8Layout
+            if layout is not None and "float8" in type(layout).__name__.lower():
+                return True
+    except Exception:  # noqa: BLE001 - unreadable: keep the family's choice
+        return False
+    return False
+
+
 def unbacked_sources_for(transformer: Any) -> tuple[str, ...]:
     if not unbacked_supported():
         return ()
-    return _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    unbacked = _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    if unbacked and _torchao_float8_weights(transformer):
+        # torchao's float8 activation quantisation guards on the row count (``_get_reduction_params``,
+        # ``_maybe_expand_scale_to_tensor_shape``, ``preprocess_scale``), which an unbacked ``temb`` makes a
+        # data-dependent error, so the compile fell back to eager. Backed dynamic instead: step 1's single row
+        # specialises once more, on the first render only.
+        return ()
+    return unbacked
 
 
 def sources_for(transformer: Any) -> tuple[str, ...]:
