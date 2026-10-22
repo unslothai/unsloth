@@ -8,6 +8,7 @@ X's dtype. A PEFT LoRA variant (its own forward), a disabled or merged adapter (
 fused backward has no LoRA weights to use), a trainable base weight (its gradient) and an autocast dtype
 other than X's (the in-place LoRA accumulation is not autocast) used to run fused anyway, training plain
 LoRA, dropping gradients or crashing. Each is checked against PEFT run in float64 (CPU) / float32 (CUDA).
+A disabled or merged adapter with no gradient needed (the DPO / GRPO reference forward) stays fused.
 """
 
 from __future__ import annotations
@@ -177,15 +178,134 @@ def test_eligible_configs_still_fuse(monkeypatch, device, dropout, lora_bias):
         assert len(spy.calls[0][1]) == 6
 
 
-def test_routing_compiles_without_graph_breaks():
+FUSED_NAMES = {"o": ["LoRA_W"], "qkv": ["LoRA_QKV"], "mlp": ["LoRA_MLP"]}
+
+
+def _disable_or_merge(model, block, state):
+    if state == "disabled":
+        model.base_model.disable_adapter_layers()
+    else:
+        for name in TARGETS:
+            block.get_submodule(name).merge()
+
+
+@pytest.mark.parametrize("device,dtype,path", CASES)
+@pytest.mark.parametrize("state", ["disabled", "merged"])
+@pytest.mark.parametrize("grad_mode", ["no_grad", "inference_mode", "grad_frozen_input"])
+@pytest.mark.parametrize("dropout", [0.0, 0.3])
+def test_disabled_or_merged_adapter_without_grad_stays_fused(monkeypatch, device, dtype, path, state, grad_mode, dropout):
+    # The reference forward: no gradient flows, so the fused base matmul runs and equals PEFT bitwise.
+    model, block = _peft_block(device, dtype, dropout)
+    _disable_or_merge(model, block, state)
+    X = torch.randn(2, 5, H, device = device, dtype = dtype)
+    spy = _Spy(monkeypatch)
+    ctx = {"no_grad": torch.no_grad, "inference_mode": torch.inference_mode}.get(grad_mode, torch.enable_grad)
+    with ctx():
+        fused = PATHS[path][0](block)(X)
+    assert [name for name, _ in spy.calls] == FUSED_NAMES[path]
+    args = spy.calls[0][1]
+    if path == "o":
+        # The default config's six-argument call.
+        assert len(args) == 6
+    else:
+        # No LoRA weights, no dropout masks, no lora_B biases: the base matmul only.
+        assert args[3] is None and args[-4] is None and all(b is None for b in args[-3:])
+    with ctx():
+        ref = PATHS[path][1](block)(X)
+    # Each projection is PEFT's base_layer(X) bitwise; the MLP's Triton SwiGLU rounds its float32
+    # activation 1 ulp differently from torch's SiLU * up.
+    tol = {} if path == "mlp" else dict(rtol = 0, atol = 0)
+    for a, b in zip(fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)):
+        assert not a.requires_grad
+        torch.testing.assert_close(a, b, **tol)
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "bitsandbytes 4-bit needs CUDA")
+@pytest.mark.parametrize("path", _paths("cuda"))
+def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, path):
+    bnb = pytest.importorskip("bitsandbytes")
+    from peft import LoraConfig, get_peft_model
+
+    class _Block4bit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            for name, (i, o) in {
+                "q_proj": (H, H), "k_proj": (H, H), "v_proj": (H, H), "o_proj": (H, H),
+                "gate_proj": (H, 96), "up_proj": (H, 96), "down_proj": (96, H),
+            }.items():
+                layer = bnb.nn.Linear4bit(i, o, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
+                layer.weight = bnb.nn.Params4bit(
+                    layer.weight.data.to(torch.bfloat16), requires_grad = False, quant_type = "nf4"
+                )
+                setattr(self, name, layer)
+            self.act_fn = torch.nn.SiLU()
+
+    torch.manual_seed(3407)
+    base = _Block4bit().to("cuda")
+    cfg = LoraConfig(r = 4, lora_alpha = 8, lora_dropout = 0.1, target_modules = TARGETS, init_lora_weights = False)
+    model = get_peft_model(base, cfg)
+    for name, p in model.named_parameters():
+        if "lora_" in name:
+            p.data = p.data.to(torch.bfloat16)
+    block = model.base_model.model
+    assert getattr(block.o_proj.base_layer.weight, "quant_state", None) is not None
+    model.train()
+    model.base_model.disable_adapter_layers()
+    X = torch.randn(2, 7, H, device = "cuda", dtype = torch.bfloat16)
+    spy = _Spy(monkeypatch)
+    with torch.no_grad():
+        fused = PATHS[path][0](block)(X)
+        ref = PATHS[path][1](block)(X)
+    assert [name for name, _ in spy.calls] == FUSED_NAMES[path]
+    for a, b in zip(fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)):
+        torch.testing.assert_close(a, b, rtol = 0, atol = 0)
+
+
+def test_patch_summary_names_a_lora_variant():
+    from unsloth.models.llama import _lora_variant_note
+
+    model, block = _peft_block("cpu", torch.float32, 0.0)
+    assert _lora_variant_note(model, "default") == ""
+    block.o_proj.lora_variant["default"] = _DoubledLoRA()
+    note = _lora_variant_note(model, "default")
+    assert "_DoubledLoRA" in note and "PEFT's own forward" in note
+
+
+def test_routing_compiles_without_graph_breaks(monkeypatch):
+    # The added routing checks are Python attribute reads and grad / autocast mode queries: fullgraph traces
+    # the fused, variant, trainable base, autocast and disabled (with and without grad) routes.
     if not fast_lora.TRACE_LORA_FUNCTIONS:
         pytest.skip("fused Functions run Dynamo-disabled before torch 2.11")
     import torch._dynamo
 
     model, block = _peft_block("cpu", torch.float32, 0.3, True)
-    torch._dynamo.reset()
-    compiled = torch.compile(lambda X: fast_lora.apply_lora_o(block, X), backend = "eager", fullgraph = True)
     X = torch.randn(2, 5, H)
-    compiled(X)
+
+    def fn(X):
+        return fast_lora.apply_lora_o(block, X), fast_lora.apply_lora_qkv(block, X)
+
+    def check(X, autocast_dtype = None, grad = True):
+        torch._dynamo.reset()
+        compiled = torch.compile(fn, backend = "eager", fullgraph = True)
+        with torch.set_grad_enabled(grad), torch.autocast("cpu", dtype = autocast_dtype or torch.bfloat16, enabled = autocast_dtype is not None):
+            got = compiled(X)
+            want = fn(X)
+        torch.testing.assert_close(got[0], want[0])
+        for a, b in zip(got[1], want[1]):
+            torch.testing.assert_close(a, b)
+
+    model.eval()  # deterministic dropout, so compiled and eager agree
+    check(X)
+    check(X, torch.bfloat16)  # autocast in another dtype: PEFT
+    check(X.requires_grad_(), grad = True)
+    for name in TARGETS:
+        block.get_submodule(name).lora_variant["default"] = _DoubledLoRA()
+    check(X)
+    for name in TARGETS:
+        del block.get_submodule(name).lora_variant["default"]
+    block.o_proj.base_layer.weight.requires_grad_(True)
+    check(X)
+    block.o_proj.base_layer.weight.requires_grad_(False)
     model.base_model.disable_adapter_layers()
-    torch.testing.assert_close(compiled(X), block.o_proj.base_layer(X))
+    check(X.detach(), grad = False)  # fused
+    check(X.detach().requires_grad_(), grad = True)  # PEFT
