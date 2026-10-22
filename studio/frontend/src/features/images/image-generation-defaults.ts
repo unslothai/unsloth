@@ -99,10 +99,13 @@ export function defaultsFor(repoId: string): {
 // files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
 const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);
 
-/** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. */
-export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
+/** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. A GGUF
+ * filename that names a model outranks its repo, as on the backend: one repo can hold several checkpoints
+ * (realrebelai/KREA-2_GGUFs ships BASE/Krea-2-Base-* beside TURBO/Krea-2-Turbo-*). */
+export function defaultsKeyFor(repoId: string, familyOverride: unknown, ggufFilename?: string | null): string {
   const family = explicitFamily(familyOverride);
   if (family && FAMILY_NAMES_THE_VARIANT.has(family)) return family;
+  if (ggufFilename && defaultsFor(ggufFilename) !== DEFAULT_GEN) return ggufFilename;
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (family ?? repoId);
 }
 
@@ -132,8 +135,13 @@ export function residentDefaultsKey(
   repoId: string,
   baseRepo: string | null | undefined,
   resolvedFamily: { value?: unknown; source?: "auto" | "explicit" } | null | undefined,
+  ggufFilename?: string | null,
 ): string {
-  return defaultsKeyFor(baseRepo ?? repoId, resolvedFamily?.source === "explicit" ? resolvedFamily.value : null);
+  return defaultsKeyFor(
+    baseRepo ?? repoId,
+    resolvedFamily?.source === "explicit" ? resolvedFamily.value : null,
+    ggufFilename,
+  );
 }
 
 // The canvas every family is tuned for, and what an unrecognised model gets.

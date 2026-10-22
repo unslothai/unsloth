@@ -1975,7 +1975,12 @@ export function ImagesPage({
     }),
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
-  const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
+  const residentDefaults = residentDefaultsKey(
+    status?.repo_id ?? "",
+    status?.base_repo,
+    status?.resolved?.family_override,
+    status?.gguf_filename,
+  );
   const { steps: residentSteps, guidance: residentGuidance } = residentRecipeFor(
     residentDefaults,
     status?.generation_defaults,
@@ -2033,7 +2038,12 @@ export function ImagesPage({
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string, effectiveFamilyOverride = familyOverride, forceLoad = false) => {
+    (
+      repoId: string,
+      effectiveFamilyOverride = familyOverride,
+      forceLoad = false,
+      ggufFilename: string | null = null,
+    ) => {
       if (modelSelectionAction === "download" && !forceLoad) return;
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
@@ -2045,7 +2055,7 @@ export function ImagesPage({
       // whether the user takes the form after THIS pick.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
@@ -3286,7 +3296,12 @@ export function ImagesPage({
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
           pickDefaults.current,
-          residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),
+          residentDefaultsKey(
+            loaded.repo_id ?? "",
+            loaded.base_repo,
+            loaded.resolved?.family_override,
+            loaded.gguf_filename,
+          ),
           loaded.generation_defaults,
         );
         pickDefaults.current = null;
@@ -4321,7 +4336,7 @@ export function ImagesPage({
           if (downloadOnly) return;
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
-          applyImageModelDefaults(repoId, effectiveFamilyOverride);
+          applyImageModelDefaults(repoId, effectiveFamilyOverride, false, filename);
         },
         onNotStarted: () => {
           // Nothing was applied for a download-only pick, so there is nothing to hand back, and
@@ -4407,7 +4422,12 @@ export function ImagesPage({
     if (revert) {
       quantRevert.current = revert;
       setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
-      applyImageModelDefaults(wanted, "auto");
+      applyImageModelDefaults(
+        wanted,
+        "auto",
+        false,
+        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+      );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
       if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
@@ -4584,7 +4604,7 @@ export function ImagesPage({
         if (revert) {
           quantRevert.current = revert;
           setQuant(meta.ggufVariant);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, meta.ggufFilename);
         }
         void loadOrStage(
           id,
@@ -4629,7 +4649,7 @@ export function ImagesPage({
         if (revert) {
           quantRevert.current = revert;
           setQuant(filename);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
         void loadOrStage(dir, { kind: "gguf", filename }, meta.source, token).then((started) => {
           // Guarded like every sibling branch: quantRevert is one slot, so a pick that no longer
