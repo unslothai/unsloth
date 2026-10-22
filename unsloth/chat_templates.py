@@ -2466,9 +2466,12 @@ def get_chat_template(
 ):
     assert(type(map_eos_token) is bool)
     import sys
-    is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
+    _backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None)
+    is_mlx_backend = _backend == "mlx"
+    # The CPU backend, like MLX, never loads the GPU model stack that models._utils / save pull in.
+    is_light_backend = _backend in ("mlx", "cpu")
     if use_zoo_tokenizer_patch is None:
-        use_zoo_tokenizer_patch = is_mlx_backend
+        use_zoo_tokenizer_patch = is_light_backend
 
     # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust backend the vocab-edit
     # paths below need; unwrap here, re-wrap before return.
@@ -2729,7 +2732,7 @@ def get_chat_template(
                 setattr(_processor, _token + "_id", getattr(tokenizer, _token + "_id"))
         tokenizer = _processor
 
-    if patch_saving and not is_mlx_backend:
+    if patch_saving and not is_light_backend:
         from .save import patch_saving_functions
         tokenizer = patch_saving_functions(tokenizer, vision = _processor is not None)
 

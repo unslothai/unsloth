@@ -140,6 +140,10 @@ class _UnslothDeviceStats:
         self.multi_processor_count = 0
 
 
+class _CPUBackendSelected(Exception):
+    """Raised by _gpu_init when unsloth_zoo found no accelerator and selected the CPU backend."""
+
+
 def _bytes_to_gb(value):
     """Convert byte counts to GiB rounded"""
     return round(float(value or 0) / 1024 / 1024 / 1024, 3)
@@ -1674,16 +1678,26 @@ if _IS_MLX:
     _install_mlx_unsloth_trainer_shim()
 
 else:
-    # GPU path: load everything from _gpu_init
-    from ._gpu_init import *
-    from ._gpu_init import __version__
+    try:
+        # GPU path: load everything from _gpu_init
+        from ._gpu_init import *
+        from ._gpu_init import __version__
+        _IS_CPU_BACKEND = False
+    except _CPUBackendSelected:
+        _IS_CPU_BACKEND = True
+        _sys_mod = __import__("sys").modules
+        _sys_mod.pop(f"{__name__}._gpu_init", None)
+        del _sys_mod
+        from ._cpu_init import *
+        from ._cpu_init import __version__
 
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
     try:
-        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
-        _install_fsdp2_hooks()
-        del _install_fsdp2_hooks
+        if not _IS_CPU_BACKEND:
+            from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+            _install_fsdp2_hooks()
+            del _install_fsdp2_hooks
     except Exception:
         pass
 
