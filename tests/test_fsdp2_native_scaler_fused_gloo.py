@@ -35,12 +35,16 @@ def _run(fused):
     native = _load_native()
     rank = torch.distributed.get_rank()
     old = torch.amp.GradScaler("cpu", init_scale = 2.0**8)
-    trainer = types.SimpleNamespace(accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler()))
+    trainer = types.SimpleNamespace(
+        accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler())
+    )
     assert native._scaler_for_native(trainer) is True
     scaler = trainer.accelerator.scaler
     torch.manual_seed(0)
     model = torch.nn.Linear(8, 8)
-    opt = torch.optim.AdamW(model.parameters(), lr = 1e-2, fused = fused, foreach = None if fused else True)
+    opt = torch.optim.AdamW(
+        model.parameters(), lr = 1e-2, fused = fused, foreach = None if fused else True
+    )
     for step in range(3):
         torch.manual_seed(100 + 10 * step + rank)
         loss = model(torch.randn(4, 8)).pow(2).mean()
@@ -61,7 +65,9 @@ def _device_kept():
     # XPU run is a disabled scaler, so float16 would train without loss scaling).
     native = _load_native()
     old = torch.amp.GradScaler("cpu", init_scale = 2.0**8)
-    trainer = types.SimpleNamespace(accelerator = types.SimpleNamespace(scaler = old, scaler_handler = None))
+    trainer = types.SimpleNamespace(
+        accelerator = types.SimpleNamespace(scaler = old, scaler_handler = None)
+    )
     native._scaler_for_native(trainer)
     new = trainer.accelerator.scaler
     return new._device, new.is_enabled()
@@ -76,7 +82,9 @@ def _disabled():
     # GradScalerKwargs(enabled=False): unscale_ returns before any optimizer state exists.
     native = _load_native()
     old = torch.amp.GradScaler("cpu")
-    trainer = types.SimpleNamespace(accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _DisabledHandler()))
+    trainer = types.SimpleNamespace(
+        accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _DisabledHandler())
+    )
     native._scaler_for_native(trainer)
     scaler = trainer.accelerator.scaler
     model = torch.nn.Linear(8, 8)
