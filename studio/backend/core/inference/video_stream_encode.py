@@ -59,6 +59,10 @@ class StreamEncode:
             getattr(sys.modules.get(type(vae).__module__), "unpatchify", None) if patch else None
         )
         self._patch = patch
+        # ROCm's bf16 decode (diffusion_device.install_rocm_vae_bf16_decode) runs the decoder in bf16 and hands the
+        # pipeline the fp32 widening of its output, so the pipeline postprocesses fp32: the chunks must be widened the
+        # same way or no frame ever matches. NVIDIA's fp16 decode returns fp16 as is, which the chunks already are.
+        self._widen = bool(getattr(getattr(vae, "decode", None), "_unsloth_bf16_decode", False))
         self._side = None
         self.chunks: list = []
         self.reason = ""
@@ -98,6 +102,8 @@ class StreamEncode:
                     self.invalidate("no unpatchify")
                     return
                 x = self._unpatchify(x, patch_size = self._patch)
+            if self._widen and x.is_floating_point() and x.dtype != torch.float32:
+                x = x.float()
             x = torch.clamp(x, min = -1.0, max = 1.0)
             x = self.processor.postprocess(x[0].permute(1, 0, 2, 3), "pt")
             x = (
