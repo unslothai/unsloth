@@ -86,9 +86,20 @@ def test_status_keeps_a_model_whose_worker_may_still_answer(monkeypatch, release
 
 
 def test_loading_the_same_model_again_restarts_a_killed_worker(monkeypatch, released):
+    from core.inference import gpu_arbiter
     from hub.services.models import account_access
     from models.inference import LoadRequest
 
+    # The load takes the real CHAT claim before its stubbed loader raises.
+    for name, empty in (
+        ("_owner", None),
+        ("_owner_account", None),
+        ("_prior_account", None),
+        ("_residents", {}),
+        ("_accounts", {}),
+        ("_media_needs", {}),
+    ):
+        monkeypatch.setattr(gpu_arbiter, name, empty)
     backend = _orchestrator()
     calls = []
 
