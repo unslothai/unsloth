@@ -283,6 +283,19 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
     return False
 
 
+def assert_not_ltx25_checkpoint(checkpoint_path: Path | str) -> None:
+    """Catch a renamed LTX-2.5 file by header: ``is_ltx23_checkpoint`` counts modulation rows, and 2.5 keeps 2.3's nine."""
+    from .diffusion_content import is_ltx25_checkpoint
+    from .video_families import LTX2_FAMILY, wrong_ltx_family_message
+
+    if is_ltx25_checkpoint(str(checkpoint_path)):
+        raise ValueError(
+            wrong_ltx_family_message(
+                "2.5", LTX2_FAMILY, f"'{Path(str(checkpoint_path)).name}' (by its tensors)"
+            )
+        )
+
+
 def _apply_rename(state: dict[str, Any], rename: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in state.items():
@@ -789,7 +802,9 @@ LTX23_PREQUANT_RESIDENT_GB = 19.06
 
 
 # The hosted DiT REPLACES the file's own, so the file must be the official one (a same-named fine-tune would be swapped silently).
-LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3"})
+# The official repo and the unsloth repo carrying its byte-identical files (diffusion_families._VIDEO_MIRROR_PAIRS): a
+# pick of Lightricks/LTX-2.3 is FETCHED from there, so the file it lands on sits under that repo's cache dir.
+LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3", "unsloth/ltx-2.3-fp8"})
 _LTX23_HUB_REPO_DIRS = frozenset(
     "models--" + r.replace("/", "--") for r in LTX23_PREQUANT_SOURCE_REPOS
 )
@@ -972,7 +987,16 @@ def ltx23_prequant_eligible(
         return False
     if str(repo_id).strip().lower() not in LTX23_PREQUANT_SOURCE_REPOS:
         return False
-    cached = _ltx23_hub_cached_file(str(repo_id).strip(), str(checkpoint_filename))
+    cached = None
+    from .diffusion_families import canonical_base, mirror_repo
+
+    upstream = canonical_base(str(repo_id).strip())
+    for candidate in dict.fromkeys(
+        (str(repo_id).strip(), upstream, mirror_repo(upstream) or upstream)
+    ):
+        cached = _ltx23_hub_cached_file(candidate, str(checkpoint_filename))
+        if cached is not None:
+            break
     return True if cached is None else ltx23_source_file_verified(cached)
 
 
@@ -986,7 +1010,15 @@ class _LTX23PrequantConfig:
     def load_config(self, _base: str, **kwargs: Any) -> dict[str, Any]:
         from diffusers import LTX2VideoTransformer3DModel
 
-        config = dict(LTX2VideoTransformer3DModel.load_config(self.config_repo, **kwargs))
+        from .diffusion_families import pinned_revision_kwargs
+
+        # Pinned on the repo actually read, which need not be the caller's ``_base``.
+        kwargs.pop("revision", None)
+        config = dict(
+            LTX2VideoTransformer3DModel.load_config(
+                self.config_repo, **kwargs, **pinned_revision_kwargs(self.config_repo)
+            )
+        )
         config.update(LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES)
         return config
 
@@ -1088,6 +1120,29 @@ def _recompile_limit_hit(exc: BaseException) -> bool:
     return isinstance(kind, type) and isinstance(exc, kind)
 
 
+def _stg_adapted(inner: Any, guard: Any, transformer: Any, torch: Any) -> Any:
+    def adapted(*args: Any, **kwargs: Any) -> Any:
+        flag = kwargs.get("all_perturbed")
+        if isinstance(flag, torch.Tensor):
+            kwargs["all_perturbed"] = bool(flag)
+        try:
+            return inner(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
+            if guard is None or guard.error is not None or not _recompile_limit_hit(exc):
+                raise
+            # Past the recompile limit fullgraph raises unclassified by the guard: drop this DiT to eager.
+            guard.fail(exc, transformer)
+            exc.__traceback__ = None
+            return inner(*args, **kwargs)
+
+    adapted._unsloth_stg_adapter = True
+    if guard is not None:
+        adapted._unsloth_compile_guard = guard
+    # A compile moved below an offload hook rebuilds the block's callable: re-apply the adapter around it.
+    adapted._unsloth_rewrap = lambda new_inner: _stg_adapted(new_inner, guard, transformer, torch)
+    return adapted
+
+
 def install_stg_compile_adapter(transformer: Any) -> int:
     """Convert the STG pass's 0-d ``all_perturbed`` tensor to a bool before the compiled block (LTX2Attention branches
     on it, which fails fullgraph and drops the DiT to eager). Keeps the guard's marker so ``guard_compiled_blocks``
@@ -1103,32 +1158,9 @@ def install_stg_compile_adapter(transformer: Any) -> int:
         inner = getattr(module, "_compiled_call_impl", None)
         if inner is None or getattr(inner, "_unsloth_stg_adapter", False):
             continue
-
-        guard = getattr(inner, "_unsloth_compile_guard", None)
-
-        def adapted(
-            *args: Any,
-            _inner: Any = inner,
-            _guard: Any = guard,
-            **kwargs: Any,
-        ) -> Any:
-            flag = kwargs.get("all_perturbed")
-            if isinstance(flag, torch.Tensor):
-                kwargs["all_perturbed"] = bool(flag)
-            try:
-                return _inner(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
-                if _guard is None or _guard.error is not None or not _recompile_limit_hit(exc):
-                    raise
-                # Past the recompile limit fullgraph raises unclassified by the guard: drop this DiT to eager.
-                _guard.fail(exc, transformer)
-                exc.__traceback__ = None
-                return _inner(*args, **kwargs)
-
-        adapted._unsloth_stg_adapter = True
-        if guard is not None:
-            adapted._unsloth_compile_guard = guard
-        module._compiled_call_impl = adapted
+        module._compiled_call_impl = _stg_adapted(
+            inner, getattr(inner, "_unsloth_compile_guard", None), transformer, torch
+        )
         count += 1
     return count
 
@@ -1216,6 +1248,7 @@ def load_ltx23_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
@@ -1243,6 +1276,7 @@ def load_ltx23_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
         family = family,
         target = target,
         logger = logger,
@@ -1278,6 +1312,10 @@ def load_ltx23_transformer(
         "local_files_only": local_files_only,
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The load plan's commit for that hub-id config (absent for an unpinned load).
+    kwargs.update(pinned_revision_kwargs(base_repo))
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
@@ -1544,6 +1582,7 @@ def _assemble_ltx23_pipeline(
     transformer_override: Optional[Any] = None,
     device: Optional[Any] = None,
     text_encoder_device: Optional[Any] = None,
+    revision: Optional[str] = None,
 ) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
     (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
@@ -1654,8 +1693,15 @@ def _assemble_ltx23_pipeline(
     # mid-session change searches the OTHER root, so under local_files_only it raises for a base that is fully
     # downloaded, after eviction.
     cache_dir = _live_cache_dir()
+    # ``revision``: the load plan's commit for the base, so the components come from the snapshot it staged (passed only
+    # when set, so an unpinned load calls exactly as before).
+    pinned: dict[str, Any] = {"revision": revision} if revision else {}
     index = LTX2Pipeline.load_config(
-        base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
+        base_repo,
+        token = hf_token,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+        **pinned,
     )
 
     def _sub(name: str, **extra: Any) -> Any:
@@ -1667,6 +1713,7 @@ def _assemble_ltx23_pipeline(
             token = hf_token,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
+            **pinned,
             **extra,
         )
 

@@ -28,6 +28,7 @@ from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any, Callable
 
+from utils.cpu_threads import fit_threads_to_affinity, runtime_capped_openblas_loaded
 from utils.hardware.hardware import DeviceType, get_device
 from utils.transformers_dtype import dtype_kwargs
 from utils.utils import hf_env_offline
@@ -64,7 +65,7 @@ def _device() -> str:
 
     The trade is small at these sizes: one 128-token chunk takes 18.7ms on CPU against 5.2ms on
     CUDA. Bulk indexing is where it shows (batch 64: 445 chunks/s on CPU against 3174/s), and
-    ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
+    Settings (GPU) or ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
 
     This reads the same setting as the llama-server backend but resolves ``auto`` differently, which
     is intended: that backend offloads inside its own subprocess, where the context dies with the
@@ -437,16 +438,21 @@ _ST_PACKAGE_PREFIX = "sentence_transformers."
 _ST_GATE_MARKER = "_unsloth_custom_module_gate"
 
 
-def _refuse_custom_module(class_ref, model_name_or_path, trust_remote_code) -> None:
+def _refuse_custom_module(
+    class_ref,
+    model_name_or_path,
+    trust_remote_code,
+    prefix = _ST_PACKAGE_PREFIX,
+) -> None:
     if (
         isinstance(class_ref, str)
-        and not class_ref.startswith(_ST_PACKAGE_PREFIX)
+        and not class_ref.startswith(prefix)
         and model_name_or_path is not None
         and not trust_remote_code
     ):
         raise ValueError(
             f"The model {model_name_or_path} references the module class {class_ref!r}, which is not "
-            "part of Sentence Transformers. Importing it executes third-party code, so Studio refuses "
+            "part of Sentence Transformers. Importing it executes third-party code, so Unsloth refuses "
             "to load it as an embedding model."
         )
 
@@ -486,25 +492,44 @@ def _gate_st_custom_modules() -> None:
             setattr(_load_module_class_from_ref, _ST_GATE_MARKER, True)
             _load_module_class_from_ref.__wrapped__ = original
             setattr(owner, "_load_module_class_from_ref", _load_module_class_from_ref)
-    # 5.0-5.4 Router imports via import_from_string, past both resolvers.
-    try:
-        import importlib
+    # Below 6.0 these module loaders import a dotted path out of their own config via
+    # import_from_string, past both resolvers: Router its types, Dense its
+    # activation_function (and calls it), WordEmbeddings its tokenizer_class.
+    for module_path, prefix, where in (
+        ("sentence_transformers.models.Router", _ST_PACKAGE_PREFIX, "behind this Router"),
+        ("sentence_transformers.models.Dense", "torch.", "in a Dense module"),
+        (
+            "sentence_transformers.models.WordEmbeddings",
+            _ST_PACKAGE_PREFIX,
+            "in a WordEmbeddings module",
+        ),
+    ):
+        try:
+            import importlib
 
-        router = importlib.import_module("sentence_transformers.models.Router")
-        original_from_string = getattr(router, "import_from_string", None)
-        if original_from_string is not None and not getattr(
-            original_from_string, _ST_GATE_MARKER, False
-        ):
+            module = importlib.import_module(module_path)
+            original_from_string = getattr(module, "import_from_string", None)
+            if original_from_string is None or getattr(
+                original_from_string, _ST_GATE_MARKER, False
+            ):
+                continue
 
-            def import_from_string(dotted_path, *args, **kwargs):
-                _refuse_custom_module(dotted_path, "behind this Router", False)
-                return original_from_string(dotted_path, *args, **kwargs)
+            def import_from_string(
+                dotted_path,
+                *args,
+                _original = original_from_string,
+                _prefix = prefix,
+                _where = where,
+                **kwargs,
+            ):
+                _refuse_custom_module(dotted_path, _where, False, prefix = _prefix)
+                return _original(dotted_path, *args, **kwargs)
 
             setattr(import_from_string, _ST_GATE_MARKER, True)
             import_from_string.__wrapped__ = original_from_string
-            router.import_from_string = import_from_string
-    except Exception:
-        pass
+            module.import_from_string = import_from_string
+        except Exception:
+            pass
     try:
         import sys
         from sentence_transformers.util import misc
@@ -532,6 +557,52 @@ def _gate_st_custom_modules() -> None:
             and getattr(module, "import_module_class", None) is original_import
         ):
             setattr(module, "import_module_class", import_module_class)
+
+
+def _route_linears_through_onednn(model) -> int:
+    """Run a CPU model's fp32 Linear layers in oneDNN when torch's BLAS is Windows ROCm's OpenBLAS.
+
+    That DLL does ~4 GFLOPS per core against MKL's ~130, so bge-small indexed ~7x slower on all cores
+    (#14313). oneDNN ships in the same wheel; the vectors match to ~2e-7, so the index stays valid.
+    Probed on the model's own first layer; any doubt keeps the stock path. Returns layers rerouted.
+    """
+    if not runtime_capped_openblas_loaded():
+        return 0
+    try:
+        import torch
+
+        if not getattr(torch.version, "hip", None) or not torch.backends.mkldnn.is_available():
+            return 0
+        linears = [
+            m
+            for m in model.modules()
+            if type(m) is torch.nn.Linear
+            and m.weight.device.type == "cpu"
+            and m.weight.dtype == torch.float32
+        ]
+        if not linears:
+            return 0
+
+        class OneDnnLinear(torch.nn.Linear):
+            def forward(self, x):
+                return torch.ops.mkldnn._linear_pointwise(x, self.weight, self.bias, "none", [], "")
+
+        probe = linears[0]
+        with torch.inference_mode():
+            x = torch.randn(2, 5, probe.in_features)
+            expected = torch.nn.functional.linear(x, probe.weight, probe.bias)
+            got = OneDnnLinear.forward(probe, x)
+        if got.shape != expected.shape or not torch.allclose(got, expected, rtol = 1e-4, atol = 1e-5):
+            return 0
+    except Exception:  # noqa: BLE001 -- the stock path is always correct
+        return 0
+    for module in linears:
+        module.__class__ = OneDnnLinear
+    logger.info(
+        "embedding model: %d Linear layers run in oneDNN (ROCm OpenBLAS is slow on CPU)",
+        len(linears),
+    )
+    return len(linears)
 
 
 def _get(model_name: str | None = None):
@@ -611,9 +682,24 @@ def _get(model_name: str | None = None):
                 # Re-emit in finally: a load that raises after transformers wrote its report is exactly when a
                 # MISSING or MISMATCH line matters.
                 try:
-                    _model = SentenceTransformer(load_target, **st_kwargs)
+                    try:
+                        _model = SentenceTransformer(load_target, **st_kwargs)
+                    except Exception as exc:  # noqa: BLE001 - e.g. CUDA OOM beside a resident chat model
+                        # Retry on CPU before encode()'s llama-server fallback, which changes the embedding space.
+                        if device == "cpu" or config.embed_device_requires_gpu():
+                            raise
+                        logger.warning(
+                            "loading embedding model %s on %s failed (%s); retrying on CPU",
+                            name,
+                            device,
+                            exc,
+                        )
+                        st_kwargs["device"] = "cpu"
+                        st_kwargs["model_kwargs"] = dtype_kwargs(_load_dtype("cpu", name))
+                        _model = SentenceTransformer(load_target, **st_kwargs)
                 finally:
                     _emit_load_reports(report)
+            _route_linears_through_onednn(_model)
             _name = name
             if download_pending:
                 # Retire only once the model is constructed: retiring earlier let a failed construction fall through
@@ -654,6 +740,8 @@ def _st_encode(
         # Admission and model lookup are one lease: lookup first would let unload clear the globals while
         # this call still held a strong reference.
         model = _get(model_name)
+        # Affinity narrowed in Task Manager mid-index must reach this thread's pool (#14313).
+        fit_threads_to_affinity()
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
         try:
             with _inference_ctx():
@@ -858,6 +946,29 @@ def _model_names_gguf_repo(model: str | None) -> bool:
     return config._names_gguf(model.strip().rstrip("/").rsplit("/", 1)[-1])
 
 
+# ST under auto stays on the CPU in float32 (_device); llama-server offloads. Exact ids: a fine-tune may lack the -GGUF.
+_LLAMA_SERVER_PREFERRED_MODELS = frozenset(
+    {"unsloth/embeddinggemma-300m", "unsloth/embeddinggemma-2"}
+)
+
+
+def _plan_prefers_llama_server(model: str) -> bool:
+    """Picker plan only: the runtime follows the saved record, so an env-configured model keeps its embedding space."""
+    if model.strip().rstrip("/").lower() not in _LLAMA_SERVER_PREFERRED_MODELS:
+        return False
+    # The runtime serves the unrecorded model in effect on the hardware default; another plan would be a dead download.
+    if model == config.effective_embedding_model():
+        return False
+    # A pinned GGUF repo serves other weights; an explicit device already chose where torch runs.
+    if config.gguf_repo_is_explicit() or config.embed_device_preference() != "auto":
+        return False
+    try:
+        from utils.embedding_model_settings import get_stored_backend
+        return not get_stored_backend(model)
+    except Exception:  # noqa: BLE001 - store unavailable: keep the hardware plan
+        return False
+
+
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """``auto``, but honouring the backend recorded for the saved model.
 
@@ -1009,12 +1120,14 @@ def resolved_backend_for_model(model_name: str, token: str | bool | None = None)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
     # Without a llama binary ST is the only plan; its error beats a fabricated GGUF destination. Stat before Hub.
     if key in _ST_ALIASES and _llama_server_runtime_available():
-        st_unusable = not sentence_transformers_runtime_available() or (
+        use_llama = (
+            # Auto only: an explicit ST policy ignores both the preference and the stored backend.
+            (raw in _AUTO_ALIASES and _plan_prefers_llama_server(model_name))
+            or not sentence_transformers_runtime_available()
             # An ST plan for it never loads, and its pending marker blocks the llama fallback's GGUF.
-            # Auto only: an explicit ST policy ignores the stored backend.
-            raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name, token)
+            or (raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name, token))
         )
-        if st_unusable:
+        if use_llama:
             key = "llama-server"
     if key in _LLAMA_ALIASES:
         return "llama-server"
@@ -1463,6 +1576,25 @@ def dim(model_name: str | None = None) -> int:
 
 def max_tokens(model_name: str | None = None) -> int | None:
     return _get_backend(model_name).max_tokens(model_name = model_name)
+
+
+def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
+    """The longest prefix of ``text`` within ``limit`` tokens by ``count``, and whether it was cut."""
+    if not limit or count(text) <= limit:
+        return text, False
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if count(text[:mid]) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo], True
+
+
+def chunk_tokens(model_name: str | None = None) -> int:
+    limit = max_tokens(model_name)
+    return min(config.CHUNK_TOKENS, limit) if limit else config.CHUNK_TOKENS
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:

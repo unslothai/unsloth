@@ -89,11 +89,14 @@ export function TabsList({
 
 type TabsTriggerProps = React.ComponentProps<typeof TabsPrimitive.Trigger> & {
   indicatorClassName?: string;
+  /** Drawn in place of the built-in sliding background while this tab is active. */
+  indicator?: React.ReactNode;
 };
 
 export function TabsTrigger({
   className,
   indicatorClassName,
+  indicator,
   value,
   children,
   ...props
@@ -118,7 +121,8 @@ export function TabsTrigger({
       )}
       {...props}
     >
-      {isActive && (
+      {isActive && indicator}
+      {isActive && !indicator && (
         <motion.span
           layoutId={`tab-bg-${ctx.id}`}
           className={cn(

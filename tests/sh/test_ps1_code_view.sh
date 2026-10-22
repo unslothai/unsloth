@@ -1,7 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Guards the here-string filter the installer-structure suites grep through.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,21 +20,16 @@ for f in "$SETUP_PS1" "$INSTALL_PS1"; do
 done
 
 echo "=== the shipped scripts ==="
-# The claim test_tauri_retry_failure_context.sh makes: setup.ps1 exits in exactly
-# one place, the tail of Exit-SetupFailure. The emitted probe's `exit 1` is the
-# probe's, and counting it is what turned main red after #10540.
+# setup.ps1 exits in exactly one place; the emitted probe's `exit 1` is not its own.
 assert_eq "setup.ps1 has one exit in its own code" \
     1 "$(ps1_code "$SETUP_PS1" | grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)"
 assert_eq "the surviving exit is Exit-SetupFailure's" \
     1 "$(ps1_code "$SETUP_PS1" | grep -c '^[[:space:]]*exit \$Code$' || true)"
-# install.ps1's emitted launcher declares its own functions and its own finally.
 assert_eq "install.ps1's own '} finally {' blocks are counted, not the launcher's" \
     3 "$(ps1_code "$INSTALL_PS1" | grep -c '^    } finally {$' || true)"
 
 echo "=== a redaction pattern is not a here-string opener ==="
-# Both scripts carry `-replace '(https?://)[^/@\s`]+@', '$1<redacted>@'`, a line
-# whose raw text ends in @'. Opening there hides everything up to the next
-# terminator, which is how ~780 lines of setup.ps1 stopped being scanned.
+# Both scripts have a `-replace ... '$1<redacted>@'` line whose raw text ends in @'.
 for f in "$SETUP_PS1" "$INSTALL_PS1"; do
     _redact_line=$(grep -n "redacted" "$f" | head -1 | cut -d: -f1)
     assert_eq "$(basename "$f") keeps its redaction line as code" \
@@ -82,9 +76,7 @@ assert_eq "@\" ... \"@ bodies are blanked" \
     1 "$(ps1_code "$WORK/expandable.ps1" | grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)"
 
 echo "=== the terminator must sit in column 0 ==="
-# install.ps1 builds a .bat through an array of strings, one of which is
-# `"@echo off",`. A stripped comparison closes the here-string there and every
-# line after it reads as code again.
+# install.ps1 has an indented `"@echo off",` entry; a stripped comparison would close there.
 cat > "$WORK/indented-terminator.ps1" <<'PS1'
 $body = @'
 line one

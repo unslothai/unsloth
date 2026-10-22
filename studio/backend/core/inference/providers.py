@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
@@ -256,12 +256,13 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "kimi": {
         "display_name": "Kimi",
         "base_url": "https://api.moonshot.ai/v1",
-        # Surface only the two SoTA multimodal models (kimi-k2.6/k2.5);
+        # Surface only the SoTA multimodal models (kimi-k3, kimi-k2.6/k2.5);
         # moonshot-v1-* and dated k2 previews are filtered by the allowlist.
         # Docs: https://platform.kimi.ai/docs/models
         # Listing/overview: https://platform.kimi.ai/docs/api/list-models
         #                   https://platform.kimi.ai/docs/api/overview
         "default_models": [
+            "kimi-k3",
             "kimi-k2.6",
             "kimi-k2.5",
         ],
@@ -274,10 +275,46 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
-        "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
+        "model_id_allowlist": re.compile(r"^kimi-(?:k3|k2\.[56])$"),
         # Reasoning-class: the API rejects custom temperature/top_p ("only 1
         # is allowed"). Strip both so the server uses its required defaults.
         "body_omit": ("temperature", "top_p"),
+    },
+    "zai": {
+        "display_name": "Z.ai",
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "default_models": [
+            "glm-5.3",
+            "glm-5.3-flash",
+            "glm-5.3-flashx",
+            "glm-5.2",
+            "glm-4.7-flash",
+            "glm-4.5-flash",
+            "glm-4.6v-flash",
+        ],
+        "model_capabilities": {
+            "glm-5.3": {"vision": False},
+            "glm-5.3-flash": {"vision": True},
+            "glm-5.3-flashx": {"vision": True},
+            "glm-5.2": {"vision": False},
+            "glm-5.1": {"vision": False},
+            "glm-5": {"vision": False},
+            "glm-4.7": {"vision": False},
+            "glm-4.6": {"vision": False},
+            "glm-4.5": {"vision": False},
+            "glm-4.5-air": {"vision": False},
+            "glm-4.7-flash": {"vision": False},
+            "glm-4.5-flash": {"vision": False},
+            "glm-4.6v-flash": {"vision": True},
+        },
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Z.ai API key. China mainland: use base URL https://open.bigmodel.cn/api/paas/v4",
+        "body_omit": ("presence_penalty",),
     },
     "qwen": {
         "display_name": "Qwen",
@@ -295,6 +332,32 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "DashScope API key. China mainland: override base URL to https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
+    "qwencloud": {
+        "display_name": "QwenCloud",
+        "base_url": "https://maas.qwencloudapi.com/compatible-mode/v1",
+        "default_models": [
+            "qwen3.8-max",
+            "qwen3.7-plus",
+            "qwen3.8-flash",
+        ],
+        "model_capabilities": {
+            "qwen3.8-max": {"vision": True, "studio_tools": True},
+            "qwen3.7-plus": {"vision": True, "studio_tools": True},
+            "qwen3.8-flash": {"vision": True, "studio_tools": True},
+        },
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "QwenCloud pay-as-you-go API key (sk-ws-) from https://home.qwencloud.com/api-keys",
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:realtime|livetranslate|tts|asr|s2s|embedding|rerank|ocr)\b"
+            r"|^(?:qwen-audio|qwen-image|wan\d|z-image|cosyvoice|happyhorse|happyoyster|"
+            r"tongyi-tingwu|ccai-pro|pre-mock)"
+        ),
     },
     "huggingface": {
         "display_name": "Hugging Face",
@@ -394,7 +457,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "llama_cpp": {
         "display_name": "llama.cpp",
-        "base_url": "http://localhost:8080/v1",
+        "base_url": "http://localhost:9931/v1",
         "default_models": [],
         "supports_streaming": True,
         "supports_vision": True,
@@ -1035,6 +1098,12 @@ def provider_address_excluding_metadata(url: str) -> str:
     return str(addresses[0])
 
 
+# The client appends these itself, so a pasted full endpoint would request /chat/completions/models.
+_PASTED_ENDPOINT_PATH = re.compile(
+    r"/(?:chat/completions|completions|responses|messages|models)$", re.IGNORECASE
+)
+
+
 def validate_provider_base_url(base_url: str) -> str:
     """Return a normalized provider base URL, or raise ``ValueError``.
 
@@ -1050,8 +1119,9 @@ def validate_provider_base_url(base_url: str) -> str:
     installation (``utils.managed_provider_url_settings``), which is how a team
     sharing one LAN model server gets to use it from more than one account.
 
-    Normalization is strip + trailing-slash removal only (what the client did
-    before), so validating an already-validated URL returns it unchanged.
+    Normalization is strip, trailing-slash removal and dropping a pasted endpoint
+    path such as ``/chat/completions``, so validating an already-validated URL
+    returns it unchanged.
     """
     if not isinstance(base_url, str) or not base_url.strip():
         raise ValueError("Provider base URL is required.")
@@ -1095,6 +1165,10 @@ def validate_provider_base_url(base_url: str) -> str:
         # Caller-controlled egress: the owner's loopback and LAN, unless the owner opened them.
         _reject_non_public(hostname, port, scheme, managed_public_only_reason())
 
+    path = parts.path.rstrip("/")
+    endpoint = _PASTED_ENDPOINT_PATH.search(path)
+    if endpoint:
+        raw = urlunsplit(parts._replace(path = path[: endpoint.start()]))
     return raw.rstrip("/")
 
 

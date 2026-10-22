@@ -60,6 +60,7 @@ export type ShortcutId =
   | "sendMessage"
   | "queueMessage"
   | "steerMessage"
+  | "stopGeneration"
   | "toggleFastMode"
   | "copyChatAsMarkdown"
   | "copySessionId"
@@ -90,8 +91,7 @@ export interface ShortcutDef {
   webOnly?: boolean;
 }
 
-/** `code` is KeyboardEvent.code, so a binding survives a layout change. `mod`
- *  is Cmd on macOS and Ctrl elsewhere. */
+/** `code` as eventCode reads it; `mod` is Cmd on macOS and Ctrl elsewhere. */
 export interface ShortcutBinding {
   code: string;
   mod: boolean;
@@ -237,6 +237,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // name the behaviour instead of flipping it. Chat settings picks the default.
   def("queueMessage", null),
   def("steerMessage", null),
+  // ⌘. is the macOS cancel chord. Safari's Stop loading shares it, but only while a page loads.
+  def("stopGeneration", "Mod+Period"),
   def("toggleFastMode", null),
 
   def("copyChatAsMarkdown", null),
@@ -320,6 +322,8 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+Shift+KeyP",
   // Chrome's tab search, and Firefox's add-ons manager.
   "Mod+Shift+KeyA",
+  // Firefox's Reader View, ⌥⌘R and Ctrl+Alt+R. renameChat ships on it anyway; this warns a web user.
+  "Mod+Alt+KeyR",
   "Mod+Tab",
   "Mod+Shift+Tab",
   "Ctrl+Tab",
@@ -376,6 +380,31 @@ export function isBrowserReservedBinding(
     : NON_MAC_RESERVED_VALUES.has(value);
 }
 
+/** Tab and window chords a page never sees; only the desktop app can run them. */
+const BROWSER_UNREACHABLE_VALUES = new Set<string>([
+  "Mod+KeyN",
+  "Mod+Shift+KeyN",
+  "Mod+KeyT",
+  "Mod+Shift+KeyT",
+  "Mod+KeyW",
+  "Mod+Shift+KeyW",
+  "Mod+Tab",
+  "Mod+Shift+Tab",
+  "Ctrl+Tab",
+  "Ctrl+Shift+Tab",
+]);
+
+export function isBrowserUnreachableBinding(
+  value: string | null,
+  mac = isMacPlatform(),
+): boolean {
+  if (value === null) return false;
+  if (BROWSER_UNREACHABLE_VALUES.has(value)) return true;
+  return mac
+    ? value === "Mod+Shift+BracketLeft" || value === "Mod+Shift+BracketRight"
+    : value === "Mod+PageUp" || value === "Mod+PageDown";
+}
+
 /**
  * Keys the browser turns into a click on whatever control has focus. A chord built from one of
  * these with no modifier has to leave that click alone, or pressing Enter on a focused Deny
@@ -429,6 +458,28 @@ export function isMacPlatform(): boolean {
   return macPlatform;
 }
 
+/** Not while an IME composes (isComposing, on nativeEvent for React); keyCode 229 alone is idle macOS Pinyin. */
+export function isModEnter(
+  event: {
+    key: string;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    isComposing?: boolean;
+    nativeEvent?: { isComposing?: boolean };
+  },
+  mac = isMacPlatform(),
+): boolean {
+  if (event.key !== "Enter") return false;
+  if (event.isComposing || event.nativeEvent?.isComposing) return false;
+  return mac
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
+}
+
+export function modEnterLabel(mac = isMacPlatform()): string {
+  return mac ? "⌘↵" : "Ctrl+Enter";
+}
+
 /** Serialize to the stored form, e.g. "Mod+Shift+KeyO". */
 export function formatBindingValue(binding: ShortcutBinding): string {
   const parts: string[] = [];
@@ -477,6 +528,18 @@ export function parseBinding(
   return binding;
 }
 
+/** Off macOS, Super or AltGr: bindingFromEvent returns null for both, which otherwise reads as "still assembling". */
+export function unrecordableModifier(
+  event: Parameters<typeof bindingFromEvent>[0],
+  mac = isMacPlatform(),
+): "meta" | "altGraph" | null {
+  if (mac) return null;
+  const code = eventCode(event, mac);
+  if (!code || isModifierCode(code)) return null;
+  if (event.metaKey) return "meta";
+  return isAltGraphEvent(event) ? "altGraph" : null;
+}
+
 /** Build a binding from a keydown. Returns null while only modifiers are held. */
 export function bindingFromEvent(
   event: {
@@ -490,7 +553,7 @@ export function bindingFromEvent(
   },
   mac = isMacPlatform(),
 ): ShortcutBinding | null {
-  const code = event.code || keyToCode(event.key ?? "");
+  const code = eventCode(event, mac);
   if (!code || isModifierCode(code)) return null;
   // Off macOS there is nowhere to put Meta: matchesBinding rejects an event carrying it, so
   // recording Super+Alt+K would persist plain Alt+K -- a chord the user did not choose, which then
@@ -541,6 +604,33 @@ function keyToCode(key: string): string {
   return punctuation[key] ?? key;
 }
 
+function typedPunctuation(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1) return "";
+  if (event.code.startsWith("Numpad")) return "";
+  const typed = keyToCode(key);
+  return typed === key || /^(Key|Digit)/.test(typed) ? "" : typed;
+}
+
+/** The Latin letter a key types, as the browser's own Ctrl+C reads it (Dvorak, #14035), else the
+ *  punctuation a letter position types, else the position. Option on macOS rewrites the key. */
+function eventCode(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const code = event.code || keyToCode(event.key ?? "");
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1 || code.startsWith("Numpad")) {
+    return code;
+  }
+  if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^Key[A-Z]$/.test(code)) return typedPunctuation(event, mac) || code;
+  return code;
+}
+
 export function matchesBinding(
   binding: ShortcutBinding,
   event: {
@@ -554,8 +644,13 @@ export function matchesBinding(
   },
   mac = isMacPlatform(),
 ): boolean {
-  const code = event.code || keyToCode(event.key ?? "");
-  if (code !== binding.code) return false;
+  // Also the punctuation typed (Dvorak's / sits on [). Not recorded: German types / with Shift.
+  if (
+    eventCode(event, mac) !== binding.code &&
+    typedPunctuation(event, mac) !== binding.code
+  ) {
+    return false;
+  }
   // Off macOS a Ctrl chord is unreachable, and without this a value stored on
   // a Mac would fall through the checks below and fire on the bare key.
   if (!mac && binding.ctrl) return false;
@@ -591,10 +686,25 @@ export function keystrokeMatchesBinding(
   return true;
 }
 
+const NUMPAD_NAMES: Record<string, string> = {
+  Add: "+",
+  Subtract: "-",
+  Multiply: "*",
+  Divide: "/",
+  Decimal: ".",
+  Comma: ",",
+  Equal: "=",
+  Enter: "Enter",
+};
+
 /** Human label for a code: "KeyO" -> "O", "Comma" -> ",", "ArrowUp" -> "↑". */
-export function formatCode(code: string): string {
+export function formatCode(code: string, mac = isMacPlatform()): string {
   if (code.startsWith("Key") && code.length === 4) return code.slice(3);
   if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
+  if (code.startsWith("Numpad")) {
+    const rest = code.slice(6);
+    return `Num ${NUMPAD_NAMES[rest] ?? rest}`;
+  }
   const named: Record<string, string> = {
     Comma: ",",
     Period: ".",
@@ -604,14 +714,23 @@ export function formatCode(code: string): string {
     BracketLeft: "[",
     BracketRight: "]",
     Backslash: "\\",
+    // The ISO key beside left Shift types < on most of Europe and \ in the UK, so no glyph fits all.
+    IntlBackslash: "ISO \\",
+    IntlRo: "Ro",
+    IntlYen: "¥",
     Minus: "-",
     Equal: "=",
     Backquote: "`",
     Space: "Space",
     Enter: "Enter",
     Escape: "Esc",
-    Backspace: "⌫",
+    Backspace: mac ? "⌫" : "Backspace",
     Delete: "Del",
+    Insert: "Ins",
+    Home: "Home",
+    End: "End",
+    PageUp: "Page Up",
+    PageDown: "Page Down",
     Tab: "Tab",
     ArrowUp: "↑",
     ArrowDown: "↓",
@@ -627,7 +746,7 @@ export function formatBindingLabel(
   binding: ShortcutBinding,
   mac = isMacPlatform(),
 ): string {
-  const key = formatCode(binding.code);
+  const key = formatCode(binding.code, mac);
   if (mac) {
     let out = "";
     if (binding.ctrl) out += "⌃";
@@ -642,6 +761,42 @@ export function formatBindingLabel(
   if (binding.shift) parts.push("Shift");
   parts.push(key);
   return parts.join("+");
+}
+
+function bindingSearchText(binding: ShortcutBinding, mac: boolean): string {
+  const words = [formatBindingLabel(binding, mac)];
+  if (binding.mod) words.push(mac ? "⌘ cmd command" : "ctrl control");
+  if (binding.ctrl) words.push("⌃ ctrl control");
+  if (binding.alt) words.push(mac ? "⌥ opt option alt" : "alt opt option");
+  if (binding.shift) words.push("⇧ shift");
+  return words.join(" ").toLowerCase();
+}
+
+const MODIFIER_GLYPHS = new Set(["⌘", "⌃", "⌥", "⇧"]);
+
+/** Every word must match; a one-letter word is the key, so "k" finds ⌘K, not every chord with a k. */
+export function bindingMatchesQuery(
+  binding: ShortcutBinding,
+  query: string,
+  mac = isMacPlatform(),
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  if (formatBindingLabel(binding, mac).toLowerCase().includes(q)) return true;
+  const text = bindingSearchText(binding, mac);
+  const key = formatCode(binding.code, mac).toLowerCase();
+  const words = q
+    .replace(/[⌘⌃⌥⇧]/g, (glyph) => ` ${glyph} `)
+    .split(/[\s+]+/)
+    .filter(Boolean);
+  return (
+    words.length > 0 &&
+    words.every((word) =>
+      word.length === 1 && !MODIFIER_GLYPHS.has(word)
+        ? word === key
+        : text.includes(word),
+    )
+  );
 }
 
 export function formatBindingValueLabel(

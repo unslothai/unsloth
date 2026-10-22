@@ -4,8 +4,13 @@
 import { AppPortalGate } from "@/components/app-readiness";
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 import type * as React from "react";
+import { useContext } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownGlowContext,
+  dialogDropdownGlow,
+} from "@/components/ui/dropdown-glow";
 import { cn } from "@/lib/utils";
 
 function AlertDialog({
@@ -41,7 +46,7 @@ function AlertDialogOverlay({
       data-slot="alert-dialog-overlay"
       data-viewport-backdrop={true}
       className={cn(
-        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100 supports-backdrop-filter:backdrop-blur-[2px] fixed inset-0 z-50",
+        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100 fixed inset-0 z-50",
         className,
       )}
       {...props}
@@ -51,6 +56,7 @@ function AlertDialogOverlay({
 
 function AlertDialogContent({
   className,
+  children,
   size = "default",
   overlayClassName,
   onOverlayClick,
@@ -61,6 +67,7 @@ function AlertDialogContent({
   /** Alert dialogs ignore outside clicks; set this to cancel on backdrop click. */
   onOverlayClick?: () => void;
 }) {
+  const glow = dialogDropdownGlow(className, useContext(DropdownGlowContext));
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay className={overlayClassName} onClick={onOverlayClick} />
@@ -76,7 +83,11 @@ function AlertDialogContent({
           className,
         )}
         {...props}
-      />
+      >
+        <DropdownGlowContext.Provider value={glow}>
+          {children}
+        </DropdownGlowContext.Provider>
+      </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   );
 }

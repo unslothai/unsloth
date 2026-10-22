@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import gc
 import json
+import weakref
 from pathlib import Path
 
 import pytest
@@ -285,6 +287,207 @@ def test_claude_rewinds_keep_their_branch(claude_home):
     ids = [m["id"] for m in claude.read_transcript(path, "t", "s1").messages]
     parents = [m["parentId"] for m in claude.read_transcript(path, "t", "s1").messages]
     assert parents == [None, ids[0], ids[1], ids[1]]
+
+
+def test_claude_harness_records_and_compaction_keep_one_conversation(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            c_user("meta", "caveat", parent = "u1", isMeta = True),
+            {"type": "attachment", "uuid": "at1", "parentUuid": "meta", "attachment": {}},
+            c_asst("a1", [{"type": "text", "text": "A"}], parent = "at1"),
+            {"type": "system", "subtype": "turn_duration", "uuid": "s1", "parentUuid": "a1"},
+            c_user("u2", "two", parent = "s1"),
+            c_asst("a2", [{"type": "text", "text": "B"}], parent = "u2"),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "cb",
+                "parentUuid": None,
+                "logicalParentUuid": "a2",
+            },
+            c_user("u3", "three", parent = "cb"),
+            c_asst("a3", [{"type": "text", "text": "C"}], parent = "u3"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
+def test_claude_rewind_compaction_uses_its_logical_parent(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            c_asst("a1", [{"type": "text", "text": "A"}], parent = "u1"),
+            c_user("u2", "abandoned", parent = "a1"),
+            c_asst("a2", [{"type": "text", "text": "B"}], parent = "u2"),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "cb",
+                "parentUuid": None,
+                "logicalParentUuid": "a1",
+            },
+            c_user("sum", "summary", parent = "cb", isCompactSummary = True),
+            c_user("u3", "three", parent = "sum"),
+            c_asst("a3", [{"type": "text", "text": "C"}], parent = "u3"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [
+        None,
+        ids[0],
+        ids[1],
+        ids[2],
+        ids[1],
+        ids[4],
+        ids[5],
+    ]
+
+
+def test_claude_releases_filtered_records_while_streaming(tmp_path, monkeypatch):
+    class Record(dict):
+        pass
+
+    released = False
+
+    def records(_path):
+        nonlocal released
+        attachment = Record(type = "attachment", uuid = "at1", parentUuid = None, payload = "x" * 1_000_000)
+        reference = weakref.ref(attachment, lambda _ref: mark_released())
+        yield attachment
+        attachment = None
+        yield {"type": "progress", "uuid": "p1", "parentUuid": "at1"}
+        gc.collect()
+        assert reference() is None
+        yield c_user("u1", "one", parent = "p1")
+
+    def mark_released():
+        nonlocal released
+        released = True
+
+    path = tmp_path / "session.jsonl"
+    path.touch()
+    monkeypatch.setattr(claude, "read_jsonl", records)
+    messages = claude.read_transcript(path, "t", "s1").messages
+    assert released
+    assert len(messages) == 1
+
+
+def test_claude_duplicate_reply_ids_do_not_merge_sequential_responses(claude_home):
+    def block(uuid, reply, tool_id, parent):
+        record = c_asst(
+            uuid,
+            [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"cmd": "ls"}}],
+            parent = parent,
+        )
+        record["message"]["id"] = reply
+        return record
+
+    def result(uuid, tool_id, parent):
+        return c_user(
+            uuid, [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}], parent = parent
+        )
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            block("a1", "duplicate", "t1", "u1"),
+            result("r1", "t1", "a1"),
+            block("a2", "duplicate", "t2", "r1"),
+            result("r2", "t2", "a2"),
+            c_asst("a3", [{"type": "text", "text": "done"}], parent = "r2"),
+            c_user("u2", "rewind", parent = "a1"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2], ids[1]]
+
+
+def test_claude_duplicate_reply_ids_do_not_merge_sibling_responses(claude_home):
+    first = c_asst("a1", [{"type": "text", "text": "first"}], parent = "u1")
+    first["message"]["id"] = "duplicate"
+    alternate = c_asst("a2", [{"type": "text", "text": "alternate"}], parent = "u1")
+    alternate["message"]["id"] = "duplicate"
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            first,
+            alternate,
+            c_user("u2", "rewind from first", parent = "a1"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, ids[0], ids[0], ids[1]]
+
+
+def test_claude_duplicate_hook_uuids_keep_per_occurrence_ancestry(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            {"type": "saved_hook_context", "uuid": "hook", "parentUuid": "u1"},
+            c_asst("a1", [{"type": "text", "text": "A"}], parent = "hook"),
+            c_user("u2", "two", parent = "a1"),
+            {"type": "saved_hook_context", "uuid": "hook", "parentUuid": "u2"},
+            c_asst("a2", [{"type": "text", "text": "B"}], parent = "hook"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert [m["parentId"] for m in messages] == [None, ids[0], ids[1], ids[2]]
+
+
+@pytest.mark.parametrize("logical", ["never-written", "at2"])
+def test_claude_parallel_tool_calls_and_compaction_keep_one_conversation(claude_home, logical):
+    def block(uuid, reply, content, parent):
+        record = c_asst(uuid, content, parent = parent)
+        record["message"]["id"] = reply
+        return record
+
+    def call(tool_id):
+        return [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"cmd": "ls"}}]
+
+    def result(uuid, tool_id, parent):
+        return c_user(
+            uuid, [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}], parent = parent
+        )
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            block("a1", "m1", call("t1"), "u1"),
+            block("a1b", "m1", call("t2"), "a1"),
+            result("r2", "t2", "a1b"),
+            result("r1", "t1", "a1"),
+            block("a2", "m2", [{"type": "text", "text": "A"}], "r1"),
+            c_user("u2", "/compact", parent = "a2"),
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "cb",
+                "parentUuid": None,
+                "logicalParentUuid": logical,
+            },
+            c_user("sum", "summary", parent = "cb", isCompactSummary = True),
+            {"type": "attachment", "uuid": "at2", "parentUuid": "sum", "attachment": {}},
+            c_user("u3", "three", parent = "at2"),
+            c_asst("a3", [{"type": "text", "text": "C"}], parent = "u3"),
+        ],
+    )
+    messages = claude.read_transcript(path, "t", "s1").messages
+    ids = [m["id"] for m in messages]
+    assert len(messages) == 8
+    assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
 
 
 def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):

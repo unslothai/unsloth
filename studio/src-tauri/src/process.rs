@@ -384,10 +384,19 @@ fn acquire_named_studio_runtime_launch_guard(
     const WAIT_OBJECT_0: u32 = 0x0000_0000;
     const WAIT_ABANDONED: u32 = 0x0000_0080;
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
+    // Only the rights the guard uses. CreateMutexW asks for MUTEX_ALL_ACCESS, which an
+    // elevated holder's mutex denies to this process: error 5 instead of busy (#9928).
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const MUTEX_MODIFY_STATE: u32 = 0x0000_0001;
 
     let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     let handle = unsafe {
-        windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, wide_name.as_ptr())
+        windows_sys::Win32::System::Threading::CreateMutexExW(
+            std::ptr::null(),
+            wide_name.as_ptr(),
+            0,
+            SYNCHRONIZE | MUTEX_MODIFY_STATE,
+        )
     };
     if handle.is_null() {
         return Err(format!(
@@ -506,9 +515,46 @@ fn current_windows_user_sid() -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+const STUDIO_MANAGED_RUNTIME_PATH_MUTEX_PREFIX: &str =
+    "Global\\UnslothStudioManagedEnvironmentPath-";
+
+/// Mirrors `_resolved_windows_path` in unsloth_cli/_studio_runtime_gate.py.
+#[cfg(windows)]
+fn resolved_windows_path_text(path: &std::path::Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut text = resolved.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        text = format!(r"\\{rest}");
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        text = rest.to_string();
+    }
+    let trimmed = text.trim_end_matches(['\\', '/']);
+    if trimmed.len() == 2 && trimmed.ends_with(':') {
+        return format!("{trimmed}\\");
+    }
+    trimmed.to_string()
+}
+
+/// The CLI and install.ps1 lock a custom root by path hash, not SID; take that lock too.
+#[cfg(windows)]
+fn chosen_root_runtime_mutex_name() -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let root = crate::studio_home::chosen_root()?;
+    let digest = Sha256::digest(resolved_windows_path_text(&root).as_bytes());
+    Some(format!(
+        "{STUDIO_MANAGED_RUNTIME_PATH_MUTEX_PREFIX}{}",
+        crate::native_backend_lease::hex_bytes(&digest)
+    ))
+}
+
+#[cfg(windows)]
+fn acquire_studio_runtime_launch_guard() -> Result<Vec<StudioManagedRuntimeLaunchGuard>, String> {
     let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
-    acquire_named_studio_runtime_launch_guard(&name)
+    let mut guards = vec![acquire_named_studio_runtime_launch_guard(&name)?];
+    if let Some(path_name) = chosen_root_runtime_mutex_name() {
+        guards.push(acquire_named_studio_runtime_launch_guard(&path_name)?);
+    }
+    Ok(guards)
 }
 
 #[cfg(unix)]
@@ -543,7 +589,7 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
 }
 
 /// serialize managed-environment child creation with install and repair.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,
     operation: impl FnOnce() -> Result<T, String>,
@@ -557,8 +603,8 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
 ) -> Result<T, String> {
     #[cfg(windows)]
     {
-        let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
-        return with_named_studio_runtime_launch_guard(&name, operation);
+        let _runtime_launch_guards = acquire_studio_runtime_launch_guard()?;
+        return operation();
     }
     #[cfg(unix)]
     {
@@ -820,6 +866,76 @@ mod studio_runtime_launch_guard_tests {
         assert!(error.contains("installation is modifying"));
         drop(first);
         acquire_named_studio_runtime_launch_guard(&name).unwrap();
+    }
+
+    // The access an elevated holder's mutex grants a non-elevated opener (#9928).
+    #[test]
+    fn a_holder_that_denies_full_access_reads_as_busy() {
+        use windows_sys::Win32::Security::{
+            AddAccessAllowedAce, CreateWellKnownSid, InitializeAcl, InitializeSecurityDescriptor,
+            SetSecurityDescriptorDacl, WinWorldSid, ACL, ACL_REVISION, SECURITY_ATTRIBUTES,
+            SECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE,
+        };
+
+        let name = format!(
+            "Local\\UnslothStudioRuntimeGateAccessTest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let mut sid = [0_u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut sid_len = SECURITY_MAX_SID_SIZE;
+        let mut acl = [0_u64; 16];
+        let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+        let descriptor_ptr = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+        unsafe {
+            assert_ne!(
+                CreateWellKnownSid(
+                    WinWorldSid,
+                    std::ptr::null_mut(),
+                    sid.as_mut_ptr().cast(),
+                    &mut sid_len
+                ),
+                0
+            );
+            let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+            assert_ne!(
+                InitializeAcl(acl_ptr, std::mem::size_of_val(&acl) as u32, ACL_REVISION),
+                0
+            );
+            assert_ne!(
+                AddAccessAllowedAce(acl_ptr, ACL_REVISION, 0x0010_0001, sid.as_mut_ptr().cast()),
+                0
+            );
+            assert_ne!(InitializeSecurityDescriptor(descriptor_ptr, 1), 0);
+            assert_ne!(SetSecurityDescriptorDacl(descriptor_ptr, 1, acl_ptr, 0), 0);
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor_ptr,
+            bInheritHandle: 0,
+        };
+        let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let holder = unsafe {
+            windows_sys::Win32::System::Threading::CreateMutexW(&attributes, 1, wide_name.as_ptr())
+        };
+        assert!(!holder.is_null());
+
+        let contender_name = name.clone();
+        let error = std::thread::spawn(move || {
+            acquire_named_studio_runtime_launch_guard(&contender_name)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        unsafe {
+            let _ = windows_sys::Win32::System::Threading::ReleaseMutex(holder);
+            let _ = windows_sys::Win32::Foundation::CloseHandle(holder);
+        }
+        assert_eq!(error, STUDIO_RUNTIME_GATE_BUSY);
     }
 
     #[test]
@@ -1609,10 +1725,7 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
 }
 
 pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
-    let studio = home.join(".unsloth").join("studio");
-
-    find_unsloth_binary_in_studio_dir(&studio)
+    find_unsloth_binary_in_studio_dir(&crate::studio_home::studio_root()?)
 }
 
 /// The Windows console script is a generated, unsigned PE wrapper. Application
@@ -2824,6 +2937,9 @@ fn apply_managed_cli_context_inner(
     for name in skipped {
         cmd.env_remove(name);
     }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
 }
@@ -2843,6 +2959,9 @@ pub(crate) fn apply_managed_cli_context_tokio(
     }
     for name in &skipped {
         cmd.env_remove(name);
+    }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
     }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
@@ -3643,12 +3762,15 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses the legacy root whatever the environment says; scrub so the
+    // Tauri uses its own root whatever the environment says; scrub so the
     // spawned Python backend can't diverge. Off the shared list, so a name added
     // there cannot be honoured by the backend and missed here.
     // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
     for name in MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
+    }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
     }
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its

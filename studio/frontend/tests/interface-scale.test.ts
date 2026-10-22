@@ -72,6 +72,8 @@ async function load(tauri: boolean) {
   define("window", windowStub);
   define("document", {
     documentElement: {
+      setAttribute: () => undefined,
+      removeAttribute: () => undefined,
       style: {
         setProperty: (name: string, value: string) => styles.set(name, value),
         removeProperty: (name: string) => styles.delete(name),

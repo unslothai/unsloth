@@ -60,13 +60,6 @@ type SidebarContextProps = {
   /** The unpinned sidebar is held out over the content, from the window edge. */
   peeking: boolean
   setPeeking: (value: boolean) => void
-  width: number
-  /** Browser interface scale: the sidebar renders at width * widthScale. */
-  widthScale: number
-  storedWidth: number
-  maxWidth: number
-  setWidth: (value: number) => void
-  resetWidth: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -79,6 +72,9 @@ function useSidebar() {
 
   return context
 }
+
+const OPEN_DIALOG_SELECTOR =
+  '[data-slot="dialog-content"][data-state="open"], [data-slot="alert-dialog-content"][data-state="open"]'
 
 function SidebarProvider({
   defaultOpen = true,
@@ -105,11 +101,7 @@ function SidebarProvider({
   const [openMobile, setOpenMobile] = React.useState(false)
   const {
     width,
-    max: maxWidth,
     scale: widthScale,
-    stored: storedWidth,
-    setWidth,
-    resetWidth,
   } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
@@ -157,8 +149,11 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it.
-  useShortcut("toggleSidebar", toggleSidebar)
+  // Not behind an open dialog (Settings leaves the app un-hidden); the mobile drawer is itself one.
+  useShortcut("toggleSidebar", toggleSidebar, {
+    claims: () =>
+      (isMobile && openMobile) || document.querySelector(OPEN_DIALOG_SELECTOR) === null,
+  })
 
   const pinned = pinnedProp ?? false
   const setPinned = setPinnedProp ?? noop
@@ -203,14 +198,8 @@ function SidebarProvider({
       togglePinned,
       peeking,
       setPeeking,
-      width,
-      widthScale,
-      storedWidth,
-      maxWidth,
-      setWidth,
-      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking, width, widthScale, storedWidth, maxWidth, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking]
   )
 
   return (
@@ -297,8 +286,9 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking, width, widthScale } =
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking } =
     useSidebar()
+  const { width, scale: widthScale } = useSidebarWidth()
   // Only a sidebar that collapses to nothing has an edge to be held out from.
   const holdsOut = hasPinMode && !pinned && collapseToZero
   const heldOut = holdsOut && peeking
@@ -350,7 +340,7 @@ function Sidebar({
   return (
     <div
       className={cn(
-        "group peer text-sidebar-foreground relative shrink-0",
+        "group sidebar-peer text-sidebar-foreground relative shrink-0",
         hasPinMode && pinned && "w-(--sidebar-width)",
         hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
@@ -481,8 +471,15 @@ function SidebarResizeHandle({
   className?: string
   side?: "left" | "right"
 }) {
-  const { open, toggleSidebar, width, widthScale, storedWidth, maxWidth, setWidth, resetWidth } =
-    useSidebar()
+  const { open, toggleSidebar } = useSidebar()
+  const {
+    width,
+    scale: widthScale,
+    stored: storedWidth,
+    max: maxWidth,
+    setWidth,
+    resetWidth,
+  } = useSidebarWidth()
   const ref = React.useRef<HTMLDivElement>(null)
   const t = useT()
 
@@ -596,7 +593,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
+        "bg-background md:[:where(.sidebar-peer)[data-variant=inset]~&]:m-2 md:[:where(.sidebar-peer)[data-variant=inset]~&]:ml-0 md:[:where(.sidebar-peer)[data-variant=inset]~&]:rounded-xl md:[:where(.sidebar-peer)[data-variant=inset]~&]:shadow-sm md:[:where(.sidebar-peer)[data-variant=inset]~&]:[:where(.sidebar-peer)[data-state=collapsed]~&]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
         className
       )}
       {...props}
@@ -850,6 +847,8 @@ function SidebarMenuButton({
   )
 }
 
+const sidebarMenuPeerActiveClass = String.raw`[:where(.peer\/menu-button):where([data-state=active],[data-active]:not([data-active=false]))~&]:text-sidebar-accent-foreground`
+
 function SidebarMenuAction({
   className,
   asChild = false,
@@ -867,8 +866,10 @@ function SidebarMenuAction({
       data-sidebar="menu-action"
       className={cn(
         "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground peer-hover/menu-button:text-sidebar-accent-foreground absolute top-1.5 right-1 aspect-square w-5 rounded-full p-0 peer-data-[size=default]/menu-button:top-2 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 focus-visible:ring-1 [&>svg]:size-4 flex items-center justify-center outline-hidden transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 md:after:hidden [&>svg]:shrink-0",
-        showOnHover &&
-          "peer-data-active/menu-button:text-sidebar-accent-foreground group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        showOnHover && [
+          sidebarMenuPeerActiveClass,
+          "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        ],
         className
       )}
       {...props}
@@ -885,7 +886,8 @@ function SidebarMenuBadge({
       data-slot="sidebar-menu-badge"
       data-sidebar="menu-badge"
       className={cn(
-        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground peer-data-active/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-full px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-full px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        sidebarMenuPeerActiveClass,
         className
       )}
       {...props}

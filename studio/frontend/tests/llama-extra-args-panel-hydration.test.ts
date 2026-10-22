@@ -186,9 +186,13 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   // Whitespace-tolerant: the call carries an eviction list now, so it spans lines.
   assert.match(
     PANEL,
-    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
-  assert.match(PANEL, /configRef\.current === configAtStart/);
+  // By value: the primed draft is a different object from the first render's fallback.
+  assert.match(
+    PANEL,
+    /perModelConfigsEqual\(configRef\.current, configAtStart\)/,
+  );
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
   // To the shared draft, so the adopted row reaches both hosts, not just the one that read it.
   assert.match(
@@ -279,7 +283,7 @@ test("the hydration write-back rejects a stale server response", () => {
   const writeBack = PANEL.slice(adoptionStart, writeBackEnd);
   assert.match(
     writeBack,
-    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\);\s*if \(perModelConfigStorageChanged\(storedAtStart, storedConfig\)\) \{\s*return;\s*\}[\s\S]*const rememberedConfig = fromApiOverride\(\s*resolvedRow,\s*storedConfig\.config,\s*\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\);\s*if \(perModelConfigStorageChanged\(storedAtStart, storedConfig\)\) \{\s*return;\s*\}[\s\S]*const rememberedConfig = fromApiOverride\(\s*resolvedRow,\s*storedConfig\.config,\s*\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
 });
 

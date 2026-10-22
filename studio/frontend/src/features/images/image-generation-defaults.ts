@@ -20,11 +20,26 @@ const MODEL_DEFAULTS: Array<{
   { match: "kontext", steps: 20, guidance: 2.5 },
   { match: "flux.1-krea", steps: 20, guidance: 3.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
+  // FLUX.3 Image Klein (ComfyUI templates, the BFL reference): base 50 steps at CFG 3.5, distilled 16 steps without CFG. Base first.
+  // Every alias the backend registers for the two families, and the canonical family names (an opaque path
+  // resolves through the explicit family).
+  { match: "flux.3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux-3-image-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux3-image-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux.3-klein", steps: 16, guidance: 1 },
+  { match: "flux-3-image-klein", steps: 16, guidance: 1 },
+  { match: "flux3-image-klein", steps: 16, guidance: 1 },
+  { match: "flux3-klein", steps: 16, guidance: 1 },
   // Klein base is undistilled. The generic key below covers both distilled sizes.
   { match: "flux.2-klein-base", steps: 20, guidance: 5 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
   { match: "flux.2-dev", steps: 20, guidance: 4 },
-  // Qwen-Image-2.1 and its aliases, before the generic key.
+  // Qwen-Image-2.1 and its aliases, before the generic key, Turbo before 2.1.
+  { match: "qwen-image-2.1-turbo", steps: 8, guidance: 1 },
+  { match: "qwen-image-21-turbo", steps: 8, guidance: 1 },
+  { match: "qwenimage21-turbo", steps: 8, guidance: 1 },
+  { match: "qwenimage21turbo", steps: 8, guidance: 1 },
   { match: "qwen-image-2.1", steps: 25, guidance: 1 },
   { match: "qwen-image-21", steps: 25, guidance: 1 },
   { match: "qwen_image_21", steps: 25, guidance: 1 },
@@ -49,20 +64,64 @@ const MODEL_DEFAULTS: Array<{
   { match: "sdxl", steps: 25, guidance: 7 },
 ];
 
+// The Steps slider's usual top, and the request's (DiffusionGenerateRequest.steps is 1-100).
+export const STEPS_SLIDER_MAX = 50;
+export const STEPS_REQUEST_MAX = 100;
+
+/** Steps slider top: 50, widened to twice the model's default (Krea-2-raw ships 52) and to the
+ *  current value (an import or restore), never past what the request accepts. */
+export function stepsSliderMax(modelDefault: number, current: number): number {
+  const wanted = Math.max(STEPS_SLIDER_MAX, modelDefault * 2, current);
+  return Math.min(STEPS_REQUEST_MAX, Number.isFinite(wanted) ? Math.ceil(wanted) : STEPS_SLIDER_MAX);
+}
+
 export function defaultsFor(repoId: string): {
   steps: number;
   guidance: number;
 } {
+  // Mirrors the backend's name_key_in, so both tables resolve one spelling alike.
+  const fold = (text: string) => text.replace(/[-_.\s]+/g, "-");
   const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+  const folded = fold(id);
+  const matched = MODEL_DEFAULTS.find(
+    (entry) => id.includes(entry.match) || folded.includes(fold(entry.match)),
+  );
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
 }
 
+// Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base
+// files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
+const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);
+
 /** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. */
 export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
-  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
+  const family = explicitFamily(familyOverride);
+  if (family && FAMILY_NAMES_THE_VARIANT.has(family)) return family;
+  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (family ?? repoId);
+}
+
+/** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. */
+export function loadedRecipeFor(
+  pickDefaults: { steps: number; guidance: number } | null | undefined,
+  residentKey: string,
+  reported?: { steps?: number; guidance?: number } | null,
+): { steps: number; guidance: number } | null {
+  if (pickDefaults !== DEFAULT_GEN) return null;
+  const resident = residentRecipeFor(residentKey, reported);
+  return resident.steps === DEFAULT_GEN.steps && resident.guidance === DEFAULT_GEN.guidance ? null : resident;
+}
+
+/** The resident model's recipe: the backend's own when it reports one, else the base-repo key's. */
+export function residentRecipeFor(
+  residentKey: string,
+  reported?: { steps?: number; guidance?: number } | null,
+): { steps: number; guidance: number } {
+  if (reported && typeof reported.steps === "number" && typeof reported.guidance === "number") {
+    return { steps: reported.steps, guidance: reported.guidance };
+  }
+  return defaultsFor(residentKey);
 }
 
 export function residentDefaultsKey(

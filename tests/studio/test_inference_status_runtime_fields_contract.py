@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""A runtime field must not be passed twice into an inference response (#8007).
-
-`_llama_runtime_fields()` returns one entry per field on `_InferenceRuntimeFields`, and
-callers splat it. Passing any of those same names as an explicit keyword in the same call
-is `TypeError: got multiple values for keyword argument`, whatever the two values are, so
-pinning the duplicate to None does not help -- the key has to be absent from the dict.
-
-#8007 added `chat_template_override` to `_InferenceRuntimeFields` while `get_status` was
-already passing it explicitly. Every `/api/inference/status` poll with a GGUF loaded then
-raised, the chat UI showed "Failed to get status", and the model picker rendered empty.
-
-Checked at source level: importing the routes module pulls in the whole studio stack, and
-this is a call-shape property that AST can see directly.
-"""
+"""A runtime field passed again as a keyword raises TypeError; the key must be absent from the dict."""
 
 from __future__ import annotations
 

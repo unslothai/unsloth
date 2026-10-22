@@ -68,6 +68,18 @@ export function uploadItemFromIntent(intent: NativeIntent): RagUploadItem {
   };
 }
 
+export function sameDocument(a: TrackedDocument, b: TrackedDocument): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (
+      a[key as keyof TrackedDocument] !== b[key as keyof TrackedDocument]
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function itemName(item: RagUploadItem): string {
   return item.kind === "file" ? item.file.name : item.name;
 }
@@ -111,6 +123,8 @@ export function useRagDocuments(
   }, [documents]);
   // documentId -> signature; forgotten on delete, cleared on scope change.
   const sigByDocId = useRef<Map<string, string>>(new Map());
+  // Row id -> source File for retry. Files only: a native drop's path token is spent on first use.
+  const retryItems = useRef<Map<string, RagUploadItem>>(new Map());
   // Skip a re-selected file only if a matching doc is healthy or still indexing. A doc
   // that completed with 0 chunks is re-ingestable (e.g. a scan attached before a vision
   // model loaded); the backend re-ingests on the same hash, so let it through.
@@ -189,13 +203,17 @@ export function useRagDocuments(
         numChunks?: number | null,
       ) => {
         if (stale()) return forget();
+        if (status !== "failed") retryItems.current.delete(documentId);
         if (status === "cancelled") {
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
         } else if (status === "failed") {
-          // Drop the chip rather than show "Failed"; warn via toast.
           sigByDocId.current.delete(documentId);
-          setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+          patchDoc(documentId, {
+            status: "failed",
+            error: error ?? "Indexing failed",
+            progress: null,
+          });
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
           });
@@ -293,25 +311,38 @@ export function useRagDocuments(
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
-        // live "running %" chip. Failed docs hidden (toast warned at upload).
-        const rows = (await lister()).filter((row) => row.status !== "failed");
+        // live "running %" chip. Failed docs hidden, except ones this session can retry.
+        const rows = (await lister()).filter(
+          (row) => row.status !== "failed" || retryItems.current.has(row.id),
+        );
         if (refreshSeq.current !== requestId) return true;
         setDocuments((prev) => {
+          // A synced folder lists thousands of rows per poll: index once, keep unchanged rows by identity.
+          const prevById = new Map(prev.map((p) => [p.id, p]));
           const merged = rows.map((row) => {
-            const tracked = prev.find((p) => p.id === row.id);
-            return tracked &&
+            const tracked = prevById.get(row.id);
+            const next =
+              tracked &&
               tracked.progress != null &&
               row.status !== "completed"
-              ? { ...row, progress: tracked.progress, stage: tracked.stage }
-              : row;
+                ? { ...row, progress: tracked.progress, stage: tracked.stage }
+                : row;
+            return tracked && sameDocument(tracked, next) ? tracked : next;
           });
           // Keep optimistic chips (not yet listed) so a refresh racing an upload
-          // can't make them vanish.
+          // can't make them vanish, and failed rows this session can still retry.
           const serverIds = new Set(rows.map((row) => row.id));
           const pendingLocal = prev.filter(
-            (row) => row.id.startsWith("pending_") && !serverIds.has(row.id),
+            (row) =>
+              !serverIds.has(row.id) &&
+              (row.id.startsWith("pending_") ||
+                (row.status === "failed" && retryItems.current.has(row.id))),
           );
-          return [...merged, ...pendingLocal];
+          const next = [...merged, ...pendingLocal];
+          return next.length === prev.length &&
+            next.every((row, i) => row === prev[i])
+            ? prev
+            : next;
         });
         return true;
       } catch (err) {
@@ -397,6 +428,7 @@ export function useRagDocuments(
       uploadGenerationRef.current += 1;
       activeUploadsRef.current.clear();
       uploadInFlightRef.current = false;
+      retryItems.current.clear();
       setUploading(false);
       // Scope changes intentionally clear the old scope before fetching the new
       // one. Keep this synchronous so React StrictMode's setup/cleanup replay
@@ -551,6 +583,7 @@ export function useRagDocuments(
                 );
         if (generation !== uploadGenerationRef.current) return;
         sigByDocId.current.set(result.documentId, itemSignature(item));
+        if (item.kind === "file") retryItems.current.set(result.documentId, item);
         setDocuments((rows) =>
           rows.some((row) => row.id === result.documentId)
             ? rows.filter((row) => row.id !== tempId)
@@ -569,12 +602,16 @@ export function useRagDocuments(
       } catch (err) {
         if (generation !== uploadGenerationRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
-        // Drop the chip rather than show "Failed"; warn via toast.
-        setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+        if (item.kind === "file") {
+          retryItems.current.set(tempId, item);
+          patchDoc(tempId, { status: "failed", error: message, progress: null });
+        } else {
+          setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+        }
         toast.error(`Couldn't upload ${name}`, { description: message });
       }
     },
-    [trackJob],
+    [trackJob, patchDoc],
   );
 
   // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of one), since the
@@ -701,9 +738,12 @@ export function useRagDocuments(
   );
 
   const remove = useCallback(
-    async (documentId: string) => {
+    async (documentId: string): Promise<boolean> => {
       const prev = documents;
       setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+      const prevRetry = retryItems.current.get(documentId);
+      retryItems.current.delete(documentId);
+      if (documentId.startsWith("pending_")) return true;
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
@@ -720,12 +760,15 @@ export function useRagDocuments(
           documentId,
           scope?.type === "project" ? scope.projectId : undefined,
         );
+        return true;
       } catch (err) {
         setDocuments(prev);
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
+        if (prevRetry !== undefined) retryItems.current.set(documentId, prevRetry);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
+        return false;
       } finally {
         if (removingProjectId) {
           noteProjectWork(removingProjectId, -1);
@@ -733,6 +776,21 @@ export function useRagDocuments(
       }
     },
     [documents, scope],
+  );
+
+  const canRetry = useCallback(
+    (documentId: string) => retryItems.current.has(documentId),
+    [],
+  );
+
+  const retry = useCallback(
+    async (documentId: string) => {
+      const item = retryItems.current.get(documentId);
+      if (!item) return;
+      if (!(await remove(documentId))) return;
+      await upload([item]);
+    },
+    [remove, upload],
   );
 
   return {
@@ -743,5 +801,7 @@ export function useRagDocuments(
     refresh,
     upload,
     remove,
+    retry,
+    canRetry,
   };
 }

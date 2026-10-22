@@ -4,6 +4,8 @@
 // Real logic, re-exported: only the barrel it normally comes from needs stubbing.
 export { EMBEDDING_TAGS } from "../../../src/features/hub/lib/hf-model-meta.ts";
 export { normalizeModelIdentity } from "../../../src/features/hub/lib/model-identity.ts";
+export { isGgufLike } from "../../../src/features/hub/lib/model-identifiers.ts";
+export { classifyUnslothSupport } from "../../../src/features/hub/lib/unsloth-support.ts";
 
 /** Minimal HF-token store. */
 let token = "";

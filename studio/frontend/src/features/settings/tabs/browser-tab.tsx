@@ -45,6 +45,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { BrowserAgentSettings } from "./browser-agent-settings";
 
 const RETENTION_LABELS: Record<number, TranslationKey> = {
   0: "browser.retention.forever",
@@ -230,6 +231,8 @@ export function BrowserTab() {
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">{t("browser.settingsTitle")}</h1>
       </header>
+
+      <BrowserAgentSettings />
 
       <SettingsSection title={t("browser.linksTitle")}>
         <SettingsRow

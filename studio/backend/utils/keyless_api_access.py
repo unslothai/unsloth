@@ -45,6 +45,11 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
+        # /v1/models for Open WebUI's management view; /models/load and /models/unload stay keyed.
+        ("GET", "/models"),
+        # Token counters, like /v1/chat/count_tokens. Not /slots or /metrics: those are server-wide.
+        ("POST", "/tokenize"),
+        ("POST", "/detokenize"),
     }
 )
 
@@ -375,6 +380,11 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
 
     if not request_is_loopback(request):
         return False
+    from utils.client_ip import names_a_forwarded_client
+
+    # The loopback socket is a same-host proxy's when it marks the request as relayed.
+    if names_a_forwarded_client(request):
+        return False
     bind_host = getattr(app_state, "bind_host", None)
     scope = getattr(request, "scope", {})
     server = scope.get("server")
@@ -498,7 +508,9 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
         return True
     if _public_tunnel_active(app_state):
         return False
-    return request_is_loopback(request)
+    from utils.client_ip import names_a_forwarded_client
+
+    return request_is_loopback(request) and not names_a_forwarded_client(request)
 
 
 def keyless_request_allowed(request: Any) -> bool:

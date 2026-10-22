@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import logging
+import copy
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
 from .loader_utils import (
@@ -18,6 +19,7 @@ from .loader_utils import (
     requested_device_map,
     unmarked_device_map,
 )
+from ..device_type import DEVICE_TYPE, xpu_keeps_explicit_bf16
 from ._utils import (
     config_return_dict,
     SUPPORTS_BFLOAT16,
@@ -29,6 +31,7 @@ from ._utils import (
 import inspect
 import json
 import os
+import posixpath
 import threading
 import types
 from huggingface_hub import hf_hub_download
@@ -181,6 +184,43 @@ def _normalize_save_method(save_method):
         # strip before replacing spaces so " lora " does not become "_lora_" and bypass the adapter guard.
         return save_method.strip().lower().replace(" ", "_")
     return save_method
+
+
+def _copy_sentence_encoder_for_merge(model, dtype):
+    """Merge an independent encoder; never unload the training model's adapters."""
+    from peft import PeftModel, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict
+
+    model = copy.deepcopy(getattr(model, "_orig_mod", model))
+    adapter_names = None
+    if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
+        # bnb LoRA merges requantize; merge into a dequantized base instead.
+        adapters = []
+        if isinstance(model, PeftModel):
+            adapter_names = list(model.active_adapters)
+            adapters = [
+                (name, model.peft_config[name], get_peft_model_state_dict(model, adapter_name = name))
+                for name in adapter_names
+            ]
+            model = model.unload()
+        model = model.dequantize()
+        model.is_loaded_in_4bit = False
+        model.is_loaded_in_8bit = False
+        model.to(dtype = dtype)
+        devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        # Fresh adapter layers draw from the global RNG; keep the live run's stream untouched.
+        with torch.random.fork_rng(devices = devices):
+            for name, config, state in adapters:
+                # Residual initializers (OLoRA, PiSSA, LoftQ) already rewrote the base; rerunning one subtracts it twice.
+                config = copy.deepcopy(config)
+                config.init_lora_weights = False
+                if isinstance(model, PeftModel):
+                    model.add_adapter(name, config)
+                else:
+                    model = get_peft_model(model, config, adapter_name = name)
+                set_peft_model_state_dict(model, state, adapter_name = name)
+    if hasattr(model, "merge_and_unload"):
+        model = model.merge_and_unload(safe_merge = True, adapter_names = adapter_names)
+    return model.to(dtype = dtype)
 
 
 def _save_pretrained_torchao(
@@ -1106,9 +1146,14 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
         module_subfolder = "",
+        transformer_class = None,
     ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
+
+        # A repo's Transformer subclass, built around our model.
+        if transformer_class is not None:
+            Transformer = transformer_class
 
         # Prevents loading the model a second time and redirects AutoProcessor/AutoTokenizer so Transformer.__init__ picks up our pre-fixed tokenizer.
         from transformers import AutoProcessor, AutoTokenizer
@@ -1297,9 +1342,12 @@ class FastSentenceTransformer(FastModel):
             )
 
         if class_ref.startswith("sentence_transformers."):
-            return FastSentenceTransformer._import_sentence_transformers_class(
+            resolved = FastSentenceTransformer._import_sentence_transformers_class(
                 class_ref, model_name
             )
+            if not trust_remote_code:
+                FastSentenceTransformer._refuse_whole_model_class(resolved, class_ref, model_name)
+            return resolved
 
         if not trust_remote_code:
             # Not transformers' resolve_trust_remote_code: it appends a hf.co URL that is bogus for local dirs.
@@ -1359,10 +1407,35 @@ class FastSentenceTransformer(FastModel):
             )
         return resolved
 
+    # A whole model is not a module: its load() opens a modules.json of its own, which
+    # nothing here has read, and below 6.0 imports what that names from the folder.
+    _WHOLE_MODEL_CLASS_NAMES = frozenset(
+        {"SentenceTransformer", "CrossEncoder", "SparseEncoder", "BaseModel"}
+    )
+
+    @staticmethod
+    def _refuse_whole_model_class(resolved, class_ref, model_name):
+        for ancestor in getattr(resolved, "__mro__", ()):
+            module_name = getattr(ancestor, "__module__", "") or ""
+            if (
+                module_name.split(".")[0] == "sentence_transformers"
+                and getattr(ancestor, "__name__", "")
+                in FastSentenceTransformer._WHOLE_MODEL_CLASS_NAMES
+            ):
+                raise ValueError(
+                    f"Unsloth: The model {model_name} declares a whole model ({class_ref!r}) "
+                    f"as one of its modules. Its loader reads a second, unchecked set of "
+                    f"modules. Please pass the argument `trust_remote_code=True` to allow "
+                    f"custom code to be run."
+                )
+
+    # Router routes can hold further Routers; a "" route is the same folder again.
+    _MAX_SUB_MODULE_DEPTH = 8
+
     @staticmethod
     def _is_transformer_module_ref(class_ref):
         """Name ST's Transformer without importing anything, since importing to compare is the same
-        execution the gate refuses. Any other spelling is caught by `is Transformer` in
+        execution the gate refuses. Any other spelling (or a subclass) is caught by `issubclass` in
         _load_modules, after gating; refusals all live in _resolve_module_class."""
         if not isinstance(class_ref, str):
             return False
@@ -1423,7 +1496,13 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _check_module_config_class_refs(
-        load_path, class_ref, model_name, trust_remote_code, module_class
+        load_path,
+        class_ref,
+        model_name,
+        trust_remote_code,
+        module_class,
+        descend = None,
+        depth = 0,
     ):
         if trust_remote_code:
             return
@@ -1451,6 +1530,7 @@ class FastSentenceTransformer(FastModel):
         config_names.append("config.json")
 
         refs = []
+        routes = []
         for config_name in dict.fromkeys(config_names):
             config_path = os.path.join(load_path, config_name)
             if not os.path.isfile(config_path):
@@ -1495,6 +1575,11 @@ class FastSentenceTransformer(FastModel):
                             for value in types.values()
                             if isinstance(value, str)
                         ]
+                        routes += [
+                            (route, value)
+                            for route, value in types.items()
+                            if isinstance(route, str) and isinstance(value, str)
+                        ]
                 elif isinstance(config.get(key), str):
                     refs.append((key, config[key], prefix))
 
@@ -1514,6 +1599,59 @@ class FastSentenceTransformer(FastModel):
                     f"code. Please pass the argument `trust_remote_code=True` to allow custom code to "
                     f"be run."
                 )
+            if key == "tokenizer_class":
+                # WordEmbeddings.load calls tokenizer_class.load(folder): only a word
+                # tokenizer is meant here, not a Router or a whole model with configs of
+                # their own.
+                FastSentenceTransformer._require_word_tokenizer(value, class_ref, model_name)
+
+        # Router.load runs the same unchecked loaders one folder down for each route, so
+        # each route is checked the way this module was, where the loader will read it.
+        for route, value in routes:
+            if depth >= FastSentenceTransformer._MAX_SUB_MODULE_DEPTH:
+                raise ValueError(
+                    f"Unsloth: The model {model_name} nests its {class_ref} modules more than "
+                    f"{FastSentenceTransformer._MAX_SUB_MODULE_DEPTH} levels deep. Please pass "
+                    f"the argument `trust_remote_code=True` to allow custom code to be run."
+                )
+            sub_class = FastSentenceTransformer._import_sentence_transformers_class(
+                value, model_name
+            )
+            FastSentenceTransformer._refuse_whole_model_class(sub_class, value, model_name)
+            if descend is not None:
+                descend(route, value, sub_class, depth + 1)
+            else:
+                FastSentenceTransformer._check_module_config_class_refs(
+                    os.path.join(load_path, route),
+                    value,
+                    model_name,
+                    False,
+                    sub_class,
+                    depth = depth + 1,
+                )
+
+    @staticmethod
+    def _require_word_tokenizer(class_ref, module_ref, model_name):
+        from sentence_transformers.util import import_from_string
+
+        resolved = None
+        if all(part.isidentifier() for part in class_ref.split(".")):
+            try:
+                resolved = import_from_string(class_ref)
+            except Exception:
+                resolved = None
+        names = {
+            getattr(ancestor, "__name__", "")
+            for ancestor in getattr(resolved, "__mro__", ())
+            if (getattr(ancestor, "__module__", "") or "").split(".")[0] == "sentence_transformers"
+        }
+        if "WordTokenizer" not in names:
+            raise ValueError(
+                f"Unsloth: The model {model_name} declares the module {module_ref} whose "
+                f"tokenizer_class is {class_ref!r}, which is not a sentence-transformers word "
+                f"tokenizer. Please pass the argument `trust_remote_code=True` to allow custom "
+                f"code to be run."
+            )
 
     @staticmethod
     def _is_commit(revision):
@@ -1856,6 +1994,22 @@ class FastSentenceTransformer(FastModel):
         for module_config in modules_config:
             if not isinstance(module_config, dict):
                 continue
+            folder = module_config.get("path")
+            # modules/../1_Pooling stays inside: only a folder that normalizes above the model escapes.
+            normalized = (
+                posixpath.normpath(folder.replace("\\", "/")) if isinstance(folder, str) else ""
+            )
+            if isinstance(folder, str) and (
+                os.path.isabs(folder)
+                or folder.startswith(("/", "\\"))
+                or folder[1:2] == ":"
+                or normalized == ".."
+                or normalized.startswith("../")
+            ):
+                raise ValueError(
+                    f"Unsloth: {model_name} names the module folder {folder!r}, which is "
+                    f"outside the model. Module folders must stay inside the model folder."
+                )
             class_ref = module_config.get("type")
             if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                 continue
@@ -1894,6 +2048,7 @@ class FastSentenceTransformer(FastModel):
         token = None,
         cache_dir = None,
         revision = None,
+        depth = 0,
     ):
         """Check a module's own config on a delegated route, where nothing is local yet.
 
@@ -1923,10 +2078,13 @@ class FastSentenceTransformer(FastModel):
         folder = module_config.get("path")
         if not isinstance(folder, str):
             return
+        # A rooted path is not a repository folder: Path(model, "/x") is "/x" to the
+        # loader, so that local folder is the one to check.
+        rooted = folder.startswith("/") or os.path.isabs(folder)
         # An empty path is the repository root, which sentence-transformers accepts and
         # loads the root config.json from. Skipping it left the whole check bypassable by
         # declaring Dense with "path": "".
-        folder = folder.strip("/")
+        folder = folder.rstrip("/") if rooted else folder.strip("/")
 
         config_names = []
         config_file_name = getattr(module_class, "config_file_name", None)
@@ -1960,7 +2118,9 @@ class FastSentenceTransformer(FastModel):
             is_local = False
 
         folders = []
-        if is_local:
+        if rooted:
+            folders.append(folder or "/")
+        elif is_local:
             folders.append(os.path.join(model_name, *folder.split("/")) if folder else model_name)
         else:
             from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
@@ -2014,9 +2174,34 @@ class FastSentenceTransformer(FastModel):
                 if content:
                     break
 
+        def descend(route, sub_ref, sub_class, sub_depth):
+            # Router.load joins the route onto its own subfolder (Path(subfolder, route)),
+            # and fetches it from the same repository.
+            sub_folder = (
+                route
+                if route.startswith("/") or os.path.isabs(route)
+                else (f"{folder}/{route}" if folder else route)
+            )
+            FastSentenceTransformer._check_delegated_module_config(
+                model_name,
+                {"path": sub_folder},
+                sub_ref,
+                sub_class,
+                token = token,
+                cache_dir = cache_dir,
+                revision = revision,
+                depth = sub_depth,
+            )
+
         for load_path in dict.fromkeys(folders):
             FastSentenceTransformer._check_module_config_class_refs(
-                load_path, class_ref, model_name, False, module_class
+                load_path,
+                class_ref,
+                model_name,
+                False,
+                module_class,
+                descend = descend,
+                depth = depth,
             )
 
     @staticmethod
@@ -2063,7 +2248,13 @@ class FastSentenceTransformer(FastModel):
                         cache_dir = cache_dir,
                         revision = revision,
                     )
-                    is_transformer_module = module_class is Transformer
+                    # Stock load() would re-read the weights unpatched; a subclass's own load() may restore its state, so keep it.
+                    is_transformer_module = (
+                        isinstance(module_class, type)
+                        and issubclass(module_class, Transformer)
+                        and inspect.getattr_static(module_class, "load", None)
+                        is inspect.getattr_static(Transformer, "load", None)
+                    )
 
                 if is_transformer_module:
                     transformer_module = FastSentenceTransformer._create_transformer_module(
@@ -2076,6 +2267,7 @@ class FastSentenceTransformer(FastModel):
                         cache_dir,
                         revision,
                         module_subfolder = module_config.get("path") or "",
+                        transformer_class = module_class,
                     )
                     modules[name] = transformer_module
                 else:
@@ -2472,7 +2664,10 @@ class FastSentenceTransformer(FastModel):
                     dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
                 else:
                     dtype = torch.float32
-            elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+            # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+            elif (
+                dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16()
+            ):
                 print("Unsloth: Device does not support bfloat16. Using float16 instead.")
                 dtype = torch.float16
 
@@ -2580,20 +2775,19 @@ class FastSentenceTransformer(FastModel):
                         f"supported for this SentenceTransformer; only "
                         f"'merged_16bit' is."
                     )
-                self.save_pretrained(save_directory)
+                # Keep the load dtype; quantized weights dequantize into it.
+                dtype = self._dtype if isinstance(self._dtype, torch.dtype) else torch.float16
+                merged = _copy_sentence_encoder_for_merge(self[0].auto_model, dtype)
+                exported = copy.deepcopy(self, {id(self[0].auto_model): merged})
+                transformer = exported[0]
+                # The adapter-save hook is bound to the live module; it would write its adapter config.
+                if getattr(transformer, "_unsloth_save_config_patched", False):
+                    del transformer.save
+                exported.save_pretrained(save_directory)
                 if tokenizer is None:
                     tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
                 else:
                     save_kwargs.pop("tokenizer", None)
-                if hasattr(self[0], "auto_model"):
-                    inner = self[0].auto_model
-                    if hasattr(inner, "_orig_mod"):
-                        inner = inner._orig_mod
-                    if hasattr(inner, "merge_and_unload"):
-                        merged = inner.merge_and_unload()
-                        merged.save_pretrained(save_directory)
-                    elif hasattr(inner, "save_pretrained"):
-                        inner.save_pretrained(save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
                 FastSentenceTransformer._add_unsloth_branding(save_directory)
@@ -3024,11 +3218,23 @@ class FastSentenceTransformer(FastModel):
                     target_modules = target_modules,
                     lora_dropout = lora_dropout,
                     bias = bias,
+                    layers_to_transform = layers_to_transform,
+                    layers_pattern = layers_pattern,
+                    use_rslora = use_rslora,
                     use_dora = use_dora,
+                    modules_to_save = modules_to_save,
+                    init_lora_weights = init_lora_weights,
+                    loftq_config = loftq_config or {},
                     task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
+                from ._utils import _mark_unsloth_disable_data_parallel
+                from .llama import _unfreeze_modules_to_save
+
+                # float16 modules_to_save copies must train in float32 or GradScaler refuses to unscale them (#1200).
+                _unfreeze_modules_to_save(peft_model)
+                _mark_unsloth_disable_data_parallel(peft_model)
 
                 qat_scheme = kwargs.get("qat_scheme", None)
                 if qat_scheme is not None:
@@ -3206,6 +3412,13 @@ def _patch_sentence_transformer_trainer():
                     if hasattr(self.args, "fp16_full_eval"):
                         self.args.fp16_full_eval = False
 
+        if os.environ.get("UNSLOTH_LOG_MFU", "0") == "1":
+            try:
+                from ..utils.mfu import add_mfu_callback
+                add_mfu_callback(self)
+            except Exception as exc:
+                print(f"Unsloth: could not enable MFU logging ({exc}).")
+
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 
@@ -3374,6 +3587,42 @@ def _patch_pooling_float16_accumulation():
     Pooling._unsloth_float16_pooling = True
 
 
+def _patch_dense_input_dtype():
+    """Cast Dense input to its weight dtype: the float32 pooled vector meets float16 Dense
+    weights (EmbeddingGemma on T4), which F.linear refuses without autocast."""
+    try:
+        from sentence_transformers.models import Dense
+    except Exception:
+        return
+    if getattr(Dense, "_unsloth_input_dtype", False):
+        return
+    _original_forward = Dense.forward
+
+    def forward(self, features, *args, **kwargs):
+        key = getattr(self, "module_input_name", "sentence_embedding")
+        weight = getattr(getattr(self, "linear", None), "weight", None)
+        x = features.get(key, None) if hasattr(features, "get") else None
+        if not (
+            torch.is_tensor(x)
+            and torch.is_tensor(weight)
+            and x.is_floating_point()
+            and x.dtype != weight.dtype
+            and not torch.is_autocast_enabled(x.device.type)
+        ):
+            return _original_forward(self, features, *args, **kwargs)
+        features[key] = x.to(weight.dtype)
+        try:
+            return _original_forward(self, features, *args, **kwargs)
+        finally:
+            if getattr(self, "module_output_name", key) != key:
+                features[key] = x
+
+    forward.__wrapped__ = _original_forward
+    Dense.forward = forward
+    Dense._unsloth_input_dtype = True
+
+
 _patch_sentence_transformer_trainer()
 _patch_st_trainer_load_from_checkpoint()
 _patch_pooling_float16_accumulation()
+_patch_dense_input_dtype()

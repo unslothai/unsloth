@@ -64,7 +64,7 @@ test("the render_html scan happens once per message part, above the blocks", () 
   );
   assert.match(
     impl,
-    /useAuiState\(\(\{ message \}\) =>\s*message\.parts\.some\(isRenderableRenderHtmlToolPart\),?\s*\)/,
+    /useAuiState\(\(\{ message \}\) =>\s*partsHaveRenderableRenderHtmlTool\(message\.parts\),?\s*\)/,
   );
   // The value has to reach the blocks, or the context read above answers with its default.
   assert.match(
@@ -122,10 +122,24 @@ test("the newest message still gets the whole continue bar", () => {
     /useAuiState\(\(\{ message \}\) => message\.status\)/,
     /useAuiState\(\(\{ message \}\) => message\.metadata\)/,
     /readContinuationSource\(message\.content\)/,
-    /isContinuableContent\(message\.content, \{ thought: thoughtResumable \}\)/,
+    /isContinuableContent\(messageContent, \{[\s\S]{0,160}thought: thoughtResumable,[\s\S]{0,160}replay: geminiReplayTurns\.length > 0/,
     /findLatestUserAudioBase64\(thread\.messages, false\)/,
     /modeAllowsContinuation\(\{/,
   ]) {
     assert.match(shared, marker);
+  }
+});
+
+test("a streaming reply does not re-read its content for the continue bar on every token", () => {
+  const shared = body(thread, "function useContinuation() {", "\n}\n");
+  for (const gated of [
+    /const reasoning = useAuiState\(\(\{ message \}\) =>\s*"status" in message && message\.status\?\.type === "running"\s*\? ""\s*: readContinuationSource\(message\.content\)\.reasoning,/,
+    /const messageContent = useAuiState\(\(\{ message \}\) =>\s*"status" in message && message\.status\?\.type === "running"\s*\? undefined\s*: message\.content,/,
+  ]) {
+    assert.match(
+      shared,
+      gated,
+      "the bar cannot resume a running reply, so joining its reasoning or scanning its parts per token is wasted work",
+    );
   }
 });

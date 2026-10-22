@@ -17,6 +17,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 from core import chat_originals
+from storage import sqlite_gate
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -140,33 +142,8 @@ def contains_sensitive_path_component(path: str) -> bool:
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 
-# SQLite 3.51.0-3.51.1 deadlocks when one thread's WAL close (unixIsSharingShmNode) races another
-# thread's open or close of the same file: they take the VFS and inode mutexes in opposite order
-# (fixed in 3.51.2, #10022). Gating only close() still deadlocks; opens must share the lock.
-# Reentrant: a GC finalizer can close a pooled connection inside a gated connect on this thread.
-_CONNECTION_GATE = threading.RLock()
-
-
-def _reset_connection_gate_after_fork() -> None:
-    global _CONNECTION_GATE
-    _CONNECTION_GATE = threading.RLock()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child = _reset_connection_gate_after_fork)
-
-
-class _StudioDbConnection(sqlite3.Connection):
-    # A connection dropped without close() is finalized natively and bypasses this gate.
-    def close(self) -> None:
-        with _CONNECTION_GATE:
-            super().close()
-
-
-def connect_studio_db(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect for studio.db, with opens and closes serialized process-wide."""
-    with _CONNECTION_GATE:
-        return sqlite3.connect(str(database), factory = _StudioDbConnection, **kwargs)
+# Opens and closes serialized process-wide against the SQLite 3.51.0-3.51.1 deadlock (#10022).
+connect_studio_db = sqlite_gate.connect
 
 
 _SQLITE_IN_CHUNK_SIZE = 900
@@ -477,6 +454,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
+    if "working_folder" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
+    if "working_folder_identity" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder_identity TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
     )
@@ -751,6 +733,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_forked_from "
+        "ON chat_threads(forked_from_thread_id, forked_from_message_id)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
     )
     conn.execute(
@@ -1015,6 +1001,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    document_source_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(research_document_sources)").fetchall()
+    }
+    if "kind" not in document_source_cols:
+        conn.execute("ALTER TABLE research_document_sources ADD COLUMN kind TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_events (
@@ -1321,12 +1312,9 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
-def is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
-    """Is this the writer lock being held elsewhere, rather than a real fault? sqlite reports it as
-    plain OperationalError, so the message is the only signal. Lives here because studio.db is the
-    contended file and several modules need the same answer; storage.api_usage_db delegates to it."""
-    message = str(exc).lower()
-    return "locked" in message or "busy" in message
+# Old names kept: storage.api_usage_db and core.research_runs import them from here.
+is_sqlite_busy_error = sqlite_gate.is_busy_error
+_apply_wal_synchronous = sqlite_gate.apply_wal_synchronous
 
 
 # sqlite's own default, kept for every caller that may run on the event loop
@@ -1335,25 +1323,6 @@ _BUSY_TIMEOUT_SECONDS = 5.0
 # only for the chat history transactions that run in Starlette's threadpool, where a large clear
 # can hold the writer lock past the default and the failure escapes as an unmapped 500
 _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
-
-
-def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
-    """Drop to synchronous=NORMAL, but only while the file is really in WAL mode. Under WAL, sqlite
-    still defaults to synchronous=FULL, which fsyncs on every commit while holding the writer lock:
-    on a machine whose disk is busy one commit blocked for 37s, and every other writer spent that
-    window timing out with "database is locked". NORMAL is sqlite's own recommended pairing for WAL:
-    it can lose the last transactions to a host power loss, but the database is never corrupted and
-    commits stay durable across an application crash. The WAL check is not decoration. `PRAGMA
-    journal_mode=WAL` silently declines on filesystems without proper shared-memory support (network
-    shares, some FUSE and container-mounted paths), leaving the file on a rollback journal where
-    NORMAL drops the very fsync that keeps it consistent. Those installs keep FULL. journal_mode is
-    persistent in the file, so this reads what is in force rather than what was requested."""
-    try:
-        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    except (sqlite3.Error, TypeError, IndexError):
-        return
-    if isinstance(mode, str) and mode.lower() == "wal":
-        conn.execute("PRAGMA synchronous=NORMAL")
 
 
 def reset_schema_state_for_tests() -> None:
@@ -2126,6 +2095,8 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "instructions": data.get("instructions") or "",
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "workingFolder": data.get("working_folder") or None,
+        "workingFolderIdentity": data.get("working_folder_identity") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "updatedAt": data["updated_at"],
@@ -2258,6 +2229,7 @@ def update_chat_thread(
     expected_title: Optional[str] = None,
     expected_opening_message_id: Optional[str] = None,
     settings_write: Optional[dict] = None,
+    preserve_title_modified_at: bool = False,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row still holds that title,
     so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
@@ -2309,11 +2281,14 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
-    # Stamp real renames, moves and (un)archives. The CASE reads the pre-update row.
+    # Generated title refreshes preserve recency. Moves and (un)archives still stamp it.
+    # The CASE reads the pre-update row.
     edited = [
         (column, value)
         for key, (column, value) in allowed.items()
-        if key in patch and key in ("title", "projectId", "archived")
+        if key in patch
+        and key in ("title", "projectId", "archived")
+        and not (key == "title" and preserve_title_modified_at)
     ]
     if edited:
         changed = " OR ".join(f"{column} IS NOT ?" for column, _ in edited)
@@ -2507,6 +2482,237 @@ def list_chat_threads(
         ).fetchall()
         # the snapshot is only read when a thread is opened, so it is left out of the listing.
         return [_chat_thread_from_row(row, include_settings = False) for row in rows]
+    finally:
+        conn.close()
+
+
+SIDEBAR_ROWS_CURSOR_VERSION = 2
+SIDEBAR_ROWS_MAX_LIMIT = 200
+
+_SIDEBAR_ROW_ID_SQL = "COALESCE(NULLIF(pair_id, ''), id)"
+_SIDEBAR_ACTIVITY_SQL = "COALESCE(updated_at, created_at)"
+
+
+class SidebarCursorError(ValueError):
+    """A cursor this listing did not issue, or one issued for another sort."""
+
+
+def encode_sidebar_cursor(payload: dict) -> str:
+    raw = json.dumps({"v": SIDEBAR_ROWS_CURSOR_VERSION, **payload}, separators = (",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_sidebar_cursor(cursor: str, sort: str) -> dict:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise SidebarCursorError("Malformed cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != SIDEBAR_ROWS_CURSOR_VERSION:
+        raise SidebarCursorError("Unsupported cursor version")
+    if payload.get("s") != sort:
+        raise SidebarCursorError("Cursor was issued for another sort")
+    keys = ("o",) if sort == "manual" else ("u", "c", "r")
+    # SQLite binds 64-bit integers only; the exclusive lower bound keeps `-r` in range too
+    if not all(type(v) is int and -(2**63) < v < 2**63 for v in map(payload.get, keys)):
+        raise SidebarCursorError("Malformed cursor")
+    if sort == "manual" and payload["o"] < 0:
+        raise SidebarCursorError("Malformed cursor")
+    return payload
+
+
+def list_chat_sidebar_rows(
+    *,
+    archived: bool = False,
+    project_id: str | None = None,
+    unfiled_only: bool = False,
+    include_ids: list[str] | None = None,
+    exclude_ids: list[str] | None = None,
+    sort: str = "updated",
+    manual_order: list[str] | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> dict:
+    """One page of sidebar rows, grouped (before the limit) and ordered as the frontend's groupThreads
+    does. `updated` pages by keyset; `manual` follows applyManualOrder and pages by offset."""
+    position = decode_sidebar_cursor(cursor, sort) if cursor else None
+
+    filters: list[str] = []
+    filter_values: list[object] = []
+    if include_ids is not None:
+        # a row id, or any member thread id: a running compare pane names its pair by its own id. Only a
+        # pane on this side of the archive filter counts, as the full list filters panes before matching
+        filters.append(
+            "(rows.row_id IN (SELECT value FROM json_each(?)) OR rows.row_id IN ("
+            f"SELECT {_SIDEBAR_ROW_ID_SQL} FROM chat_threads WHERE id IN (SELECT value FROM json_each(?))"
+            " AND (COALESCE(archived, 0) <> 0) = ?))"
+        )
+        filter_values += [json.dumps(include_ids), json.dumps(include_ids), 1 if archived else 0]
+    if exclude_ids:
+        filters.append("rows.row_id NOT IN (SELECT value FROM json_each(?))")
+        filter_values.append(json.dumps(exclude_ids))
+    if project_id is not None:
+        filters.append("rows.project_id = ?")
+        filter_values.append(project_id)
+    if unfiled_only:
+        filters.append("rows.project_id IS NULL")
+
+    # Last occurrence wins, as `new Map(order.map((id, i) => [id, i]))` does.
+    ranks_json = json.dumps(manual_order or []) if sort == "manual" else "[]"
+    base = f"""
+        WITH members AS (
+            SELECT {_SIDEBAR_ROW_ID_SQL} AS row_id,
+                   CASE WHEN COALESCE(pair_id, '') <> '' THEN 1 ELSE 0 END AS is_pair,
+                   title,
+                   NULLIF(project_id, '') AS project_id,
+                   created_at,
+                   {_SIDEBAR_ACTIVITY_SQL} AS activity_at,
+                   NULLIF(modified_at, 0) AS modified_at,
+                   CASE WHEN COALESCE(forked_from_thread_id, '') <> '' THEN 1 ELSE 0 END AS is_fork,
+                   rowid AS member_rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY {_SIDEBAR_ROW_ID_SQL}
+                       ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                   ) AS member_rank
+            FROM chat_threads
+            WHERE (COALESCE(archived, 0) <> 0) = ?
+        ),
+        rows AS (
+            SELECT row_id,
+                   MAX(is_pair) AS is_pair,
+                   MAX(created_at) AS created_at,
+                   MAX(activity_at) AS updated_at,
+                   MAX(modified_at) AS modified_at,
+                   MAX(CASE WHEN member_rank = 1 THEN title END) AS title,
+                   MAX(CASE WHEN member_rank = 1 THEN project_id END) AS project_id,
+                   MAX(CASE WHEN member_rank = 1 THEN is_fork END) AS is_fork,
+                   -- groupThreads sorts stably, so rows tied on updatedAt keep list order: their newest
+                   -- member's created_at DESC, then storage order.
+                   MAX(CASE WHEN member_rank = 1 THEN created_at END) AS lead_created_at,
+                   MAX(CASE WHEN member_rank = 1 THEN member_rowid END) AS lead_rowid
+            FROM members
+            GROUP BY row_id
+        ),
+        ranks AS (
+            SELECT value AS row_id, MAX(CAST(key AS INTEGER)) AS manual_rank
+            FROM json_each(?)
+            GROUP BY value
+        ),
+        eligible AS (
+            SELECT rows.*, ranks.manual_rank
+            FROM rows LEFT JOIN ranks ON ranks.row_id = rows.row_id
+            {"WHERE " + " AND ".join(filters) if filters else ""}
+        )
+    """
+    base_values: list[object] = [1 if archived else 0, ranks_json, *filter_values]
+
+    page_values = list(base_values)
+    if sort == "updated":
+        where = ""
+        if position is not None:
+            where = "WHERE (updated_at, lead_created_at, -lead_rowid) < (?, ?, ?)"
+            page_values += [position["u"], position["c"], -position["r"]]
+        page_sql = (
+            f"{base} SELECT * FROM (SELECT *, COUNT(*) OVER () AS total FROM eligible) {where} "
+            "ORDER BY updated_at DESC, lead_created_at DESC, lead_rowid ASC LIMIT ?"
+        )
+        page_values.append(limit + 1)
+    else:
+        offset = position["o"] if position is not None else 0
+        page_sql = (
+            f"{base} SELECT *, COUNT(*) OVER () AS total FROM eligible "
+            "ORDER BY manual_rank IS NOT NULL, manual_rank ASC, updated_at DESC, lead_created_at DESC, lead_rowid ASC "
+            "LIMIT ? OFFSET ?"
+        )
+        page_values += [limit + 1, offset]
+
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN")
+        page = conn.execute(page_sql, page_values).fetchall()
+        if page:
+            total = page[0]["total"]
+        else:
+            total = conn.execute(f"{base} SELECT COUNT(*) FROM eligible", base_values).fetchone()[0]
+        has_more = len(page) > limit
+        page = page[:limit]
+        members_by_row: dict[str, list[sqlite3.Row]] = {row["row_id"]: [] for row in page}
+        if page:
+            row_ids = json.dumps(list(members_by_row))
+            for member in conn.execute(
+                f"""
+                SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id, NULLIF(model_id, '') AS model_id, title
+                FROM chat_threads
+                WHERE (COALESCE(archived, 0) <> 0) = ?
+                  AND (
+                      pair_id IN (SELECT value FROM json_each(?))
+                      OR (COALESCE(pair_id, '') = '' AND id IN (SELECT value FROM json_each(?)))
+                  )
+                ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                """,
+                (1 if archived else 0, row_ids, row_ids),
+            ):
+                members_by_row[member["row_id"]].append(member)
+        conn.commit()
+    finally:
+        conn.close()
+
+    rows: list[dict] = []
+    for row in page:
+        members = members_by_row[row["row_id"]]
+        model_ids: list[str] = []
+        for member in members:
+            if member["model_id"] and member["model_id"] not in model_ids:
+                model_ids.append(member["model_id"])
+        item: dict[str, Any] = {
+            "id": row["row_id"],
+            "type": "compare" if row["is_pair"] else "single",
+            "threadIds": [member["id"] for member in members],
+            "title": row["title"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "projectId": row["project_id"],
+        }
+        if row["modified_at"]:
+            item["modifiedAt"] = row["modified_at"]
+        if model_ids:
+            item["modelIds"] = model_ids
+        if not row["is_pair"]:
+            item["isFork"] = bool(row["is_fork"])
+        else:
+            item["threadTitles"] = [member["title"] or "" for member in members]
+        rows.append(item)
+
+    next_cursor = None
+    if has_more and page:
+        if sort == "updated":
+            last = page[-1]
+            next_cursor = encode_sidebar_cursor(
+                {
+                    "s": "updated",
+                    "u": last["updated_at"],
+                    "c": last["lead_created_at"],
+                    "r": last["lead_rowid"],
+                }
+            )
+        else:
+            offset = (position["o"] if position is not None else 0) + len(page)
+            next_cursor = encode_sidebar_cursor({"s": "manual", "o": offset})
+    return {"rows": rows, "nextCursor": next_cursor, "hasMore": has_more, "total": total}
+
+
+def lookup_chat_sidebar_row_ids(thread_ids: list[str]) -> dict[str, str]:
+    """The sidebar row each existing thread belongs to; unknown ids are left out."""
+    if not thread_ids:
+        return {}
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id FROM chat_threads "
+            "WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(thread_ids),),
+        ).fetchall()
+        return {row["id"]: row["row_id"] for row in rows}
     finally:
         conn.close()
 
@@ -2906,7 +3112,13 @@ def _unretire_project_rag_scope(project_id: str) -> None:
         )
 
 
-def upsert_chat_project(project: dict) -> dict:
+class ProjectWorkingFolderConflictError(ValueError):
+    pass
+
+
+def upsert_chat_project(
+    project: dict, *, working_folder: Optional[tuple[str, tuple[int, int]]] = None
+) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
     if not root_path:
@@ -2914,6 +3126,15 @@ def upsert_chat_project(project: dict) -> dict:
     root_path = _ensure_project_workspace(root_path)
     conn = get_connection()
     try:
+        if working_folder is not None:
+            # Create-only: an existing project changes its folder via the working-folder route.
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM chat_projects WHERE id = ?", (project["id"],)
+            ).fetchone():
+                raise ProjectWorkingFolderConflictError(
+                    "This project already exists. Change its working folder from Edit project."
+                )
         conn.execute(
             """
             INSERT INTO chat_projects
@@ -2937,6 +3158,12 @@ def upsert_chat_project(project: dict) -> dict:
                 int(project["updatedAt"]),
             ),
         )
+        if working_folder is not None:
+            path, (device, inode) = working_folder
+            conn.execute(
+                "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ? WHERE id = ?",
+                (path, f"{device}:{inode}", project["id"]),
+            )
         conn.commit()
         saved = get_chat_project(project["id"]) or project
     finally:
@@ -2973,6 +3200,52 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
         return _chat_project_from_row(row) if row is not None else None
     finally:
         conn.close()
+
+
+def set_chat_project_working_folder(
+    id: str,
+    path: Optional[str],
+    identity: Optional[tuple[int, int]] = None,
+) -> Optional[dict]:
+    """The managed workspace is kept, so switching back finds its files."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ?, "
+            "updated_at = ? WHERE id = ?",
+            (
+                path or None,
+                f"{identity[0]}:{identity[1]}" if path and identity else None,
+                int(time.time() * 1000),
+                id,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    path = (project or {}).get("workingFolder")
+    if not path or not is_owner_context():
+        return None
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+    identity = (project or {}).get("workingFolderIdentity")
+    if identity and identity != f"{st.st_dev}:{st.st_ino}":
+        return None
+    real = os.path.realpath(path)
+    # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
+    if os.path.normcase(real) != os.path.normcase(path):
+        return None
+    return real
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:
@@ -3012,13 +3285,43 @@ def get_chat_project(id: str) -> Optional[dict]:
 
 
 def list_chat_projects(include_archived: bool = False) -> list[dict]:
+    """Projects with `lastActivityAt`: their own last edit or newest unarchived chat, whichever is later."""
     conn = get_connection()
     try:
-        where = "" if include_archived else "WHERE archived = 0"
+        where = "" if include_archived else "WHERE p.archived = 0"
         rows = conn.execute(
-            f"SELECT * FROM chat_projects {where} ORDER BY updated_at DESC"
+            f"""
+            SELECT p.*,
+                   MAX(
+                       COALESCE(p.updated_at, p.created_at),
+                       COALESCE(chats.last_chat_at, 0)
+                   ) AS last_activity_at
+            FROM chat_projects p
+            LEFT JOIN (
+                -- one row per sidebar row, as the sidebar groups it: a compare pair's activity is its
+                -- newest pane's and counts for that pane's project only
+                SELECT project_id, MAX(row_activity) AS last_chat_at
+                FROM (
+                    SELECT NULLIF(project_id, '') AS project_id,
+                           MAX({_SIDEBAR_ACTIVITY_SQL}) OVER (PARTITION BY {_SIDEBAR_ROW_ID_SQL}) AS row_activity,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY {_SIDEBAR_ROW_ID_SQL}
+                               ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                           ) AS member_rank
+                    FROM chat_threads
+                    WHERE COALESCE(archived, 0) = 0
+                )
+                WHERE member_rank = 1 AND project_id IS NOT NULL
+                GROUP BY project_id
+            ) chats ON chats.project_id = p.id
+            {where}
+            ORDER BY p.updated_at DESC
+            """
         ).fetchall()
-        return [_chat_project_from_row(row) for row in rows]
+        return [
+            {**_chat_project_from_row(row), "lastActivityAt": row["last_activity_at"]}
+            for row in rows
+        ]
     finally:
         conn.close()
 
@@ -3534,11 +3837,12 @@ def _detach_terminal_generation_for_edit(
         return False
     stored_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
     incoming_metadata = message.get("metadata")
+    # Not generationSettled: a settle whose `incomplete` disagrees with the producer's is refused,
+    # so a finished reply would never become editable (#13938). The run status above decides.
     if (
         not isinstance(stored_metadata, dict)
         or stored_metadata.get("serverManaged") is not True
         or stored_metadata.get("generationRunId") != row["run_id"]
-        or stored_metadata.get("generationSettled") is not True
         or isinstance(incoming_metadata, dict)
         and incoming_metadata.get("serverManaged") is True
         or str(message.get("role")) != str(row["role"])
@@ -3600,35 +3904,57 @@ def _content_part_id(part: dict) -> Optional[str]:
     return f"{_CONTENT_PART_ID_PREFIX}{hashlib.sha256(canonical).hexdigest()}"
 
 
-def _chat_attachment_tombstones_for_messages(
+def _chat_message_revision(metadata: Any) -> int:
+    revision = metadata.get("revision") if isinstance(metadata, dict) else None
+    return revision if type(revision) is int and revision > 0 else 0
+
+
+def _chat_attachment_deletions_for_messages(
     conn: sqlite3.Connection, thread_id: str, message_ids: list[str]
-) -> dict[str, set[str]]:
-    tombstones = {message_id: set() for message_id in message_ids}
+) -> dict[str, tuple[set[str], int]]:
+    deletions: dict[str, tuple[set[str], int]] = {}
     unique_ids = list(dict.fromkeys(message_ids))
     for start in range(0, len(unique_ids), _SQLITE_IN_CHUNK_SIZE):
         chunk = unique_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
         placeholders = ",".join("?" for _ in chunk)
         rows = conn.execute(
             f"""
-            SELECT message_id, attachment_id
-            FROM chat_attachment_tombstones
-            WHERE thread_id = ? AND message_id IN ({placeholders})
+            SELECT t.message_id, t.attachment_id, m.metadata_json
+            FROM chat_attachment_tombstones AS t
+            LEFT JOIN chat_messages AS m ON m.id = t.message_id AND m.thread_id = t.thread_id
+            WHERE t.thread_id = ? AND t.message_id IN ({placeholders})
             """,
             (thread_id, *chunk),
         ).fetchall()
         for row in rows:
-            tombstones[row["message_id"]].add(row["attachment_id"])
-    return tombstones
+            message_id = row["message_id"]
+            if message_id not in deletions:
+                deletions[message_id] = (
+                    set(),
+                    _chat_message_revision(_json_loads(row["metadata_json"], {})),
+                )
+            deletions[message_id][0].add(row["attachment_id"])
+    return deletions
 
 
-def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict:
+def _reconcile_chat_message_uploads(
+    message: dict,
+    tombstones: set[str],
+    stored_revision: int = 0,
+) -> dict:
     """Strip uploads previously deleted through the Data tab from a stale write."""
     if not tombstones:
         return message
 
     reconciled = dict(message)
+    removed_ids: set[str] = set()
     attachments = message.get("attachments")
     if isinstance(attachments, list):
+        removed_ids.update(
+            str(attachment.get("id") or "")
+            for attachment in attachments
+            if isinstance(attachment, dict) and str(attachment.get("id") or "") in tombstones
+        )
         reconciled["attachments"] = [
             attachment
             for attachment in attachments
@@ -3637,11 +3963,22 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
 
     content = message.get("content")
     if isinstance(content, list):
-        reconciled["content"] = [
-            part
-            for part in content
-            if not (isinstance(part, dict) and (_content_part_id(part) or "") in tombstones)
-        ]
+        kept_content = []
+        for part in content:
+            part_id = _content_part_id(part) if isinstance(part, dict) else None
+            if part_id is not None and part_id in tombstones:
+                removed_ids.add(part_id)
+            else:
+                kept_content.append(part)
+        reconciled["content"] = kept_content
+    metadata = message.get("metadata")
+    incoming_revision = _chat_message_revision(metadata)
+    revision = max(stored_revision, incoming_revision + len(removed_ids))
+    if revision != incoming_revision:
+        reconciled["metadata"] = {
+            **(metadata if isinstance(metadata, dict) else {}),
+            "revision": revision,
+        }
     return reconciled
 
 
@@ -3877,14 +4214,14 @@ def upsert_chat_message(
             message["threadId"],
             [message["id"]],
         )
-        tombstones = _chat_attachment_tombstones_for_messages(
+        deletions = _chat_attachment_deletions_for_messages(
             conn,
             message["threadId"],
             [message["id"]],
         )
         reconciled = _reconcile_chat_message_uploads(
             message,
-            tombstones.get(message["id"], set()),
+            *deletions.get(message["id"], (set(), 0)),
         )
         content_json = json.dumps(reconciled.get("content", []))
         attachments_json = (
@@ -4024,13 +4361,14 @@ def sync_chat_messages(
             thread_id,
             [m["id"] for m in messages],
         )
-        tombstones = _chat_attachment_tombstones_for_messages(
+        deletions = _chat_attachment_deletions_for_messages(
             conn,
             thread_id,
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set())) for m in messages
+            _reconcile_chat_message_uploads(m, *deletions.get(m["id"], (set(), 0)))
+            for m in messages
         ]
         serialized_messages = [
             (
@@ -4179,9 +4517,19 @@ def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> No
     parents they pointed at need not, and a dangling parent makes the whole thread unimportable on
     the next load rather than just that turn."""
     for message_id, parent_id in reseat_parents.items():
+        row = conn.execute(
+            "SELECT parent_id, metadata_json FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (thread_id, message_id),
+        ).fetchone()
+        if row is None or (row["parent_id"] or None) == parent_id:
+            continue
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["revision"] = _chat_message_revision(metadata) + 1
         conn.execute(
-            "UPDATE chat_messages SET parent_id = ? WHERE thread_id = ? AND id = ?",
-            (parent_id, thread_id, message_id),
+            "UPDATE chat_messages SET parent_id = ?, metadata_json = ? WHERE thread_id = ? AND id = ?",
+            (parent_id, json.dumps(metadata), thread_id, message_id),
         )
 
 
@@ -4247,6 +4595,8 @@ class ChatForkActiveGenerationError(RuntimeError):
 
 
 _FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
+# The frontend auto-titles only a chat still named this (runtime-provider generateTitle).
+_DEFAULT_CHAT_TITLE = "New Chat"
 
 # Roles the thread paints a row for. Mirrors threadMessageKind in
 # components/assistant-ui/thread-message-slot.ts, which is pinned from the other side by
@@ -4373,7 +4723,11 @@ def fork_chat_thread(
         # Named from the row this transaction read, under the write lock: a title taken
         # before it could be renamed by another tab, and the number could already be gone.
         base = fork_base_of(src)
-        title = _next_fork_title(conn, base)
+        # An untitled chat's fork stays untitled so its first reply still names it.
+        if base in ("", _DEFAULT_CHAT_TITLE):
+            title, base = _DEFAULT_CHAT_TITLE, None
+        else:
+            title = _next_fork_title(conn, base)
         # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
         # source's timestamps and take fresh ids. The last message that PAINTS one, not simply
         # the last copied: an imported chat can end on a system message, which renders as no row
@@ -4501,6 +4855,24 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
             (thread_id, message_id),
         ).fetchone()
         return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def next_message_created_at(thread_id: str, message_id: str) -> Optional[int]:
+    """created_at of the thread's first message after `message_id`; None when it is the tip."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT MIN(created_at) FROM chat_messages
+            WHERE thread_id = ? AND created_at > (
+                SELECT created_at FROM chat_messages WHERE thread_id = ? AND id = ?
+            )
+            """,
+            (thread_id, thread_id, message_id),
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
     finally:
         conn.close()
 
@@ -4864,7 +5236,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         _ensure_chat_attachment_inventory_current(conn)
         row = conn.execute(
             """
-            SELECT thread_id, attachments_json, content_json
+            SELECT thread_id, attachments_json, content_json, metadata_json
             FROM chat_messages WHERE id = ?
             """,
             (message_id,),
@@ -4913,13 +5285,17 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if not deleted_attachment and not deleted_content:
             conn.rollback()
             return False
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["revision"] = _chat_message_revision(metadata) + 1
         conn.execute(
             """
             UPDATE chat_messages
-            SET attachments_json = ?, content_json = ?
+            SET attachments_json = ?, content_json = ?, metadata_json = ?
             WHERE id = ?
             """,
-            (updated_attachments_json, updated_content_json, message_id),
+            (updated_attachments_json, updated_content_json, json.dumps(metadata), message_id),
         )
         _record_chat_attachment_tombstone(
             conn,
@@ -5268,6 +5644,31 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
     return merged
 
 
+# A command, not a setting: per model id, the remembered keys dropped before the rest of the patch
+# merges, since a deep merge can only add or overwrite (#14068). Keys, not rows, so a concurrent edit
+# to a key the command does not name survives.
+_FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
+
+
+def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    updates = dict(updates)
+    forget = updates.pop(_FORGET_PARAMS_KEY, None) or {}
+    by_model = current.get("inferenceParamsByModel")
+    if forget and isinstance(by_model, dict):
+        pruned = dict(by_model)
+        for model_id, keys in forget.items():
+            entry = pruned.get(model_id)
+            if not isinstance(entry, dict):
+                continue
+            rest = {k: v for k, v in entry.items() if k not in keys}
+            if rest:
+                pruned[model_id] = rest
+            else:
+                del pruned[model_id]
+        current = {**current, "inferenceParamsByModel": pruned}
+    return _deep_merge_settings(current, updates)
+
+
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
     """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
     cannot drop each other's updates."""
@@ -5290,7 +5691,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
             raise CorruptSettingsError(
                 f"Cannot apply partial settings patch to corrupt key(s): {keys}"
             )
-        merged = _deep_merge_settings(current, updates)
+        merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             """
@@ -5376,7 +5777,7 @@ def upsert_chat_settings_merge_if_current(
             # those timestamps reads as a settings change.
             conn.commit()
             return current, True
-        merged = _deep_merge_settings(current, updates)
+        merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             """

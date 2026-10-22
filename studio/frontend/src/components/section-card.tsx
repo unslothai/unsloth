@@ -65,12 +65,7 @@ export function SectionCard({
       )}
       {/* Header */}
       <div className="flex items-center gap-3">
-        <div
-          className={cn(
-            "rounded-xl p-2 ring-1 shrink-0",
-            styles.iconBox,
-          )}
-        >
+        <div className={cn("rounded-xl p-2 ring-1 shrink-0", styles.iconBox)}>
           {icon}
         </div>
         <div className="min-w-0 flex-1">

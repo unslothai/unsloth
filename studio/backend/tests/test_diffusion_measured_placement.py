@@ -109,11 +109,9 @@ def test_24gb_keeps_transformer_and_text_encoder_resident(q21_pipe):
     assert new.offload_policy == dm.OFFLOAD_GROUP
     assert new.stream_text_encoders and not new.stream_transformer
     assert new.resident_transformer_mib is None
-    assert (
-        new.resident_text_encoder_mib
-        == 21432 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
-        >= 8959
-    )
+    # the room (21432 - 2304 - overhead - 644 - 6922) covers the whole encoder; the plan records the encoder's size
+    assert 21432 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922 >= 8959
+    assert new.resident_text_encoder_mib == 8959
     assert new.estimates["measured_runtime_headroom_mib"] == 2304
     # never under-reserved: loaded weights + measured peak x margin + base overhead within the safe budget
     assert 6922 + 8959 + 644 + 2304 + dm.DEFAULT_BASE_OVERHEAD_MIB <= 21432
@@ -402,7 +400,9 @@ def test_only_measured_family_moves(q21_pipe, speed, budget, total):
     plan = _flat_plan(budget, total)
     for family in names:
         new = _refine(q21_pipe, plan, family = family, speed = speed)
-        if family in ("qwen-image-2.1", "flux.1", "z-image") and speed in ("default", "max"):
+        # seeded: the peak table, or the per-phase calibration for a family the peak table lacks
+        seeded = set(dm._MEASURED_IMAGE_PEAK_MIB) | set(dm._MEASURED_IMAGE_ACTIVATION_MIB)
+        if family in seeded and speed in ("default", "max"):
             continue
         assert new is plan, family
 
@@ -759,13 +759,13 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
             assert torch.equal(net(x), ref)
         restore()
         for lin in net[1]:
-            # torchao 0.14 (torch <= 2.9) keeps the v1 layout, nesting its int8 data one subclass deeper
+            # torchao 0.14 with torch <= 2.8 uses v1 layout, nesting int8 data one subclass deeper
             assert set(_inner_devices(lin.weight)) == {"cuda"}
         assert torch.equal(net(x), ref)
 
 
 def _encode_release_pipe(monkeypatch):
-    """A real group-offloaded denoiser pinned whole; the encoder records which blocks are on the device."""
+    """a whole-pinned group-offloaded denoiser whose encoder records block device placement."""
     torch, net = _cuda_offload_model()
     from diffusers.hooks import apply_group_offloading
 
@@ -875,13 +875,22 @@ def test_encode_release_only_for_the_whole_tier(monkeypatch):
 
 
 def test_generate_load_installs_the_encode_release():
+    import ast
+
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    at = src.index("install_encode_release(pipe, plan, logger)")
-    # after the placement is applied and before the int8 GEMM reads the final residency
-    assert src.index("effective_policy, effective_tiling = apply_memory_plan(") < at
-    assert at < src.index("if denoisers_pinned_resident(pipe):", at)
+    calls: dict = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
+            calls.setdefault(name, []).append(node.lineno)
+    (at,) = calls["install_encode_release"]
+    assert any(line < at for line in calls["apply_memory_plan"])
+    pinned = min(line for line in calls["denoisers_pinned_resident"] if line > at)
+    engage = min(line for line in calls["engage_pinned_denoisers"] if line > at)
+    assert at < pinned < engage
 
 
 def _inner_devices(tensor):
@@ -932,7 +941,7 @@ def test_failed_release_keeps_the_copy_stream_wait(monkeypatch):
 
     monkeypatch.setattr(dm, "_release_group", boom)
     pipe = types.SimpleNamespace(components = {"transformer": module})
-    assert dm.release_resident_groups(pipe, 4) is None
+    assert callable(dm.release_resident_groups(pipe, 4))
     assert module._unsloth_stream_state["streamed"] >= 1
 
 

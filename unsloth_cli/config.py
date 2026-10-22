@@ -144,6 +144,7 @@ class Config(BaseModel):
             "use_rslora": self.lora.use_rslora,
             "use_loftq": self.lora.use_loftq,
             "use_dora": self.lora.use_dora,
+            "random_state": self.training.random_seed,
         }
 
     def training_kwargs(self) -> dict:

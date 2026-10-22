@@ -639,6 +639,41 @@ def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypat
     assert by_model == {"qwen": {"temperature": 0.4, "topP": 0.8}, "llama": {"temperature": 0.9}}
 
 
+def test_picking_a_preset_can_forget_one_model_s_params(tmp_path, monkeypatch):
+    """A preset pick drops the loaded model's preset-owned keys (#14068); a merge alone cannot
+    remove a key. The forget runs first, so an edit in the same debounced patch starts fresh, and
+    a key it does not name (a Fast mode another tab just set) survives."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_settings_merge(
+        {
+            "inferenceParamsByModel": {
+                "qwen": {"temperature": 0.3, "systemPrompt": "Pirate", "fastMode": True},
+                "llama": {"temperature": 0.9},
+            }
+        }
+    )
+    studio_db.upsert_chat_settings_merge(
+        {
+            "forgetInferenceParamsByModel": {"qwen": ["temperature", "systemPrompt", "topP"]},
+            "inferenceParamsByModel": {"qwen": {"topP": 0.5}},
+        }
+    )
+    settings = studio_db.list_chat_settings()
+    assert settings["inferenceParamsByModel"] == {
+        "qwen": {"fastMode": True, "topP": 0.5},
+        "llama": {"temperature": 0.9},
+    }
+    assert "forgetInferenceParamsByModel" not in settings
+
+    _, applied = studio_db.upsert_chat_settings_merge_if_current(
+        {}, {"forgetInferenceParamsByModel": {"qwen": ["fastMode", "topP"], "missing": ["x"]}}
+    )
+    assert applied is True
+    settings = studio_db.list_chat_settings()
+    assert settings["inferenceParamsByModel"] == {"llama": {"temperature": 0.9}}
+    assert "forgetInferenceParamsByModel" not in settings
+
+
 def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
@@ -1149,6 +1184,63 @@ def _without(messages: list[dict], *drop: str) -> list[dict]:
     return [dict(m) for m in messages if m["id"] not in drop]
 
 
+@pytest.mark.parametrize("owner", ["generation", "research"])
+@pytest.mark.parametrize("revision", [None, 4])
+def test_reparented_managed_prompt_invalidates_saved_usage_after_reload(
+    tmp_path, monkeypatch, owner, revision
+):
+    from storage import chat_generation_runs_db, research_runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    prompt = _stored_message(id = "prompt", parentId = "ancestor")
+    prompt["metadata"] = {"kept": "server value"}
+    if revision is not None:
+        prompt["metadata"]["revision"] = revision
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "ancestor", role = "assistant", createdAt = 1),
+            prompt,
+            _stored_message(id = "sibling", createdAt = 10),
+        ],
+    )
+    common = dict(
+        run_id = "run-1",
+        owner_subject = "owner",
+        thread_id = "src",
+        user_message_id = "prompt",
+        assistant_message_id = "report",
+    )
+    if owner == "generation":
+        chat_generation_runs_db.create_run(
+            **common,
+            request_payload = {"model": "local", "messages": [{"role": "user", "content": "Hello"}]},
+        )
+    else:
+        research_runs_db.create_run(**common, config = {}, created_at = 11)
+    before = {m["id"]: m for m in studio_db.list_chat_messages("src")}
+    payload = _without(list(before.values()), "ancestor")
+    edited = next(m for m in payload if m["id"] == "prompt")
+    edited["parentId"] = None
+    edited["metadata"] = {"revision": 999, "untrusted": True}
+    edited["content"] = [{"type": "text", "text": "client drift"}]
+
+    studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    reloaded = {m["id"]: m for m in studio_db.list_chat_messages("src")}
+
+    assert reloaded["prompt"]["parentId"] is None
+    assert reloaded["prompt"]["metadata"] == {
+        **before["prompt"]["metadata"],
+        "revision": (revision or 0) + 1,
+    }
+    assert reloaded["prompt"]["content"] == before["prompt"]["content"]
+    assert reloaded["report"] == before["report"]
+    assert reloaded["sibling"] == before["sibling"]
+    studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    assert studio_db.list_chat_messages("src") == list(reloaded.values())
+
+
 def test_deleting_an_ancestor_relinks_the_research_prompt(tmp_path, monkeypatch):
     # The headline case: assistant-ui relinks the protected prompt to the deleted node's parent,
     # and the guard must read that as the repair it is rather than an edit.
@@ -1231,9 +1323,10 @@ def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, 
     prompt = next(m for m in synced if m["id"] == "prompt")
     # The deleted ancestor was the root, so the repair is a reseat to the root.
     assert prompt["parentId"] is None
-    # .get on both sides: an absent key is how a None metadata comes back, and the point is
-    # that the client's value is not there either way.
-    assert prompt.get(field) == stored.get(field)
+    expected = stored.get(field)
+    if field == "metadata":
+        expected = {**(expected or {}), "revision": 1}
+    assert prompt.get(field) == expected
     assert prompt.get(field) != value
 
 
@@ -1577,6 +1670,23 @@ def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch
     studio_db.upsert_chat_thread({**_thread("old"), "title": "Notes (1)", "archived": True})
 
     assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
+
+
+@pytest.mark.parametrize("title", ["New Chat", ""])
+def test_a_fork_of_an_untitled_chat_stays_untitled(tmp_path, monkeypatch, title):
+    """The frontend auto-titles only "New Chat", so "New Chat (1)" would never get a name."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": title})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+
+    fork = _fork("src", "f", 10)
+    assert fork["title"] == "New Chat"
+    assert fork["forkTitleBase"] is None
+    assert _fork("f", "f2", 11)["title"] == "New Chat"
+
+    # Once auto-titled, its own forks number from the new name.
+    studio_db.update_chat_thread("f", {"title": "Notes"})
+    assert _fork("f", "f3", 12)["title"] == "Notes (1)"
 
 
 def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):

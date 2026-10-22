@@ -191,32 +191,40 @@ test("the two update cards do not drift apart", () => {
 });
 
 test("the llama.cpp card takes the desktop updater's floor only with its changelog open", () => {
-  // A collapsed changelog leaves nothing for the floor to protect.
   const slot = LLAMA.slice(
     LLAMA.indexOf("pointer-events-auto flex "),
     LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
-  // The constants match the desktop card, though their gates differ.
-  for (const floor of [
-    "min-h-[calc(117px+93px*var(--ui-font-scale,1))]",
-    "min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+  // the details toggle adds 22px; each extra bundled component adds an 18px row.
+  for (const [base, text, llamaText] of [
+    ["117px", "93px", "115px"],
+    ["24px", "224px", "246px"],
   ]) {
-    assert.ok(slot.includes(floor) && TAURI.includes(floor));
+    assert.ok(
+      TAURI.includes(`min-h-[calc(${base}+${text}*var(--ui-font-scale,1))]`),
+    );
+    assert.ok(
+      slot.includes(
+        `min-h-[calc(${base}+(${llamaText}+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]`,
+      ),
+    );
   }
+  assert.match(
+    slot,
+    /"--llama-update-extra-rows":\s*Math\.max\(\s*rows\.length - 1,\s*0\s*\)/,
+  );
   assert.match(slot, /max-\[383px\]:min-h-\[calc\(24px/);
   assert.match(
     slot,
     /changelogPanelOpen\s*\n?\s*\?\s*"min-h-\[calc\(117px/,
     "the floor is back on every state of the card, including the collapsed one",
   );
-  // The floor and panel share the same predicate.
   assert.match(LLAMA, /\{changelogPanelOpen &&/);
   assert.match(
     slot,
     /"shrink-0"/,
     "with no notes to give up, the card must hold its height and let the rail scroll",
   );
-  // Only the conditional branch may carry a floor.
   assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
   assert.doesNotMatch(slot, /\bmin-h-0\b/);
   assert.ok(LLAMA.includes("max-w-[calc(448px*var(--ui-space-scale,1))]"));
@@ -319,9 +327,7 @@ function darkShadow(source: string): {
   blur: number;
   spread: number;
 } {
-  const seen = source.match(
-    /dark:shadow-\[0_(\d+)px_(\d+)px_(-?\d+)px_/,
-  );
+  const seen = source.match(/dark:shadow-\[0_(\d+)px_(\d+)px_(-?\d+)px_/);
   assert.ok(seen, "the card has no dark-mode shadow to size the gutter from");
   return { y: Number(seen[1]), blur: Number(seen[2]), spread: Number(seen[3]) };
 }
@@ -400,15 +406,15 @@ test("the rail's block gutter costs the cards no room", () => {
   // The gutter drops the rail's box to the floor and it reaches the right edge,
   // so it spans the window's resize grips, which are under it on Tailwind's scale.
   // All eight: a narrow window spans the rail across the north and west targets too.
-  const TITLEBAR = readSrc("components/tauri/window-titlebar.tsx");
+  const titlebar = readSrc("components/tauri/window-titlebar.tsx");
   // A z-index on the toolbar would read as protection and give none: it sits inside a
   // positioned, numbered header, which is a stacking context.
-  const toolbar = TITLEBAR.slice(
-    TITLEBAR.lastIndexOf(
+  const toolbar = titlebar.slice(
+    titlebar.lastIndexOf(
       "<div",
-      TITLEBAR.indexOf('aria-label="Window controls"'),
+      titlebar.indexOf('aria-label="Window controls"'),
     ),
-    TITLEBAR.indexOf('aria-label="Window controls"'),
+    titlebar.indexOf('aria-label="Window controls"'),
   );
   assert.doesNotMatch(
     toolbar,
@@ -425,9 +431,9 @@ test("the rail's block gutter costs the cards no room", () => {
     "cursor-sw-resize",
     "cursor-se-resize",
   ]) {
-    const target = TITLEBAR.slice(
-      TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf(grip)),
-      TITLEBAR.indexOf("/>", TITLEBAR.indexOf(grip)),
+    const target = titlebar.slice(
+      titlebar.lastIndexOf("<div", titlebar.indexOf(grip)),
+      titlebar.indexOf("/>", titlebar.indexOf(grip)),
     );
     assert.doesNotMatch(
       target,
@@ -487,4 +493,15 @@ test("the rail is anchored to its corner, not placed from JS", () => {
       `the dodge arithmetic is back in the frame store (${banned})`,
     );
   }
+});
+
+test("a missing audio.cpp runtime reads as a first install, not unknown → latest", () => {
+  assert.match(
+    LLAMA,
+    /row\.component === "audio\.cpp" && row\.installedTag === null\s*\?\s*"Install the audio runtime"[\s\S]*\{lead \? `\$\{lead\} ` : null\}/,
+  );
+  assert.match(
+    LLAMA,
+    /title = firstInstall\s*\?\s*"Installing the audio runtime\.\.\."/,
+  );
 });

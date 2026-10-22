@@ -15,7 +15,11 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 
-import { imageFieldCandidates } from "./api/mcp-image";
+import {
+  imageFieldCandidates,
+  unmappedImageFields,
+  withImageField,
+} from "./api/mcp-image";
 import {
   type McpImageInputMapping,
   listMcpServerTools,
@@ -40,6 +44,7 @@ export function McpImageMappings({
   const [enabled, setEnabled] = useState(value.length > 0);
   const [options, setOptions] = useState<Option[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const addable = options ? unmappedImageFields(options, value) : [];
 
   async function discover(id: string) {
     setLoading(true);
@@ -100,10 +105,11 @@ export function McpImageMappings({
         <div className="space-y-2">
           {value.map((mapping) => (
             <div
-              key={mapping.tool}
+              key={`${mapping.tool}:${mapping.field}`}
               className="flex items-center justify-between gap-3 text-xs"
             >
-              <span className="min-w-0 flex-1 truncate">
+              {/* Wraps instead of truncating: a nowrap name widens the whole dialog grid to its length. */}
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
                 {mapping.tool} / {mapping.field}
               </span>
               <Select
@@ -111,13 +117,10 @@ export function McpImageMappings({
                 disabled={disabled}
                 onValueChange={(next) =>
                   onChange(
-                    value.map((m) =>
-                      m.tool === mapping.tool
-                        ? {
-                            ...m,
-                            encoding: next as McpImageInputMapping["encoding"],
-                          }
-                        : m,
+                    withImageField(
+                      value,
+                      mapping,
+                      next as McpImageInputMapping["encoding"],
                     ),
                   )
                 }
@@ -165,18 +168,14 @@ export function McpImageMappings({
             <p className="text-xs text-muted-foreground">
               No tool on this server takes a top-level string field.
             </p>
-          ) : (
+          ) : addable.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               <Select
                 value=""
                 disabled={disabled}
                 onValueChange={(index) => {
-                  const option = options[Number(index)];
-                  if (!option) return;
-                  onChange([
-                    ...value.filter((m) => m.tool !== option.tool),
-                    { ...option, encoding: "base64" },
-                  ]);
+                  const option = addable[Number(index)];
+                  if (option) onChange(withImageField(value, option));
                 }}
               >
                 <SelectTrigger
@@ -186,10 +185,11 @@ export function McpImageMappings({
                   <SelectValue placeholder="Add tool / field" />
                 </SelectTrigger>
                 <SelectContent>
-                  {options.map((option, index) => (
+                  {addable.map((option, index) => (
                     <SelectItem
                       key={`${option.tool}:${option.field}`}
                       value={String(index)}
+                      className="[overflow-wrap:anywhere]"
                     >
                       {option.tool} / {option.field}
                     </SelectItem>
@@ -197,7 +197,7 @@ export function McpImageMappings({
                 </SelectContent>
               </Select>
             </div>
-          )}
+          ) : null}
         </div>
       ) : null}
     </div>

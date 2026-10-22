@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createMinimumSizeApplier,
   finalizeAppWindowLayout,
   measureWindowLayout,
   observeDevicePixelRatio,
@@ -588,4 +589,84 @@ test("stale layouts do not show the window", async () => {
   });
 
   assert.equal(shown, false);
+});
+
+function fakeMinimumSizeWindow(restored: boolean) {
+  const state = {
+    restored,
+    applied: [] as { width: number; height: number }[],
+    handlers: [] as (() => void)[],
+    unlistened: 0,
+  };
+  const applier = createMinimumSizeApplier({
+    isRestored: async () => state.restored,
+    onResized: async (handler) => {
+      state.handlers.push(handler);
+      return () => {
+        state.unlistened += 1;
+      };
+    },
+    applyFloor: async (minimum) => {
+      state.applied.push(minimum);
+    },
+  });
+  const resize = async (nextRestored: boolean) => {
+    state.restored = nextRestored;
+    for (const handler of state.handlers) handler();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  return { state, applier, resize };
+}
+
+test("a restored window gets its floor at once", async () => {
+  const { state, applier } = fakeMinimumSizeWindow(true);
+  await applier.apply({ width: 900, height: 600 });
+  assert.deepEqual(state.applied, [{ width: 900, height: 600 }]);
+  assert.equal(state.handlers.length, 0);
+});
+
+test("a maximized window keeps maximized until it is restored", async () => {
+  const { state, applier, resize } = fakeMinimumSizeWindow(false);
+  await applier.apply({ width: 900, height: 600 });
+  await applier.apply({ width: 960, height: 640 });
+  assert.deepEqual(state.applied, []);
+  assert.equal(state.handlers.length, 1);
+
+  await resize(false);
+  assert.deepEqual(state.applied, []);
+
+  await resize(true);
+  assert.deepEqual(state.applied, [{ width: 960, height: 640 }]);
+  assert.equal(state.unlistened, 1);
+
+  await resize(true);
+  assert.equal(state.applied.length, 1);
+});
+
+test("a restore during listener setup still applies the floor", async () => {
+  const applied: { width: number; height: number }[] = [];
+  let restored = false;
+  const applier = createMinimumSizeApplier({
+    isRestored: async () => restored,
+    onResized: async () => {
+      restored = true;
+      return () => undefined;
+    },
+    applyFloor: async (minimum) => {
+      applied.push(minimum);
+    },
+  });
+  await applier.apply({ width: 900, height: 600 });
+  assert.deepEqual(applied, [{ width: 900, height: 600 }]);
+});
+
+test("setup cancels a floor still waiting for the restore", async () => {
+  const { state, applier, resize } = fakeMinimumSizeWindow(false);
+  await applier.apply({ width: 900, height: 600 });
+  applier.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(state.unlistened, 1);
+
+  await resize(true);
+  assert.deepEqual(state.applied, []);
 });

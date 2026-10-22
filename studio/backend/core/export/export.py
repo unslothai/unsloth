@@ -32,7 +32,11 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
-from utils.models.model_config import detect_audio_type, load_mlx_adapter_tokenizer
+from utils.models.model_config import (
+    detect_audio_type,
+    load_mlx_adapter_processor,
+    load_mlx_adapter_tokenizer,
+)
 from utils.paths import (
     ensure_dir,
     outputs_root,
@@ -86,6 +90,22 @@ def _resolve_adapter_format(adapter_format: Optional[str]) -> Tuple[Optional[str
 def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     # True is the loaders' default; passing it reads as an explicit request to requantize fp8 checkpoints to NF4.
     return {} if load_in_4bit else {"load_in_4bit": False}
+
+
+# Export merges one module at a time and trains nothing, so the auto plan keeps 1 GiB for that, not a training step.
+_EXPORT_AUTO_OFFLOAD_KWARGS = {
+    "offload_layers": "auto",
+    "device_map_planner_kwargs": {"reserve_bytes": 1 << 30},
+}
+
+
+def _offload_layers_kwargs(offload_layers, device_map_kw: Optional[dict] = None) -> dict:
+    if not offload_layers or offload_layers == "auto":
+        return {}
+    # A fixed count loads onto one card; core raises on a multi-GPU map.
+    if (device_map_kw or {}).get("device_map") in ("unsloth_balanced", "balanced"):
+        return {}
+    return {"offload_layers": offload_layers}
 
 
 def _export_runtime_available() -> bool:
@@ -190,6 +210,30 @@ def _llama_cpp_scripts_pin():
         os.environ.pop("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", None)
 
 
+@contextlib.contextmanager
+def _converter_remote_code(approved: bool):
+    """Keep convert_hf_to_gguf.py to the load's consent-gated trust decision for one conversion.
+
+    The converter loads several architectures' tokenizers with trust_remote_code=True, so a
+    checkpoint loaded with built-in classes (never seen by the consent gate) could run its
+    auto_map code there. Transformers imports that code only from its HF_MODULES_CACHE copy,
+    which the converter child inherits: a path no directory can be created at refuses it.
+    Covers the MLX save path too, which has no guard of its own.
+    """
+    if approved:
+        yield
+        return
+    existing = os.environ.get("HF_MODULES_CACHE")
+    os.environ["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
+    try:
+        yield
+    finally:
+        if existing is None:
+            os.environ.pop("HF_MODULES_CACHE", None)
+        else:
+            os.environ["HF_MODULES_CACHE"] = existing
+
+
 def _multi_gpu_device_map_kwargs() -> dict:
     """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
 
@@ -245,9 +289,14 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
 
     Busy secondary GPUs can make ``balanced`` spill to CPU even where the old sequential
     load fit on GPU0, and that message says nothing about memory, so the retry has to
-    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``.
+    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``. Unsloth
+    re-raises it as "does not fit in GPU memory" with the original as ``__cause__``.
     """
-    return "dispatched on the cpu or the disk" in str(exc).lower()
+    while exc is not None:
+        if "dispatched on the cpu or the disk" in str(exc).lower():
+            return True
+        exc = exc.__cause__
+    return False
 
 
 def _is_device_map_infeasible(exc: BaseException) -> bool:
@@ -419,6 +468,15 @@ def _torchao_runtime_unavailable():
         return False
 
 
+def _torchao_too_old():
+    """Installed torchao version when it is below what transformers' TorchAoConfig accepts, else None."""
+    try:
+        from core._torchao_stub import torchao_too_old_for_export
+        return torchao_too_old_for_export()
+    except Exception:
+        return None
+
+
 def _is_torchao_alias(alias):
     """Any torchao spelling unsloth's normalizer accepts, else a torchao_ prefix, so the Windows
     ROCm guard catches it before it is misread as compressed-tensors."""
@@ -564,8 +622,21 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 # export_metadata.json is local bookkeeping whose base model can be a local path; the GGUF push
 # keeps it out of the repo too.
 _HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
+# REAP's report: uploaded with a pruned export, and deleted from a reused repo by any other merged
+# or base upload (GGUF files carry one each) (upload_folder never removes remote files on its own; one it uploads in the
+# same commit is kept).
+_REAP_REPORT = "reap_report.json"
 
 _STAGING_PREFIX = "unsloth-hub-upload-"
+
+
+def _card_base_model(model) -> str:
+    """The base a Hub card names: after REAP the config points at a staging copy, so the id the
+    pruned model came from is used instead."""
+    source = getattr(model, "_unsloth_reap_source", None)
+    if source:
+        return source
+    return getattr(getattr(model, "config", None), "_name_or_path", "unknown") or "unknown"
 
 
 def _staging_dir(export_parent):
@@ -633,6 +704,13 @@ def _open_hub_repo(hf_api, repo_id, private):
     return repo_id
 
 
+def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
+    if hf_token is None:
+        from huggingface_hub import get_token
+        return get_token()
+    return hf_token
+
+
 def _push_mlx_merged(
     model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
 ):
@@ -655,6 +733,7 @@ def _push_mlx_merged(
             repo_id = repo_id,
             repo_type = "model",
             ignore_patterns = _HUB_UPLOAD_IGNORE,
+            delete_patterns = [_REAP_REPORT],
         )
     return repo_id
 
@@ -672,7 +751,7 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         config = getattr(model, "config", None)
         if config is None:
             return
-        base_model = getattr(config, "_name_or_path", "unknown") or "unknown"
+        base_model = _card_base_model(model)
         # method/extra reproduce what upload_to_huggingface passed for this path
         # ("finetuned", "trl"): the template already carries the unsloth tag, so `extra`
         # is where trl goes, and the heading already reads "Uploaded finetuned ... model".
@@ -688,6 +767,22 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         logger.warning(f"Could not publish the model card: {exception}")
 
 
+def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
+    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
+    weight entries that point outside the folder."""
+    from core.export.decision import adapter_base_changed
+    from utils.security.file_security import escaping_weight_references
+
+    if pinned_base and adapter_base_changed(checkpoint_path, pinned_base):
+        return "The adapter's base model changed after it was checked. Load it again."
+    if escaping_weight_references(checkpoint_path):
+        return "This checkpoint's weight index names files outside its folder."
+    # A local base loads too: its own index must stay inside its folder as well.
+    if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
+        return "The base model's weight index names files outside its folder."
+    return None
+
+
 class ExportBackend:
     # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
     decision: Optional[dict] = None
@@ -695,12 +790,22 @@ class ExportBackend:
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
+        self._checkpoint_token = None
         self.current_model = None
         self.current_tokenizer = None
         self.is_vision = False
         self.is_peft = False
         self._audio_type = None
         self.decision = None
+        self.diffusion_lm_profile = None
+
+    def _diffusion_refusal(self, method: str) -> Optional[str]:
+        profile = getattr(self, "diffusion_lm_profile", None)
+        if not profile:
+            return None
+        from utils.models.diffusion_lm import export_refusal
+
+        return export_refusal(profile, method)
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -714,6 +819,7 @@ class ExportBackend:
             self.current_model = None
             self.current_tokenizer = None
             self.current_checkpoint = None
+            self._checkpoint_token = None
             self._audio_type = None
             self.decision = None
 
@@ -725,6 +831,14 @@ class ExportBackend:
         except Exception as e:
             logger.error(f"Error during memory cleanup: {e}")
             return False
+        finally:
+            # Even when an unload above failed: a later load must never inherit this load's REAP
+            # settings (they would read as "already pruned" for an unpruned model).
+            try:
+                from core.export.reap import discard_reap_staging
+                discard_reap_staging(self)
+            except Exception as e:
+                logger.warning(f"Could not clear the REAP state: {e}")
 
     def scan_checkpoints(
         self, outputs_dir: Optional[str] = None
@@ -749,6 +863,8 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
         base_model: Optional[str] = None,
+        offload_layers = "auto",
+        _offload_retry: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -758,6 +874,8 @@ class ExportBackend:
         the token the worker used for the security preflight (otherwise a gated repo passes scanning
         then 401s at from_pretrained).
 
+        ``offload_layers = "auto"`` only retries a single-GPU 4-bit load that spilled to the CPU (#13696).
+
         ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as "go and
         find a credential" (``if token is None: get_token()`` in ``save.py`` and ``hf_login``), and
         ``get_token()`` reads the operator's stored login off disk.
@@ -766,10 +884,12 @@ class ExportBackend:
         # Loaders only: the probes' cache guards refuse an anonymous read, which offline
         # misreads a cached VLM as a text model.
         probe_token = token or None
+        pinned_base = base_model
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+            self.diffusion_lm_profile = None
 
             # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
             from core.export.decision import decision_kind
@@ -782,6 +902,11 @@ class ExportBackend:
                     token = token,
                     base_model = base_model,
                 )
+
+            # The decision loader above checks its own base against the pin.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             checkpoint_path_obj = Path(checkpoint_path)
 
@@ -804,6 +929,11 @@ class ExportBackend:
                 if _device_map_override is None
                 else _device_map_override
             )
+            _offload_kw = (
+                _EXPORT_AUTO_OFFLOAD_KWARGS
+                if _offload_retry
+                else _offload_layers_kwargs(offload_layers, _device_map_kw)
+            )
 
             # Run the type-detection probes inside the forced-offline window, else a gated base 404s: it
             # covers is_vision_model's Hub reads, and local_files_only makes detect_audio_type's requests.get
@@ -815,6 +945,23 @@ class ExportBackend:
                 self.is_vision = not self._audio_type and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
+                from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+                self.diffusion_lm_profile = (
+                    None
+                    if self._audio_type
+                    else diffusion_lm_profile_for_model(
+                        model_id, hf_token = probe_token, local_files_only = local_files_only
+                    )
+                )
+                if self.diffusion_lm_profile:
+                    # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
+                    self.is_vision = False
+
+            # Again right before the load: the folder may have been edited during the probes.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -831,6 +978,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "whisper":
@@ -849,6 +997,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "snac":
@@ -862,21 +1011,28 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
+                from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
+
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
-                model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None if _IS_MLX else torch.float32,
-                    load_in_4bit = False,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
-                    local_files_only = local_files_only,
-                    **_device_map_kw,
-                )
+                with spark_tts_adapter_load_target(
+                    checkpoint_path, hf_token = token, local_files_only = local_files_only
+                ) as load_target:
+                    model, tokenizer = FastModel.from_pretrained(
+                        model_name = load_target,
+                        max_seq_length = max_seq_length,
+                        dtype = None if _IS_MLX else torch.float32,
+                        load_in_4bit = False,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        local_files_only = local_files_only,
+                        **_device_map_kw,
+                        **_offload_kw,
+                    )
 
             elif self._audio_type == "dac":
                 from unsloth import FastModel
@@ -885,6 +1041,22 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                    **_offload_kw,
+                )
+
+            elif self.diffusion_lm_profile:
+                from unsloth import FastModel
+                logger.info(f"Loading as text-diffusion model ({self.diffusion_lm_profile})...")
+                # Text-diffusion has no block swapping; skip offload like Training does.
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -902,7 +1074,10 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
+                if _IS_MLX and adapter_config.exists():
+                    processor = load_mlx_adapter_processor(processor, checkpoint_path)
                 tokenizer = processor
 
             else:
@@ -916,6 +1091,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
                 if _IS_MLX and adapter_config.exists():
                     tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
@@ -938,14 +1114,25 @@ class ExportBackend:
                     f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
                 )
 
+            # A Hub adapter has no config.json for the probe, but core loads a diffusion base through its
+            # diffusion path: classify from what loaded, so the merged / GGUF refusals still apply.
+            if not self.diffusion_lm_profile and not _IS_MLX:
+                from utils.models.diffusion_lm import loaded_diffusion_profile
+                self.diffusion_lm_profile = loaded_diffusion_profile(model)
+
             # The MLX GGUF LoRA converter honors the approved load decision.
             self.trust_remote_code = bool(trust_remote_code)
             self.current_model = model
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
+            self._checkpoint_token = token
+            if not self.is_peft and not _IS_MLX:
+                self._attach_full_checkpoint_mtp_head(checkpoint_path)
 
             if self._audio_type:
                 model_type = f"Audio ({self._audio_type})"
+            elif self.diffusion_lm_profile:
+                model_type = f"Text-diffusion ({self.diffusion_lm_profile})"
             elif self.is_vision:
                 model_type = "Vision"
             else:
@@ -971,6 +1158,19 @@ class ExportBackend:
                 # Retry outside this block: the live traceback pins the half-built model's frames, so an in-block
                 # retry inherits the exhausted device.
                 retry_reason = str(e)
+                # Name the map: an omitted one is unsloth's DEFAULT_DEVICE_MAP, which requested_device_map
+                # upgrades back to the planner, re-running the placement that just failed.
+                retry_kw = {"_device_map_override": {"device_map": "sequential"}}
+            elif (
+                offload_layers == "auto"
+                and not _offload_retry
+                and _device_map_override is None
+                and not self.diffusion_lm_profile
+                and _is_cpu_spill_rejection(e)
+                and not _multi_gpu_device_map_kwargs()
+            ):
+                retry_reason = str(e)
+                retry_kw = {"_offload_retry": True}
             else:
                 logger.error(f"Error loading checkpoint: {e}")
                 import traceback
@@ -978,20 +1178,26 @@ class ExportBackend:
                 logger.error(traceback.format_exc())
                 return False, f"Failed to load checkpoint: {str(e)}"
 
-        logger.warning(
-            f"Multi-GPU export load unusable ({retry_reason}); retrying on "
-            f"the sequential loader default."
-        )
+        if "_offload_retry" in retry_kw:
+            logger.warning(
+                f"Export load does not fit in GPU memory ({retry_reason}); retrying with "
+                f"offload_layers='auto' to keep the layers the GPU cannot hold in host RAM."
+            )
+        else:
+            logger.warning(
+                f"Multi-GPU export load unusable ({retry_reason}); retrying on "
+                f"the sequential loader default."
+            )
         self.cleanup_memory()
         return self.load_checkpoint(
             checkpoint_path,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = offload_layers,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
-            # Name the map: an omitted one is unsloth's DEFAULT_DEVICE_MAP, which requested_device_map
-            # upgrades back to the planner, re-running the placement that just failed.
-            _device_map_override = {"device_map": "sequential"},
+            base_model = base_model,
+            **retry_kw,
         )
 
     def _load_decision_checkpoint(
@@ -1026,6 +1232,8 @@ class ExportBackend:
         except DecisionExportError as exc:
             return False, str(exc)
         self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # The base is loaded only at export: kept here and rechecked right before that load.
+        self._decision_base_pin = resolved if adapter_only else None
         # An adapter folder loads its base at export time, under the credential of this load.
         self._decision_token = token
         self.is_vision = False
@@ -1051,8 +1259,23 @@ class ExportBackend:
                 "Decision model GGUF export does not support imatrix or Q4NX conversion.",
                 None,
             )
-        from core.export.decision import DecisionExportError, run_decision_gguf_export
+        from core.export.decision import DecisionExportError, adapter_base, run_decision_gguf_export
 
+        pinned = getattr(self, "_decision_base_pin", None)
+        if pinned:
+            try:
+                current = adapter_base(self.current_checkpoint)
+            except DecisionExportError as exc:
+                return False, str(exc), None
+            if current != pinned:
+                return (
+                    False,
+                    "The adapter's base model changed after it was loaded. Load it again.",
+                    None,
+                )
+        refusal = _checkpoint_load_refusal(self.current_checkpoint, pinned)
+        if refusal:
+            return False, refusal, None
         try:
             data = run_decision_gguf_export(
                 self.current_checkpoint,
@@ -1070,6 +1293,31 @@ class ExportBackend:
 
     def _decision_only_gguf(self) -> Tuple[bool, str, Optional[str]]:
         return False, "Decision models export to GGUF only.", None
+
+    def _sync_gguf_reap_reports(self, folder, ggufs) -> List[str]:
+        """One report beside each GGUF this export wrote (a reused folder keeps other files);
+        returns their names, written or removed."""
+        try:
+            from core.export.reap import gguf_report_name, sync_reap_report
+
+            names = []
+            for gguf in ggufs:
+                name = gguf_report_name(gguf)
+                sync_reap_report(self, folder, name, [os.path.basename(gguf)])
+                names.append(name)
+            return names
+        except Exception as exc:  # noqa: BLE001 - the report never blocks an export
+            logger.warning(f"Could not update the REAP reports in {folder}: {exc}")
+            return []
+
+    def _sync_reap_report(self, folder) -> None:
+        """reap_report.json in ``folder`` describes the weights it holds (written for a REAP pruned
+        model, a stale one removed otherwise); run before a folder is uploaded."""
+        try:
+            from core.export.reap import sync_reap_report
+            sync_reap_report(self, folder)
+        except Exception as exc:  # noqa: BLE001 - the report never blocks an export
+            logger.warning(f"Could not update reap_report.json in {folder}: {exc}")
 
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
@@ -1117,6 +1365,9 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("merged")
+        if refusal:
+            return False, refusal, None
 
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
@@ -1139,6 +1390,18 @@ class ExportBackend:
                 "16-bit merged or GGUF quantization instead.",
                 None,
             )
+
+        # transformers 5 refuses torchao < 0.15 as "requires torchao to be installed"; name the real cause.
+        if _is_torchao_alias(compressed_alias):
+            _old_torchao = _torchao_too_old()
+            if _old_torchao:
+                return (
+                    False,
+                    f"Portable torchao FP8/INT8 export needs torchao 0.15 or newer, but torchao "
+                    f"{_old_torchao} is installed. Update Unsloth to install a newer torchao, or "
+                    "use 16-bit merged or GGUF quantization instead.",
+                    None,
+                )
 
         compressed_suffix: Optional[str] = None
         # Classify the alias: torchao-portable vs compressed-tensors.
@@ -1289,10 +1552,22 @@ class ExportBackend:
                     else save_directory
                 )
                 self._write_export_metadata(final_dir)
+                if not _IS_MLX:
+                    # Compressed / torchao siblings carry no stitched MTP head; an EAGLE-3 drafter ships.
+                    self._package_drafter_merged(
+                        final_dir,
+                        repo_id if push_to_hub else None,
+                        allow_mtp = not (is_compressed or is_torchao),
+                    )
                 logger.info(f"Model saved successfully to {final_dir}")
                 output_path = str(Path(final_dir).resolve())
+                # Complete on disk even if the Hub upload below fails (the worker syncs REAP's report).
+                self._local_export_path = output_path
+                # Before any upload: the folder's REAP report must describe the weights it now holds.
+                self._sync_reap_report(output_path)
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1332,6 +1607,8 @@ class ExportBackend:
                                     save_method = save_method,
                                     **merged_token_kw,
                                 )
+                                self._package_drafter_merged(upload_dir, repo_id)
+                                self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
                             if _holds_checkpoint_weights(upload_dir):
@@ -1347,6 +1624,7 @@ class ExportBackend:
                                     repo_id = repo_id,
                                     repo_type = "model",
                                     ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                    delete_patterns = [_REAP_REPORT],
                                 )
                                 uploaded = True
                     if uploaded:
@@ -1354,9 +1632,7 @@ class ExportBackend:
                         # push_to_hub_merged does.
                         try:
                             if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
-                                base_model = getattr(
-                                    self.current_model.config, "_name_or_path", "unknown"
-                                )
+                                base_model = _card_base_model(self.current_model)
                                 content = MODEL_CARD.format(
                                     username = repo_id.split("/")[0],
                                     base_model = repo_id if os.path.isdir(base_model) else base_model,
@@ -1414,7 +1690,8 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
-        if self.is_peft:
+        # A LoRA load stays one after REAP merged its adapters in memory for a pruned export.
+        if self.is_peft or getattr(self, "_reap_merged_peft", False):
             return (
                 False,
                 "This is a PEFT model. Use 'Merged Model' export type instead.",
@@ -1440,12 +1717,17 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                    # A full fine-tune trained with a drafter ships it like a merged export.
+                    self._package_drafter_merged(save_directory, repo_id if push_to_hub else None)
 
                 self._write_export_metadata(save_directory)
                 logger.info(f"Model saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
+                self._local_export_path = output_path
+                self._sync_reap_report(output_path)
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1467,9 +1749,7 @@ class ExportBackend:
                         private = private,
                     )
                 else:
-                    base_model = (
-                        base_model_id or self.current_model.config._name_or_path or "unknown"
-                    )
+                    base_model = base_model_id or _card_base_model(self.current_model)
 
                     with contextlib.ExitStack() as stack:
                         upload_dir = save_directory
@@ -1481,6 +1761,8 @@ class ExportBackend:
                             )
                             self.current_model.save_pretrained(upload_dir)
                             self.current_tokenizer.save_pretrained(upload_dir)
+                            self._package_drafter_merged(upload_dir, repo_id)
+                            self._sync_reap_report(upload_dir)
                         hf_api = HfApi(token = hf_token)
                         repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         repo_id = getattr(repo_url, "repo_id", repo_id)
@@ -1506,6 +1788,7 @@ class ExportBackend:
                                 repo_id = repo_id,
                                 repo_type = "model",
                                 ignore_patterns = _HUB_UPLOAD_IGNORE,
+                                delete_patterns = [_REAP_REPORT],
                             )
                             logger.info(f"Model pushed successfully to {repo_id}")
                         else:
@@ -1550,6 +1833,9 @@ class ExportBackend:
             )
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf")
+        if refusal:
+            return False, refusal, None
 
         # Older unsloth builds raise on an unexpected imatrix_file kwarg even for a plain no-imatrix export.
         if imatrix_file and not _imatrix_export_supported(self.current_model.save_pretrained_gguf):
@@ -1561,6 +1847,8 @@ class ExportBackend:
             )
         # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        # True only after the load's consent gate passed; only then may the converter run auto_map code.
+        remote_code_approved = bool(getattr(self, "trust_remote_code", False))
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
         # push shares and names token= itself.
         local_token_kw = (
@@ -1573,6 +1861,8 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         exported_ggufs: List[str] = []
+        gguf_reports: List[str] = []
+        drafter_gguf_files: List[str] = []
         exported_modelfile = False
         exported_modelfile_bytes: Optional[bytes] = None
         exported_is_vlm = False
@@ -1615,7 +1905,7 @@ class ExportBackend:
                 try:
                     # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
                     # llama-quantize gguf API; scoped to the conversion.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
                             self.current_tokenizer,
@@ -1662,6 +1952,10 @@ class ExportBackend:
                             "GGUF conversion produced only AppleDouble metadata companions "
                             f"and no usable .gguf file for {abs_save_dir}"
                         )
+                    drafter_gguf_files = self._package_drafter_gguf(
+                        reported.get("save_directory") or _model_tmp, abs_save_dir, exported_ggufs
+                    )
+                    exported_ggufs.extend(f for f in drafter_gguf_files if f.endswith(".gguf"))
                     exported_is_vlm = bool(
                         reported.get("is_vlm", getattr(self, "is_vision", False))
                     )
@@ -1740,6 +2034,13 @@ class ExportBackend:
                 # Only write metadata once an artifact is actually present.
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
+                # Before the upload below, which allow-lists each file's report when there is one.
+                # The model's own GGUFs only: an EAGLE-3 drafter is converted separately, not pruned.
+                drafter_names = {os.path.basename(f) for f in drafter_gguf_files}
+                gguf_reports = self._sync_gguf_reap_reports(
+                    output_path,
+                    [f for f in exported_ggufs if os.path.basename(f) not in drafter_names],
+                )
 
                 if npu_q4nx:
                     source = q4nx.source_gguf(exported_ggufs, quant_methods)
@@ -1749,6 +2050,8 @@ class ExportBackend:
                         with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
                             q4nx.convert_gguf_to_q4nx(source, staging)
                             self._write_q4nx_companions(staging, exported_config)
+                            # The NPU folder is deployed on its own, so it carries its own report.
+                            self._sync_reap_report(staging)
                     except Exception as exception:
                         logger.error(f"Q4NX conversion failed: {exception}")
                         return (
@@ -1759,6 +2062,7 @@ class ExportBackend:
                         )
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -1783,7 +2087,15 @@ class ExportBackend:
                         allow_patterns = [
                             *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
                             *(["Modelfile"] if exported_modelfile else []),
+                            *(["drafter.json"] if drafter_gguf_files else []),
+                            *(
+                                glob.escape(name)
+                                for name in gguf_reports
+                                if (Path(output_path) / name).is_file()
+                            ),
                         ],
+                        # A report an earlier pruned export pushed for these same files.
+                        delete_patterns = [glob.escape(name) for name in gguf_reports] or None,
                     )
                     if exported_config is not None:
                         hf_api.upload_file(
@@ -1817,7 +2129,7 @@ class ExportBackend:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
                     # Converts as well as pushes, so it needs the same scoped pin.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         self.current_model.push_to_hub_gguf(
                             repo_id,
                             self.current_tokenizer,
@@ -1847,6 +2159,98 @@ class ExportBackend:
                     output_path,
                 )
             return False, f"GGUF export failed: {str(e)}", None
+
+    def _attach_full_checkpoint_mtp_head(self, checkpoint_path: str) -> None:
+        """A full fine-tune keeps its trained MTP head only inside its shards, which transformers
+        drops on load: attach it so every export writes it back."""
+        try:
+            from core.export.drafter_export import training_manifest
+
+            if not os.path.isdir(checkpoint_path) or os.path.isfile(
+                os.path.join(checkpoint_path, "adapter_config.json")
+            ):
+                return
+            manifest = training_manifest(checkpoint_path)
+            if not manifest or manifest.get("strategy") != "mtp":
+                return
+            from unsloth import FastModel
+
+            FastModel.get_mtp_head(self.current_model, source = checkpoint_path)
+            logger.info(f"Attached the trained MTP head from {checkpoint_path}")
+        except Exception as exception:
+            logger.warning(f"Could not attach the trained MTP head: {exception}")
+
+    def _package_drafter_merged(
+        self,
+        final_dir: str,
+        repo_id: Optional[str],
+        allow_mtp: bool = True,
+    ) -> None:
+        """Ship the drafter trained with this fine-tune next to a merged export (best-effort: the
+        merged model is valid without it)."""
+        try:
+            from core.export.drafter_export import package_merged
+            info = package_merged(
+                self.current_checkpoint,
+                final_dir,
+                verifier = repo_id,
+                allow_mtp = allow_mtp,
+                token = self._checkpoint_token,
+            )
+            if info:
+                logger.info(f"Packaged the trained {info['strategy']} drafter into {final_dir}")
+        except Exception as exception:
+            logger.warning(f"Could not package the trained drafter: {exception}")
+
+    def _package_drafter_lora(
+        self,
+        adapter_dir: str,
+        head_saved: Optional[bool] = None,
+    ) -> bool:
+        try:
+            from core.export.drafter_export import package_lora
+            return (
+                package_lora(
+                    self.current_checkpoint, adapter_dir, head_saved, token = self._checkpoint_token
+                )
+                is not None
+            )
+        except Exception as exception:
+            logger.warning(f"Could not carry the drafter manifest with the adapter: {exception}")
+            return False
+
+    def _push_drafter_lora_manifest(self, hf_api, repo_id: str) -> None:
+        """push_to_hub uploads the head beside the adapter but not Studio's manifest."""
+        try:
+            from unsloth.save import _attached_mtp_head
+            from core.export.drafter_export import DRAFTER_MANIFEST
+            with tempfile.TemporaryDirectory() as tmp:
+                head = _attached_mtp_head(self.current_model) is not None
+                if self._package_drafter_lora(tmp, head_saved = head):
+                    hf_api.upload_file(
+                        path_or_fileobj = os.path.join(tmp, DRAFTER_MANIFEST),
+                        path_in_repo = DRAFTER_MANIFEST,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                    )
+        except Exception as exception:
+            logger.warning(f"Could not upload the drafter manifest with the adapter: {exception}")
+
+    def _package_drafter_gguf(self, merged_dir: str, gguf_dir: str, ggufs: List[str]) -> List[str]:
+        try:
+            from core.export.drafter_export import package_gguf
+
+            info, files = package_gguf(
+                self.current_checkpoint, merged_dir, gguf_dir, ggufs, token = self._checkpoint_token
+            )
+            if info:
+                logger.info(f"Packaged the trained {info['strategy']} drafter with the GGUF export")
+            return files
+        except Exception as exception:
+            logger.warning(
+                f"Could not package the trained drafter with the GGUF export: {exception}"
+            )
+            return []
 
     def _write_q4nx_companions(self, q4nx_dir: Path, config: Optional[bytes]) -> None:
         """The tokenizer files FastFlowLM loads next to model.q4nx (see q4nx.CONFIG_FILES)."""
@@ -1933,9 +2337,11 @@ class ExportBackend:
             )
 
         from unsloth_zoo import llama_cpp as _zoo_llama_cpp
+        from utils import llama_cpp_source
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
         source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        base_source_dir = source_dir
         # A user-set scripts dir is authoritative and is checked before any network revision lookup.
         pinned_dir = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "").strip()
         if pinned_dir:
@@ -1948,55 +2354,73 @@ class ExportBackend:
         elif os.path.exists(os.path.join(default_dir, "convert_lora_to_gguf.py")):
             converter = os.path.join(default_dir, "convert_lora_to_gguf.py")
         else:
-            # Pinned to the installed binaries' revision (else the latest release).
+            # The installed binaries' revision (else latest), from its unslothai/llama.cpp release.
             try:
-                _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
+                repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
             except Exception:
-                tag = None
-            tag = tag.split("-mix-")[0] if tag else None
-            if tag:
+                repo, tag = None, None
+            converter = None
+            if tag and llama_cpp_source.is_fork_release_tag(repo, tag):
                 source_dir = f"{source_dir}-{tag}"
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
-                converter = None
+                if os.path.exists(os.path.join(source_dir, "convert_lora_to_gguf.py")):
+                    converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
+            elif tag and not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
+                # Offline only: online, the download path resolves the stable mix release first.
+                cached = sorted(
+                    glob.glob(f"{glob.escape(source_dir)}-{glob.escape(tag)}-mix-*"),
+                    key = os.path.getmtime,
+                )
+                cached = [
+                    d for d in cached if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if cached:
+                    converter = os.path.join(cached[-1], "convert_lora_to_gguf.py")
+            # Trees the previous git-clone exporter left: llama.cpp-source-<upstream tag>, or
+            # llama.cpp-source when no revision was known.
+            legacy = base_source_dir + (f"-{tag.split('-mix-')[0]}" if tag else "")
+            if converter is None and os.path.isfile(
+                os.path.join(legacy, "convert_lora_to_gguf.py")
+            ):
+                converter = os.path.join(legacy, "convert_lora_to_gguf.py")
+            if converter is None and not tag:
+                # No revision known (offline, no marker): the newest tree any exporter left.
+                trees = [
+                    d
+                    for d in glob.glob(f"{glob.escape(base_source_dir)}-*")
+                    if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if trees:
+                    converter = os.path.join(
+                        max(trees, key = os.path.getmtime), "convert_lora_to_gguf.py"
+                    )
         if converter is None:
             if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
                 raise RuntimeError(
                     "GGUF adapter export needs llama.cpp's convert_lora_to_gguf.py, which is not "
-                    f"installed, and offline mode forbids cloning it; clone llama.cpp into {source_dir}."
+                    "installed, and offline mode forbids downloading it; extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
             if not getattr(_zoo_llama_cpp, "_auto_install_enabled", lambda: True)():
                 raise RuntimeError(
-                    "GGUF adapter export needs a llama.cpp source checkout and automatic "
-                    f"installation was declined (UNSLOTH_AUTO_INSTALL=0); clone llama.cpp into {source_dir}."
+                    "GGUF adapter export needs llama.cpp's converter sources and automatic "
+                    "installation was declined (UNSLOTH_AUTO_INSTALL=0); extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
-            # Not install_llama_cpp: it probes apt-get even when only cloning, which fails on macOS.
-            ensure_dir(Path(source_dir).parent)
-            with tempfile.TemporaryDirectory(dir = Path(source_dir).parent) as tmp_dir:
-                clone = os.path.join(tmp_dir, "llama.cpp")
-                subprocess.run(
-                    [
-                        "git",
-                        "clone",
-                        "--depth",
-                        "1",
-                        *(["--branch", tag] if tag else []),
-                        "https://github.com/ggml-org/llama.cpp",
-                        clone,
-                    ],
-                    check = True,
-                    capture_output = True,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
+            # Not install_llama_cpp: it probes apt-get even when only fetching sources, which fails on macOS.
+            try:
+                fetched = llama_cpp_source.download_converter_source(
+                    repo, tag, Path(source_dir).parent
                 )
-                if not os.path.exists(source_dir):
-                    os.replace(clone, source_dir)
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
+            except Exception as exc:
                 raise RuntimeError(
-                    f"convert_lora_to_gguf.py is missing from the llama.cpp clone at {source_dir}."
-                )
+                    "Could not download llama.cpp's converter sources from the "
+                    f"{llama_cpp_source.FORK_REPO} release: {exc}"
+                ) from exc
+            converter = os.path.join(str(fetched), "convert_lora_to_gguf.py")
+            if not os.path.exists(converter):
+                raise RuntimeError(f"convert_lora_to_gguf.py is missing from {fetched}.")
         if importlib.util.find_spec("gguf") is None and not os.path.isdir(
             os.path.join(os.path.dirname(converter), "gguf-py")
         ):
@@ -2085,7 +2509,17 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf") if gguf else None
+        if refusal:
+            return False, refusal, None
 
+        if getattr(self, "_reap_merged_peft", False):
+            return (
+                False,
+                "The LoRA adapters were merged into the model for a REAP export. Load the "
+                "checkpoint again to export the adapter.",
+                None,
+            )
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None
 
@@ -2195,11 +2629,13 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                    self._package_drafter_lora(save_directory)
                 self._write_export_metadata(save_directory)
                 logger.info(f"Adapter saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
+                hf_token = _hub_push_token(hf_token)
                 if not repo_id or not hf_token:
                     return (
                         False,
@@ -2256,6 +2692,7 @@ class ExportBackend:
                     _publish_unsloth_model_card(hf_api, repo_id, self.current_model, hf_token)
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
                     self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
+                    self._push_drafter_lora_manifest(hf_api, repo_id)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path

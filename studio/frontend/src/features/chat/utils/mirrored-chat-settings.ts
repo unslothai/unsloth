@@ -7,6 +7,35 @@
 // reaches the backend, which rejects the whole patch on a single out-of-contract field.
 
 import type { PersistedChatSettings } from "../api/chat-settings-api";
+import type { ResearchMcpSource } from "../types/research";
+
+export const MAX_RESEARCH_MCP_SOURCES = 20;
+
+export function normalizeResearchMcpSources(value: unknown): ResearchMcpSource[] {
+  if (!Array.isArray(value)) return [];
+  const sources: ResearchMcpSource[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const serverId = item?.serverId;
+    const tool = item?.tool;
+    if (
+      typeof serverId !== "string" ||
+      serverId.length < 1 ||
+      serverId.length > 200 ||
+      typeof tool !== "string" ||
+      tool.length < 1 ||
+      tool.length > 500
+    ) {
+      continue;
+    }
+    const key = `${serverId}\0${tool}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push({ serverId, tool });
+    if (sources.length === MAX_RESEARCH_MCP_SOURCES) break;
+  }
+  return sources;
+}
 
 const MIRRORED_BOOLEAN_KEYS = [
   "reasoningEnabled",
@@ -70,6 +99,7 @@ export const MIRRORED_SETTING_KEYS = [
     MIRRORED_NUMBER_BOUNDS,
   ) as (keyof typeof MIRRORED_NUMBER_BOUNDS)[]),
   "researchWebsitePolicy",
+  "researchMcpSources",
   "ragSource",
 ] as const satisfies readonly (keyof PersistedChatSettings)[];
 
@@ -163,6 +193,11 @@ export function assignSanitizedMirroredSettings(
   );
   if (researchWebsitePolicy) {
     settings.researchWebsitePolicy = researchWebsitePolicy;
+  }
+  if (Array.isArray(value.researchMcpSources)) {
+    settings.researchMcpSources = normalizeResearchMcpSources(
+      value.researchMcpSources,
+    );
   }
   const ragSource = sanitizeRagSource(value.ragSource);
   if (ragSource) settings.ragSource = ragSource;

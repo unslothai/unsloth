@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AudioWave01Icon,
   Delete02Icon,
   Image03Icon,
   FlimSlateIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -49,7 +49,7 @@ import {
 } from "@/features/video/api";
 import { videoThumbnailQueue } from "@/features/video/thumbnail-request-queue";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
-import { notifyGalleryChanged } from "@/lib/gallery-flags";
+import { notifyArchiveChanged, notifyGalleryChanged } from "@/lib/gallery-flags";
 import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
@@ -522,6 +522,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     running.current = true;
     setBusy(true);
     let restored = false;
+    let changed = false;
     try {
       for (const row of targets) {
         const succeeded =
@@ -529,11 +530,14 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             ? await handleDelete(row)
             : await handleRestore(row);
         if (!succeeded) break;
+        changed = true;
         if (action === "restore") restored = true;
       }
     } finally {
       // refresh the persistent gallery once, including after a partially successful batch.
       if (restored) notifyGalleryChanged(kind);
+      // A delete leaves the strip as it was, but the Images page tracks whether the archive is empty.
+      if (changed) notifyArchiveChanged(kind);
       running.current = false;
       setBusy(false);
       setConfirming(null);
@@ -626,7 +630,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                     <HugeiconsIcon
                       icon={
                         isAudio
-                          ? AudioWave01Icon
+                          ? AiSpeechIcon
                           : isImages
                             ? Image03Icon
                             : FlimSlateIcon

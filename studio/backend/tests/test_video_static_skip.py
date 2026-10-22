@@ -214,32 +214,48 @@ def test_fbcache_load_still_reports_an_active_cache(loop_runtime, monkeypatch):
 
 
 @pytest.mark.parametrize("request_cache", [None, "auto"])
+def test_default_speed_never_auto_skips_on_wan_5b(loop_runtime, monkeypatch, request_cache):
+    monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        WAN_5B, model_kind = "pipeline", speed_mode = "default", transformer_cache = request_cache
+    )
+    assert status["transformer_cache"] is None
+    assert "forward" not in loop_runtime["pipe"].transformer.__dict__
+    backend.generate(prompt = "a sloth", steps = STEPS)
+    assert loop_runtime["pipe"].transformer.computed == 2 * STEPS
+    backend.unload()
+
+
+@pytest.mark.parametrize("request_cache", [None, "auto"])
 def test_auto_installs_the_measured_static_skip_on_wan_5b(loop_runtime, monkeypatch, request_cache):
     monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
     seen = _record_speed(monkeypatch)
     backend = VideoBackend()
     status = backend.load_pipeline(
-        WAN_5B, model_kind = "pipeline", speed_mode = "default", transformer_cache = request_cache
+        WAN_5B, model_kind = "pipeline", speed_mode = "max", transformer_cache = request_cache
     )
     assert status["transformer_cache"] == "static"
     entry = status["resolved"]["transformer_cache"]
     assert entry["value"] == "static" and entry["requested"] is None
     assert "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
     layer = loop_runtime["pipe"].transformer.__dict__["forward"]
-    # Measured at 50 steps, so a shorter render computes every step.
-    assert (layer.every, layer.auto, layer.min_steps) == (2, True, 50)
+    assert (layer.every, layer.auto, layer.min_steps) == (3, True, 50)
     # Kept graph decisions, and the generate-time FBCache toggle is never armed over it.
     assert [kw["cache_active"] for kw in seen] == [False]
     assert backend._state.cache_auto is False
     backend.generate(prompt = "a sloth", steps = STEPS)
-    assert loop_runtime["pipe"].transformer.computed == 2 * (STEPS - SKIPPED_PER_BRANCH)
+    skipped = len(ss.static_schedule(STEPS, every = 3, min_steps = 50)) - sum(
+        ss.static_schedule(STEPS, every = 3, min_steps = 50)
+    )
+    assert loop_runtime["pipe"].transformer.computed == 2 * (STEPS - skipped)
     backend.unload()
 
 
 def test_auto_skip_leaves_a_keyframe_clip_unskipped(loop_runtime, monkeypatch):
     monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
     backend = VideoBackend()
-    backend.load_pipeline(WAN_5B, model_kind = "pipeline", speed_mode = "default")
+    backend.load_pipeline(WAN_5B, model_kind = "pipeline", speed_mode = "max")
     real = VideoBackend._resolve_keyframes
 
     def with_first_frame(*args, **kwargs):
@@ -247,6 +263,16 @@ def test_auto_skip_leaves_a_keyframe_clip_unskipped(loop_runtime, monkeypatch):
         return object(), last, width, height, conditioning
 
     monkeypatch.setattr(VideoBackend, "_resolve_keyframes", staticmethod(with_first_frame))
+
+    # A first frame on Wan2.2-TI2V-5B runs its image-to-video class over the loaded pipe (video_i2v);
+    # the fake runtime only knows the text-to-video one, so give it a class to swap to.
+    class _LoopWanI2V(_LoopWanPipe):
+        def __init__(self, **_components):  # the template the swap reads; nothing to set
+            pass
+
+    monkeypatch.setattr(
+        sys.modules["diffusers"], "WanImageToVideoPipeline", _LoopWanI2V, raising = False
+    )
     armed = []
     import core.inference.video as video_mod
 
@@ -452,7 +478,11 @@ def test_hv15_counts_branches_by_context_without_a_step_callback(loop_runtime, m
     backend.unload()
 
 
-def _load_h3(backend, transformer_cache):
+def _load_h3(
+    backend,
+    transformer_cache,
+    speed_mode = None,
+):
     from core.inference.video import _detect_load_family
 
     diffusers = sys.modules["diffusers"]
@@ -473,6 +503,7 @@ def _load_h3(backend, transformer_cache):
         _load_token = None,
         _base_local_dir = None,
         transformer_cache = transformer_cache,
+        speed_mode = speed_mode,
     )
 
 
@@ -574,6 +605,11 @@ def test_modular_workflow_auto_follows_the_table_and_the_kill_switch(h3_runtime,
     )
     backend = VideoBackend()
     status = _load_h3(backend, None)
+    assert status["transformer_cache"] is None
+    assert "forward" not in h3_runtime.instance.transformer.__dict__
+    backend.unload()
+    backend = VideoBackend()
+    status = _load_h3(backend, None, speed_mode = "max")
     entry = status["resolved"]["transformer_cache"]
     assert status["transformer_cache"] == "static"
     assert entry["requested"] is None and entry["value"] == "static"
@@ -587,7 +623,7 @@ def test_modular_workflow_auto_follows_the_table_and_the_kill_switch(h3_runtime,
 
     monkeypatch.setenv(dcache.ENV_AUTO_STEP_SKIP, "0")
     backend = VideoBackend()
-    status = _load_h3(backend, None)
+    status = _load_h3(backend, None, speed_mode = "max")
     assert status["transformer_cache"] is None
     assert "forward" not in h3_runtime.instance.transformer.__dict__
     backend.unload()

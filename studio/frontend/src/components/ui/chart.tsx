@@ -4,6 +4,7 @@
 import * as React from "react";
 import * as RechartsPrimitive from "recharts";
 
+import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { cn } from "@/lib/utils";
 
 // Format: { THEME_NAME: CSS_SELECTOR }
@@ -246,8 +247,9 @@ function ChartTooltipContent({
 
   return (
     <div
+      ref={roundIfSingleLine}
       className={cn(
-        "border-border/50 bg-background gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-xl grid min-w-[calc(8rem*var(--ui-space-scale,1))] items-start",
+        "tooltip-compact gap-1.5 px-2.5 py-1.5 text-xs grid min-w-[calc(8rem*var(--ui-space-scale,1))] items-start",
         className,
       )}
     >

@@ -137,9 +137,14 @@ test("a failure is only reported for the request still being awaited", () => {
 test("no project scope is opened where RAG cannot run", () => {
   assert.match(
     THREAD_DOCUMENTS_BAR,
-    /const projectId =\s*\(ragEnabled && ragSource\.type === "kb"\) \|\| ragUnavailable\s*\? null\s*: \(threadProjectId \?\? null\);/,
+    /const watchedProjectId = ragUnavailable \? null : \(threadProjectId \?\? null\);\s*const projectId =\s*ragEnabled && ragSource\.type === "kb" \? null : watchedProjectId;/,
   );
-  assert.match(THREAD_DOCUMENTS_BAR, /projectId \? \{ type: "project", projectId \} : null/);
+  // Watched beside an active KB too: retrieval adds the project there (#9485), so a
+  // send must still wait for a project source that is indexing.
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /watchedProjectId \? \{ type: "project", projectId: watchedProjectId \} : null/,
+  );
 });
 
 // A project's sources also change from the Sources panel: an upload invalidated
@@ -720,11 +725,16 @@ test("a failed project lookup leaves the scope unresolved", () => {
   // Nothing records a null project on the failure path any more.
   assert.doesNotMatch(
     THREAD_DOCUMENTS_BAR,
-    /setResolved\(\{ threadId, trigger: activeProjectId, projectId: null \}\);/,
+    /record\(null, 0\)|setResolved\(\{ threadId, projectId: null/,
+  );
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /\} catch \{\s*if \(cancelled \|\| announced\) return;\s*await new Promise/,
+    "a failed read records nothing and retries",
   );
   // And unresolved still disables the attach controls.
   assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);
-  assert.match(THREAD_DOCUMENTS_BAR, /uploading \|\| projectUploading \|\| projectUnresolved/);
+  assert.match(THREAD_DOCUMENTS_BAR, /const busy = projectUnresolved;/);
 });
 
 // A row the probe could not read is not a chat with no project: answering null
@@ -748,24 +758,13 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
   );
 });
 
-// A knowledge base replaces every other scope in rag_scope, so a queue scoped to
-// one cannot be affected by a project upload or a folder sync.
-test("a knowledge-base queue does not wait on project sources", () => {
-  assert.match(
-    THREAD,
-    /const usesKnowledgeBaseAtQueueStart =\s*chatStateAtQueueStart\.ragEnabled &&\s*chatStateAtQueueStart\.ragSource\.type === "kb";/,
-  );
-  assert.match(THREAD, /usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,/);
-  // Ahead of the project lookup, and after the thread one, which a KB queue
-  // never takes anyway.
-  assert.match(
-    THREAD,
-    /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,900}?const projectId = threadId/,
-  );
-  // The exclusivity this relies on, in the adapter that builds the scope.
+// A knowledge base replaces only the thread's documents in rag_scope; the project's
+// sources still reach the run (#9485), so a KB queue waits on them like any other.
+test("a knowledge-base queue still waits on project sources", () => {
+  assert.doesNotMatch(THREAD, /usesKnowledgeBase/);
   assert.match(
     CHAT_ADAPTER,
-    /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}/,
+    /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}\s*: ragEnabled && resolvedThreadId\s*\? \{ thread_id: resolvedThreadId \}\s*: \{\}\),\s*\.\.\.\(projectRagEnabled && ragProjectId\s*\? \{ project_id: ragProjectId \}/,
   );
 });
 

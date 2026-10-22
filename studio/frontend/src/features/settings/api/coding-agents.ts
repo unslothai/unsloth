@@ -16,10 +16,6 @@ type ApiCodingAgentsInfo = {
   detected: string[];
 };
 
-// Agents the CLI still supports but Unsloth does not list. Filtered here so
-// every consumer of this endpoint sees the same set.
-const HIDDEN_AGENTS = new Set(["pi"]);
-
 // Which CLIs are on PATH is environment state, not a persisted setting -- it can change any time
 // the user installs something new, so this only de-duplicates concurrent in-flight calls (e.g.
 // React strict-mode's double mount) rather than caching the result across the module's lifetime.
@@ -27,8 +23,7 @@ const HIDDEN_AGENTS = new Set(["pi"]);
 let inFlightInfo: Promise<CodingAgentsInfo> | null = null;
 
 function fromApi(info: ApiCodingAgentsInfo): CodingAgentsInfo {
-  const visible = (ids: string[]) => ids.filter((id) => !HIDDEN_AGENTS.has(id));
-  return { agents: visible(info.agents), detected: visible(info.detected) };
+  return { agents: info.agents, detected: info.detected };
 }
 
 async function fetchCodingAgents(): Promise<CodingAgentsInfo> {

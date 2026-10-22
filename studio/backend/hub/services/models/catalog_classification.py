@@ -24,7 +24,21 @@ from utils.gguf_archs import (
 from utils.paths.path_utils import file_contents_available_locally
 
 
-_DIFFUSION_GGUF_ARCHS = frozenset({"flux", "flux2", "qwen_image", "qwenimage", "z_image", "zimage"})
+_DIFFUSION_GGUF_ARCHS = frozenset(
+    {
+        "flux",
+        "flux2",
+        "qwen_image",
+        "qwenimage",
+        "qwen_image21",
+        "qwenimage21",
+        "z_image",
+        "zimage",
+        "krea2",
+    }
+)
+# Archs that alone name the family. Not "flux" / "qwen_image": several DiTs ship under those (#14474).
+_FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2"})
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
 )
@@ -113,6 +127,16 @@ def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
     except Exception:
         return True
     return True
+
+
+def _diffusion_gguf_family_hints(
+    arch: Optional[str], name_hints: tuple[Optional[str], ...]
+) -> tuple[Optional[str], ...]:
+    """``name_hints`` led by the architecture when it alone names the family."""
+    normalized = (arch or "").strip().lower()
+    if normalized in _FAMILY_NAMING_DIFFUSION_GGUF_ARCHS:
+        return (normalized, *name_hints)
+    return tuple(name_hints)
 
 
 def _video_family_buildable(family) -> bool:
@@ -252,14 +276,36 @@ def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> 
     arch = _gguf_architecture(str(path))
     if is_audio_cpp_gguf_architecture(arch):
         return _audio_cpp_classification(path, name_hints)[0]
+    if arch is None or arch.lower() == "sdxl":
+        whole = _whole_pipeline_gguf_task(path)
+        if whole is not None:
+            return whole
     return _arch_to_task(arch, name_hints = name_hints)
+
+
+def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
+    """Images task for a whole-pipeline SDXL GGUF: sd.cpp ``convert`` writes no architecture, so the name fallback
+    would call it a chat model."""
+    try:
+        from core.inference.diffusion_content import whole_pipeline_gguf_family
+
+        family = whole_pipeline_gguf_family(str(path))
+        if family is None:
+            return None
+        from core.inference.diffusion_engine_router import family_buildable_here
+        from core.inference.diffusion_families import detect_family
+
+        buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
+    except Exception:
+        return None
+    return "text-to-image" if buildable else _UNSUPPORTED_DIFFUSION_TASK
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        # Qwen-Image-2.1 GGUFs have kv_count 0, so the name is the only evidence, as for a cloud placeholder.
+        # unsloth/Qwen-Image-2.1-GGUF has kv_count 0 (others declare "qwen_image21"): the name is the only evidence.
         return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
     if is_audio_cpp_gguf_architecture(normalized):
@@ -278,7 +324,9 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         return _SPEECH_TASK
     if normalized in _DIFFUSION_GGUF_ARCHS:
         return (
-            "text-to-image" if _gguf_family_buildable(name_hints) else _UNSUPPORTED_DIFFUSION_TASK
+            "text-to-image"
+            if _gguf_family_buildable(_diffusion_gguf_family_hints(normalized, name_hints))
+            else _UNSUPPORTED_DIFFUSION_TASK
         )
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family

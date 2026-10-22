@@ -13,11 +13,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import type { NativeDocumentFolderSelection } from "@/features/native-intents";
+import { WorkingFolderPicker } from "./working-folder-picker";
 import { LinkedFoldersManager } from "@/features/rag";
+import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+import { setChatProjectWorkingFolder } from "../api/chat-api";
 import {
   renameChatProject,
   updateChatProjectInstructions,
@@ -29,7 +33,42 @@ import {
   newInputImeState,
 } from "../utils/composer-preferences";
 
-/** Name, instructions and linked folders for one project. Opened from the folder row's "Edit".
+function ProjectWorkingFolder({
+  project,
+  disabled,
+  onPendingChange,
+}: {
+  project: ProjectRecord;
+  disabled: boolean;
+  onPendingChange: (pending: boolean) => void;
+}) {
+  const [folder, setFolder] = useState(project.workingFolder ?? null);
+  const seed = `${project.id}\n${project.workingFolder ?? ""}`;
+  const [seededFor, setSeededFor] = useState(seed);
+  if (seed !== seededFor) {
+    setSeededFor(seed);
+    setFolder(project.workingFolder ?? null);
+  }
+
+  async function apply(selection: NativeDocumentFolderSelection | null) {
+    const saved = await setChatProjectWorkingFolder(
+      project.id,
+      selection?.token ?? null,
+    );
+    setFolder(saved.workingFolder ?? null);
+  }
+
+  return (
+    <WorkingFolderPicker
+      value={folder}
+      onChange={apply}
+      disabled={disabled}
+      onPendingChange={onPendingChange}
+    />
+  );
+}
+
+/** Name, instructions, working folder and source folders for one project.
  *  Deleting hands back to the caller, which owns the confirmation. */
 export function EditProjectDialog({
   project,
@@ -44,6 +83,7 @@ export function EditProjectDialog({
   const [name, setName] = useState(project?.name ?? "");
   const [instructions, setInstructions] = useState(project?.instructions ?? "");
   const [busy, setBusy] = useState(false);
+  const [folderBusy, setFolderBusy] = useState(false);
   const nameImeRef = useRef(newInputImeState());
   const nameImeHandlers = {
     onFocus: () => inputImeHandlers(nameImeRef.current).onFocus(),
@@ -61,6 +101,7 @@ export function EditProjectDialog({
     setName(project?.name ?? "");
     setInstructions(project?.instructions ?? "");
     setBusy(false);
+    setFolderBusy(false);
   }
 
   if (!project) return null;
@@ -75,12 +116,12 @@ export function EditProjectDialog({
   const dirty = nameChanged || instructionsChanged;
 
   function close() {
-    if (busy) return;
+    if (busy || folderBusy) return;
     onOpenChange(false);
   }
 
   async function save() {
-    if (busy || !trimmedName) return;
+    if (busy || folderBusy || !trimmedName) return;
     if (!dirty) {
       onOpenChange(false);
       return;
@@ -123,7 +164,7 @@ export function EditProjectDialog({
             })
           )
             return;
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          if (isModEnter(e)) {
             e.preventDefault();
             void save();
           }
@@ -132,8 +173,8 @@ export function EditProjectDialog({
         <DialogHeader>
           <DialogTitle className="text-ui-21">Edit project</DialogTitle>
           <DialogDescription className="sr-only">
-            Rename this project, set the instructions its chats follow, and manage the local
-            folders it indexes.
+            Rename this project, set instructions, choose its working folder,
+            and manage source folders for document search.
           </DialogDescription>
         </DialogHeader>
         {/* The same name field the create dialog uses. */}
@@ -147,7 +188,10 @@ export function EditProjectDialog({
           </span>
           {/* The rule that separates the icon from the field. The container drops its border in
               dark mode, where --border goes with it, so the rule carries its own tint there. */}
-          <span aria-hidden="true" className="my-3 w-px bg-border dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]" />
+          <span
+            aria-hidden="true"
+            className="my-3 w-px bg-border dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+          />
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -168,7 +212,7 @@ export function EditProjectDialog({
               }
             }}
             autoFocus={true}
-            disabled={busy}
+            disabled={busy || folderBusy}
             maxLength={120}
             placeholder="Project name"
             aria-label="Project name"
@@ -189,19 +233,26 @@ export function EditProjectDialog({
             id="edit-project-instructions"
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
-            disabled={busy}
+            disabled={busy || folderBusy}
             rows={4}
             placeholder="How should the model answer in this project?"
             className="mt-0.5 resize-none rounded-[16px]"
           />
         </div>
+        <ProjectWorkingFolder
+          key={project.id}
+          project={project}
+          disabled={busy}
+          onPendingChange={setFolderBusy}
+        />
         {/* The Sources tab's own manager, so a folder linked here is linked there. */}
         <div className="flex flex-col gap-1.5">
           <h3 className="text-ui-15 font-medium text-foreground">
             Source folders
           </h3>
           <p className="text-ui-13 text-muted-foreground">
-            Indexed and kept in sync, for every chat in this project to search.
+            Keep supported documents in sync for chats to search. Linking does
+            not grant access to edit the original files.
           </p>
           <div className="mt-0.5">
             <LinkedFoldersManager
@@ -214,7 +265,7 @@ export function EditProjectDialog({
           <Button
             type="button"
             variant="destructive"
-            disabled={busy}
+            disabled={busy || folderBusy}
             onClick={() => {
               onOpenChange(false);
               onDelete(project);
@@ -226,7 +277,7 @@ export function EditProjectDialog({
             <Button
               type="button"
               variant="ghost"
-              disabled={busy}
+              disabled={busy || folderBusy}
               onClick={close}
             >
               Cancel
@@ -234,7 +285,7 @@ export function EditProjectDialog({
             <Button
               type="button"
               onClick={() => void save()}
-              disabled={busy || !trimmedName}
+              disabled={busy || folderBusy || !trimmedName}
             >
               {busy ? "Saving…" : "Save"}
             </Button>

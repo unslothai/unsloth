@@ -208,8 +208,8 @@ const ROWS: Row[] = [
       "and reads normally.",
   },
   {
-    name: "version 11 (genuinely future)",
-    raw: { version: 11, customContextLength: 32768 },
+    name: "version 12 (genuinely future)",
+    raw: { version: 12, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -357,7 +357,7 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
     true,
   );
   assert.equal(
-    stage({ version: 11, customContextLength: 32768 }).remembered,
+    stage({ version: 12, customContextLength: 32768 }).remembered,
     false,
   );
 });
@@ -365,6 +365,8 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
 
 test("a stored mlxKvQuant stamps a version older builds refuse", () => {
   assert.equal(stampedVersion({ mlxKvQuant: "tq-4" }), 7);
+  // An older client folds a kept Auto and an MLX-only mode back to unset, so both lock it out.
+  assert.deepEqual(["auto", "eagle3", "mtp"].map((speculativeType) => stampedVersion({ speculativeType })), [11, 11, 1]);
   assert.equal(stampedVersion({ mlxKvQuant: "4" }), 7);
   assert.equal(stampedVersion({ loadMode: "mmap" }), 5);
   assert.equal(stampedVersion({ mlxKvQuant: "tq-4", loadMode: "mmap" }), 7);

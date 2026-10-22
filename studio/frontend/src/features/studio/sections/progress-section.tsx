@@ -30,6 +30,7 @@ import {
 import {
   getTrainingMethodLabel,
   type TrainingViewData,
+  useDuplicateTrainingRun,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
@@ -79,6 +80,7 @@ const phaseLabelKeys = {
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
   finalizing: "studio.progress.phase.finalizing",
+  training_drafter: "studio.progress.phase.trainingDrafter",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",
@@ -95,12 +97,14 @@ interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
   configOverride?: RunConfigOverride;
+  runId?: string | null;
 }
 
 export function ProgressSection({
   data,
   isHistorical = false,
   configOverride,
+  runId,
 }: ProgressSectionProps): ReactElement {
   const t = useT();
   const navigate = useNavigate();
@@ -311,9 +315,10 @@ export function ProgressSection({
             </Button>
           )}
           {isHistorical ? (
-            <ConfigPopoverButton configItems={configItems} />
+            <ConfigPopoverButton configItems={configItems} runId={runId} />
           ) : (
             <LiveTrainingHeaderActions
+              runId={runId}
               configItems={configItems}
               isTrainingRunning={data.isTrainingRunning}
               onOpenStopDialog={setStopDialogOpen}
@@ -548,6 +553,7 @@ function LiveGpuPanel({
 }
 
 function LiveTrainingHeaderActions({
+  runId,
   configItems,
   isTrainingRunning,
   onOpenStopDialog,
@@ -555,6 +561,7 @@ function LiveTrainingHeaderActions({
   stopRequested,
   onSetStopRequested,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
   isTrainingRunning: boolean;
   onOpenStopDialog: (open: boolean) => void;
@@ -580,6 +587,7 @@ function LiveTrainingHeaderActions({
 
   return (
     <TrainingHeaderActions
+      runId={runId}
       configItems={configItems}
       isTrainingRunning={isTrainingRunning}
       onOpenStopDialog={onOpenStopDialog}
@@ -591,11 +599,14 @@ function LiveTrainingHeaderActions({
 }
 
 function ConfigPopoverButton({
+  runId,
   configItems,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
 }): ReactElement {
   const t = useT();
+  const { duplicate, disabled } = useDuplicateTrainingRun();
   return (
     <Popover>
       <PopoverTrigger asChild={true}>
@@ -627,6 +638,16 @@ function ConfigPopoverButton({
               ))}
             </div>
           ))}
+          {runId && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => void duplicate(runId)}
+            >
+              {t("common.duplicate")}
+            </Button>
+          )}
         </div>
       </PopoverContent>
     </Popover>
@@ -634,6 +655,7 @@ function ConfigPopoverButton({
 }
 
 function TrainingHeaderActions({
+  runId,
   configItems,
   isTrainingRunning,
   onOpenStopDialog,
@@ -641,6 +663,7 @@ function TrainingHeaderActions({
   stopDialogOpen,
   stopRequested,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
   isTrainingRunning: boolean;
   onOpenStopDialog: (open: boolean) => void;
@@ -651,7 +674,7 @@ function TrainingHeaderActions({
   const t = useT();
   return (
     <div className="flex items-center gap-2">
-      <ConfigPopoverButton configItems={configItems} />
+      <ConfigPopoverButton configItems={configItems} runId={runId} />
       <ChartSettingsSheet />
       <AlertDialog open={stopDialogOpen} onOpenChange={onOpenStopDialog}>
         <Button
@@ -670,7 +693,7 @@ function TrainingHeaderActions({
         </Button>
         <AlertDialogContent
           className="w-max max-w-[95vw]"
-          overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
+          overlayClassName="bg-background/40"
         >
           <AlertDialogHeader>
             <AlertDialogTitle>{t("studio.training.stopTitle")}</AlertDialogTitle>

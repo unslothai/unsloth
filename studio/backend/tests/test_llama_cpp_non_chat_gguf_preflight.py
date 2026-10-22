@@ -284,17 +284,15 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
 
 
 def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
-    # Wan 2.2 A14B is a two-expert MoE the Video backend assembles only from a file naming one
-    # expert of a high/low noise pair, and Wan 2.1's repo ids resolve to no family, so
-    # _arch_to_task tags an unpaired A14B file and Wan 2.1 image-diffusion-unsupported and the
-    # Video picker never lists them. The header says "wan" for all of them, so the refusal has
-    # to consult the same family resolution rather than trusting the arch.
+    # The header says "wan" for an unpaired A14B expert and Wan 2.1 I2V alike: the refusal must consult
+    # family resolution, not the arch.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-Q4_K_M.gguf", False),
-        ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", True),
+        ("city96/Wan2.1-I2V-14B-480P-gguf", "wan2.1-i2v-14b-480p-Q4_K_M.gguf", False),
     ):
         _, message = _refusal(tmp_path, arch = "wan", name = name, identifier = identifier)
         assert message is not None
@@ -436,3 +434,57 @@ def test_every_name_the_video_preflight_imports_from_routes_still_resolves():
         f"core/inference/llama_cpp.py imports {missing} from routes.models, but routes.models "
         f"does not bind them. The probe's broad except turns that into a silent fail-open."
     )
+
+
+def test_an_image_arch_this_host_cannot_build_promises_no_page(tmp_path, monkeypatch):
+    # The catalog hides an unbuildable family, so the refusal must not name the Images page.
+    import core.inference.diffusion_engine_router as router
+
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)
+    _, message = _refusal(
+        tmp_path,
+        arch = "qwen_image21",
+        name = "qwen-image-2.1-Q4_K_M.gguf",
+        identifier = "unsloth/Qwen-Image-2.1-GGUF",
+    )
+    assert message is not None
+    assert "cannot run as a chat model" in message
+    assert "Open it from the Images page" not in message
+
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: True)
+    _, message = _refusal(
+        tmp_path,
+        arch = "qwen_image21",
+        name = "qwen-image-2.1-Q4_K_M.gguf",
+        identifier = "unsloth/Qwen-Image-2.1-GGUF",
+    )
+    assert "Open it from the Images page" in message
+
+
+@pytest.mark.parametrize("name", ["krea2_turbo-Q4_0.gguf", "my-custom-mix-Q8_0.gguf"])
+def test_a_krea2_gguf_names_the_images_page(tmp_path, name):
+    # Was "does not recognise this GGUF's model architecture ('krea2')" from llama-server (#14474).
+    _, message = _refusal(tmp_path, arch = "krea2", name = name)
+    assert message is not None
+    assert "Open it from the Images page" in message
+    assert "Video page" not in message
+
+
+def test_a_krea2_gguf_this_host_cannot_build_promises_no_page(tmp_path, monkeypatch):
+    import core.inference.diffusion_engine_router as router
+
+    monkeypatch.setattr(
+        router, "family_buildable_here", lambda fam, *, model_kind: fam.name != "krea-2"
+    )
+    _, message = _refusal(tmp_path, arch = "krea2", name = "my-custom-mix-Q8_0.gguf")
+    assert message is not None
+    assert "cannot run as a chat model" in message
+    assert "Open it from the Images page" not in message
+    text = LlamaCppBackend._classify_start_failure_text(
+        "error loading model: unknown model architecture: 'krea2'",
+        str(tmp_path / "my-custom-mix-Q8_0.gguf"),
+        None,
+    )
+    assert "krea2" in text
+    assert "Use Unsloth's Images page to generate" not in text
+    assert "does not list it either" in text

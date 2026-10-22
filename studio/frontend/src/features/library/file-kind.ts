@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AudioWave01Icon,
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
@@ -11,7 +10,7 @@ import {
   Presentation01Icon,
   SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
-import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { documentKind } from "@/components/file-viewer/kind";
 import { attachmentFileKind } from "@/features/chat/lib/attachment-file-kind";
@@ -175,7 +174,7 @@ export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
   presentation: Presentation01Icon,
   pdf: Pdf01Icon,
   code: SourceCodeIcon,
-  audio: AudioWave01Icon,
+  audio: AiSpeechIcon,
   video: FlimSlateIcon,
   model: TestTubeOutlineIcon,
 };

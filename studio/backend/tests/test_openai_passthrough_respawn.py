@@ -33,7 +33,6 @@ from routes.inference import (
     _is_lost_upstream_connection,
     _openai_passthrough_non_streaming_upstream,
     _openai_passthrough_stream_admitted,
-    _passthrough_retry_url,
 )
 
 _DEAD = "http://127.0.0.1:57953"
@@ -178,20 +177,6 @@ async def _run_stream(backend, lease = None):
     async for chunk in response.body_iterator:
         chunks.append(chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk)
     return "".join(chunks)
-
-
-# ── Helper ────────────────────────────────────────────────────
-
-
-def test_the_retry_url_is_shared_with_the_anthropic_surface():
-    """Both passthroughs post to the same upstream route, so one helper serves both.
-    A rename that leaves this surface behind is the bug being fixed."""
-    backend = _Backend()
-
-    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
-
-    assert url == f"{_FRESH}/v1/chat/completions"
-    assert backend.respawn_calls == 1
 
 
 # ── Non-streaming ─────────────────────────────────────────────

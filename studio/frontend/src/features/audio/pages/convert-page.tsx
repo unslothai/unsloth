@@ -19,16 +19,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
 import { audioModelLabel } from "../audio-workspace-utils";
-import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
 import { sourceFileUrl } from "../audio-run-request";
-import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { ABCompare } from "../components/convert-ab-compare";
 import { Field } from "../components/field";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
 } from "../components/audio-source-input";
-import { CONVERT_MODEL_ORDER } from "../convert-policy";
 import {
   CONVERT_SOURCE_TEXT_FIELD_ID,
   type ConvertGeneration,
@@ -36,34 +33,6 @@ import {
 import { useAudioConvertStore } from "../stores/audio-convert-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
-
-function convertRank(id: string): number {
-  const index = CONVERT_MODEL_ORDER.findIndex((name) =>
-    id.endsWith(`/${name}`),
-  );
-  return index === -1 ? CONVERT_MODEL_ORDER.length : index;
-}
-
-export function convertPageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models
-    .filter((model) => {
-      const entry = audioCppModelFor(model.id);
-      return (
-        entry !== null &&
-        audioCppWorkflowsFor(entry).includes("convert") &&
-        (!isMac || macTtsCatalogChoiceIsRunnable(model.id))
-      );
-    })
-    .map((model, index) => ({ model, index }))
-    .sort(
-      (a, b) =>
-        convertRank(a.model.id) - convertRank(b.model.id) || a.index - b.index,
-    )
-    .map(({ model }) => model);
-}
 
 type RailProps = Omit<
   ComponentProps<typeof TtsRailFields>,
@@ -207,7 +176,7 @@ function ConvertInputs({
               max={24}
               step={1}
               disabled={disabled}
-              displayValue={`${convert.pitch > 0 ? "+" : ""}${convert.pitch} st`}
+              format={(v) => `${v > 0 ? "+" : ""}${v} st`}
               info={
                 pitchSupport.auto && convert.pitchAuto
                   ? "Semitones added after matching the target's pitch, e.g. +12 to sing an octave up."
@@ -267,7 +236,7 @@ function SourceTextField({
         aria-busy={transcriber.transcribing}
         onChange={(event) => store.setSourceText(event.target.value)}
         placeholder="Type the words in the recording, or press Transcribe."
-        className="min-h-16"
+        className="min-h-16 rounded-lg"
       />
       {transcriber.error ? (
         <p role="alert" className="text-ui-11p5 leading-snug text-destructive">

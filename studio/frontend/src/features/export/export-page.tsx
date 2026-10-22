@@ -49,6 +49,7 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -66,14 +67,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   type DecisionExportInfo,
+  type DiffusionLmExportInfo,
   type ModelCheckpoints,
-  fetchDecisionExportInfo,
+  type MoeInfo,
+  fetchCheckpointExportProbe,
+  fetchMoeInfo,
 } from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
+import { ImageLoraExportCard } from "./components/image-lora-export-card";
 import { MethodPicker } from "./components/method-picker";
 import { Q4nxConvertCard } from "./components/q4nx-convert-card";
 import { QuantPicker } from "./components/quant-picker";
+import { ReapCard } from "./components/reap-card";
 import {
   EXPORT_METHODS,
   type ExportMethod,
@@ -94,6 +100,18 @@ import {
 } from "./export-navigation-cache";
 import { confirmLlmCompressorInstallIfNeeded } from "./hooks/use-llm-compressor-consent";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
+import {
+  DEFAULT_REAP_SETTINGS,
+  type ReapSettings,
+  reapAllowedSparsities,
+  reapProbeFailed,
+  reapProbePending,
+  reapUnavailable,
+  reapRequest,
+  reapSummaryLabel,
+} from "./lib/reap";
+import { saveDirectoryField } from "./lib/save-directory";
+import { exportUnsupportedText } from "./lib/unsupported-text";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -224,6 +242,9 @@ export function ExportPage() {
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
   const [npuQ4nx, setNpuQ4nx] = useState(false);
+  const [reapSettings, setReapSettings] = useState<ReapSettings>(
+    DEFAULT_REAP_SETTINGS,
+  );
   const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
@@ -250,9 +271,13 @@ export function ExportPage() {
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
-  const exportUnsupportedMessage =
-    hardware.exportUnsupportedMessage ??
-    "Export requires a supported accelerator (NVIDIA, AMD, or Intel GPU, or Apple Silicon) with PyTorch or MLX installed.";
+  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
+  const repair = useTauriRepairController();
+  const exportUnsupportedMessage = exportUnsupportedText(
+    hardware.exportUnsupportedReason,
+    hardware.exportUnsupportedMessage,
+    repair !== null && !repair.isExternalServer,
+  );
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
       MERGED_FORMATS.filter((f) => {
@@ -347,7 +372,7 @@ export function ExportPage() {
 
   // Apply the ?run= deep link once its run appears in the checkpoint list: select the run and
   // default to GGUF. The main checkpoint is auto-selected below, after the model-change effect.
-  const { run: preselectRun } = useSearch({ from: "/export" });
+  const { run: preselectRun, imageLora: preselectImageLora } = useSearch({ from: "/export" });
   const appliedRunRef = useRef<string | null>(null);
   useEffect(() => {
     if (!preselectRun) {
@@ -522,15 +547,16 @@ export function ExportPage() {
   const [decisionState, setDecisionState] = useState<{
     path: string;
     info: DecisionExportInfo | null;
+    diffusionLm?: DiffusionLmExportInfo | null;
   } | null>(null);
   useEffect(() => {
     if (!decisionProbePath) {
       return;
     }
     const controller = new AbortController();
-    fetchDecisionExportInfo(decisionProbePath, controller.signal)
-      .then((info) => {
-        setDecisionState({ path: decisionProbePath, info });
+    fetchCheckpointExportProbe(decisionProbePath, controller.signal)
+      .then(({ decision: info, diffusionLm }) => {
+        setDecisionState({ path: decisionProbePath, info, diffusionLm });
         if (!info) {
           return;
         }
@@ -559,6 +585,15 @@ export function ExportPage() {
       ? decisionState.info
       : null;
   const isDecision = decisionInfo != null;
+  // Text-diffusion LMs: no GGUF (llama.cpp would serve them left to right); DiffusionGemma also no merge.
+  const diffusionLmInfo =
+    decisionProbePath && decisionState?.path === decisionProbePath
+      ? (decisionState.diffusionLm ?? null)
+      : null;
+  const diffusionDisabledMethods = useMemo<ExportMethod[]>(
+    () => diffusionLmInfo?.disabled_methods ?? [],
+    [diffusionLmInfo],
+  );
   const decisionIneligible = decisionInfo?.eligible === false;
   const decisionQuantOptions = useMemo(
     () =>
@@ -571,6 +606,36 @@ export function ExportPage() {
   );
   const decisionExistingQuants =
     decisionInfo?.existing_export?.quantizations ?? [];
+  // REAP is offered only for routed-MoE models: a local checkpoint / model folder, or a Hub id.
+  const moeProbeTarget =
+    decisionProbePath ??
+    (sourceMode !== "checkpoint" && modelSource === "hf"
+      ? selectedSourceModel || null
+      : null);
+  const moeProbeToken = debouncedHfToken?.trim() || "";
+  const moeProbeKey = moeProbeTarget ? `${moeProbeTarget}|${moeProbeToken}` : "";
+  const [moeState, setMoeState] = useState<{
+    key: string;
+    info: MoeInfo | null;
+    failed?: boolean;
+  } | null>(null);
+  const [moeRetry, setMoeRetry] = useState(0);
+  useEffect(() => {
+    if (!moeProbeTarget) return;
+    const controller = new AbortController();
+    fetchMoeInfo(moeProbeTarget, moeProbeToken || null, controller.signal)
+      .then((info) => {
+        if (!controller.signal.aborted) setMoeState({ key: moeProbeKey, info });
+      })
+      .catch(() => {
+        // A dense or unreadable config answers null; a thrown request is not an answer.
+        if (!controller.signal.aborted)
+          setMoeState({ key: moeProbeKey, info: null, failed: true });
+      });
+    return () => controller.abort();
+  }, [moeProbeKey, moeProbeTarget, moeProbeToken, moeRetry]);
+  const moeInfo =
+    moeProbeKey && moeState?.key === moeProbeKey ? moeState.info : null;
 
   const localResultIds = useMemo(() => {
     const ids = exportableLocalModels.map((model) => model.id);
@@ -631,6 +696,15 @@ export function ExportPage() {
     if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
+    if (
+      exportMethod !== null &&
+      diffusionDisabledMethods.includes(exportMethod)
+    ) {
+      setExportMethod(null);
+    }
+    if (diffusionDisabledMethods.includes("gguf") && loraAsGguf) {
+      setLoraAsGguf(false);
+    }
     // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
     if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
       setGgufTarget("model");
@@ -641,6 +715,8 @@ export function ExportPage() {
     exportMethod,
     isMacHost,
     ggufTarget,
+    diffusionDisabledMethods,
+    loraAsGguf,
   ]);
 
   const handleSourceTabChange = useCallback((next: string) => {
@@ -736,7 +812,10 @@ export function ExportPage() {
     sourceBaseModelName,
     sourceMode,
   ]);
-  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
+  const { inputValue: saveDirectoryInput, saveDirectory } = saveDirectoryField(
+    customSaveDirectory,
+    defaultSaveDirectory,
+  );
   // Each merged format uploads a full model to the repo root, so several to one repo would collide.
   // GGUF method exporting an adapter checkpoint as a GGUF LoRA; reuses the LoRA export path.
   const ggufAsLora =
@@ -744,6 +823,42 @@ export function ExportPage() {
     ggufTarget === "lora" &&
     effectiveIsAdapter &&
     !isMacHost;
+
+  // REAP prunes the full model before a merged or full-model GGUF export (torch backends only).
+  const reapMethodApplies =
+    !isMacHost &&
+    !isDecision &&
+    !exportUnsupported &&
+    !!exportMethod &&
+    !diffusionDisabledMethods.includes(exportMethod) &&
+    (exportMethod === "merged" || (exportMethod === "gguf" && !ggufAsLora));
+  const showReap =
+    !!moeInfo && reapAllowedSparsities(moeInfo).length > 0 && reapMethodApplies;
+  // With REAP on, a merged / full-model GGUF export started before the new source's probe
+  // answers would go out unpruned. Other methods never send REAP, so they never wait.
+  const reapPending =
+    reapMethodApplies &&
+    reapProbePending(reapSettings, moeProbeKey, moeState?.key);
+  const reapFailed =
+    reapMethodApplies &&
+    reapProbeFailed(
+      reapSettings,
+      moeProbeKey,
+      moeState?.failed ? moeState.key : null,
+    );
+  const reapBlocked =
+    reapMethodApplies &&
+    reapUnavailable(
+      reapSettings,
+      moeProbeKey,
+      moeState?.key,
+      !!moeState?.failed,
+      showReap,
+    );
+  const reapOptions =
+    showReap && moeInfo ? reapRequest(reapSettings, moeInfo) : null;
+  const reapLabel =
+    showReap && moeInfo ? reapSummaryLabel(reapSettings, moeInfo) : null;
 
   // Restrict a Hub merged export to a single format; multi-format stays available for local export.
   const hubMultiFormat =
@@ -755,10 +870,14 @@ export function ExportPage() {
     selectedExportSource &&
     exportMethod &&
     !exportUnsupported &&
+    !diffusionDisabledMethods.includes(exportMethod) &&
     !hubMultiFormat &&
     (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0) &&
-    (!isDecision || (exportMethod === "gguf" && !decisionIneligible))
+    (!isDecision || (exportMethod === "gguf" && !decisionIneligible)) &&
+    !reapPending &&
+    !reapFailed &&
+    !reapBlocked
   );
 
   const applyHfSourceModel = useCallback((value: string) => {
@@ -832,6 +951,9 @@ export function ExportPage() {
     if (!source || !exportMethod) return;
     // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
     if (exportUnsupported) return;
+    if (diffusionDisabledMethods.includes(exportMethod)) return;
+    // REAP is on but the new source's MoE probe has not answered (or failed): never send it unpruned.
+    if (reapPending || reapFailed || reapBlocked) return;
     // GGUF with no quant, or merged with no format, would run an empty export; require at least one.
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
@@ -850,6 +972,8 @@ export function ExportPage() {
     const checkpointPath = selectedCp?.path ?? null;
 
     const pushToHub = destination === "hub";
+    if (pushToHub && !isDecision && (!hfUsername.trim() || !modelName.trim()))
+      return;
     const preparedToken = await prepareHfTokenForUse(hfToken, {
       allowAnonymous: !pushToHub,
     });
@@ -857,8 +981,8 @@ export function ExportPage() {
     const actionHfToken = preparedToken.token ?? "";
 
     const repoId =
-      pushToHub && hfUsername && modelName
-        ? `${hfUsername}/${modelName}`
+      pushToHub && hfUsername.trim() && modelName.trim()
+        ? `${hfUsername.trim()}/${modelName.trim()}`
         : undefined;
     const token = pushToHub && actionHfToken ? actionHfToken : undefined;
     // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
@@ -934,6 +1058,7 @@ export function ExportPage() {
       privateRepo,
       installMissingDependencies,
       baseModelId: selectedModelData?.base_model ?? undefined,
+      reap: reapOptions,
       summary: {
         baseModelName: sourceBaseModelName,
         checkpointLabel: selectedExportSource,
@@ -942,9 +1067,15 @@ export function ExportPage() {
         quantLevels,
         mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
+        reapLabel,
       },
     });
   }, [
+    reapPending,
+    reapFailed,
+    reapBlocked,
+    reapOptions,
+    reapLabel,
     checkpoint,
     checkpointsForModel,
     sourceMode,
@@ -976,6 +1107,7 @@ export function ExportPage() {
     runExport,
     isDecision,
     decisionIneligible,
+    diffusionDisabledMethods,
     t,
   ]);
 
@@ -1534,9 +1666,10 @@ export function ExportPage() {
                       ? ["merged", "lora"]
                       : !effectiveIsAdapter && effectiveIsQuantized
                         ? ["merged", "lora", "gguf"]
-                        : effectiveIsAdapter
-                          ? []
-                          : ["lora"]
+                        : [
+                            ...(effectiveIsAdapter ? [] : (["lora"] as const)),
+                            ...diffusionDisabledMethods,
+                          ]
                 }
                 disabledReason={
                   exportUnsupported
@@ -1545,9 +1678,16 @@ export function ExportPage() {
                       ? t("exportDecision.ggufOnly")
                       : !effectiveIsAdapter && effectiveIsQuantized
                         ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                        : effectiveIsAdapter
-                          ? undefined
-                          : "LoRA-only export needs a LoRA adapter checkpoint"
+                        : [
+                            effectiveIsAdapter
+                              ? null
+                              : "LoRA-only export needs a LoRA adapter checkpoint",
+                            diffusionDisabledMethods.length > 0
+                              ? diffusionLmInfo?.reason
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" ") || undefined
                 }
               />
 
@@ -1676,8 +1816,8 @@ export function ExportPage() {
 
                     {torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
-                        Portable FP8/INT8 (torchao) export needs torchao, which
-                        is not installed here. Update Unsloth, or use
+                        Portable FP8/INT8 (torchao) export needs torchao 0.15 or
+                        newer, which is not installed here. Update Unsloth, or use
                         16-bit or GGUF.
                       </div>
                     )}
@@ -1706,7 +1846,12 @@ export function ExportPage() {
                           variant={loraAsGguf ? "default" : "outline"}
                           size="sm"
                           onClick={() => setLoraAsGguf(true)}
-                          title="llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                          disabled={diffusionDisabledMethods.includes("gguf")}
+                          title={
+                            diffusionDisabledMethods.includes("gguf")
+                              ? (diffusionLmInfo?.reason ?? undefined)
+                              : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                          }
                         >
                           GGUF adapter
                         </Button>
@@ -1968,6 +2113,70 @@ export function ExportPage() {
                   )}
                 </div>
               )}
+              {showReap && moeInfo && (
+                <ReapCard
+                  moe={moeInfo}
+                  settings={reapSettings}
+                  onChange={setReapSettings}
+                  disabled={isExporting}
+                />
+              )}
+              {reapFailed && (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
+                >
+                  <p>
+                    Expert pruning (REAP) is on, but checking whether this model
+                    can be pruned failed. Retry, or turn pruning off to export
+                    the full model.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setMoeRetry((n) => n + 1)}
+                    >
+                      Retry
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setReapSettings((s) => ({ ...s, enabled: false }))
+                      }
+                    >
+                      Turn off expert pruning
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {reapBlocked && (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs"
+                >
+                  <p>
+                    Expert pruning (REAP) is on, but this model cannot be
+                    pruned: it is not a routed MoE, or its weights or setup are
+                    not supported. Turn pruning off to export it.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setReapSettings((s) => ({ ...s, enabled: false }))
+                      }
+                    >
+                      Turn off expert pruning
+                    </Button>
+                  </div>
+                </div>
+              )}
               {estimatedSize && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <HugeiconsIcon
@@ -1989,6 +2198,7 @@ export function ExportPage() {
                   destination={destination}
                   onDestinationChange={setDestination}
                   saveDirectory={saveDirectory}
+                  saveDirectoryInput={saveDirectoryInput}
                   defaultSaveDirectory={defaultSaveDirectory}
                   saveDirectoryOverridden={!!customSaveDirectory}
                   onSaveDirectoryChange={setCustomSaveDirectory}
@@ -2009,6 +2219,7 @@ export function ExportPage() {
                         })
                       : undefined
                   }
+                  reapLabel={reapLabel}
                 />
               )}
               {showPanel && (
@@ -2050,6 +2261,7 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
+        <ImageLoraExportCard preselect={preselectImageLora} />
         <Q4nxConvertCard />
       </main>
     </div>

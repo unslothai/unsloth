@@ -86,6 +86,8 @@ os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
 # A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+# A fake CPU host must not take the Vulkan route through this machine's real GPUs.
+os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
 # settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
 # transient tenant on a live card has time to clear. Under test the snapshots are stubs
 # whose answers do not change with time, so the wait buys nothing and the max() over the
@@ -120,6 +122,26 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _no_vae_structural_verdict_cache(monkeypatch):
+    """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
+    (the cache tests turn it on against a temp dir)."""
+    monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
+
+
+@pytest.fixture(autouse = True)
+def _zoo_without_gdn_decode_kernel(monkeypatch):
+    # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
+    # older-zoo answer so results do not follow the host. Tests of the newer zoo patch it back.
+    ssm_runtime = sys.modules.get("utils.ssm_runtime")
+    if ssm_runtime is None:
+        try:
+            from utils import ssm_runtime
+        except Exception:
+            return
+    monkeypatch.setattr(ssm_runtime, "_zoo_gdn_decode_kernel_present", lambda: False, raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
     # MXC tests opt back in.
@@ -133,6 +155,19 @@ def _forget_mxc_isolation_settings():
         settings = sys.modules.get("utils.mxc_isolation_settings")
         if settings is not None:
             settings.forget_cached_setting()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_embedding_device_setting():
+    # Same one-store-per-test reason as above.
+    def _forget():
+        settings = sys.modules.get("utils.embedding_model_settings")
+        if settings is not None:
+            settings.forget_cached_embedding_device()
 
     _forget()
     yield
@@ -168,6 +203,7 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
     home = _skills_home_root / f"h{next(_skills_home_counter)}"
     home.mkdir()
     # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
+    monkeypatch.delenv("UNSLOTH_STUDIO_SKILLS_HOME", raising = False)
     monkeypatch.setattr(_skills, "_owner_home", lambda: home)
     monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
     try:
@@ -211,6 +247,10 @@ def _reset_gpu_query_cache():
         if hw is not None and hasattr(hw, "_last_good_visible_info"):
             with hw._last_good_visible_lock:
                 hw._last_good_visible_info.clear()
+        amd = sys.modules.get("utils.hardware.amd")
+        if amd is not None and hasattr(amd, "_hip_id_map_lock"):
+            with amd._hip_id_map_lock:
+                amd._hip_id_map_cache = None
 
     _reset()
     yield
@@ -467,6 +507,17 @@ def _isolate_wal_keepers():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_auth_wal_keeper():
+    """Close an auth.db keeper a test opened, so it never outlives that test's DB_PATH."""
+    auth_storage = sys.modules.get("auth.storage")
+    before = auth_storage._wal_keeper if auth_storage is not None else None
+    yield
+    auth_storage = sys.modules.get("auth.storage")
+    if auth_storage is not None and auth_storage._wal_keeper is not before:
+        auth_storage.close_wal_keeper()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
@@ -531,8 +582,12 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
     from core.inference.llama_cpp import LlamaCppBackend
+
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
 
 
@@ -1092,6 +1147,7 @@ def stub_embeddings(monkeypatch):
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
     monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(
         embeddings,
         "token_counter",
@@ -1429,3 +1485,14 @@ def traced_offload_hooks(monkeypatch):
             orig = getattr(fn, "_unsloth_orig", None)
             if orig is not None:
                 monkeypatch.setattr(cls, name, orig)
+
+
+@pytest.fixture(scope = "session")
+def _kernel_lock_dir(tmp_path_factory):
+    return str(tmp_path_factory.mktemp("kernel-locks"))
+
+
+@pytest.fixture(autouse = True)
+def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
+    # Tests never take (or create) the environment's real kernel install locks.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)

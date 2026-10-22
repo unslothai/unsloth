@@ -27,9 +27,15 @@ import type {
   LinkedFolderScope,
 } from "../types/rag";
 import {
+  jobChangedSources,
   linkedFolderSourcesChanged,
   retainActiveFolderJobs,
 } from "../types/rag";
+
+const LINKED_FOLDERS_BUSY_POLL_MS = 4_000;
+// Matches the backend's folder scan interval.
+const LINKED_FOLDERS_IDLE_POLL_MS = 30_000;
+
 export function useLinkedFolders(
   scope?: LinkedFolderScope,
   onSourcesChanged?: () => void,
@@ -80,11 +86,14 @@ export function useLinkedFolders(
     [projectWorkScopeId],
   );
 
+  // Only syncs started here toast on failure; periodic failures show on the folder row.
+  const userStartedJobs = useRef(new Set<string>());
+
   const notifySourcesChanged = useCallback(
     (job: FolderSyncJob) => {
       if (notifiedJobs.current.has(job.id)) return;
       notifiedJobs.current.add(job.id);
-      onSourcesChanged?.();
+      if (jobChangedSources(job)) onSourcesChanged?.();
     },
     [onSourcesChanged],
   );
@@ -123,7 +132,8 @@ export function useLinkedFolders(
         apply(job);
         releaseController();
         notifySourcesChanged(job);
-        if (job.status === "failed") {
+        const userStarted = userStartedJobs.current.delete(job.id);
+        if (job.status === "failed" && userStarted) {
           toast.error("Folder sync failed", {
             description: job.error ?? "The folder could not be indexed.",
           });
@@ -250,14 +260,30 @@ export function useLinkedFolders(
     folderSnapshot.current = null;
     notifiedJobs.current.clear();
     const initialRefresh = window.setTimeout(() => void refresh(), 0);
-    const interval = window.setInterval(
-      () => void refresh({ quiet: true }),
-      4000,
-    );
+    // Fast only while a sync runs; idle folders only need to notice the backend's scan timer.
+    let lastPoll = Date.now();
+    const poll = () => {
+      lastPoll = Date.now();
+      void refresh({ quiet: true });
+    };
+    const interval = window.setInterval(() => {
+      if (document.hidden) return;
+      const busy =
+        controllers.current.size > 0 ||
+        (folderSnapshot.current ?? []).some(
+          (folder) => folder.status === "syncing" || folder.activeJobId,
+        );
+      if (busy || Date.now() - lastPoll >= LINKED_FOLDERS_IDLE_POLL_MS) poll();
+    }, LINKED_FOLDERS_BUSY_POLL_MS);
+    const onVisible = () => {
+      if (!document.hidden) poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     const activeControllers = controllers.current;
     return () => {
       window.clearTimeout(initialRefresh);
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
       for (const controller of activeControllers.values()) controller.abort();
       activeControllers.clear();
     };
@@ -285,6 +311,7 @@ export function useLinkedFolders(
         ...current.filter((folder) => folder.id !== result.linkedFolder.id),
         result.linkedFolder,
       ]);
+      userStartedJobs.current.add(result.job.id);
       trackJob(result.job);
       onSourcesChanged?.();
     } catch (error) {
@@ -321,6 +348,7 @@ export function useLinkedFolders(
           return started;
         });
         if (currentScopeKey.current !== operationScopeKey) return;
+        userStartedJobs.current.add(job.id);
         trackJob(job);
         onSourcesChanged?.();
       } catch (error) {

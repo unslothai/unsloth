@@ -468,16 +468,61 @@ def test_comfy_int8_krea2_file_loads_with_codes_exact(tmp_path, monkeypatch):
     assert loaded._unsloth_comfy_quant["dequantized"] == len(expected)
 
 
-def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_plain_fp8_krea2_file_keeps_its_linears_fp8_and_widens_exactly(tmp_path, monkeypatch, fmt):
+    """A plain (unscaled) fp8 file: with fp8_storage every Linear weight stays 1 byte per element and the forward
+    rebuilds exactly the bf16 weight the load-time cast held (fp8 values are exact in bf16), so outputs match."""
+    cls = _class("Krea2Transformer2DModel")
+    model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
+    fp8 = getattr(torch, fmt)
+    tensors = {}
+    for k, v in krea2_original(model.state_dict()).items():
+        tensors[k] = (v.to(fp8) if v.dim() == 2 else v.to(torch.bfloat16)).contiguous()
+    path = tmp_path / "krea2_tiny_fp8.safetensors"
+    safetensors_torch.save_file(tensors, str(path))
+    monkeypatch.setattr(cls, "load_config", classmethod(lambda c, *a, **k: dict(KREA2_CFG)))
+    kwargs = {
+        "torch_dtype": torch.bfloat16,
+        "config": "krea/Krea-2-Turbo",
+        "subfolder": "transformer",
+    }
+    widened = conv.load_original_layout_transformer(cls, str(path), kwargs)
+    stored = conv.load_original_layout_transformer(cls, str(path), kwargs, fp8_storage = True)
+    linears = [n for n, m in widened.named_modules() if isinstance(m, torch.nn.Linear)]
+    assert linears
+    keep = cls._keep_in_fp32_modules or []
+    count = 0
+    for name in linears:
+        dense = widened.get_submodule(name)
+        layer = stored.get_submodule(name)
+        if dense.weight.dtype is not torch.bfloat16 or any(m in name.split(".") for m in keep):
+            assert type(layer) is torch.nn.Linear, name
+            continue
+        count += 1
+        assert layer.weight_q.dtype is torch.uint8 and layer.fp8_format == fmt, name
+        assert torch.equal(layer.weight, dense.weight), name
+        x = torch.randn(2, 5, layer.in_features, dtype = torch.bfloat16)
+        assert torch.equal(layer(x), dense(x)), name
+    assert count
+    assert stored._unsloth_fp8_stored == count
+    assert not getattr(widened, "_unsloth_fp8_stored", 0)
+    wide_bytes = sum(t.numel() * t.element_size() for t in widened.state_dict().values())
+    stored_bytes = sum(t.numel() * t.element_size() for t in stored.state_dict().values())
+    assert stored_bytes < 0.6 * wide_bytes
+
+
+@pytest.mark.parametrize("prefix", ["", "model.model.", "diffusion_model."])
+def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch, prefix):
     """A plain bf16 ComfyUI file through Studio's loader (used while diffusers gives Krea 2 no
     from_single_file): same tensors as the diffusers weights, the _keep_in_fp32_modules norms in float32
-    as from_pretrained leaves them, strict on keys."""
+    as from_pretrained leaves them, strict on keys. Every container prefix, including the two diffusers
+    0.41's own Krea 2 converter does not strip."""
     cls = _class("Krea2Transformer2DModel")
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
     path = tmp_path / "krea2_tiny_bf16.safetensors"
     safetensors_torch.save_file(
         {
-            k: v.to(torch.bfloat16).contiguous()
+            prefix + k: v.to(torch.bfloat16).contiguous()
             for k, v in krea2_original(model.state_dict()).items()
         },
         str(path),
@@ -508,7 +553,10 @@ def test_the_single_file_branch_uses_studio_loader_only_without_from_single_file
 
     # Whitespace-free, so a formatter rewrapping the condition cannot break the check.
     source = "".join(inspect.getsource(studio).split())
-    gate = source.index('ifkind!="gguf"andnothasattr(transformer_cls,"from_single_file"):')
+    gate = source.index('ifkind!="gguf"and(nothasattr(transformer_cls,"from_single_file")')
+    assert source.index('=="Krea2Transformer2DModel"', gate) < source.index(
+        "transformer=load_original_layout_transformer(", gate
+    )
     assert (
         gate
         < source.index("transformer=load_original_layout_transformer(", gate)
@@ -534,6 +582,20 @@ def test_both_classes_register_and_resolve(monkeypatch):
     # The ComfyUI loader's lookup, which raised "has no single-file converter" before.
     fn, _ = cq._mapping(diffusers.HunyuanImageTransformer2DModel)
     assert fn is conv.hunyuanimage_checkpoint_to_diffusers
+
+
+def test_studio_converters_win_over_a_later_upstream_entry(monkeypatch):
+    """diffusers 0.41 registers its own Krea 2 converter, which strips only model.diffusion_model."""
+    from diffusers.loaders import single_file_model as sfm
+
+    cls = _class("Krea2Transformer2DModel")
+    monkeypatch.setitem(
+        sfm.SINGLE_FILE_LOADABLE_CLASSES,
+        "Krea2Transformer2DModel",
+        {"checkpoint_mapping_fn": lambda **k: {}, "default_subfolder": "transformer"},
+    )
+    fn, _ = cq._mapping(cls)
+    assert fn is conv.krea2_checkpoint_to_diffusers
 
 
 @pytest.mark.parametrize(

@@ -80,9 +80,9 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
-import { isMacPlatform } from "../lib/keyboard-shortcuts";
+import { isModEnter, modEnterLabel } from "../lib/keyboard-shortcuts";
 
-const SHORTCUT = isMacPlatform() ? "⌘↵" : "Ctrl ↵";
+const SHORTCUT = modEnterLabel();
 
 const TYPE_LABELS: Record<DecisionType, TranslationKey> = {
   noul: "decisions.typeNoul",
@@ -601,11 +601,11 @@ function AnswerPreview({
       </div>
     );
   }
-  const { keys, nearest, max } = scoreLevels(answer);
+  const { keys, top, max } = scoreLevels(answer);
   return (
     <div className="flex flex-col gap-6">
       <AnswerHeading
-        answer={criterionText(answer.legend[nearest]) ?? nearest}
+        answer={criterionText(answer.legend[top]) ?? top}
         detail={t("decisions.scoreDetail", {
           score: answer.score.toFixed(2),
           max,
@@ -618,7 +618,7 @@ function AnswerPreview({
             index={key}
             label={criterionText(answer.legend[key]) ?? key}
             value={answer.probabilities[key] ?? 0}
-            top={key === nearest}
+            top={key === top}
             percent={percent}
           />
         ))}
@@ -988,9 +988,7 @@ export function DecisionTryDialog({
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (
-      event.key !== "Enter" ||
-      !(event.metaKey || event.ctrlKey) ||
-      event.nativeEvent.isComposing ||
+      !isModEnter(event) ||
       event.repeat ||
       (event.target instanceof Element &&
         event.target.closest('[role="menu"], [role="listbox"]'))

@@ -18,6 +18,10 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_device import float64_device
+from .diffusion_vae_oom import clear_partial_decode
+from .diffusion_vae_oom import free_first as oom_free_first
+
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
 
 TILE_LATENTS = 32
@@ -67,11 +71,12 @@ def axis_weights(
     shared edge, linear over the next ``ramp``. Overlaps >= 16 put every pixel >= 8 latents inside some tile, so a
     margin under 8 keeps the sum positive."""
     size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
-    total = torch.zeros(length * scale, dtype = torch.float64, device = device)
+    build = float64_device(device)
+    pos = (torch.arange(size, dtype = torch.float64, device = build) + 0.5) / scale
+    total = torch.zeros(length * scale, dtype = torch.float64, device = build)
     weights = []
     for s in starts:
-        w = torch.ones(size, dtype = torch.float64, device = device)
+        w = torch.ones(size, dtype = torch.float64, device = build)
         if s > 0:
             w = torch.minimum(w, ((pos - margin) / ramp).clamp(0, 1))
         if s + tile < length:
@@ -80,7 +85,10 @@ def axis_weights(
         weights.append(w)
     if float(total.min()) <= 0.0:
         raise ValueError(f"tiles {starts} leave pixels without weight on a {length}-latent axis")
-    return [(w / total[s * scale : s * scale + size]).float() for w, s in zip(weights, starts)]
+    return [
+        (w / total[s * scale : s * scale + size]).float().to(device)
+        for w, s in zip(weights, starts)
+    ]
 
 
 def _decode_tile(vae: Any, z: Any) -> Any:
@@ -261,8 +269,10 @@ def _free_mib(
 
 
 def _fused(vae: Any) -> bool:
-    return bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not getattr(
-        vae, "_unsloth_vae_fused_failed", False
+    return (
+        bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
+        and not getattr(vae, "_unsloth_vae_fused_failed", False)
+        and not getattr(vae, "_unsloth_vae_fused_structural", False)
     )
 
 
@@ -271,6 +281,16 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
     raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
+    # CUDA-calibrated coefficients under-predict Qwen-Image-2.1 decode on ROCm (40x40, 64x32 and 96x56 OOM at
+    # 17/19 GiB limits): start at the tested 32x32 floor rather than retrying an oversized tile on every image.
+    import torch
+
+    if (
+        z.device.type == "cuda"
+        and getattr(torch.version, "hip", None)
+        and type(vae).__name__ == "AutoencoderKLQwenImage21"
+    ):
+        return TILE_LATENTS**2
     try:
         _, tile, _ = _geometry(vae)
         # Stock tile == floor: grow only into device-free memory; decoding out of the allocator cache stalled on
@@ -520,6 +540,10 @@ def _release_cache(z: Any) -> None:
         pass
 
 
+def _clear_partial(vae: Any, z: Any) -> None:
+    clear_partial_decode(vae, z)
+
+
 def _log_stock_fallback(vae: Any, reason: str) -> None:
     logger = vae.__dict__.get("_unsloth_wide_logger")
     seen = vae.__dict__.setdefault("_unsloth_wide_fallback_logged", set())
@@ -560,23 +584,27 @@ def install(vae: Any, logger: Any = None) -> bool:
     ) -> Any:
         if wide_tiles_disabled() or stock_layout_ok(geometry, z.shape[-2], z.shape[-1]):
             return _stock(z, return_dict)
-        # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles.
-        reason = floor_shortfall(self, z)
-        if reason is None:
-            for max_area in ("auto", 0):
-                try:
-                    return tiled_decode(self, z, return_dict = return_dict, max_area = max_area)
-                except Exception as exc:  # noqa: BLE001
-                    if not _is_oom(exc):
-                        raise
-                    reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
-                    tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
-                # outside the except block, so the failed attempt's tensors are freed
-                _release_cache(z)
-                ratio, tile, _ = _geometry(self)
-                if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
-                    break
+        # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles. Before
+        # settling for them, the OOM retry frees the card (rest of the pipeline off it) and the wide tiles go again.
+        for _round in range(2):
+            reason = floor_shortfall(self, z)
+            if reason is None:
+                for max_area in ("auto", 0):
+                    try:
+                        return tiled_decode(self, z, return_dict = return_dict, max_area = max_area)
+                    except Exception as exc:  # noqa: BLE001
+                        if not _is_oom(exc):
+                            raise
+                        reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
+                        tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
+                    _clear_partial(self, z)
+                    ratio, tile, _ = _geometry(self)
+                    if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
+                        break
+            if _round or not oom_free_first(self, z):
+                break
         _log_stock_fallback(self, reason)
+        _clear_partial(self, z)
         return _stock(z, return_dict)
 
     def _tiled_encode(self: Any, x: Any) -> Any:

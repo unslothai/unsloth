@@ -7,9 +7,17 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./app/app";
 import {
+  applyCodeBlockContainment,
+  watchCodeBlockContainmentOverride,
+} from "./components/assistant-ui/code-block-containment";
+import {
   applyMathBlockContainment,
   watchMathBlockContainmentOverride,
 } from "./components/assistant-ui/math-block-containment";
+import {
+  applyReasoningRowContainment,
+  watchReasoningRowContainmentOverride,
+} from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
 import { refreshSession } from "./features/auth/api";
 import {
@@ -22,6 +30,7 @@ import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 import { watchRowShape } from "./lib/row-shape";
+import { watchSpellCheck } from "./lib/spellcheck";
 
 setHubSessionRefresh(refreshSession);
 
@@ -56,12 +65,19 @@ applyMathBlockContainment();
 // And keep watching, so a devtools flip of `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` reapplies instead of
 // leaving the session measuring the arm it was already in.
 watchMathBlockContainmentOverride();
+applyCodeBlockContainment();
+watchCodeBlockContainmentOverride();
+applyReasoningRowContainment();
+watchReasoningRowContainmentOverride();
 
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
 watchInputModality(window);
 // One-line hover rows draw as pills; taller ones keep soft corners.
 watchRowShape(window);
+
+// Before the first render, so a disabled spell check never flashes underlines.
+watchSpellCheck(window);
 
 function renderApp(): void {
   root.render(

@@ -28,7 +28,7 @@ function Check {
     else { Write-Host "  FAIL  $Name" -ForegroundColor Red; $script:failures++ }
 }
 
-# The tokens are joined at run time so this file does not itself carry the shapes it bans.
+# Joined at run time so this file does not itself carry the shapes it bans.
 $bannedConstructs = @(
     @("compiles no C# at all", "(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName)"),
     @("emits no P/Invoke stubs", ('DefinePInvoke' + 'Method')),
@@ -69,7 +69,6 @@ foreach ($fn in $fns) {
 }
 
 if ($src.Count -eq $fns.Count) {
-    # Each step prints TAG_THREW plus TAG_* facts; the parent matches them below.
     $harness = @"
 `$ErrorActionPreference = "Stop"
 function Write-StudioLine { param([string]`$Message, `$ForegroundColor) Write-Host "LINE: `$Message" }
@@ -181,7 +180,7 @@ Write-Host "PROCIMG_TABLE_STILL_NULL: `$(`$null -eq `$script:StudioPythonProcess
         @("PROCIMG_DEEP_THREW: False", "the rungs below Get-Process do not throw either"),
         @("PROCIMG_DEEP_NULL: True", "an unanswerable process reads as unknown, not as a path"),
         @("PROCIMG_PROBED_ONCE: True", "the child interpreter is asked once per run"),
-        # Counted, not inferred from the latch: a ladder that probes unconditionally also sets it.
+        # Counted: a ladder that probes unconditionally also sets the latch.
         @("PROCIMG_NOT_REPROBED: True", "and is not asked again on the next process"),
         @("PROCIMG_TABLE_STILL_NULL: True", "and an empty result is not re-probed")
     )) { Check $row[1] ($out -match $row[0]) }
@@ -206,7 +205,6 @@ if ($probeFn) {
     )
     if ($madeAlias) { $rows += , @("two spellings that reach one directory are one", $aliasDir, $realDir, $true) }
     else { Write-Host "  SKIP  this host cannot create a link to test the aliased spelling" }
-    # A missing side cannot be an alias of one that does exist, and must be answered without a write.
     $rows += @(
         @("a missing right side is not a match", $realDir, $absent, $false),
         @("a missing left side is not a match", $absent, $realDir, $false),

@@ -89,6 +89,14 @@ export interface ExportOperationResponse {
   details?: { output_path?: string | null } & Record<string, unknown>;
 }
 
+/** The trained speculative-decoding drafter an export carried (backend `details.drafter`). */
+export interface ExportDrafterInfo {
+  strategy: "mtp" | "eagle3";
+  files?: string[];
+  vllm_command?: string | null;
+  llama_cpp_args?: string[] | string | null;
+}
+
 /** GGUF export options for a decision model (Clef / Laya) checkpoint folder. */
 export interface DecisionExportInfo {
   is_decision: boolean;
@@ -106,19 +114,91 @@ export interface DecisionExportInfo {
   existing_export: ({ quantizations?: string[] } & Record<string, unknown>) | null;
 }
 
+/** Export limits of a text-diffusion LM checkpoint (LLaDA, Dream, DiffusionGemma, ...). */
+export interface DiffusionLmExportInfo {
+  profile: string;
+  disabled_methods: ("merged" | "lora" | "gguf")[];
+  reason: string | null;
+}
+
+export interface CheckpointExportProbe {
+  decision: DecisionExportInfo | null;
+  diffusionLm: DiffusionLmExportInfo | null;
+}
+
+/** Decision and text-diffusion export info for a local checkpoint folder; nulls for any other model. */
+export async function fetchCheckpointExportProbe(
+  checkpointPath: string,
+  signal?: AbortSignal,
+): Promise<CheckpointExportProbe> {
+  const response = await authFetch(
+    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
+    { signal },
+  );
+  const body = await parseJson<{
+    decision: DecisionExportInfo | null;
+    diffusion_lm?: DiffusionLmExportInfo | null;
+  }>(response);
+  return {
+    decision: body.decision ?? null,
+    diffusionLm: body.diffusion_lm ?? null,
+  };
+}
+
 /** Decision export info for a local checkpoint folder; null for any other model. */
 export async function fetchDecisionExportInfo(
   checkpointPath: string,
   signal?: AbortSignal,
 ): Promise<DecisionExportInfo | null> {
+  return (await fetchCheckpointExportProbe(checkpointPath, signal)).decision;
+}
+
+/** Opt-in REAP expert pruning applied to an MoE model before it is exported. */
+export interface ReapOptions {
+  /** Fraction of the routed experts removed in every MoE layer, e.g. 0.25. */
+  sparsity: number;
+  num_calibration_samples: number;
+  /** Hugging Face dataset id for calibration; the backend default when null. */
+  dataset?: string | null;
+}
+
+export interface MoeInfo {
+  num_experts: number;
+  top_k: number;
+  /** Group-limited routers (DeepSeek style): Core prunes the same number from every group. */
+  n_group?: number | null;
+  topk_group?: number | null;
+}
+
+/** Routed-expert counts for a local folder or Hub id; null for a dense model or when unknown. */
+export async function fetchMoeInfo(
+  model: string,
+  hfToken?: string | null,
+  signal?: AbortSignal,
+): Promise<MoeInfo | null> {
+  // Token in a header (not the query string) so it never lands in URLs/logs.
+  const headers: Record<string, string> = {};
+  if (hfToken) {
+    headers["X-HF-Token"] = hfToken;
+  }
   const response = await authFetch(
-    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
-    { signal },
+    `/api/export/moe-info?model=${encodeURIComponent(model)}`,
+    { signal, headers },
   );
-  const body = await parseJson<{ decision: DecisionExportInfo | null }>(
-    response,
-  );
-  return body.decision ?? null;
+  const body = await parseJson<{
+    num_experts: number | null;
+    top_k: number | null;
+    n_group?: number | null;
+    topk_group?: number | null;
+  }>(response);
+  return body.num_experts && body.top_k
+    ? {
+        num_experts: body.num_experts,
+        top_k: body.top_k,
+        n_group: body.n_group ?? null,
+        topk_group: body.topk_group ?? null,
+      }
+    : null;
 }
 
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
@@ -148,6 +228,8 @@ export async function loadCheckpoint(params: {
   checkpoint_path: string;
   max_seq_length?: number;
   load_in_4bit?: boolean;
+  /** Decoder layers in host RAM for low-VRAM export; "auto" (default) or a fixed count. */
+  offload_layers?: number | "auto";
   /** Allow loading models with custom code. Only enable for checkpoints you trust. */
   trust_remote_code?: boolean;
   /** sha256 fingerprint pinning user approval of this exact custom-code version. */
@@ -173,6 +255,7 @@ export async function exportMerged(params: {
   hf_token?: string | null;
   private?: boolean;
   install_missing_dependencies?: boolean;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/merged", {
     method: "POST",
@@ -189,6 +272,7 @@ export async function exportBase(params: {
   hf_token?: string | null;
   private?: boolean;
   base_model_id?: string | null;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/base", {
     method: "POST",
@@ -210,6 +294,7 @@ export async function exportGGUF(params: {
   private?: boolean;
   /** Also convert a Q4_0/Q4_1/Q4_K_M GGUF to Q4NX for the AMD NPU, into <save_directory>/npu-q4nx. */
   npu_q4nx?: boolean;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",
@@ -230,6 +315,19 @@ export async function convertGgufToQ4nx(params: {
   hf_token?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/convert/q4nx", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
+/** Copy an image-generation LoRA from the Images catalog (weights plus its .json sidecar) to a folder. */
+export async function exportDiffusionLora(params: {
+  lora_id: string;
+  save_directory: string;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/export/diffusion-lora", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),

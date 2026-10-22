@@ -95,7 +95,8 @@ def test_every_qwen_edit_checkpoint_maps_to_vae_encoder_and_projector(repo, file
     specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(repo, filename, fam)
     assert specs == [
         (repo, filename, "diffusion_model"),
-        ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors", "vae"),
+        # qwen-image's official diffusers VAE, the same one the base family reads.
+        ("Qwen/Qwen-Image", "vae/diffusion_pytorch_model.safetensors", "vae"),
         (
             "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
             "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
@@ -103,6 +104,7 @@ def test_every_qwen_edit_checkpoint_maps_to_vae_encoder_and_projector(repo, file
         ),
         ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
     ]
+    assert fam.sd_cpp_vae == detect_family("qwen-image").sd_cpp_vae
     assert (fam.sd_cpp_sampling_method, fam.sd_cpp_flow_shift) == ("euler", 3.0)
     assert text_encoder_flags_for_family(fam.name) == ("--qwen2vl",)
 
@@ -116,15 +118,24 @@ def test_kontext_maps_to_the_flux1_assets():
     specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(
         "unsloth/FLUX.1-Kontext-dev-GGUF", "flux1-kontext-dev-Q4_K_M.gguf", fam
     )
-    assert [k for _r, _f, k in specs] == ["diffusion_model", "vae", "clip_l", "t5xxl"]
+    # The T5-XXL is BFL's sharded file: the index is the --t5xxl input, its two shards are fetched beside it.
+    assert [k for _r, _f, k in specs] == [
+        "diffusion_model",
+        "vae",
+        "clip_l",
+        "t5xxl",
+        "t5xxl_shard",
+        "t5xxl_shard",
+    ]
     assert text_encoder_flags_for_family(fam.name) == ("--clip_l", "--t5xxl")
 
 
 def test_the_new_companions_stay_fetch_only_and_bases_stay_loadable():
     companions = sd_cpp_companion_only_repo_ids()
-    assert "unsloth/qwen-image-comfyui" in companions
     assert "unsloth/qwen2.5-vl-7b-instruct-gguf" in companions
-    # The FLUX.1 VAE lives in a real base; mapping Kontext onto it must not hide that base.
+    # The Qwen edit VAE and the FLUX.1 VAE / encoders live in real bases; mapping the edit families
+    # onto them must not hide those bases.
+    assert "qwen/qwen-image" not in companions
     assert "black-forest-labs/flux.1-schnell" not in companions
 
 
@@ -287,8 +298,6 @@ def test_edit_only_families_refuse_what_the_diffusers_engine_refuses(fam, files)
         b.generate(prompt = "p", steps = 2, width = 512, height = 512)
     with pytest.raises(ValueError, match = "reference workflow is not supported"):
         b.generate(prompt = "p", steps = 2, init_image = _png(), workflow = "reference")
-    with pytest.raises(ValueError, match = "Reference images are not supported"):
-        b.generate(prompt = "p", steps = 2, init_image = _png(), reference_images = [_png()])
     with pytest.raises(ValueError, match = "mask_image is not supported"):
         b.generate(prompt = "p", steps = 2, init_image = _png(), mask_image = _png())
 
@@ -397,3 +406,60 @@ def test_an_uncached_projector_fails_an_offline_edit_only_load(monkeypatch, tmp_
     assert SdCppDiffusionBackend(engine = None)._fetch_assets(
         assets, None, local_files_only = True
     ) == {"qwen2vl": str(cached)}
+
+
+# -- multi-image edit -------------------------------------------------------------------------------
+
+
+def test_kontext_still_refuses_extra_images():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = _state(KONTEXT, KONTEXT_FILES)
+    with pytest.raises(ValueError, match = "Reference images are not supported"):
+        b.generate(prompt = "p", steps = 2, init_image = _png(), reference_images = [_png()])
+
+
+def test_qwen_edit_sends_every_image_as_a_ref_image_in_order():
+    """sd.cpp's Qwen-Image-Edit conditioner reads each ref image as "Picture N": the source first, then the extras."""
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state, server = _server_state(QWEN_EDIT, QWEN_FILES)
+    colors = [(200, 10, 10), (10, 200, 10), (10, 10, 200)]
+    b.generate(
+        prompt = "p",
+        steps = 20,
+        guidance = 4.0,
+        seed = 3,
+        init_image = _png(color = colors[0]),
+        reference_images = [_png((512, 512), colors[1]), _png((640, 480), colors[2])],
+        workflow = "edit",
+    )
+    body = server.payloads[-1]
+    # The output still takes the source's size.
+    assert (body["width"], body["height"]) == (768, 496)
+    assert len(body["ref_images"]) == 3
+    seen = []
+    for ref in body["ref_images"]:
+        img = Image.open(io.BytesIO(base64.b64decode(ref.split(",", 1)[1]))).convert("RGB")
+        seen.append(img.getpixel((img.width // 2, img.height // 2)))
+    assert seen == colors
+
+
+def test_qwen_edit_refuses_more_than_three_images():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = _state(QWEN_EDIT, QWEN_FILES)
+    with pytest.raises(ValueError, match = "at most 3 input images"):
+        b.generate(prompt = "p", steps = 2, init_image = _png(), reference_images = [_png()] * 3)
+
+
+def test_native_status_advertises_a_multi_image_edit_only_for_qwen_edit(monkeypatch):
+    from core.inference.diffusion_conditioning import conditioning_capabilities
+
+    assert conditioning_capabilities(QWEN_EDIT, ["edit"])["multi_image_edit"] is True
+    assert conditioning_capabilities(QWEN_EDIT, ["edit"])["max_condition_images"] == 3
+    # Not edit-ready (no projector): no edit, so no extra images either.
+    assert conditioning_capabilities(QWEN_EDIT, [])["multi_image_edit"] is False
+    assert conditioning_capabilities(KONTEXT, ["edit"])["multi_image_edit"] is False
+    assert conditioning_capabilities(KONTEXT, ["edit"])["max_condition_images"] == 1
+    layered = detect_family("unsloth/Qwen-Image-Layered-GGUF")
+    assert conditioning_capabilities(layered, ["edit"])["multi_image_edit"] is False
+    flux2 = detect_family("unsloth/FLUX.2-klein-4B-GGUF")
+    assert conditioning_capabilities(flux2, ["txt2img", "reference"])["multi_image_edit"] is False

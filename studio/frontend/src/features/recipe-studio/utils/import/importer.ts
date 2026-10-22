@@ -151,7 +151,9 @@ function parseMcpProviders(input: unknown): Map<string, LlmMcpProviderConfig> {
     }
     const providerTypeRaw = readString(item.provider_type);
     const providerType =
-      providerTypeRaw === "stdio" ? "stdio" : "streamable_http";
+      providerTypeRaw === "stdio" || providerTypeRaw === "sse"
+        ? providerTypeRaw
+        : "streamable_http";
     const args = Array.isArray(item.args)
       ? item.args.map((value) => String(value))
       : [];

@@ -12,12 +12,12 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  AudioWave01Icon,
   Cancel01Icon,
   Mic01Icon,
   StopIcon,
   Upload04Icon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -35,6 +35,7 @@ import {
   REFERENCE_MAX_SECONDS,
   clipReference,
 } from "../audio-run-request";
+import { referenceLengthHint } from "../clone-policy";
 import {
   type AudioSourceStatus,
   REFERENCE_EXPIRED_MESSAGE,
@@ -107,6 +108,7 @@ export function AudioSourceInput({
   expiredMessage = REFERENCE_EXPIRED_MESSAGE,
   usesFirstSeconds = REFERENCE_MAX_SECONDS,
   recordHint = "Read a sentence or two in a quiet room.",
+  idealSeconds,
 }: {
   id: string;
   label: string;
@@ -124,6 +126,8 @@ export function AudioSourceInput({
   expiredMessage?: string;
   usesFirstSeconds?: number | null;
   recordHint?: string;
+  /** Seconds that work best, e.g. a clone reference's 5 to 15 s; adds a length hint. */
+  idealSeconds?: readonly [number, number];
 }) {
   const active = useContext(AudioActiveContext);
   const source = useAudioSource({ value, onChange, maxRecordSeconds, active });
@@ -179,6 +183,9 @@ export function AudioSourceInput({
   ];
 
   const durationS = preview.durationS ?? value?.durationS ?? null;
+  const lengthHint = idealSeconds
+    ? referenceLengthHint(durationS, idealSeconds)
+    : null;
   const name = status.phase === "uploading" ? status.name : (value?.name ?? "");
 
   return (
@@ -208,7 +215,7 @@ export function AudioSourceInput({
         if (file) void source.pickFile(file);
       }}
       className={cn(
-        "grid gap-3 rounded-4xl bg-card p-4 ring-1 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
+        "grid gap-3 rounded-lg bg-card p-4 ring-1 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
         dragging
           ? "bg-accent ring-[color-mix(in_oklab,var(--foreground)_calc(40%*var(--contrast-edge-gain,1)),transparent)]"
           : "ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]",
@@ -269,7 +276,7 @@ export function AudioSourceInput({
         <div className="grid gap-2">
           <div className="flex min-w-0 items-center gap-2 text-ui-12">
             <HugeiconsIcon
-              icon={AudioWave01Icon}
+              icon={AiSpeechIcon}
               className="size-3.5 shrink-0 text-muted-foreground"
             />
             <span
@@ -330,6 +337,10 @@ export function AudioSourceInput({
                 ? `Uses the first ${usesFirstSeconds / 60} min.`
                 : `Uses the first ${usesFirstSeconds} s.`}
             </p>
+          ) : lengthHint ? (
+            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              {lengthHint}
+            </p>
           ) : null}
         </div>
       ) : (
@@ -377,7 +388,7 @@ export function AudioSourceInput({
               type="button"
               disabled={disabled}
               onClick={() => fileRef.current?.click()}
-              className="flex min-h-[calc(88px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex min-h-[calc(88px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-[10px] border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <HugeiconsIcon icon={Upload04Icon} className="size-5" />
               <span>Drop an audio file here, or choose one</span>

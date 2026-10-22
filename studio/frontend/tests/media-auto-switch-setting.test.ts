@@ -52,6 +52,7 @@ globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 const {
   invalidateOpenAIAutoSwitchSettings,
   loadOpenAIAutoSwitchSettings,
+  subscribeOpenAIAutoSwitchSettings,
   updateOpenAIAutoSwitchSettings,
 } = await import("../src/features/settings/api/openai-auto-switch.ts");
 
@@ -103,5 +104,30 @@ test("a false toggle is sent, not dropped as absent", async () => {
     enabled: true,
     // biome-ignore lint/style/useNamingConvention: API schema
     media_auto_switch_model: false,
+  });
+});
+
+test("a saved auto-switch value reaches subscribers until they unsubscribe", async () => {
+  invalidateOpenAIAutoSwitchSettings();
+  const seen: boolean[] = [];
+  const unsubscribe = subscribeOpenAIAutoSwitchSettings((settings) =>
+    seen.push(settings.enabled),
+  );
+  nextBody = { ...API, enabled: false };
+  await updateOpenAIAutoSwitchSettings({ enabled: false });
+  unsubscribe();
+  nextBody = { ...API, enabled: true };
+  await updateOpenAIAutoSwitchSettings({ enabled: true });
+  assert.deepEqual(seen, [false]);
+});
+
+test("a media TTL save from Model memory leaves the chat toggle stored", async () => {
+  // That row has no chat toggle on screen, so it must not write back a stale `enabled`.
+  invalidateOpenAIAutoSwitchSettings();
+  bodies.length = 0;
+  await updateOpenAIAutoSwitchSettings({ mediaAutoUnloadIdleSeconds: 600 });
+  // biome-ignore lint/style/useNamingConvention: API schema
+  assert.deepEqual(JSON.parse(bodies[0] ?? "{}"), {
+    media_auto_unload_idle_seconds: 600,
   });
 });

@@ -720,13 +720,13 @@ def test_physical_gpu_count_records_whether_the_smi_answered(monkeypatch):
     monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", False)
-    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda: 4)
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda gpu_rows_only = False: 4)
     assert hw.get_physical_gpu_count() == 4
     assert hw._physical_gpu_count_from_smi is True
 
     monkeypatch.setattr(hw, "_physical_gpu_count", None)
     monkeypatch.setattr(hw, "_physical_gpu_count_from_smi", False)
-    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda: None)
+    monkeypatch.setattr(nvidia, "get_physical_gpu_count", lambda gpu_rows_only = False: None)
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
     assert hw.get_physical_gpu_count() == 1
     assert hw._physical_gpu_count_from_smi is False
@@ -851,7 +851,6 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
         raise FileNotFoundError("no amd-smi should be spawned here")
 
     monkeypatch.setattr(amd, "platform", types.SimpleNamespace(system = lambda: "Windows"))
-    monkeypatch.setattr(amd, "_hip_sdk_present", lambda: False)
     monkeypatch.setattr(amd.shutil, "which", lambda _n: r"C:\rocm\bin\amd-smi.exe")
     monkeypatch.setattr(amd.subprocess, "run", _spy)
     monkeypatch.delenv("UNSLOTH_ENABLE_AMD_SMI", raising = False)
@@ -880,12 +879,14 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "the guard is Windows-only")
-def test_amd_smi_is_refused_on_a_real_windows_host_without_a_hip_sdk():
+def test_amd_smi_is_refused_on_a_real_windows_host_unless_opted_in():
     # The test above fakes the platform. This one runs the same predicate against
     # the real OS, PATH and environment, so the guard is pinned where it applies.
     from utils.hardware import amd
-    if amd._hip_sdk_present() or os.environ.get("UNSLOTH_ENABLE_AMD_SMI"):
-        pytest.skip("this host may legitimately run amd-smi un-elevated")
+    if os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower() in ("1", "true", "yes", "on"):
+        pytest.skip(
+            reason = "UNSLOTH_ENABLE_AMD_SMI opts this host in, so amd-smi is allowed by design"
+        )
     assert amd._amd_smi_allowed() is False
 
 

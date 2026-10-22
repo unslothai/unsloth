@@ -13,7 +13,8 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
+import threading
+import time
 from pathlib import PurePath
 from typing import Any, Optional
 
@@ -32,56 +33,12 @@ _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
 
 
-def _path_inside_venv(path: str) -> bool:
-    """True if ``path`` is inside the active venv (sys.prefix). The venv hipInfo.exe (AMD wheel, put on PATH by main.py/worker.py for bitsandbytes) is NOT a HIP SDK (see _hip_sdk_present)."""
-    try:
-        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
-        root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on it. A venv is never at root, so treat that as outside.
-        if os.path.dirname(root) == root:
-            return False
-        return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
-    except (ValueError, OSError):
-        # Different drive / unresolvable -> treat as outside the venv.
-        return False
-
-
-def _external_hipinfo_on_path() -> bool:
-    """True if a hipinfo OUTSIDE the venv is on PATH. shutil.which returns only the first hit, so the venv hipInfo could shadow a real HIP SDK's; scan every PATH entry and skip the venv copy."""
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        directory = directory.strip('"')  # PATH entries can be quoted on Windows
-        if not directory:
-            continue
-        candidate = os.path.join(directory, "hipinfo.exe")
-        if os.path.isfile(candidate) and not _path_inside_venv(candidate):
-            return True
-    return False
-
-
-def _hip_sdk_present() -> bool:
-    """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/ROCM_PATH), so amd-smi has a runtime and runs un-elevated. Ignores the venv hipInfo.exe (AMD wheel via the bnb fix): not a HIP SDK, and does not stop amd-smi's DiskPart UAC."""
-    if _external_hipinfo_on_path():
-        return True
-    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
-        root = os.environ.get(var)
-        if not root:
-            continue
-        candidate = os.path.join(root, "bin", "hipinfo.exe")
-        if os.path.exists(candidate) and not _path_inside_venv(candidate):
-            return True
-    return False
-
-
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi here. On Windows without a working HIP runtime, amd-smi elevates a child at runtime, popping a UAC/DiskPart prompt that RunAsInvoker cannot suppress (its manifest is asInvoker), so only call it on Windows with a HIP SDK present or UNSLOTH_ENABLE_AMD_SMI=1. Linux amd-smi never elevates."""
+    """Windows is opt-in only (UNSLOTH_ENABLE_AMD_SMI=1): amd-smi.exe pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK."""
     if platform.system() != "Windows":
         return True
     flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
-    if flag in ("1", "true", "yes", "on"):
-        return True
-    if flag in ("0", "false", "no", "off"):
-        return False
-    return _hip_sdk_present()
+    return flag in ("1", "true", "yes", "on")
 
 
 def _run_amd_smi(
@@ -94,11 +51,10 @@ def _run_amd_smi(
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows without a HIP SDK: every call pops a UAC/DiskPart prompt. VRAM polling is then unavailable, which beats the prompt (UNSLOTH_ENABLE_AMD_SMI=1 opts back in).
         if not _amd_smi_disabled:
             logger.info(
-                "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
-                "UAC/DiskPart elevation prompt; GPU VRAM polling unavailable. "
+                "amd-smi disabled on Windows to avoid a UAC/DiskPart elevation "
+                "prompt; VRAM comes from the adapter perf counters. "
                 "Set UNSLOTH_ENABLE_AMD_SMI=1 to force amd-smi."
             )
             _amd_smi_disabled = True
@@ -156,7 +112,17 @@ def _run_amd_smi(
             _amd_smi_disabled = True
         return None
     if not result.stdout.strip():
-        logger.debug("amd-smi exited 0 but returned no output")
+        if platform.system() == "Windows":
+            # System32 amd-smi.exe exits 0 with no stdout when it can't run, prompting each spawn.
+            logger.info(
+                "amd-smi exited 0 with no output (%s); GPU utilization polling via amd-smi disabled",
+                (result.stderr or "").strip().splitlines()[-1]
+                if (result.stderr or "").strip()
+                else "no stderr",
+            )
+            _amd_smi_disabled = True
+        else:
+            logger.debug("amd-smi exited 0 but returned no output")
         return None
     _amd_smi_consecutive_failures = 0
     try:
@@ -379,8 +345,24 @@ def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
     return get_gpu_vram_report()[0]
 
 
+_HIP_ID_MAP_NONE_TTL_S = 300.0
+_hip_id_map_lock = threading.Lock()
+_hip_id_map_cache: Optional[tuple[float, Optional[dict[int, int]]]] = None
+
+
 def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
-    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable. Two index spaces, one number: amd-smi's gpu id is an enumeration index in discovery order over its KFD/sysfs view, while HIP's is what ``HIP_VISIBLE_DEVICES`` names and what torch reports as ``cuda:N``, derived from the KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on most hosts and not on all of them, so the number cannot be carried from one space to the other without this call. ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a usable id (an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A" when the library cannot reach the device's KFD node) so callers decline rather than assume the identity mapping."""
+    """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable. Two index spaces, one number: amd-smi's gpu id is an enumeration index in discovery order over its KFD/sysfs view, while HIP's is what ``HIP_VISIBLE_DEVICES`` names and what torch reports as ``cuda:N``, derived from the KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on most hosts and not on all of them, so the number cannot be carried from one space to the other without this call. ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a usable id (an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A" when the library cannot reach the device's KFD node) so callers decline rather than assume the identity mapping. Cached for the process; an unreadable answer is retried after five minutes."""
+    global _hip_id_map_cache
+    with _hip_id_map_lock:
+        cached = _hip_id_map_cache
+        if cached is None or (
+            cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S
+        ):
+            cached = _hip_id_map_cache = (time.monotonic(), _read_hip_id_by_gpu_index())
+    return None if cached[1] is None else dict(cached[1])
+
+
+def _read_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
     data = _run_amd_smi("list", "-e", count_failures = False)
     if data is None:
         return None
@@ -621,6 +603,40 @@ def amd_kfd_gpu_node_count() -> Optional[int]:
     return count
 
 
+def amd_kfd_gpu_gfx_targets(
+    nodes: str = "/sys/class/kfd/kfd/topology/nodes",
+) -> Optional[list[str]]:
+    """The gfx target of each AMD GPU agent KFD enumerates, in HIP device order, or ``None``
+    when the topology cannot be read. HIP numbers GPU agents by KFD node id, so position N is
+    physical device N. ``gfx_target_version`` is written by amdkfd itself, so it is immune to
+    HSA_OVERRIDE_GFX_VERSION; it encodes major * 10000 + minor * 100 + stepping, the stepping
+    in hex (110501 is gfx1151, 90010 is gfx90a), as install_python_stack._kfd_gfx_targets reads
+    it. Unlike that one, an unreadable node fails the whole answer, since it would shift ordinals."""
+    try:
+        entries = sorted((int(e), e) for e in os.listdir(nodes) if e.isdigit())
+    except OSError:
+        return None
+    targets = []
+    for _node, entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            return None
+        simd = re.search(r"\bsimd_count\s+(\d+)\b", properties)
+        if not re.search(r"\bvendor_id\s+4098\b", properties) or (
+            simd is not None and int(simd.group(1)) == 0
+        ):
+            continue
+        version = re.search(r"\bgfx_target_version\s+(\d+)\b", properties)
+        raw = int(version.group(1)) if version else 0
+        major, minor, step = raw // 10000, (raw // 100) % 100, raw % 100
+        targets.append(
+            f"gfx{major}{minor}{step:x}" if raw > 0 and minor <= 9 and step <= 15 else ""
+        )
+    return targets
+
+
 def _amd_render_node_exists() -> bool:
     """Whether any AMD render node is present at all.
 
@@ -772,7 +788,12 @@ def _dynamic_loader_search_dirs() -> "list[str]":
         for entry in (os.environ.get("LD_LIBRARY_PATH") or "").split(os.pathsep)
         if entry.strip()
     ]
-    dirs.extend(_ld_so_conf_dirs())
+    return list(dict.fromkeys(dirs + _system_library_dirs()))
+
+
+def _system_library_dirs() -> "list[str]":
+    """The loader's search directories that do not come from LD_LIBRARY_PATH."""
+    dirs = list(_ld_so_conf_dirs())
     dirs.extend(_DEFAULT_LIBRARY_DIRS)
     for pattern in ("/usr/lib/*-linux-gnu*", "/lib/*-linux-gnu*"):
         dirs.extend(sorted(glob.glob(pattern)))
@@ -833,7 +854,12 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
     return _ld_cache_sonames_cached
 
 
-def _a_bare_soname_resolves(soname: str) -> bool:
+def _a_bare_soname_resolves(
+    soname: str,
+    *,
+    with_ld_library_path: bool = True,
+    when_unknown: bool = True,
+) -> bool:
     """Whether a manifest's bare library name still resolves to something on this host.
 
     A manifest may name its library by soname alone and leave the loader to find it, which
@@ -846,8 +872,13 @@ def _a_bare_soname_resolves(soname: str) -> bool:
     question only when the cache could actually be read; a host whose loader configuration
     this cannot enumerate answers True, because calling a live driver stale would demote
     the node hint on a host whose other vendor really does have a path.
+
+    ``with_ld_library_path = False`` asks for a child that does not inherit LD_LIBRARY_PATH;
+    ``when_unknown`` is the answer when the cache cannot be read (False for a hard requirement).
     """
-    for _directory in _dynamic_loader_search_dirs():
+    for _directory in (
+        _dynamic_loader_search_dirs() if with_ld_library_path else _system_library_dirs()
+    ):
         try:
             if os.path.isfile(os.path.join(_directory, soname)):
                 return True
@@ -855,7 +886,7 @@ def _a_bare_soname_resolves(soname: str) -> bool:
             continue
     _cache = _ld_cache_sonames()
     if _cache is None:
-        return True
+        return when_unknown
     return soname in _cache
 
 

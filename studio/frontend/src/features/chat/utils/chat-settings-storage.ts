@@ -298,13 +298,24 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   );
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
+  const deduplicateToolCalls = sanitizeBool(value.deduplicateToolCalls);
   const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
+  const keepRunningWhenTabClosed = sanitizeBool(value.keepRunningWhenTabClosed);
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 0);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
   if (inferenceParamsByModel) {
     settings.inferenceParamsByModel = inferenceParamsByModel;
+  }
+  if (isRecord(value.forgetInferenceParamsByModel)) {
+    const forget: Record<string, string[]> = {};
+    for (const [id, keys] of Object.entries(value.forgetInferenceParamsByModel)) {
+      if (!id || !Array.isArray(keys)) continue;
+      const named = keys.filter((key): key is string => typeof key === "string");
+      if (named.length > 0) forget[id] = named;
+    }
+    if (hasKeys(forget)) settings.forgetInferenceParamsByModel = forget;
   }
   if (rememberParamsPerModel !== undefined) {
     settings.rememberParamsPerModel = rememberParamsPerModel;
@@ -330,8 +341,14 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (nudgeToolCalls !== undefined) {
     settings.nudgeToolCalls = nudgeToolCalls;
   }
+  if (deduplicateToolCalls !== undefined) {
+    settings.deduplicateToolCalls = deduplicateToolCalls;
+  }
   if (autoCompactEnabled !== undefined) {
     settings.autoCompactEnabled = autoCompactEnabled;
+  }
+  if (keepRunningWhenTabClosed !== undefined) {
+    settings.keepRunningWhenTabClosed = keepRunningWhenTabClosed;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -397,7 +414,9 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
+    settings.deduplicateToolCalls === undefined &&
     settings.autoCompactEnabled === undefined &&
+    settings.keepRunningWhenTabClosed === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined &&
     hasNoMirroredSettings(settings)
