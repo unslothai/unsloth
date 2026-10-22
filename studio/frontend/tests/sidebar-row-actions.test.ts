@@ -90,7 +90,12 @@ test("every chat row offers the pin without opening a menu", () => {
 test("a chat row reserves one gutter, whatever its state", () => {
   assert.match(
     APP_SIDEBAR,
-    /showWorkSpinner \? "pr-16" : hasUnreadActivity \? "pr-7" : undefined,/,
+    /showWorkSpinner \? "pr-16" : hasUnreadActivity \? "pr-7" : showForkMark \? "pr-9" : undefined,/,
+  );
+  // The fork mark sits in the trailing column in grey, not inline after the title.
+  assert.match(
+    APP_SIDEBAR,
+    /aria-label="Forked chat"\s+className=\{cn\(\s+"pointer-events-none absolute right-4 [^"]*text-muted-foreground/,
   );
   assert.ok(
     !APP_SIDEBAR.includes("hasSecondaryRowAction"),
@@ -242,7 +247,7 @@ test("a chat row forks from its own menu", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)[^]*?<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\* Projects and sections in one place[^]*?\*\/\}\n\s*<P\.Sub>/,
+    /<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)[^]*?<span>\{t\("library\.chats\.menu\.fork"\)\}<\/span>\n\s*<\/P\.Item>\n\s*\{\/\* Projects and sections in one place[^]*?\*\/\}\n\s*<P\.Sub>/,
   );
   const rowMenu = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("function renderChatRowMenuItems("),
@@ -307,5 +312,7 @@ test("closed-chat forks leave tip selection to the server", async () => {
   // Its 409 is a refusal, not a failure.
   assert.match(ROW_MENU, /if \(message\.includes\("still generating"\)\) throw forkRefused\(\);/);
   assert.match(ROW_MENU, /\{ unslothForkRefused: true \}/);
-  assert.match(APP_SIDEBAR, /\?\.unslothForkRefused\) \{\n\s*toast\.info\(/);
+  assert.match(APP_SIDEBAR, /\} catch \(error\) \{\n\s*showForkFailedToast\(error\);/);
+  const TOAST = await readSrcAsync("features/chat/utils/fork-toast.ts");
+  assert.match(TOAST, /\?\.unslothForkRefused \|\| message\.includes\("still generating"\)\) \{\n\s*toast\.info\(/);
 });

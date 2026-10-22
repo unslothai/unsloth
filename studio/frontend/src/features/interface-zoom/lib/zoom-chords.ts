@@ -41,9 +41,27 @@ export function zoomDirectionForKey(
   return null;
 }
 
+const ZOOM_CODES = new Set([
+  "Equal",
+  "Minus",
+  "Digit0",
+  "NumpadAdd",
+  "NumpadSubtract",
+  "Numpad0",
+]);
+
+export function zoomTypedOffZoomKey(
+  event: ZoomKeyEvent,
+  code: string,
+  mac: boolean,
+): boolean {
+  return !ZOOM_CODES.has(code) && zoomDirectionForKey(event, mac) !== null;
+}
+
 /**
  * Whether a user shortcut takes this press instead: one bound to the canonical chord, or to the
- * exact keys pressed (Mod+Shift+Equal, a keypad key).
+ * exact keys pressed (Mod+Shift+Equal, a keypad key). Only on a zoom key: German and most of Europe
+ * type "-" on the Slash key, and Mod+Slash there is a shortcut, not the zoom the user typed.
  */
 export function zoomChordTaken(
   event: ZoomKeyEvent,
@@ -53,5 +71,9 @@ export function zoomChordTaken(
 ): boolean {
   if (owned(ZOOM_CHORDS[direction])) return true;
   const pressed = bindingFromEvent(event, mac);
-  return pressed !== null && owned(formatBindingValue(pressed));
+  return (
+    pressed !== null &&
+    ZOOM_CODES.has(pressed.code) &&
+    owned(formatBindingValue(pressed))
+  );
 }

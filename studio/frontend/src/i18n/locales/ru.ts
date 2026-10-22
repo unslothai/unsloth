@@ -1088,6 +1088,10 @@ export const ru = {
       alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
+      metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
+      altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
+      desktopOnly: "Только в настольном приложении",
+      builtInKey: "Встроено: {key}",
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1288,6 +1292,10 @@ export const ru = {
         steerMessage: {
           label: "Скорректировать ответ",
           description: "Остановить текущий ответ и отправить черновик следующим",
+        },
+        stopGeneration: {
+          label: "Остановить генерацию",
+          description: "Остановить текущий ответ",
         },
         cycleReasoningEffort: {
           label: "Переключать усилие рассуждения",
@@ -2075,9 +2083,9 @@ export const ru = {
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
         activityDescription: {
-          daily: "Период: {weeks} · {total}",
-          weekly: "Пиковая неделя {total} · последние {weeks}",
-          cumulative: "{total} накоплено за последние {weeks}",
+          daily: "{total} с {since}",
+          weekly: "Самая активная неделя {total} · с {since}",
+          cumulative: "Всего {total} с {since}",
         },
         mode: {
           daily: "По дням",
@@ -2086,8 +2094,9 @@ export const ru = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Неделя с {date} · {tokens}",
-        chartToggle: "График",
-        chartToggleHint: "Показывать режимы «По неделям» и «Накопительно» графиком с подписанными осями",
+        emptyDayTooltip: "{date} · Нет активности",
+        apiRequests: "{count} через API",
+        cumulativeTooltip: "К неделе {date} · всего {tokens}",
         less: "Меньше",
         more: "Больше",
         insightsTitle: "Сводка по активности",

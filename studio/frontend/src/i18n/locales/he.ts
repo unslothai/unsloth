@@ -1174,6 +1174,10 @@ export const he = {
       alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
+      metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
+      altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
+      desktopOnly: "באפליקציית שולחן העבודה בלבד",
+      builtInKey: "מובנה: {key}",
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1375,6 +1379,10 @@ export const he = {
         steerMessage: {
           label: "הכוונת התשובה",
           description: "עצור את התשובה הנוכחית ושלח את הטיוטה מיד אחריה",
+        },
+        stopGeneration: {
+          label: "עצירת היצירה",
+          description: "עצירת התשובה שנכתבת",
         },
         cycleReasoningEffort: {
           label: "החלף רמת מאמץ חשיבה",
@@ -2161,9 +2169,9 @@ export const he = {
         longestStreak: "רצף שיא",
         activityTitle: "פעילות טוקנים",
         activityDescription: {
-          daily: "{total} במהלך {weeks} האחרונים",
-          weekly: "שבוע שיא: {total} · {weeks} אחרונים",
-          cumulative: "{total} נצברו במהלך {weeks} האחרונים",
+          daily: "{total} מאז {since}",
+          weekly: "השבוע העמוס ביותר {total} · מאז {since}",
+          cumulative: "{total} בסך הכול מאז {since}",
         },
         mode: {
           daily: "יומי",
@@ -2172,8 +2180,9 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
-        chartToggle: "תרשים",
-        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
+        emptyDayTooltip: "{date} · אין פעילות",
+        apiRequests: "{count} דרך API",
+        cumulativeTooltip: "עד שבוע {date} · {tokens} בסך הכול",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
