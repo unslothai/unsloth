@@ -959,6 +959,7 @@ def build_img_gen_request(
     ref_images: Optional[list[str]] = None,
     qwen_image_layers: Optional[int] = None,
     custom_sigmas: Optional[list[float]] = None,
+    hires: Optional[dict] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -1009,6 +1010,8 @@ def build_img_gen_request(
         req["ref_images"] = list(ref_images)
     if qwen_image_layers is not None:
         req["qwen_image_layers"] = int(qwen_image_layers)
+    if hires:
+        req["hires"] = dict(hires)
     return req
 
 
