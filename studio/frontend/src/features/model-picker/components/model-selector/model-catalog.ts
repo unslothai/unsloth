@@ -302,7 +302,6 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("OpenMOSS-Team/MOSS-Image-SFT", 25.33, {
         totalParams: 5082308624,
         prequantRepo: "unsloth/MOSS-Image-SFT-FP8",
-        fetchedFrom: "unsloth/MOSS-Image-SFT-FP8",
         prequantSizeGb: { fp8: 5.04, int8: 5.04 },
       }),
       gguf("unsloth/MOSS-Image-SFT-GGUF"),
@@ -319,7 +318,6 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("OpenMOSS-Team/MOSS-Image-Base", 25.33, {
         totalParams: 5082308624,
         prequantRepo: "unsloth/MOSS-Image-Base-FP8",
-        fetchedFrom: "unsloth/MOSS-Image-Base-FP8",
         prequantSizeGb: { fp8: 5.04, int8: 5.04 },
       }),
       gguf("unsloth/MOSS-Image-Base-GGUF"),

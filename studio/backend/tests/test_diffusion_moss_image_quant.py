@@ -368,6 +368,8 @@ def test_fp8_te_cast_keeps_the_gated_delta_conv1d_in_compute_dtype():
     calling the module, so the layerwise upcast hook never runs: the cast must leave conv1d out."""
     import torch
 
+    pytest.importorskip("diffusers.hooks")
+
     try:
         from transformers import Qwen3_5TextConfig, Qwen3_5TextModel
     except ImportError:

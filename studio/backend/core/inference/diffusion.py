@@ -11961,7 +11961,7 @@ class DiffusionBackend:
         specs = [(i, w) for (i, w) in (loras or []) if w != 0]
 
         if specs:
-            _refuse_lora_without_loader(state.family, specs)
+            _refuse_lora_without_loader(getattr(state, "family", None), specs)
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
         if quant in ("int8", "fp8", "nvfp4", "mxfp8"):

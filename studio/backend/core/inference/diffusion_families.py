@@ -1295,6 +1295,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = MOSS_IMAGE_FAMILY_NAME,
         label = "MOSS-Image",
+        # ComfyUI's MOSSImage is ModelType.FLOW (ModelSamplingDiscreteFlow, shift 5), the node ModelSamplingSD3 sets.
+        comfy_shift_node = "sd3",
         profile = FamilyProfile(
             quant_exclude_tokens = _MOSS_IMAGE_QUANT_KEEP,
             # Required, not optional: plain int8 with the same keep-list scored 0.111 against ConvRot's 0.058 (SFT).
