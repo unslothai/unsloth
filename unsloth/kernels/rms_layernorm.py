@@ -201,7 +201,9 @@ def _rms_layernorm_backward(
         )
 
 
-_rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
+_rms_layernorm_backward = triton.jit(
+    _rms_layernorm_backward, do_not_specialize = ("n_rows", "rows_per_program")
+)
 _rms_layernorm_backward = triton.heuristics(
     {
         "GEMMA": lambda args: bool(args["GEMMA"]),
@@ -313,7 +315,7 @@ def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
     return total
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_rows",))
 def _rms_layernorm_forward_rows(
     Y,
     X,
@@ -415,7 +417,7 @@ def _rms_backward_rows_block(
     return tl.sum(dY_rows * normed, axis = 0)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_rows", "blocks_per_program"))
 def _rms_layernorm_backward_rows(
     dY,
     dX,
@@ -487,7 +489,7 @@ def _rms_layernorm_backward_rows(
         )
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_programs",))
 def _rms_sum_dw_partials(
     partials, dW, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
 ):
