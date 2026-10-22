@@ -138,8 +138,7 @@ _display_cache: dict[tuple[str, ...], tuple[float, int, Any]] = {}
 
 
 def _run_amd_smi_for_display(*args: str) -> Optional[Any]:
-    """``_run_amd_smi`` behind gpu_query's display rules (TTL, GPU memory events,
-    fresh_reads); the lock coalesces concurrent pollers. Failures are never served."""
+    """``_run_amd_smi`` under gpu_query's display rules; the lock coalesces pollers, failures are never cached."""
     try:
         from utils import gpu_memory_events
         from utils.hardware import gpu_query

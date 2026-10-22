@@ -69,7 +69,6 @@ _system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]]
 
 _CPU_PERCENT_MIN_WINDOW_S = 1.0
 _cpu_percent_lock = threading.Lock()
-# (sampled at, value); value None = primed, nothing measured yet.
 _cpu_percent_reading: Optional[tuple[float, Optional[float]]] = None
 
 
@@ -85,8 +84,7 @@ def _prime_cpu_percent() -> None:
 
 
 def _cpu_usage_percent() -> float:
-    """psutil.cpu_percent(None) measures since its previous call, process-wide: 0.0 the first
-    time and noise when pollers interleave, so sample at most once per window."""
+    """cpu_percent(None) measures since anyone's last call: sample at most once per window."""
     global _cpu_percent_reading
     import psutil
 
