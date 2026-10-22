@@ -592,6 +592,76 @@ def recipe_has_stdio_mcp(recipe: dict[str, Any]) -> bool:
     )
 
 
+_ENV_CREDENTIAL_KEYS = {"api_key_env", "token_env", "hf_token_env"}
+_LITERAL_CREDENTIAL_KEYS = {"api_key", "token", "hf_token"}
+
+
+def _names_env_credential(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(_names_env_credential(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    for key, item in value.items():
+        if key in _ENV_CREDENTIAL_KEYS and item:
+            return True
+        if key in _LITERAL_CREDENTIAL_KEYS and isinstance(item, str) and item in os.environ:
+            return True
+        if isinstance(item, (dict, list)) and _names_env_credential(item):
+            return True
+    return False
+
+
+def recipe_names_host_env_credential(recipe: Any) -> bool:
+    """True when the recipe would have the backend fill a credential from its own environment:
+    an ``api_key_env``-style field, or a bare variable name in ``api_key``/``token`` (Data
+    Designer resolves those from the environment before treating them as literals). The value
+    then goes out as a bearer token to whatever endpoint the same recipe names. Only top-level
+    ``model_providers`` entries marked ``is_local`` are skipped: the routes rewire exactly those
+    to this server's /v1 and drop their external auth."""
+    if isinstance(recipe, dict) and isinstance(recipe.get("model_providers"), list):
+        rest = {key: value for key, value in recipe.items() if key != "model_providers"}
+        external = [
+            provider
+            for provider in recipe["model_providers"]
+            if not (isinstance(provider, dict) and provider.get("is_local") is True)
+        ]
+        return _names_env_credential(rest) or _names_env_credential(external)
+    return _names_env_credential(recipe)
+
+
+def _hf_seed_sends_host_token_elsewhere(recipe: Any) -> bool:
+    """An HF seed with no token of its own falls back to this host's Hugging Face token, which then
+    goes to whatever endpoint the seed names. Only this server's own endpoint is safe for that."""
+    if not isinstance(recipe, dict):
+        return False
+    seed_config = recipe.get("seed_config")
+    source = seed_config.get("source") if isinstance(seed_config, dict) else None
+    if not isinstance(source, dict) or source.get("seed_type") != "hf":
+        return False
+    if str(source.get("token") or "").strip():
+        return False
+    typed = str(source.get("endpoint") or "").strip()
+    if not typed:
+        return False
+    from utils.hf_endpoint import get_hf_endpoint
+
+    return typed.rstrip("/") != get_hf_endpoint().rstrip("/")
+
+
+def require_ui_session_for_host_env_credentials(recipe: Any, via_api_key: bool) -> None:
+    """Refuse an API key or keyless caller that asks the backend to supply a credential from its
+    environment (HF_TOKEN, provider keys). A UI session keeps the lookup; API callers pass the
+    credential itself."""
+    if via_api_key and (
+        recipe_names_host_env_credential(recipe) or _hf_seed_sends_host_token_elsewhere(recipe)
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Recipes sent with an API key cannot read credentials from the server's "
+            "environment. Put the provider key in api_key instead of naming an environment variable.",
+        )
+
+
 def _require_confinable_mcp_transport(provider_type: str) -> None:
     """Refuse network MCP for managed accounts: the engine opens its own connections and cannot use chat's confined transport."""
     if provider_type not in {"sse", "streamable_http"} or not managed_account():

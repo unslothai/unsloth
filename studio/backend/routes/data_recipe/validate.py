@@ -17,6 +17,7 @@ from core.data_recipe.service import (
     build_config_builder,
     create_data_designer,
     recipe_has_stdio_mcp,
+    require_ui_session_for_host_env_credentials,
     validate_recipe,
 )
 from loggers import get_logger
@@ -154,6 +155,11 @@ def _patch_local_providers(recipe: dict[str, Any]) -> None:
             continue
         if provider.pop("is_local", None) is True:
             provider["endpoint"] = "http://127.0.0.1"
+            # Same as _inject_local_providers: external-only auth must not ride along to loopback.
+            provider["api_key"] = None
+            provider.pop("api_key_env", None)
+            provider.pop("extra_headers", None)
+            provider.pop("extra_body", None)
 
 
 @router.post("/validate", response_model = ValidateResponse)
@@ -166,6 +172,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         )
     if recipe_has_stdio_mcp(recipe):
         require_ui_session_for_local_commands(via_api_key)
+    require_ui_session_for_host_env_credentials(recipe, via_api_key)
 
     _patch_local_providers(recipe)
     _resolve_seed_endpoint(recipe)

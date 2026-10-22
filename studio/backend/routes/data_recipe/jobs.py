@@ -52,7 +52,11 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
-from core.data_recipe.service import recipe_has_stdio_mcp, validate_recipe_names
+from core.data_recipe.service import (
+    recipe_has_stdio_mcp,
+    require_ui_session_for_host_env_credentials,
+    validate_recipe_names,
+)
 from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
@@ -564,6 +568,7 @@ def create_job(
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     if recipe_has_stdio_mcp(recipe):
         require_ui_session_for_local_commands(via_api_key)
+    require_ui_session_for_host_env_credentials(recipe, via_api_key)
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)
