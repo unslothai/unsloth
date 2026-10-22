@@ -392,6 +392,74 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
+_MAX_ROW_IMAGE_BYTES = 64 * 1024 * 1024
+_ROW_IMAGE_TIMEOUT_S = 30
+
+
+def _fetch_row_image(url):
+    """Download a dataset row's image URL. Rows are untrusted, so this uses the web tool's
+    fetch: public addresses only, pinned to the resolved IP, every redirect re-checked."""
+    import time
+    from io import BytesIO
+
+    from PIL import Image
+    from core.inference.tools import _fetch_url_raw
+
+    error, body, _ = _fetch_url_raw(
+        url,
+        timeout = _ROW_IMAGE_TIMEOUT_S,
+        extra_headers = {"Accept": "image/*"},
+        deadline = time.monotonic() + _ROW_IMAGE_TIMEOUT_S * 2,
+        raw_bytes_max = _MAX_ROW_IMAGE_BYTES,
+    )
+    if error is not None:
+        raise OSError(error)
+    return Image.open(BytesIO(body)).convert("RGB")
+
+
+def _is_remote_image_path(path):
+    # hf:// paths resolve against the Hub itself; any other scheme is a fetch the row chose.
+    return isinstance(path, str) and "://" in path and not path.startswith("hf://")
+
+
+def _guard_remote_image_feature(dataset, image_column):
+    """An Image()-typed column decodes itself on access, and a row stored as a URL with no bytes
+    is then fetched by ``datasets`` with no SSRF guard. Only for such columns, turn decoding off
+    so those rows reach _fetch_row_image; every other dataset is returned untouched."""
+    try:
+        from datasets import Dataset
+        from datasets import Image as ImageFeature
+
+        if not isinstance(dataset, Dataset):
+            return dataset
+        feature = dataset.features.get(image_column)
+        if not isinstance(feature, ImageFeature) or not feature.decode:
+            return dataset
+        # Read only the path and bytes-null columns from Arrow, never the image bytes themselves.
+        remote = False
+        for chunk in dataset.data.column(image_column).chunks:
+            paths = chunk.field("path").to_pylist()
+            missing = chunk.field("bytes").is_null().to_pylist()
+            if any(m and _is_remote_image_path(p) for p, m in zip(paths, missing)):
+                remote = True
+                break
+        if not remote:
+            return dataset
+        return dataset.cast_column(image_column, ImageFeature(decode = False))
+    except Exception as exc:
+        logger.debug(f"Image column remote-path check skipped: {exc}")
+        return dataset
+
+
+def _decode_image_cell(value):
+    """Decode an undecoded Image() cell ({"bytes", "path"}): remote paths go through the guarded
+    fetch, everything else through datasets' own decoder as before."""
+    if not _is_remote_image_path(value.get("path")) or value.get("bytes"):
+        from datasets import Image as ImageFeature
+        return ImageFeature().decode_example(value).convert("RGB")
+    return _fetch_row_image(value["path"])
+
+
 def convert_to_vlm_format(
     dataset,
     instruction = None,
@@ -409,6 +477,7 @@ def convert_to_vlm_format(
     from .vlm_processing import generate_smart_vlm_instruction
 
     account = current_account()
+    dataset = _guard_remote_image_feature(dataset, image_column)
 
     def _notify(msg):
         """Send a status update to the training overlay if callback set."""
@@ -442,12 +511,11 @@ def convert_to_vlm_format(
         # Image may be a PIL Image, local path, URL, or bare filename
         image_data = sample[image_column]
 
-        if isinstance(image_data, str):
+        if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
+            image_data = _decode_image_cell(image_data)
+        elif isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    image_data = Image.open(BytesIO(f.read())).convert("RGB")
+                image_data = _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
@@ -754,6 +822,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     from utils.account_context import current_account
 
     account = current_account()
+    dataset = _guard_remote_image_feature(dataset, image_column)
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     _ROLE_MAP = {
         "human": "user",
@@ -814,10 +883,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             return image_data
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    return Image.open(BytesIO(f.read())).convert("RGB")
+                return _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache
@@ -835,6 +901,8 @@ def convert_sharegpt_with_images_to_vlm_format(
             if image_data.get("bytes"):
                 from io import BytesIO
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
+            if _is_remote_image_path(image_data.get("path")):
+                return _fetch_row_image(image_data["path"])
             if image_data.get("path"):
                 return Image.open(_own_image_path(image_data["path"], account)).convert("RGB")
         raise ValueError(f"Cannot resolve image: {type(image_data)}")
