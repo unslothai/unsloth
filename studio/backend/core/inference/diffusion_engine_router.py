@@ -279,9 +279,9 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     if not gpus or any(d.get("vendor") in masked for d in gpus):
         return False
     if not all(_renders(d) for d in gpus):
-        # A UHD iGPU beside an AMD card or an Arc: unpinned ggml-vulkan enumerates only dedicated GPUs when there
-        # are any, and sd.cpp takes a GPU before an iGPU, so the card renders. Alone, or under a GGML_VK_VISIBLE_DEVICES
-        # list (whose ordinals may name the iGPU), the iGPU would.
+        # A UHD iGPU beside an AMD card or an Arc: unpinned sd.cpp takes a discrete GPU before an iGPU
+        # (get_default_backend_name), so the card renders. Alone, or under a GGML_VK_VISIBLE_DEVICES list
+        # (whose ordinals may name the iGPU), the iGPU would.
         if vk_mask is not None or not any(_renders(d) for d in gpus):
             return False
         if any(d.get("vendor") != "intel" for d in gpus if not _renders(d)):
