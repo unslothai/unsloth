@@ -34549,6 +34549,10 @@ async def produce_openai_chat_completions(
                             chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = final_visible)))
                         return chunks
 
+                    # Set by a frame that ends a park. The slot is taken back before the generator is asked for
+                    # more, not before that frame is sent: the first one after a decision is the approval,
+                    # refusal or expiry every other tab clears its prompt on, and no work went into it.
+                    resume_before_next = False
                     while True:
                         if cancel_event.is_set():
                             mark_current_response_failed()
@@ -34558,6 +34562,10 @@ async def produce_openai_chat_completions(
                             mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
+
+                        if resume_before_next:
+                            resume_before_next = False
+                            await _park_admission(False)
 
                         next_task = asyncio.create_task(
                             asyncio.to_thread(next, gen, _tool_sentinel)
@@ -34594,18 +34602,16 @@ async def produce_openai_chat_completions(
                             _tool_decode_finished = True
                             break
 
-                        # Anything after the gated tool_start is the answer, except the context meter sent before the wait
-                        # and the approval notice: other tabs clear their prompt on it, so it must not wait for the slot.
+                        # Anything after the gated tool_start is the answer, except the context meter sent before the wait.
                         if not (
                             (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
                             or event["type"] == "context_usage"
-                            or event["type"] == "tool_approved"
                             or (
                                 event["type"] == "skill_load"
                                 and event.get("status") == "awaiting_approval"
                             )
                         ):
-                            await _park_admission(False)
+                            resume_before_next = True
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.

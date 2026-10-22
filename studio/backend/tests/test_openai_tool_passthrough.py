@@ -5391,9 +5391,14 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
-    def test_gguf_approval_reaches_other_tabs_while_another_chat_holds_the_slot(self, monkeypatch):
-        """tool_approved clears the prompt in every other tab, so it must not wait for the model slot."""
+    @pytest.mark.parametrize("outcome", ["allow", "deny", "expire"])
+    def test_gguf_decision_reaches_other_tabs_while_another_chat_holds_the_slot(
+        self, monkeypatch, outcome
+    ):
+        """Other tabs clear their prompt on the first frame after a decision, so it must not wait for the
+        model slot. The run itself does no more work until the slot is back."""
         import routes.inference as inf_mod
+        from state.tool_approvals import TOOL_APPROVAL_EXPIRED_MESSAGE, TOOL_REJECTED_MESSAGE
 
         async def _run():
             async def fake_select_tools(*_args, **_kwargs):
@@ -5407,9 +5412,12 @@ class TestGgufVisionToolRouting:
                     }
                 ]
 
-            approved = threading.Event()
+            decided = threading.Event()
+            resumed = threading.Event()
+            end = {"type": "tool_end", "tool_name": "python", "tool_call_id": "call_0"}
 
-            # The GGUF loop's own order after an Allow: the approval, then the running status.
+            # The GGUF loop's own frames after each outcome: an Allow sends the approval and then the
+            # running status; a refusal or an expiry ends the card at once.
             def _generate(**kwargs):
                 cancel_event = kwargs["cancel_event"]
                 yield {"type": "status", "text": "Waiting for approval: Python"}
@@ -5421,22 +5429,27 @@ class TestGgufVisionToolRouting:
                     "awaiting_confirmation": True,
                     "approval_id": "approval_0",
                 }
-                while not approved.is_set() and not cancel_event.is_set():
+                while not decided.is_set() and not cancel_event.is_set():
                     time.sleep(0.005)
-                yield {
-                    "type": "tool_approved",
-                    "tool_name": "python",
-                    "tool_call_id": "call_0",
-                    "approval_id": "approval_0",
-                }
-                yield {"type": "status", "text": "Running Python..."}
-                yield {
-                    "type": "tool_end",
-                    "tool_name": "python",
-                    "tool_call_id": "call_0",
-                    "result": "1",
-                }
-                yield {"type": "content", "text": "done"}
+                if outcome == "allow":
+                    yield {
+                        "type": "tool_approved",
+                        "tool_name": "python",
+                        "tool_call_id": "call_0",
+                        "approval_id": "approval_0",
+                    }
+                    resumed.set()
+                    yield {"type": "status", "text": "Running Python..."}
+                    yield {**end, "result": "1"}
+                else:
+                    result = (
+                        TOOL_REJECTED_MESSAGE
+                        if outcome == "deny"
+                        else TOOL_APPROVAL_EXPIRED_MESSAGE
+                    )
+                    yield {**end, "result": result}
+                    resumed.set()
+                yield {"type": "content", "text": "next-turn-answer"}
 
             backend = SimpleNamespace(
                 is_loaded = True,
@@ -5447,7 +5460,7 @@ class TestGgufVisionToolRouting:
                 _is_audio = False,
                 model_identifier = "test-gguf",
                 context_length = 4096,
-                base_url = "http://llama.approval.test",
+                base_url = f"http://llama.decision-{outcome}.test",
                 effective_parallel_slots = 1,
                 count_chat_tokens = lambda *_args, **_kwargs: 10,
                 generate_chat_completion = lambda **_kwargs: "unused",
@@ -5477,26 +5490,32 @@ class TestGgufVisionToolRouting:
                 pytest.fail(f"{needle} never arrived")
 
             blocker = None
+            rest = None
             try:
                 await asyncio.wait_for(next_frame('"tool_start"'), timeout = 2)
                 # The parked run gave up its slot; another chat takes it.
-                queue = get_llama_admission_queue("http://llama.approval.test")
+                queue = get_llama_admission_queue(f"http://llama.decision-{outcome}.test")
                 blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
                 assert blocker is not None
-                approved.set()
-                await asyncio.wait_for(next_frame('"tool_approved"'), timeout = 2)
+                decided.set()
+                first = '"tool_approved"' if outcome == "allow" else '"tool_end"'
+                await asyncio.wait_for(next_frame(first), timeout = 2)
 
-                # The run itself still waits for the slot before it goes on.
-                running = asyncio.create_task(next_frame("Running Python"))
+                # The run itself waits for the slot before it goes on.
+                rest = asyncio.create_task(next_frame("next-turn-answer"))
                 await asyncio.sleep(0.2)
-                assert not running.done()
+                assert not rest.done()
+                assert not resumed.is_set(), "the run went on while another chat held its slot"
                 blocker.release()
                 blocker = None
-                await asyncio.wait_for(running, timeout = 2)
+                await asyncio.wait_for(rest, timeout = 2)
             finally:
-                approved.set()
+                decided.set()
                 if blocker is not None:
                     blocker.release()
+                if rest is not None and not rest.done():
+                    rest.cancel()
+                    await asyncio.gather(rest, return_exceptions = True)
                 await iterator.aclose()
 
         asyncio.run(_run())
