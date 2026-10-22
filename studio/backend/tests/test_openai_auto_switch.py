@@ -8231,6 +8231,19 @@ def test_the_retired_snapshot_path_entry_hands_over_its_launch_flags(override_st
     assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
 
 
+def test_the_retired_snapshot_path_entry_hands_over_its_mlx_offload(override_store):
+    # A client that predates the offload knobs omits them, so retiring the row a load read keeps them.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", mlx_ple_offload = 1.0)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["mlx_ple_offload"] == 1.0 and entry["max_seq_length"] == 32768
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+    # An explicit null still resets it.
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, mlx_ple_offload = None)
+    assert "mlx_ple_offload" not in resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+
+
 def test_a_standalone_gguf_save_keeps_its_filename_label_launch_flags(override_store):
     # An early build keyed a loose .gguf by the quant label from its filename, and the bare
     # path the picker writes today is read before that key (see

@@ -2823,7 +2823,8 @@ def update_openai_auto_switch_override(
             + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
             + (() if payload.mirrors_spec_draft_model else _drafter_fields)
         )
-        if _carried_fields and not is_removal:
+        _alias_row: dict = {}
+        if not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -2841,12 +2842,12 @@ def update_openai_auto_switch_override(
             # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
             # dormant tuning on.
             for _alias_id in _alias_ids:
-                _stored_tuning = get_model_override(_alias_id)
-                if not _stored_tuning:
+                _alias_row = get_model_override(_alias_id)
+                if not _alias_row:
                     continue
                 for name in _carried_fields:
                     if _kept_tuning[name] is None:
-                        _kept_tuning[name] = _stored_tuning.get(name)
+                        _kept_tuning[name] = _alias_row.get(name)
                 break
         removed_keys: list[str] = []
         if payload.remove is True:
@@ -2954,9 +2955,14 @@ def update_openai_auto_switch_override(
                         "engine_kv_cache_dtype",
                         "engine_seed",
                         "engine_gpu_memory_utilization",
-                        "mlx_ple_offload",
-                        "mlx_expert_offload",
                     )
+                },
+                # Omitted keeps what the row a load reads holds, which may be an alias retired below.
+                **{
+                    field: getattr(payload, field)
+                    if field in fields_set or is_removal
+                    else (_alias_row or get_model_override(target_id)).get(field)
+                    for field in ("mlx_ple_offload", "mlx_expert_offload")
                 },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
