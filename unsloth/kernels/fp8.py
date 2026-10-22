@@ -427,6 +427,173 @@ def w8a8_block_fp8_matmul_triton(
     return C
 
 
+# Decode-sized M: act_quant fused into a narrow-N w8a8 GEMM, one launch. The 128 x 128 tile above
+# runs only N / 128 programs at M <= 16 (32 for a 4096 wide projection) and a separate act_quant.
+# M is not specialized: batch 1 and batch 8 decode share one compiled variant per call site.
+@triton.jit(do_not_specialize = ["M"])
+def _w8a8_block_fp8_small_m(
+    X,
+    B,
+    C,
+    Bs,
+    P,
+    L,
+    M,
+    N,
+    K,
+    stride_xm,
+    stride_bn,
+    stride_cm,
+    stride_Bs_n,
+    stride_Bs_k,
+    KB_PER_SPLIT,
+    GROUP_N: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    SPLIT_K: tl.constexpr,
+):
+    pid_n = tl.program_id(axis = 0)
+    pid_k = tl.program_id(axis = 1)
+    offs_m = tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
+    m_mask = offs_m < M
+    n_mask = offs_n < N
+    x_ptrs = X + offs_m[:, None] * stride_xm + offs_k[None, :]
+    b_ptrs = B + offs_k[:, None] + offs_n[None, :] * stride_bn
+    bs_ptrs = Bs + (offs_n // GROUP_N) * stride_Bs_n
+    kb_start = pid_k * KB_PER_SPLIT
+    kb_end = tl.minimum(kb_start + KB_PER_SPLIT, tl.cdiv(K, BLOCK_SIZE_K))
+
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype = tl.float32)
+    for kb in range(kb_start, kb_end):
+        k0 = kb * BLOCK_SIZE_K
+        # Same quantization as act_quant_kernel: per row and 128 block, scale max|x| / 448, 1 when all zero.
+        x = tl.load(x_ptrs + k0, mask = m_mask[:, None], other = 0.0).to(tl.float32)
+        a_s = tl.max(tl.abs(x), axis = 1) / 448.0
+        a_s = tl.where(a_s == 0, 1.0, a_s)
+        a = (x / a_s[:, None]).to(B.dtype.element_ty)
+        b = tl.load(b_ptrs + k0, mask = n_mask[None, :], other = 0.0)
+        b_s = tl.load(bs_ptrs + kb * stride_Bs_k, mask = n_mask, other = 0.0)
+        accumulator += tl.dot(a, b) * a_s[:, None] * b_s[None, :]
+
+    c_ptrs = C + offs_m[:, None] * stride_cm + offs_n[None, :]
+    c_mask = m_mask[:, None] & n_mask[None, :]
+    if SPLIT_K == 1:
+        tl.store(c_ptrs, accumulator.to(C.dtype.element_ty), mask = c_mask)
+    else:
+        # Deterministic split K: every split stores its partial, the last to arrive sums them in split order.
+        p_ptrs = P + offs_m[:, None] * N + offs_n[None, :]
+        tl.store(p_ptrs + pid_k * M * N, accumulator, mask = c_mask)
+        tl.debug_barrier()
+        arrived = tl.atomic_add(L + pid_n, 1, sem = "acq_rel")
+        if arrived == SPLIT_K - 1:
+            total = tl.load(p_ptrs, mask = c_mask, other = 0.0, cache_modifier = ".cg")
+            for s in range(1, SPLIT_K):
+                total += tl.load(p_ptrs + s * M * N, mask = c_mask, other = 0.0, cache_modifier = ".cg")
+            tl.store(c_ptrs, total.to(C.dtype.element_ty), mask = c_mask)
+
+
+_FP8_BLOCK_SMALL_M = os.environ.get("UNSLOTH_FP8_BLOCK_SMALL_M", "1") != "0"
+_SMALL_M_MAX = 16
+
+
+# Fitted on full config sweeps (L4, RTX PRO 6000; checked on B200): the widest N tile that still gives
+# 2 tiles per SM, then split K while the grid stays within 4 programs per SM and each split keeps 8+ K blocks.
+_SMALL_M_STAGES = {16: 5, 32: 4, 64: 3, 128: 4}
+
+
+def _small_m_config(M, N, K, device):
+    """(BLOCK_SIZE_N, SPLIT_K, num_warps, num_stages) for the fused small-M kernel; depends on N, K only."""
+    sms = _sm_count(device)
+    block_n = 16
+    for candidate in (128, 64, 32):
+        if triton.cdiv(N, candidate) >= 2 * sms:
+            block_n = candidate
+            break
+    tiles = triton.cdiv(N, block_n)
+    k_blocks = triton.cdiv(K, 128)
+    split_k = 1
+    while tiles * split_k * 2 <= 4 * sms and k_blocks // (split_k * 2) >= 8:
+        split_k *= 2
+    return block_n, split_k, 4, _SMALL_M_STAGES[block_n]
+
+
+@functools.lru_cache(maxsize = None)
+def _sm_count(device):
+    return torch.cuda.get_device_properties(device).multi_processor_count
+
+
+def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
+    # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
+    if not _FP8_BLOCK_SMALL_M or fp8_block_matmul is not w8a8_block_fp8_matmul_triton or torch.compiler.is_compiling():
+        return False
+    if not X.is_cuda or X.dtype not in (torch.bfloat16, torch.float16):
+        return False
+    if list(block_size) != [128, 128] or weight.dtype != torch.float8_e4m3fn:
+        return False
+    K = X.shape[-1]
+    M = X.numel() // K if K else 0
+    N = weight.shape[0]
+    if not (1 <= M <= _SMALL_M_MAX) or weight.shape[1] != K or K % 128 or N % 16:
+        return False
+    # Checkpoints store weight_scale_inv in bf16 too; the kernel promotes it exactly as the w8a8 one does.
+    if weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16) or tuple(weight_scale.shape) != (triton.cdiv(N, 128), K // 128):
+        return False
+    return not long_indexing(X, weight)
+
+
+@_opaque_under_compile(
+    "fp8_block_small_m_linear",
+    lambda X, weight, weight_scale: X.new_empty(X.shape[:-1] + (weight.shape[0],)),
+)
+def fp8_block_small_m_linear(X, weight, weight_scale):
+    """act_quant(X) then the w8a8 block matmul in one launch, for M <= _SMALL_M_MAX rows."""
+    if not X.is_contiguous():
+        X = X.contiguous()
+    N, K = weight.shape
+    M = X.numel() // K
+    out = X.new_empty(X.shape[:-1] + (N,))
+    block_n, split_k, warps, stages = _small_m_config(M, N, K, X.device)
+    k_blocks = triton.cdiv(K, 128)
+    kb_per_split = triton.cdiv(k_blocks, split_k)
+    split_k = triton.cdiv(k_blocks, kb_per_split)
+    tiles = triton.cdiv(N, block_n)
+    if split_k > 1:
+        partial = torch.empty((split_k, M, N), device = X.device, dtype = torch.float32)
+        arrivals = torch.zeros(tiles, device = X.device, dtype = torch.int32)
+    else:
+        partial = arrivals = out
+    with _fp8_triton_device_context(X, static_device_count = True):
+        _w8a8_block_fp8_small_m[(tiles, split_k)](
+            X,
+            weight,
+            out,
+            weight_scale,
+            partial,
+            arrivals,
+            M,
+            N,
+            K,
+            K,
+            weight.stride(0),
+            N,
+            weight_scale.stride(0),
+            weight_scale.stride(1),
+            kb_per_split,
+            GROUP_N = 128,
+            BLOCK_SIZE_M = 16,
+            BLOCK_SIZE_N = block_n,
+            BLOCK_SIZE_K = 128,
+            SPLIT_K = split_k,
+            num_warps = warps,
+            num_stages = stages,
+            enable_fp_fusion = True,
+        )
+    return out
+
+
 @_opaque_under_compile(
     "fp8_block_matmul_torchao",
     lambda A, B, As, Bs, block_size, output_dtype = torch.bfloat16: A.new_empty(
@@ -833,15 +1000,18 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             output = torch_matmul(X, W_deq.T)
             return output if output.dtype == X.dtype else output.to(X.dtype)
 
-        qinput, scale = act_quant(X, block_size[1])
-        output = fp8_block_matmul(
-            qinput,
-            weight,
-            scale,
-            weight_scale,
-            block_size,
-            output_dtype = X.dtype,
-        )
+        if can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
+            output = fp8_block_small_m_linear(X, weight, weight_scale)
+        else:
+            qinput, scale = act_quant(X, block_size[1])
+            output = fp8_block_matmul(
+                qinput,
+                weight,
+                scale,
+                weight_scale,
+                block_size,
+                output_dtype = X.dtype,
+            )
         ctx.weight = weight
         ctx.weight_scale = original_weight_scale
         ctx.block_size = block_size
@@ -861,7 +1031,14 @@ class FP8BlockQuantLinear(torch.autograd.Function):
 # Not torch.compiled: after a model's second weight shape, automatic dynamic shapes recompile the
 # user Triton kernel into a version 40-80x slower than eager (the only work here is that kernel).
 def fp8_torch_block_quant_forward(X, weight, weight_scale):
+    if not (torch.is_grad_enabled() and X.requires_grad):
+        # Nothing to differentiate (decode, no_grad): skip the autograd.Function's per-call host cost.
+        return FP8BlockQuantLinear.forward(_NO_CTX(), X, weight, weight_scale)
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
+
+
+class _NO_CTX:
+    pass
 
 
 def _quantize_fp8_per_row(x, scale_ub = None):
