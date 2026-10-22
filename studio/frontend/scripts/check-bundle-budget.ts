@@ -388,10 +388,10 @@ export const BUDGET = {
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
   // (a CI build measured about 100 B over a local one). Raised by that.
   // Browser use step names in the agent bar (#14681): the step strings in the eager en locale, the executor's step
-  // bookkeeping and the tool card's fence strip: +941 B raw / +386 B transfer (6,893,056 -> 6,893,997 B raw,
-  // 2,076,713 -> 2,077,099 B transfer against b4f3e06940, Node 26, one machine and build). Raised by that.
-  transferBytes: 2_084_696,
-  rawBytes: 6_920_821,
+  // bookkeeping and the tool card's fence strip: +930 B raw / +379 B transfer (6,920,526 -> 6,921,456 B raw,
+  // 2,084,371 -> 2,084,750 B transfer against 9a822f490b, Node 26, 97 chunks, one machine and build). Raised by that.
+  transferBytes: 2_085_075,
+  rawBytes: 6_921_751,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -361,6 +361,17 @@ def test_prepare_page_leaves_inert_base_and_refresh_tags_alone():
     assert html == '<textarea><base href="https://evil.example/"></textarea><p>y</p>'
 
 
+def test_custom_elements_named_like_raw_text_ones_are_not_inert():
+    page = (
+        "<title-bar>x</title-bar><template-card></template-card><script-loader></script-loader>"
+        '<base href="/docs/"><meta http-equiv="refresh" content="1; url=next">'
+    )
+    html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
+    assert "<base" not in html and "refresh" not in html
+
+
 def test_a_failed_fetch_of_an_unparseable_address_still_answers_502():
     from fastapi import HTTPException
 

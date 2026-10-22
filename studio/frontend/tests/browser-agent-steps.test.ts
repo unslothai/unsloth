@@ -9,7 +9,7 @@ import { test } from "node:test";
 
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
-const { agentChat } = await import("../src/features/browser/agent/agent-store.ts");
+const { agentChat, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
 // Actions without a scope act for the chat on screen.
 const CHAT = "new";
@@ -57,4 +57,18 @@ test("Back with no page behind it stays put and says so", async () => {
   assert.match(result?.note ?? "", /no previous page/);
   const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === agentChat(CHAT).tabId);
   assert.equal(tab?.history.length, 1);
+});
+
+test("Back with no page behind it still holds the page it stays on to the site rules", async () => {
+  const block = { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask" } as const;
+  useBrowserAgentStore.getState().setSiteRule("example.com", block);
+  try {
+    await runBrowserAction({ id: "b2", sessionId: "s", op: "back", direction: "down", policy }, run);
+    const result = resultOf("b2");
+    assert.equal(result?.ok, false);
+    assert.equal(result?.text, undefined);
+    assert.match(result?.error ?? "", /blocked example\.com/);
+  } finally {
+    useBrowserAgentStore.getState().setSiteRule("example.com", null);
+  }
 });

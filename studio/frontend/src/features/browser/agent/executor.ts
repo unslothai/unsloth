@@ -794,6 +794,9 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     if (action.op !== "reload" && !nativeMove && !entry) {
       const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
       if (!ready) return { ok: false, error: "the browser tab closed." };
+      // The page it stays on may be one the user declined after a redirect, or one a site rule blocks.
+      const refused = await stillAllowed(ready, action, context);
+      if (refused) return { ok: false, error: refused };
       return observe(ready, context, `There is no ${action.op === "back" ? "previous" : "next"} page in this tab's history; this is still the same page.`);
     }
     if (destination) {

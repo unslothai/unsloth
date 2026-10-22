@@ -116,7 +116,8 @@ _MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGN
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 # Text, not markup: comments, raw-text/RCDATA/noscript/template content, and other tags' attribute values.
 _INERT_START_RE = re.compile(
-    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
+    # A tag-name end, not \b: <title-bar> and <template-card> are custom elements, not raw-text ones.
+    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)(?=[\s/>])"
     + _TAG_BODY
     # No "<" in a tag name: with it, an unclosed "<meta<base<meta..." run backtracked quadratically.
     + r"|<[a-z][^\s/<>]*"
