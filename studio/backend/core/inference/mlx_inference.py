@@ -7,6 +7,7 @@ import functools
 import hashlib
 import importlib
 import inspect
+import math
 import os
 import re
 import shutil
@@ -478,12 +479,16 @@ def compact_sliding_windows(entries):
 
 class VLMPromptSnapshotStore:
     """LRU boundary snapshots under a byte budget; a shorter prefix reads KV rows from its base.
-    A replay (one per key) serves only a prompt of that exact length and reads through no base."""
+    A replay (one per key) serves only a prompt of that exact length and reads through no base.
+
+    Those over the budget are held for one chat's next lookup only; a boundary that serves is
+    handed over uncopied, since that request banks successors a kept copy would sit beside."""
 
     def __init__(
         self,
         max_bytes,
         max_entries = VLM_PROMPT_CACHE_ENTRIES,
+        holds = True,
     ):
         self._max_bytes = max_bytes
         self._max_entries = max_entries
@@ -491,12 +496,40 @@ class VLMPromptSnapshotStore:
         self._bases = {}
         self._replays = {}
         self.nbytes = 0
+        # One request's boundary and replay.
+        self._held = VLMPromptSnapshotStore(math.inf, 2, holds = False) if holds else None
 
     def __len__(self):
         return len(self._entries)
 
-    def lookup(self, key, token_ids, limit):
-        """Longest stored prefix ending by ``limit``, or the replay holding all but the last token."""
+    def __contains__(self, item):
+        return item in self._entries or (self._held is not None and item in self._held)
+
+    def lookup(
+        self,
+        key,
+        token_ids,
+        limit,
+        takes = False,
+    ):
+        """Longest stored prefix ending by ``limit``, or the replay holding all but the last token.
+        A held replay that serves stays held unless the caller ``takes`` it, as a boundary is."""
+        entries, n = self._lookup(key, token_ids, limit)
+        if not self._held:
+            return entries, n
+        held, held_n = self._held._lookup(key, token_ids, limit)
+        if held_n <= n:
+            self._held.clear()
+            return entries, n
+        if takes or not self._held._is_replay((key, tuple(token_ids[:held_n]))):
+            self._held.clear()
+        return held, held_n
+
+    def release_held(self):
+        if self._held is not None:
+            self._held.clear()
+
+    def _lookup(self, key, token_ids, limit):
         best = None
         for item, (entries, _nbytes) in self._entries.items():
             stored_key, prefix = item
@@ -519,16 +552,23 @@ class VLMPromptSnapshotStore:
         prefix_ids,
         entries,
         replay = False,
+        hold = True,
     ):
         compact_sliding_windows(entries)
         nbytes = cache_entries_nbytes(entries)
         if nbytes > self._max_bytes:
+            held = self._held is not None and hold
             logger.debug(
-                "MLX VLM prompt cache: skipping %.2f GB snapshot over the %.2f GB budget",
+                "MLX VLM prompt cache: %s %.2f GB snapshot over the %.2f GB budget",
+                "holding" if held else "skipping",
                 nbytes / 1e9,
                 self._max_bytes / 1e9,
             )
-            return False
+            if not held:
+                return False
+            if any(other[0] != key for other in self._held._entries):
+                self._held.clear()
+            return self._held.store(key, prefix_ids, entries, replay)
         item = (key, tuple(prefix_ids))
         replay = replay or self._is_replay(item)
         readers = [other for other, base in self._bases.items() if base == item]
@@ -619,15 +659,21 @@ class VLMPromptSnapshotStore:
         self._pop(item)
         for other in [other for other, base in self._bases.items() if base == item]:
             self.discard(other)
+        if self._held is not None:
+            self._held.discard(item)
 
     def retain(self, item):
         keep = (item, self._bases.get(item))
         for other in [other for other in self._entries if other not in keep]:
             self.discard(other)
+        if self._held is not None:
+            self._held.retain(item)
 
     def retain_key(self, key):
+        """Held snapshots go too: no prompt has matched them yet."""
         for other in [other for other in self._entries if other[0] != key]:
             self.discard(other)
+        self.release_held()
 
     def resume_entries(self):
         """The newest turn's longest boundary snapshot, then its replay."""
@@ -652,6 +698,7 @@ class VLMPromptSnapshotStore:
         self._bases.clear()
         self._replays.clear()
         self.nbytes = 0
+        self.release_held()
 
 
 def _extends(item, other):
@@ -701,6 +748,7 @@ class VLMPromptCacheSession:
         self.reused_tokens = 0
         self._token_ids = None
         self._media_end = 0
+        self._handed_over = False
 
     def __enter__(self):
         self._forward.__enter__()
@@ -735,6 +783,9 @@ class VLMPromptCacheSession:
             self._keep(None)
             return 0
         entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
+        self._handed_over = (
+            entries is not None and (self._key, tuple(token_ids[:prefix_len])) not in self._store
+        )
         if entries is None and origin:
             # Produced here instead, in the one square forward the vision tokens need.
             self._keep(None)
@@ -779,6 +830,8 @@ class VLMPromptCacheSession:
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: declined snapshot not released (%s)", exc)
             return
+        if self._handed_over:
+            return
         # About to be advanced by this generation: the store keeps a copy.
         try:
             copy = copy_cache_entries(self.cache)
@@ -787,7 +840,9 @@ class VLMPromptCacheSession:
             logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
             self._store.discard((self._key, tuple(prefix_ids)))
             return
-        self._store.store(self._key, prefix_ids, copy)
+        # Held only in place of what served it, never beside the generation that produced it.
+        kept = (self._key, tuple(prefix_ids)) in self._store
+        self._store.store(self._key, prefix_ids, copy, hold = kept)
 
     def update(self, _token_ids, _cache):
         """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a consumer that
@@ -832,7 +887,8 @@ class VLMBatchRowCache:
     and store: ``open`` resumes the longest snapshot ending by the row's boundary and names the
     chunk ends to bank, the boundary and the replay; ``checkpoint`` stores each. With no
     ``store`` the row prefills cold on the same cache layout; ``releases_unserved`` frees what
-    does not serve it, as the single path does."""
+    does not serve it, as the single path does. A row holds nothing over the budget, which
+    would sit beside its own decode, and takes what is held without copying it."""
 
     def __init__(
         self,
@@ -862,13 +918,19 @@ class VLMBatchRowCache:
             self._keep(None)
             return self._make_cache(), ()
         cache = None
-        entries, prefix = self._store.lookup(self._key, token_ids, boundary)
+        entries, prefix = self._store.lookup(self._key, token_ids, boundary, takes = True)
         if entries is not None and prefix >= media_end:
-            try:
-                # The row advances its cache in place; the store keeps its own.
-                cache = copy_cache_entries(entries)
-            except Exception as exc:
-                logger.info("MLX VLM prompt cache: snapshot not copied for a batched row (%s)", exc)
+            if (self._key, tuple(token_ids[:prefix])) not in self._store:
+                # Handed over by the store: the row's only copy.
+                cache = entries
+            else:
+                try:
+                    # The row advances its cache in place; the store keeps its own.
+                    cache = copy_cache_entries(entries)
+                except Exception as exc:
+                    logger.info(
+                        "MLX VLM prompt cache: snapshot not copied for a batched row (%s)", exc
+                    )
         if cache is None:
             cache, prefix = self._make_cache(), 0
         self._keep((self._key, tuple(token_ids[:prefix])) if prefix else None)
@@ -888,6 +950,7 @@ class VLMBatchRowCache:
                 self._token_ids[:token_count],
                 copy_cache_entries(cache),
                 replay = token_count == self._replay,
+                hold = False,
             )
         except Exception as exc:
             logger.info("MLX VLM prompt cache: batched row snapshot not stored (%s)", exc)
@@ -4754,6 +4817,8 @@ class _VisionBatchSession:
             raise RowRefused("this row cannot carry the load's quantized KV cache")
         if state is None and plan.images:
             backend._release_vlm_snapshots()
+        elif state is None:
+            backend._release_held_vlm_snapshots()
         resume = {} if state is None else {"prompt_cache_state": state}
         admitted_at = time.perf_counter()
         try:
@@ -5096,6 +5161,12 @@ class MLXInferenceBackend:
         store = getattr(self, "_vlm_snapshot_store", None)
         if store is not None:
             store.clear()
+
+    def _release_held_vlm_snapshots(self):
+        """Before a request that looks nothing up, which they would sit beside."""
+        store = getattr(self, "_vlm_snapshot_store", None)
+        if store is not None:
+            store.release_held()
 
     def _vlm_prompt_cache_store(self):
         if self._vlm_snapshot_store is not None or self._vlm_snapshot_store_unavailable:
@@ -7743,6 +7814,8 @@ class MLXInferenceBackend:
                 if session is None and (images or videos):
                     # Free headroom for the vision pass under the lock; a video turn resumes no snapshot, so retained ones are pure occupancy
                     self._release_vlm_snapshots()
+                elif session is None:
+                    self._release_held_vlm_snapshots()
                 generation_scope.enter_context(
                     self._generation_scopes("vision", *(() if draft is None else ("speculative",)))
                 )
@@ -8176,6 +8249,8 @@ class MLXInferenceBackend:
             ]
             if any(plan.images or plan.videos for plan in plans):
                 self._release_vlm_snapshots()
+            else:
+                self._release_held_vlm_snapshots()
             logger.info(
                 "Generating %d vision replies as one batch: images=%d, videos=%d, max_tokens=%s, model=%s",
                 len(plans),

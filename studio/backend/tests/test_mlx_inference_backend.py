@@ -8518,6 +8518,23 @@ def test_a_resident_vision_tool_row_decodes_its_ids_and_keeps_the_stop_that_clos
     assert list(session.step())[-2:] == [("r", "".join(pieces)), ("r", None)]
 
 
+def _store_holding_over_budget():
+    from core.inference import mlx_inference
+
+    store = mlx_inference.VLMPromptSnapshotStore(max_bytes = 10**9)
+    store._entries[("m", (1,))], store._held._entries[("m", (1, 2))] = ([], 0), ([], 0)
+    return store
+
+
+def test_a_vision_reply_without_a_prompt_cache_session_frees_what_is_held(monkeypatch):
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._vlm_snapshot_store = store = _store_holding_over_budget()
+    _drive_vlm_generation(backend, monkeypatch)
+    assert not store._held and len(store) == 1
+
+
 def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypatch):
     engine = _batch_engine(monkeypatch)
     monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
@@ -8553,8 +8570,11 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     monkeypatch.setattr(engine, "stream_batch", stream_batch, raising = False)
     monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
     backend._reads_vision, backend._generation_lock = False, threading.Lock()
+    backend._vlm_snapshot_store = store = _store_holding_over_budget()
     with pytest.raises(LookupError):
         next(backend._generate_vlm_batch([{}]))
+    # Its rows look nothing up, so what is held over the budget would sit beside them.
+    assert not store._held and len(store) == 1
     from dataclasses import make_dataclass
 
     fields = (
@@ -8729,8 +8749,9 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session.admit({}, "text")
     assert added[0].prompt_cache_state._store is store and len(store) == 2
     backend._model = SimpleNamespace(config = SimpleNamespace(image_token_id = 9))
+    store._held._entries[("m|img", (1, 2))] = ([], 0)
     session.admit({"images": [object()]}, "image")
-    assert list(store._entries) == [("m|img", (1,))]
+    assert list(store._entries) == [("m|img", (1,))] and not store._held
     assert added[1].prompt_cache_state._store is store
     backend._model.config.use_bidirectional_attention = "vision"
     session.admit({"images": [object()]}, "block")
@@ -8753,6 +8774,11 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session._resumes_rows = mlx_inference._row_prompt_cache_gap() is None
     session.admit({"images": [object()]}, "old")
     assert not hasattr(added[3], "prompt_cache_state") and len(store) == 0
+    # A text row that looks nothing up still frees what is held over the budget.
+    store._entries[("m", (1,))] = ([], 0)
+    store._held._entries[("m", (1, 2))] = ([], 0)
+    session.admit({}, "old text")
+    assert not store._held and len(store) == 1
 
     backend._kv_quant = {"kv_bits": 4}
     with pytest.raises(mlx_inference.RowRefused):
@@ -8760,7 +8786,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session._resumes_rows = True
     backend._vlm_prompt_cache_store = lambda: None
     session.admit({"images": [object()]}, "quantized")
-    assert added[4].prompt_cache_state._store is None
+    assert added[5].prompt_cache_state._store is None
 
 
 def _batch_engine(monkeypatch):
