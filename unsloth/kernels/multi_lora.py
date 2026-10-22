@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .utils import (
-    QUANT_STATE,
+    _base_quant_state,
     fast_dequantize,
     matmul_lora,
     torch_amp_custom_bwd,
@@ -540,7 +540,7 @@ class MultiLoraLinear(nn.Module):
         return multi_lora_linear(
             x,
             W,
-            QUANT_STATE(W),
+            _base_quant_state(self.base_layer, W),
             getattr(self.base_layer, "bias", None),
             self.lora_A,
             self.lora_B,
@@ -563,7 +563,7 @@ def inject_multi_lora(
         p.requires_grad_(False)
     replaced = []
     for name, module in list(model.named_modules()):
-        if not name or name.split(".")[-1] not in targets:
+        if not name or not any(name == t or name.endswith("." + t) for t in targets):
             continue
         if not hasattr(module, "in_features") or not hasattr(module, "weight"):
             continue
@@ -589,7 +589,9 @@ def set_multi_lora_batch(
     layers = _layers(model)
     if not layers:
         raise ValueError("The model has no multi-LoRA layers.")
-    batch = MultiLoraBatch.from_adapter_ids(adapter_ids, layers[0][1].num_adapters, seq_len)
+    first = layers[0][1]
+    adapter_ids = adapter_ids.to(first.lora_A.device)
+    batch = MultiLoraBatch.from_adapter_ids(adapter_ids, first.num_adapters, seq_len)
     for _, layer in layers:
         layer.batch = batch
     return batch

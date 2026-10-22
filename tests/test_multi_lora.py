@@ -159,6 +159,15 @@ def test_per_adapter_loss_is_each_adapters_own_mean():
     torch.testing.assert_close(total, losses.sum())
 
 
+def test_targets_match_qualified_names_like_peft():
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Sequential(torch.nn.Linear(4, 4)), torch.nn.Linear(4, 4))
+    assert ml.inject_multi_lora(model, ["0.0"], 2) == ["0.0"]
+    assert isinstance(model[0][0], ml.MultiLoraLinear) and not isinstance(
+        model[1], ml.MultiLoraLinear
+    )
+
+
 def test_layers_refuse_a_batch_that_does_not_match_the_tokens():
     model = _tiny_model(2)
     with pytest.raises(ValueError):
@@ -175,7 +184,7 @@ _INTERPRET = textwrap.dedent(
     root = sys.argv[1]
     pkg = types.ModuleType("mlk"); pkg.__path__ = []; sys.modules["mlk"] = pkg
     utils = types.ModuleType("mlk.utils")
-    utils.QUANT_STATE = lambda W: None
+    utils._base_quant_state = lambda layer, W: None
     utils.fast_dequantize = lambda W, q = None, dtype = None, **k: W
     utils.matmul_lora = lambda X, W, Wq, A, B, s, out = None: X @ W.t()
     utils.torch_amp_custom_fwd = utils.torch_amp_custom_bwd = lambda f: f
