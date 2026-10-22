@@ -27,7 +27,6 @@ test("today and yesterday go by calendar day, not elapsed time", () => {
 test("older messages show the date, with the year only when it differs", () => {
   assert.match(at(2026, 8, 23, 21, 12), /^Sep 23, 9:12\s?PM$/);
   assert.match(at(2025, 8, 13, 21, 12), /2025/);
-  // Across New Year, the day before is still yesterday.
   const jan1 = new Date(2027, 0, 1, 9, 0).getTime();
   assert.match(
     formatMessageDate(new Date(2026, 11, 31, 22, 0).getTime(), jan1, "en", labels),

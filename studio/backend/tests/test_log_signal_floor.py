@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Nothing that matters may ever be suppressed, and the budget may not be met by deleting.
-
-``test_log_budget.py`` caps how much gets written. On its own that is a dangerous test: an
-upper bound is satisfied just as well by a middleware that was never mounted, a logger
-replaced with a no-op, a scenario that stopped issuing requests, or a developer who deleted
-an error log to get under the number. Every one of those is a worse outcome than the
-regression the cap exists to catch.
-
-So this file asserts the floor. Failures and mutations log every time at any interval, and
-the replay is proved to have actually exercised the real middleware before any of it counts.
-"""
+"""Failures and mutations must always log, so the volume cap cannot be met by silencing real errors."""
 
 from __future__ import annotations
 
@@ -27,7 +17,6 @@ if _TESTS_DIR not in sys.path:
 from loggers import handlers as hmod  # noqa: E402
 from log_budget import policy, replay, session  # noqa: E402
 
-# Every way a request can fail that a user or a support engineer would go looking for.
 FAILURE_STATUSES = (400, 401, 403, 404, 409, 422, 429, 500, 502, 503)
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
@@ -65,20 +54,11 @@ class TestFailuresAreNeverSuppressed:
 
     @pytest.mark.parametrize("status", FAILURE_STATUSES)
     def test_repeated_failures_all_log_on_every_classified_path(self, status, monkeypatch):
-        # Zero gap: the worst case for any window-based suppressor.
-        #
-        # The `excluded` class is left out because it is the one suppressor that is NOT
-        # gated on a 2xx: `__call__` drops the path before the status is considered, so a
-        # 500 on /api/train/status is invisible here. That is existing behaviour, not
-        # something this guard can assert away; it is pinned instead by
-        # test_the_excluded_set_is_exactly_what_was_reviewed below.
+        # `excluded` is left out: it drops the path before status is considered.
         paths = sorted(
             p
             for p in session.ALL_POLLS
             if policy.classify(hmod, p) != policy.EXCLUDED
-            # Chat-list 401s have one narrow, deliberate exemption during the bootstrap
-            # token race. Its exact boundaries are pinned by
-            # test_the_chat_list_401_exemption_is_only_pre_auth rather than waved through.
             and not (status == 401 and p in hmod._CHAT_LIST_PATHS)
         )
         requests = [
@@ -123,8 +103,8 @@ class TestFailuresAreNeverSuppressed:
             monkeypatch,
             [
                 replay.Request("GET", path, 200),
-                replay.Request("GET", path, 200),  # collapsed, correctly
-                replay.Request("GET", path, 503),  # must not be
+                replay.Request("GET", path, 200),
+                replay.Request("GET", path, 503),
                 replay.Request("GET", path, 503),
             ],
             gap_s = 0.0,
@@ -138,13 +118,8 @@ class TestFailuresAreNeverSuppressed:
         )
 
     def test_the_chat_list_401_exemption_is_only_pre_auth(self, monkeypatch):
-        """The one status-specific exemption, held to its stated scope.
-
-        A chat list poll racing the first token refresh answers 401 for reasons that are
-        not a problem, so it is suppressed. Once a refresh has succeeded a 401 means
-        something real and must log. An exemption that quietly widened past the bootstrap
-        window would hide genuine auth failures for the rest of the session.
-        """
+        """Chat-list 401s are suppressed only before the first token refresh; after that a 401 must
+        still log."""
         from loggers.handlers import LoggingMiddleware
         import asyncio
 
@@ -170,13 +145,11 @@ class TestFailuresAreNeverSuppressed:
             "successful refresh"
         )
 
-        # A 500 is not covered by the exemption even during bootstrap.
         send(500)
         assert (
             len(capture.events) == 1
         ), "only 401 is exempt during bootstrap; a 500 on the same path must log"
 
-        # After a refresh succeeds, a 401 is real.
         middleware._auth_refreshed = True
         send(401)
         assert len(capture.events) == 2, (
@@ -185,15 +158,8 @@ class TestFailuresAreNeverSuppressed:
         )
 
     def test_the_excluded_set_is_exactly_what_was_reviewed(self):
-        """The one class where a failure genuinely does disappear.
-
-        Every other suppressor checks the status first, so a 4xx or 5xx always logs. The
-        ``excluded`` check in ``LoggingMiddleware.__call__`` runs before the status is
-        known, so these paths log nothing at all, including a 500. That may be the right
-        trade for a metrics endpoint polled twice a second, but it should never grow by
-        accident: adding a path here means accepting that its failures are invisible in the
-        access log.
-        """
+        """Excluded paths log nothing at all, including 5xx, since the check runs before the status
+        is known."""
         reviewed = {
             "/api/system",
             "/api/train/hardware",
@@ -274,17 +240,7 @@ class TestTheGuardIsNotVacuous:
 
 
 class TestSlowSuccessIsNotYetSignal:
-    """A 200 that took a minute is treated exactly like a 200 that took a millisecond.
-
-    Both suppressors key on the STATUS CODE. Nothing anywhere reads how long the request
-    took, so a degrading endpoint stays invisible for as long as it keeps returning 2xx.
-
-    These tests assert the CURRENT behaviour rather than the desired one, on purpose. The
-    gap is real and worth closing, but a guard that silently tolerates either answer would
-    let the exemption be added and then removed again without anyone noticing. Closing it
-    should flip these deliberately, with the new volume budgeted the same way as every
-    other line here.
-    """
+    """Suppression keys on status code only, so a slow 2xx is treated like a fast one; pinned on purpose."""
 
     SLOW_MS = 30_000.0
 
@@ -316,12 +272,8 @@ class TestSlowSuccessIsNotYetSignal:
         )
 
     def test_the_harness_can_tell_a_slow_request_from_a_fast_one(self, monkeypatch):
-        """Guards the guard: without this, the two tests around it are vacuous.
-
-        ``duration_ms`` has to actually reach the middleware's clock. If it silently did
-        nothing, every 'slow' case above would really be a fast one and would pass for the
-        wrong reason.
-        """
+        """Proves duration_ms reaches the middleware clock, so the slow-request tests cannot pass
+        vacuously."""
         path = "/api/models/list"
         capture = _drive(
             monkeypatch,

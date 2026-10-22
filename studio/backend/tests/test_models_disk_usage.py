@@ -37,7 +37,7 @@ def second_drive(tmp_path, monkeypatch):
         return _Usage(100 * GB, 60 * GB, 40 * GB)
 
     def fake_device(path):
-        os.stat(path)  # real errors: missing, permission denied
+        os.stat(path)
         return 2 if on_second(path) else 1
 
     monkeypatch.setattr(system_disk, "_device", fake_device)
@@ -86,7 +86,7 @@ def test_volume_sharing_the_system_pool_adds_nothing(second_drive, monkeypatch):
     reason = "hosted Linux / macOS runners have one disk (Windows checks out on D:, home on C:)",
 )
 def test_hosted_runner_home_cache_is_the_system_disk():
-    # macos runners put home on the APFS Data volume (own st_dev, same container as `/`).
+    # macOS runners put home on the APFS Data volume (own st_dev, same container as `/`).
     assert system_disk.models_disk_usage(Path.home() / ".cache" / "huggingface" / "hub") is None
 
 
@@ -107,7 +107,7 @@ def test_active_cache_on_root_volume_is_none_on_a_single_disk_host(tmp_path, mon
     sys.platform == "win32" or os.geteuid() == 0, reason = "needs POSIX permission bits"
 )
 def test_unreadable_cache_under_a_readable_volume_is_not_its_parent(second_drive):
-    # Python 3.14's Path.exists is False for EACCES too; climbing on it reported the parent volume.
+    # Python 3.14 Path.exists is False on EACCES too.
     locked = second_drive / "locked"
     (locked / "hub").mkdir(parents = True)
     locked.chmod(0)
@@ -181,7 +181,6 @@ def test_switching_away_from_a_hung_folder_probes_the_new_one(fresh_cache, monke
     assert system_disk.cached_models_disk_usage() is None
     folder["key"] = "local"
     assert system_disk.cached_models_disk_usage() == {"key": "local"}
-    # The slow probe landing late must not evict the active folder's reading.
     release.set()
     for _ in range(50):
         if not system_disk._probes:

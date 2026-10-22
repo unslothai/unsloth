@@ -13,7 +13,7 @@ import pytest
 from core.inference import llama_cpp
 
 
-# q4_1 / q5_0 / q5_1 run on the GPU since ggml-org/llama.cpp#28079.
+# q4_1 / q5_0 / q5_1 run on GPU since ggml-org/llama.cpp#28079.
 SAFE = ("f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "f32", None)
 GPU = (frozenset({"cpu", "cuda"}), frozenset({"cpu", "hip"}))
 NO_GPU = (frozenset(), frozenset({"cpu"}), frozenset({"cpu", "vulkan"}))

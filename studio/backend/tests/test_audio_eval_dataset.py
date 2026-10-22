@@ -58,7 +58,6 @@ CODEC_TYPES = ("csm", "snac", "bicodec", "dac")
 
 @pytest.fixture
 def audio_trainer(monkeypatch):
-    # Avoid MLX substitution on Apple silicon.
     monkeypatch.setattr(tmod, "should_use_mlx_training_backend", lambda *a, **k: False)
     t = tmod.UnslothTrainer()
     t.model_name = "unsloth/csm-1b"
@@ -351,8 +350,6 @@ def test_the_generic_sft_path_uses_the_same_cadence_gate(
             output_dir = str(tmp_path),
         )
     except Exception:
-        # The generic path needs a real model; the eval decision happens before that, so only
-        # the captured config matters.
         pass
 
     if expect_enabled:
