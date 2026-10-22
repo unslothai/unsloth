@@ -808,11 +808,14 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
 def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
     """The encode release streams groups and pins them back on every new prompt. It leaves the freed blocks cached:
     an encoder allocation that needs the room gets it back from the allocator itself. An empty_cache per prompt cost a
-    device sync plus fresh cudaMallocs for the encoder on every render. Only a step-graph pool dropped since the last
-    flush is handed back, once."""
+    device sync plus fresh cudaMallocs for the encoder on every render."""
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     block_mib = 4
     assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "_POOL_DROPS", [0])  # no graph pool retired before this load
+    monkeypatch.setattr(cg, "_POOL_FLUSHED", [0], raising = False)
     flushes = {"n": 0}
     real = torch.cuda.empty_cache
 
@@ -827,14 +830,48 @@ def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
         assert on_device() == ["cuda"] * 6
         assert torch.equal(net(x.cuda()).cpu(), ref)
     assert flushes["n"] == 0
-    # a re-record dropped a step-graph pool: the next encode hands its segments back, once
+
+
+@pytest.mark.parametrize("retired", ["step_pool", "block_pool", "reset_all"])
+def test_encode_release_flushes_once_per_retired_graph_pool(monkeypatch, retired):
+    """A retired graph pool keeps its segments reserved until a flush: the next encode hands them back once, whether
+    the shared step pool was dropped (a re-record) or a failed per-block capture retired the block layer's own pool.
+    reset_all (a LoRA load) already empties the cache after dropping its graphs: no second flush then."""
     import core.inference.diffusion_cuda_graph as cg
 
-    monkeypatch.setattr(cg, "_POOL_DROPS", [cg._POOL_DROPS[0] + 1])
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 8), None) == 1
+    monkeypatch.setattr(cg, "_POOL_DROPS", [0])
+    monkeypatch.setattr(cg, "_POOL_FLUSHED", [0], raising = False)
+    flushes = {"n": 0}
+    real = torch.cuda.empty_cache
+
+    def counted():
+        flushes["n"] += 1
+        real()
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", counted)
+
+    class _Graph:
+        def reset(self):
+            pass
+
+    if retired == "step_pool":
+        monkeypatch.setattr(cg, "_POOL_BOX", [object()])
+        cg._drop_pool_if_unused()
+    elif retired == "block_pool":
+        monkeypatch.setattr(cg, "_abandon_capture_pool", lambda pool: False)
+        monkeypatch.setattr(cg, "_heal_generators", lambda: None)
+        monkeypatch.setattr(cg, "_FAILED_GRAPHS", [])
+        cg.retire_failed_capture(_Graph(), object(), RuntimeError("capture failed"))
+    else:
+        monkeypatch.setattr(cg, "_POOL_BOX", [object()])
+        cg.reset_all([_Graph()])
+    flushes["n"] = 0
     for _ in range(2):
         enc(torch.randn(2, 8, device = "cuda"))
         assert torch.equal(net(x.cuda()).cpu(), ref)
-    assert flushes["n"] == 1
+    assert flushes["n"] == (0 if retired == "reset_all" else 1)
 
 
 def test_encode_release_restores_after_a_failed_encode(monkeypatch):

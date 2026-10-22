@@ -3764,12 +3764,20 @@ def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
     return False
 
 
-def _graph_pool_drops() -> int:
+def _graph_pools_pending() -> bool:
     try:
-        from .diffusion_cuda_graph import pool_drops
-        return pool_drops()
+        from .diffusion_cuda_graph import pools_pending_flush
+        return pools_pending_flush()
     except Exception:  # noqa: BLE001 - no graph layer
-        return 0
+        return False
+
+
+def _note_graph_pools_flushed() -> None:
+    try:
+        from .diffusion_cuda_graph import note_pools_flushed
+        note_pools_flushed()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def install_encode_release(
@@ -3798,7 +3806,6 @@ def install_encode_release(
             pipe_ref = lambda: pipe  # noqa: E731 - not weak-referenceable
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
         pending: list = []
-        flushed_at = [_graph_pool_drops()]
 
         def _before(module: Any, args: Any) -> None:
             owner = pipe_ref()
@@ -3810,14 +3817,13 @@ def install_encode_release(
             # No empty_cache per prompt: the freed blocks stay cached, and an encoder allocation (also one on the copy
             # stream, which cannot take the default stream's free blocks) that finds no room gets them back from the
             # allocator, which releases cached segments to the driver and retries before it raises. Flushing on every
-            # prompt cost a device sync plus fresh cudaMallocs for the encoder. Only a step-graph pool dropped since
-            # the last flush (a re-record) is handed back here, as the per-prompt flush did, so its segments do not
-            # pile up beside each new recording.
+            # prompt cost a device sync plus fresh cudaMallocs for the encoder. Only a graph pool retired since the last
+            # flush (a re-record, a failed capture) and not already flushed by the graph layer is handed back here, as
+            # the per-prompt flush did, so its segments do not pile up beside each new recording.
             pending.append(restore)
-            drops = _graph_pool_drops()
-            if restore is not None and drops != flushed_at[0] and torch.cuda.is_available():
-                flushed_at[0] = drops
+            if restore is not None and _graph_pools_pending() and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                _note_graph_pools_flushed()
 
         def _after(module: Any, args: Any, output: Any) -> None:
             if not pending:

@@ -1421,6 +1421,8 @@ def _release_cached() -> None:
         torch = _torch()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            from .diffusion_cuda_graph import note_pools_flushed
+            note_pools_flushed()
     except Exception:  # noqa: BLE001
         pass
 
