@@ -16,15 +16,26 @@ from pathlib import Path
 import pytest
 
 _TESTS = Path(__file__).resolve().parent
-_VERSION_STRINGS = {"torch.version.hip", "torch.version.cuda"}
+_VERSION_ATTRS = ("hip", "cuda")
+
+
+def _is_version_string(node: ast.expr) -> bool:
+    # <torch or any alias>.version.hip / .cuda
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr in _VERSION_ATTRS
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "version"
+    )
 
 
 def _string_operands(condition: ast.expr) -> list[str]:
-    """Operands a condition can evaluate to: ``and`` / ``or`` return one of their operands, nested ones included."""
+    """Operands a condition can evaluate to: ``or`` can return any operand, ``and`` only its last one (an
+    earlier truthy operand is never the result)."""
     if isinstance(condition, ast.BoolOp):
-        return [found for value in condition.values for found in _string_operands(value)]
-    text = ast.unparse(condition)
-    return [text] if text in _VERSION_STRINGS else []
+        values = condition.values if isinstance(condition.op, ast.Or) else condition.values[-1:]
+        return [found for value in values for found in _string_operands(value)]
+    return [ast.unparse(condition)] if _is_version_string(condition) else []
 
 
 def test_nested_boolean_operands_are_inspected():
@@ -34,6 +45,13 @@ def test_nested_boolean_operands_are_inspected():
     )
     assert _string_operands(tree.body) == ["torch.version.hip"]
     assert _string_operands(ast.parse("bool(torch.version.hip)", mode = "eval").body) == []
+    assert (
+        _string_operands(ast.parse("torch.version.hip and unsupported_arch", mode = "eval").body)
+        == []
+    )
+    assert _string_operands(ast.parse("t.version.cuda or x", mode = "eval").body) == [
+        "t.version.cuda"
+    ]
 
 
 def test_every_condition_argument_is_inspected(tmp_path, monkeypatch):
@@ -57,7 +75,7 @@ def test_no_skip_condition_can_evaluate_to_a_version_string():
     offenders = []
     for path in sorted(_TESTS.rglob("*.py")):
         source = path.read_text(encoding = "utf-8", errors = "replace")
-        if "torch.version" not in source:
+        if "version.hip" not in source and "version.cuda" not in source:
             continue
         try:
             tree = ast.parse(source)
