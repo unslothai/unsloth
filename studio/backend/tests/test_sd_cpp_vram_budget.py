@@ -522,12 +522,18 @@ def _h3_telemetry(monkeypatch, *, rocm, smi):
     return touched
 
 
-def test_h3_card_probes_read_amd_smi_on_rocm_without_a_context(monkeypatch):
+def test_h3_card_probes_read_nothing_on_rocm_without_a_context(monkeypatch):
+    # The pre-spawn budget never creates a context, and ROCm's amd-smi rows need one.
     touched = _h3_telemetry(monkeypatch, rocm = True, smi = True)
-    assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (40 * GiB, 48 * GiB)
+    assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
+    assert video_mod._h3_visible_card_count("cuda") == 0
+    assert touched == []
+
+
+def test_h3_residency_reads_fall_back_to_torch_on_rocm(monkeypatch):
+    # The residency and pressure reads may create a context, as they did before the launch budget.
+    _h3_telemetry(monkeypatch, rocm = True, smi = True)
     assert video_mod._h3_card_memory_bytes("cuda", 0) == (40 * GiB, 48 * GiB)
-    assert video_mod._h3_visible_card_count("cuda") == 1
-    assert touched == []  # no unified-memory reconcile, no torch fallback
 
 
 @pytest.mark.parametrize("rocm, smi", [(True, True), (False, False)], ids = ["rocm_amd_smi", "nvidia_no_smi"])
