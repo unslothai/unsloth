@@ -367,8 +367,11 @@ export const BUDGET = {
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
   // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
   // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_075_550,
-  rawBytes: 6_887_000,
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate)
+  // add 1,504 B raw / 375 B transfer (6,886,968 -> 6,888,472 B raw, 2,075,385 -> 2,075,760 B transfer against
+  // 6bbe268, one machine and build, Node 24, 98 chunks). Raised by that.
+  transferBytes: 2_075_925,
+  rawBytes: 6_888_504,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
