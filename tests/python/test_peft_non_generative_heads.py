@@ -121,3 +121,9 @@ def test_ctc_and_classifier_heads_are_trained_and_saved():
     source = _get_peft_model_source()
     assert "modules_to_save = _trainable_head_modules(model) or None" in source
     assert "type(model) is PeftModel" in source  # a generic PeftModel is not wrapped twice
+
+
+def test_num_labels_on_an_audio_classifier_loads_the_audio_head():
+    source = VISION_PATH.with_name("loader.py").read_text(encoding = "utf-8")
+    shortcut = source[source.index("if _num_labels is not None:") :][:900]
+    assert "AutoModelForAudioClassification" in shortcut

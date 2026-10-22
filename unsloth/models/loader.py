@@ -3096,6 +3096,14 @@ class FastModel(FastBaseModel):
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
+                # Audio classifiers (AST, wav2vec2) map only under the audio classification auto class.
+                if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
+                    import transformers as _transformers
+                    _audio_cls = getattr(_transformers, "AutoModelForAudioClassification", None)
+                    if _audio_cls is not None and resolve_model_class(
+                        _audio_cls, model_config, **_probe_hub_kwargs
+                    ):
+                        auto_model = _audio_cls
             elif _is_text_seq2seq_config(model_config) or (
                 # SeamlessM4T: Seq2SeqLM-mapped (text-to-text) beside its speech classes, no causal-LM class.
                 not is_vlm
