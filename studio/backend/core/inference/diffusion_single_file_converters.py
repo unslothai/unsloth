@@ -449,7 +449,7 @@ class HostRamBudget:
         from .diffusion_small_host import (
             host_ram_check_disabled,
             host_ram_mib,
-            host_reserve_mib,
+            single_file_host_reserve_mib,
         )
 
         self.path, self.why, self.logger = path, why, logger
@@ -469,7 +469,7 @@ class HostRamBudget:
         if available is None:
             return
         self.available_mib = int(available)
-        self.reserve_mib = host_reserve_mib(total)
+        self.reserve_mib = single_file_host_reserve_mib(total)
         # Armed by the file size here, and by the widened estimate in ``check``: a 900 MiB nvfp4 file widens
         # to 3.6 GiB of bf16. Only a load small on disk AND in its estimate is never checked.
         try:

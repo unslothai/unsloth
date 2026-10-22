@@ -267,3 +267,64 @@ def test_a_file_that_fits_only_stored_loads_with_fp8_storage_and_is_refused_wide
     monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
     with pytest.raises(RuntimeError, match = "Not enough system RAM"):
         load(fp8_storage = cq.comfy_fp8_storage(None))
+
+
+_GIB = 1024
+_KREA2_WIDENED_MIB = 24 * _GIB  # Krea 2 fp8 widened to bf16
+
+
+def _budget(tmp_path, monkeypatch, total_mib, available_mib):
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    _host(monkeypatch, available_mib, total_mib)
+    path = tmp_path / "krea2.safetensors"
+    path.write_bytes(b"\0")
+    return conv.HostRamBudget(str(path), "widening its weights to bfloat16")
+
+
+@pytest.mark.parametrize("available_gib", [28.5, 29.0, 30.0, 30.3])
+def test_big_host_loads_what_the_fp8_storage_rule_widens(tmp_path, monkeypatch, available_gib):
+    """64 GB host, Krea 2 (~24 GB widened), 28-30.4 GB free: the fp8-storage rule widens (the widened load fits its
+    reserve), so the single-file refusal must not reserve more and refuse the load the rule just chose."""
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    available = int(available_gib * _GIB)
+    cuda = type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
+    assert (
+        cq.fp8_storage_wanted(
+            cuda, widened_mib = _KREA2_WIDENED_MIB, host_available_mib = available
+        )
+        is False
+    )
+    budget = _budget(tmp_path, monkeypatch, 64 * _GIB, available)
+    budget.check(_KREA2_WIDENED_MIB * conv._MIB)  # no refusal
+
+
+def test_reserves_cannot_drift(monkeypatch):
+    """The single-file refusal never reserves more than the fp8-storage rule keeps free when it widens."""
+    for total in (8 * _GIB, 16 * _GIB, 31 * _GIB, 40 * _GIB, 64 * _GIB, 256 * _GIB, 2048 * _GIB):
+        assert small_host.single_file_host_reserve_mib(total) <= cq.FP8_STORAGE_HOST_RESERVE_MIB
+    assert cq.FP8_STORAGE_HOST_RESERVE_MIB == small_host.FP8_STORAGE_HOST_RESERVE_MIB
+
+
+def test_big_host_still_refuses_a_load_that_cannot_fit(tmp_path, monkeypatch):
+    """Too little free RAM for even the cheapest path is still refused before any read."""
+    budget = _budget(tmp_path, monkeypatch, 64 * _GIB, 20 * _GIB)
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        budget.check(_KREA2_WIDENED_MIB * conv._MIB)
+    # fp8-stored (~12 GB) fits 20 GB free with the reserve; the same stored need is refused at 15 GB free
+    budget.check(12 * _GIB * conv._MIB)
+    budget = _budget(tmp_path, monkeypatch, 64 * _GIB, 15 * _GIB)
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        budget.check(12 * _GIB * conv._MIB)
+
+
+@pytest.mark.parametrize("total_gib", [8, 16, 24, 31])
+def test_small_host_reserve_unchanged(tmp_path, monkeypatch, total_gib):
+    """Hosts up to 40 GB keep the small-host reserve max(3 GB, 10%) on the single-file refusal."""
+    total = total_gib * _GIB
+    reserve = max(3072, int(total * 0.10))
+    assert small_host.host_reserve_mib(total) == reserve
+    budget = _budget(tmp_path, monkeypatch, total, 6 * _GIB + reserve)
+    assert budget.reserve_mib == reserve
+    budget.check(6 * _GIB * conv._MIB)
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        budget.check((6 * _GIB + 1) * conv._MIB)

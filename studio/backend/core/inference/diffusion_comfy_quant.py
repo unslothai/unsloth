@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
 from .diffusion_single_file_converters import host_ram_budget_scope
+from .diffusion_small_host import FP8_STORAGE_HOST_RESERVE_MIB
 
 COMFY_QUANT_SUFFIX = ".comfy_quant"
 QUANT_METADATA_KEY = "_quantization_metadata"
@@ -39,7 +40,6 @@ COMFY_FP8_ENV = "UNSLOTH_DIFFUSION_COMFY_FP8"
 # Store fp8 layers no fp8 GEMM takes as fp8, widened per layer (ComfyUI manual_cast). Unset: only when widening
 # would offload or crowd host RAM (per-layer widen costs eager steps); ``1``: always; ``0``: never.
 FP8_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP8_STORAGE"
-FP8_STORAGE_HOST_RESERVE_MIB = 4096
 # Header metadata our own converter writes (base model, scheme); ComfyUI ignores it.
 CONVERSION_RECORD_KEY = "unsloth_comfy_conversion"
 
