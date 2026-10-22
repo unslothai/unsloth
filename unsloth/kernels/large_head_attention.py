@@ -746,9 +746,15 @@ def _shapes_qualify(query, key, value):
     if key.dtype != query.dtype or value.dtype != query.dtype:
         return False
     # The output is a fresh contiguous query-sized tensor; the inputs may be strided views.
-    return max(
-        query.numel() - 1, _furthest_offset(query), _furthest_offset(key), _furthest_offset(value)
-    ) <= _INT32_MAX
+    return (
+        max(
+            query.numel() - 1,
+            _furthest_offset(query),
+            _furthest_offset(key),
+            _furthest_offset(value),
+        )
+        <= _INT32_MAX
+    )
 
 
 _SELF_CHECK = {}
@@ -877,7 +883,9 @@ def _make_router(original):
             and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
             # transformers 4.x keeps an explicit is_causal beside a mask and SDPA applies both, while 5.x
             # drops it; the intervals carry the mask only, so leave that pairing to the wrapped function.
-            and not (attention_mask is not None and is_causal is not None and is_causal is not False)
+            and not (
+                attention_mask is not None and is_causal is not None and is_causal is not False
+            )
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
