@@ -536,6 +536,32 @@ export function ChatSettingsPanel({
     );
   }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
   const currentCheckpoint = params.checkpoint;
+  const setRememberedParamsForModel = useChatRuntimeStore(
+    (s) => s.setRememberedParamsForModel,
+  );
+  // Without this a chat's sampling stays that chat's: new chats start from the model's memory.
+  const saveSamplingForCurrentModel = async () => {
+    const modelId = currentCheckpoint;
+    const current = params;
+    try {
+      const { saveSamplingForModel } = await import(
+        "./lib/save-sampling-for-model"
+      );
+      await saveSamplingForModel(modelId, current);
+      setRememberedParamsForModel(modelId, {
+        temperature: current.temperature,
+        topP: current.topP,
+        topK: current.topK,
+        minP: current.minP,
+        minPMode: current.minPMode,
+        repetitionPenalty: current.repetitionPenalty,
+        presencePenalty: current.presencePenalty,
+      });
+      toast.success("Sampling saved for this model.");
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
   );
@@ -1705,6 +1731,19 @@ export function ChatSettingsPanel({
                   className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
                 />
               </div>
+            ) : null}
+            {activeModelIsLocal && !isExternalModel && currentCheckpoint ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="self-start"
+                onClick={() => {
+                  saveSamplingForCurrentModel().catch(() => undefined);
+                }}
+              >
+                Save for this model
+              </Button>
             ) : null}
           </div>
         </CollapsibleSection>

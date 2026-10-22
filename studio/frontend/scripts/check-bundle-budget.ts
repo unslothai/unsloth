@@ -348,11 +348,11 @@ export const BUDGET = {
   // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
   // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
-  // Per-model sampling defaults (#14515): the run settings row and its API helper are eager with the page, the
-  // editor itself is lazy. +2,315 B raw / +650 B transfer (6,878,631 -> 6,880,946 B raw, 2,071,507 -> 2,072,157 B
-  // transfer against 0a20d7bf1, 97 chunks). Raised by that.
-  transferBytes: 2_072_343,
-  rawBytes: 6_881_465,
+  // Per-model sampling defaults (#14515): the run settings row, its API helper and Chat's "Save for this model"
+  // button are eager; the editor and the save itself are lazy. +2,992 B raw / +1,004 B transfer over main
+  // (6,879,002 -> 6,881,994 B raw, 2,071,626 -> 2,072,630 B transfer, 97 chunks). Raised by that.
+  transferBytes: 2_072_697,
+  rawBytes: 6_882_142,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
