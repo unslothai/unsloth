@@ -13,6 +13,7 @@ import re
 import struct
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1112,6 +1113,20 @@ def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
     return found
 
 
+def _alongside_request(request: Any) -> bool:
+    return bool(getattr(request, "alongside", False)) or bool(
+        getattr(request, "force_alongside", False)
+    )
+
+
+def _passthrough_request(request: Any) -> bool:
+    """A load the cluster leaves alone (another engine, or beside the served model): no worker
+    discovery, verification or native switch on its behalf."""
+    return _alongside_request(request) or (
+        str(getattr(request, "engine", "auto") or "auto") != "auto"
+    )
+
+
 def _same_link_worker(endpoint: str, node: "Node") -> bool:
     """Whether ``endpoint`` (from an earlier plan) reached the same paired worker as ``node`` over the
     other transport: its relay endpoint, or a tls:// endpoint pinned to its certificate."""
@@ -1123,8 +1138,22 @@ def _same_link_worker(endpoint: str, node: "Node") -> bool:
     return False
 
 
-def _drop_stale_relays(current: set) -> None:
-    """Close the relay (and any live session through it) of every worker no longer paired."""
+def _revoke_native(relays: Any, node_id: str) -> None:
+    # llama-server holds this session directly: only the worker can cut it. Then drop its relay.
+    try:
+        relays.native_close(node_id)
+    except Exception:
+        pass
+    try:
+        relays.remove(node_id)
+    except Exception:
+        pass
+
+
+def _drop_stale_relays(current: set, wait: bool = True) -> None:
+    """Close the relay (and any live session through it) of every worker no longer paired. With
+    ``wait=False`` (status reads, on the event loop) a native session is cut from a background
+    thread: native_close waits on the worker, up to its timeout."""
     stale = [(e, n) for e, n in _LINK_ENDPOINTS.items() if n not in current]
     if not stale:
         return
@@ -1135,11 +1164,16 @@ def _drop_stale_relays(current: set) -> None:
     for endpoint, node_id in stale:
         _LINK_ENDPOINTS.pop(endpoint, None)
         if _NATIVE.pop(node_id, None) is not None:
-            # llama-server holds this session directly: only the worker can cut it.
-            try:
-                relays.native_close(node_id)
-            except Exception:
-                pass
+            if wait:
+                _revoke_native(relays, node_id)
+            else:
+                threading.Thread(
+                    target = _revoke_native,
+                    args = (relays, node_id),
+                    name = f"cluster-revoke-{node_id[:12]}",
+                    daemon = True,
+                ).start()
+            continue
         try:
             relays.remove(node_id)
         except Exception:
@@ -1149,7 +1183,7 @@ def _drop_stale_relays(current: set) -> None:
 def _link_nodes(verify: bool = True) -> List[Node]:
     workers = _paired_workers()
     # Before the early return: removing the LAST worker must still cut its session.
-    _drop_stale_relays({p.node_id for p in workers})
+    _drop_stale_relays({p.node_id for p in workers}, wait = verify)
     _UNVERIFIED.intersection_update({p.node_id for p in workers})
     if not workers:
         return []
@@ -1786,7 +1820,7 @@ class ClusterServing:
     ) -> Any:
         from core.inference import spark_serving as ss
 
-        if _paired_workers():
+        if _paired_workers() and not _passthrough_request(request):
             # Wait for discovery so an early load sees its workers; in a thread, off Studio's event loop.
             await asyncio.to_thread(self.refresh_nodes)
             settle = discovery_settle_s()
@@ -1816,12 +1850,8 @@ class ClusterServing:
         self._cancel_event = cancel_event
         self.in_flight = True
         self.pipeline_groups_reason = None
-        self._alongside = bool(getattr(request, "alongside", False)) or bool(
-            getattr(request, "force_alongside", False)
-        )
-        self._passthrough = self._alongside or (
-            str(getattr(request, "engine", "auto") or "auto") != "auto"
-        )
+        self._alongside = _alongside_request(request)
+        self._passthrough = _passthrough_request(request)
         if self._passthrough:
             return request
         self.settle_internal_load()

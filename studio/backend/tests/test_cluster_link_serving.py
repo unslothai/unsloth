@@ -561,6 +561,55 @@ def test_removing_a_native_worker_asks_it_to_cut_the_session(monkeypatch, relays
     assert calls["close"] == ["node-a"] and "node-a" in relays.removed
 
 
+def test_a_status_read_cuts_a_removed_native_worker_off_the_event_loop(monkeypatch, relays):
+    import threading
+    import time as _time
+
+    calls = _offer_native(monkeypatch, relays)
+    assert {n.node_id: n for n in cs.load_nodes()}["node-a"].transport == "native_tls"
+    release, closed = threading.Event(), threading.Event()
+
+    def slow_close(node_id, timeout = 15.0):
+        release.wait(10)  # the worker takes its time to answer
+        calls["close"].append(node_id)
+        closed.set()
+        return True
+
+    relays.native_close = slow_close
+    FakeRegistry.peers[0].removed = True
+    started = _time.monotonic()
+    nodes = cs._link_nodes(verify = False)  # what /status runs, on Studio's event loop
+    assert _time.monotonic() - started < 2.0
+    assert "node-a" not in {n.node_id for n in nodes} and "node-a" not in cs._NATIVE
+    release.set()
+    # The revocation still happens, just not on the caller's thread.
+    assert closed.wait(10)
+    for _ in range(100):
+        if "node-a" in relays.removed:
+            break
+        _time.sleep(0.05)
+    assert calls["close"] == ["node-a"] and "node-a" in relays.removed
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"engine": "vllm"}, {"alongside": True}, {"force_alongside": True}],
+)
+def test_a_passthrough_load_skips_paired_worker_discovery(monkeypatch, relays, fields):
+    state = cs.state()
+    refreshed, slept = [], []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(state, "refresh_nodes", lambda *a, **k: refreshed.append(1) or [])
+    monkeypatch.setattr(cs.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(cs, "discovery_settle_s", lambda: 6.5)
+    request = SimpleNamespace(model_path = "m.gguf", gguf_variant = None, **fields)
+    assert asyncio.run(state.before_load(request, 1)) is request
+    assert refreshed == [] and slept == [] and state._passthrough
+
+
 def test_a_status_read_reuses_the_native_grant_without_asking_again(monkeypatch, relays):
     calls = _offer_native(monkeypatch, relays)
     cs.load_nodes()
