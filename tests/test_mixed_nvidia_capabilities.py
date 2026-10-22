@@ -141,6 +141,17 @@ def test_model_utils_bf16_follows_the_current_device(monkeypatch, caps, current)
     assert namespace["SUPPORTS_BFLOAT16"] is (caps[current][0] >= 8)
 
 
+@pytest.mark.parametrize("chain", ["gpu_init", "model_utils"])
+@pytest.mark.parametrize("world_size,bf16", [("2", False), ("1", True), ("", True)])
+def test_a_distributed_launch_keeps_the_weakest_card_for_bf16(monkeypatch, chain, world_size, bf16):
+    # Every DDP rank must pick one dtype, and a rank's own card is not current yet at import: a mixed
+    # host keeps the weakest visible card there, as before. One process follows the current device.
+    monkeypatch.setenv("WORLD_SIZE", world_size)
+    fake = _fake_torch([SM86, SM75])
+    run = _run_gpu_init_chain if chain == "gpu_init" else _run_model_utils_chain
+    assert run(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
+
+
 def test_capability_cache_follows_set_device(monkeypatch):
     fake = _fake_torch([SM86, SM75])
     _run_model_utils_chain(fake, monkeypatch)

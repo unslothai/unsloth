@@ -170,6 +170,7 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     apply_pre_volta_compile_workaround,
     arch_breaks_compile,
+    cuda_bf16_capability,
     gfx101x_triton_workaround_applied,
     xpu_supports_native_bf16,
     zoo_shares_xpu_bf16,
@@ -3985,7 +3986,10 @@ elif DEVICE_TYPE == "cuda":
     torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
     # The current device, as torch.cuda.is_bf16_supported() answers: an idle older card beside it must
     # not take bf16 from a model that runs here. A load placing layers there is checked after loading.
-    SUPPORTS_BFLOAT16 = major_version >= 8
+    # Distributed launches keep the weakest visible card so every rank agrees on the dtype.
+    _bf16_cap = cuda_bf16_capability()
+    SUPPORTS_BFLOAT16 = _bf16_cap is not None and _bf16_cap[0] >= 8
+    del _bf16_cap
 
     if major_version >= 8:
         if _package_available("flash_attn"):

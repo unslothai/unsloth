@@ -226,6 +226,20 @@ def cuda_current_capability():
         return None
 
 
+def cuda_bf16_capability():
+    """Capability the process-wide bf16 answer is judged on. One process: the current device, as torch
+    answers. A distributed launch (WORLD_SIZE > 1): the weakest visible card, as before, since every
+    rank must pick the same dtype and a rank's own card is not current yet at import."""
+    try:
+        distributed = int(os.environ.get("WORLD_SIZE", "1") or "1") > 1
+    except ValueError:
+        distributed = False
+    if distributed:
+        caps = cuda_gate_capabilities()
+        return min(caps) if caps else None
+    return cuda_current_capability()
+
+
 def hip_current_arch():
     """gcnArchName of the current HIP device, or "" when it cannot be read."""
     try:

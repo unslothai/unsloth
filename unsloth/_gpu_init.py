@@ -329,7 +329,7 @@ try:
         arch_lacks_bf16,
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
-        cuda_current_capability,
+        cuda_bf16_capability,
         cuda_order_mismatch_names,
         hip_visible_archs,
         xpu_supports_native_bf16,
@@ -570,7 +570,8 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
 elif DEVICE_TYPE == "cuda":
     # The current device, as torch answers: an idle older card beside it must not take bf16 from a
     # model that runs here. A load placing layers on such a card is checked after loading.
-    _cuda_cap = cuda_current_capability()
+    # Distributed launches keep the weakest visible card so every rank agrees on the dtype.
+    _cuda_cap = cuda_bf16_capability()
     SUPPORTS_BFLOAT16 = _cuda_cap is not None and _cuda_cap[0] >= 8
     del _cuda_cap
 
