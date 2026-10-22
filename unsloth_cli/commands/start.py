@@ -5392,6 +5392,7 @@ def _check_agent_context(
     loaded: bool = True,
     refuse: bool = True,
     model: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
 ) -> None:
     window = entry.get("context_length") or entry.get("max_context_length")
     if not window:
@@ -5420,6 +5421,8 @@ def _check_agent_context(
     else:
         quote = _powershell_quote if os.name == "nt" else shlex.quote
         target = f" --model {quote(model)}" if model else ""
+        if gguf_variant:
+            target += f" --gguf-variant {quote(gguf_variant)}"
         hint = (
             f"Run unsloth start {agent}{target} --max-seq-length {suggested} "
             "(a smaller quant if that does not fit in memory)."
@@ -7071,6 +7074,7 @@ def claude(
             _CLAUDE_PROMPT_TOKENS,
             loaded = False,
             model = model,
+            gguf_variant = gguf_variant,
             refuse = refuse_small_context,
         )
     _require_agent_for_launch("claude", install_hint, launch)
@@ -7111,6 +7115,8 @@ def claude(
                 entry,
                 _CLAUDE_PROMPT_TOKENS,
                 refuse = refuse_small_context,
+                model = model,
+                gguf_variant = gguf_variant,
             )
     except BaseException:
         _shutdown_auto_served()
@@ -7489,6 +7495,7 @@ def opencode(
             max_tokens,
             loaded = False,
             model = model,
+            gguf_variant = gguf_variant,
             refuse = refuse_small_context,
         )
     _require_agent_for_launch(command_name, install_hint, launch and not app)
@@ -7533,6 +7540,8 @@ def opencode(
                 opencode_prompt_tokens,
                 max_tokens,
                 refuse = refuse_small_context,
+                model = model,
+                gguf_variant = gguf_variant,
             )
         except BaseException:
             _shutdown_auto_served()

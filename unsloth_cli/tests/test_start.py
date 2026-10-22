@@ -7812,13 +7812,18 @@ def test_agent_context_check_refuses_before_installing_or_loading(
 
 
 @pytest.mark.parametrize("agent, suggested", [("claude", 65536), ("opencode", 32768)])
-def test_agent_context_retry_keeps_the_requested_model(fake_studio, launched, agent, suggested):
+@pytest.mark.parametrize("variant", [None, "Q8_0"])
+def test_agent_context_retry_keeps_the_requested_model(
+    fake_studio, launched, agent, suggested, variant
+):
     target = "unsloth/other-GGUF"
+    quant = ["--gguf-variant", variant] if variant else []
     result = CliRunner().invoke(
-        start.start_app, [agent, "--model", target, "--max-seq-length", "8192"]
+        start.start_app, [agent, "--model", target, *quant, "--max-seq-length", "8192"]
     )
     assert result.exit_code == 1, result.output
-    command = f"unsloth start {agent} --model {target} --max-seq-length {suggested}"
+    selection = f" --gguf-variant {variant}" if variant else ""
+    command = f"unsloth start {agent} --model {target}{selection} --max-seq-length {suggested}"
     assert command in result.output
     retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
     assert retry.exit_code == 0, retry.output
@@ -7826,6 +7831,46 @@ def test_agent_context_retry_keeps_the_requested_model(fake_studio, launched, ag
     assert len(loads) == 1
     assert loads[0]["model_path"] == target
     assert loads[0]["max_seq_length"] == suggested
+    assert loads[0].get("gguf_variant") == variant
+    assert launched
+
+
+@pytest.mark.parametrize("agent, suggested", [("claude", 65536), ("opencode", 32768)])
+def test_agent_context_retry_restarts_the_model_after_fitting(
+    fake_studio, launched, monkeypatch, agent, suggested
+):
+    target = "unsloth/other-GGUF"
+    started, stopped = [], []
+    server = SimpleNamespace(pid = 999, poll = lambda: None)
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+
+    def serve(base, model, load, server_options = None):
+        started.append((model, load))
+        fake_studio.state["models"] = [
+            {"id": model, "context_length": load.max_seq_length or 8192}
+        ]
+        start._auto_served_server = server
+        return base, server
+
+    monkeypatch.setattr(start, "_start_studio_server", serve)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: stopped.append(server))
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", target, "--gguf-variant", "Q8_0"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "is loaded with 8,192 tokens of context, too few" in result.output
+    assert len(started) == len(stopped) == 1
+    command = (
+        f"unsloth start {agent} --model {target} --gguf-variant Q8_0 "
+        f"--max-seq-length {suggested}"
+    )
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    assert len(started) == 2
+    assert started[1][0] == target
+    assert started[1][1].gguf_variant == "Q8_0"
+    assert started[1][1].max_seq_length == suggested
     assert launched
 
 
