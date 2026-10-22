@@ -6728,6 +6728,16 @@ def _extra_args_draft_offloaded_to_cpu(
     return False
 
 
+def _margin_mib_for(margin: Union[float, Mapping[int, float], None], idx: int) -> float:
+    """The ``--fit-target`` margin one card keeps: a single broadcast value, or that
+    card's entry in a per-device mapping (the largest entry for a card it omits)."""
+    if isinstance(margin, Mapping):
+        if not margin:
+            return 0.0
+        return max(0.0, float(margin.get(int(idx), max(margin.values()))))
+    return max(0.0, float(margin or 0.0))
+
+
 def _extra_args_device(
     extra_args: Optional[Iterable[str]], flags: Collection[str]
 ) -> Optional[str]:
@@ -16848,7 +16858,7 @@ class LlamaCppBackend:
         gpu_indices: Optional[Iterable[int]] = None,
         shared_gpu_ids: Iterable[int] = (),
         host_only_bytes: int = 0,
-        vram_margin_mib: float = 0.0,
+        vram_margin_mib: Union[float, Mapping[int, float]] = 0.0,
         avail_mib: Optional[int] = None,
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[bool]:
@@ -16881,16 +16891,16 @@ class LlamaCppBackend:
         per device for --fit"; common/arg.cpp, common/common.h). Under ``--fit on``
         the child spills weights to host RAM rather than dip into it, so those bytes
         are not credit this launch may spend. Zero on the proved path, which emits
-        ``-ngl -1 --fit off`` and runs no fitter at all.
+        ``-ngl -1 --fit off`` and runs no fitter at all. A mapping gives each card the
+        margin of Studio's per-device list, keyed by physical GPU id.
         """
         if not footprint_bytes or footprint_bytes <= 0:
             return None
         host_only = max(0, int(host_only_bytes or 0))
         shared = set(shared_gpu_ids or ())
         pinned = None if gpu_indices is None else {int(idx) for idx in gpu_indices}
-        margin_mib = max(0.0, float(vram_margin_mib or 0.0))
         free_vram_mib = sum(
-            max(0, row[1] - margin_mib)
+            max(0, row[1] - _margin_mib_for(vram_margin_mib, row[0]))
             for row in (detected_gpus or ())
             if row[0] not in shared and (pinned is None or row[0] in pinned)
         )
@@ -16923,7 +16933,7 @@ class LlamaCppBackend:
         gpus: Optional[Iterable[tuple]] = None,
         gpu_indices: Optional[Iterable[int]] = None,
         shared_gpu_ids: Iterable[int] = (),
-        fit_margin_mib: float = 0.0,
+        fit_margin_mib: Union[float, Mapping[int, float]] = 0.0,
         is_vulkan_backend: bool = False,
         avail_mib: Optional[int] = None,
         extra_args: Optional[Iterable[str]] = None,
@@ -25691,6 +25701,10 @@ class LlamaCppBackend:
             # devices are known. Signed: lowering holds more back, raising packs
             # closer to the card. Zero at the default.
             _fit_target_delta_mib = 0.0
+            # The same delta per physical GPU id, when the per-device list applies.
+            _fit_target_delta_by_idx: Optional[dict[int, float]] = None
+            # Studio's emitted margins per card, spelled into --fit-target at spawn.
+            _fit_target_margins_by_idx: Optional[dict[int, float]] = None
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -27133,14 +27147,16 @@ class LlamaCppBackend:
                     # so the slider never reached the path that runs when the fit is
                     # tightest. Hand it the difference, both directions, measured from
                     # the default so an untouched slider leaves the command alone.
-                    # One broadcast value: --fit-target does take a per-device list, but
-                    # in llama.cpp's enumeration order, which the visible-device pin and
-                    # the ROCr/Vulkan ordinal quirks make not ours to assume, and a
-                    # misaligned list hands a card the wrong margin. So the direction
-                    # picks the card: lowering scales by the largest, so no device ends
-                    # up under the margin it asked for, raising by the smallest, so none
-                    # is taken below its own. Mixed cards gain a little less, and hold
-                    # back a little more, than a per-device list would.
+                    # --fit-target takes a per-device list in llama.cpp's enumeration
+                    # order. Where CUDA's PCI order makes that order provable, each card
+                    # gets its own margin, spelled at spawn against the final mask. A
+                    # single broadcast value would otherwise have to be sized by the
+                    # largest card when lowering, which on mixed cards can exceed a
+                    # smaller card's whole memory and leave it unused. Elsewhere (Vulkan,
+                    # ROCm, UUID/MIG masks, --device/--rpc) the direction picks the card:
+                    # lowering scales by the largest, so no device ends up under the
+                    # margin it asked for, raising by the smallest, so none is taken
+                    # below its own.
                     if _vram_frac != _CTX_FIT_VRAM_FRACTION and gpus:
                         # Free stands in for an unreported total, the same scale
                         # _vram_usable_mib falls back to: MIG/vGPU and the two-column
@@ -27152,6 +27168,19 @@ class LlamaCppBackend:
                             max(_scales) if _vram_frac < _CTX_FIT_VRAM_FRACTION else min(_scales)
                         )
                         _fit_target_delta_mib = (_CTX_FIT_VRAM_FRACTION - _vram_frac) * _scale
+                        # Where llama.cpp's device order is provable, each card gets
+                        # its own margin instead (_per_device_fit_target_argv). Every
+                        # probed row, not just `gpus`: an unpinned child sees them all.
+                        if self._fit_target_per_device_ok(
+                            is_vulkan_backend = is_vulkan_backend,
+                            extra_args = extra_args,
+                            env = os.environ,
+                        ):
+                            _fit_target_delta_by_idx = {
+                                int(_idx): (_CTX_FIT_VRAM_FRACTION - _vram_frac)
+                                * (_total if _total and _total > 0 else _free)
+                                for _idx, _free, _total in _gpu_mem
+                            }
 
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
 
@@ -29643,6 +29672,8 @@ class LlamaCppBackend:
                         )
                         # A per-device list reads as its largest entry (the larger shortfall).
                         _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        # Studio's own per-card margins, when it spells the list itself.
+                        _margins_by_idx: Optional[dict[int, float]] = None
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -29650,6 +29681,12 @@ class LlamaCppBackend:
                             _env_mib = None if _emits else fit_target_margin_in((), _child_env)
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
+                            if _emits:
+                                _margins_by_idx = self._fit_target_margins_mib(
+                                    auto_fit = _auto_fit,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
+                                    supports_fit_target = _supports_fit_target,
+                                )
                         # A lazily read table stays mmap'd on the host, never on the GPU.
                         _lazy_host = self._lazy_read_host_bytes(
                             model_path,
@@ -29680,7 +29717,10 @@ class LlamaCppBackend:
                             )
                             + _cc_bytes(effective_ctx, len(_on))
                         )
-                        _free = sum(max(0.0, free - _margin_mib) for _idx, free in _on)
+                        _free = sum(
+                            max(0.0, free - _margin_mib_for(_margins_by_idx or _margin_mib, _idx))
+                            for _idx, free in _on
+                        )
                         return _need - _free * 1024 * 1024
 
                     def _moe_resident_share_now() -> Optional[float]:
@@ -30039,6 +30079,20 @@ class LlamaCppBackend:
                         if _fitter_runs
                         else 0.0
                     )
+                    # Studio's per-card list replaces the single value only when Studio
+                    # owns the margin: a pass-through one wins outright (above).
+                    _fit_margins_by_idx = (
+                        self._fit_target_margins_mib(
+                            auto_fit = (gpu_memory_mode == "manual" and gpu_layers < 0),
+                            fit_target_delta_by_idx = _fit_target_delta_by_idx,
+                            supports_fit_target = bool(server_caps.get("supports_fit_target")),
+                        )
+                        if _fitter_runs
+                        and use_fit
+                        and not _metal_fit_target_floor_mib
+                        and fit_target_margin_in(_fit_extras, _fit_env) is None
+                        else None
+                    )
                     # A projector Unsloth never resolved but the child loads anyway:
                     # LLAMA_ARG_MMPROJ / _URL are read before argv and only the vision
                     # switch and the paravirtual pin clear them, while model_size carries
@@ -30171,7 +30225,7 @@ class LlamaCppBackend:
                         # A running fitter keeps --fit-target free per device, so that
                         # margin is not VRAM this fit may spend. Zero only when the
                         # fitter is provably off; see _fitter_runs above.
-                        fit_margin_mib = _fit_margin_mib,
+                        fit_margin_mib = _fit_margins_by_idx or _fit_margin_mib,
                         is_vulkan_backend = is_vulkan_backend,
                         # Never stripped, and appended last, so they beat this
                         # launch's own -ngl.
@@ -30877,6 +30931,16 @@ class LlamaCppBackend:
                 # the capability and a budget at the default all leave the child
                 # unpriced, and each is decided inside that call.
                 _fit_target_priced = "--fit-target" in _integrity_flags
+                # Spelled per device at spawn, against the child's final mask.
+                _fit_target_margins_by_idx = (
+                    self._fit_target_margins_mib(
+                        auto_fit = auto_fit,
+                        fit_target_delta_by_idx = _fit_target_delta_by_idx,
+                        supports_fit_target = bool(server_caps.get("supports_fit_target")),
+                    )
+                    if _fit_target_priced and use_fit and not _metal_fit_target_floor_mib
+                    else None
+                )
                 if _metal_fit_target_floor_mib:
                     # Rebuilt after the price is read: the floor is the machine's
                     # margin, not the budget slider's.
@@ -33083,6 +33147,9 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        run_cmd = self._per_device_fit_target_argv(
+                            run_cmd, env, _fit_target_margins_by_idx
+                        )
                         _last_spawn_cmd = list(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
@@ -34803,6 +34870,9 @@ class LlamaCppBackend:
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
                             cmd = self._strip_mmproj_args(_vision_gpu_cmd)
+                            cmd = self._per_device_fit_target_argv(
+                                cmd, env, _fit_target_margins_by_idx
+                            )
                             _unified_withdraw_if_unneeded(cmd, why = "The text-only retry")
                             # This retry bypasses _spawn_and_wait, so refresh the
                             # launched-argv snapshot itself -- the zero-offload
@@ -38456,6 +38526,126 @@ class LlamaCppBackend:
             return _LLAMA_FIT_TARGET_DEFAULT_MIB
         base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
         return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib, floor_mib)
+
+    @staticmethod
+    def _fit_target_margins_mib(
+        *,
+        auto_fit: bool,
+        fit_target_delta_by_idx: Optional[Mapping[int, float]],
+        supports_fit_target: bool = True,
+    ) -> Optional[dict[int, float]]:
+        """``_fit_target_margin_mib`` for each card, keyed by physical GPU id.
+
+        None when there is no per-card delta, so callers keep the single margin. One
+        formula for the priced margins and the emitted list, like the scalar.
+        """
+        if not fit_target_delta_by_idx or not supports_fit_target:
+            return None
+        return {
+            int(idx): LlamaCppBackend._fit_target_margin_mib(
+                auto_fit = auto_fit, fit_target_delta_mib = delta
+            )
+            for idx, delta in fit_target_delta_by_idx.items()
+        }
+
+    @staticmethod
+    def _fit_target_per_device_ok(
+        *,
+        is_vulkan_backend: bool,
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]],
+    ) -> bool:
+        """Whether a per-card ``--fit-target`` list can be lined up with llama.cpp's devices.
+
+        The list is positional over the child's device enumeration. CUDA under
+        PCI_BUS_ID enumerates the visible physical ids in mask order (ascending when
+        unmasked), which ties a position to an nvidia-smi index. Vulkan and HIP order
+        devices their own way, a UUID or MIG mask cannot be mapped back to indices,
+        and --device / --rpc / a pass-through --fit-target change or own the list, so
+        each of those keeps the single broadcast margin.
+        """
+        if is_vulkan_backend or sys.platform == "darwin":
+            return False
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
+            return False
+        if (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper() != "PCI_BUS_ID":
+            return False
+        if LlamaCppBackend._visibility_mask_is_unmappable():
+            return False
+        # A resolvable uuid mask still reaches the child as uuids, which the spawn-time
+        # spelling cannot order, so the pricing keeps the broadcast margin with it.
+        mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if mask is not None and not all(t.strip().isdigit() for t in mask.split(",") if t.strip()):
+            return False
+        if LlamaCppBackend._SMI_MIG_INDICES:
+            return False
+        if LlamaCppBackend._host_torch_is_rocm():
+            return False
+        env = env or {}
+        if fit_target_margin_in(extra_args or (), env) is not None:
+            return False
+        if (_extra_args_device(extra_args, {"--device", "-dev", "--rpc"}) or "").strip():
+            return False
+        # A companion device flag can make the pin add --device after planning, which
+        # the spawn-time spelling then declines; decline here so pricing agrees.
+        if any(_extra_args_device(extra_args, flags) for flags in _COMPANION_DEVICE_FLAG_GROUPS):
+            return False
+        if any(str(env.get(k, "")).strip() for k in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_RPC")):
+            return False
+        return True
+
+    @staticmethod
+    def _per_device_fit_target_argv(
+        cmd: list[str], env: Mapping[str, str], margins_by_idx: Optional[Mapping[int, float]]
+    ) -> list[str]:
+        """``cmd`` with Studio's ``--fit-target`` spelled per device for the child's mask.
+
+        llama.cpp broadcasts a single value, so on mixed cards the margin sized for
+        the largest card can exceed a smaller card's whole memory and leave it
+        unused. Built from the FINAL child env at spawn time, since a retry can
+        re-pin the mask. Returns ``cmd`` unchanged when the order cannot be proven
+        (a device without a margin, a non-numeric mask, another device order) or
+        when every card would get the same value, which a single value already says.
+        """
+        if not margins_by_idx:
+            return cmd
+        at = None
+        for k in range(len(cmd) - 2, -1, -1):
+            if cmd[k] == "--fit-target":
+                at = k
+                break
+        if at is None:
+            return cmd
+        if (str(env.get("CUDA_DEVICE_ORDER") or "")).strip().upper() != "PCI_BUS_ID":
+            return cmd
+        # --device narrows the model's devices and --rpc puts remote ones first, both
+        # re-indexing the list; a companion widen can add --device after planning.
+        if (_extra_args_device(cmd, {"--device", "-dev", "--rpc"}) or "").strip() or any(
+            str(env.get(k, "")).strip() for k in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_RPC")
+        ):
+            return cmd
+        mask = env.get("CUDA_VISIBLE_DEVICES")
+        if mask is None:
+            order = sorted(int(i) for i in margins_by_idx)
+        else:
+            try:
+                order = [int(tok) for tok in str(mask).split(",") if tok.strip()]
+            except ValueError:
+                return cmd
+        if not order or any(i < 0 or i not in margins_by_idx for i in order):
+            return cmd
+        values = [str(int(margins_by_idx[i])) for i in order]
+        spelled = values[0] if len(set(values)) == 1 else ",".join(values)
+        if cmd[at + 1] == spelled:
+            return cmd
+        out = list(cmd)
+        out[at + 1] = spelled
+        logger.info(
+            "Per-device --fit-target %s for GPUs %s: each card keeps its own budget margin.",
+            spelled,
+            order,
+        )
+        return out
 
     @staticmethod
     def _ctx_integrity_flags(
