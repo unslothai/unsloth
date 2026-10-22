@@ -6767,13 +6767,20 @@ def _explicit_pick_backend(
     monkeypatch,
     *,
     checkpoints_per_slot = False,
+    mask = None,
+    memory = ((0, 15_000, 16_384), (1, 1_000, 0)),
+    apu = 1,
 ):
     """A dGPU at ordinal 0 and a 1 GB APU at ordinal 1, 11 GiB model, 32K context."""
-    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1}))
+    for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    if mask is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {apu}))
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
     monkeypatch.setattr(LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda *a: False))
     monkeypatch.setattr(LlamaCppBackend, "_other_planned_vram_mib", lambda self: {})
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 15_000, 16_384), (1, 1_000, 0)])
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = list(memory))
     backend._get_gguf_size_bytes = lambda _p: 11 * 1024**3
     backend._can_estimate_kv = lambda: True
     if checkpoints_per_slot:
@@ -6849,21 +6856,105 @@ def test_an_explicit_device_pick_keeps_host_checkpoints_off_the_dgpu_slots(tmp_p
     assert launch(6) == launch(0) == ("0", "off", "2")
 
 
-def test_an_explicit_pick_prices_only_a_leading_dgpu_without_host_bytes():
-    # Ordinal safety: a dGPU-only subset that would renumber the user's device ordinals
-    # (the dGPU behind the APU) keeps the full price, exactly as without the accounting.
-    gib, mib = 1024**3, 1024 * 1024
+def test_an_explicit_pick_discounts_only_a_vetted_dgpu_subset():
+    # The selector discounts host-only bytes only on a subset load_model vetted for ordinal safety;
+    # anything else (or no vetting at all) pays the full price, exactly as without the accounting.
+    gib = 1024**3
     full, discrete = 14 * gib, 12 * gib
+    gpus = [(0, 13_500), (1, 1_000)]
     kw = dict(total_by_idx = {0: 16_384, 1: 0}, integrated = frozenset({1}), prefer_discrete = False)
+    vetted = frozenset({frozenset({0}), frozenset({0, 1})})
     assert LlamaCppBackend._select_gpus(
-        full, [(0, 13_500), (1, 1_000)], discrete_size_bytes = discrete, **kw
+        full, gpus, discrete_size_bytes = discrete, discount_prefixes = vetted, **kw
     ) == ([0], False)
-    assert LlamaCppBackend._select_gpus(full, [(0, 13_500), (1, 1_000)], **kw)[1] is True
-    kw["integrated"], kw["total_by_idx"] = frozenset({0}), {0: 0, 1: 16_384}
+    assert LlamaCppBackend._select_gpus(full, gpus, discrete_size_bytes = discrete, **kw)[1] is True
+    only_both = frozenset({frozenset({0, 1})})
     assert (
         LlamaCppBackend._select_gpus(
-            full, [(0, 1_000), (1, 13_500)], discrete_size_bytes = discrete, **kw
+            full, gpus, discrete_size_bytes = discrete, discount_prefixes = only_both, **kw
         )[1]
         is True
     )
-    del mib
+
+
+def _host_projector_explicit_launch(tmp_path, monkeypatch, *, extra, **layout):
+    backend, gguf = _explicit_pick_backend(tmp_path, monkeypatch, **layout)
+    proj = _write_gguf(tmp_path / "mmproj.gguf")
+    backend._resolve_launch_mmproj_path = lambda **k: str(proj)
+    backend._mmproj_vram_bytes = lambda _p: 4 * 1024**3
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend.probe_server_capabilities = lambda *a, **k: {"supports_no_mmproj_offload": True}
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = 32_768,
+        is_vision = True,
+        n_parallel = 1,
+        extra_args = [*extra, "--no-mmproj-offload"],
+    )
+    cmd = result["cmd"]
+    return result["env"].get("CUDA_VISIBLE_DEVICES"), cmd[cmd.index("--fit") + 1]
+
+
+def test_a_reordered_mask_keeps_the_users_card_under_the_host_discount(tmp_path, monkeypatch):
+    # A mask of "1,0": the user's ordinal 0 is physical 1. With the dGPU at physical 1 the
+    # discount pins it ("1" keeps it at ordinal 0); with the APU there, pinning the dGPU alone
+    # would make ordinal 0 a different card, so no discount narrows the launch onto it.
+    dgpu_first = dict(memory = ((0, 1_000, 0), (1, 15_000, 16_384)), apu = 0, mask = "1,0")
+    assert _host_projector_explicit_launch(
+        tmp_path, monkeypatch, extra = ["--main-gpu", "0"], **dgpu_first
+    ) == ("1", "off")
+    apu_first = dict(memory = ((0, 15_000, 16_384), (1, 1_000, 0)), apu = 1, mask = "1,0")
+    mask, _fit = _host_projector_explicit_launch(
+        tmp_path, monkeypatch, extra = ["--main-gpu", "0"], **apu_first
+    )
+    assert mask != "0"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--main-gpu", "1"], ["--device", "ROCm1"], ["--device", "ROCm0,ROCm1"]],
+)
+def test_a_flag_naming_the_second_ordinal_keeps_both_cards(tmp_path, monkeypatch, extra):
+    # The user's flags reach ordinal 1, so a discounted launch on ordinal 0 alone would leave
+    # their device pointing at nothing (or another card): the discount needs the whole prefix.
+    mask, _fit = _host_projector_explicit_launch(tmp_path, monkeypatch, extra = extra)
+    assert mask != "0"
+
+
+def test_the_explicit_device_ordinals_needed_reads_flags_and_env(monkeypatch):
+    from core.inference.llama_cpp import _explicit_device_ordinals_needed as need
+
+    for var in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU", "LLAMA_ARG_TENSOR_SPLIT"):
+        monkeypatch.delenv(var, raising = False)
+    assert need([]) == 0
+    assert need(["--device", "ROCm0"]) == 1
+    assert need(["--device", "Vulkan0,Vulkan2"]) == 3
+    assert need(["--device", "none"]) == 0
+    assert need(["-mg", "1"]) == 2
+    assert need(["--tensor-split", "3,1"]) == 2
+    assert need(["--device", "weird"]) is None
+    monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "2")
+    assert need([]) == 3
+    assert need(["--main-gpu", "0"]) == 1
+
+
+def test_the_checkpoint_discount_removes_only_the_checkpoints():
+    # kv(ckpts) - kv(0) is evaluated at the same context, so the dGPU is spared the host
+    # snapshots and nothing else: the slot count matches a load with no checkpoints at all.
+    from .test_ctx_checkpoint_host_budget import QWEN38_27B
+
+    mib = 1024 * 1024
+    backend = LlamaCppBackend()
+    for key, value in QWEN38_27B.items():
+        setattr(backend, key, value)
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    assert backend._estimate_kv_cache_bytes(32_768, "f16", n_parallel = 1) > 0
+    total = {0: 0, 1: 16_384}
+    for free in (13_000, 14_000, 15_000):
+        args = (8, 32_768, [(1, free)], total, 12_000 * mib, "f16", 1.0, 0, 1)
+        kw = dict(include_requested = True, integrated = frozenset({0}))
+        with_ckpts = backend._slots_that_fit_on_gpu(*args, ctx_checkpoints = 8, **kw)
+        without = backend._slots_that_fit_on_gpu(*args, ctx_checkpoints = 0, **kw)
+        assert with_ckpts == without
+    assert without[1] is False and without[2] < 8

@@ -5106,6 +5106,37 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
     return False
 
 
+def _explicit_device_ordinals_needed(extra_args: Optional[Iterable[str]]) -> Optional[int]:
+    """Leading child ordinals the user's device flags name (highest ordinal + 1, tensor-split
+    length), 0 when none; None when a value cannot be read. argv wins over LLAMA_ARG_*."""
+    try:
+        device = _last_flag_value(extra_args, frozenset({"--device", "-dev"}))
+        main_gpu = _last_flag_value(extra_args, frozenset({"--main-gpu", "-mg"}))
+        split = _last_flag_value(extra_args, _TENSOR_SPLIT_FLAGS)
+    except ValueError:
+        return None
+    device = device or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip() or None
+    main_gpu = main_gpu or str(os.environ.get("LLAMA_ARG_MAIN_GPU", "")).strip() or None
+    split = split or str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip() or None
+    need = 0
+    for token in (device or "").split(","):
+        token = token.strip()
+        if not token or token.lower() == "none":
+            continue
+        match = re.fullmatch(r"[A-Za-z]+(\d+)", token)
+        if match is None:
+            return None
+        need = max(need, int(match.group(1)) + 1)
+    if main_gpu is not None:
+        try:
+            need = max(need, int(main_gpu) + 1)
+        except ValueError:
+            return None
+    if split is not None:
+        need = max(need, len([part for part in re.split(r"[,/]", split) if part.strip()]))
+    return need
+
+
 def _diffusion_manual_ngl(gpu_memory_mode: str, gpu_layers: int) -> Optional[int]:
     """The --ngl the diffusion runner would launch with, or None for its default.
 
@@ -17742,6 +17773,7 @@ class LlamaCppBackend:
         integrated: frozenset = frozenset(),
         discrete_size_bytes: Optional[int] = None,
         prefer_discrete: bool = True,
+        discount_prefixes: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
@@ -17795,16 +17827,18 @@ class LlamaCppBackend:
             usable_fraction = _active_vram_fraction()
         overhead_mib = per_device_overhead_bytes / (1024 * 1024)
         # Host-only bytes (checkpoints, a CPU-pinned projector) never land on a dGPU-only subset.
+        # Only on a subset the caller vetted (``discount_prefixes``): one that keeps the user's
+        # device ordinals naming the same cards. Anything else pays the full price.
         _discount = (
             not prefer_discrete
             and integrated
+            and discount_prefixes
             and discrete_size_bytes is not None
             and discrete_size_bytes < model_size_bytes
         )
-        _leading = sorted(idx for idx, _free in gpus)
 
         def _size_mib(ids: list) -> float:
-            if _discount and integrated.isdisjoint(ids) and sorted(ids) == _leading[: len(ids)]:
+            if _discount and integrated.isdisjoint(ids) and frozenset(ids) in discount_prefixes:
                 return discrete_size_bytes / (1024 * 1024)
             return model_size_mib
 
@@ -17869,6 +17903,7 @@ class LlamaCppBackend:
         integrated: frozenset = frozenset(),
         discrete_size_bytes: Optional[int] = None,
         prefer_discrete: bool = True,
+        discount_prefixes: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
@@ -17888,7 +17923,7 @@ class LlamaCppBackend:
         and hands the accounting to ``_select_gpus``."""
         # Only an explicit pick passes the accounting on; the tier above already ran otherwise.
         _acct = (
-            {"integrated": integrated, "prefer_discrete": False}
+            {"integrated": integrated, "prefer_discrete": False, "discount_prefixes": discount_prefixes}
             if not prefer_discrete and integrated and discrete_size_bytes is not None
             else {}
         )
@@ -19204,6 +19239,7 @@ class LlamaCppBackend:
         integrated: frozenset = frozenset(),
         discrete_host_only_bytes: int = 0,
         prefer_discrete: bool = True,
+        discount_prefixes: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -19285,6 +19321,7 @@ class LlamaCppBackend:
                 integrated = integrated,
                 discrete_size_bytes = discrete_total,
                 prefer_discrete = prefer_discrete,
+                discount_prefixes = discount_prefixes,
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -26835,6 +26872,8 @@ class LlamaCppBackend:
                 _integrated_gpus = frozenset()
                 # The discrete-first tier; accounting keeps _integrated_gpus.
                 _tier_gpus = frozenset()
+                # dGPU subsets an explicit pick may price without host-only bytes.
+                _discount_prefixes = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -27061,6 +27100,28 @@ class LlamaCppBackend:
                             or self._visibility_mask_is_unmappable()
                         ):
                             _tier_gpus = frozenset()
+                        # Under that pick, host-only bytes may skip only a dGPU subset whose pinned
+                        # mask (emitted in ascending ids) keeps every ordinal the flags name on the
+                        # same card: a leading run of the inherited order, already ascending.
+                        if (
+                            _integrated_gpus
+                            and not _tier_gpus
+                            and not self._visibility_mask_is_unmappable()
+                        ):
+                            _need = _explicit_device_ordinals_needed(extra_args)
+                            if _need is not None:
+                                _ids = {idx for idx, _free in gpus}
+                                _mask = self._resolve_visible_physical_ids()
+                                _order = (
+                                    [i for i in _mask if i in _ids]
+                                    if _mask is not None
+                                    else sorted(_ids)
+                                )
+                                _discount_prefixes = frozenset(
+                                    frozenset(_order[:k])
+                                    for k in range(max(1, _need), len(_order) + 1)
+                                    if _order[:k] == sorted(_order[:k])
+                                )
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
                     _shared_gpu_ids = (
@@ -28772,6 +28833,7 @@ class LlamaCppBackend:
                                 shared = _shared_gpus,
                                 integrated = _integrated_gpus,
                                 prefer_discrete = bool(_tier_gpus),
+                                discount_prefixes = _discount_prefixes,
                                 discrete_size_bytes = requested_total - _discrete_host_only(),
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
@@ -28833,6 +28895,7 @@ class LlamaCppBackend:
                                             shared = _shared_gpus,
                                             integrated = _integrated_gpus,
                                             prefer_discrete = bool(_tier_gpus),
+                                            discount_prefixes = _discount_prefixes,
                                             discrete_size_bytes = model_size_fit
                                             + _q8_kv
                                             + _mtp_bytes(effective_ctx)
@@ -29048,6 +29111,7 @@ class LlamaCppBackend:
                             shared = _shared_gpus,
                             integrated = _integrated_gpus,
                             prefer_discrete = bool(_tier_gpus),
+                            discount_prefixes = _discount_prefixes,
                             discrete_size_bytes = _fs_total - _discrete_host_only(),
                         )
                         if use_fit and not explicit_ctx:
@@ -29469,6 +29533,7 @@ class LlamaCppBackend:
                             # An explicit device pick skips the discrete tier; host-only accounting still applies.
                             integrated = _integrated_gpus,
                             prefer_discrete = bool(_tier_gpus),
+                            discount_prefixes = _discount_prefixes,
                             discrete_host_only_bytes = _discrete_host_only(),
                         )
                         if not _uf_slots:
@@ -29507,6 +29572,7 @@ class LlamaCppBackend:
                                     ctx_checkpoints = _placement_ctx_checkpoints,
                                     integrated = _integrated_gpus,
                                     prefer_discrete = bool(_tier_gpus),
+                                    discount_prefixes = _discount_prefixes,
                                     discrete_host_only_bytes = _discrete_host_only(),
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
