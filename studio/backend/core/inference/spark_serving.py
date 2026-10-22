@@ -3488,6 +3488,15 @@ def current_topology() -> Optional[str]:
     return st.topology
 
 
+async def _confirm(confirm_teardown: Any) -> None:
+    """Run the route's teardown gate; it may be async (a forced reload drains its chats there)."""
+    if confirm_teardown is None:
+        return
+    confirmed = confirm_teardown()
+    if inspect.isawaitable(confirmed):
+        await confirmed
+
+
 async def before_load(
     request: Any,
     n_parallel: int,
@@ -3517,8 +3526,7 @@ async def before_load(
         retired_first = False
         if replacing and await _legacy_worker_holds_a_cluster_port_bounded():
             # The two-Spark rpc-server holds the port a managed worker must bind: retire it first.
-            if confirm_teardown is not None:
-                confirm_teardown()
+            await _confirm(confirm_teardown)
             _STATE._note_retired_split(_STATE.peer_process)
             await _STATE.detach()
             retired_first = True
@@ -3543,8 +3551,7 @@ async def before_load(
         if replacing and legacy and not cluster_serving.state()._cancelled():
             # Only once the cluster has a plan, so a refused or cancelled load leaves it serving.
             try:
-                if confirm_teardown is not None:
-                    confirm_teardown()
+                await _confirm(confirm_teardown)
             except BaseException:
                 await cluster_serving._STATE.load_failed()  # no load follows a refused teardown
                 raise
@@ -3562,8 +3569,7 @@ async def before_load(
         if replacing and cluster_serving._STATE.retire_on_commit and enabled():
             # The workers go once the two-Spark planner accepts; a refused load keeps them serving.
             async def retire_cluster() -> None:
-                if confirm_teardown is not None:
-                    confirm_teardown()
+                await _confirm(confirm_teardown)
                 cluster = cluster_serving._STATE
                 if cluster._backend is not None and cluster.block and cluster.workers:
                     state()._retired_split = (

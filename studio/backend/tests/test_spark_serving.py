@@ -5004,3 +5004,18 @@ def test_kv_estimate_prices_hybrid_and_per_layer_kv_like_the_loader(tmp_path):
         },
     )
     assert ss.estimate_kv_bytes(lfm, 262144, "f16") == 22 * 8 * 256 * 4 * 262144
+
+
+def test_an_async_teardown_gate_is_awaited_on_every_cluster_teardown_path():
+    """Regression: the route's gate is async since a forced reload drains there; a sync call drops its 409."""
+    from fastapi import HTTPException
+
+    async def _refuse():
+        raise HTTPException(status_code = 409, detail = "active generations")
+
+    with pytest.raises(HTTPException):
+        run(ss._confirm(_refuse))
+    calls = []
+    run(ss._confirm(lambda: calls.append(1)))
+    run(ss._confirm(None))
+    assert calls == [1]
