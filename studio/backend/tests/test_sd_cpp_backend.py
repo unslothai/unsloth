@@ -3287,7 +3287,7 @@ def test_a_cancel_during_the_respawn_stops_the_replacement_start(monkeypatch, tm
         b._generate_server(b._state, **kwargs)
     assert time.monotonic() - started < 4.0
     assert len(servers) == 2 and all(s.stopped for s in servers)
-    assert len(payloads) == 1   # no retry job was posted
+    assert len(payloads) == 1  # no retry job was posted
     assert b._pending_server is None and b._replacing_server is None
 
 
