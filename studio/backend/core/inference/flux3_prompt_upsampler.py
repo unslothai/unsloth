@@ -54,6 +54,12 @@ UPSAMPLER_MODEL_FILES = {
 # divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
+# What a run reads, in order: the default, else another quant of the same repo already downloaded. An install that
+# fetched an earlier default (Q4_K_M until the UD-Q4_K_XL switch) keeps enhancing from it, offline included, instead
+# of running prompts as typed until another ~6 GB arrives. The download still fetches the default.
+UPSAMPLER_RUN_FILES = (UPSAMPLER_MODEL_FILE,) + tuple(
+    name for name in UPSAMPLER_MODEL_FILES.values() if name != UPSAMPLER_MODEL_FILE
+)
 # Vision projector, needed only for edits (reference images).
 UPSAMPLER_MMPROJ_FILE = "mmproj-F16.gguf"
 # Expected sizes of the files as built, for the UI before the download starts (the download reads the real ones).
@@ -724,19 +730,27 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
     return None
 
 
-def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optional[str]]:
+def _cached_pair(
+    hub_cache: Optional[Path] = None,
+    model_files: tuple = (UPSAMPLER_MODEL_FILE,),
+) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both."""
-    model_only = None
-    for revision in _candidate_revisions(hub_cache):
-        model = _cached_file(UPSAMPLER_MODEL_FILE, hub_cache = hub_cache, revision = revision)
-        if model is None:
-            continue
-        mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
-        if mmproj is not None:
-            return model, mmproj
-        model_only = model_only or model
-    return model_only, None
+    with no projector at its revision when no revision holds both. ``model_files`` in preference order: the first
+    one cached at any revision is the model."""
+    revisions = _candidate_revisions(hub_cache)
+    for model_file in model_files:
+        model_only = None
+        for revision in revisions:
+            model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
+            if model is None:
+                continue
+            mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
+            if mmproj is not None:
+                return model, mmproj
+            model_only = model_only or model
+        if model_only is not None:
+            return model_only, None
+    return None, None
 
 
 def _cached_download_paths(
@@ -757,11 +771,11 @@ def _cached_download_paths(
 
 
 def model_path() -> Optional[str]:
-    """The upsampler GGUF: the env override, else the downloaded repo file."""
+    """The upsampler GGUF: the env override, else the downloaded repo file (``UPSAMPLER_RUN_FILES``)."""
     if (os.environ.get(ENV_MODEL_OVERRIDE) or "").strip():
         # An override that does not exist is a typo, not a reason to read the cache instead.
         return _env_path(ENV_MODEL_OVERRIDE)
-    return _cached_pair()[0]
+    return _cached_pair(model_files = UPSAMPLER_RUN_FILES)[0]
 
 
 def mmproj_path() -> Optional[str]:
@@ -770,7 +784,7 @@ def mmproj_path() -> Optional[str]:
     if _overridden():
         # Beside a local model file there is no revision to match.
         return _cached_at_any_revision(UPSAMPLER_MMPROJ_FILE)
-    return _cached_pair()[1]
+    return _cached_pair(model_files = UPSAMPLER_RUN_FILES)[1]
 
 
 def _overridden() -> bool:
@@ -827,9 +841,8 @@ def status() -> dict:
     """The prompt-upsampler status route body."""
     model = model_path()
     mmproj = mmproj_path()
-    model_name = (
-        Path(model).name if model and os.environ.get(ENV_MODEL_OVERRIDE) else UPSAMPLER_MODEL_FILE
-    )
+    # The file a run reads: the override, or an earlier default still serving until the current one is downloaded.
+    model_name = Path(model).name if model else UPSAMPLER_MODEL_FILE
     size = None
     if model:
         with suppress(OSError):
@@ -840,7 +853,7 @@ def status() -> dict:
         "loaded": get_sidecar().loaded,
         "repo": UPSAMPLER_REPO,
         "filename": model_name,
-        "size_bytes": size or UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MODEL_FILE),
+        "size_bytes": size or UPSAMPLER_FILE_SIZES.get(model_name),
         "mmproj_filename": UPSAMPLER_MMPROJ_FILE,
         "mmproj_size_bytes": UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MMPROJ_FILE),
         "mmproj_downloaded": mmproj is not None,

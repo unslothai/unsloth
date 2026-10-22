@@ -1413,6 +1413,77 @@ def test_model_and_projector_come_from_one_revision(monkeypatch):
     assert pup._cached_download_paths(pup.UPSAMPLER_ID) is None
 
 
+_OLD_REV = "1" * 40
+_NEW_REV = "2" * 40
+
+
+@pytest.fixture
+def offline_upsampler_cache(monkeypatch, tmp_path):
+    """An offline HF cache holding what an install made before the UD-Q4_K_XL default has: Q4_K_M + projector."""
+    from core.inference import stt_sidecar
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: tmp_path)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    repo = tmp_path / f"models--{pup.UPSAMPLER_REPO.replace('/', '--')}"
+
+    def put(revision, name):
+        path = repo / "snapshots" / revision / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"gguf")
+        (repo / "refs").mkdir(parents = True, exist_ok = True)
+        (repo / "refs" / "main").write_text(revision)
+        return str(path)
+
+    put(_OLD_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    old = put(_OLD_REV, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"])
+    return put, old
+
+
+def test_an_install_holding_only_the_earlier_q4_k_m_keeps_enhancing_offline(
+    monkeypatch, offline_upsampler_cache
+):
+    _put, old = offline_upsampler_cache
+    assert pup.UPSAMPLER_MODEL_FILE != pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    assert pup.model_path() == old
+    assert pup.mmproj_path().endswith(pup.UPSAMPLER_MMPROJ_FILE)
+    status = pup.status()
+    assert status["downloaded"] and status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    # The download still fetches the current default: the earlier file does not complete it.
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID) is None
+
+    sidecar = _FakeSidecar(reply = "An enhanced caption.")
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    monkeypatch.setattr(pup, "get_sidecar", lambda: sidecar)
+    out = pup.enhance_for_generation(["a cat"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == "applied" and out.encoded("a cat") == "An enhanced caption."
+    assert [call["model"] for call in sidecar.calls] == [old]
+
+
+def test_the_default_quant_wins_once_it_is_downloaded(offline_upsampler_cache):
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    new = put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    assert pup.model_path() == new
+    assert pup.status()["filename"] == pup.UPSAMPLER_MODEL_FILE
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID) == (
+        new,
+        new.replace(pup.UPSAMPLER_MODEL_FILE, pup.UPSAMPLER_MMPROJ_FILE),
+    )
+
+
+def test_nothing_downloaded_is_still_unavailable(monkeypatch, tmp_path):
+    from core.inference import stt_sidecar
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: tmp_path)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    assert pup.model_path() is None and pup.status()["filename"] == pup.UPSAMPLER_MODEL_FILE
+    out = pup.enhance_for_generation(["a cat"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == pup.STATUS_UNAVAILABLE
+
+
 def test_no_repo_download_beside_an_override(routes, monkeypatch):
     client, backend, saved = routes
     started = []
