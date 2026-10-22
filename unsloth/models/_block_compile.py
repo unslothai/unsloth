@@ -684,6 +684,10 @@ def _wrap(cls, compile_options):
 
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
+        # Inside a user's torch.compile the enclosing graph owns the layer: marking dims dynamic is
+        # forbidden while tracing and a nested compiled call would split or fail the outer graph.
+        if torch.compiler.is_compiling():
+            return original(self, hidden_states, *args, **kwargs)
         mode = self.__dict__.get("_unsloth_block_mode")
         if mode is None:
             mode = state["start"].get(_layer_kind(self), _FIRST_MODE)

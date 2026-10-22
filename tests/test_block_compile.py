@@ -131,6 +131,60 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "fullgraph, suppress", [(True, False), (False, False), (False, True)], ids = ["fullgraph", "default", "suppress_errors"]
+)
+def test_outer_compile_owns_the_block(monkeypatch, fullgraph, suppress):
+    """A user's torch.compile around a wrapped layer: no maybe_mark_dynamic inside the trace (forbidden),
+    no nested compiled call, one graph with no break, same output and grads as the stock forward."""
+    from torch._dynamo.utils import counters
+
+    M = _load()
+    real_compile = torch.compile
+    inner = []
+
+    def eager_compile(fn, **kwargs):
+        compiled = real_compile(fn, backend = "eager", fullgraph = False, dynamic = None)
+
+        def call(*args, **kw):
+            inner.append(1)
+            return compiled(*args, **kw)
+
+        return call
+
+    monkeypatch.setattr(torch, "compile", eager_compile)
+    cls = _toy_class()
+    original = cls.forward
+    M._wrap(cls, {})
+    monkeypatch.setattr(torch, "compile", real_compile)
+    torch.manual_seed(0)
+    layer = cls().train()
+    x = torch.randn(2, 4, 8)
+
+    xr = x.clone().requires_grad_()
+    original(layer, xr).sum().backward()
+    want = [xr.grad] + [p.grad.clone() for p in layer.parameters()]
+    layer.zero_grad(set_to_none = True)
+
+    torch._dynamo.reset()
+    counters.clear()
+    monkeypatch.setattr(torch._dynamo.config, "suppress_errors", suppress)
+    outer = torch.compile(layer, backend = "aot_eager", fullgraph = fullgraph)
+    xc = x.clone().requires_grad_()
+    outer(xc).sum().backward()
+    got = [xc.grad] + [p.grad for p in layer.parameters()]
+    for g, w in zip(got, want):
+        torch.testing.assert_close(g, w)
+    assert inner == []
+    assert dict(counters["graph_break"]) == {}
+    assert counters["stats"]["unique_graphs"] == 1
+    torch._dynamo.reset()
+
+    # Standalone still runs the block's own compiled region.
+    layer(x.clone().requires_grad_()).sum().backward()
+    assert inner
+
+
 def test_stop_recomputation_does_not_demote(monkeypatch):
     """#14063: checkpoint early-stop is control flow; demoting on it raised CheckpointError."""
     from torch.utils.checkpoint import _StopRecomputationError
