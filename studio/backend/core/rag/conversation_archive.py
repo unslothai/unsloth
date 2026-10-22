@@ -1131,6 +1131,37 @@ def _flushes_local_pair(part: dict) -> bool:
     return part.get("result") is not None
 
 
+def _with_attachments(message: dict):
+    """A stored row's content with its attached files folded in, as `toOpenAIMessages` sends it.
+
+    The store keeps attachments apart from the typed words, but `collectTextParts` (chat-adapter.ts)
+    sends a user turn as its own text followed by every attachment's text, after
+    `modelVisibleMessage` drops the tool-only images. Without them a turn sent with a document never equalled what was archived from
+    the request, so it found no seat and `_fallback_ordinal` numbered it after every later turn. An
+    assistant row's attachments add no text on the wire, so it is left as stored.
+    """
+    content = message.get("content")
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list) or str(message.get("role") or "") == "assistant":
+        return content
+    attached = [
+        part
+        for attachment in attachments
+        if isinstance(attachment, dict)
+        and attachment.get("mcpToolOnly") is not True
+        and isinstance(attachment.get("content"), list)
+        for part in attachment["content"]
+        if isinstance(part, dict) and part.get("type") in ("text", "image")
+    ]
+    if not attached:
+        return content
+    if isinstance(content, list):
+        return [*content, *attached]
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}, *attached]
+    return attached
+
+
 def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
@@ -1155,10 +1186,12 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     own messages against something written WITHOUT this projection must pass False:
     `_branch_boundary_anchor` records an anchor straight off the request, so `_archive_as_wire` has
     to hand the same bytes back or the rebase stops matching.
+
+    A user row's attached files go into its content (`_with_attachments`), as the client sends them.
     """
     wire: list[dict] = []
     for message in messages:
-        content = message.get("content")
+        content = _with_attachments(message)
         parts = content if isinstance(content, list) else None
         # Reasoning is not content: the serializer never puts it in `content`, but `_probe_text` renders any part with
         # a `text` field, so forwarding the stored list put a model's thinking inline and the turn matched no
@@ -1267,6 +1300,28 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     return wire
 
 
+# The note `withSandboxAttachmentPaths` (sandbox-attachments.ts) puts before an attachment while the python tool is on,
+# one line each, in the two forms `checkpoint._ATTACHMENT` also recognises.
+_SANDBOX_NOTE = re.compile(
+    r"^\[[^\n]*(?: is saved at \.unsloth_attachments/[0-9a-f]{12}/[^\n]* in the python tool's working directory"
+    r"|: its text is below, so answer from it\. For calculations, the python tool has the file at "
+    r"path = \"\.unsloth_attachments/[0-9a-f]{12}/)[^\n]*\]$",
+    re.MULTILINE,
+)
+
+
+def _seat_text(message: dict) -> str:
+    """One message as seat matching compares it: its probe, without the python tool's path notes.
+
+    The client adds those notes to the request only, so the stored row never has them, and with the
+    python tool on a turn sent with a document matched no seat even with its attachments folded in.
+    """
+    text = _probe_text(message)
+    if str(message.get("role") or "") == "user":
+        text = _SANDBOX_NOTE.sub("", text)
+    return _normalise_cased(text)
+
+
 def _fallback_ordinal(conn, scope: str, positions: Optional[list[list[str]]]) -> int:
     """Where a turn that matched no seat goes: past the archive AND past the transcript.
 
@@ -1312,11 +1367,7 @@ def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
     # Grouped with the evictor's own grouper, so a position is a TURN's index, which is what the ordinal is compared
     # against.
     wire = _as_wire(_active_chain(messages, branch))
-    return [
-        [_normalise_cased(_probe_text(message)) for message in group]
-        for group in group_turns(wire)
-        if group
-    ]
+    return [[_seat_text(message) for message in group] for group in group_turns(wire) if group]
 
 
 def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> list[int]:
@@ -1338,7 +1389,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     """
     if not positions or not group:
         return []
-    texts = [_normalise_cased(_probe_text(message)) for message in group]
+    texts = [_seat_text(message) for message in group]
     if not texts or not texts[0]:
         return []
     calls = [bool(message.get("tool_calls")) for message in group]
@@ -1475,9 +1526,7 @@ def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
     except Exception:
         return None
     positions = [
-        [_normalise_cased(_probe_text(message)) for message in group]
-        for group in group_turns(_as_wire(live))
-        if group
+        [_seat_text(message) for message in group] for group in group_turns(_as_wire(live)) if group
     ]
     return positions or None
 
