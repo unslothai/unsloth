@@ -3,7 +3,7 @@
 
 """MOSS-Image quantisation wiring: the frozen keep-list and ConvRot spec the hosted builds were made with, the hosted
 file names for SFT and Base, the shared text encoder, the automatic scheme order, and a clean fallback when the hosted
-repos are absent. CPU only, no network."""
+repos are unreachable. CPU only, no network."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _fam(repo = SFT):
 
 @pytest.fixture
 def offline_empty(tmp_path, monkeypatch):
-    """No mirror, no Hub, an empty cache: the hosted repos do not exist yet."""
+    """No mirror, no Hub, an empty cache: the hosted repos are unreachable."""
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PREQUANT_MIRROR", raising = False)
     cache = tmp_path / "hub"
