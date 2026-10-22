@@ -2995,14 +2995,14 @@ media-src 'self' https:"
     /// An elevated launch must still write the per-user Run value the readers above check.
     #[test]
     fn windows_autostart_entry_is_written_for_the_current_user() {
-        let exe = r"C:\Users\A B\AppData\Local\Unsloth Studio\unsloth-studio.exe";
-        let builder = windows_autostart_builder("Unsloth Studio", exe);
+        let exe = r"C:\Users\A B\AppData\Local\Unsloth\unsloth.exe";
+        let builder = windows_autostart_builder("Unsloth", exe);
         assert_eq!(
             builder.windows_enable_mode,
             auto_launch::WindowsEnableMode::CurrentUser
         );
         // Same entry the plugin writes, so the Run value is still quoted and launched hidden.
-        assert_eq!(builder.app_name.as_deref(), Some("Unsloth Studio"));
+        assert_eq!(builder.app_name.as_deref(), Some("Unsloth"));
         assert_eq!(builder.app_path.as_deref(), Some(exe));
         assert_eq!(builder.args, Some(vec!["--hidden".to_string()]));
         assert_eq!(
@@ -3019,7 +3019,7 @@ media-src 'self' https:"
         use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
         use winreg::RegKey;
         const RUN: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
-        let name = format!("Unsloth Studio autostart test {}", std::process::id());
+        let name = format!("Unsloth autostart test {}", std::process::id());
         let exe = std::env::current_exe().unwrap().display().to_string();
         let has = |hive, name: &str| {
             RegKey::predef(hive)
@@ -3030,6 +3030,10 @@ media-src 'self' https:"
         let elevated = RegKey::predef(HKEY_LOCAL_MACHINE)
             .open_subkey_with_flags(RUN, KEY_SET_VALUE)
             .is_ok();
+        // Hosted runners are elevated; without that the HKLM half below would pass untested.
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            assert!(elevated, "CI runner is not elevated");
+        }
         if elevated {
             // Control: the 0.6 default (`Dynamic`) lands in HKLM, the value this change avoids.
             let dynamic = auto_launch::AutoLaunchBuilder::new()
