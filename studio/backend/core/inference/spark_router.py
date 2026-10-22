@@ -64,7 +64,6 @@ _READ_CHUNK = 64 * 1024
 
 
 def _is_event_stream(headers: Any) -> bool:
-    """Whether the upstream headers promised an SSE body."""
     for name, value in headers or ():
         if str(name).lower() == "content-type":
             return "text/event-stream" in str(value).lower()
@@ -329,7 +328,6 @@ class SparkRouter:
         return None
 
     async def set_backend_address(self, name: str, host: str, port: int) -> None:
-        """Re-point a backend after its process was respawned on a new port."""
         backend = self.get_backend(name)
         if backend is None or (backend.host == host and backend.port == port):
             return
@@ -477,7 +475,6 @@ class SparkRouter:
         await self.mark_down(backend, reason)
 
     def release(self, name: str) -> None:
-        """Let the health loop put a held backend back once it answers."""
         self._held.discard(name)
 
     async def _record_probe(self, backend: Backend, ok: bool, error: str) -> None:
@@ -501,7 +498,6 @@ class SparkRouter:
             await self.mark_down(backend, error)
 
     async def mark_down(self, backend: Backend, error: str) -> None:
-        """Take a backend out of rotation now; the health loop puts it back."""
         backend.last_error = error
         backend.failures += 1
         was_healthy = backend.healthy
