@@ -128,7 +128,6 @@ test("the previous result is replaced only after its replacement model is ready"
 });
 
 test("leaving the page lets a transcription finish into history; the input card owns the microphone", () => {
-  // The input card records; the page stays mounted when hidden, so hiding it must end a recording too.
   assert.doesNotMatch(source, /getUserMedia|stopAndDiscardRecording/);
   assert.match(
     readSrc("features/audio/hooks/use-audio-source.ts"),

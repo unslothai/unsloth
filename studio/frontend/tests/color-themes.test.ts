@@ -91,16 +91,12 @@ function mix(hex: string, target: string, amount: number): string {
   return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
-// text-primary and text-control-accent paint these on the page, so they share
-// the applier's 2.5:1 accent-text floor, plain and on a 20% wash.
 test("flavor accents used as text meet the accent-text floor", () => {
   for (const id of FLAVOR_THEME_IDS) {
     for (const [mode, selector] of [
       ["light", `:root[data-palette="${id}"]:not(.dark) {`],
       ["dark", `:root[data-palette="${id}"].dark {`],
     ] as const) {
-      // A palette can open the same selector more than once (its seeds in one block, a shared
-      // variable such as --composer-shadow in another), so read every block it opens.
       const blocks: string[] = [];
       for (let start = indexCss.indexOf(selector); start >= 0; start = indexCss.indexOf(selector, start + 1)) {
         blocks.push(indexCss.slice(start, indexCss.indexOf("}", start)));
@@ -127,8 +123,6 @@ test("flavor accents used as text meet the accent-text floor", () => {
 });
 
 test("More themes leads with Butterfly Pea and Earl Grey, and Cherry is just Cherry", () => {
-  // The menu draws FLAVOR_THEME_IDS in order: Butterfly Pea took Blueberry's slot and Earl Grey
-  // took Honey's, with Blueberry and Honey moving to where those two were.
   assert.deepEqual(FLAVOR_THEME_IDS.slice(0, 5), ["matcha", "espresso", "butterfly-pea", "cherry", "earl-grey"]);
   assert.equal(FLAVOR_THEME_IDS.indexOf("blueberry"), 11);
   assert.equal(FLAVOR_THEME_IDS.indexOf("honey"), 13);
