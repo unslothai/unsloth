@@ -17,14 +17,22 @@ from unsloth.kernels import utils as utils_mod
 from unsloth.kernels.utils import MAX_FUSED_SIZE
 
 
-def _fake_target(monkeypatch, hip, warp_size = None):
+def _fake_target(
+    monkeypatch,
+    hip,
+    warp_size = None,
+):
     target = types.SimpleNamespace(arch = "gfx906", warp_size = warp_size)
     driver = types.SimpleNamespace(active = types.SimpleNamespace(get_current_target = lambda: target))
     monkeypatch.setattr(utils_mod, "is_hip", lambda: hip)
-    monkeypatch.setattr(utils_mod, "triton", types.SimpleNamespace(runtime = types.SimpleNamespace(driver = driver)))
+    monkeypatch.setattr(
+        utils_mod, "triton", types.SimpleNamespace(runtime = types.SimpleNamespace(driver = driver))
+    )
 
 
-@pytest.mark.parametrize("hip, warp_size, expected", [(False, None, 32), (True, 64, 16), (True, 32, 32)])
+@pytest.mark.parametrize(
+    "hip, warp_size, expected", [(False, None, 32), (True, 64, 16), (True, 32, 32)]
+)
 def test_max_num_warps_is_1024_threads_over_the_warp_size(hip, warp_size, expected, monkeypatch):
     _fake_target(monkeypatch, hip, warp_size)
     utils_mod.max_num_warps.cache_clear()
