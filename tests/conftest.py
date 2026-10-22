@@ -169,6 +169,8 @@ def _install_device_type_stub(name: str) -> None:
     stub.cuda_visible_capabilities = lambda *a, **k: []
     stub.cuda_gate_capabilities = lambda: []
     stub.cuda_current_capability = lambda: None
+    stub.cuda_bf16_capability = lambda: None
+    stub.apply_pre_volta_compile_workaround = lambda *a, **k: False
     stub.hip_current_arch = lambda: ""
     stub.arch_breaks_compile = lambda arch: False
     stub.cuda_order_mismatch_names = lambda: []

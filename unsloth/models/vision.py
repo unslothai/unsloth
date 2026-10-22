@@ -3955,10 +3955,12 @@ class FastBaseModel:
                         disarm_fp8_to_nf4(model_config)
                 # Before extracting the text core, which does not carry hf_device_map over.
                 fall_back_from_flash_attention_on_pre_ampere(model)
-                check_mixed_gpu_placement(model, dtype)
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
+                # After extraction: a discarded vision / audio sibling on an older card must not decide
+                # for the retained decoder. The core has no hf_device_map, so its parameters are walked.
+                check_mixed_gpu_placement(model, dtype)
                 # Save the standalone decoder under its own names, not the composite prefix it was read from.
                 _drop_text_only_key_mapping(model, _text_key_mapping)
                 _inherit_gradient_checkpointing_support(model)

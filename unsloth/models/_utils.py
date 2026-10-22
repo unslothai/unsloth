@@ -1678,17 +1678,27 @@ def _pre_ampere_cuda_devices(model):
 
 
 def _placed_gpu_indices(model):
-    """GPU indices a loaded model's weights sit on: its hf_device_map, else its first parameter."""
+    """GPU indices a loaded model's weights sit on: its hf_device_map, else every parameter's device
+    (an extracted text core carries no hf_device_map but may still span cards)."""
     device_map = getattr(model, "hf_device_map", None)
     if isinstance(device_map, dict):
         return {i for i in (_cuda_index(v) for v in device_map.values()) if i is not None}
     try:
-        device = next(model.parameters()).device
+        devices = {p.device for p in model.parameters()}
     except Exception:
         return set()
-    if device.type != "cuda":
-        return set()
-    return {torch.cuda.current_device() if device.index is None else device.index}
+    current = None
+    indices = set()
+    for device in devices:
+        if device.type != "cuda":
+            continue
+        if device.index is None:
+            if current is None:
+                current = torch.cuda.current_device()
+            indices.add(current)
+        else:
+            indices.add(device.index)
+    return indices
 
 
 def check_mixed_gpu_placement(model, dtype = None):

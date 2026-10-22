@@ -395,6 +395,7 @@ def _check_placement(
     device_map,
     dtype,
     current = 0,
+    model = None,
 ):
     import torch
 
@@ -414,7 +415,7 @@ def _check_placement(
         "apply_pre_volta_compile_workaround",
         lambda major: disabled.append(major) or True,
     )
-    model_utils.check_mixed_gpu_placement(_Placed(device_map), dtype)
+    model_utils.check_mixed_gpu_placement(_Placed(device_map) if model is None else model, dtype)
     return disabled
 
 
@@ -566,3 +567,59 @@ def test_sentence_transformer_direct_loads_check_the_placement():
                 for n in ast.walk(later)
             ), f"SentenceTransformer load at line {stmt.lineno} must check the placement"
     assert found >= 2
+
+
+class _ParamsOn:
+    """A model with no hf_device_map (an extracted text core) whose parameters sit on these devices."""
+
+    def __init__(self, *devices):
+        import torch
+
+        self._params = [types.SimpleNamespace(device = torch.device(d)) for d in devices]
+
+    def parameters(self):
+        return iter(self._params)
+
+
+def test_a_core_without_a_device_map_is_checked_on_every_card_it_spans(monkeypatch, capsys):
+    import torch
+
+    model = _ParamsOn("cuda:0", "cuda:0", "cuda:1", "cpu")
+    disabled = _check_placement(monkeypatch, [SM90, SM61], None, torch.float16, model = model)
+    assert disabled == [0]
+    assert "GPU 1 (card1)" in capsys.readouterr().out
+
+
+def test_a_core_on_capable_cards_only_changes_nothing(monkeypatch, capsys):
+    import torch
+
+    # The discarded sibling's card (GPU 1) is no longer among the retained parameters.
+    model = _ParamsOn("cuda:0", "cuda:0")
+    assert _check_placement(monkeypatch, [SM90, SM61], None, torch.bfloat16, model = model) == []
+    assert capsys.readouterr().out == ""
+
+
+def test_text_only_composite_loads_check_the_retained_core():
+    """The placement check runs after _text_trainable_core drops the vision / audio siblings."""
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8"))
+    checked = 0
+    for block in ast.walk(tree):
+        body = getattr(block, "body", None)
+        if not isinstance(body, list):
+            continue
+        calls = [
+            (i, getattr(n.func, "id", None))
+            for i, stmt in enumerate(body)
+            for n in ast.walk(stmt)
+            if isinstance(n, ast.Call)
+            and getattr(n.func, "id", None) in ("_text_trainable_core", "check_mixed_gpu_placement")
+        ]
+        core = [i for i, name in calls if name == "_text_trainable_core"]
+        check = [i for i, name in calls if name == "check_mixed_gpu_placement"]
+        # Outer blocks hold both inside one statement; the block that lists them as siblings decides.
+        if core and check and min(core) != min(check):
+            checked += 1
+            assert min(check) > min(core), "check the placement of the retained core, not the composite"
+    assert checked
