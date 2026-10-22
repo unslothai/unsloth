@@ -119,6 +119,16 @@ def test_approved_calls_import_chat_helpers_without_shadowing_the_stdlib(tmp_pat
     assert "PLANTED" not in out, out
 
 
+def test_chat_cli_names_match_case_insensitively_on_windows(tmp_path, monkeypatch):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "ruff.exe").write_bytes(b"MZ")
+    (scripts / "other.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(tools.os, "name", "nt")
+    dest = tools._requested_chat_clis(str(scripts), "RUFF check C:\\data", str(tmp_path / "bin"))
+    assert dest is not None and sorted(os.listdir(dest)) == ["ruff.exe"]
+
+
 def test_chat_folder_only_supplies_the_helpers_the_script_imports(tmp_path):
     """Startup hooks and optional imports a library probes never come from the chat folder."""
     assert tools._script_top_level_imports(

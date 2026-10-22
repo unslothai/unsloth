@@ -10199,12 +10199,14 @@ def _requested_chat_clis(scripts: str, text: str, dest: str) -> "str | None":
         entries = os.listdir(scripts)
     except OSError:
         return None
-    words = set(re.findall(r"[\w.+-]+", text))
+    # Windows resolves commands case-insensitively.
+    fold = str.lower if os.name == "nt" else str
+    words = {fold(word) for word in re.findall(r"[\w.+-]+", text)}
     copied = False
     for entry in entries:
         stem = os.path.splitext(entry)[0] if os.name == "nt" else entry
         source = os.path.join(scripts, entry)
-        if (entry in words or stem in words) and os.path.isfile(source):
+        if (fold(entry) in words or fold(stem) in words) and os.path.isfile(source):
             os.makedirs(dest, exist_ok = True)
             shutil.copy2(source, os.path.join(dest, entry))
             copied = True
