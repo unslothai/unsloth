@@ -1376,7 +1376,11 @@ def _write_video_clip(video_b64: str) -> str:
     import base64
     import tempfile
 
+    from utils.media_playlist import refuse_playlist
+
     data = base64.b64decode(video_b64)
+    # cv2.VideoCapture and mlx-vlm both open this through FFmpeg, which follows playlist entries.
+    refuse_playlist(data)
     with tempfile.NamedTemporaryFile(prefix = "unsloth-video-", delete = False) as handle:
         handle.write(data)
         return handle.name
