@@ -4568,7 +4568,8 @@ function Install-UnslothStudio {
         param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
         if ($Tool -ne 'pip') {
             if ($Tool -eq 'python') {
-                if ($env:UV_PYTHON_INSTALL_MIRROR) { return $true }
+                # UV_ASTRAL_MIRROR_URL also serves Python builds, but UV_PYTHON_INSTALL_MIRROR would win over it.
+                if ("$env:UV_PYTHON_INSTALL_MIRROR$env:UV_ASTRAL_MIRROR_URL") { return $true }
                 $pattern = '^\s*python-install-mirror\s*='
             } else {
                 if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
@@ -4577,7 +4578,8 @@ function Install-UnslothStudio {
             # uv reads UV_CONFIG_FILE in place of every discovered file, and none with UV_NO_CONFIG.
             $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
             $dir = (Get-Location -PSProvider FileSystem).ProviderPath
-            if ($env:UV_NO_CONFIG -and $env:UV_NO_CONFIG -notmatch '^(0|false|no|off)$') { $files = @(); $dir = $null }
+            # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
+            if (@('1', 't', 'true', 'y', 'yes', 'on') -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
             elseif ($env:UV_CONFIG_FILE) { $files = @($env:UV_CONFIG_FILE); $dir = $null }
             while ($dir) {
                 $pyproject = Join-Path $dir 'pyproject.toml'
