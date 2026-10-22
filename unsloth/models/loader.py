@@ -130,8 +130,20 @@ def _vllm_unsupported_model_types(model_types):
     return unsupported
 
 
+def _vllm_engine_device():
+    """The card fast_inference's vLLM engine runs on: unsloth_zoo's target device (cuda:0), not the current one."""
+    import torch
+
+    try:
+        from unsloth_zoo.vllm_utils import get_target_device
+
+        return get_target_device()
+    except Exception:
+        return torch.device("cuda", 0)
+
+
 def _vllm_needs_newer_gpu(model_types):
-    """First model type vLLM cannot run on this CUDA GPU (compute capability < 8), else None."""
+    """First model type vLLM cannot run on the engine's CUDA GPU (compute capability < 8), else None."""
     if DEVICE_TYPE != "cuda":
         return None
     model_type = next((t for t in model_types if t in VLLM_NEEDS_SM80_MODEL_TYPES), None)
@@ -140,7 +152,8 @@ def _vllm_needs_newer_gpu(model_types):
     import torch
 
     try:
-        if torch.cuda.get_device_capability()[0] >= 8:
+        # Mixed hosts: the current card may differ from the engine's (vLLM's UniProcExecutor takes cuda:0).
+        if torch.cuda.get_device_capability(_vllm_engine_device())[0] >= 8:
             return None
     except Exception:
         return None
