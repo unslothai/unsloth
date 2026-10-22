@@ -236,11 +236,32 @@ def cuda_order_mismatch_names():
     return names if len(names) > 1 else []
 
 
-def xpu_supports_native_bf16():
-    """Process-wide like CUDA: any visible XPU proven to lack native bf16 turns it off, since the
-    load target is not known here. Each device is judged by its own aspects: without libocloc
-    (absent in torch-xpu wheels) every aspect reads False, so trust the probe only once some
-    aspect reads True on that device. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
+def _xpu_selected_indices(device = None):
+    """XPU indices to judge: `device` (an index, "xpu:N", a torch.device or several of them), else
+    the current device, which torch.xpu.is_bf16_supported() also asks. None when unreadable."""
+    items = device if isinstance(device, (list, tuple, set, frozenset)) else [device]
+    indices = []
+    for item in items:
+        try:
+            if item is None:
+                index = torch.xpu.current_device()
+            elif isinstance(item, int) and not isinstance(item, bool):
+                index = item
+            else:
+                item = torch.device(item)
+                if item.type != "xpu":
+                    continue
+                index = torch.xpu.current_device() if item.index is None else item.index
+        except Exception:
+            return None
+        if index not in indices:
+            indices.append(int(index))
+    return indices
+
+
+def _xpu_device_lacks_native_bf16(index):
+    """True only when this device is proven to emulate bf16. Its own aspects decide whether the probe
+    can be trusted: without libocloc (absent in torch-xpu wheels) every SYCL aspect reads False."""
     aspects = (
         "has_bfloat16_conversions",
         "has_subgroup_matrix_multiply_accumulate",
@@ -248,18 +269,22 @@ def xpu_supports_native_bf16():
         "has_subgroup_2d_block_io",
     )
     try:
-        count = torch.xpu.device_count()
+        props = torch.xpu.get_device_properties(index)
     except Exception:
+        return False
+    lacks_bf16 = getattr(props, "has_bfloat16_conversions", True) is False
+    return lacks_bf16 and any(getattr(props, name, False) is True for name in aspects)
+
+
+def xpu_supports_native_bf16(device = None):
+    """Native bf16 on the XPU(s) in use: `device`, else the current XPU, the one
+    torch.xpu.is_bf16_supported() asks. An unused sibling never narrows it, and emulated bf16 still
+    runs on any XPU a split model reaches. Unknown means True.
+    Must match unsloth_zoo.device_type._xpu_bf16_supported."""
+    indices = _xpu_selected_indices(device)
+    if indices is None:
         return True
-    for index in range(count):
-        try:
-            props = torch.xpu.get_device_properties(index)
-        except Exception:
-            continue
-        lacks_bf16 = getattr(props, "has_bfloat16_conversions", True) is False
-        if lacks_bf16 and any(getattr(props, name, False) is True for name in aspects):
-            return False
-    return True
+    return not any(_xpu_device_lacks_native_bf16(index) for index in indices)
 
 
 def xpu_keeps_explicit_bf16():
