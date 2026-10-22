@@ -234,13 +234,7 @@ def test_an_inconclusive_re_probe_under_the_lock_keeps_the_kernel(monkeypatch):
 
 def _real_probe(extension, path):
     return subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            ips._SSM_EXTENSION_PROBE.format(
-                extension = extension, code = ips._SSM_EXTENSION_BROKEN_EXIT
-            ),
-        ],
+        [sys.executable, "-c", ips._ssm_extension_probe(extension)],
         capture_output = True,
         text = True,
         timeout = 300,
@@ -248,16 +242,24 @@ def _real_probe(extension, path):
     )
 
 
-def test_the_probe_passes_an_extension_free_install_and_fails_a_broken_one(tmp_path):
+def test_the_probe_passes_an_extension_free_mamba_ssm_only(tmp_path):
     pytest.importorskip("torch")
-    # The extension-free mamba_ssm wheel ships no selective_scan_cuda at all.
-    extension = "unsloth_probe_test_selective_scan_cuda"
-    assert _real_probe(extension, tmp_path).returncode == 0
+    import importlib.util
+
+    if any(importlib.util.find_spec(e) for e in ("selective_scan_cuda", "causal_conv1d_cuda")):
+        pytest.skip("a CUDA mamba_ssm / causal_conv1d is installed here")
+    # The extension-free mamba_ssm wheel ships no selective_scan_cuda at all: kept.
+    assert _real_probe("selective_scan_cuda", tmp_path).returncode == 0
+    # causal_conv1d has no extension-free wheel: a missing causal_conv1d_cuda is still broken.
+    missing = _real_probe("causal_conv1d_cuda", tmp_path)
+    assert missing.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, missing.stderr
     # A build for another torch: the module is there but does not load.
-    (tmp_path / f"{extension}.py").write_text("raise ImportError('undefined symbol: _ZN3c10')\n")
-    broken = _real_probe(extension, tmp_path)
+    (tmp_path / "selective_scan_cuda.py").write_text(
+        "raise ImportError('undefined symbol: _ZN3c10')\n"
+    )
+    broken = _real_probe("selective_scan_cuda", tmp_path)
     assert broken.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, broken.stderr
-    assert extension in broken.stderr
+    assert "selective_scan_cuda" in broken.stderr
 
 
 def test_setup_keeps_the_extension_free_mamba_ssm(monkeypatch, tmp_path):

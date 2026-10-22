@@ -8760,14 +8760,15 @@ def _ensure_flash_attn() -> None:
 # The compiled extension each SSM kernel loads (kernel_install.KERNELS checks the same import).
 _SSM_KERNEL_EXTENSIONS = {"causal_conv1d": "causal_conv1d_cuda", "mamba_ssm": "selective_scan_cuda"}
 # Exit code of the probe below when torch imported and the extension raised ImportError / OSError.
-# No compiled module at all is the extension-free mamba_ssm wheel Studio's Triton route installs:
-# nothing in it was built against torch, so it is kept.
 _SSM_EXTENSION_BROKEN_EXIT = 87
+# mamba_ssm without selective_scan_cuda is the extension-free wheel Studio's Triton route installs:
+# nothing in it was built against torch, so it is kept. causal_conv1d has no such wheel.
+_SSM_EXTENSION_OPTIONAL = {"selective_scan_cuda"}
 _SSM_EXTENSION_PROBE = (
     "import importlib.util\n"
     "import sys\n"
     "import torch\n"
-    "if importlib.util.find_spec('{extension}') is None:\n"
+    "if {optional} and importlib.util.find_spec('{extension}') is None:\n"
     "    sys.exit(0)\n"
     "try:\n"
     "    import {extension}\n"
@@ -8775,6 +8776,14 @@ _SSM_EXTENSION_PROBE = (
     "    print('{extension}: %s: %s' % (type(exc).__name__, exc), file = sys.stderr)\n"
     "    sys.exit({code})\n"
 )
+
+
+def _ssm_extension_probe(extension: str) -> str:
+    return _SSM_EXTENSION_PROBE.format(
+        extension = extension,
+        code = _SSM_EXTENSION_BROKEN_EXIT,
+        optional = extension in _SSM_EXTENSION_OPTIONAL,
+    )
 
 
 def _probe_tail(stderr) -> str:
@@ -8824,9 +8833,7 @@ def _remove_stale_ssm_kernels() -> None:
     for name in installed:
         distribution = KERNELS[name][0]
         extension = _SSM_KERNEL_EXTENSIONS[name]
-        probe = _run_import_probe(
-            _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
-        )
+        probe = _run_import_probe(_ssm_extension_probe(extension))
         if probe is None or probe.returncode == 0:
             continue
         tail = _probe_tail(probe.stderr)
@@ -8844,9 +8851,7 @@ def _remove_stale_ssm_kernels() -> None:
                     f"{name} does not load with this torch, but its install lock is busy; kept it"
                 )
                 continue
-            recheck = _run_import_probe(
-                _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
-            )
+            recheck = _run_import_probe(_ssm_extension_probe(extension))
             if recheck is not None and recheck.returncode == 0:
                 _note(f"{name} now loads with this torch; kept it")
                 continue
