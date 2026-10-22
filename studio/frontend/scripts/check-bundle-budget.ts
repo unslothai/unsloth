@@ -365,14 +365,19 @@ export const BUDGET = {
   // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
   // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
+  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
-  // Settings API / Remote / LAN strings (#14596) merged with main at c2f75c486c: 6,891,550 B raw / 2,076,208 B
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 65db7508a: 6,893,351 B raw / 2,076,850 B
   // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_076_400,
-  rawBytes: 6_891_750,
+  transferBytes: 2_077_050,
+  rawBytes: 6_893_551,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

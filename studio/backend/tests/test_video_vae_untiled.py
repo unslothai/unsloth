@@ -51,14 +51,14 @@ def test_untiled_when_it_fits(monkeypatch):
     monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
     assert U.install_untiled_decode(_pipe(vae), WAN)
     assert vae.decode(Z, return_dict = False) == ("untiled",)
-    assert vae.use_tiling is True  # restored after the call
+    assert vae.use_tiling is True
     assert vae.decode._unsloth_untiled_stats == {"untiled": 1, "tiled": 0, "oom_fallback": 0}
 
 
 def test_tiled_when_it_does_not_fit(monkeypatch):
     vae = FakeVAE()
     need = U.untiled_decode_bytes(WAN, tuple(Z.shape))
-    monkeypatch.setattr(U, "_free_bytes", lambda device: need)  # below estimate x margin
+    monkeypatch.setattr(U, "_free_bytes", lambda device: need)
     assert U.install_untiled_decode(_pipe(vae), WAN)
     assert vae.decode(Z) == ("tiled",)
     assert vae.calls == [True]
@@ -107,15 +107,13 @@ def test_estimate_scales_with_latent_area_and_output_frames():
     assert c == 2 * a
     # 121 -> 17 frames: only the RGB output (held twice) shrinks.
     assert a - b == 2 * 3 * (121 - 17) * 704 * 1280 * 2
-    # 1021 frames at 1280x704 holds ~10 GiB of fp16 output on top of the per-frame peak.
     long = U.untiled_decode_bytes(WAN, (1, 48, 256, 44, 80))
     assert long - b >= 10 * 2**30 - 2 * 3 * 17 * 704 * 1280 * 2
     assert U.untiled_decode_bytes("nope", (1, 48, 31, 44, 80)) is None
 
 
 def test_fp32_decoder_needs_twice_the_fp16_estimate(monkeypatch):
-    # Wan's untiled fp32 decode peaked at 21.1 GiB against 9.6 GiB fp16 (1280x704): a gate sized for fp16 must not
-    # send an fp32 decoder untiled.
+    # Wan's untiled fp32 decode peaks ~2x fp16, so an fp16-sized gate must not go untiled.
     fp16_gate = U.untiled_decode_bytes(WAN, tuple(Z.shape)) * U._MARGIN + U._MARGIN_BYTES
     monkeypatch.setattr(U, "_free_bytes", lambda device: int(fp16_gate) + 1)
     half, full = FakeVAE(), FakeVAE(dtype = torch.float32)
@@ -164,7 +162,6 @@ def test_estimate_that_ran_out_of_memory_is_not_retried_untiled(monkeypatch):
     assert vae.decode(Z) == ("tiled",)
     assert vae.calls == [False, True, True]
     assert vae.decode._unsloth_untiled_stats["oom_fallback"] == 1
-    # a smaller clip still tries untiled
     vae.decode(torch.zeros(1, 48, 2, 44, 80))
     assert vae.calls[-2:] == [False, True]
 

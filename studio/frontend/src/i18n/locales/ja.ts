@@ -119,6 +119,7 @@ export const ja = {
     reload: "再読み込み",
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
+    local: "ローカル",
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -469,6 +470,8 @@ export const ja = {
       downloadFailed: "{name} をダウンロードできませんでした",
       notMarked: "{name} は保存されましたが、インターネットからダウンロードしたファイルとしてマークできなかったため、開く前にシステムの警告が表示されません。",
       blocked: "このアドレスはブラウザパネルでは開けません。開けるのは公開ウェブサイトのみです。",
+      blockedLocal: "このローカルアドレスはここでは開けません。開くにはアドレスバーに入力してください。",
+      studioAddress: "これは Unsloth 自身のアドレスのため、ブラウザパネルでは開けません。",
       clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去します。サイトからはログアウトされます。",
       clearDataDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
