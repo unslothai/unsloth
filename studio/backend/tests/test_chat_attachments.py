@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import base64
+import copy
 import json
 import os
 import sqlite3
@@ -266,6 +267,105 @@ def test_delete_chat_attachment_keeps_others(tmp_path, monkeypatch):
     assert studio_db.get_chat_attachment("msg-1", "att-1") is None
     assert studio_db.get_chat_attachment("msg-1", "att-2") is not None
     assert [r["id"] for r in studio_db.list_chat_attachments()] == ["att-2"]
+
+
+@pytest.mark.parametrize("content_part", [False, True])
+@pytest.mark.parametrize("revision", [None, 4])
+def test_attachment_deletion_invalidates_saved_usage_inputs(
+    tmp_path, monkeypatch, content_part, revision
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    message = _message("msg-1", attachments = [] if content_part else [_image_attachment()])
+    message["metadata"] = {"customField": "preserved"}
+    if revision is not None:
+        message["metadata"]["revision"] = revision
+    if content_part:
+        message["content"].append({"type": "image", "image": PNG_DATA_URL})
+    studio_db.upsert_chat_message(message)
+    attachment_id = studio_db.list_chat_attachments()[0]["id"]
+
+    assert studio_db.delete_chat_attachment("msg-1", attachment_id) is True
+    saved = studio_db.get_chat_message("thread-1", "msg-1")
+    assert saved["metadata"] == {"customField": "preserved", "revision": (revision or 0) + 1}
+    assert studio_db.delete_chat_attachment("msg-1", attachment_id) is False
+    assert studio_db.get_chat_message("thread-1", "msg-1")["metadata"] == saved["metadata"]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("content_parts", [False, True])
+@pytest.mark.parametrize("pruned", [False, True])
+def test_stale_attachment_writes_cannot_restore_a_saved_usage_revision(
+    tmp_path, monkeypatch, batch, content_parts, pruned
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    original = _message("msg-1", attachments = [])
+    original["metadata"] = {"revision": 4, "customField": "preserved"}
+    if content_parts:
+        original["content"].extend(
+            [
+                {"type": "image", "image": PNG_DATA_URL},
+                {"type": "audio", "audio": "data:audio/wav;base64,AAAA"},
+            ]
+        )
+    else:
+        original["attachments"] = [_image_attachment("att-1"), _image_attachment("att-2")]
+    studio_db.upsert_chat_message(original)
+    attachment_ids = [item["id"] for item in studio_db.list_chat_attachments()]
+
+    def write(message):
+        if batch:
+            studio_db.sync_chat_messages("thread-1", [message])
+        else:
+            studio_db.upsert_chat_message(message)
+        return studio_db.get_chat_message("thread-1", "msg-1")
+
+    assert studio_db.delete_chat_attachment("msg-1", attachment_ids[0]) is True
+    intermediate = studio_db.get_chat_message("thread-1", "msg-1")
+    assert intermediate["metadata"]["revision"] == 5
+    assert write(original)["metadata"]["revision"] == 5
+    assert studio_db.delete_chat_attachment("msg-1", attachment_ids[1]) is True
+    if pruned:
+        studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
+        assert studio_db.get_chat_message("thread-1", "msg-1") is None
+
+    for stale in [original, intermediate, original]:
+        saved = write(stale)
+        assert saved["metadata"] == {"revision": 6, "customField": "preserved"}
+        assert saved["content"] == [{"type": "text", "text": "hello"}]
+        assert saved["attachments"] == []
+    assert original["metadata"]["revision"] == 4
+    assert intermediate["metadata"]["revision"] == 5
+
+    clean = copy.deepcopy(saved)
+    clean["metadata"]["revision"] = 4
+    assert write(clean)["metadata"]["revision"] == 6
+    clean["metadata"]["revision"] = 7
+    assert write(clean)["metadata"]["revision"] == 7
+    revised_stale = copy.deepcopy(original)
+    revised_stale["metadata"]["revision"] = 7
+    assert write(revised_stale)["metadata"]["revision"] == 9
+    assert write(revised_stale)["metadata"]["revision"] == 9
+
+
+def test_attachment_and_content_sharing_a_deleted_id_advance_revision_once(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    part = {"type": "image", "image": PNG_DATA_URL}
+    attachment_id = studio_db._content_part_id(part)
+    message = _message("msg-1", attachments = [_image_attachment(attachment_id)])
+    message["content"].append(part)
+    message["metadata"] = {"revision": 4}
+    studio_db.upsert_chat_message(message)
+
+    assert studio_db.delete_chat_attachment("msg-1", attachment_id) is True
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
+    saved = studio_db.upsert_chat_message(message)
+
+    assert saved["metadata"]["revision"] == 5
+    assert saved["attachments"] == []
+    assert saved["content"] == [{"type": "text", "text": "hello"}]
 
 
 def test_delete_last_chat_attachment_stores_empty_list(tmp_path, monkeypatch):

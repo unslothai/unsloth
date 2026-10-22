@@ -22,6 +22,7 @@ import base64
 import contextlib
 import json
 import logging
+import functools
 import os
 import re
 import shutil
@@ -297,18 +298,97 @@ def _cgroup_cpu_limit(
         path = os.path.dirname(path)
 
 
+@functools.lru_cache(maxsize = 1)
+def _libc() -> Any:
+    """Cached: ``find_library`` walks the filesystem."""
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib")
+    libc.sysctlbyname.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    ]
+    libc.sysctlbyname.restype = ctypes.c_int
+    return libc
+
+
+def _sysctl(name: str, as_str: bool = False) -> Any:
+    try:
+        import ctypes
+
+        libc = _libc()
+        if as_str:
+            buf = ctypes.create_string_buffer(64)
+            size = ctypes.c_size_t(len(buf))
+            ok = libc.sysctlbyname(name.encode(), buf, ctypes.byref(size), None, 0) == 0
+            return buf.value.decode(errors = "replace") if ok else None
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        ok = libc.sysctlbyname(name.encode(), ctypes.byref(value), ctypes.byref(size), None, 0) == 0
+        return int(value.value) if ok and value.value > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# M5 Pro / Max: perflevel0 "Super", perflevel1 "Performance".
+_FAST_PERF_LEVELS = ("super", "performance")
+
+
+def _apple_performance_cores() -> Optional[int]:
+    """macOS fast cores: perflevel0 plus lower tiers named Super/Performance (sd.cpp reads perflevel0 only).
+    No SMT, so ``cpu_count() // 2`` undercounts."""
+    if sys.platform != "darwin":
+        return None
+    levels = _sysctl("hw.nperflevels") or 0
+    total = 0
+    for level in range(levels):
+        if level > 0:
+            name = _sysctl(f"hw.perflevel{level}.name", as_str = True)
+            if name is None or name.strip().lower() not in _FAST_PERF_LEVELS:
+                continue
+        total += _sysctl(f"hw.perflevel{level}.physicalcpu") or 0
+    return total or _sysctl("hw.perflevel0.physicalcpu") or _sysctl("hw.physicalcpu")
+
+
 def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else ``os.cpu_count() // 2`` capped by the cgroup quota ``os.cpu_count()`` ignores."""
+    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else ``os.cpu_count() // 2`` capped by the cgroup quota."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
         configured = 0
     if configured > 0:
         return configured
+    performance_cores = _apple_performance_cores()
+    if performance_cores:
+        return performance_cores
     cpu = os.cpu_count()
     threads = cpu // 2 if cpu else 8
     limit = _cgroup_cpu_limit() if sys.platform.startswith("linux") else None
     return max(1, min(threads, limit) if limit else threads)
+
+
+def _explicit_threads() -> Optional[int]:
+    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or a cgroup quota below sd.cpp's physical-core default; None
+    keeps that default."""
+    try:
+        configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
+    except ValueError:
+        configured = 0
+    if configured > 0:
+        return configured
+    performance_cores = _apple_performance_cores()
+    if performance_cores:
+        return performance_cores
+    if sys.platform.startswith("linux"):
+        limit = _cgroup_cpu_limit()
+        cpu = os.cpu_count()
+        if limit and cpu and limit < cpu // 2:
+            return max(1, limit)
+    return None
 
 
 def _server_binary_runnable(binary: str) -> bool:
@@ -584,6 +664,56 @@ def sd_cpp_cuda_compute_capability(
     return caps.get(int(device_name[len(head) :]))
 
 
+def sd_cpp_device_listing_known(binary: Optional[str]) -> bool:
+    if not binary:
+        return False
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    return seen is not None and seen[0] == _binary_stat_identity(binary)
+
+
+# Runs when --list-devices timed out (possibly a stalled driver); CUDA calls have no deadline, so bound the wait.
+TORCH_CC_TIMEOUT_S = 10.0
+
+
+def torch_cuda_compute_capability(
+    ordinal: Optional[int], *, timeout_s: Optional[float] = None
+) -> Optional[tuple[int, int]]:
+    """torch's compute capability for ``ordinal`` (lowest visible when None), or None on ROCm (not sm numbers),
+    error or timeout (the daemon thread is left behind). Same runtime and mask as CUDA sd.cpp, so indices agree."""
+    import threading
+
+    result: list = []
+
+    def read() -> None:
+        result.append(_torch_cuda_compute_capability(ordinal))
+
+    worker = threading.Thread(target = read, daemon = True, name = "sd-cpp-torch-cc")
+    worker.start()
+    worker.join(TORCH_CC_TIMEOUT_S if timeout_s is None else timeout_s)
+    return result[0] if result else None
+
+
+def _torch_cuda_compute_capability(ordinal: Optional[int]) -> Optional[tuple[int, int]]:
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not getattr(torch.version, "cuda", None):
+            return None
+        if not torch.cuda.is_available():
+            return None
+        if ordinal is None:
+            caps = [
+                tuple(torch.cuda.get_device_capability(i)) for i in range(torch.cuda.device_count())
+            ]
+            return min(caps) if caps else None  # type: ignore[return-value]
+        if not 0 <= int(ordinal) < torch.cuda.device_count():
+            return None
+        major, minor = torch.cuda.get_device_capability(int(ordinal))
+        return (int(major), int(minor))
+    except Exception:  # noqa: BLE001 -- unknown stays unknown
+        return None
+
+
 _VULKAN_DEVICE_UMA_RE = re.compile(r"^ggml_vulkan: (\d+) = .*?\| uma: ([01]) \|", re.MULTILINE)
 
 
@@ -618,8 +748,13 @@ def sd_cpp_vulkan_device_is_uma(
 _GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
 
 
+_TRADEMARK_RE = re.compile(r"\((?:tm|r)\)|[\u2122\u00ae]", re.IGNORECASE)
+
+
 def _normalized_card_name(text: str) -> str:
-    """Letters and digits only, lowercased: `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    """Letters and digits only, lowercased, trademark marks dropped (HIP's `AMD Radeon(TM) Graphics` is RADV's
+    `AMD Radeon Graphics`): `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    text = _TRADEMARK_RE.sub(" ", text)
     return "".join(character for character in text.lower() if character.isalnum())
 
 
@@ -664,19 +799,26 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     source = os.environ if env is None else env
     # Windows HIP has no ROCr layer, so a leftover ROCR_VISIBLE_DEVICES masks nothing there.
     rocr = None if sys.platform == "win32" else source.get(_ROCR_MASK_VAR)
-    hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
+    # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one does not shadow it.
+    present = [source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None]
+    hip = next((raw for raw in present if raw.strip()), present[0] if present else None)
     opaque = source.get(_OPAQUE_MASK_VAR)
     if rocr is None and hip is None and opaque is None:
         return ordinal, False
     if opaque is not None:
         return None, True
     visible: "Optional[list[int]]" = None
-    for raw in (rocr, hip):
+    for is_hip, raw in ((False, rocr), (True, hip)):
         if raw is None:
             continue
         entries = _mask_entries(raw)
         if entries is None:
             return None, True
+        # clr keeps the first of a repeated HIP entry; ROCr stops at one (utils/hardware/amd.py).
+        if is_hip:
+            entries = list(dict.fromkeys(entries))
+        elif len(set(entries)) < len(entries):
+            entries = entries[: next(i for i, e in enumerate(entries) if e in entries[:i])]
         if visible is None:
             visible = entries
         else:
@@ -798,17 +940,19 @@ def sd_cpp_device_named(
     card_name: Optional[str],
     *,
     position: Optional[int] = None,
+    listing: Optional[str] = None,
 ) -> Optional[str]:
     """The ggml device that IS *card_name*, when exactly one of them is. The Vulkan build names its
     devices in its own namespace, so a physical ordinal names nothing in it. ``position`` breaks a
     tie on the ASSUMPTION that RADV and HIP walk one vendor's GPUs in the same order -- unreadable
-    here, so only among devices already agreed to be the right MODEL."""
+    here, so only among devices already agreed to be the right MODEL. ``listing``: tab-separated name and
+    description lines read elsewhere, instead of running ``binary --list-devices``."""
     if not binary or not card_name:
         return None
     wanted = _normalized_card_name(card_name)
     if not wanted:
         return None
-    text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = listing if listing is not None else _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
         return None
     # Both readings: containment cannot tell `RX 7600` from `RX 7600 XT`, equality cannot see through a driver tag.
@@ -2592,6 +2736,13 @@ def _map_guidance(
     return cfg, None
 
 
+def _negative_prompt_guidance_threshold(fam: DiffusionFamily) -> Optional[float]:
+    """sd.cpp drops a negative prompt unless _map_guidance gives cfg > 1; embedded-guidance families never use one."""
+    if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
+        return None
+    return 0.0 if fam.name == "z-image" else 1.0
+
+
 def _assert_shards_beside_index(kind: str, path: str) -> None:
     """sd-cli resolves a ``*.safetensors.index.json`` encoder's shards relative to the index, so every shard it names
     must sit in the same snapshot directory. The shards are fetched as their own assets, which normally lands them
@@ -3045,6 +3196,8 @@ class SdCppDiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
+        # Accepted for parity; native never raises the unified-memory refusal.
+        allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
@@ -4991,6 +5144,10 @@ class SdCppDiffusionBackend:
             ),
             "supports_controlnet": False,
             "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
+            "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
+            # Every family maps guidance to sd.cpp's cfg or embedded guidance (_map_guidance). No denoise previews.
+            "supports_guidance": True,
+            "supports_live_preview": False,
             "prompt_hint": state.family.prompt_hint,
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,

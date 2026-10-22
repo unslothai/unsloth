@@ -334,6 +334,14 @@ def is_path_within(
     return common == base and (allow_root or candidate != base)
 
 
+def is_network_or_device_path(value) -> bool:
+    """A UNC share (``\\\\host\\share``, ``//host/share``) or a ``\\\\?\\`` / ``\\\\.\\`` / ``\\??\\`` device path.
+    Any filesystem call on one makes Windows reach out over SMB with the service account's
+    credentials, so managed-account checks refuse it before touching the disk."""
+    text = str(value).strip()
+    return text.startswith(("\\\\", "//", "\\/", "/\\", "\\??\\"))
+
+
 def same_path(
     left,
     right,
@@ -463,21 +471,76 @@ DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
 _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 
 
-def _prune_open_staging(root: Path) -> None:
+# Older builds staged hard links the OS sandbox refuses; only the name goes, so an app holding the dir can still save.
+def _break_hard_links(entry: Path) -> None:
+    import stat as stat_module
+    import tempfile
+    for child in list(entry.iterdir()):
+        info = child.lstat()
+        if not (stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1):
+            continue
+        handle, name = tempfile.mkstemp(dir = entry)
+        os.close(handle)
+        held, legacy = Path(name), False
+        try:
+            os.replace(child, held)
+            moved = held.lstat()
+            legacy = (moved.st_dev, moved.st_ino) == (info.st_dev, info.st_ino)
+            if not legacy:
+                try:
+                    os.link(held, child)
+                except FileExistsError:
+                    pass
+        finally:
+            if legacy or os.path.lexists(child):
+                held.unlink(missing_ok = True)
+
+
+def _prune_open_staging(root: Path, break_links: bool = False) -> None:
     import shutil
+    import stat as stat_module
     import time
+
+    def real_dir(info: os.stat_result) -> bool:
+        return stat_module.S_ISDIR(info.st_mode) and not getattr(info, "st_reparse_tag", 0)
 
     cutoff = time.time() - _OPEN_STAGING_MAX_AGE_S
     try:
+        # Never through a symlink or junction, which would reach outside the cache.
+        if not real_dir(root.lstat()):
+            return
         entries = list(root.iterdir())
     except OSError:
         return
     for entry in entries:
         try:
-            if entry.lstat().st_mtime < cutoff:
+            info = entry.lstat()
+            if info.st_mtime < cutoff:
                 shutil.rmtree(entry, ignore_errors = True)
+            elif break_links and real_dir(info):
+                _break_hard_links(entry)
         except OSError:
             continue
+
+
+# Only under the lock, so sibling backends sharing the home never swap at once; no lock = links wait for a later call.
+def prune_open_staging() -> None:
+    from utils.cache_cleanup import _try_lock, _unlock
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        handle = os.open(cache_root() / "open-staging.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return
+    try:
+        _try_lock(handle)
+    except OSError:
+        os.close(handle)
+        return
+    try:
+        _prune_open_staging(cache_root() / "open-staging", break_links = True)
+    finally:
+        _unlock(handle)
 
 
 def _opened_path(handle: int) -> Optional[str]:
@@ -489,13 +552,25 @@ def _opened_path(handle: int) -> Optional[str]:
     return os.readlink(proc) if os.path.islink(proc) else None
 
 
+def _same_bytes(handle: int, staged: Path, size: int) -> bool:
+    with os.fdopen(os.dup(handle), "rb") as source, open(staged, "rb") as copy:
+        source.seek(0)
+        while size:
+            chunk = source.read(min(size, 1 << 20))
+            if not chunk or copy.read(len(chunk)) != chunk:
+                return False
+            size -= len(chunk)
+    return True
+
+
 def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
     """A name for *path*'s current file in a private directory, for the OS opener.
 
     Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
     it) between any check and the opener resolving the name. So the file is opened once without
-    following links, and the inode that open returned is hard-linked (or, across filesystems,
-    copied) into a fresh directory only Studio writes to. That name is what the OS opens.
+    following links, and what that open returned is copied into a fresh directory only Studio
+    writes to. That name is what the OS opens. Not a hard link: the OS sandbox refuses a workdir
+    file linked from outside it.
     O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
     opened file really is against *root*.
     """
@@ -528,17 +603,40 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         staging = cache_root() / "open-staging"
         staging.mkdir(parents = True, exist_ok = True)
         _prune_open_staging(staging)
-        target = Path(tempfile.mkdtemp(dir = staging)) / path.name
+
+        # Reuse the newest copy only if byte-identical: an app may have edited it, and coarse mtimes miss same-size rewrites.
+        def newest_first(entry: Path) -> int:
+            try:
+                return entry.lstat().st_mtime_ns
+            except OSError:
+                return 0
+
+        key = f"{info.st_dev}-{info.st_ino}-{info.st_size}-"
+        for entry in sorted(staging.glob(key + "*"), key = newest_first, reverse = True)[:1]:
+            try:
+                staged = os.lstat(entry / path.name)
+                if (
+                    stat_module.S_ISREG(staged.st_mode)
+                    and staged.st_nlink == 1
+                    and staged.st_size == info.st_size
+                    and _same_bytes(handle, entry / path.name, info.st_size)
+                ):
+                    os.utime(entry)
+                    return entry / path.name
+            except OSError:
+                continue
+        target = Path(tempfile.mkdtemp(prefix = key, dir = staging)) / path.name
         try:
-            os.link(path, target, follow_symlinks = False)
-            linked = os.lstat(target)
-            # Swapped since the open: copy what was opened.
-            if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
-                target.unlink()
-                raise OSError("file changed")
-        except (OSError, NotImplementedError):
             with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
-                shutil.copyfileobj(source, copy)
+                source.seek(0)
+                remaining = info.st_size
+                while remaining and (chunk := source.read(min(remaining, 1 << 20))):
+                    remaining -= copy.write(chunk)
+            if remaining:
+                raise OSError(f"{path.name} got shorter while it was being copied")
+        except OSError:
+            shutil.rmtree(target.parent, ignore_errors = True)
+            raise
         return target
     finally:
         os.close(handle)

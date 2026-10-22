@@ -880,6 +880,21 @@ mod tests {
         Some(me)
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stable_records_guard_updates_after_an_epoch_clock_shift() {
+        let home = temp_home("stable-markers");
+        let me = std::process::id();
+        let identity = crate::process_identity::linux_process_identity(me).unwrap();
+        let marker = home.join(format!("studio-starting-{me}.marker"));
+        fs::write(&marker, format!("{me}\n1.0\n\n{identity}\n")).unwrap();
+        assert!(recorded_pids(&home).contains(&me));
+        fs::write(&marker, format!("{me}\n1.0\n\nlinux:another-boot:0\n")).unwrap();
+        fs::write(home.join("studio.pid"), format!("{me}\n")).unwrap();
+        assert!(!recorded_pids(&home).contains(&me));
+        cleanup(home);
+    }
+
     #[test]
     fn a_startup_marker_counts_as_a_live_tree_record() {
         let home = temp_home("markers");
