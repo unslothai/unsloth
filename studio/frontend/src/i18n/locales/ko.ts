@@ -1085,6 +1085,10 @@ export const ko = {
       alternateSlot: "대체 단축키",
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
+      metaUnsupported: "Windows 키는 단축키에 사용할 수 없습니다.",
+      altGraphUnsupported: "AltGr 조합은 단축키로 사용할 수 없습니다.",
+      desktopOnly: "데스크톱 앱 전용",
+      builtInKey: "기본 제공: {key}",
       actions: {
         findInPage: {
           label: "페이지에서 찾기",
@@ -1285,6 +1289,10 @@ export const ko = {
         steerMessage: {
           label: "응답 조정",
           description: "현재 응답을 중단하고 초안을 다음으로 보냅니다",
+        },
+        stopGeneration: {
+          label: "생성 중지",
+          description: "작성 중인 응답을 중지합니다",
         },
         cycleReasoningEffort: {
           label: "추론 강도 순환",
