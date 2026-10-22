@@ -15054,16 +15054,12 @@ def _scope_retrieval_kwargs(scope: dict) -> dict:
     return {"mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid"}
 
 
-# Ceiling for a knowledge-search top_k: the most the sidebar's Top K setting allows. Uncapped, a lexical search binds it
-# as a LIMIT over every match, and a dense one past ~1365 asks vec0 for more neighbours than it allows and fails.
+# The sidebar's Top K maximum. Uncapped, lexical binds top_k as an SQL LIMIT and dense fails past vec0's KNN limit.
 _MAX_KNOWLEDGE_SEARCH_TOP_K = 50
 
 
 def _kb_top_k(value) -> int | None:
-    """``value`` as a knowledge-search top_k, or None for the search's own default.
-
-    Below 1 is not a count. Passed through, hybrid slices the fused list with it (-1 kept all but the last of up to 60
-    candidates), lexical binds it as an SQLite LIMIT (-1 is no limit) and dense slices its neighbours (-5 kept none)."""
+    """``value`` capped at the sidebar maximum, or None (the search default) when it is not a positive count."""
     k = _opt_int(value)
     return min(k, _MAX_KNOWLEDGE_SEARCH_TOP_K) if k is not None and k > 0 else None
 
@@ -15084,8 +15080,6 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         logger.warning("RAG tool unavailable: %s", exc)
         return "Knowledge base search is unavailable on this server."
 
-    # The model supplies top_k, so it is clamped rather than trusted, as search_conversation's is. One that is not a
-    # count falls back to the sidebar's setting, the same as an omitted one.
     top_k = _kb_top_k((arguments or {}).get("top_k")) or _kb_top_k(scope.get("default_top_k"))
     text, sources = search_knowledge_base_with_sources(
         query = str(query),

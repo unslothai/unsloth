@@ -470,8 +470,6 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
 
 
 def test_model_top_k_is_clamped_in_every_mode(rag_conn, bow_embeddings, monkeypatch):
-    # Unclamped, a top_k of -1 returned 59 of these chunks in hybrid mode and all 60 in lexical, -5 returned none in
-    # dense, and 2000 failed the dense search past vec0's KNN ceiling.
     tools = _shared_setup_1(monkeypatch)
     for i in range(60):
         _add_doc(rag_conn, "kb_a", f"d{i}", f"f{i}.txt", f"h{i}", f"alpha note {i}")
@@ -484,7 +482,7 @@ def test_model_top_k_is_clamped_in_every_mode(rag_conn, bow_embeddings, monkeypa
 
     for mode in ("hybrid", "lexical", "dense"):
         assert returned(3, mode) == 3, mode
-        # Not a count, so the sidebar's setting applies, as it does to an omitted top_k.
+        # Not a count, so the sidebar's setting applies.
         assert returned(-1, mode) == 6, mode
         assert returned(-5, mode) == 6, mode
     assert returned(2000, "lexical") == tools._MAX_KNOWLEDGE_SEARCH_TOP_K
