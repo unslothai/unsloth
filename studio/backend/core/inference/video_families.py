@@ -82,7 +82,7 @@ def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
 
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
-        f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
+        f"{subject} is LTX-{version}, which Unsloth does not support yet. Unsloth runs LTX-2.0 / LTX-2.3 "
         "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers or "
         "unsloth/LTX-2.5-GGUF)."
     )
@@ -211,7 +211,7 @@ def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> 
 
 def ltx25_training_message(subject: str) -> str:
     return (
-        f"{subject} is LTX-2.5, which Studio can run on the Video page but cannot train yet. "
+        f"{subject} is LTX-2.5, which Unsloth can run on the Video page but cannot train yet. "
         "Train on LTX-2 (Lightricks/LTX-2) instead."
     )
 
@@ -386,7 +386,7 @@ _LTX_VIDEO_09_RE = (
     r"(?=.*(?<![a-z0-9])ltx(?:[-_ ]?video|v)(?:$|[-_ /.](?!2(?:$|[-_ /.]|\.\d))))"
 )
 _LTX_VIDEO_09_REFUSAL = (
-    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
+    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Unsloth does not "
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
 # Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
@@ -398,19 +398,19 @@ _LTX_VIDEO_09_REFUSAL = (
 _H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
 H3_PDD_WITHOUT_HEADS_REFUSAL = (
     "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
-    "external PDD head bank applied per step by a custom node, which Studio does not have, so it would render "
+    "external PDD head bank applied per step by a custom node, which Unsloth does not have, so it would render "
     "wrong output. Load the matching '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead, which carries "
     "the 32 video and audio heads in the file."
 )
 _H3_PDD_BANK_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*(?:lora|_comfyui\.safetensors$)"
 _H3_PDD_BANK_REFUSAL = (
     "This is a MiniMax-H3 PDD acceleration LoRA with an external head bank for a companion custom node, not a "
-    "denoiser Studio can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
+    "denoiser Unsloth can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
 )
 _HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
-    "transformer and SigLIP image encoder, which Studio does not load yet. Load a HunyuanVideo-1.5 "
+    "transformer and SigLIP image encoder, which Unsloth does not load yet. Load a HunyuanVideo-1.5 "
     "text-to-video checkpoint (hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v or "
     "720p_t2v) instead."
 )
@@ -437,6 +437,28 @@ _HUNYUAN15_INT8_EXCLUDES = (
     "to_add_out",
     "ff_context",
 )
+# Measured failing the NVFP4 accuracy gate (LPIPS mean vs bf16 <= 0.25), so nvfp4 is denied outright, as the image
+# families deny an ungated base. HunyuanVideo-1.5: hosted 480p / 720p 0.62 / 0.59 (Studio main, 20 steps); the 50-step
+# campaign put GPTQ NVFP4 at 0.44 and fp8 itself at 0.35 to 0.37, so no NVFP4 rebuild clears the bar.
+# Wan2.2-TI2V-5B: hosted 0.29; weight-only 4-bit (bf16 activations) is already 0.29 at the default grid, and the
+# layer keep-sets that come near 0.25 save about 10% of fp8's bytes, where fp8 (0.17) already passes.
+_NVFP4_GATE_FAILED = frozenset({"nvfp4"})
+# What a refused explicit nvfp4 request says for those families: measured and failed, not merely unmeasured.
+NVFP4_GATE_FAILURES: dict[str, str] = {
+    "hunyuanvideo-1.5": "the hosted NVFP4 build measured LPIPS 0.62 against bf16 (bar 0.25), and no NVFP4 rebuild "
+    "clears it: GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
+    "hunyuanvideo-1.5-720p": "the hosted NVFP4 build (RTN) measured LPIPS 0.59 against bf16 (bar 0.25), and no NVFP4 "
+    "rebuild clears it: on the 480p weights GPTQ reached 0.44 and fp8 itself 0.35 to 0.37",
+    "wan2.2-ti2v-5b": "the hosted NVFP4 build measured LPIPS 0.29 to 0.30 against bf16 (bar 0.25); weight-only 4-bit is "
+    "already 0.29, while fp8 passes at 0.17",
+}
+
+
+def nvfp4_gate_failure(family: Optional[str]) -> Optional[str]:
+    """Why ``family``'s nvfp4 builds were measured and failed the accuracy gate, or None (not a measured failure)."""
+    return NVFP4_GATE_FAILURES.get(str(family or "").strip().lower())
+
+
 # nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 # LTX-2 is audiovisual: every block carries an audio-side stream (audio_attn1 / audio_attn2 / audio_ff, fed by
@@ -704,6 +726,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         trainable = True,
         label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
+            scheme_deny = _NVFP4_GATE_FAILED,
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
             auto_static_skip = (
@@ -760,9 +783,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         profile = FamilyProfile(
+            # gated: auto leads with nvfp4 only once a passing accuracy-gate record exists for this base and
+            # backend, the rule the image families follow. None exists yet (no bf16 reference was measured; the
+            # hosted NVFP4 experts were only compared with the FP8 build), so auto takes the ladder (int8) here and
+            # nvfp4 stays an explicit pick.
             auto_prefer = AutoPrefer(
                 floor = (10, 0),
                 schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
+                gated = True,
                 backend = "flashinfer",
             ),
             untiled_vae = _WAN21_VAE_UNTILED,
@@ -877,6 +905,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "hunyuanvideo-1.5",
         profile = FamilyProfile(
+            scheme_deny = _NVFP4_GATE_FAILED,
             int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
             nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
             preview_factors = "hv15",
@@ -929,6 +958,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
         profile = FamilyProfile(
+            scheme_deny = _NVFP4_GATE_FAILED,
             int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
             nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
             preview_factors = "hv15",
@@ -977,14 +1007,14 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
         "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
         "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
-        "ship), so Studio cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
+        "ship), so Unsloth cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
         "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
         "This is an NVIDIA AnyFlow checkpoint. AnyFlow is a flow-map distillation of Wan2.1 whose "
         "transformer takes a second (delta) timestep and samples through AnyFlowPipeline with "
-        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Studio loads cannot run it "
+        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Unsloth loads cannot run it "
         "faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
@@ -994,7 +1024,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"[^/\\]*[/\\]*$",
         "This is a Wan2.1 image-to-video checkpoint (I2V-14B 480P / 720P or FLF2V). It generates "
         "from a start frame through its own image-conditioned transformer and a CLIP vision "
-        "encoder, which Studio does not load yet; image-to-video support is coming. Load a Wan2.1 "
+        "encoder, which Unsloth does not load yet; image-to-video support is coming. Load a Wan2.1 "
         "text-to-video checkpoint (Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
         "Wan-AI/Wan2.1-T2V-14B-Diffusers) instead.",
     ),
@@ -1006,7 +1036,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"(?![a-z0-9]))[^/\\]*[/\\]*$",
         "This is a Wan2.1 conditioning variant (VACE, Fun, MAGREF, Phantom, talking-head, "
         "ControlNet or ReCamMaster). Its transformer takes extra control inputs the text-to-video "
-        "pipeline does not provide, so Studio cannot run it. Load a plain Wan2.1 text-to-video "
+        "pipeline does not provide, so Unsloth cannot run it. Load a plain Wan2.1 text-to-video "
         "checkpoint instead.",
     ),
 )
@@ -1262,7 +1292,9 @@ def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) 
             schemes.append(entry[1])
     if task:
         schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
-    return without_nvfp4(schemes)
+    denied = getattr(getattr(fam, "profile", None), "scheme_deny", None) or frozenset()
+    # A family-denied scheme (a measured gate failure) is never offered, even though its build is hosted.
+    return without_nvfp4([s for s in schemes if s not in denied])
 
 
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:

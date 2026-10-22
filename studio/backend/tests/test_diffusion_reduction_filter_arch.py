@@ -6,7 +6,7 @@ one image in every fresh server there.
 
 A few of their norm reductions get several configs that sum in different orders, and a cold-cache server benchmarks
 them in its own process on near-equal timings: fresh servers rendered 2-4 variants per seed on an RTX PRO 6000, A100
-and L4. B200 servers were deterministic for FLUX.1 and Z-Image but not Qwen-Image, so the opt-in is per (family,
+and L4. B200 servers were deterministic for FLUX.1 but not Qwen-Image or Z-Image, so the opt-in is per (family,
 compute capability)."""
 
 from __future__ import annotations
@@ -16,14 +16,21 @@ import types
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_compile_config as cc  # noqa: E402
 from core.inference import diffusion_speed as ds  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 _SM120 = (12, 0)
 _MEASURED_ARCHS = ((8, 0), (8, 9), (12, 0))
 _IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image", "flux.1-kontext", "qwen-image-edit")
 _QWEN_FAMILIES = ("qwen-image", "qwen-image-edit", "qwen-image-layered")
+_B200_PINNED = (*_QWEN_FAMILIES, "z-image")
 
 
 def _family(name):
@@ -70,15 +77,15 @@ def test_the_race_families_share_one_arch_list():
     for name in _IMAGE_FAMILIES:
         expected = (
             diffusion_families._QWEN_REDUCTION_RACE_ARCHS
-            if name in _QWEN_FAMILIES
+            if name in _B200_PINNED
             else diffusion_families._REDUCTION_RACE_ARCHS
         )
-        assert _family(name).filter_reduction_configs_archs == expected
+        assert tuple(_family(name).filter_reduction_configs_archs) == tuple(expected)
     assert set(diffusion_families._REDUCTION_RACE_ARCHS) == set(_MEASURED_ARCHS)
     assert set(diffusion_families._QWEN_REDUCTION_RACE_ARCHS) == {*_MEASURED_ARCHS, (10, 0)}
 
 
-@pytest.mark.parametrize("name", _QWEN_FAMILIES)
+@pytest.mark.parametrize("name", _B200_PINNED)
 def test_qwen_image_also_pins_on_b200(monkeypatch, name):
     _on(monkeypatch, (10, 0))
     fam = _family(name)
@@ -89,8 +96,8 @@ def test_qwen_image_also_pins_on_b200(monkeypatch, name):
 @pytest.mark.parametrize("cap", [(10, 0), (10, 3), (9, 0), (7, 5), (12, 1), None])
 @pytest.mark.parametrize("name", _IMAGE_FAMILIES)
 def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
-    if cap == (10, 0) and name in _QWEN_FAMILIES:
-        pytest.skip("Qwen-Image pins on B200 (test_qwen_image_also_pins_on_b200)")
+    if cap == (10, 0) and name in _B200_PINNED:
+        pytest.skip("Qwen-Image and Z-Image pin on B200 (test_qwen_image_also_pins_on_b200)")
     _on(monkeypatch, cap)
     fam = _family(name)
     assert cc.family_filters_reductions(fam) is False
@@ -124,6 +131,7 @@ def test_no_family_or_plain_object(monkeypatch):
 def test_capability_query_never_raises(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
     def boom(*a, **k):
         raise RuntimeError("no device")
@@ -137,7 +145,7 @@ def test_capability_query_never_raises(monkeypatch):
 
 
 def test_load_paths_key_the_bundle_on_the_same_decision():
-    # The bundle key follows the arch-scoped decision, else a load reuses a bundle compiled the other way.
+    # the bundle key must follow the arch-scoped decision or a load reuses the wrong bundle
     import inspect
 
     from core.inference import diffusion

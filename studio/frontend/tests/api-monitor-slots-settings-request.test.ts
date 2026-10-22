@@ -10,12 +10,16 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  keptRunSettingsRequest,
   residentHasRunSettings,
   residentHasSlotsSetting,
   residentMatchesMonitor,
   runSettingsRequest,
   slotsSettingsRequest,
 } = await import("../src/features/api-monitor/slots-settings-request.ts");
+const { modelConfigTarget } = await import(
+  "../src/features/model-picker/model-config/model-config-handoff.ts"
+);
 
 const GGUF: ResidentRunTarget = {
   checkpoint: "unsloth/Qwen3-4B-GGUF",
@@ -71,6 +75,7 @@ test("a GGUF resident opens its Run settings on Parallel Slots, as Chat's reload
     requestId: "req-1",
     id: "unsloth/Qwen3-4B-GGUF",
     focus: "parallelSlots",
+    standalone: true,
     meta: {
       source: "local",
       isLora: false,
@@ -134,4 +139,48 @@ test("the readout is offered only when the picker takes the target for the monit
     false,
   );
   assert.equal(residentMatchesMonitor(null, monitor), false);
+});
+
+test("a kept model's settings open on its own checkpoint and quant", () => {
+  const gguf = keptRunSettingsRequest(
+    { checkpoint: "unsloth/gemma-3-270m-it-GGUF", quant: "Q4_K_M" },
+    "kept",
+  );
+  assert.equal(gguf.id, "unsloth/gemma-3-270m-it-GGUF");
+  assert.equal(gguf.focus, "advanced");
+  assert.equal(gguf.meta.ggufVariant, "Q4_K_M");
+  assert.equal(gguf.meta.isGguf, true);
+  assert.equal(gguf.standalone, true);
+  assert.equal(runSettingsRequest(GGUF, "live")?.standalone, true);
+  const safetensors = keptRunSettingsRequest(
+    { checkpoint: "unsloth/Qwen3-0.6B", quant: null },
+    "kept",
+  );
+  assert.equal(safetensors.meta.ggufVariant, undefined);
+  assert.equal(safetensors.meta.isGguf, false);
+});
+
+test("a kept standalone GGUF opens its saved settings, keyed without the filename quant", () => {
+  const request = keptRunSettingsRequest(
+    { checkpoint: "/models/gemma-3-270m-it-Q4_K_M.gguf", quant: "Q4_K_M" },
+    "kept",
+  );
+  assert.equal(request.meta.ggufVariant, undefined);
+  assert.equal(request.meta.isGguf, true);
+  assert.equal(
+    keptRunSettingsRequest(
+      { checkpoint: "unsloth/gemma-3-270m-it-GGUF", quant: "Q4_K_M" },
+      "kept",
+    ).meta.ggufVariant,
+    "Q4_K_M",
+  );
+});
+
+test("a kept HF cache snapshot opens the repo's saved settings and still loads the snapshot", () => {
+  const snapshot =
+    "/Users/me/.cache/huggingface/hub/models--unsloth--Qwen3-0.6B/snapshots/abc123";
+  const request = keptRunSettingsRequest({ checkpoint: snapshot, quant: null }, "kept");
+  const target = modelConfigTarget(request.id, request.meta);
+  assert.equal(target.configId, "unsloth/Qwen3-0.6B");
+  assert.equal(target.id, snapshot);
 });

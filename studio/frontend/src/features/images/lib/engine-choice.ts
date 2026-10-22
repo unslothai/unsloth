@@ -73,6 +73,7 @@ interface EngineStatus {
   engine_forced?: string | null;
   native_engine_eligible?: boolean;
   lora_via_native?: boolean;
+  lora_after_reload?: boolean;
   supports_lora?: boolean;
   resolved?: Record<string, { source: string; requested?: string | boolean | null }> | null;
 }
@@ -95,6 +96,11 @@ export function offersNativeLoraReload(status: EngineStatus | null | undefined):
   return Boolean(
     status?.loaded && status.lora_via_native && !status.supports_lora && !status.engine_forced,
   );
+}
+
+/** The note under the LoRA slot after Speed=Auto compiled the model on its 3rd image: a reload defers again. */
+export function offersCompiledLoraReload(status: EngineStatus | null | undefined): boolean {
+  return Boolean(status?.loaded && status.lora_after_reload && !status.supports_lora);
 }
 
 interface ReloadStatus {

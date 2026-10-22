@@ -52,7 +52,7 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
-from core.data_recipe.service import recipe_has_stdio_mcp
+from core.data_recipe.service import recipe_has_stdio_mcp, validate_recipe_names
 from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
@@ -558,6 +558,10 @@ def create_job(
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+    try:
+        validate_recipe_names(recipe)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
     if recipe_has_stdio_mcp(recipe):
         require_ui_session_for_local_commands(via_api_key)
 

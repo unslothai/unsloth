@@ -425,3 +425,71 @@ def test_cache_built_in_chunks_matches_one_shot(rows, dtype):
     ref_cos, ref_sin = _reference(rows, dtype)
     assert cos.shape == ref_cos.shape and cos.dtype == dtype
     assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
+
+
+def _assert_trainable(*tensors):
+    for t in tensors:
+        assert not t.is_inference()
+    cos = tensors[0]
+    x = torch.ones(cos.shape, dtype = cos.dtype, requires_grad = True)
+    (x * cos).sum().backward()
+    assert torch.equal(x.grad, cos)
+
+
+def _gemma(max_position):
+    llama_ns = _llama_ns()
+    ns = _load(
+        GEMMA,
+        ["GemmaFixedRotaryEmbedding"],
+        {"_PerDeviceRopeCache": llama_ns["_PerDeviceRopeCache"]},
+    )
+    return ns["GemmaFixedRotaryEmbedding"](dim = DIM, max_position_embeddings = max_position, base = BASE)
+
+
+@pytest.mark.parametrize("kind", ["llama", "gemma"])
+def test_cache_first_built_in_inference_mode_is_trainable(kind):
+    rope = _llama(1 << 17) if kind == "llama" else _gemma(1 << 17)
+    reference = _llama(1 << 17) if kind == "llama" else _gemma(1 << 17)
+    with torch.inference_mode():
+        cos, sin = rope.get_cached(100, 1)
+        assert torch.is_inference_mode_enabled()
+    _assert_trainable(cos, sin, *([rope.inv_freq] if kind == "llama" else []))
+    ref_cos, ref_sin = reference.get_cached(100, 1)
+    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
+
+
+def test_cache_grown_in_inference_mode_is_trainable():
+    rope = _llama(1 << 17)
+    rope.get_cached(10, 0)
+    with torch.inference_mode():
+        rope.extend_rope_embedding(_x(0, torch.float16), 50000)
+        cos, sin = rope(_x(0, torch.float16), seq_len = 50000)
+    _assert_trainable(cos, sin, rope.inv_freq)
+    ref_cos, ref_sin = _reference(57344, torch.float16)
+    assert torch.equal(rope.multi_gpu_cos_cached[0], ref_cos)
+    assert torch.equal(rope.multi_gpu_sin_cached[0], ref_sin)
+
+
+def test_longrope_cache_built_in_inference_mode_is_trainable():
+    rope = _llama_ns()["LongRopeRotaryEmbedding"](
+        dim = DIM,
+        max_position_embeddings = 128,
+        original_max_position_embeddings = 16,
+        short_factor = [1.0] * (DIM // 2),
+        long_factor = [2.0] * (DIM // 2),
+    )
+    with torch.inference_mode():
+        rope.get_cached(8, 1)
+        rope.extend_rope_embedding(_x(1, torch.float16), 100)
+    _assert_trainable(rope.multi_gpu_short_cos_cached[1], rope.multi_gpu_short_sin_cached[1])
+    _assert_trainable(rope.multi_gpu_long_cos_cached[1], rope.multi_gpu_long_sin_cached[1])
+
+
+def test_cache_build_keeps_grad_mode():
+    rope = _llama(1 << 17)
+    with torch.inference_mode():
+        rope.get_cached(10, 0)
+        assert torch.is_inference_mode_enabled() and not torch.is_grad_enabled()
+    rope = _llama(1 << 17)
+    rope.get_cached(10, 0)
+    assert torch.is_grad_enabled() and not rope.multi_gpu_cos_cached[0].requires_grad

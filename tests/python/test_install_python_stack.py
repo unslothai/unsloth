@@ -365,6 +365,115 @@ class TestUvSafePathHardening:
         assert Path(value).read_text() == "transformers>=4.57.6\n"
 
 
+class TestUvSafePathWindowsNo8dot3:
+    """Windows volumes without 8.3 names (#14487: D:\\Program Files) must still get a space-free path."""
+
+    def _spaced_constraints(self, tmp_path):
+        src = tmp_path / "Program Files" / "constraints.txt"
+        src.parent.mkdir(parents = True)
+        src.write_text("idna<4\n")
+        return src
+
+    def test_no_short_name_copies_to_a_space_free_path(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+        assert any(out.startswith(d) for d in uvps._UV_SAFE_PATH_TMPDIRS)
+
+    def test_resolving_short_name_is_used_without_a_copy(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: "C:\\PROGRA~1\\constraints.txt")
+        before = list(uvps._UV_SAFE_PATH_TMPDIRS)
+
+        assert uvps.uv_safe_path(str(src)) == "C:\\PROGRA~1\\constraints.txt"
+        assert uvps._UV_SAFE_PATH_TMPDIRS == before
+
+    def test_spaced_temp_without_short_name_keeps_the_original(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        spaced_tmp = tmp_path / "First Last" / "Temp"
+        spaced_tmp.mkdir(parents = True)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        monkeypatch.setattr(uvps.tempfile, "mkdtemp", lambda *a, **k: str(spaced_tmp))
+
+        assert uvps.uv_safe_path(str(src)) == str(src)
+
+    def test_uv_accepts_the_returned_constraint_path(self, tmp_path, monkeypatch):
+        """End to end against the real uv. uv < 0.13 cuts a spaced -c path at the space; 0.13 reads it."""
+        import shutil
+        import subprocess
+        import sys
+
+        from backend.utils import uv_path_safety as uvps
+
+        if shutil.which("uv") is None:
+            pytest.skip("uv not available")
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+
+        def dry_run(constraint):
+            return subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--dry-run",
+                    "--offline",
+                    "--python",
+                    sys.executable,
+                    "-c",
+                    constraint,
+                    "pytest",  # installed wherever this runs, so the offline plan resolves
+                ],
+                capture_output = True,
+                text = True,
+            )
+
+        safe = uvps.uv_safe_path(str(src))
+        spaced = dry_run(str(src))
+        if spaced.returncode != 0:
+            assert "File not found" in spaced.stderr, spaced.stderr
+            assert str(src).split(" ")[0] in spaced.stderr, spaced.stderr
+            if " " in uvps.tempfile.gettempdir():
+                pytest.skip("temp dir has a space and no short name: nothing uv < 0.13 can read")
+            assert " " not in safe
+        accepted = dry_run(safe)
+        assert accepted.returncode == 0, accepted.stderr
+
+    @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
+    def test_real_directory_without_a_short_name(self, tmp_path):
+        """A real spaced directory whose 8.3 alias was stripped, as on a D: with 8.3 creation off."""
+        import subprocess
+
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        if uvps._windows_short_path(str(src)) is not None:
+            # Needs admin (SeRestorePrivilege), which CI runners have.
+            subprocess.run(
+                ["fsutil", "file", "setshortname", str(src.parent), ""], capture_output = True
+            )
+        if uvps._windows_short_path(str(src)) is not None:
+            pytest.skip("could not remove the 8.3 name on this volume")
+
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+
+
 class TestPinnedIndexClearsUvEnv:
     """Pinned installs must clear inherited UV_INDEX and UV_EXTRA_INDEX_URL, so the pinned index wins."""
 

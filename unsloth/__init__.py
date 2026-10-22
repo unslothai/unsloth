@@ -252,11 +252,13 @@ if _IS_MLX:
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
+            fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
-        del _fix_untrusted_config, _fix_template_names
+        _fix_vocab_paths()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
     except Exception:
         pass
     try:
@@ -370,11 +372,23 @@ if _IS_MLX:
     _raw_text_spec.loader.exec_module(_raw_text)
     RawTextDataLoader = _raw_text.RawTextDataLoader
     TextPreprocessor = _raw_text.TextPreprocessor
+    _ebook_path = _Path(__file__).resolve().parent / "dataprep" / "ebooks.py"
+    _ebook_spec = importlib.util.spec_from_file_location("unsloth._mlx_ebooks", _ebook_path)
+    _ebook = importlib.util.module_from_spec(_ebook_spec)
+    _ebook_spec.loader.exec_module(_ebook)
+    load_ebook_dataset = _ebook.load_ebook_dataset
+    del _ebook, _ebook_spec, _ebook_path
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):
         # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
-        if not is_bfloat16_supported():
+        # Not for full finetuning: zoo trains any non-bf16 target in float32, doubling weight memory.
+        try:
+            bound = _inspect.signature(FastMLXModel.from_pretrained).bind_partial(*args, **kwargs)
+            full_finetuning = bound.arguments.get("full_finetuning", False)
+        except Exception:
+            full_finetuning = kwargs.get("full_finetuning", False)
+        if not full_finetuning and not is_bfloat16_supported():
             if len(args) > 2:
                 if args[2] is None:
                     args = (*args[:2], "float16", *args[3:])

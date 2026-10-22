@@ -74,7 +74,7 @@ export function WorkingFolderPicker({
           className="min-w-0 flex-1 truncate text-sm"
           title={value ?? undefined}
         >
-          {value ?? "Studio-managed folder"}
+          {value ?? "Unsloth-managed folder"}
         </span>
         {value && (
           <Button

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #8483: every delta event minted a new run object, so every component selecting the run
-// re-rendered ~12x/s for the whole synthesis - including ChatPage, which owns the thread pane.
-// The backend omits the run from those events by design (_DELTA_ONLY_EVENTS in
-// studio/backend/routes/research_runs.py); the frontend must not reinvent it.
+// The backend omits the run from delta events by design (_DELTA_ONLY_EVENTS); do not mint one per delta.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -45,7 +42,6 @@ function snapshot(overrides: AnyRecord = {}): AnyRecord {
   };
 }
 
-/** One SSE frame in the shape routes/research_runs.py writes. */
 function frame(id: number, event: string, data: AnyRecord): string {
   return `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }

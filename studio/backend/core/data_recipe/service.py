@@ -680,8 +680,26 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
     }
 
 
+def validate_recipe_names(recipe: dict[str, Any]) -> None:
+    """Refuse a column, processor or validator target name holding a path separator: the code
+    validator writes `<tmp>/<record id>_<column>.py`, and Windows resolves `..` after it lexically."""
+    for field in ("columns", "processors"):
+        items = recipe.get(field)
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            # A validator's targets can be seed columns, named by the seed file rather than the recipe.
+            targets = item.get("target_columns")
+            for name in [item.get("name"), *(targets if isinstance(targets, list) else ())]:
+                if isinstance(name, str) and ("/" in name or "\\" in name or name in (".", "..")):
+                    raise ValueError(
+                        f"Column and processor names can't contain '/' or '\\' or be '.' / '..': {name!r}"
+                    )
+
+
 def build_config_builder(recipe: dict[str, Any]):
     validate_recipe_access(recipe)
+    validate_recipe_names(recipe)
     _apply_data_designer_image_context_patch()
     from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
     from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]

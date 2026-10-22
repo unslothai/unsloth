@@ -4733,7 +4733,7 @@ _master_root_note_is_honoured() {
     _mrn_legacy_studio=$(CDPATH= cd -P -- "${HOME:-}/.unsloth/studio" 2>/dev/null && pwd -P) \
         || _mrn_legacy_studio="${HOME:-}/.unsloth/studio"
     if [ "$_mrn_studio" = "$_mrn_legacy_studio" ]; then
-        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself is the" >&2
+        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Unsloth Studio itself is the" >&2
         echo "      default install at $_mrn_studio, where no reader honours a recorded root. That" >&2
         echo "      root cannot be recorded, so a later launch or uninstall will not find them." >&2
         echo "      Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or re-export UNSLOTH_HOME whenever" >&2
@@ -4744,7 +4744,7 @@ _master_root_note_is_honoured() {
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac
-    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself lives at" >&2
+    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Unsloth Studio itself lives at" >&2
     echo "      $STUDIO_HOME, which is outside it. That root cannot be recorded, so a later launch" >&2
     echo "      or uninstall will not find them. Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or" >&2
     echo "      re-export UNSLOTH_HOME whenever you run Unsloth." >&2

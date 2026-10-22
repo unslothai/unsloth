@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native (sd.cpp) route for a checkpoint whose base ships a sampling grid (Qwen-Image-2.1-Turbo's
-model_index.json ``sample_sigmas``): the grid plus sd.cpp's terminal 0 goes out as custom sigmas on
-both the sd-server body and the one-shot sd-cli argv, resampled for other step counts, and a load
-without a grid sends exactly what it sent before."""
+"""Sample-sigmas grid route (Qwen-Image-2.1-Turbo) on both transports."""
 
 from __future__ import annotations
 

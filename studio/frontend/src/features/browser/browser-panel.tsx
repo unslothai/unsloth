@@ -112,7 +112,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
+import { fileNameFromUrl, hostOf, isLoopbackUrl, resolveAddress } from "./address";
 import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./capture";
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
@@ -153,6 +153,7 @@ import {
   startNativeViews,
   useNativeBrowser,
 } from "./native-view";
+import { grantLocalOrigin, localOriginGranted } from "./native-support";
 import { type BookmarksToolbarMode, useBrowserPrefsStore } from "./prefs-store";
 import {
   type BrowserEntry,
@@ -169,6 +170,7 @@ import {
   pageDownload,
   useBrowserStore,
 } from "./store";
+import { sendFrameCommand } from "./page-frame";
 import { TabView } from "./tab-view";
 import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
 import { useShallow } from "zustand/shallow";
@@ -662,7 +664,9 @@ function TabStrip({
       >
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
-          const title = tabTitle(tab, currentEntry(tab));
+          const entry = currentEntry(tab);
+          const title = tabTitle(tab, entry);
+          const local = entry.kind === "web" && !tab.nativeError && localOriginGranted(tab.id, entry.url);
           return (
             <TabContextMenu key={tab.id} tab={tab}>
               <div
@@ -697,6 +701,11 @@ function TabStrip({
                     {title}
                   </span>
                 )}
+                {local ? (
+                  <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] px-1.5 text-ui-10 font-medium leading-4 text-muted-foreground">
+                    {t("browser.local")}
+                  </span>
+                ) : null}
                 {tab.muted ? (
                   <button
                     type="button"
@@ -798,7 +807,10 @@ function AddressBar({
         event.preventDefault();
         const url = resolveAddress(value, engine);
         if (!url || !tab) return;
-        useBrowserStore.getState().navigate(tab.id, { url });
+        const open = () => useBrowserStore.getState().navigate(tab.id, { url });
+        // Typing a local address is what lets it open: never a link, a redirect or the agent.
+        if (useNativeBrowser.getState().enabled && isLoopbackUrl(url)) void grantLocalOrigin(tab.id, url).then(open, open);
+        else open();
         setEditing(false);
         inputRef.current?.blur();
       }}
@@ -1436,21 +1448,21 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
   const { goBack, goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
   const canGoBack = Boolean(
-    tab && (tab.index > 0 || (native && (tab.nativeError || tab.nativeHistory?.back))),
+    tab && (tab.index > 0 || tab.pageHistory?.back || (native && (tab.nativeError || tab.nativeHistory?.back))),
   );
   const canGoForward = Boolean(
-    tab && (tab.index < tab.history.length - 1 || (native && tab.nativeHistory?.forward)),
+    tab && (tab.index < tab.history.length - 1 || tab.pageHistory?.forward || (native && tab.nativeHistory?.forward)),
   );
   const back = () => {
     if (!tab) return;
     if (native && tab.nativeError && returnToNativePage(tab.id)) return;
     if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
-    else goBack(tab.id);
+    else if (!tab.pageHistory?.back || !sendFrameCommand(tab.id, { command: "go", delta: -1 })) goBack(tab.id);
   };
   const forward = () => {
     if (!tab) return;
     if (native && tab.nativeHistory?.forward) nativeAction(tab.id, "forward");
-    else goForward(tab.id);
+    else if (!tab.pageHistory?.forward || !sendFrameCommand(tab.id, { command: "go", delta: 1 })) goForward(tab.id);
   };
   return (
     <>

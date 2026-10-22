@@ -183,7 +183,7 @@ def _trusted_bwrap_path() -> str:
         return resolved
     if overflow is not None and _executable_refusal(resolved, vouched) is None:
         raise BwrapUntrustedError(
-            "Studio runs in a user namespace (an AppImage or nixpkgs FHS wrapper, Flatpak or a "
+            "Unsloth runs in a user namespace (an AppImage or nixpkgs FHS wrapper, Flatpak or a "
             f"rootless container) where Unsloth cannot confirm that {resolved} is system-owned "
             f"({detail}). If it is the system bubblewrap, set {BWRAP_PATH_ENV}={candidate}",
             hidden_root = True,
@@ -363,7 +363,7 @@ def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, 
         if depth <= 0:
             # Fails CLOSED: restoring an ancestor of the state directory would hand over auth/auth.db.
             logger.warning(
-                "Not binding %s read-only: Studio's own state is nested too "
+                "Not binding %s read-only: Unsloth's own state is nested too "
                 "deeply inside it to exclude",
                 root,
             )
@@ -593,7 +593,7 @@ def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
             if candidate is sys.executable:
                 # Refuse: protecting this alias would expose its external target.
                 raise WorkdirUnsafeError(
-                    f"the session workdir holds a link to the Python that runs Studio: {written}"
+                    f"the session workdir holds a link to the Python that runs Unsloth: {written}"
                 )
             continue
         for path in (written, resolved):
@@ -879,7 +879,7 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         if _holds_studio_state(path):
             logger.warning(
                 "Not sharing the %s cache into the sandbox: it is at or above "
-                "Studio's own state directory",
+                "Unsloth's own state directory",
                 name,
             )
             continue

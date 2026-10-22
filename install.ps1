@@ -3253,9 +3253,10 @@ function Install-UnslothStudio {
             Restore-StudioTempEnvironment
             throw "$envOverrideVar=$StudioHome is not writable."
         }
-        # A new desktop-chosen root would inherit its drive's ACL (often writable by every
-        # account): give it the profile's access instead. An existing folder keeps its ACL.
-        if ($tauriChosenRoot -and -not $script:StudioEnvRootExisted) {
+        # A new custom root would inherit its drive's ACL (often writable by every account, so
+        # another user could swap the installed executables): give it the profile's access
+        # instead. An existing folder keeps its ACL.
+        if (-not $script:StudioEnvRootExisted) {
             try {
                 $rootAcl = New-Object System.Security.AccessControl.DirectorySecurity
                 $rootAcl.SetAccessRuleProtection($true, $false)

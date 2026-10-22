@@ -663,7 +663,7 @@ def unregister() -> None:
     if distro_ready():
         owner = json.loads(guest(["cat", f"{GUEST_ROOT}/owner.json"]))
         if owner.get("distro") != distro_name():
-            raise RuntimeError("The WSL environment belongs to another Studio installation.")
+            raise RuntimeError("The WSL environment belongs to another Unsloth installation.")
     code, output = run(["--unregister", distro_name()], timeout = 300)
     if code and distro_name() in registered_distros():
         raise RuntimeError("Could not remove the WSL environment. " + output.strip()[-500:])

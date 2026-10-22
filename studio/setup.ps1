@@ -3650,19 +3650,22 @@ function Test-MasterRootNoteIsHonoured {
     # warned about nothing, and was then honoured by nobody.
     $legacyStudio = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")
     if ($legacyStudio -and ($here -ieq $legacyStudio)) {
-        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio is the" -ForegroundColor Yellow
+        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio is the" -ForegroundColor Yellow
         Write-StudioLine "        default install at $here, where no reader honours a recorded root." -ForegroundColor Yellow
         Write-StudioLine "        That root cannot be recorded, so a later launch or uninstall will" -ForegroundColor Yellow
         Write-StudioLine "        not find them. Set UNSLOTH_STUDIO_HOME to $norm\studio, or re-set" -ForegroundColor Yellow
         Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
         return $false
     }
-    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
+    # A note must describe the tree it is written into: every reader requires the Studio
+    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
+    # a removal at the original install. A split layout, with the runtimes under the master root
+    # and Studio outside it, is that shape: say so, rather than leave a note no reader honours.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
-    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio lives at" -ForegroundColor Yellow
+    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio lives at" -ForegroundColor Yellow
     Write-StudioLine "        $here, which is outside it. That root cannot be recorded, so a later" -ForegroundColor Yellow
     Write-StudioLine "        launch or uninstall will not find them. Set UNSLOTH_STUDIO_HOME to" -ForegroundColor Yellow
     Write-StudioLine "        $norm\studio, or re-set UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
@@ -9647,7 +9650,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         } elseif ($_mxcExit -eq 3) {
             step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
         } else {
-            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+            step "MXC Preview" "prebuilt unavailable; Unsloth Studio will use software safeguards" "Yellow"
         }
         if ($script:UnslothVerbose -and $_mxcOutput) {
             Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })

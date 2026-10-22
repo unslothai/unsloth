@@ -58,7 +58,7 @@ export function videoNavHint(
   if (chatOnlyReason === "intel_mac")
     return "Video generation requires Apple Silicon. This Intel Mac has no Metal device to run it.";
   if (chatOnlyReason === "rosetta")
-    return "Studio is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable video generation.";
+    return "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable video generation.";
   // The GPU is there; PyTorch is what cannot reach it (a Windows update that resolved torch
   // from PyPI leaves a +cpu wheel beside two working cards), so "get a GPU" is a lie.
   if (

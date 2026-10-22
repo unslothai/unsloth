@@ -597,6 +597,12 @@ def h3_reference_frame_size(source_w: int, source_h: int) -> tuple[int, int]:
     return width, height
 
 
+def _open_reference_media(av: Any, blob: bytes) -> Any:
+    # No protocols: a probed concat or HLS playlist would otherwise open the files it names.
+    import io
+    return av.open(io.BytesIO(blob), options = {"protocol_whitelist": "none"})
+
+
 def decode_h3_reference_video(
     blob: bytes,
     *,
@@ -613,8 +619,6 @@ def decode_h3_reference_video(
     ``(samples, channels)`` at the container's own rate; both engines resample it themselves.
     ``decode_audio=False`` avoids touching an embedded track that a replacement will supersede.
     """
-    import io
-
     import av
     import numpy as np
 
@@ -645,7 +649,7 @@ def decode_h3_reference_video(
 
     waveform, sample_rate = (None, None)
     if decode_audio:
-        with av.open(io.BytesIO(blob)) as container:
+        with _open_reference_media(av, blob) as container:
             if container.streams.audio:
                 waveform, sample_rate = _decode_audio_stream(
                     container,
@@ -706,9 +710,7 @@ def _fit_h3_video_frame(
 
 def _decode_h3_video_without_trim(blob: bytes, av: Any) -> tuple[list, float, Optional[float]]:
     """Preserve the existing whole-file rate-based behavior and its 15-second refusal."""
-    import io
-
-    with av.open(io.BytesIO(blob)) as container:
+    with _open_reference_media(av, blob) as container:
         if not container.streams.video:
             raise ValueError("That reference file carries no video track.")
         stream = container.streams.video[0]
@@ -745,11 +747,9 @@ def _decode_h3_video_trim_by_timestamp(
     blob: bytes, av: Any, trim: tuple[float, float]
 ) -> tuple[list, Optional[float]]:
     """Select an explicit interval from presentation timestamps and stop at its endpoint."""
-    import io
-
     start, end = trim
     target_count = int(round((end - start) * H3_FPS))
-    with av.open(io.BytesIO(blob)) as container:
+    with _open_reference_media(av, blob) as container:
         if not container.streams.video:
             raise ValueError("That reference file carries no video track.")
         stream = container.streams.video[0]
@@ -819,8 +819,7 @@ def _decode_h3_video_trim_by_ordinal(
     blob: bytes, av: Any, trim: tuple[float, float]
 ) -> tuple[list, Optional[float]]:
     """Fallback for streams whose decoded frames carry no presentation timestamps."""
-    import io
-    with av.open(io.BytesIO(blob)) as container:
+    with _open_reference_media(av, blob) as container:
         if not container.streams.video:
             raise ValueError("That reference file carries no video track.")
         stream = container.streams.video[0]
@@ -869,12 +868,10 @@ def decode_h3_reference_audio(
     trim_end_seconds: Optional[float] = None,
 ) -> tuple[Any, int]:
     """Decode one uploaded audio file to a float32 ``(samples, channels)`` waveform + its rate."""
-    import io
-
     import av
     import numpy as np
 
-    with av.open(io.BytesIO(blob)) as container:
+    with _open_reference_media(av, blob) as container:
         if not container.streams.audio:
             raise ValueError("That reference file carries no audio track.")
         waveform, sample_rate = _decode_audio_stream(

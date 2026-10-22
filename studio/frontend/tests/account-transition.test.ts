@@ -166,7 +166,6 @@ test("switch removes every content prefix and preserves only listed chrome and u
     b.browser,
   );
   assert.equal(changed, true);
-  // The fence is written before the tokens and lifted after the marker.
   assert.deepEqual(b.removed.sort(), [...content, BROWSER_ACCOUNT_FENCE_KEY].sort());
   for (const key of ACCOUNT_CHROME_KEYS)
     assert.equal(b.data.get(key), "chrome");
@@ -199,7 +198,6 @@ test("only a switch clears the desktop browser's site data, before the new sessi
     ),
   );
   assert.equal(events.includes("carol"), false);
-  // The clear runs first, so a failed one leaves the signed-in account's data whole.
   assert.equal(failing.browser.localStorage.getItem("unsloth-draft"), "kept");
 });
 
@@ -540,7 +538,7 @@ test("switching accounts clears session content and keeps neutral session flags"
     }),
     "unsloth.reload-snapshot.v1": "<div>alice</div>",
     "data-recipes:open-learning-recipes": "1",
-    // USER_STOPPED_KEY: neutral, and clearing it would restart a server the user stopped.
+    // USER_STOPPED_KEY is neutral: clearing it would restart a server the user stopped.
     unsloth_server_user_stopped: "1",
   });
   assert.equal(
