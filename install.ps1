@@ -4575,11 +4575,17 @@ function Install-UnslothStudio {
                 if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
                 $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
             }
-            # uv reads UV_CONFIG_FILE in place of every discovered file, and none with UV_NO_CONFIG.
-            $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
-            $dir = (Get-Location -PSProvider FileSystem).ProviderPath
+            # uv reads UV_CONFIG_FILE in place of every discovered file, none with UV_NO_CONFIG, and no
+            # system file with UV_NO_SYSTEM_CONFIG; discovery starts from --directory, then --project.
             # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
-            if (@('1', 't', 'true', 'y', 'yes', 'on') -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
+            $uvTrue = @('1', 't', 'true', 'y', 'yes', 'on')
+            $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml")
+            if ($uvTrue -notcontains "$env:UV_NO_SYSTEM_CONFIG".Trim().ToLowerInvariant()) { $files += "$env:ProgramData\uv\uv.toml" }
+            $dir = (Get-Location -PSProvider FileSystem).ProviderPath
+            $workDir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
+            if ($workDir) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $workDir)) }
+            if ($env:UV_PROJECT) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_PROJECT)) }
+            if ($uvTrue -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
             elseif ($env:UV_CONFIG_FILE) { $files = @($env:UV_CONFIG_FILE); $dir = $null }
             while ($dir) {
                 $pyproject = Join-Path $dir 'pyproject.toml'

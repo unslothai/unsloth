@@ -58,7 +58,7 @@ try {
 
 $names = '_UNSLOTH_MIRROR_PROBED', 'UNSLOTH_MIRROR_FALLBACK', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL',
     'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'NPM_CONFIG_REGISTRY', 'UV_OFFLINE', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
-    'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_NO_CONFIG', 'UV_ASTRAL_MIRROR_URL'
+    'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_NO_CONFIG', 'UV_ASTRAL_MIRROR_URL', 'UV_NO_SYSTEM_CONFIG', 'UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY'
 $saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData', 'PATH') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
 $home_ = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-mirror-" + [guid]::NewGuid())
 $pipIni = Join-Path $home_ 'AppData/pip/pip.ini'
@@ -203,6 +203,19 @@ try {
     Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = $customUv }; Check "UV_CONFIG_FILE replaces the discovered uv.toml, so its Python mirror does not count" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
     Run @{ astral = 'blocked' } @{ UV_NO_CONFIG = '1' }; Check "UV_NO_CONFIG ignores the uv.toml Python mirror" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
     Run @{ astral = 'blocked' } @{ UV_NO_CONFIG = 'f' }; Check "UV_NO_CONFIG=f is false to uv, so the uv.toml Python mirror still counts" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    New-Item -ItemType Directory -Force -Path (Join-Path $env:ProgramData 'uv') | Out-Null
+    Set-Content -Path (Join-Path $env:ProgramData 'uv/uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+    Remove-Item -LiteralPath (Join-Path $env:APPDATA 'uv/uv.toml')
+    Run @{ astral = 'blocked' }; Check "a system uv.toml Python mirror counts" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    Run @{ astral = 'blocked' } @{ UV_NO_SYSTEM_CONFIG = '1' }; Check "UV_NO_SYSTEM_CONFIG ignores the system uv.toml Python mirror" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    Remove-Item -LiteralPath (Join-Path $env:ProgramData 'uv/uv.toml')
+    $proj = Join-Path $home_ 'proj'; New-Item -ItemType Directory -Force -Path $proj | Out-Null
+    Set-Content -Path (Join-Path $proj 'uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+    foreach ($v in 'UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY') {
+        Run @{ astral = 'blocked' } @{ $v = $proj }; Check "$v points discovery at a project whose uv.toml has a Python mirror" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    }
+    Run @{ astral = 'blocked' }; Check "without it, that project's uv.toml is not in scope" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    Set-Content -Path (Join-Path $env:APPDATA 'uv/uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
     Set-Content -Path $customUv -Value 'python-install-mirror = "https://corp.example/pbs"'
     Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = $customUv }; Check "a Python mirror in UV_CONFIG_FILE is kept" (-not $env:UV_PYTHON_INSTALL_MIRROR)
     Remove-Item -LiteralPath (Join-Path $env:APPDATA 'uv/uv.toml')
