@@ -711,6 +711,8 @@ export const he = {
     temporaryChatDescription: "הצ'אט הזה לא יופיע בהיסטוריה שלך ולא נשמר. הוא נעלם כשתעזוב.",
   },
   picker: {
+    unifiedTightFit: "התאמה צפופה",
+    unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",
@@ -2098,6 +2100,18 @@ export const he = {
         openError: "לא ניתן לפתוח את התיקייה",
         copyError: "לא ניתן להעתיק את הנתיב",
       },
+      fullInstall: {
+        label: "סוג התקנה",
+        description:
+          "צ'אט בלבד (GGUF). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
+        action: "שדרג להתקנה מלאה",
+        confirmTitle: "לשדרג להתקנה המלאה?",
+        confirmDescription:
+          "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט (לפחות 5 GB של שטח דיסק) ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmAction: "שדרג",
+        keywords:
+          "full install upgrade סוג התקנה התקנה מלאה שדרוג צ'אט בלבד chat only gguf add training אימון train fine-tune pytorch torch ייצוא וידאו יצירת תמונות safetensors",
+      },
       repairInstall: {
         label: "תיקון התקנה",
         description:
@@ -2106,6 +2120,8 @@ export const he = {
         confirmTitle: "לתקן התקנה זו?",
         confirmDescription:
           "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה, אשר מתקינה מחדש את PyTorch עבור ה-GPU של מכונה זו בגרסה הנתמכת החדשה ביותר. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmDescriptionChatOnly:
+          "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה. זוהי התקנה של צ'אט בלבד, ולכן תוכנית ההתקנה גם משדרגת אותה להתקנה המלאה עם PyTorch, כמה ג'יגה-בייט בסך הכול. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "תקן כעת",
       },
       resetPreferences: {
@@ -3288,6 +3304,7 @@ export const he = {
       relativeNever: "אף פעם",
       relativeJustNow: "זה עתה",
       expired: "פג תוקף",
+      expiredStatus: "פג תוקף",
       today: "היום",
       created: "נוצר {value}",
       used: "שימוש אחרון {value}",
@@ -4866,5 +4883,42 @@ export const he = {
     cantRun: "לא ניתן היה להריץ",
     failed: "שגיאה {status}",
     invalidJson: "גוף הבקשה אינו JSON תקין.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "מודלים טעונים",
+      countOne: "{count} מודל טעון",
+      countMany: "{count} מודלים טעונים",
+      pillLabel: "{count}. הצג פרטים, או גרור כדי להזיז",
+      dragToMove: "גרור כדי להזיז",
+      dragHandleLabel: "הזז את המודלים הטעונים. מקשי החיצים מזיזים אותו מעט.",
+      collapse: "כווץ",
+      collapseLabel: "כווץ את המודלים הטעונים",
+      close: "סגירה",
+      closeLabel: "סגור את המודלים הטעונים",
+      backOnNextLoad: "יחזור בטעינת המודל הבאה",
+      ejectToFree: "הוצא כדי לפנות זיכרון",
+      ejectLabel: "הוצא את {model}",
+      openTarget: "פתח את {target}",
+      rowLabel: "{model}. פתח את {target}",
+      loading: "טוען",
+      ejecting: "מוציא",
+      stillInMemory: "עדיין בזיכרון",
+      alsoServing: "מספק שירות גם ל־",
+      noneLoaded: "אין מודלים טעונים",
+      noneLoadedDetail: "מודלים שתטען יוצגו כאן.",
+      otherAccount: "בשימוש בחשבון אחר",
+      otherAccountDetail: "הזיכרון תפוס על ידי מודל שאינך יכול לראות",
+      toastStillResident: "„{model}” נטען בזמן ההוצאה, ולכן עדיין משתמש בזיכרון. הוצא אותו שוב כדי לפנות אותו.",
+      toastUnverified: "התבקשה הוצאה של {model}, אך סביבת ההרצה לא אישרה זאת. בדוק את הכרטיס בעוד רגע.",
+      toastAlreadyFree: "{model} כבר לא היה טעון.",
+      toastReplaced: "{model} אינו טעון עוד. „{resident}” תפס את מקומו ולא נגעו בו.",
+      toastEjected: "{model} הוצא",
+      toastFailed: "הוצאת {model} נכשלה",
+    },
+    monitor: {
+      dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
+      reconnecting: "מתחבר מחדש...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

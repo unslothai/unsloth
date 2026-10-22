@@ -945,9 +945,17 @@ def _close(agent, release_gpu: bool = True) -> None:
         gpu_arbiter.release_if(gpu_arbiter.DECISIONS, unclaimed)
 
 
+def _unloaded() -> bool:
+    unloads = getattr(_load_generation, "unloads", None)
+    return unloads is not None and unloads != _unloads
+
+
 def _evict(external: bool = False) -> None:
     global _agent, _loaded, _device_name, _generation, _unloads
     with _run_lock:
+        # Every load evicts once its files are on disk: one unloaded meanwhile stops here.
+        if _unloaded():
+            raise RuntimeError("It was unloaded while it downloaded.")
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1
         _unloads += external
@@ -1114,11 +1122,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        unloads = getattr(_load_generation, "unloads", _unloads)
-        agent = ClefAgent(
-            root,
-            cancelled = lambda: _clef_preempted() or _unloads != unloads,
-        )
+        agent = ClefAgent(root, cancelled = lambda: _clef_preempted() or _unloaded())
         # Training may have started while this loaded, and Clef has no CPU fallback.
         if _clef_preempted():
             agent.close()
@@ -1135,10 +1139,12 @@ def _load_checkpoint(checkpoint: Checkpoint):
     device = "cpu" if for_training else _device()
     if device in ("cuda", "xpu"):
         try:
-            agent = LayaWorker(root, checkpoint, device, cancelled = _training_active)
+            agent = LayaWorker(
+                root, checkpoint, device, cancelled = lambda: _training_active() or _unloaded()
+            )
             return agent, agent.device
         except LayaWorkerError:
-            if not _training_active():
+            if _unloaded() or not _training_active():
                 raise
         device, for_training = "cpu", True
     agent, placed = _build_laya(root, checkpoint, device, for_training)
@@ -1199,7 +1205,7 @@ def _load_native(checkpoint: Checkpoint):
             gpu = gpu,
             clef_answers = checkpoint.layout == "clef",
             ctx = get_native_ctx(),
-            cancelled = (lambda: _training_active()) if gpu else None,
+            cancelled = lambda: (gpu and _training_active()) or _unloaded(),
         )
         if gpu and _training_active():
             agent.close()
@@ -1472,18 +1478,28 @@ def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
         else:
             logger.warning("System One load failed: %s", message, exc_info = True)
         return
+    finally:
+        del _load_generation.unloads
     with _state_lock:
         stale = _unloads != unloads
         if not stale:
             _agent, _loaded, _device_name = agent, checkpoint, str(getattr(agent, "device", device))
-        _failure = _loading = None
+            _loading = None
+        _failure = None
         _gpu_load = False
         _generation += 1
         _last_used = time.monotonic()
         generation = _generation
     if stale:
         logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
-        _close(agent)
+        # _loading stays set until its memory is back, so no other load claims the GPU first.
+        try:
+            _close(agent)
+            del agent
+            _release_memory()
+        finally:
+            with _state_lock:
+                _loading = None
         return
     if _arbitrated(checkpoint):
         _schedule_idle_unload(generation)
@@ -1637,6 +1653,8 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
             raise Unavailable(503, "model_loading", f"{checkpoint.name} is loading", retry_after = 5)
         # Claimed before the registry probe, so a Hub download admitted from now on sees this load.
         _loading = checkpoint
+        if unloads is None:
+            unloads = _unloads
     # Checked after the claim, so an eviction that lands before it is still seen.
     if _torch_gpu(checkpoint) and _gpu_load_in_flight():
         with _state_lock:
@@ -2455,19 +2473,10 @@ def status() -> dict[str, Any]:
         }
 
 
-def ensure_can_unload() -> None:
-    with _state_lock:
-        if _reloading is not None and _reloading == _loading:
-            return
-        # _loading: a load claimed but not yet started would otherwise land after this unload.
-        if _loading is not None or (_loader is not None and _loader.is_alive()):
-            raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
-
-
 def unload(reload_after_training: bool = False) -> bool:
     global _agent, _loaded, _device_name, _failure, _generation, _unloads
-    ensure_can_unload()
-    with _run_lock:
+    # _state_lock too: a load publishes under it, so it can never land just after this unload.
+    with _run_lock, _state_lock:
         agent, was_loaded, checkpoint = _agent, _agent is not None, _loaded
         _agent = _loaded = _device_name = None
         _failure = None

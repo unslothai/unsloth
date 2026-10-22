@@ -626,6 +626,8 @@ export const fr = {
       "Ce chat n’apparaîtra pas dans votre historique et n’est pas enregistré. Il disparaît quand vous le quittez.",
   },
   picker: {
+    unifiedTightFit: "Juste",
+    unifiedTightFitHint: "Peut se charger avec un contexte plus court ou être plus lent sur ce Mac.",
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
     retry: "Réessayer",
@@ -2010,6 +2012,18 @@ export const fr = {
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
       },
+      fullInstall: {
+        label: "Type d'installation",
+        description:
+          "Chat uniquement (GGUF). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
+        action: "Passer à l'installation complète",
+        confirmTitle: "Passer à l'installation complète ?",
+        confirmDescription:
+          "Cette installation Chat uniquement exécute des modèles GGUF. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmAction: "Mettre à niveau",
+        keywords:
+          "full install upgrade type d'installation installation complète mise à niveau chat uniquement chat only gguf add training entraînement entraîner train fine-tune pytorch torch export vidéo génération d'images safetensors",
+      },
       repairInstall: {
         label: "Réparer l'installation",
         description:
@@ -2018,6 +2032,8 @@ export const fr = {
         confirmTitle: "Réparer cette installation ?",
         confirmDescription:
           "Arrête le serveur et relance le programme d'installation, qui réinstalle PyTorch pour le GPU de cette machine. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmDescriptionChatOnly:
+          "Arrête le serveur et relance le programme d'installation. Cette installation est en mode Chat uniquement, donc le programme d'installation la fait aussi passer à l'installation complète avec PyTorch, plusieurs gigaoctets au total. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Réparer maintenant",
       },
       resetPreferences: {
@@ -3216,6 +3232,7 @@ export const fr = {
       relativeNever: "jamais",
       relativeJustNow: "à l'instant",
       expired: "expiré",
+      expiredStatus: "Expiré",
       today: "aujourd'hui",
       created: "Créé {value}",
       used: "Utilisé {value}",
@@ -4817,5 +4834,42 @@ export const fr = {
     cantRun: "Impossible d'exécuter",
     failed: "Erreur {status}",
     invalidJson: "Le corps de la requête n'est pas un JSON valide.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Modèles chargés",
+      countOne: "{count} modèle chargé",
+      countMany: "{count} modèles chargés",
+      pillLabel: "{count}. Afficher les détails ou faire glisser pour déplacer",
+      dragToMove: "Faire glisser pour déplacer",
+      dragHandleLabel: "Déplacer les modèles chargés. Les touches fléchées le déplacent légèrement.",
+      collapse: "Réduire",
+      collapseLabel: "Réduire les modèles chargés",
+      close: "Fermer",
+      closeLabel: "Fermer les modèles chargés",
+      backOnNextLoad: "Réapparaît au prochain chargement de modèle",
+      ejectToFree: "Éjecter pour libérer la mémoire",
+      ejectLabel: "Éjecter {model}",
+      openTarget: "Ouvrir {target}",
+      rowLabel: "{model}. Ouvrir {target}",
+      loading: "Chargement",
+      ejecting: "Éjection",
+      stillInMemory: "Toujours en mémoire",
+      alsoServing: "Sert aussi",
+      noneLoaded: "Aucun modèle chargé",
+      noneLoadedDetail: "Les modèles que vous chargez s’afficheront ici.",
+      otherAccount: "Utilisé par un autre compte",
+      otherAccountDetail: "La mémoire est occupée par un modèle que vous ne pouvez pas voir",
+      toastStillResident: "« {model} » a été chargé pendant l’éjection et utilise donc toujours de la mémoire. Éjectez-le à nouveau pour la libérer.",
+      toastUnverified: "Le déchargement de {model} a été demandé, mais l’environnement d’exécution ne l’a pas confirmé. Vérifiez la carte dans un instant.",
+      toastAlreadyFree: "{model} n’était plus chargé.",
+      toastReplaced: "{model} n’est plus chargé. « {resident} » a pris sa place et n’a pas été modifié.",
+      toastEjected: "{model} éjecté",
+      toastFailed: "Impossible d’éjecter {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Déplacer le moniteur en direct. Les touches fléchées le déplacent légèrement, un double-clic le réinitialise.",
+      reconnecting: "Reconnexion...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

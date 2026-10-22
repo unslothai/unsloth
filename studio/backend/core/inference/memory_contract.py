@@ -172,6 +172,15 @@ def build_memory_estimate(
         layer_count = getattr(breakdown, "layer_count", None),
         gpu_layers = getattr(breakdown, "gpu_layers", None),
         moe_offload_unmodelled = bool(moe_offload_unmodelled),
+        mlx_offload = (
+            None
+            if getattr(breakdown, "offloadable", None) is None
+            else {
+                "ple": breakdown.ple_offload,
+                "experts": breakdown.expert_offload,
+                "offloadable": list(breakdown.offloadable),
+            }
+        ),
         context_is_pinned = bool(context_is_pinned),
         inherited_device_pin = bool(inherited_device_pin),
         spec_unpriced = bool(spec_unpriced),
@@ -211,6 +220,7 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         "layer_count": estimate.layer_count,
         "gpu_layers": estimate.gpu_layers,
         "moe_offload_unmodelled": estimate.moe_offload_unmodelled,
+        "mlx_offload": estimate.mlx_offload,
     }
 
 
