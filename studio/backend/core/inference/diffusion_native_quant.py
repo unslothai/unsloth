@@ -31,6 +31,31 @@ _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 _INT_MM_CHUNK_ELEMS = 1 << 25
+# fp8 codes a native fp8 layer may hold; e5m2 only from a checkpoint (the quantise path writes e4m3fn).
+NATIVE_FP8_FORMATS = ("float8_e4m3fn", "float8_e5m2")
+
+
+def fp8_bits_to_float32(bits: Any, fmt: str = "float8_e4m3fn") -> Any:
+    """uint8 fp8 codes to float32 by integer ops, bit-exact; Triton has no e4m3fn convert below sm_89."""
+    import torch
+
+    b = bits.to(torch.int32)
+    if fmt == "float8_e5m2":
+        exp_bits, man_bits, bias = 5, 2, 15
+    else:
+        exp_bits, man_bits, bias = 4, 3, 7
+    e = (b >> man_bits) & ((1 << exp_bits) - 1)
+    m = b & ((1 << man_bits) - 1)
+    normal = (((e + (127 - bias)) << 23) | (m << (23 - man_bits))).view(torch.float32)
+    # subnormal: m * 2**(1 - bias - man_bits), exact in float32
+    sub = m.to(torch.float32) * (2.0 ** (1 - bias - man_bits))
+    mag = torch.where(e == 0, sub, normal)
+    if fmt == "float8_e5m2":
+        top = e == (1 << exp_bits) - 1
+        mag = torch.where(top, torch.where(m == 0, float("inf"), float("nan")), mag)
+    else:
+        mag = torch.where((e == 15) & (m == 7), float("nan"), mag)
+    return torch.where((b & 0x80) != 0, -mag, mag)
 
 
 def int8_act_requested() -> bool:
@@ -259,8 +284,15 @@ def native_linear_class():
                 if self.act_int8 and rot_group and self.in_features % int(rot_group) == 0
                 else 0
             )
+            self.fp8_format = "float8_e4m3fn"
             if codes is not None:
                 wanted = torch.int8 if scheme == NATIVE_INT8 else torch.float8_e4m3fn
+                if (
+                    scheme == NATIVE_FP8
+                    and str(codes.dtype).replace("torch.", "") in NATIVE_FP8_FORMATS
+                ):
+                    wanted = codes.dtype
+                    self.fp8_format = str(codes.dtype).replace("torch.", "")
                 if codes.dtype != wanted:
                     raise ValueError(
                         f"pre-quantized native {scheme} codes must be {str(wanted).replace('torch.', '')}"
@@ -313,13 +345,14 @@ def native_linear_class():
             self._int8pack_scales: dict = {}
 
         def _stored_weight(self, dtype: Any) -> Any:
-            wq = (
-                self.weight_q.view(torch.float8_e4m3fn)
-                if self.scheme == NATIVE_FP8
-                else self.weight_q
-            )
             scale = self.weight_scale.view(torch.float32)
-            return (wq.to(torch.float32) * scale[:, None]).to(dtype)
+            if self.scheme != NATIVE_FP8:
+                wide = self.weight_q.to(torch.float32)
+            elif torch.compiler.is_compiling():
+                wide = fp8_bits_to_float32(self.weight_q, self.fp8_format)
+            else:
+                wide = self.weight_q.view(getattr(torch, self.fp8_format)).to(torch.float32)
+            return (wide * scale[:, None]).to(dtype)
 
         def _rotate(self, x: Any) -> Any:
             g = self.rot_group
@@ -465,6 +498,7 @@ def native_linear_class():
             return (
                 f"in_features={self.in_features}, out_features={self.out_features}, "
                 f"scheme={self.scheme}, act_int8={self.act_int8}, rot_group={self.rot_group}, bias={self.bias is not None}"
+                + (f", codes={self.fp8_format}" if self.scheme == NATIVE_FP8 else "")
             )
 
     return NativeWeightOnlyLinear
