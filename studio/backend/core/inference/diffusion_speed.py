@@ -164,9 +164,8 @@ def cudnn_benchmark_scope(value: bool) -> Iterator[None]:
 
 
 def family_render_cudnn_scope(family: Any, device: Any) -> Any:
-    """Hold ``cudnn.benchmark`` off for a render of a family that opts out of it. The flag is process-wide: a
-    co-resident load (or an earlier one this load's snapshot captured) can have it on, and skipping this load's enable
-    alone would leave the VAE convs on a per-process pick."""
+    """Hold ``cudnn.benchmark`` off for a render of a family that opts out of it. The flag is process-wide, so a
+    co-resident or earlier load can have left it on, leaving the VAE convs on a per-process pick."""
     if getattr(family, "cudnn_benchmark", True) or not str(device or "").startswith("cuda"):
         return nullcontext()
     try:

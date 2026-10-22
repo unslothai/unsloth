@@ -6,8 +6,7 @@ seed renders one image in every fresh server there.
 
 A few of their norm reductions get several configs that sum in different orders, and a cold-cache server benchmarks
 them in its own process on near-equal timings: fresh servers rendered 2-4 variants per seed on an RTX PRO 6000, A100
-and L4, and on B200 for all three (FLUX.1-schnell int8 cold-cache processes denoised one seed into 3 latents over 15).
-The opt-in is per (family, compute capability)."""
+and L4, and on B200 for all three. The opt-in is per (family, compute capability)."""
 
 from __future__ import annotations
 

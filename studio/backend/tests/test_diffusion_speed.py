@@ -649,8 +649,7 @@ def test_cudnn_benchmark_opt_out_image_families():
     }
 
 
-# Repos whose VAE decode split across fresh B200 processes with cudnn.benchmark on (one latent, Studio's VAE layer):
-# FLUX.2 6 images over 9, FLUX.1 (Kontext) 4 over 5, Qwen-Image (Edit) 2 over 5, Qwen-Image RGBA (Layered) 2 over 5.
+# Repos whose VAE decode of one latent split across fresh B200 processes with cudnn.benchmark on.
 @pytest.mark.parametrize(
     "repo, pipeline_class",
     [
