@@ -636,7 +636,27 @@ def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
 def test_cudnn_benchmark_opt_out_image_families():
     from core.inference.diffusion_families import _FAMILIES
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
-    assert off == {"qwen-image", "flux.1", "flux.2-dev", "z-image", "sdxl"}
+    assert off == {"qwen-image", "flux.1", "flux.2-dev", "flux.2-klein", "z-image", "sdxl"}
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "black-forest-labs/FLUX.2-dev",
+        "black-forest-labs/FLUX.2-klein-4B",
+        "black-forest-labs/FLUX.2-klein-base-4B",
+        "black-forest-labs/FLUX.2-klein-9B",
+        "black-forest-labs/FLUX.2-klein-base-9B",
+        "unsloth/FLUX.2-klein-base-4B",
+    ],
+)
+def test_flux2_vae_families_hold_cudnn_benchmark_off(repo):
+    # One FLUX.2 VAE decode, one latent: the per-process conv pick gave 6 images over 9 fresh processes.
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.pipeline_class in ("Flux2Pipeline", "Flux2KleinPipeline")
+    assert fam.cudnn_benchmark is False
 
 
 @pytest.mark.parametrize(
