@@ -88,6 +88,14 @@ def _is_text_seq2seq_config(config):
     return not any(mapped(auto_class) for auto_class in _multimodal_auto_classes())
 
 
+def _is_bare_feature_extractor(processor):
+    try:
+        from transformers.feature_extraction_utils import FeatureExtractionMixin
+    except Exception:
+        return False
+    return isinstance(processor, FeatureExtractionMixin)
+
+
 def _generation_padding_side(config):
     # BART / Marian encoder positions are absolute, so left padding would shift every real token.
     # Any encoder-decoder (Whisper, SeamlessM4T): left-padded labels put pads before the decoder's target.
@@ -4474,6 +4482,20 @@ class FastBaseModel:
                 if not local_files_only and _is_offline_related_error(_e):
                     raise
             if tokenizer is None:
+                # Encoder-only audio checkpoints (AST, WavLM, wav2vec2 bases) ship only a feature extractor.
+                try:
+                    from transformers import AutoFeatureExtractor
+                    tokenizer = AutoFeatureExtractor.from_pretrained(
+                        tokenizer_name,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
+                        local_files_only = local_files_only,
+                        revision = _tokenizer_revision,
+                    )
+                except Exception:
+                    tokenizer = None
+            if tokenizer is None:
                 del model
                 raise RuntimeError(
                     "Unsloth: Could not load the tokenizer/processor. If you are "
@@ -4502,7 +4524,9 @@ class FastBaseModel:
         patch_gradient_accumulation_fix(Trainer)
 
         _padding_side = _generation_padding_side(getattr(model, "config", None))
-        tokenizer.padding_side = _padding_side
+        # A bare audio feature extractor pads waveforms, which must stay right padded.
+        if not _is_bare_feature_extractor(tokenizer):
+            tokenizer.padding_side = _padding_side
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
