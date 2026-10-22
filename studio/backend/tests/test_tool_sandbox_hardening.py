@@ -119,6 +119,31 @@ def test_approved_calls_import_chat_helpers_without_shadowing_the_stdlib(tmp_pat
     assert "PLANTED" not in out, out
 
 
+def test_chat_folder_never_supplies_startup_hooks(tmp_path):
+    """site imports usercustomize after sitecustomize: the chat folder must not be able to supply it."""
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    (workdir / "helper.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    (workdir / "usercustomize.py").write_text("print('PLANTED')\n", encoding = "utf-8")
+    site_dir = os.path.join(os.path.dirname(tools.__file__), "sandbox_site")
+    env = dict(os.environ, PYTHONPATH = site_dir, _UNSLOTH_HOST_WORKDIR = str(workdir))
+    code = (
+        "import importlib.util as u, sys, helper; "
+        "print('HOOK', u.find_spec('usercustomize'), 'HELPER', helper.VALUE, "
+        f"{str(workdir)!r} in sys.path)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env = env,
+        cwd = str(tmp_path),
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    ).stdout
+    assert "HOOK None HELPER 1 False" in out, out
+    assert "PLANTED" not in out, out
+
+
 @_POSIX
 def test_an_approved_terminal_call_runs_chat_clis_after_system_ones(tmp_path, monkeypatch):
     workdir = _planted_workdir(tmp_path)
