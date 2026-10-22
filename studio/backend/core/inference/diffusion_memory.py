@@ -3548,7 +3548,7 @@ def _resident_tensors(group: Any) -> list:
     return out
 
 
-def _release_group(group: Any, owner: Any = None) -> None:
+def _release_group(group: Any) -> None:
     onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
     for name, fn in (("onload_", onload_), ("offload_", offload_)):
         if fn is not None:
@@ -3557,11 +3557,15 @@ def _release_group(group: Any, owner: Any = None) -> None:
             group.__dict__.pop(name, None)
     group._unsloth_resident = False
     group.offload_()
+    _bump_placement_epoch()
+
+
+def _release_group_range(owner: Any, group: Any) -> None:
+    """A released group's weights are on their host copies again: its stable re-pin range gives the physical memory
+    back (the addresses stay reserved)."""
     if "_unsloth_repin_range" in getattr(group, "__dict__", {}):
-        # its weights are on their host copies again: the physical memory goes back, the addresses stay reserved
         from .diffusion_stable_arena import release_group_range
         release_group_range(owner, group, _resident_tensors(group))
-    _bump_placement_epoch()
 
 
 def release_resident_groups(
@@ -3640,7 +3644,8 @@ def release_resident_groups(
                         continue
                     # Recorded before demoting: a release that fails part way is still re-pinned by ``restore``.
                     streamed.add(id(member))
-                    _release_group(member, module)
+                    _release_group(member)
+                    _release_group_range(module, member)
                     left -= int(getattr(member, "_unsloth_resident_bytes", 0))
         if not released:
             return None
