@@ -12,7 +12,11 @@ const SWITCHER = await readSrcAsync("features/chat/components/project-switcher.t
 
 test("the switcher lists the six most recent projects, not all of them", () => {
   assert.match(SWITCHER, /const RECENT_PROJECT_LIMIT = 6;/);
-  assert.match(SWITCHER, /const recent = projects\.slice\(0, RECENT_PROJECT_LIMIT\);/);
+  // By chat activity: the server's order is by edit time, which a chat never moves.
+  assert.match(
+    SWITCHER,
+    /const recent = sortProjectsByActivity\(projects\)\.slice\(0, RECENT_PROJECT_LIMIT\);/,
+  );
   // The menu draws the capped list, not the prop.
   assert.match(SWITCHER, /\{recentProjects\.map\(\(project\) => \{/);
   assert.ok(
