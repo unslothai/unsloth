@@ -183,3 +183,74 @@ def test_reference_pass_restores_hook_order_with_prepended_hooks(replay):
         calls.clear()
         model(input_ids = ids)
     assert calls == ["prepended", "appended"]
+
+
+def _bias_router_model(model_type):
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    extra = {
+        "minimax_m2": dict(num_local_experts = EXPERTS),
+        "hy_v3": dict(num_local_experts = EXPERTS),
+        "lfm2_moe": dict(num_experts = EXPERTS, use_expert_bias = True, num_dense_layers = 0,
+                         layer_types = ["full_attention"] * LAYERS),
+    }[model_type]
+    try:
+        config = AutoConfig.for_model(
+            model_type, vocab_size = 64, hidden_size = 32, intermediate_size = 64, moe_intermediate_size = 16,
+            num_hidden_layers = LAYERS, num_attention_heads = 4, num_key_value_heads = 2, head_dim = 8,
+            num_experts_per_tok = TOP_K, pad_token_id = PAD, **extra,
+        )
+    except Exception as error:
+        pytest.skip(f"this transformers has no {model_type}: {error}")
+    torch.manual_seed(0)
+    model = AutoModelForCausalLM.from_config(config).float().eval()
+    model.vllm_engine = None
+    return model
+
+
+@pytest.mark.parametrize("model_type", ["minimax_m2", "hy_v3", "lfm2_moe"])
+def test_correction_bias_routers_are_primed_and_compile_cold(replay, model_type):
+    # MiniMax-M2 / HY-V3: TopKRouter.forward(hidden_states, e_score_correction_bias), the bias a
+    # buffer of the parent MoE block; LFM2-MoE: forward(hidden_states, expert_bias = None).
+    model = _bias_router_model(model_type)
+    _run_post_init(model)
+    pairs = [
+        (parent, child) for parent in model.modules() for child in parent.children()
+        if "TopKRouter" in type(child).__name__
+    ]
+    assert pairs
+    for parent, router in pairs:
+        assert router._forward_hooks, type(router).__name__
+        assert getattr(router, "_unsloth_replay_formula", None) is not None, type(router).__name__
+    parent, router = pairs[0]
+    bias_name = "expert_bias" if model_type == "lfm2_moe" else "e_score_correction_bias"
+    bias = getattr(parent, bias_name)
+    x = torch.randn(5, 32, generator = torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        natural = router.forward(x, bias)[2]
+    rr._STATE.in_forward, rr._STATE.record = True, None
+    rr._STATE.current = ((natural + 3) % EXPERTS)[:, None, :].expand(-1, LAYERS, -1).contiguous()
+    try:
+        compiled = torch.compile(router, backend = "eager", fullgraph = True)
+        compiled(x, bias)
+    finally:
+        rr._STATE.in_forward, rr._STATE.current = False, None
+    with torch.no_grad():
+        model(input_ids = torch.tensor([[5, 6, 7, 8]]))
+
+
+def test_router_that_cannot_be_primed_loses_its_hook_with_a_warning(replay):
+    model = _moe()
+    original = type(model.model.layers[0].mlp.gate)
+
+    class OddTopKRouter(original):
+        # A required argument the parent block does not hold: priming cannot build the call.
+        def forward(self, hidden_states, routing_temperature):
+            return super().forward(hidden_states / routing_temperature)
+
+    model.model.layers[0].mlp.gate.__class__ = OddTopKRouter
+    with pytest.warns(UserWarning, match = r"routing replay is off for 1 router.*OddTopKRouter"):
+        _run_post_init(model)
+    assert not model.model.layers[0].mlp.gate._forward_hooks
+    assert model.model.layers[1].mlp.gate._forward_hooks
+    assert getattr(model.model.layers[1].mlp.gate, "_unsloth_replay_formula", None) is not None
