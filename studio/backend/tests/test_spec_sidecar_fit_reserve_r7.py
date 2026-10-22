@@ -456,13 +456,18 @@ def test_the_graph_follows_the_targets_output_layer_not_the_drafters(tmp_path, _
     assert idle < 2048
 
 
-def test_a_row_split_shares_the_drafter_by_weight_not_whole_layers(tmp_path, _discrete):
-    """--split-mode row cuts every block across the cards, so equal cards split it in half."""
+def test_a_row_split_places_whole_draft_layers_like_a_layer_split(tmp_path, _discrete):
+    """CUDA / ROCm register no split buffer type, so --split-mode row places whole layers."""
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     backend._arch_gate_survivors = lambda binary = None: []
     _three_block_drafter(backend)
-    first, second = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--split-mode", "row"]))
-    assert abs(first - second) <= 512
+    row = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--split-mode", "row"]))
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    _three_block_drafter(backend)
+    layer = _margins(_dspark(backend, gguf, tmp_path))
+    assert row == layer
+    assert row[0] > row[1]
 
 
 def test_shares_follow_each_cards_free_memory_past_its_own_margin(tmp_path, _discrete):
@@ -491,3 +496,32 @@ def test_a_draft_pinned_to_one_target_card_reserves_there(tmp_path, _discrete, e
     assert len(margins) == 2, margins
     assert margins[at] >= _FLOOR, margins
     assert margins[1 - at] < 1024 + 1024, margins
+
+
+def test_a_draft_with_its_own_embeddings_and_head_gets_no_reserve(tmp_path, _discrete, monkeypatch):
+    """llama_context needs the target's context only when the draft lacks token_embd or output;
+    a self-contained draft is measured by the fitter like any model."""
+    monkeypatch.setattr(_lc, "_sidecar_borrows_target_tensors", lambda path: False)
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    assert _r4._margin(_dspark(backend, gguf, tmp_path)) < _FLOOR
+
+
+@pytest.mark.parametrize(
+    "present, borrows",
+    [
+        ({"token_embd.weight", "output.weight"}, False),
+        ({"token_embd.weight"}, True),
+        ({"output.weight"}, True),
+        (set(), True),
+    ],
+)
+def test_borrowed_tensor_detection(tmp_path, monkeypatch, present, borrows):
+    import utils.models.gguf_metadata as gm
+    import utils.models.model_config as mc
+
+    draft = tmp_path / "dflash.gguf"
+    draft.write_bytes(b"GGUF")
+    monkeypatch.setattr(mc, "colocated_split_shards", lambda path: ([path], True))
+    monkeypatch.setattr(gm, "_gguf_shard_has_named_tensor", lambda path, name: name in present)
+    assert _lc._sidecar_borrows_target_tensors(str(draft)) is borrows
+    assert _lc._sidecar_borrows_target_tensors(None) is True

@@ -5306,6 +5306,29 @@ def _spawn_draft_on_target(
     return int(re.sub(r"\D", "", pin)) == (LlamaCppBackend._effective_main_gpu(run_cmd, env) or 0)
 
 
+def _sidecar_borrows_target_tensors(path: Optional[str]) -> bool:
+    """Whether a DFlash / DSpark draft borrows the target's token_embd or output.
+
+    llama_context requires ctx_other only when either is missing (src/llama-context.cpp), and
+    the fitter cannot measure a context it has not built; a draft carrying both is measured
+    like any model. Unknown or incomplete files count as borrowing."""
+    if not path:
+        return True
+    try:
+        from utils.models.gguf_metadata import _gguf_shard_has_named_tensor
+        from utils.models.model_config import colocated_split_shards
+
+        shards, complete = colocated_split_shards(Path(path))
+        if not complete or not shards:
+            return True
+        return any(
+            not any(_gguf_shard_has_named_tensor(str(shard), name) is True for shard in shards)
+            for name in ("token_embd.weight", "output.weight")
+        )
+    except Exception:
+        return True
+
+
 def _draft_pin_device_index(
     pin: Optional[str], spawn_devices: Optional[str], device_count: int
 ) -> Optional[int]:
@@ -30361,8 +30384,10 @@ class LlamaCppBackend:
                         and _mtp_reserves_gpu
                         and _sidecar_kind_for_fit is not None
                         and _draft_on_target_device
-                        # A fitter that measures borrowed-tensor drafts needs no reserve.
+                        # A fitter that measures borrowed-tensor drafts needs no reserve,
+                        # and every fitter measures a draft that carries its own tensors.
                         and not server_caps.get("fit_measures_borrowed_drafts")
+                        and _sidecar_borrows_target_tensors(_mtp_draft_for_budget or mtp_draft_path)
                     ):
                         # Priced even under --fit off: a startup-OOM retry turns the
                         # fitter on with the drafter still loaded. With -c omitted the
@@ -33952,10 +33977,9 @@ class LlamaCppBackend:
                                     _cum = list(
                                         itertools.accumulate(w / sum(_weights) for w in _weights)
                                     )
-                                    _row_split = _extra_args_split_mode(run_cmd, env) in (
-                                        "row",
-                                        "tensor",
-                                    )
+                                    # CUDA / ROCm register no split buffer type, so
+                                    # "row" places whole layers like "layer" does.
+                                    _row_split = _extra_args_split_mode(run_cmd, env) == "tensor"
                                     if _layers > 0 and not _row_split:
                                         # llama.cpp's own layer split: block il goes to the
                                         # first device whose cumulative share exceeds
