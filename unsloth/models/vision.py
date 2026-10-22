@@ -4455,8 +4455,8 @@ class FastBaseModel:
                     revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
-                # Re-attach as a processor wrapper if the original was a processor.
-                if hasattr(tokenizer, "image_processor"):
+                # Re-attach as a processor wrapper if the original was a processor (audio ones included).
+                if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "feature_extractor"):
                     tokenizer.tokenizer = _fallback_tok
                 else:
                     tokenizer = _fallback_tok

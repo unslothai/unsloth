@@ -62,3 +62,11 @@ def test_audio_configs_get_their_processor():
             assert maps(getattr(transformers, cfg)()), cfg
     for cfg in ("LlamaConfig", "Qwen2Config", "T5Config"):
         assert not maps(getattr(transformers, cfg)()), cfg
+
+
+def test_tokenizer_fallback_keeps_audio_processors():
+    source = VISION_PATH.read_text(encoding = "utf-8")
+    assert (
+        'if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "feature_extractor"):'
+        in source
+    )
