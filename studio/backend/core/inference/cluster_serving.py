@@ -2296,7 +2296,9 @@ class ClusterServing:
             self.topology, self.reason, self.plan, self.block = self._pre_load
             self._pre_load, self.in_flight = None, False
             self.last_error = plan.reason
-            raise ss.SparkLoadDoesNotFit(plan.reason)
+            refusal = ss.SparkLoadDoesNotFit(plan.reason)
+            refusal.cluster_plan = plan  # cluster_ux words the /load refusal from it
+            raise refusal
         self.topology, self.reason = plan.topology, plan.reason
         if plan.topology != "layer_split":
             self.block = []

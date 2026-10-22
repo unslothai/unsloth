@@ -2014,6 +2014,13 @@ class LoadResponse(_InferenceRuntimeFields):
     """Response after loading a model"""
 
     status: str = Field(..., description = "Load status")
+    cluster_summary: Optional[str] = Field(
+        None,
+        description = (
+            "Which machines serve the model when it is split across paired cluster workers, "
+            "e.g. 'Split across this machine and studio-2.'; null for a single-machine load."
+        ),
+    )
     model: str = Field(..., description = "Model identifier")
     display_name: str = Field(..., description = "Display name of the model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
@@ -2084,6 +2091,13 @@ class LoadProgressResponse(BaseModel):
         description = "Total bytes across all GGUF shards for the active model.",
     )
     fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
+    message: Optional[str] = Field(
+        None,
+        description = (
+            "What the load is doing when the byte count alone cannot say it: planning a split "
+            "across paired cluster workers, or sending layers to them. Null otherwise."
+        ),
+    )
 
 
 class LlamaFlagCatalogResponse(BaseModel):
