@@ -2070,6 +2070,23 @@ def output_shows_vulkan_device_lost(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _VULKAN_DEVICE_LOST_MARKERS)
 
 
+# Appended when a lost Vulkan device repeats and no CPU fallback applies. Must match no failure marker.
+_REPEATED_DEVICE_LOSS_HINT = (
+    "The GPU lost its Vulkan device twice in a row (usually a driver reset during the render). Try Low VRAM "
+    "memory mode, a smaller resolution or a smaller quant, or load the model again to retry on the GPU."
+)
+
+
+def _device_loss_cpu_fallback_applies(state: Any) -> bool:
+    """Whether a repeated Vulkan device loss may move this load to the CPU backend: only the CPU-torch Vulkan
+    route (the one with a CPU rung, as on main), the Vulkan-to-CPU fallback enabled, and no user-picked GPU."""
+    if getattr(state, "device", None) != "vulkan" or getattr(state, "off_torch_device", None):
+        return False
+    if getattr(state, "gpu_explicit", False):
+        return False
+    return fallback_accelerator_for("vulkan") == "cpu" and _vulkan_cpu_rung_applies()
+
+
 def output_shows_accelerator_failure(text: Optional[str]) -> bool:
     """True when sd-cli output names a failure of the GPU BUILD rather than of the request; an unrecognised failure persists nothing."""
     if not text:
@@ -2744,6 +2761,8 @@ class _SdState:
     # UNSLOTH_DIFFUSION_SD_CPP_DEVICE placement: its label, and the env every spawn gets to open only that card.
     off_torch_device: Optional[str] = None
     child_env: tuple[tuple[str, str], ...] = ()
+    # The user picked the GPU (a gpu_ids pool or UNSLOTH_DIFFUSION_SD_CPP_DEVICE): never moved to CPU behind their back.
+    gpu_explicit: bool = False
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
@@ -3339,6 +3358,7 @@ class SdCppDiffusionBackend:
         from core.inference.diffusion_engine_router import off_torch_sd_cpp_device
 
         off_torch = off_torch_sd_cpp_device()
+        gpu_explicit = bool(gpu_ids) or off_torch is not None
         if off_torch is not None:
             gpu_ids, gpu_ordinal = None, None
         # Same fallback the diffusers and video backends take: the route ranks the selection and passes the winner,
@@ -3435,6 +3455,7 @@ class SdCppDiffusionBackend:
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 gpu_ordinal = gpu_ordinal,
+                gpu_explicit = gpu_explicit,
                 off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
@@ -3462,6 +3483,7 @@ class SdCppDiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        gpu_explicit: bool = False,
         off_torch: Any = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
@@ -3902,6 +3924,7 @@ class SdCppDiffusionBackend:
                     selected_card = self._loading_card,
                     off_torch_device = off_torch.label if off_torch is not None else None,
                     child_env = tuple(sorted((spawn_env or {}).items())),
+                    gpu_explicit = gpu_explicit,
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
@@ -4808,8 +4831,10 @@ class SdCppDiffusionBackend:
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
-        # One same-build respawn per request: a second lost device in a row surfaces the error.
+        # One same-build respawn per request. A second lost device in a row (the respawned server lost it too) moves
+        # this load to the CPU backend where the CPU rung applies, else surfaces the error with a hint. Persists nothing.
         device_respawned = False
+        device_losses = 0
         try:
             for offset in range(0, total, _MAX_SERVER_BATCH):
                 if cancel.is_set():
@@ -4847,32 +4872,52 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         total_timeout = max(deadline - time.monotonic(), 1.0),
                     )
-                except RuntimeError as exc:
+                except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device leaves
-                    # the server alive on a dead device: start the same build again (a fresh device) and retry once.
-                    # Any other death propagates.
-                    server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
-                    if server is None and not device_respawned:
-                        server = self._respawn_server_after_device_loss(state, str(exc), cancel)
-                        device_respawned = server is not None
-                    if server is None:
-                        raise
-                    old_server = state.server
-                    state = replace(state, server = server)
-                    self._hand_over_replacement(state, server, old_server)
-                    # The old server's stop removed its scratch dir, and the staged adapters with it.
-                    if lora_payload is not None:
-                        if lora_stage is not None:
-                            shutil.rmtree(lora_stage, ignore_errors = True)
-                        lora_stage, lora_payload = _stage_loras(server)
-                        payload["lora"] = lora_payload
-                    blobs = server.img_gen(
-                        payload,
-                        on_step = self._on_log,
-                        cancel_event = cancel,
-                        total_timeout = max(deadline - time.monotonic(), 1.0),
-                    )
+                    # the server alive on a dead device: start the same build again (a fresh device) and retry once;
+                    # when the respawned server loses it too, this load alone moves to the CPU backend where the CPU
+                    # rung applies. Any other death propagates.
+                    exc = first_exc
+                    while True:
+                        server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
+                        if server is None and output_shows_vulkan_device_lost(str(exc)):
+                            device_losses += 1
+                            if device_losses >= 2:
+                                server = self._restart_server_on_cpu_backend(
+                                    state, str(exc), cancel, after_device_loss = True
+                                )
+                                if server is None:
+                                    raise RuntimeError(
+                                        f"{exc} {_REPEATED_DEVICE_LOSS_HINT}"
+                                    ) from exc
+                            elif not device_respawned:
+                                server = self._respawn_server_after_device_loss(
+                                    state, str(exc), cancel
+                                )
+                                device_respawned = server is not None
+                        if server is None:
+                            raise exc
+                        old_server = state.server
+                        state = replace(state, server = server)
+                        self._hand_over_replacement(state, server, old_server)
+                        # The old server's stop removed its scratch dir, and the staged adapters with it.
+                        if lora_payload is not None:
+                            if lora_stage is not None:
+                                shutil.rmtree(lora_stage, ignore_errors = True)
+                            lora_stage, lora_payload = _stage_loras(server)
+                            payload["lora"] = lora_payload
+                        try:
+                            blobs = server.img_gen(
+                                payload,
+                                on_step = self._on_log,
+                                cancel_event = cancel,
+                                total_timeout = max(deadline - time.monotonic(), 1.0),
+                            )
+                            break
+                        except RuntimeError as retry_exc:
+                            exc = retry_exc
+                device_losses = 0
                 # All-or-nothing per chunk; a layered generation decodes layers + 1 images.
                 expected = count * ((layers + 1) if layers else 1)
                 if not cancel.is_set() and len(blobs) != expected:
@@ -4998,7 +5043,12 @@ class SdCppDiffusionBackend:
         )
 
     def _restart_server_on_cpu_backend(
-        self, state: _SdState, error_text: str, cancel: threading.Event
+        self,
+        state: _SdState,
+        error_text: str,
+        cancel: threading.Event,
+        *,
+        after_device_loss: bool = False,
     ) -> Optional[SdCppServer]:
         """Relaunch this checkpoint's sd-server with ``--backend cpu``; None if that does not apply.
 
@@ -5014,8 +5064,15 @@ class SdCppDiffusionBackend:
         (``--offload-to-cpu`` moves parameters, not compute), so the restart runs the same
         checkpoint slower rather than not at all. Done once per load: the second abort, or any other
         cause of death, is surfaced to the caller.
+
+        ``after_device_loss``: the respawned server lost its Vulkan device too (a host whose driver resets the
+        card on every render). Only on the CPU-torch Vulkan route, the one route with a CPU rung, and never for a
+        GPU the user picked. For this load only and nothing is persisted: the next load tries Vulkan again.
         """
-        if not is_ggml_unsupported_op_abort(error_text):
+        if after_device_loss:
+            if not _device_loss_cpu_fallback_applies(state):
+                return None
+        elif not is_ggml_unsupported_op_abort(error_text):
             return None
         if self._cpu_backend_forced or state.device == "cpu":
             return None  # already on CPU: the abort is not a backend-placement problem
@@ -5026,12 +5083,19 @@ class SdCppDiffusionBackend:
             return None
         if not self._begin_replacement(state):
             return None
-        logger.warning(
-            "sd-server aborted on an op the '%s' backend cannot run; restarting on the CPU "
-            "backend (slower, but it completes). Details: %s",
-            state.device,
-            error_text[:300],
-        )
+        if after_device_loss:
+            logger.warning(
+                "sd-server lost its Vulkan device again after a restart; this model now renders on the CPU "
+                "backend (slower) until it is loaded again, which tries Vulkan first. Details: %s",
+                error_text[:300],
+            )
+        else:
+            logger.warning(
+                "sd-server aborted on an op the '%s' backend cannot run; restarting on the CPU "
+                "backend (slower, but it completes). Details: %s",
+                state.device,
+                error_text[:300],
+            )
         self._cpu_backend_forced = True
         state.server.stop()
         server = SdCppServer(server_binary)

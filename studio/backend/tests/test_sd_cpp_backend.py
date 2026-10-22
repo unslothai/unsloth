@@ -3058,7 +3058,9 @@ def _png_bytes():
 @pytest.mark.parametrize("losses, recovers", [(1, True), (2, False)])
 def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, recovers):
     # The resident server stays up on a dead device after VK_ERROR_DEVICE_LOST: start the same build again
-    # (a fresh device) and retry the job once; a second loss in a row surfaces. Neither records a strike.
+    # (a fresh device) and retry the job once; a second loss in a row surfaces where no CPU rung applies (an Arc /
+    # ROCm host keeps Vulkan). Neither records a strike.
+    monkeypatch.setattr(bk, "_vulkan_cpu_rung_applies", lambda: False)
     events: list = []
     remaining = {"losses": losses}
 
@@ -3110,6 +3112,116 @@ def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, 
         e[0] == "start" and "--offload-to-cpu" in (e[1] or ()) for e in events
     )
     assert not bk._accelerator_runtime_failures
+
+
+def _repeated_device_loss_backend(monkeypatch, *, losses, gpu_explicit = False):
+    """A CPU-torch Vulkan load whose first ``losses`` jobs lose the device, on whichever server runs them."""
+    events: list = []
+    remaining = {"losses": losses}
+    persisted: list = []
+
+    class _FakeServer:
+        lora_dir = None
+
+        def __init__(self, binary):
+            self.binary = binary
+
+        def start(self, files, **kwargs):
+            events.append(("start", self.binary, tuple(kwargs.get("extra_args") or ())))
+
+        def stop(self):
+            events.append(("stop", self.binary))
+
+        def is_alive(self):
+            return True
+
+        def img_gen(self, payload, **_kw):
+            if remaining["losses"]:
+                remaining["losses"] -= 1
+                raise RuntimeError("sd-server job failed: vk::Queue::submit: ErrorDeviceLost")
+            return [_png_bytes()]
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ("--offload-to-cpu",), device = "vulkan")
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server-vulkan"))
+    object.__setattr__(b._state, "mode", "server")
+    object.__setattr__(b._state, "gpu_explicit", gpu_explicit)
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/bin/sd-server-vulkan")
+    monkeypatch.setattr(bk, "_vulkan_cpu_rung_applies", lambda: True)
+    monkeypatch.setattr(bk, "fallback_accelerator_for", lambda acc: "cpu" if acc == "vulkan" else None)
+    monkeypatch.setattr(bk, "_persist_accelerator_runtime_failures", lambda records: persisted.append(records))
+    monkeypatch.setattr(bk, "_stored_accelerator_runtime_failures", lambda: {})
+    bk._accelerator_runtime_failures.clear()
+    return b, events, persisted
+
+
+def test_a_vulkan_device_lost_again_after_the_respawn_renders_this_load_on_cpu(monkeypatch):
+    # A host whose driver resets the card on every render (a Windows TDR on a slow iGPU) must not fail every request:
+    # the respawned server losing the device too moves this load alone to the CPU backend. Nothing is persisted, so
+    # the next load resolves the Vulkan build again.
+    b, events, persisted = _repeated_device_loss_backend(monkeypatch, losses = 2)
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    starts = [e for e in events if e[0] == "start"]
+    # First the same-build respawn on Vulkan, then the CPU backend.
+    assert [s[2] for s in starts] == [(), ("--backend", "cpu")]
+    assert b._cpu_backend_forced is True
+    assert not persisted and not bk._accelerator_runtime_failures
+    # The failure text is not a strike either, and the next load still prefers Vulkan.
+    bk.note_accelerator_failure_from_output(
+        "/bin/sd-server-vulkan", "sd-server job failed: vk::Queue::submit: ErrorDeviceLost"
+    )
+    assert not persisted and not bk._accelerator_runtime_failures
+    assert bk.preferred_accelerator("vulkan") == "vulkan"
+    # Later requests on this load keep the CPU server without another restart.
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert len([e for e in events if e[0] == "start"]) == 2
+
+
+def test_a_single_vulkan_device_loss_stays_on_vulkan(monkeypatch):
+    b, events, persisted = _repeated_device_loss_backend(monkeypatch, losses = 1)
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1
+    assert [e[2] for e in events if e[0] == "start"] == [()]
+    assert b._cpu_backend_forced is False
+    assert not persisted
+
+
+@pytest.mark.parametrize("why", ["explicit_gpu", "no_cpu_rung", "fallback_disabled"])
+def test_a_repeated_vulkan_device_loss_without_a_cpu_rung_errors_with_a_hint(monkeypatch, why):
+    # A user-picked GPU is never moved to CPU behind their back, and an Arc / ROCm host (no CPU rung) or a disabled
+    # Vulkan fallback keeps Vulkan: the second loss surfaces, with what to try.
+    b, events, persisted = _repeated_device_loss_backend(
+        monkeypatch, losses = 2, gpu_explicit = why == "explicit_gpu"
+    )
+    if why == "no_cpu_rung":
+        monkeypatch.setattr(bk, "_vulkan_cpu_rung_applies", lambda: False)
+    if why == "fallback_disabled":
+        monkeypatch.setattr(bk, "fallback_accelerator_for", lambda acc: None)
+    with pytest.raises(RuntimeError, match = "ErrorDeviceLost") as info:
+        b._generate_server(b._state, **_gen_kwargs())
+    assert "twice in a row" in str(info.value)
+    assert not bk.output_shows_accelerator_failure(str(info.value))
+    assert all(e[2] != ("--backend", "cpu") for e in events if e[0] == "start")
+    assert b._cpu_backend_forced is False
+    assert not persisted
+
+
+def test_an_explicit_gpu_pool_marks_the_native_load_explicit(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(
+        "core.inference.diffusion_engine_router.off_torch_sd_cpp_device", lambda *a, **k: None
+    )
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kw: seen.update(kw))
+    monkeypatch.setattr(bk, "resolve_selected_cuda_ordinal", lambda ids: None, raising = False)
+    b.begin_load(repo_id = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_M.gguf", gpu_ids = [0])
+    deadline = time.monotonic() + 5
+    while "gpu_explicit" not in seen and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert seen.get("gpu_explicit") is True
 
 
 def _device_loss_backend(
