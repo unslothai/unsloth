@@ -1541,8 +1541,6 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         _BNB_GEMM_4BIT
         and X.dtype in _BNB_GEMM_4BIT_DTYPES
         and X.is_cuda
-        # bitsandbytes returns X.dtype; torch.matmul under autocast returns the autocast dtype.
-        and not (torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != X.dtype)
         and _bnb_gemm_4bit_device_ok(X.device)
         # bitsandbytes passes raw pointers to the kernel on X's device.
         and W.device == X.device
@@ -1662,8 +1660,12 @@ def _rows_plans(quant_state):
 def _fast_lora_weights(lora_A, lora_B, dtype):
     if lora_A.dtype == dtype and lora_B.dtype == dtype:
         return lora_A, lora_B
-    # Keyed on _version: adapters keep training between decodes (GRPO).
-    key = (lora_A._version, lora_B._version, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
+    # Keyed on _version: adapters keep training between decodes (GRPO). Inference tensors have no
+    # version counter (and cannot change outside inference mode), so they key on storage alone.
+    if lora_A.is_inference() or lora_B.is_inference():
+        key = (None, None, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
+    else:
+        key = (lora_A._version, lora_B._version, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
         cache = (key, lora_A.to(dtype), lora_B.to(dtype))
@@ -1729,6 +1731,11 @@ def fast_linear_forward(
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True, dtype = X.dtype)
         out = torch_matmul(X, W, out = out)
 
+    if out.dtype != X.dtype:
+        # torch.matmul under a different autocast dtype returns that dtype; the LoRA update, decode
+        # buffers and every other branch here work in X.dtype.
+        out = out.to(X.dtype)
+
     if lora_A is not None:
         out_dim = out.shape[2]
         dtype = X.dtype
@@ -1741,10 +1748,15 @@ def fast_linear_forward(
         if bsz == 1:
             out = out.view(out_dim)
             temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
+            # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
+            if temp_lora.dtype != dtype:
+                temp_lora = temp_lora.to(dtype)
             out.addmv_(B, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
+            if temp_lora.dtype != dtype:
+                temp_lora = temp_lora.to(dtype)
             out.addmm_(temp_lora, B.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 

@@ -531,20 +531,43 @@ def test_fast_linear_forward_sees_lora_updates(nf4_kernels):
     torch.testing.assert_close(after, fresh, rtol = 0, atol = 0)
 
 
-def test_bnb_gemm_gate_declines_a_different_autocast_dtype(nf4_kernels, monkeypatch):
-    monkeypatch.setattr(U, "_BNB_GEMM_4BIT", True)
-    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DTYPES", (torch.float16, torch.bfloat16))
-    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
-    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_ARCHS", {torch.cuda.get_device_capability()})
-    q, s = _quantize((512, 256), torch.float16)
-    X = torch.randn(8, 1, 256, dtype = torch.float16, device = DEVICE)
+@pytest.mark.parametrize("bnb_gemm", [True, False])
+def test_fast_linear_forward_lora_under_a_different_autocast_dtype(nf4_kernels, monkeypatch, bnb_gemm):
+    # fp16 activations under bf16 autocast: every base path must hand the LoRA update X.dtype.
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("needs bf16")
+    monkeypatch.setattr(U, "_TRITON_GEMV_EAGER", False)
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT", bnb_gemm)
+    calls = []
+    if bnb_gemm:
+        monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DTYPES", (torch.float16, torch.bfloat16))
+        monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
+        monkeypatch.setattr(U, "_BNB_GEMM_4BIT_ARCHS", {torch.cuda.get_device_capability()})
+        matmul_4bit = U.bnb.matmul_4bit
+        monkeypatch.setattr(U.bnb, "matmul_4bit", lambda *a, **k: calls.append(1) or matmul_4bit(*a, **k))
+    _, block = _lora_block(dtype = torch.float16)
+    proj = block.o_proj
+    X = torch.randn(4, 1, 256, dtype = torch.float16, device = DEVICE)
     with torch.no_grad():
-        assert U._bnb_gemm_4bit_ok(X, q, s)
-        with torch.autocast("cuda", dtype = torch.float16):
-            assert U._bnb_gemm_4bit_ok(X, q, s)
-        if torch.cuda.is_bf16_supported():
-            with torch.autocast("cuda", dtype = torch.bfloat16):
-                assert not U._bnb_gemm_4bit_ok(X, q, s)
+        expected = U.fast_linear_forward(proj, X)
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            got = U.fast_linear_forward(proj, X)
+    assert len(calls) == (2 if bnb_gemm else 0)
+    assert got.dtype == torch.float16
+    torch.testing.assert_close(got, expected, rtol = 2e-2, atol = 2e-2)
+
+
+def test_fast_linear_forward_lora_cast_with_inference_tensors(nf4_kernels):
+    # Inference tensors have no version counter; the cast cache must not read one.
+    with torch.inference_mode():
+        _, block = _lora_block(dtype = torch.float16)
+    proj = block.o_proj
+    assert proj.lora_A["default"].weight.is_inference()
+    X = torch.randn(4, 1, 256, dtype = torch.float16, device = DEVICE)
+    with torch.no_grad():
+        first = U.fast_linear_forward(proj, X)
+        again = U.fast_linear_forward(proj, X)
+    torch.testing.assert_close(first, again, rtol = 0, atol = 0)
 
 
 def test_eager_gemv_gate_off_takes_bitsandbytes(monkeypatch):
