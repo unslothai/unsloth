@@ -14,6 +14,7 @@ import contextlib
 import gc
 import inspect
 import os
+import sys
 import threading
 import traceback
 import weakref
@@ -32,7 +33,9 @@ OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH"
 # =0: a block-streamed whole-step graph records its copies into the graph pool instead of the prefetcher's slot ring.
 STEP_SLOTS_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS"
 MODEL_OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_MODEL_OFFLOAD_CUDA_GRAPH"
-# Default off: replay saved ~1% of a step (FLUX.2-klein 4B, 1024^2) but the per-render re-record + ~0.6 GB pool cost more.
+# =1: record over the stock onloads, re-recording whenever they move (replay saved ~1% of a step on FLUX.2-klein 4B
+# 1024^2 while each re-record + ~0.6 GB pool cost more). Default: record only over the stable range, see
+# diffusion_stable_arena.
 MODEL_OFFLOAD_REASON = (
     "model offload re-uploads the denoiser every render at new addresses, so its step graph would record again on "
     "every render; set " + MODEL_OFFLOAD_CUDA_GRAPH_ENV + "=1 to record it anyway"
@@ -1642,7 +1645,9 @@ class OffloadPlacement:
     and the resident groups read in place. The pool holds the in-flight window at fixed addresses, so it plays the
     prefetch ring. Recorded again when a residency change, a release / restore or a host-copy swap moves an address.
 
-    ``model``: whole-module CPU offload (accelerate), only with ``MODEL_OFFLOAD_CUDA_GRAPH_ENV=1`` (see
+    ``model``: whole-module CPU offload (accelerate). By default only over the stable device range
+    (``diffusion_stable_arena``: every onload lands at the same addresses, so render 1's recording replays on every
+    later render); ``MODEL_OFFLOAD_CUDA_GRAPH_ENV=1`` records over the stock onloads instead (see
     ``MODEL_OFFLOAD_REASON``). The hook moves the module on the eager path first and the replay sits under it, in
     ``_old_forward``. Recorded again when the onload placed the weights at new addresses; after
     ``MODEL_MAX_INVALIDATIONS`` re-records the module runs eager (each re-record costs a forward)."""
@@ -1912,14 +1917,23 @@ def offload_placement(module: Any) -> tuple:
                 None,
                 f"offload hook {type(hf_hook).__name__} moves the weights inside the forward",
             )
-        if not model_offload_graphs_requested():
-            return None, MODEL_OFFLOAD_REASON
+        # Every other refusal first: the stable range below swaps the module's onload, so it attaches only for a
+        # placement that will record.
         why = _forward_refusal(module, "model")
         if why is not None:
             return None, why
+        arena = None
+        if not model_offload_graphs_requested():
+            # Recorded only where the onloads land at the same addresses every render (diffusion_stable_arena).
+            from .diffusion_stable_arena import attach
+            arena, _arena_why = attach(module)
+            if arena is None:
+                return None, MODEL_OFFLOAD_REASON
         try:
             return OffloadPlacement(module, "model"), None
         except Exception as exc:  # noqa: BLE001
+            if arena is not None:
+                arena.detach()
             return None, f"model offload hook unreadable ({exc})"
     registry = getattr(module, "_diffusers_hook", None)
     hooks = getattr(registry, "hooks", None) or {}
@@ -1956,6 +1970,25 @@ def offload_placement(module: Any) -> tuple:
         return None, f"block offload hook unreadable ({exc})"
     placement.skip = skip
     return placement, None
+
+
+def _detach_stable_range(module: Any) -> None:
+    """Give a module whose step stays eager its stock onload back (no stable range, no per-offload card sync)."""
+    try:
+        from .diffusion_stable_arena import arena_of
+        arena = arena_of(module)
+        if arena is not None:
+            arena.detach()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _stable_range(module: Any) -> bool:
+    try:
+        from .diffusion_stable_arena import arena_of
+        return arena_of(module) is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _forward_refusal(module: Any, mode: str) -> Optional[str]:
@@ -2053,8 +2086,11 @@ def arm_after_placement(
                         module, max_graphs = max_graphs, logger = logger, placement = placement
                     ).enable()
                 )
-                modes.append(placement.mode)
+                stable = placement.mode == "model" and _stable_range(module)
+                modes.append("model_stable" if stable else placement.mode)
         except Exception as exc:  # noqa: BLE001
+            if placement is not None and placement.mode == "model":
+                _detach_stable_range(module)
             refusals.append(f"{type(module).__name__}: {exc}")
     installed = tuple(handles)
     try:
@@ -2068,6 +2104,7 @@ def arm_after_placement(
             "resident": "resident",
             "group": "block-streamed (copies recorded in the graph)",
             "model": "model offload",
+            "model_stable": "model offload over a stable device range",
         }
         reason = "captured per input shape: " + ", ".join(sorted({labels.get(m, m) for m in modes}))
     if logger is not None:
@@ -2343,6 +2380,11 @@ def stats(handles: Any) -> dict:
                 out["replay_ms"] = float(handle.stats["replay_ms"])
             placement = getattr(handle, "placement", None)
             out["placements"].append("resident" if placement is None else placement.mode)
+            if placement is not None and placement.mode == "model":
+                from .diffusion_stable_arena import arena_of
+                arena = arena_of(placement.module)
+                if arena is not None:
+                    out["stable_range"] = arena.describe()
             if handle.poisoned:
                 out["poisoned"] = True
             error = handle.capture_error
@@ -2351,6 +2393,43 @@ def stats(handles: Any) -> dict:
                     "type": str(error.get("type")),
                     "msg": str(error.get("msg")),
                 }
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def engagement(handles: Any) -> dict:
+    """Compile / CUDA-graph engagement counters for the status payload, so a client can tell an engaged path from one
+    that merely never recompiles: this load's graph captures, replays and ungraphed denoiser calls (whole-step and per
+    block, with a layer split's per-card segment graphs), and the process's dynamo frame and graph-break totals
+    (process-wide: a new frame or break after the first render is a recompile or a new break)."""
+    # A whole-step graph that dropped a key or failed hands its calls to per-block graphs it holds as
+    # ``fallback_handle`` (``GraphedForward._engage_fallback``): those count too.
+    units: list = []
+    for handle in handles or ():
+        units.append(handle)
+        nested = getattr(handle, "fallback_handle", None)
+        if nested is not None and nested is not handle:
+            units.append(nested)
+    s = stats(units)
+    out = {
+        field: s[field]
+        for field in ("graphs", "captures", "replays", "eager_calls", "invalidations", "fallbacks")
+    }
+    out["segment_captures"] = out["segment_replays"] = 0
+    for handle in units:
+        for segment in getattr(handle, "segments", None) or ():
+            try:
+                out["segment_captures"] += int(segment.stats.get("segment_captures", 0))
+                out["segment_replays"] += int(segment.stats.get("segment_replays", 0))
+            except Exception:  # noqa: BLE001
+                pass
+    out["dynamo_frames"] = out["graph_breaks"] = None
+    if "torch._dynamo" in sys.modules:
+        try:
+            from torch._dynamo.utils import counters
+            out["dynamo_frames"] = int(counters["stats"].get("unique_graphs", 0))
+            out["graph_breaks"] = int(sum(counters["graph_break"].values()))
         except Exception:  # noqa: BLE001
             pass
     return out

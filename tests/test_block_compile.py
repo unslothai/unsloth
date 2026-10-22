@@ -131,6 +131,246 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "fullgraph, suppress",
+    [(True, False), (False, False), (False, True)],
+    ids = ["fullgraph", "default", "suppress_errors"],
+)
+def test_outer_compile_owns_the_block(monkeypatch, fullgraph, suppress):
+    """Enclosing compile: no maybe_mark_dynamic or nested compile, one graph, stock output and grads."""
+    from torch._dynamo.utils import counters
+
+    M = _load()
+    real_compile = torch.compile
+    inner = []
+
+    def eager_compile(fn, **kwargs):
+        compiled = real_compile(fn, backend = "eager", fullgraph = False, dynamic = None)
+
+        def call(*args, **kw):
+            inner.append(1)
+            return compiled(*args, **kw)
+
+        return call
+
+    monkeypatch.setattr(torch, "compile", eager_compile)
+    cls = _toy_class()
+    original = cls.forward
+    M._wrap(cls, {})
+    monkeypatch.setattr(torch, "compile", real_compile)
+    torch.manual_seed(0)
+    layer = cls().train()
+    x = torch.randn(2, 4, 8)
+
+    xr = x.clone().requires_grad_()
+    original(layer, xr).sum().backward()
+    want = [xr.grad] + [p.grad.clone() for p in layer.parameters()]
+    layer.zero_grad(set_to_none = True)
+
+    torch._dynamo.reset()
+    counters.clear()
+    monkeypatch.setattr(torch._dynamo.config, "suppress_errors", suppress)
+    outer = torch.compile(layer, backend = "aot_eager", fullgraph = fullgraph)
+    xc = x.clone().requires_grad_()
+    outer(xc).sum().backward()
+    got = [xc.grad] + [p.grad for p in layer.parameters()]
+    for g, w in zip(got, want):
+        torch.testing.assert_close(g, w)
+    assert inner == []
+    assert dict(counters["graph_break"]) == {}
+    assert counters["stats"]["unique_graphs"] == 1
+    torch._dynamo.reset()
+
+    layer(x.clone().requires_grad_()).sum().backward()
+    assert inner
+
+
+def _install_blocks(M, model, monkeypatch):
+    """patch_block_compile on CPU with an eager inner compile, restored at teardown."""
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    for cls in {type(m) for m in model.modules()}:
+        for key, value in list(cls.__dict__.items()):
+            if callable(value):
+                monkeypatch.setattr(cls, key, value)
+    for key in ("sdpa", "flex_attention"):
+        if key in ALL_ATTENTION_FUNCTIONS:
+            monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, key, ALL_ATTENTION_FUNCTIONS[key])
+    config = torch._dynamo.config
+    name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+    monkeypatch.setattr(config, name, getattr(config, name))
+    real_compile = torch.compile
+    inner = []
+
+    def eager_compile(fn, **kwargs):
+        compiled = real_compile(fn, backend = "eager", fullgraph = False, dynamic = None)
+
+        def call(*args, **kw):
+            inner.append(1)
+            return compiled(*args, **kw)
+
+        return call
+
+    real_available = torch.cuda.is_available
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)  # the install gate only
+    monkeypatch.setattr(torch, "compile", eager_compile)
+    assert M.patch_block_compile(model)
+    monkeypatch.setattr(torch, "compile", real_compile)
+    monkeypatch.setattr(torch.cuda, "is_available", real_available)
+    return inner
+
+
+def _outer_loss(model, ids, fullgraph, backend = "aot_eager"):
+    from torch._dynamo.utils import counters
+
+    torch._dynamo.reset()
+    counters.clear()
+    model.zero_grad(set_to_none = True)
+    loss = torch.compile(model, backend = backend, fullgraph = fullgraph)(
+        input_ids = ids, labels = ids, use_cache = False
+    ).loss
+    loss.backward()
+    return loss.detach(), dict(counters["graph_break"]), counters["stats"]["unique_graphs"]
+
+
+def _stock_modeling(monkeypatch, name):
+    """Reload stock modeling classes: zoo patches swap Qwen MoE experts for a compiler-disabled loop."""
+    import importlib
+
+    module = importlib.import_module(f"transformers.models.{name}.modeling_{name}")
+    saved = dict(module.__dict__)
+    importlib.reload(module)
+
+    def restore():
+        module.__dict__.clear()
+        module.__dict__.update(saved)
+
+    return module, restore
+
+
+def _tiny_qwen3_moe(request, monkeypatch):
+    from transformers import AutoModelForCausalLM
+
+    _, restore = _stock_modeling(monkeypatch, "qwen3_moe")
+    request.addfinalizer(restore)
+    try:
+        # batched_mm: the stock grouped_mm / eager expert loops break on their own (data dependent).
+        model = AutoModelForCausalLM.from_pretrained(
+            "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
+            dtype = torch.float32,
+            experts_implementation = "batched_mm",
+        )
+    except Exception as e:  # offline without the cached repo
+        pytest.skip(f"tiny Qwen3-MoE unavailable: {e}")
+    return model.train()
+
+
+@pytest.mark.parametrize("fullgraph", [True, False], ids = ["fullgraph", "default"])
+def test_outer_compile_traces_decode_aware_moe(request, monkeypatch, fullgraph):
+    """Qwen3-MoE sparse block is disable_unless_decode: an enclosing compile needs the same flag."""
+    import unsloth_zoo.temporary_patches.utils as zoo_utils
+
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch)
+    ids = torch.randint(0, 100, (2, 8))
+    want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
+    block = type(model.model.layers[0].mlp)
+    monkeypatch.setattr(
+        block, "forward", zoo_utils.torch_compiler_disable_unless_decode(recursive = True)(block.forward)
+    )
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    inner = _install_blocks(M, model, monkeypatch)
+    assert not any(l.__dict__.get("_unsloth_block_moe_may_move") for l in model.model.layers)
+    loss, breaks, graphs = _outer_loss(model, ids, fullgraph)
+    torch.testing.assert_close(loss, want)
+    assert breaks == {} and graphs == 1 and inner == []
+    assert zoo_utils.UNSLOTH_DECODE_COMPILE[0] is False and M._IN_BLOCK[0] == M._OFF
+    torch._dynamo.reset()
+
+
+def test_outer_compile_keeps_selective_experts_eager(request, monkeypatch):
+    """Selective dequant under an enclosing compile still moves 4-bit experts out (one break)."""
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch)
+    ids = torch.randint(0, 100, (2, 8))
+    want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
+
+    class Params4bit(torch.nn.Parameter):
+        pass
+
+    experts_cls = type(model.model.layers[0].mlp.experts)
+    for layer in model.model.layers:
+        experts = layer.mlp.experts
+        experts._parameters["gate_up_proj"] = Params4bit(experts.gate_up_proj.data)
+    seen = []
+    original = experts_cls.forward
+
+    def spy(self, *args, **kwargs):
+        seen.append(torch.compiler.is_compiling())
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(experts_cls, "forward", spy)
+    monkeypatch.setenv("UNSLOTH_MOE_SELECTIVE_DEQUANT", "1")
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    inner = _install_blocks(M, model, monkeypatch)
+    loss, breaks, _ = _outer_loss(model, ids, fullgraph = False)
+    torch.testing.assert_close(loss, want)
+    assert seen and not any(seen) and inner == []
+    assert all(l.__dict__["_unsloth_block_moe_done"] for l in model.model.layers)
+    assert all(getattr(l.mlp.experts, "_unsloth_block_outside", False) for l in model.model.layers)
+    assert all(l.__dict__.get("_unsloth_block_moe_may_move") for l in model.model.layers)
+    torch._dynamo.reset()
+
+
+def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
+    """GDN first reached under an enclosing compile runs _prepare_gdn eagerly; later traces stay whole."""
+    from transformers import AutoModelForCausalLM
+
+    M = _load()
+    _, restore = _stock_modeling(monkeypatch, "qwen3_next")
+    request.addfinalizer(restore)
+    torch.manual_seed(0)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            "hf-internal-testing/tiny-random-Qwen3NextForCausalLM",
+            dtype = torch.float32,
+            experts_implementation = "batched_mm",
+        ).train()
+    except Exception as e:
+        pytest.skip(f"tiny Qwen3-Next unavailable: {e}")
+    ids = torch.randint(0, 100, (2, 8))
+    try:
+        want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
+    except (RuntimeError, ValueError) as e:
+        # A GPU host resolves the stock GDN op to the compiler-disabled fla Triton kernel, which
+        # neither takes these CPU tensors nor traces whole; the eager GDN reference only runs CPU-only.
+        if "Triton" not in str(e):
+            raise
+        pytest.skip(f"stock GDN op resolved to a Triton kernel: {e}")
+    calls = []
+    prepare = M._prepare_gdn
+
+    def spy(layer, hidden_states):
+        calls.append(torch.compiler.is_compiling())
+        return prepare(layer, hidden_states)
+
+    monkeypatch.setattr(M, "_prepare_gdn", spy)
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    inner = _install_blocks(M, model, monkeypatch)
+    assert any(hasattr(l, "linear_attn") for l in model.model.layers)
+    assert M._GDN_OP[0] is None
+    # backend "eager": stock Qwen3-Next fails aot_eager on CPU with or without blocks (a GDN view).
+    loss, _, _ = _outer_loss(model, ids, fullgraph = False, backend = "eager")
+    torch.testing.assert_close(loss, want)
+    assert calls == [False] and M._GDN_OP[0] is not None and inner == []
+    loss, breaks, graphs = _outer_loss(model, ids, fullgraph = True, backend = "eager")
+    torch.testing.assert_close(loss, want)
+    assert breaks == {} and graphs == 1 and calls == [False]
+    torch._dynamo.reset()
+
+
 def test_stop_recomputation_does_not_demote(monkeypatch):
     """#14063: checkpoint early-stop is control flow; demoting on it raised CheckpointError."""
     from torch.utils.checkpoint import _StopRecomputationError
