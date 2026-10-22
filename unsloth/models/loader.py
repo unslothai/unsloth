@@ -1853,8 +1853,9 @@ class FastLanguageModel(FastLlamaModel):
             **kwargs,
         )
         _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
-        if _fp8_dequantize_config is not None:
-            _drop_fp8_dequantize_conversions(model)
+        # Also a caller's FineGrainedFP8Config(dequantize = True) and transformers' own pre-sm89 / CPU
+        # dequantize; a no-op unless the load kept Fp8Dequantize conversions.
+        _drop_fp8_dequantize_conversions(model)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)

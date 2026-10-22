@@ -4118,6 +4118,7 @@ class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+    suspended_by_accounts: bool = False
 
 
 class McpAccessPayload(BaseModel):
@@ -4580,6 +4581,7 @@ def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
         scope = scope,
         tools = tools,
         exposure = access_exposure(request.app.state),
+        suspended_by_accounts = policy.installation_has_managed_accounts(),
     )
 
 

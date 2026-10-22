@@ -377,11 +377,15 @@ export const BUDGET = {
   // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
   // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
-  // Chat's "Save for this model" button (#14515) in the eager chat chunk; the save itself is lazy. +1,073 B raw /
-  // +341 B transfer against 8334168874 (6,894,833 -> 6,895,906 B raw, 2,077,197 -> 2,077,538 B transfer, 98 chunks,
-  // Node 24). That main build was already 103 B raw over, so raw is set to the measured build plus the same margin.
-  transferBytes: 2_077_654,
-  rawBytes: 6_895_928,
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Chat's "Save for this model" button (#14515) in the eager chat chunk; the save itself is lazy. +1,047 B raw /
+  // +345 B transfer against e66f408eb5 (6,907,886 -> 6,908,933 B raw, 2,080,818 -> 2,081,163 B transfer, 98 chunks,
+  // Node 24). Raised by that.
+  transferBytes: 2_081_363,
+  rawBytes: 6_909_133,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
