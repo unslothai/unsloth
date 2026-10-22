@@ -255,7 +255,6 @@ def test_list_training_runs_offloads_summary_batch(monkeypatch):
 
     assert [summary.id for summary in response.runs] == ["b", "a", "c"]
     assert offloads[-1] == (training_history._summaries_from_rows, (rows, False))
-    # The SQLite reads leave the event loop too: this route is polled during training.
     assert len(offloads) == 3
 
 

@@ -809,8 +809,7 @@ def _release_st_model() -> bool:
             _model = None
             _name = None
     if released:
-        # Dropping the reference alone leaves its blocks reserved in the torch allocator. Only once
-        # detection has published: before that, clear_gpu_cache() would run it here, for seconds.
+        # Dropping the reference leaves its blocks reserved; gated, since before detection clear_gpu_cache() runs it.
         try:
             from utils import hardware
             if hardware.hardware.DEVICE is not None:

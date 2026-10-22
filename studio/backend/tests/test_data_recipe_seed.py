@@ -366,7 +366,6 @@ def test_an_oversized_upload_is_refused_after_reading_one_byte_past_the_cap(monk
 
     assert sizes == [33]
     assert exc.value.status_code == 413
-    # Same message as the full read gave: the declared size, not the bytes read.
     assert "(4096 bytes)" in exc.value.detail
     assert _block_files(seed_route) == []
 
