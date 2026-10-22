@@ -450,3 +450,52 @@ def test_offload_placement_names_a_forward_that_cannot_record_under_the_hooks(mo
     assert cg._forward_refusal(m, "model") is None
     monkeypatch.setattr(cs, "resolve", lambda cls: (None, "X forward is not capture-safe (why)"))
     assert cg._forward_refusal(m, "model") == "X forward is not capture-safe (why)"
+
+
+@pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
+@pytest.mark.parametrize("every_length", [False, True])
+def test_true_cfg_negative_of_another_length_records_on_the_first_render(monkeypatch, every_length):
+    """True CFG with a negative prompt of another length: the positive key records first, so the negative one is
+    still in its warm-up when the positive replays. It must record on that render too, not run ungraphed for good."""
+    if every_length:
+        monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
+    else:
+        monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    m = _model().to("cuda")
+    cond, uncond = _cuda_inputs(text = 9, seed = 1), _cuda_inputs(text = 13, seed = 2)
+    steps = 4
+
+    def cfg_render():
+        out = []
+        kvs = [qmod.QwenImage21KVCache(len(m.transformer_blocks)) for _ in range(2)]
+        lat = cond["latents"]
+        with torch.inference_mode():
+            for i in range(steps):
+                t = torch.full((1,), 1.0 - i / steps, device = "cuda")
+                mode = "extract" if i == 0 else "cached"
+                a = m(**_call_kwargs(cond, lat, t, kvs[0], mode))[0][:, -lat.shape[1] :]
+                b = m(**_call_kwargs(uncond, lat, t, kvs[1], mode))[0][:, -lat.shape[1] :]
+                out += [a.clone(), b.clone()]
+                lat = lat - 0.1 * (a - b)
+        return out
+
+    ref = cfg_render()
+    assert q.install()
+    handle = _graphed(m)
+    assert handle.length_varies is (not every_length)
+    try:
+        got = []
+        for _ in range(2):
+            got.append(cfg_render())
+            cg.seal_lengths([handle])
+    finally:
+        cg.uninstall_all([handle])
+    for render in got:
+        for a, b in zip(ref, render):
+            assert torch.equal(a, b)
+    assert not handle.poisoned, handle.capture_error
+    # Positive records on its first decode step; the negative warms there and records on the next one.
+    stats = {k: handle.stats[k] for k in ("captures", "replays", "shape_warmups", "length_eager")}
+    assert (stats["captures"], stats["shape_warmups"], stats["length_eager"]) == (2, 1, 0), stats
+    # Decode steps: 2 renders x 3 steps x 2 branches, minus the negative's warm-up.
+    assert handle.stats["replays"] == 2 * (steps - 1) * 2 - 1
