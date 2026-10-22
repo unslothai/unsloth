@@ -1961,7 +1961,8 @@ gptoss_template = \
             {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|return|>" }}
         {%- elif "thinking" in message %}
             {#- CoT is dropped during all previous turns, so we never render it for inference #}
-            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
+            {#- message.content is the answer, so it goes on the final channel like any other previous turn #}
+            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|end|>" }}
             {%- set last_tool_call.name = none %}
         {%- else %}
             {#- CoT is dropped during all previous turns, so we never render it for inference #}
