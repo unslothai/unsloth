@@ -81,8 +81,11 @@ def test_dense_headroom_values(klein_pipe, monkeypatch):
     assert m("flux.1", "off", dense_transformer_mib = 22680) == 2816
     assert m("qwen-image", "off", dense_transformer_mib = 38968) == 5120
     assert m("flux.2-klein", "off", dense_transformer_mib = 7393, width = 2048, height = 2048) == 11520
-    # compiled tiers, unmeasured families and a larger DiT of the same family (klein-9B) keep the flat estimate
-    assert m("flux.2-klein", "default", dense_transformer_mib = 7393) is None
+    # the compiled tiers take the family's worst measured phase on that tier (2645 / 2677 MiB, the untiled decode);
+    # unmeasured families and a larger DiT of the same family (klein-9B) keep the flat estimate
+    assert m("flux.2-klein", "default", dense_transformer_mib = 7393) == 3072
+    assert m("flux.2-klein", "max", dense_transformer_mib = 7393) == 3328
+    assert m("flux.2-klein", "default", dense_transformer_mib = 17300) is None
     assert m("sdxl", "off", dense_transformer_mib = 4900) is None
     assert m("flux.2-klein", "off", dense_transformer_mib = 17300) is None
     # the torchao table is untouched by the dense one
@@ -125,7 +128,7 @@ def test_large_card_and_other_tiers_untouched(klein_pipe):
     assert resident.offload_policy == dm.OFFLOAD_NONE
     assert _refine(klein_pipe, resident) is resident
     plan = _flat_plan(12758)
-    assert _refine(klein_pipe, plan, speed = "default") is plan
+    assert _refine(klein_pipe, plan, speed = "unknown") is plan
     assert _refine(klein_pipe, plan, family = "sdxl") is plan
     balanced = _flat_plan(12758, mode = "balanced")
     assert _refine(klein_pipe, balanced) is balanced

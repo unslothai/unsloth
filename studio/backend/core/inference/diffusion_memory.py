@@ -2576,10 +2576,36 @@ _MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
     "qwen-image": (4248, 40900),
 }
 _MEASURED_DENSE_SPEED_MODES = ("off",)
+# Dense fp16 / fp32 denoisers (pre-Ampere cards: T4, V100, Turing) on the default and max tiers. Without this they had
+# no seed at all and placed from the flat 8 GiB per megapixel estimate, while the dense table above and the per-phase
+# table below already hold the same family's measured peaks. "0" restores the flat estimate.
+MEASURED_ACTIVATION_DENSE_TIERS_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE_TIERS"
 
 
 def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _dense_seed_mib(family: str, speed_mode: str, dense_mib: int, widen: int) -> Optional[int]:
+    """Seed MiB for a dense fp16 / fp32 denoiser (``widen`` = its element size), or None. Eager: the dense table. Default
+    / max: the larger of the dense table and the tier's worst phase (encoder, denoise, untiled decode), only for a
+    family the dense table measured at this DiT size. Families it lacks keep the flat estimate: on a T4, Z-Image's 11.5
+    GiB DiT would then be kept partly resident, which ran slower per step than streaming it whole (3.8-4.4 vs 3.2-3.6
+    s/step)."""
+    entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(family)
+    if entry is None or not 0 < dense_mib <= entry[1] * widen // 2:
+        return None
+    peak = entry[0] * widen // 2
+    if speed_mode in _MEASURED_DENSE_SPEED_MODES:
+        return peak
+    phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(family)
+    if (
+        speed_mode not in _MEASURED_PEAK_SPEED_MODES
+        or phases is None
+        or _env_off(MEASURED_ACTIVATION_DENSE_TIERS_ENV)
+    ):
+        return None
+    return max(peak, max(phases[1 if speed_mode == "max" else 0][:3]) * widen // 2)
 
 
 def measured_image_runtime_mib(
@@ -2611,13 +2637,12 @@ def measured_image_runtime_mib(
     if dense_transformer_mib is not None and _env_off(MEASURED_ACTIVATION_DENSE_ENV):
         return None
     if static_seed and dense_transformer_mib is not None:
-        entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(str(family or "").lower())
-        if entry is not None and str(speed_mode or "") in _MEASURED_DENSE_SPEED_MODES:
-            peak, max_dit = entry
-            widen = max(2, int(compute_bytes or 2))
-            peak, max_dit = peak * widen // 2, max_dit * widen // 2
-            if 0 < int(dense_transformer_mib) <= max_dit:
-                seed = peak
+        seed = _dense_seed_mib(
+            str(family or "").lower(),
+            str(speed_mode or ""),
+            int(dense_transformer_mib),
+            max(2, int(compute_bytes or 2)),
+        )
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if seed is None and phase_seeds:
