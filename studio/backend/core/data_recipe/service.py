@@ -725,7 +725,7 @@ def _apply_data_designer_python_validator_path_patch() -> None:
         ).resolve()
         if target.parent != root:
             raise ValueError(f"Code validator file left its temp folder: {code_column!r}")
-        with open(target, "w") as file:
+        with open(target, "w", encoding = "utf-8") as file:
             file.write(row[code_column])
 
     PythonValidator._get_module_name = staticmethod(_safe_module_name)
