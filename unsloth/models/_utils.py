@@ -10380,11 +10380,19 @@ def widen_target_regex_to_expert_submodules(
         # Requested expert siblings (Mixtral's router gate), as PEFT suffix matching would.
         for name, module in model.named_modules():
             parent, _, leaf = name.rpartition(".")
-            if leaf in requested and any(re.fullmatch(p, parent) for p in native) and (
-                isinstance(module, torch.nn.Linear)
-                or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+            if (
+                leaf in requested
+                and any(re.fullmatch(p, parent) for p in native)
+                and (
+                    isinstance(module, torch.nn.Linear)
+                    or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+                )
             ):
-                siblings.add(r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")))
+                siblings.add(
+                    r"\.".join(
+                        r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")
+                    )
+                )
     if not parents:
         return target_modules, detect_targets, []
     # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
