@@ -143,6 +143,11 @@ test("a key just created on the API tab fills the MCP snippet and is kept out of
   // Memory only: set on create, cleared when the key card is dismissed or the dialog closes.
   assert.match(API_TAB, /setRevealed\(raw\);\s*setNewApiKey\(raw\);/);
   assert.match(API_TAB, /setRevealed\(null\);\s*setNewApiKey\(null\);/);
+  // A revoked key must not stay in the MCP tab's setup snippet.
+  assert.match(
+    API_TAB,
+    /await revokeApiKey\(revokeTarget\.id\);[^}]*setNewApiKey\(null\);/,
+  );
   assert.match(MCP_TAB, /useSettingsDialogStore\(\(s\) => s\.newApiKey\)/);
   assert.match(DIALOG_STORE, /closeDialog: \(\) =>\s*set\(\{[\s\S]*?newApiKey: null,[\s\S]*?\}\)/);
   assert.doesNotMatch(DIALOG_STORE, /persist\(/);

@@ -100,6 +100,8 @@ export function ApiKeysTab() {
     setRevoking(true);
     try {
       await revokeApiKey(revokeTarget.id);
+      // Which key the MCP snippet holds is unknown here, so any revoke drops it.
+      setNewApiKey(null);
       await load();
       setRevokeTarget(null);
     } catch {
