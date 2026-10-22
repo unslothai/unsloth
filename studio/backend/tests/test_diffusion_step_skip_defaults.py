@@ -45,7 +45,7 @@ DEV = "black-forest-labs/FLUX.1-dev"
 @pytest.mark.parametrize(
     "ids, tier, steps, want",
     [
-        ((KREA,), "default", 28, {"every": 2, "min_steps": 20}),
+        ((KREA,), "default", 28, None),
         ((KREA,), "max", 28, {"every": 3, "min_steps": 20}),
         ((KREA,), "eager", 28, None),
         ((KREA,), "off", 28, None),
@@ -53,12 +53,13 @@ DEV = "black-forest-labs/FLUX.1-dev"
         ((KREA,), "default", 12, None),  # a short default schedule is never measured
         ((DEV,), "default", 28, None),
         ((DEV,), "max", 28, {"every": 2, "min_steps": 20}),
-        # The unsloth mirror and a local path based on the upstream both resolve to the upstream row.
-        (("unsloth/FLUX.1-Krea-dev",), "default", 28, {"every": 2, "min_steps": 20}),
-        (("/models/my-krea", KREA), "default", 28, {"every": 2, "min_steps": 20}),
+        # The unsloth mirror and a local path with the upstream as its base both resolve to the upstream row.
+        (("unsloth/FLUX.1-Krea-dev",), "max", 28, {"every": 3, "min_steps": 20}),
+        (("/models/my-krea", KREA), "max", 28, {"every": 3, "min_steps": 20}),
+        (("unsloth/FLUX.1-Krea-dev",), "default", 28, None),
         (("black-forest-labs/FLUX.1-schnell",), "max", 28, None),
         ((None,), "max", 28, None),
-        (KREA, "default", 28, {"every": 2, "min_steps": 20}),
+        (KREA, "max", 28, {"every": 3, "min_steps": 20}),  # a bare string
     ],
 )
 def test_plan_follows_the_tier_and_the_default_steps(table, ids, tier, steps, want):
@@ -228,10 +229,10 @@ def _probe_plan(entry):
 @pytest.mark.parametrize(
     "speed, killed, want_static",
     [
-        ("default", False, True),
+        ("default", False, False),
         ("max", False, True),
         ("eager", False, False),
-        ("default", True, False),
+        ("max", True, False),
     ],
 )
 def test_auto_load_installs_static_for_a_listed_model(
@@ -336,10 +337,7 @@ def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
     backend.unload()
 
 
-def test_deferred_default_tier_installs_the_auto_skip_on_the_third_image(
-    fake_runtime, tmp_path, monkeypatch
-):
-    # Speed unset: dense load stays eager, the 3rd image engages `default` and its skip; first two full-step.
+def test_deferred_default_tier_never_auto_skips(fake_runtime, tmp_path, monkeypatch):
     from core.inference import diffusion as dmod
 
     from .test_diffusion_backend import DiffusionBackend
@@ -373,9 +371,9 @@ def test_deferred_default_tier_installs_the_auto_skip_on_the_third_image(
     backend.generate(prompt = "three")
     st = backend.status()
     assert st["speed_mode"] == "default"
-    assert len(installs) == 1 and installs[0]["every"] == 2 and installs[0]["auto"] is True
-    assert st["transformer_cache"] == "static"
-    assert st["resolved"]["transformer_cache"]["value"] == "static"
+    assert installs == []
+    assert st["transformer_cache"] is None
+    assert st["resolved"]["transformer_cache"]["value"] != "static"
     backend.unload()
 
 
@@ -482,7 +480,7 @@ def test_a_failed_deferred_profile_takes_the_auto_skip_back_off(
         backend.generate(prompt = p)
     st = backend.status()
     assert st["speed_mode"] == "off"
-    assert st["transformer_cache"] is None and removed
+    assert st["transformer_cache"] is None and removed == []
     assert st["resolved"]["transformer_cache"]["value"] != "static"
     backend.unload()
 
@@ -527,7 +525,7 @@ def test_an_explicit_lossless_tier_never_auto_skips(requested, effective, want):
     tier = dcache.skip_tier(requested, effective)
     assert tier == want
     plan = dcache.auto_static_skip_plan(("Qwen/Qwen-Image",), tier, 20, env = {})
-    assert (plan is None) == (want in ("off", "eager"))
+    assert (plan is None) == (want != "max")
 
 
 @pytest.mark.parametrize("raw, want", [("1", 3), ("abc", 3), ("", 3), ("4", 4)])

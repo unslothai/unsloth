@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
@@ -908,8 +908,31 @@ def provider_address_excluding_metadata(url: str) -> str:
     return str(addresses[0])
 
 
+# The client appends these itself, so a pasted full endpoint would request /chat/completions/models.
+_PASTED_ENDPOINT_PATH = re.compile(
+    r"/(?:chat/completions|completions|responses|messages|models)$", re.IGNORECASE
+)
+
+
 def validate_provider_base_url(base_url: str) -> str:
-    """Private addresses are refused only if the owner opts in, or by default for managed accounts."""
+    """Return a normalized provider base URL, or raise ``ValueError``.
+
+    The backend issues outbound requests to this URL with the caller's decrypted
+    API key attached, so it is caller-controlled server-side egress. Only shapes
+    that can never be a real provider endpoint are refused: a non-http(s) scheme,
+    control characters, a missing host, and cloud metadata services. Plain http,
+    loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
+    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
+    caller-supplied hostname is resolved far enough to apply the metadata block
+    to DNS aliases of it; rejecting other private addresses stays opt-in for the
+    owner, and is on for a managed account until the owner turns it off for the
+    installation (``utils.managed_provider_url_settings``), which is how a team
+    sharing one LAN model server gets to use it from more than one account.
+
+    Normalization is strip, trailing-slash removal and dropping a pasted endpoint
+    path such as ``/chat/completions``, so validating an already-validated URL
+    returns it unchanged.
+    """
     if not isinstance(base_url, str) or not base_url.strip():
         raise ValueError("Provider base URL is required.")
 
@@ -950,6 +973,10 @@ def validate_provider_base_url(base_url: str) -> str:
     ):
         _reject_non_public(hostname, port, scheme, managed_public_only_reason())
 
+    path = parts.path.rstrip("/")
+    endpoint = _PASTED_ENDPOINT_PATH.search(path)
+    if endpoint:
+        raw = urlunsplit(parts._replace(path = path[: endpoint.start()]))
     return raw.rstrip("/")
 
 

@@ -63,6 +63,7 @@ from core.inference.stt_sidecar import (
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
+    QWEN3_ASR_LANGUAGE_NAMES,
     normalize_whisper_language,
 )
 
@@ -81,6 +82,7 @@ class MtmdSttModel:
     transcript_marker: Optional[str] = None
 
 
+# Every entry takes Qwen3-ASR's assistant-prefill language hint; see _post_transcribe before adding another family.
 MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
     "qwen3-asr-0.6b": MtmdSttModel(
         repo = "unslothai/Qwen3-ASR-0.6B-GGUF",
@@ -1058,7 +1060,11 @@ class MtmdSttSidecar:
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
     ) -> dict:
-        """fast has no effect here: decoding is greedy and the model picks the language itself."""
+        """Transcribe encoded audio bytes, as the other sidecars do.
+
+        ``fast`` has no effect: decoding is greedy. A supported ``language``
+        prefills the assistant turn; otherwise the model auto-detects it.
+        """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
         if cancel_event is not None and cancel_event.is_set():
@@ -1092,6 +1098,7 @@ class MtmdSttSidecar:
                 model_id,
                 wav_bytes,
                 audio_seconds,
+                language = language,
                 cancel_event = cancel_event,
                 **({"api_key": api_key} if api_key else {}),
                 **({"on_progress": on_progress} if on_progress is not None else {}),
@@ -1125,6 +1132,7 @@ class MtmdSttSidecar:
         wav_bytes: bytes,
         audio_seconds: Optional[float] = None,
         *,
+        language: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
         api_key: Optional[str] = None,
@@ -1149,6 +1157,13 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
+        forced_language = QWEN3_ASR_LANGUAGE_NAMES.get(normalize_whisper_language(language) or "")
+        assistant_prefix = ""
+        if forced_language:
+            assistant_prefix = f"language {forced_language}<asr_text>"
+            payload["messages"].append({"role": "assistant", "content": assistant_prefix})
+            # Explicit, so a server-wide --no-prefill-assistant cannot close the prefix as a finished turn.
+            payload.update({"continue_final_message": True, "add_generation_prompt": False})
         if on_progress is not None:
             payload["stream"] = True
         connection = http.client.HTTPConnection(
@@ -1175,7 +1190,8 @@ class MtmdSttSidecar:
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:
-                    text = ""
+                    # llama-server does not echo the prefill, so seed it to publish progress from the first token.
+                    text = assistant_prefix
                     finished = False
                     for line in response:
                         if cancel_event is not None and cancel_event.is_set():

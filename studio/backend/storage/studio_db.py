@@ -702,6 +702,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_forked_from "
+        "ON chat_threads(forked_from_thread_id, forked_from_message_id)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
     )
     conn.execute(
@@ -4437,6 +4441,8 @@ class ChatForkActiveGenerationError(RuntimeError):
 
 
 _FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
+# The frontend auto-titles only a chat still named this (runtime-provider generateTitle).
+_DEFAULT_CHAT_TITLE = "New Chat"
 
 # Mirrors threadMessageKind in thread-message-slot.ts; places the fork divider.
 _RENDERED_MESSAGE_ROLES = frozenset({"user", "assistant"})
@@ -4551,9 +4557,17 @@ def fork_chat_thread(
         src_dict = dict(src)
         # Read under the write lock so another tab's rename cannot race the fork number.
         base = fork_base_of(src)
-        title = _next_fork_title(conn, base)
-        # Divider anchor: last copied message that paints a row (system messages render none).
-        # Not derivable later since copies take fresh ids. None when nothing inherited is visible.
+        # An untitled chat's fork stays untitled so its first reply still names it.
+        if base in ("", _DEFAULT_CHAT_TITLE):
+            title, base = _DEFAULT_CHAT_TITLE, None
+        else:
+            title = _next_fork_title(conn, base)
+        # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
+        # source's timestamps and take fresh ids. The last message that PAINTS one, not simply
+        # the last copied: an imported chat can end on a system message, which renders as no row
+        # at all (threadMessageKind), and the divider rides the row it anchors to. Picking it in
+        # the frontend instead would mean reading the whole message list in every row, which is
+        # what the thread's render budget forbids. None when nothing inherited is visible.
         boundary_row = next(
             (row for row in reversed(ancestry) if row["role"] in _RENDERED_MESSAGE_ROLES), None
         )
@@ -4675,6 +4689,24 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
             (thread_id, message_id),
         ).fetchone()
         return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def next_message_created_at(thread_id: str, message_id: str) -> Optional[int]:
+    """created_at of the thread's first message after `message_id`; None when it is the tip."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT MIN(created_at) FROM chat_messages
+            WHERE thread_id = ? AND created_at > (
+                SELECT created_at FROM chat_messages WHERE thread_id = ? AND id = ?
+            )
+            """,
+            (thread_id, thread_id, message_id),
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
     finally:
         conn.close()
 

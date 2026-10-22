@@ -73,6 +73,16 @@ def _params_text(meta: dict[str, Any]) -> str:
     )
     if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
         fields += f", Denoising strength: {meta['strength']}"
+    # A1111 inpaint keys (modules/processing.py), only when this inpaint applied them.
+    if meta.get("mask_blur"):
+        fields += f", Mask blur: {meta['mask_blur']}"
+    if meta.get("inpaint_only_masked"):
+        fields += ", Inpaint area: Only masked"
+        if meta.get("inpaint_padding") is not None:
+            fields += f", Masked area padding: {meta['inpaint_padding']}"
+    # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
+    if meta.get("shift") is not None:
+        fields += f", Shift: {meta['shift']}"
     if meta.get("generator"):
         fields += f", Version: {meta['generator']}"
     lines.append(fields)

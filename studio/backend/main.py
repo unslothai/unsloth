@@ -315,6 +315,7 @@ from routes import (
     inference_router,
     inference_studio_router,
     mcp_servers_router,
+    openai_fine_tuning_router,
     skills_router,
     models_router,
     providers_router,
@@ -1360,6 +1361,8 @@ _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
     "/api/hub/datasets/upload",
 )
+# OpenAI-compatible fine-tuning upload: the same dataset upload and cap, matched by EXACT path.
+_OPENAI_FILES_UPLOAD_PATH = "/v1/files"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
     "/api/data-recipe/seed/upload-unstructured-file"
 )
@@ -1397,6 +1400,7 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
+    _OPENAI_FILES_UPLOAD_PATH,
 )
 # Runs before auth, so only small bounded uploads may omit Content-Length; others keep 411.
 _CHUNKED_UPLOAD_EXACT_PATHS = _VIDEO_MULTIPART_UPLOAD_PATHS
@@ -1427,9 +1431,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
-    if (
-        path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES)
-        or path.rstrip("/") == _DIFFUSION_DATASET_UPLOAD_PATH
+    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES) or path.rstrip("/") in (
+        _DIFFUSION_DATASET_UPLOAD_PATH,
+        _OPENAI_FILES_UPLOAD_PATH,
     ):
         return upload_request_limit_bytes()
     return default_request_body_limit_bytes()
@@ -1745,6 +1749,7 @@ app.include_router(video_openai_router, prefix = "/api/inference", tags = ["infe
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(openai_fine_tuning_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 # Must register before the SPA catch-all or /props and /version return index.html.
 app.include_router(llama_compat_router, tags = ["openai-compat"])

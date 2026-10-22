@@ -1286,6 +1286,7 @@ def test_an_uncompilable_family_loads_an_operators_checkpoint_under_auto(
 def test_a_compilable_family_loads_without_the_bf16_replan(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch)
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: None)
     replans = []
     monkeypatch.setattr(
         DiffusionBackend,
@@ -1400,7 +1401,12 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("Alpha-VLLM/Lumina-Image-2.0", True),
         ("HiDream-ai/HiDream-I1-Full", True),
         ("black-forest-labs/FLUX.1-dev", False),
-        ("Tongyi-MAI/Z-Image-Turbo", False),
+        ("Tongyi-MAI/Z-Image-Turbo", True),
+        ("black-forest-labs/FLUX.2-klein-4B", True),
+        ("black-forest-labs/FLUX.2-klein-base-4B", True),
+        ("black-forest-labs/flux-3-image-klein", True),
+        ("black-forest-labs/flux-3-image-klein-base", True),
+        ("black-forest-labs/FLUX.2-dev", False),
         ("Qwen/Qwen-Image", False),
     ],
 )
@@ -1865,3 +1871,71 @@ def test_the_streamed_seed_credits_host_ram_the_outgoing_pipeline_frees(
         ),
     )
     assert (_settle(backend) == "fp8") is expected
+
+
+def _small_dit_kept_bf16(monkeypatch, reason):
+    _measured_bf16_family(monkeypatch)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: reason)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *_a, **_k: True)
+    monkeypatch.setattr(dmod, "fp16_compile_explicit_only", lambda _t: False)
+
+
+@pytest.mark.parametrize(
+    "reason, speed, expect_speed, expect_deferred",
+    [
+        (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
+        (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
+        ("measured: no faster", None, "off", True),
+    ],
+)
+def test_a_small_dit_kept_bf16_compiles_from_render_1(
+    fake_runtime, monkeypatch, reason, speed, expect_speed, expect_deferred
+):
+    backend, spy = _load_backend(monkeypatch)
+    _small_dit_kept_bf16(monkeypatch, reason)
+    status = _load(
+        backend, speed_mode = speed, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ()
+    )
+
+    assert spy.quantised == [] and spy.seeds == []
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+    assert backend._state.speed_mode == expect_speed
+    assert backend._state.speed_deferred is expect_deferred
+
+
+@pytest.mark.parametrize(
+    "repo, kept",
+    [
+        ("black-forest-labs/FLUX.2-klein-4B", True),
+        ("black-forest-labs/FLUX.2-klein-base-4B", True),
+        ("unsloth/FLUX.2-klein-4B", True),
+        ("black-forest-labs/FLUX.2-klein-9B", False),
+        ("black-forest-labs/FLUX.2-klein-base-9B", False),
+        ("unsloth/FLUX.2-klein-9B", False),
+        ("unsloth/FLUX.2-klein-base-9B", False),
+    ],
+)
+def test_the_small_dit_rule_skips_the_9b_klein_variants(repo, kept):
+    fam = detect_family_for_pick(repo, None, None)
+    assert fam is not None and fam.name == "flux.2-klein"
+    assert (dmod._auto_keeps_bf16_reason(fam, "pipeline", repo) is not None) is kept
+    fits = types.SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"safe_device_budget_mib": 60_000, "resident_required_mib": 30_000},
+    )
+    assert (dmod._auto_quant_eager_reason(fam, fits, None, "pipeline", repo) is not None) is kept
+
+
+def test_a_large_variant_of_a_small_dit_family_quantises_under_auto(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _small_dit_kept_bf16(monkeypatch, dmod.SMALL_DIT_BF16_WHEN_RESIDENT)
+    seen = []
+
+    def excludes(base):
+        seen.append(base)
+        return base == Z_IMAGE_REPO
+
+    monkeypatch.setattr(dmod, "small_dit_rule_excludes", excludes)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+    assert Z_IMAGE_REPO in seen  # the load hands the decider its resolved base
+    assert spy.quantised == ["auto"]

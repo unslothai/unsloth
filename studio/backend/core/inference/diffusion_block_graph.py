@@ -563,7 +563,12 @@ class BlockGraph:
         return out
 
     def _record(self, full: tuple, live: list) -> Optional[_Entry]:
-        from .diffusion_cuda_graph import _capturing, refuse_if_exhausted, retire_failed_capture
+        from .diffusion_cuda_graph import (
+            CaptureRefused,
+            _capturing,
+            refuse_if_exhausted,
+            retire_failed_capture,
+        )
 
         torch = _torch()
         key = full[0]
@@ -611,6 +616,11 @@ class BlockGraph:
                 del out, flat
             current.wait_stream(stream)
             self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+        except CaptureRefused:
+            # Refused before capture_begin: nothing recorded, the pool untouched. Eager now, record on a later call.
+            self.seen[full] = (out_spec, metas)
+            self.stats["capture_refusals"] = self.stats.get("capture_refusals", 0) + 1
+            return None
         except Exception as exc:  # noqa: BLE001 - a block that cannot record runs its compute for the load's life
             self._poison(exc)
             return None
@@ -998,6 +1008,7 @@ class SegmentGraph:
 
     def _capture(self, full: tuple, live: list) -> Optional[_SegEntry]:
         from .diffusion_cuda_graph import (
+            CaptureRefused,
             _capturing,
             capture_device,
             note_capture,
@@ -1038,6 +1049,10 @@ class SegmentGraph:
                         raise
             current.wait_stream(stream)
             self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+        except CaptureRefused:
+            self.seen[full] = rec
+            self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1
+            return None
         except Exception as exc:  # noqa: BLE001 - this layout stays per block for the load's life
             self.capture_error = {"type": type(exc).__name__, "msg": str(exc)[:4000]}
             self.refused.add(full)
