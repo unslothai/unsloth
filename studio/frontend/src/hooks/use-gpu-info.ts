@@ -120,9 +120,13 @@ function appleUnifiedLoadBudgetGb(
   const freeGb =
     finitePositive(device.vram_free_gb) ??
     finitePositive(data.memory?.available_gb);
+  // Floored to 0.25 GiB: free memory drifts every poll, and each change re-renders every picker row.
   return (
-    Math.min(workingSetGb, freeGb ?? workingSetGb) *
-    APPLE_UNIFIED_MEMORY_FRACTION
+    Math.floor(
+      Math.min(workingSetGb, freeGb ?? workingSetGb) *
+        APPLE_UNIFIED_MEMORY_FRACTION *
+        4,
+    ) / 4
   );
 }
 
