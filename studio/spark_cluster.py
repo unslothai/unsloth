@@ -1032,8 +1032,7 @@ def compare_llama_bundles(local: Dict[str, Any], peer: Optional[Dict[str, Any]])
     return out
 
 
-# HELLO wire format: ggml-rpc.cpp at llama.cpp b10796 (RPC 6.0). EOF before a reply = listening, not
-# 6.0.
+# HELLO per ggml-rpc.cpp b10796 (RPC 6.0); EOF before a reply = listening, not 6.0.
 RPC_CMD_HELLO = 14
 RPC_CONN_CAPS_SIZE = 24
 RPC_HELLO_MAX_BODY = 4096
@@ -2092,8 +2091,7 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     return out
 
 
-# rsync over ssh is bound by ssh's CPU, well below the disk floor, so `provision` runs an ephemeral
-# `rsync --daemon` on the peer with FAST_MAX_WORKERS clients over disjoint subsets.
+# rsync over ssh is ssh-CPU bound, so provision uses an ephemeral peer `rsync --daemon` + parallel clients.
 FAST_ENV = "UNSLOTH_SPARK_PROVISION_FAST"
 FAST_MAX_WORKERS = 4
 FAST_PORT_RANGE = (40000, 59999)
@@ -3004,8 +3002,7 @@ TP_SPEEDUP_2 = {1: 2.09, 2: 2.13, 4: 2.10, 8: 1.97}
 PP_SPEEDUP_2 = {1: 1.08, 2: 1.11, 4: 1.09, 8: 1.07}
 TP_TPOT_MS_2 = (332.7, 162.4)
 PP_TPOT_MS_2 = (320.0, 320.0)
-# Splitting a model that ALREADY FITS: a flat loss on llama.cpp before ggml-org/llama.cpp#18626 (no
-# async RPC).
+# Splitting a model that already fits loses before ggml-org/llama.cpp#18626 (no async RPC).
 LAYER_SPLIT_FITTING_SPEEDUP = 0.92
 
 # With #18626 prefill overlaps, so the answer depends on prompt length; decode never improves.
