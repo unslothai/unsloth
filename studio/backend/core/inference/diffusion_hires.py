@@ -548,7 +548,10 @@ def _kick_deferred_bg_compile(backend: Any) -> None:
     state = getattr(backend, "_state", None)
     bg = getattr(state, "bg_compile", None) if state is not None else None
     if bg is not None:
-        bg.kick()  # idempotent; a no-op unless a compile is pending
+        try:
+            bg.kick()  # idempotent; a no-op unless a compile is pending
+        except Exception as exc:  # noqa: BLE001 - never mask the pass's own error
+            logger.debug("diffusion.hires: deferred compile kick failed: %s", exc)
 
 
 def _check_request(kwargs: dict) -> None:
@@ -647,12 +650,20 @@ def run_hires(
     cancel = threading.Event()
     bind_generation_cancel(cancel)
     t0 = time.perf_counter()
-    with backend._generation_slot(cancel), _progress_cleared_on_exit(backend):
+    with (
+        backend._generation_slot(cancel),
+        _progress_cleared_on_exit(backend),
+        contextlib.ExitStack() as after_base,
+    ):
         _plan()
         # A model upscaler also runs on the GPU after the base pass, so a background compile waits for it too.
         defer_kick = refine or upscalers.is_model_upscaler(params.upscaler)
         ctx = HiresPass(cancel = cancel, preflight = _preflight, defer_bg_kick = defer_kick)
         base = generate(backend, **kwargs, _hires_pass = ctx)
+        if defer_kick:
+            # The base pass left a compile pending: start it once the passes after it end, also when one fails or is
+            # stopped (the last refine kicks it on success; a repeat kick is a no-op).
+            after_base.callback(_kick_deferred_bg_compile, backend)
         t_base = time.perf_counter() - t0
         images = list(base["images"])
         seeds = list(base.get("seeds") or [base["seed"]] * len(images))
@@ -746,9 +757,6 @@ def run_hires(
             refine_s += time.perf_counter() - t_ref
             if out.get("negative_prompt") and not refine_negative:
                 refine_negative = out["negative_prompt"]
-        if defer_kick and not refine:
-            # Upscale only: no refine pass kicks the compile the base pass left pending, so start it now.
-            _kick_deferred_bg_compile(backend)
     result = dict(base)
     result["images"] = refined
     if refine_negative and not result.get("negative_prompt"):

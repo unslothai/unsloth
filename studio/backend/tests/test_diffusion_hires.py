@@ -1179,3 +1179,151 @@ def test_a_resident_drop_in_reloads_when_its_file_is_replaced(tmp_path, monkeypa
         assert np.array_equal(replaced, run(False))  # the resident copy is the new file's weights
     finally:
         ups.release_models()
+
+
+def _fake_model_upscaler(tmp_path, monkeypatch, fn):
+    path = tmp_path / "fake.pth"
+    path.write_bytes(b"w")
+    import torch
+
+    monkeypatch.setattr(ups, "spandrel_available", lambda: True)
+    monkeypatch.setattr(ups, "resolve_model_path", lambda upscaler_id, cancel = None: path)
+    monkeypatch.setattr(
+        ups, "_load", lambda p, dev: (types.SimpleNamespace(scale = 2, model = fn), torch.float32)
+    )
+
+
+def test_model_upscaler_halves_the_tile_on_oom_like_comfyui(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from PIL import Image
+
+    sizes = []
+
+    def needs_small_tiles(piece):
+        sizes.append(piece.shape[-1])
+        if piece.shape[-1] > 128:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return torch.nn.functional.interpolate(piece, scale_factor = 2, mode = "nearest")
+
+    _fake_model_upscaler(tmp_path, monkeypatch, needs_small_tiles)
+    img = Image.new("RGB", (300, 300), (10, 20, 30))
+    out = ups.upscale_with_model(img, "local:fake", (600, 600), device = "cpu")
+    # 512 (one 300 px tile) and 256 run out of memory; 128 px tiles fit.
+    assert sizes[:2] == [300, 256] and set(sizes[2:]) == {128}
+    assert out.tiles == len(ups.tile_boxes(300, 300, 128, ups.DEFAULT_OVERLAP))
+    assert out.image.size == (600, 600) and out.image.getpixel((5, 5)) == (10, 20, 30)
+
+    sizes.clear()
+
+    def always_oom(piece):
+        sizes.append(piece.shape[-1])
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    _fake_model_upscaler(tmp_path, monkeypatch, always_oom)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        ups.upscale_with_model(img, "local:fake", (600, 600), device = "cpu")
+    assert sizes == [300, 256, 128]  # gives up below ComfyUI's 128 px floor
+
+    calls = []
+
+    def broken(piece):
+        calls.append(1)
+        raise ValueError("bad weights")
+
+    _fake_model_upscaler(tmp_path, monkeypatch, broken)
+    with pytest.raises(ValueError):
+        ups.upscale_with_model(img, "local:fake", (600, 600), device = "cpu")
+    assert calls == [1]  # only an OOM retries
+
+
+def test_download_rechecks_stop_between_short_reads(tmp_path, monkeypatch):
+    import threading
+
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    stop = threading.Event()
+    reads = []
+
+    class _Trickle:
+        def read(self, n):
+            raise AssertionError("read(n) blocks until n bytes arrive")
+
+        def read1(self, n):
+            reads.append(n)
+            stop.set()  # Stop pressed while the server trickles
+            return b"x"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(ups.urllib.request, "urlopen", lambda *a, **k: _Trickle())
+    with pytest.raises(RuntimeError) as exc:
+        ups.resolve_model_path(ups.CATALOG[0].id, cancel = stop)
+    assert str(exc.value) == DIFFUSION_CANCELLED_MSG
+    assert len(reads) == 1 and reads[0] <= 1 << 16
+    assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("fail_in", ["refine", "upscale"])
+def test_a_failed_pass_after_the_base_still_kicks_the_deferred_compile(monkeypatch, fail_in):
+    import contextlib
+    import threading
+
+    from PIL import Image
+
+    kicks = []
+
+    class _Backend:
+        def __init__(self):
+            self._state = types.SimpleNamespace(
+                family = _fam("flux.1"),
+                offload_policy = "none",
+                device = "cpu",
+                bg_compile = types.SimpleNamespace(kick = lambda: kicks.append(1)),
+            )
+            self._lock = threading.Lock()
+            self._generation_cancel_lock = threading.Lock()
+            self._gen = None
+            self._active_generate_cancel = None
+            self._active_generate_account = None
+
+        @contextlib.contextmanager
+        def _generation_slot(self, cancel):
+            yield
+
+    def broken_upscale(*a, **k):
+        raise RuntimeError("upscale failed")
+
+    monkeypatch.setattr(ups, "spandrel_available", lambda: True)
+    monkeypatch.setattr(ups, "upscale_with_model", broken_upscale)
+
+    def fake_generate(backend, **kw):
+        ctx = kw.pop("_hires_pass")
+        if ctx.refine:
+            raise RuntimeError("refine failed")
+        return {"images": [Image.new("RGB", (256, 256))], "seed": 1, "seeds": [1]}
+
+    params = (
+        hires.HiresParams(denoise = 0.5, upscaler = "lanczos")
+        if fail_in == "refine"
+        else hires.HiresParams(denoise = 0.0, upscaler = "realesrgan_x4plus")
+    )
+    kw = {"prompt": "p", "width": 256, "height": 256, "steps": 4, "seed": 1, "batch_size": 1}
+    with pytest.raises(RuntimeError, match = "failed"):
+        hires.run_hires(_Backend(), fake_generate, params, kw)
+    assert kicks == [1]
+
+    kicks.clear()
+
+    def base_fails(backend, **kw):
+        raise RuntimeError("base failed")
+
+    with pytest.raises(RuntimeError, match = "base failed"):
+        hires.run_hires(_Backend(), base_fails, params, kw)
+    assert kicks == []  # nothing was recorded, as a failed plain render

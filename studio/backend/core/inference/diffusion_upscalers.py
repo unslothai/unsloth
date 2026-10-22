@@ -36,6 +36,8 @@ BUILTIN_LABELS = {LATENT: "Latent (nearest-exact)", LANCZOS: "Lanczos"}
 DEFAULT_TILE = 512
 DEFAULT_OVERLAP = 32
 MIN_TILE = 64
+# ComfyUI ImageUpscaleWithModel halves the tile on an OOM and gives up below 128 px.
+OOM_MIN_TILE = 128
 
 DOWNLOAD_TIMEOUT_S = 600
 _SOCKET_TIMEOUT_S = 60
@@ -219,12 +221,15 @@ def _download(
             urllib.request.urlopen(request, timeout = _SOCKET_TIMEOUT_S) as response,
             part.open("wb") as handle,
         ):
+            # read1: at most one socket read per call, so Stop and the deadline are rechecked between reads even
+            # when the server trickles bytes (read(n) waits until n bytes arrive).
+            read = getattr(response, "read1", None) or response.read
             while True:
                 if cancel is not None and cancel.is_set():
                     _raise_cancelled()
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"Timed out downloading the {entry.label} upscaler.")
-                chunk = response.read(1 << 20)
+                chunk = read(1 << 16)
                 if not chunk:
                     break
                 total += len(chunk)
@@ -467,15 +472,30 @@ def upscale_with_model(
             with torch.inference_mode():
                 # A 4x model on a 2048 px source is an 8192 px float32 result (~1 GiB with its weights): keep it in
                 # host memory, so the GPU holds the model and one tile, as in ComfyUI.
-                y = tiled_apply(
-                    x,
-                    _run,
-                    scale,
-                    tile = tile,
-                    overlap = overlap,
-                    cancel = cancel,
-                    output_device = "cpu",
-                )
+                while True:
+                    try:
+                        y = tiled_apply(
+                            x,
+                            _run,
+                            scale,
+                            tile = tile,
+                            overlap = overlap,
+                            cancel = cancel,
+                            output_device = "cpu",
+                        )
+                        break
+                    except Exception as exc:  # noqa: BLE001 - only an allocator failure retries
+                        from core.inference.diffusion_vae_oom import is_oom
+
+                        if not is_oom(exc) or tile // 2 < OOM_MIN_TILE:
+                            raise
+                        tile //= 2
+                        logger.info(
+                            "diffusion.upscaler: out of memory, retrying with %d px tiles", tile
+                        )
+                        if dev.type == "cuda":
+                            torch.cuda.empty_cache()
+                        boxes = tile_boxes(x.shape[3], x.shape[2], tile, overlap)
         finally:
             if not keep_resident:
                 del model, descriptor, cached
