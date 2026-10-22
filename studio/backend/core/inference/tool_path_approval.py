@@ -505,6 +505,23 @@ def _uncovered_runtime_subtree(path: str, roots) -> bool:
     )
 
 
+def _follows_its_own_root_link(candidate: str, resolved: str, roots) -> bool:
+    """*candidate* sits under a root that is itself a link INTO a runtime subtree (`/dev/stdout` ->
+    `/dev/fd/1`), and *resolved* stays inside that link's target. A root linking to a broad directory
+    (`/var/run` -> `/run`) exempts nothing, or it would cover every runtime subtree under it."""
+    for root in roots:
+        if not _contained_in(candidate, (root,)):
+            continue
+        target = _resolved_fs_text(root)
+        if (
+            target != root
+            and _contained_in(target, _WRITABLE_RUNTIME_SUBTREES)
+            and _contained_in(resolved, (target,))
+        ):
+            return True
+    return False
+
+
 def _resolved_fs_text(text: str) -> str:
     """*text* with its symlinked components resolved, folded the way the roots are."""
     try:
@@ -609,6 +626,7 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # that TOCTOU gap is the OS sandbox's to close.
     resolved = _resolved_fs_text(candidate)
     if resolved != candidate:
+        lexical_roots = roots
         # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
         # macOS `/tmp`, `/dev/stdout`, `/models -> /run/media/...`) would otherwise reject everything under it.
         if not _contained_in(resolved, roots) or _contained_in(
@@ -619,7 +637,11 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
             return True
         # The same carve-out for the target: a link inside a silent root (a registered folder on a drive
         # included) can point into /run/user or elsewhere on the drive, which the broad `/run` root holds.
-        if _uncovered_runtime_subtree(resolved, roots):
+        # A root that is itself a link is exempt where the target only follows that link: macOS resolves
+        # `/dev/stdout` to `/dev/fd/1`, and `2> /dev/stderr` must stay silent as it was.
+        if _uncovered_runtime_subtree(resolved, roots) and not _follows_its_own_root_link(
+            candidate, resolved, lexical_roots
+        ):
             return True
         # And the account segment: a link can hide `Accounts/<other>/...` behind an innocent name.
         if _names_a_managed_account_subtree(resolved):

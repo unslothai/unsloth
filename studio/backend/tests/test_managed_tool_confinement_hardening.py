@@ -274,3 +274,34 @@ def test_registered_folders_on_removable_mounts_stay_silent(monkeypatch):
     links["/models/link"] = "/run/media/alice/SSD/private/notes.txt"
     assert path_gate._path_needs_approval("/models/x.gguf") is False
     assert path_gate._path_needs_approval("/models/link") is True
+
+
+@pytest.mark.skipif(os.sep != "/", reason = "POSIX paths")
+def test_std_stream_writes_stay_silent_when_they_resolve_into_dev_fd(monkeypatch):
+    """macOS resolves /dev/stdout to /dev/fd/1; a `2> /dev/stderr` redirect must not become a prompt."""
+    monkeypatch.setattr(
+        path_gate,
+        "_silent_roots",
+        lambda: (
+            ("/dev/stdout", "/dev/stderr", "/run", "/var/run", "/models"),
+            ("/dev/stdout", "/dev/stderr"),
+        ),
+    )
+    links = {
+        "/dev/stdout": "/dev/fd/1",
+        "/dev/stderr": "/dev/fd/2",
+        "/models": "/run/media/alice/SSD/models",
+        "/models/bus": "/run/user/1000/bus",
+        "/var/run": "/run",
+        "/var/run/user/1000/bus": "/run/user/1000/bus",
+        "/var/run/media/alice/SSD/notes.txt": "/run/media/alice/SSD/notes.txt",
+    }
+    monkeypatch.setattr(path_gate, "_resolved_fs_text", lambda text: links.get(text, text))
+    assert path_gate._path_needs_approval("/dev/stdout", writing = True) is False
+    assert path_gate._path_needs_approval("/dev/stderr", writing = True) is False
+    assert path_gate._path_needs_approval("/dev/stdout") is False
+    # A link under a symlinked root that leaves that root's own target still asks.
+    assert path_gate._path_needs_approval("/models/bus") is True
+    # Nor does a root that links to a broad directory hand out the runtime subtrees under it.
+    assert path_gate._path_needs_approval("/var/run/user/1000/bus") is True
+    assert path_gate._path_needs_approval("/var/run/media/alice/SSD/notes.txt") is True
