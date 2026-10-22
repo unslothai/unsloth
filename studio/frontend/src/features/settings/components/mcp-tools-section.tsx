@@ -138,13 +138,19 @@ export function McpToolsSection(): ReactElement | null {
     if (!settings?.tools) {
       return;
     }
-    // Build the full list from the latest server state; one save at a time.
-    const disabled = settings.tools
-      .filter((tool) => (tool.name === name ? !on : !tool.enabled))
-      .map((tool) => tool.name);
     setSaving(true);
     setError(null);
     try {
+      // The PUT replaces the whole list: rebuild it from a fresh read, so a tool turned off in
+      // another tab since this one loaded is not turned back on.
+      const latest = await loadMcpAccess();
+      if (!latest.tools) {
+        setSettings(latest);
+        return;
+      }
+      const disabled = latest.tools
+        .filter((tool) => (tool.name === name ? !on : !tool.enabled))
+        .map((tool) => tool.name);
       setSettings(await updateMcpTools(disabled));
     } catch (err) {
       // resync because a rejected update may leave the server value unknown.
