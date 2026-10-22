@@ -116,7 +116,7 @@ export function classifyGgufFit(
   if (required <= budget) {
     // A warning, not a refusal: llama.cpp still loads it with a shorter context or slower.
     return typeof unifiedLoadBudgetGb === "number" &&
-      unifiedLoadBudgetGb > 0 &&
+      unifiedLoadBudgetGb >= 0 &&
       required > unifiedLoadBudgetGb
       ? "marginal"
       : "fits";

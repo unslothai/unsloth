@@ -74,13 +74,24 @@ function fitOn(gpu: ReturnType<typeof macInfo>, requiredGb: number) {
 test("an Apple host pool publishes min(working set, free) * 0.85, floored to 0.25 GiB, as its load budget", () => {
   const gpu = macInfo({ metal_working_set_gb: 51.84, vram_free_gb: 22 });
   assert.equal(gpu.memoryTotalGb, 64);
-  assert.ok(Math.abs((gpu.unifiedLoadBudgetGb ?? 0) - Math.floor(22 * 0.85 * 4) / 4) < 1e-9);
+  assert.ok(
+    Math.abs((gpu.unifiedLoadBudgetGb ?? 0) - Math.floor(22 * 0.85 * 4) / 4) <
+      1e-9,
+  );
   // Idle Mac: the working set binds.
   const idle = macInfo({ metal_working_set_gb: 51.84, vram_free_gb: 60 });
-  assert.ok(Math.abs((idle.unifiedLoadBudgetGb ?? 0) - Math.floor(51.84 * 0.85 * 4) / 4) < 1e-9);
+  assert.ok(
+    Math.abs(
+      (idle.unifiedLoadBudgetGb ?? 0) - Math.floor(51.84 * 0.85 * 4) / 4,
+    ) < 1e-9,
+  );
   // No device free figure: the host's available RAM stands in.
   const noFree = macInfo({ metal_working_set_gb: 51.84 }, 30);
-  assert.ok(Math.abs((noFree.unifiedLoadBudgetGb ?? 0) - Math.floor(30 * 0.85 * 4) / 4) < 1e-9);
+  assert.ok(
+    Math.abs(
+      (noFree.unifiedLoadBudgetGb ?? 0) - Math.floor(30 * 0.85 * 4) / 4,
+    ) < 1e-9,
+  );
 });
 
 test("an older backend without the working set keeps today's verdicts", () => {
@@ -144,4 +155,13 @@ test("discrete NVIDIA 24 GiB is untouched", () => {
     );
   }
   assert.equal(fitOn(gpu, 22.2), "fits");
+});
+
+test("a loader budget floored to zero still warns rather than reading as unknown", () => {
+  const fit = classifyGgufFit(bytesRequiring(10), {
+    gpuGb: 64,
+    systemRamGb: 0,
+    unifiedLoadBudgetGb: 0,
+  });
+  assert.equal(fit, "marginal");
 });

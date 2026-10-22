@@ -1994,7 +1994,9 @@ function GgufVariantExpander({
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   const capabilityScope = useContext(CapabilityScope);
-  const unifiedLoadBudgetGb = useContext(UnifiedLoadBudget);
+  // Diffusion loads never read it; keeping it out stops memory drift from re-planning downloads.
+  const chatLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const unifiedLoadBudgetGb = diffusionLoad ? null : chatLoadBudgetGb;
   const visionInScope =
     capabilityScope === null || capabilityScope.includes("vision");
   const showVision = hasVision === true && visionInScope;
