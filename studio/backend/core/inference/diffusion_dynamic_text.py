@@ -121,8 +121,11 @@ def prompt_length_varies(transformer: Any) -> bool:
     return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
 
 
-# What the compile arms (FLUX.1 and Z-Image are classified above but not armed here).
+# What the compile arms (FLUX.1 is classified above but not armed here). An int8 / fp8 Z-Image (the default when bf16
+# does not fit, e.g. a 12 GB card) compiles with automatic dynamic: its shared block saw the caption, image and unified
+# lengths as new shapes (12 recompiles in the first render) and recompiled again on the first longer prompt.
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
+    "ZImageTransformer2DModel": _ZIMAGE_SOURCES,
     "Flux3Transformer2DModel": _FLUX3_SOURCES,
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,

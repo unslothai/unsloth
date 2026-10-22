@@ -62,8 +62,9 @@ def test_prompt_length_varies_reads_the_policy():
 
 
 def test_the_compile_arms_only_its_own_sources():
-    # the classification adds no compile sources: FLUX.1 and Z-Image compile as before
+    # FLUX.1 is classified but compiles as before
     assert set(dt._FAMILY_SOURCES) == {
+        "ZImageTransformer2DModel",
         "Flux3Transformer2DModel",
         "QwenImage21Transformer2DModel",
         "QwenImageTransformer2DModel",
