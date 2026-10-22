@@ -193,6 +193,10 @@ test("a lone active day, or days all alike, take the strongest shade", () => {
   assert.equal(heatLevel(5, heatThresholds([0, 5, 0])), 4);
   assert.equal(heatLevel(80, heatThresholds([80, 80, 80])), 4);
   assert.deepEqual(heatThresholds([0, 0]), [0, 0, 0]);
+  // Coinciding quartiles promote only the days at them, not a smaller day below.
+  const repeated = heatThresholds([10, 100, 100, 100, 100, 100, 100, 100]);
+  assert.equal(heatLevel(100, repeated), 4);
+  assert.equal(heatLevel(10, repeated), 1);
 });
 
 test("the grid ends on today's week and pads only real gaps", () => {

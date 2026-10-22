@@ -311,14 +311,14 @@ export function heatThresholds(values: readonly number[]): [number, number, numb
   return [at(0.25), at(0.5), at(0.75)];
 }
 
-/** A day's shade, 0 for none. A lone active day, or days all alike, take the strongest. */
+/** A day's shade, 0 for none. Days at a shared quartile (a lone day, days all alike) take the strongest. */
 export function heatLevel(
   tokens: number,
   thresholds: readonly [number, number, number],
 ): HeatLevel {
   if (tokens <= 0) return 0;
   const [q1, q2, q3] = thresholds;
-  if (tokens > q3 || q1 === q3) return 4;
+  if (tokens > q3 || (q1 === q3 && tokens >= q3)) return 4;
   if (tokens > q2) return 3;
   if (tokens > q1) return 2;
   return 1;
