@@ -207,9 +207,10 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
   const stale = new Set(staleLanUrls(status));
   const keylessInference =
     // "full" stays localhost-only, so only "inference" reaches LAN callers.
-    status.keylessScope === "inference" &&
-    status.keylessLanEligible &&
-    status.publicUrls.length === 0;
+    status.keylessScope === "inference" && status.keylessLanEligible;
+  const keylessNote = keylessInference
+    ? "Anyone on this network can use the inference API without a key. "
+    : "";
   return (
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
@@ -238,15 +239,14 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
       ))}
       {status.publicUrls.length > 0 ? (
         <span className="text-xs text-destructive leading-snug">
+          {keylessNote}
           {status.publicUrls[0]} is a public internet address, so this reaches
           beyond your local network. Anyone who has the password or an API key
           can sign in and run code on this machine.
         </span>
       ) : (
         <span className="text-xs text-muted-foreground leading-snug">
-          {keylessInference
-            ? "Anyone on this network can use the inference API without a key. "
-            : ""}
+          {keylessNote}
           {status.servesWebUi
             ? "Anyone on this network who has the password or an API key can sign in and run code on this machine."
             : "This launch serves the API only, so devices on the network can call the API but not open the web UI."}

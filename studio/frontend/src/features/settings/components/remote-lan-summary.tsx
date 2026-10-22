@@ -84,19 +84,26 @@ export function RemoteLanSummary() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let settling = false;
     // Re-read only mid-transition: a Start left on another tab would otherwise read "Starting" forever.
+    // A failed read while settling retries too, or the last transitional state would stick.
     const readRemote = () => {
       loadRemoteAccess()
         .then((next) => {
           if (cancelled) return;
           setRemote(next);
           usePlatformStore.setState({ cloudflareUrl: next.url });
-          if (next.state === "starting" || next.state === "stopping") {
+          settling = next.state === "starting" || next.state === "stopping";
+          if (settling) {
             timer = window.setTimeout(readRemote, remoteAccessPollDelay(next));
           }
         })
         .catch(() => {
-          if (!cancelled) setRemoteFailed(true);
+          if (cancelled) return;
+          setRemoteFailed(true);
+          if (settling) {
+            timer = window.setTimeout(readRemote, remoteAccessPollDelay(null));
+          }
         });
     };
     readRemote();

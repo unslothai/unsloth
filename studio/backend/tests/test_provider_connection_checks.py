@@ -103,6 +103,11 @@ def test_gemini_lists_past_the_default_page(mock_http):
     assert mock_http[-1].url.params["pageSize"] == "1000"
 
 
+def test_gemini_through_a_proxy_gets_no_native_page_size(mock_http):
+    _run(ExternalProviderClient("gemini", "https://litellm.example/v1", "sk").list_models())
+    assert "pageSize" not in mock_http[-1].url.params
+
+
 @pytest.mark.parametrize(
     "status,expected",
     [
