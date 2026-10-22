@@ -42,6 +42,9 @@ class _LocalGgufEntry:
     is_gguf: bool = True  # False routes the load to the inference orchestrator
     repo_level_companions: bool = False
     aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
+    # Later rows answering the same key whose variants the winner lacks (a parked
+    # scan-folder copy beside the active cache); a pin on one of those resolves there.
+    alternates: tuple["_LocalGgufEntry", ...] = ()
     withheld: tuple[str, ...] = ()  # listed build keys that cannot be served (torn split sets)
     build_aliases: tuple[tuple[str, str], ...] = ()  # see _build_family_aliases
     exact_builds: bool = False  # custom folder: a build-shaped suffix names one file, never a tag
@@ -399,7 +402,8 @@ def _local_gguf_entry(
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         cache_repo_dir = None
-        if getattr(info, "source", None) == "hf_cache":
+        source = getattr(info, "source", None)
+        if source == "hf_cache":
             try:
                 if p.name.startswith("models--") and (p / "snapshots").is_dir():
                     cache_repo_dir = p
@@ -411,6 +415,25 @@ def _local_gguf_entry(
                 and p.parent.parent.name.startswith("models--")
             ):
                 cache_repo_dir = p.parent.parent
+        elif (
+            source == "custom"
+            and p.parent.name == "snapshots"
+            and p.parent.parent.name.startswith("models--")
+        ):
+            # A cache-layout copy parked in a scan folder lists as a custom row named by the
+            # snapshot the cache scan picks (routes.models._merge_scan_folder_row). It still needs
+            # the newest complete snapshot and its complete quants, or /v1/models would advertise
+            # a quant missing a shard. Any other snapshot row keeps its exact directory.
+            import os
+
+            from hub.utils.inventory_scan import resolve_hf_cache_realpath
+
+            named = resolve_hf_cache_realpath(p.parent.parent)
+            try:
+                if named and os.path.samefile(named, p):
+                    cache_repo_dir = p.parent.parent
+            except OSError:
+                pass
         if cache_repo_dir is not None:
             selected = _resolve_gguf_load_snapshot(cache_repo_dir)
             if selected is None:
@@ -872,6 +895,40 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+def _register_index_entry(
+    index: dict[str, _LocalGgufEntry], key: str, entry: _LocalGgufEntry
+) -> None:
+    """First source wins the key (HF caches ahead of scan folders, like every load path).
+
+    A later row of the same repo that holds variants the winner does not must still answer a
+    pin on them -- the requested artifact wins over the key's owner -- so it is kept as an
+    alternate of the winner instead of being dropped. Only same-repo rows qualify: a
+    different repo sharing a label (its display name, a bare stem) must not answer this
+    key's pins."""
+    from dataclasses import replace
+
+    from core.inference.model_ids import hf_cache_repo_id
+
+    existing = index.get(key)
+    if existing is None:
+        index[key] = entry
+        return
+    existing_repo = hf_cache_repo_id(existing.load_path)
+    entry_repo = hf_cache_repo_id(entry.load_path)
+    if not existing_repo or not entry_repo or existing_repo.lower() != entry_repo.lower():
+        return
+
+    def _held(candidate: _LocalGgufEntry) -> set[str]:
+        labels = {str(variant).lower() for variant in candidate.variants}
+        return labels | {legacy for legacy, _current in candidate.aliases}
+
+    held = _held(existing)
+    for alternate in existing.alternates:
+        held |= _held(alternate)
+    if any(label not in held for label in _held(entry)):
+        index[key] = replace(existing, alternates = (*existing.alternates, entry))
+
+
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Map normalized id/model_id/display_name -> local model entry.
 
@@ -1024,7 +1081,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             (public_model_id(raw_id), path_alias_entry),
         ):
             if key and alias_entry is not None:
-                index.setdefault(key.strip().lower(), alias_entry)
+                _register_index_entry(index, key.strip().lower(), alias_entry)
         # Other revisions of the same repo resolve to their own weights, so a pin on one keeps working after Hugging
         # Face writes a newer snapshot.
         if entry.is_gguf:
@@ -1412,6 +1469,17 @@ def _resolve_from_index(
         for legacy, current in (*entry.aliases, *entry.build_aliases):
             if legacy == wanted:
                 return _result(entry, current)
+        # A pin may name a variant another local row of the same repo holds (a parked
+        # scan-folder copy beside the active cache). The requested artifact wins over the
+        # key's owner -- the ordering #13034 already gives a chosen artifact -- or the pin
+        # would fall through to a remote download.
+        for alternate in entry.alternates:
+            for v in alternate.variants:
+                if v.lower() == wanted:
+                    return _result(alternate, v)
+            for legacy, current in alternate.aliases:
+                if legacy == wanted:
+                    return _result(alternate, current)
         from core.inference.openai_auto_download import looks_like_quant
 
         if looks_like_quant(variant) or _names_missing_build(entry, wanted):
@@ -1459,6 +1527,15 @@ def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Option
     for legacy, current in (*entry.aliases, *entry.build_aliases):
         if legacy == wanted:
             return current
+    # A parked copy beside the cache holds quants the id's owner does not; a pin on one
+    # of those is as local as any other.
+    for alternate in entry.alternates:
+        for variant in alternate.variants:
+            if variant.lower() == wanted:
+                return variant
+        for legacy, current in alternate.aliases:
+            if legacy == wanted:
+                return current
     return None
 
 
@@ -1557,4 +1634,17 @@ def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
         return MISS_MODEL_NOT_FOUND, ()
     if entry is None or not entry.variants:
         return MISS_MODEL_NOT_FOUND, ()
-    return MISS_VARIANT_NOT_FOUND, entry.variants
+    # Every label a pin on this repo resolves, alternates included: the message must not hide
+    # the parked copy's quants -- nor the legacy spellings the resolver still accepts
+    # (see _legacy_variant_aliases), which a pin on them does resolve.
+    labels = tuple(
+        dict.fromkeys(
+            label
+            for candidate in (entry, *entry.alternates)
+            for label in (
+                *candidate.variants,
+                *(legacy for legacy, _current in candidate.aliases),
+            )
+        )
+    )
+    return MISS_VARIANT_NOT_FOUND, labels

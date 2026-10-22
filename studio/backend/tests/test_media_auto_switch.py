@@ -291,6 +291,55 @@ def test_what_the_index_refuses_to_advertise(catalog, tmp_path):
     assert mas.available_media_model_ids(mas.IMAGE_TASK) == ["Local Only"]
 
 
+def test_a_partial_cache_row_with_a_complete_revision_stays_addressable(catalog, tmp_path):
+    # An aborted re-download leaves the snapshot the refs name unfinished while an older
+    # revision still holds the weights. The loaders serve the newest COMPLETE one, so the
+    # row keeps its names here and the pick names that revision's quant -- anything else
+    # partial (a pipeline pull whose payload never finished) stays skipped, per the test
+    # above.
+    repo = tmp_path / "models--Org--Image-GGUF"
+    complete = repo / "snapshots" / ("0" * 40)
+    complete.mkdir(parents = True)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("1" * 40)
+    (complete / "Model-Q4_K_M.gguf").write_bytes(b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64))
+    (repo / "snapshots" / ("1" * 40)).mkdir()
+
+    row = _gguf_image_info("Org/Image-GGUF", repo)
+    row.partial = True
+    catalog.append(row)
+
+    pick = mas.resolve_local_media_model("Org/Image-GGUF", task = mas.IMAGE_TASK)
+    assert pick is not None
+    assert pick.gguf_filename == "Model-Q4_K_M.gguf"
+
+
+def test_a_parked_partial_copy_picks_its_complete_revision(catalog, tmp_path):
+    # A parked scan-folder copy names the snapshot itself, so the cache-row correction above
+    # never runs for it (load_dir == on_disk): with a re-download that stopped mid-set, the
+    # picks saw only the torn revision while the loaders served the older complete one, and
+    # the copy lost its media offer for the outage. The pick must name that revision's
+    # quant -- by path, since the repo id belongs to the active cache, not to the copy.
+    repo = tmp_path / "models--Org--Image-GGUF"
+    complete = repo / "snapshots" / ("0" * 40)
+    complete.mkdir(parents = True)
+    (complete / "Model-Q4_K_M.gguf").write_bytes(b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64))
+    torn = repo / "snapshots" / ("1" * 40)
+    torn.mkdir()
+    (torn / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(
+        b"GGUF" + bytes((3, 0, 0, 0)) + bytes(64)
+    )
+
+    row = _gguf_image_info("Org/Image-GGUF", torn, source = "custom")
+    row.partial = True
+    catalog.append(row)
+
+    pick = mas.resolve_local_media_model("Org/Image-GGUF", task = mas.IMAGE_TASK)
+    assert pick is not None
+    assert pick.gguf_filename == "Model-Q4_K_M.gguf"
+    assert pick.model_path == str(complete)
+
+
 # ── the switch ──────────────────────────────────────────────────────
 
 
