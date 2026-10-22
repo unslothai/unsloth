@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
+
 """get_peft_model on heads that cannot generate (Wav2Vec2ForCTC) uses PEFT's generic PeftModel."""
 
 import ast

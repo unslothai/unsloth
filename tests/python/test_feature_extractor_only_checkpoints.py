@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
+
 """Encoder-only audio checkpoints (AST, WavLM, wav2vec2 bases) ship only a feature extractor: FastModel
 returns it instead of failing on the missing tokenizer, and keeps it right padded."""
 

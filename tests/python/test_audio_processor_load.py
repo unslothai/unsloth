@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
+
 """Audio processors load as processors, not as their text tokenizer (Dia, Higgs Audio, Granite Speech)."""
 
 import ast
@@ -87,9 +90,7 @@ def test_real_dia_processor_rejects_padding_side():
 def _is_speech_forward():
     tree = ast.parse(VISION_PATH.read_text(encoding = "utf-8"))
     nodes = [
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_is_speech_forward"
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_is_speech_forward"
     ]
     import inspect
 
@@ -127,7 +128,11 @@ def _tiny_whisper():
 def test_speech_models_get_no_task_wrapper():
     is_speech = _is_speech_forward()
     transformers = pytest.importorskip("transformers")
-    for cls in ("WhisperForConditionalGeneration", "Wav2Vec2ForCTC", "MoonshineForConditionalGeneration"):
+    for cls in (
+        "WhisperForConditionalGeneration",
+        "Wav2Vec2ForCTC",
+        "MoonshineForConditionalGeneration",
+    ):
         cls = getattr(transformers, cls)
         assert is_speech(cls.__new__(cls))
     for cls in ("LlamaForCausalLM", "Qwen2AudioForConditionalGeneration"):
