@@ -80,6 +80,8 @@ export function useChatCreatedModel(
     return () => {
       reader.dispose();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+      // Unsubscribed from here on, so coming back must wait for a fresh read.
+      setRead(null);
     };
   }, [threadId]);
   return read && read.threadId === threadId ? read.model : null;

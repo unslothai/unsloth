@@ -231,6 +231,11 @@ test("the automatic switch runs once per chat open", () => {
     notice,
     /getStoredChatThread\(threadId\)\s*\.then\(\(thread\) => \{\s*if \(thread && generation === readGeneration\) reader\.applyUpdate\(thread\);/,
   );
+  // Leaving a chat drops its read: a change made while unsubscribed must not settle the next open.
+  assert.match(
+    notice,
+    /window\.removeEventListener\(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated\);\s*(\/\/[^\n]*\n\s*)?setRead\(null\);/,
+  );
   // Unmounting ends the open, so a pending switch's check turns false.
   assert.match(body, /useEffect\(\s*\(\) => \(\) => \{\s*autoSwitchRef\.current = \{ settled: false \};\s*\},\s*\[\],\s*\);/);
   assert.match(
