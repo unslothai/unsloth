@@ -172,3 +172,29 @@ def test_an_exited_child_is_never_the_server_that_answered(foreign_listener):
     p.wait()
     b = _backend(foreign_listener, p)
     assert b._health_listener_is_ours(p) is False
+
+
+def test_a_foreign_listener_listed_before_ours_does_not_refuse_us(monkeypatch):
+    # Own tree unreadable, so the system-wide scan decides; its order must not matter.
+    p = subprocess.Popen([sys.executable, "-c", _CHILD_SERVER], stdout = subprocess.PIPE, text = True)
+    try:
+        port = int(p.stdout.readline())
+
+        def denied(*_a, **_kw):
+            raise psutil.AccessDenied()
+
+        def conn(pid, ip):
+            return SimpleNamespace(
+                laddr = SimpleNamespace(ip = ip, port = port), status = psutil.CONN_LISTEN, pid = pid
+            )
+
+        monkeypatch.setattr(psutil.Process, "net_connections", denied, raising = False)
+        monkeypatch.setattr(psutil.Process, "connections", denied, raising = False)
+        monkeypatch.setattr(
+            psutil, "net_connections", lambda kind = "inet": [conn(1, "::"), conn(p.pid, "127.0.0.1")]
+        )
+        b = _backend(port, p)
+        assert b._health_listener_is_ours(p) is True
+    finally:
+        p.kill()
+        p.wait()

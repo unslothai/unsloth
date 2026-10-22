@@ -349,7 +349,9 @@ class SdCppServer:
                 logger.error("sd-server exited early during load (code %s)", code)
                 return False
             try:
-                if self._client.get(url, timeout = 2.0).status_code == 200 and self._port_is_ours():
+                # Connection: close keeps a probe answered by a squatter out of the generation pool.
+                resp = self._client.get(url, headers = {"Connection": "close"}, timeout = 2.0)
+                if resp.status_code == 200 and self._port_is_ours():
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass

@@ -107,15 +107,18 @@ class _FakeClient:
         self._get = get or (lambda url: _Resp(200, {}))
         self._post = post or (lambda url, json: _Resp(202, {"id": "job1"}))
         self.get_urls = []
+        self.get_headers = []
         self.post_calls = []
         self.closed = False
 
     def get(
         self,
         url,
+        headers = None,
         timeout = None,
     ):
         self.get_urls.append(url)
+        self.get_headers.append(headers)
         return self._get(url)
 
     def post(
@@ -154,11 +157,12 @@ def test_start_becomes_ready_when_capabilities_200(patched, caplog):
     caplog.set_level("INFO", logger = srv.__name__)
     popen = _FakePopen(lines = ["loading model", "listening on: http://127.0.0.1:1"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
-    s = _server_with(
-        popen, _FakeClient(get = lambda url: _Resp(200, {"model": {"path": "/m/z.gguf"}}))
-    )
+    client = _FakeClient(get = lambda url: _Resp(200, {"model": {"path": "/m/z.gguf"}}))
+    s = _server_with(popen, client)
     s.start(_FILES, startup_timeout = 5.0)
     assert s.is_alive() is True
+    # Readiness probes must not leave a pooled connection for generation to reuse.
+    assert client.get_headers and all(h == {"Connection": "close"} for h in client.get_headers)
     assert s.port is not None
     messages = [record.getMessage() for record in caplog.records if record.name == srv.__name__]
     start = next(message for message in messages if message.startswith("starting sd-server:"))

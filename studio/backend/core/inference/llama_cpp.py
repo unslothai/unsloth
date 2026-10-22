@@ -19546,21 +19546,25 @@ class LlamaCppBackend:
             except Exception:  # noqa: BLE001 -- access denied / platform quirk
                 tree_readable = False
         tree_pids = {m.pid for m in tree}
+        foreign = None
         try:
+            # Scan every listener: a foreign one listed before ours must not refuse our start.
             for conn in psutil.net_connections(kind = "inet"):
                 if not _listens(conn) or conn.pid is None:
                     continue
                 if conn.pid in tree_pids or _has_ancestor(conn.pid, pid):
                     return True
-                logger.error(
-                    "llama-server port %s is held by pid %s, not our child %s; refusing to use it",
-                    port,
-                    conn.pid,
-                    pid,
-                )
-                return False
+                foreign = conn.pid
         except Exception as exc:  # noqa: BLE001 -- permissions / platform quirks
             logger.debug("llama-server port ownership check unavailable: %s", exc)
+        if foreign is not None:
+            logger.error(
+                "llama-server port %s is held by pid %s, not our child %s; refusing to use it",
+                port,
+                foreign,
+                pid,
+            )
+            return False
         if tree_readable:
             logger.error(
                 "llama-server port %s answered /health but our child %s is not listening on it; "
