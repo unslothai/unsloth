@@ -1442,3 +1442,62 @@ def test_the_mlx_plan_names_the_base_the_load_will_read(monkeypatch, tmp_path):
     assert recorder.calls[-1]["base_repo"] == BASE
     mb.MlxDiffusionBackend().download_plan(str(local), gguf_filename = gguf, base_repo = BASE)
     assert recorder.calls[-1]["base_repo"] == BASE
+
+
+@pytest.mark.parametrize("outcome", ["done", "cancelled", "failed"])
+def test_the_runtime_releases_mlx_buffer_cache_after_every_generation(monkeypatch, outcome):
+    """Freed activations otherwise sit in MLX's buffer cache, i.e. in system RAM, until unload."""
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mflux.utils.exceptions")
+
+    class _Registry:
+        """The two members of mflux's CallbackRegistry the runtime touches."""
+
+        def __init__(self):
+            self.in_loop = []
+
+        def register(self, callback):
+            self.in_loop.append(callback)
+
+    cleared = []
+    real_clear = mx.clear_cache
+    monkeypatch.setattr(mx, "clear_cache", lambda: (cleared.append(1), real_clear()))
+
+    class _Image:
+        image = "png"
+
+    class _Model:
+        callbacks = _Registry()
+
+        def generate_image(self, **kwargs):
+            latents = mx.zeros((2, 2))
+            for t in range(kwargs["num_inference_steps"]):
+                for cb in self.callbacks.in_loop:
+                    cb.call_in_loop(t, kwargs["seed"], kwargs["prompt"], latents, None, None)
+            if outcome == "failed":
+                raise RuntimeError("boom")
+            return _Image()
+
+    def on_step(done):
+        if outcome == "cancelled" and done == 2:
+            raise mb.MlxCancelled("cancelled")
+
+    runtime = mb.MfluxRuntime()
+    kwargs = dict(
+        prompt = "p",
+        negative_prompt = None,
+        seed = 1,
+        steps = 3,
+        width = 64,
+        height = 64,
+        guidance = None,
+        on_step = on_step,
+    )
+    model = _Model()
+    if outcome == "done":
+        assert runtime.generate(model, **kwargs) == "png"
+    else:
+        with pytest.raises(mb.MlxCancelled if outcome == "cancelled" else RuntimeError):
+            runtime.generate(model, **kwargs)
+    assert cleared == [1]
+    assert model.callbacks.in_loop == []
