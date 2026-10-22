@@ -166,6 +166,7 @@ import {
 } from "react";
 import {
   audioCppHubPath,
+  audioCppModelFor,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
@@ -608,6 +609,12 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
 /** `GpuInfo.unifiedLoadBudgetGb` of the inventory GGUF chat loads into: non-null only on an Apple
  *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
 const UnifiedLoadBudget = createContext<number | null>(null);
+
+/** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
+ *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
+function loadsOnAudioCpp(repoId: string): boolean {
+  return audioCppModelFor(repoId) !== null || isAudioCppFolderId(repoId);
+}
 
 function PickerScopes({
   capabilityScope,
@@ -1997,7 +2004,8 @@ function GgufVariantExpander({
   const capabilityScope = useContext(CapabilityScope);
   // Diffusion loads never read it; keeping it out stops memory drift from re-planning downloads.
   const chatLoadBudgetGb = useContext(UnifiedLoadBudget);
-  const unifiedLoadBudgetGb = diffusionLoad ? null : chatLoadBudgetGb;
+  const unifiedLoadBudgetGb =
+    diffusionLoad || loadsOnAudioCpp(repoId) ? null : chatLoadBudgetGb;
   const visionInScope =
     capabilityScope === null || capabilityScope.includes("vision");
   const showVision = hasVision === true && visionInScope;
@@ -4244,6 +4252,7 @@ export function HubModelPicker({
     const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
+      repoId: string,
     ): GgufFitClass | VramFitStatus | null => {
       const anyBudget =
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
@@ -4267,8 +4276,7 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
-            // audio.cpp GGUFs load through their own runtime, not the llama.cpp Metal budget.
-            unifiedLoadBudgetGb: audioTaskPicker
+            unifiedLoadBudgetGb: loadsOnAudioCpp(repoId)
               ? null
               : loadFreesResident
                 ? budget.unifiedLoadCeilingGb
@@ -4331,7 +4339,7 @@ export function HubModelPicker({
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
           // to the device the load LANDS on: unscoped, a downloaded media parent read as safe while
           // every variant inside it read as oom.
-          status: ggufRowFit(sizeBytes, rowInferenceGpu),
+          status: ggufRowFit(sizeBytes, rowInferenceGpu, r.id),
           // The figure the verdict was reached with, not the raw file size: classifyGgufFit scores
           // weights plus activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit" beside
           // "~20GB VRAM". The media rule scores the raw size and keeps it.
@@ -4378,7 +4386,6 @@ export function HubModelPicker({
     gpu,
     inferenceGpu,
     loadFreesResident,
-    audioTaskPicker,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -7369,11 +7376,9 @@ export function HubModelPicker({
     <PickerScopes
       capabilityScope={capabilityScope}
       unifiedLoadBudgetGb={
-        audioTaskPicker
-          ? null
-          : ((loadFreesResident
-              ? inferenceGpu.unifiedLoadCeilingGb
-              : inferenceGpu.unifiedLoadBudgetGb) ?? null)
+        (loadFreesResident
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null
       }
     >
       <div className="relative space-y-2">

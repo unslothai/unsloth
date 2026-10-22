@@ -218,7 +218,7 @@ test("a 0 GiB free reading is the tightest budget, not an unknown one", () => {
   assert.equal(gpu.unifiedLoadBudgetGb, 0);
 });
 
-test("audio pickers keep the plain verdict: audio.cpp GGUFs do not load under the llama.cpp budget", async () => {
+test("only audio.cpp GGUFs skip the llama.cpp budget; Mac TTS GGUFs load through llama.cpp", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(
     new URL(
@@ -227,6 +227,7 @@ test("audio pickers keep the plain verdict: audio.cpp GGUFs do not load under th
     ),
     "utf8",
   );
-  assert.match(src, /unifiedLoadBudgetGb: audioTaskPicker\s*\?\s*null/);
-  assert.match(src, /unifiedLoadBudgetGb=\{\s*audioTaskPicker\s*\?\s*null/);
+  assert.match(src, /unifiedLoadBudgetGb: loadsOnAudioCpp\(repoId\)\s*\?\s*null/);
+  assert.match(src, /diffusionLoad \|\| loadsOnAudioCpp\(repoId\) \? null : chatLoadBudgetGb/);
+  assert.doesNotMatch(src, /unifiedLoadBudgetGb: audioTaskPicker/);
 });
