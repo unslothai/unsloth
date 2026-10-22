@@ -6968,7 +6968,6 @@ const ComposerToolsMenu: FC<{
         externalSelection?.modelId,
       ) !== true) ||
     incognito;
-  // Three most recently used projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = sortProjectsByActivity(projects).slice(0, 3);
   const openProject = (projectId: string) => {

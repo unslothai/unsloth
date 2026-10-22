@@ -432,8 +432,7 @@ async function waitForServerModel(signal?: AbortSignal): Promise<void> {
     const elapsed = Date.now() - started;
     if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
     if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
-    // Every chat open with nothing loaded runs this for a minute: quick at first, for a load
-    // already finishing, then at a pace that does not keep the server busy for an idle page.
+    // Runs for a minute per chat open with nothing loaded: fast first, then slow for an idle page.
     await new Promise((resolve) =>
       setTimeout(
         resolve,

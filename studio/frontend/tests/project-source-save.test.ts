@@ -250,8 +250,7 @@ test("unsubscribing stops the refetch, so an unmounted panel cannot set state", 
 test("the panel's list refetches once per change, and does not resurrect a row it just deleted", async () => {
   const src = await readSrcAsync("features/rag/components/project-sources-panel.tsx");
   const hook = await readSrcAsync("features/rag/components/use-rag-documents.ts");
-  // The hook a project panel mounts is what listens; a panel subscription on top doubled every
-  // refetch, and tripled it per folder-sync tick with the linked-folder callback's own refresh.
+  // Only the hook listens: a panel subscription on top doubled every refetch.
   assert.match(
     hook,
     /window\.addEventListener\(PROJECT_SOURCES_CHANGED_EVENT, onChanged\)/,
