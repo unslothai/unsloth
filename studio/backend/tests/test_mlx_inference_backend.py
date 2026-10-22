@@ -4220,15 +4220,21 @@ def test_a_vision_checkpoint_served_through_mlx_lm_is_served_as_text(monkeypatch
     loader = types.ModuleType("unsloth_zoo.mlx.loader")
     loader.FastMLXModel = _Loader
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
-    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mlx_inference, "_classify_mlx_audio_type", lambda *a, config_audio_type: config_audio_type
+    )
     monkeypatch.setattr(
         mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (2048, 2048, 2048)
     )
-    vision = SimpleNamespace(identifier = "org/vision", is_vision = True, is_lora = False)
+    vision = SimpleNamespace(
+        identifier = "org/vision", is_vision = True, is_lora = False, audio_type = "audio_vlm"
+    )
 
     backend = mlx_inference.MLXInferenceBackend()
     backend.load_model(vision, kv_quant = "tq-4")
     assert attempts == [False]
+    entry = backend.models["org/vision"]
+    assert entry["audio_type"] is None and entry["has_audio_input"] is False
     assert backend._is_vlm is False and backend._processor is None
     assert backend._reads_vision_input() is False
     assert backend.models["org/vision"]["is_vision"] is False
