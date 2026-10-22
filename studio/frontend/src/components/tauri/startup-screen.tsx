@@ -34,6 +34,8 @@ interface StartupScreenProps {
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
+  /** The repair in flight upgrades a Chat only install to the full one, a multi-GB download. */
+  upgradingToFull?: boolean;
   onInstall: (options?: InstallOptions) => void;
   onRetry: () => void;
   onRetryInstall: () => void;
@@ -276,9 +278,11 @@ function InstallingContent({
 function RepairingContent({
   logs,
   progressDetail,
+  upgradingToFull,
 }: {
   logs: string[];
   progressDetail: string | null;
+  upgradingToFull: boolean;
 }) {
   const detailLines = progressDetail
     ? [...logs, progressDetail]
@@ -291,8 +295,14 @@ function RepairingContent({
       </div>
       <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
-        <p className="text-sm font-bold text-foreground">Getting things ready...</p>
-        <p className="text-sm text-muted-foreground">This won’t take long.</p>
+        <p className="text-sm font-bold text-foreground">
+          {upgradingToFull ? "Upgrading to the full install..." : "Getting things ready..."}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {upgradingToFull
+            ? "Downloading PyTorch and its libraries for this machine's GPU. This can take several minutes."
+            : "This won’t take long."}
+        </p>
         <LogDetails label="setup details" lines={detailLines} />
       </div>
     </div>
@@ -347,10 +357,12 @@ function InstallErrorContent({
 
 function RepairErrorContent({
   error,
+  upgradingToFull,
   onRetry,
   onCopyDiagnostics,
 }: {
   error: string | null;
+  upgradingToFull: boolean;
   onRetry: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
@@ -358,7 +370,9 @@ function RepairErrorContent({
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Update failed</p>
+        <p className="text-sm font-medium text-destructive">
+          {upgradingToFull ? "Could not upgrade to the full install" : "Update failed"}
+        </p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -470,6 +484,7 @@ export function StartupScreen({
   progressDetail,
   startupMessage,
   elevationPackages,
+  upgradingToFull = false,
   onInstall,
   onRetry,
   onRetryInstall,
@@ -501,11 +516,18 @@ export function StartupScreen({
           />
         );
       case "repairing":
-        return <RepairingContent logs={logs} progressDetail={progressDetail} />;
+        return (
+          <RepairingContent
+            logs={logs}
+            progressDetail={progressDetail}
+            upgradingToFull={upgradingToFull}
+          />
+        );
       case "repair-error":
         return (
           <RepairErrorContent
             error={error}
+            upgradingToFull={upgradingToFull}
             onRetry={onRetry}
             onCopyDiagnostics={onCopyDiagnostics}
           />

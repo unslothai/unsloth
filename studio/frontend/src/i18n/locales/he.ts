@@ -826,6 +826,7 @@ export const he = {
       more: "עוד",
       customizeSidebar: "התאמת סרגל הצד",
       newBadge: "חדש",
+      addBadge: "הוספה",
       export: "ייצוא",
       recents: "אחרונים",
       noChatsYet: "אין עדיין צ'אטים",
@@ -2092,6 +2093,18 @@ export const he = {
         openError: "לא ניתן לפתוח את התיקייה",
         copyError: "לא ניתן להעתיק את הנתיב",
       },
+      fullInstall: {
+        label: "סוג התקנה",
+        description:
+          "צ'אט בלבד (GGUF). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
+        action: "שדרג להתקנה מלאה",
+        confirmTitle: "לשדרג להתקנה המלאה?",
+        confirmDescription:
+          "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmAction: "שדרג",
+        keywords:
+          "full install upgrade סוג התקנה התקנה מלאה שדרוג צ'אט בלבד chat only gguf add training אימון train fine-tune pytorch torch ייצוא וידאו יצירת תמונות safetensors",
+      },
       repairInstall: {
         label: "תיקון התקנה",
         description:
@@ -2100,6 +2113,8 @@ export const he = {
         confirmTitle: "לתקן התקנה זו?",
         confirmDescription:
           "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה, אשר מתקינה מחדש את PyTorch עבור ה-GPU של מכונה זו בגרסה הנתמכת החדשה ביותר. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmDescriptionChatOnly:
+          "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה. זוהי התקנה של צ'אט בלבד, ולכן תוכנית ההתקנה גם משדרגת אותה להתקנה המלאה עם PyTorch, כמה ג'יגה-בייט בסך הכול. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "תקן כעת",
       },
       resetPreferences: {

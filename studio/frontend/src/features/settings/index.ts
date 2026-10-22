@@ -113,6 +113,7 @@ export {
 } from "./hooks/use-shortcut";
 export { useHubSourceNotice } from "./hooks/use-hub-source-notice";
 export { Shortcut } from "./components/shortcut";
+export { FullInstallDialog } from "./components/full-install-dialog";
 export {
   currentBinding,
   shortcutMatchingEvent,

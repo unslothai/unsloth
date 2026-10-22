@@ -48,7 +48,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": installed --no-torch on Apple Silicon, or on a host whose GPU inventory shows a card a PyTorch GPU build could use, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -845,6 +845,18 @@ def _installed_without_torch() -> bool:
         return recorded()
     except Exception:
         return False
+
+
+def _a_gpu_build_would_train_here() -> bool:
+    """Whether this non-Mac host has a card a PyTorch GPU build could use, by the PyTorch-free inventory and the filter the mismatch verdicts apply. Not a copy of the installers' wheel routing, which also reads driver and ROCm versions this cannot see. Blocking, so detection only. An inventory that could not answer keeps the benefit of the doubt, since no_gpu on a GPU host is the wrong answer no_torch exists to replace."""
+    try:
+        inventory = get_physical_gpu_inventory()
+        if _devices_that_can_establish_a_mismatch(inventory.get("devices") or []):
+            return True
+        return bool(inventory.get("unknown"))
+    except Exception as e:
+        logger.debug("GPU inventory for the no_torch verdict failed: %s", e)
+        return True
 
 
 def _mlx_distribution_installed() -> bool:
@@ -1715,8 +1727,10 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
-        elif _installed_without_torch():
+        elif _installed_without_torch() and _a_gpu_build_would_train_here():
             # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            # A host without such a GPU keeps no_gpu: the Desktop offers the full install on
+            # no_torch, and adding PyTorch there cannot enable Train.
             CHAT_ONLY_REASON = "no_torch"
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE

@@ -388,6 +388,7 @@ export function createSettingsSearchIndex({
       // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
+      "settings.general.fullInstall.label",
     ],
     browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],
     about: SETTINGS_SEARCH_INDEX.about.filter(
@@ -400,6 +401,9 @@ const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.hub.endpoint",
   "settings.general.hub.datasetsServer",
 ]);
+
+// Shown only on a Desktop Chat only install that can be upgraded to the full one.
+const FULL_INSTALL_ENTRY: TranslationKey = "settings.general.fullInstall.label";
 
 // owner-only rows on tabs visible to every account.
 const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
@@ -417,11 +421,13 @@ export function renderedSearchEntries(
   tab: SettingsTab,
   hubSource: HubSource,
   isOwner = true,
+  canUpgradeToFullInstall = false,
 ): TranslationKey[] {
   return index[tab].filter(
     (key) =>
       !(hubSource === "modelscope" && HUGGING_FACE_ONLY_ENTRIES.has(key)) &&
-      (isOwner || !OWNER_ONLY_ENTRIES.has(key)),
+      (isOwner || !OWNER_ONLY_ENTRIES.has(key)) &&
+      (canUpgradeToFullInstall || key !== FULL_INSTALL_ENTRY),
   );
 }
 
@@ -436,6 +442,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
   "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
+  // A Chat only user searches for what is missing ("train", "pytorch", "video"), not "Install type".
+  "settings.general.fullInstall.label": "settings.general.fullInstall.keywords",
   // "purge", "prune" and the tool names are in none of the labels, so the row
   // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":

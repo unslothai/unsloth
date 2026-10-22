@@ -13,9 +13,10 @@ const { exportUnsupportedText } = await import("../src/features/export/lib/unsup
 const NO_TORCH_MESSAGE =
   "This install was set up without the training stack (--no-torch), so export is disabled. Reinstall Unsloth Studio without --no-torch to enable export.";
 
-test("a Desktop Chat only install is pointed at Repair installation", () => {
+test("a Desktop Chat only install is pointed at the full install upgrade", () => {
   const text = exportUnsupportedText("no_torch", NO_TORCH_MESSAGE, true);
-  assert.match(text, /Use Repair installation in Settings/);
+  // The Settings > General row the Train row's dialog also leads to, not the Danger zone repair.
+  assert.match(text, /Use Upgrade to full install in Settings/);
   assert.doesNotMatch(text, /--no-torch/);
 });
 

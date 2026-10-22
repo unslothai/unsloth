@@ -742,6 +742,7 @@ export const ar = {
       more: "المزيد",
       customizeSidebar: "تخصيص الشريط الجانبي",
       newBadge: "جديد",
+      addBadge: "إضافة",
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
@@ -1977,6 +1978,18 @@ export const ar = {
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
       },
+      fullInstall: {
+        label: "نوع التثبيت",
+        description:
+          "دردشة فقط (GGUF). يضيف التثبيت الكامل التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور.",
+        action: "الترقية إلى التثبيت الكامل",
+        confirmTitle: "هل تريد الترقية إلى التثبيت الكامل؟",
+        confirmDescription:
+          "يشغّل تثبيت الدردشة فقط هذا نماذج GGUF. يضيف التثبيت الكامل PyTorch لوحدة معالجة الرسومات في هذا الجهاز، ما يتيح التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور. ينزّل عدة غيغابايت ثم يعيد تشغيل الخادم. تُحفظ المحادثات والنماذج والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmAction: "ترقية",
+        keywords:
+          "full install upgrade نوع التثبيت التثبيت الكامل ترقية دردشة فقط chat only gguf add training تدريب train fine-tune pytorch torch تصدير فيديو توليد الصور safetensors",
+      },
       repairInstall: {
         label: "إصلاح التثبيت",
         description:
@@ -1985,6 +1998,8 @@ export const ar = {
         confirmTitle: "هل تريد إصلاح هذا التثبيت؟",
         confirmDescription:
           "يوقف الخادم ويعيد تشغيل المثبّت، الذي يعيد تثبيت PyTorch لوحدة معالجة الرسومات في هذا الجهاز. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmDescriptionChatOnly:
+          "يوقف الخادم ويعيد تشغيل المثبّت. هذا تثبيت للدردشة فقط، لذا يرقّيه المثبّت أيضًا إلى التثبيت الكامل مع PyTorch، بحجم عدة غيغابايت إجمالًا. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
         confirmAction: "إصلاح الآن",
       },
       resetPreferences: {

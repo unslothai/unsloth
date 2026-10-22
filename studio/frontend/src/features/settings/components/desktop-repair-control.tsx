@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
 import { SettingsRow } from "./settings-row";
@@ -34,6 +35,8 @@ import { SettingsRow } from "./settings-row";
 export function DesktopRepairControl(): ReactElement | null {
   const t = useT();
   const repair = useTauriRepairController();
+  // On a Chat only install the installer also adds PyTorch, so the dialog has to say so.
+  const upgradesToFull = useFullInstallUpgrade() !== null;
   const [confirmOpen, setConfirmOpen] = useState(false);
   if (!repair || repair.isExternalServer) return null;
 
@@ -61,7 +64,11 @@ export function DesktopRepairControl(): ReactElement | null {
               {t("settings.general.repairInstall.confirmTitle")}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.general.repairInstall.confirmDescription")}
+              {t(
+                upgradesToFull
+                  ? "settings.general.repairInstall.confirmDescriptionChatOnly"
+                  : "settings.general.repairInstall.confirmDescription",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

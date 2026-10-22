@@ -68,6 +68,7 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import { DeveloperModeSection } from "../components/developer-mode-section";
@@ -500,8 +501,9 @@ export function GeneralTab() {
         </p>
       </header>
 
-      {/* Desktop-only, and self-gating: outside the desktop app both render
-          nothing and the section keeps just the version rows. */}
+      {/* Desktop-only, and self-gating: outside the desktop app these render
+          nothing and the section keeps just the version rows. Install type
+          shows only on a Chat only install that can be upgraded. */}
       <StudioVersionSection>
         {isTauri ? (
           <div data-settings-label={t("settings.about.updates")}>
@@ -509,6 +511,7 @@ export function GeneralTab() {
             <DesktopUpdateNote />
           </div>
         ) : null}
+        <DesktopInstallTypeControl />
       </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>

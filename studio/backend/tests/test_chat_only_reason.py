@@ -77,15 +77,60 @@ def _no_torch_apple_silicon(monkeypatch, *, mlx_on_disk: bool):
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
 
 
-def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypatch):
-    # A chat-only Windows / Linux install on a GPU host: "needs an NVIDIA or AMD GPU" is wrong.
+_NVIDIA_CARD = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 4090"}
+_INTEL_IGPU = {"vendor": "intel", "index": 0, "name": "Intel(R) UHD Graphics 770"}
+
+
+def _no_torch_off_mac(
+    monkeypatch,
+    *,
+    devices,
+    unknown = False,
+):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_: {
+            "available": bool(devices),
+            "devices": devices,
+            "sources": [],
+            "unknown": unknown,
+        },
+    )
+    # Pinned: the test host's own torch and install record must not vouch for an Intel iGPU.
+    monkeypatch.setattr(hw, "_expected_xpu_flavor_was_chosen", lambda: False)
+    monkeypatch.setattr(hw, "_torch_reports_an_xpu_runtime", lambda: False)
+
+
+def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypatch):
+    # A chat-only Windows / Linux install on a GPU host: "needs an NVIDIA or AMD GPU" is wrong.
+    _no_torch_off_mac(monkeypatch, devices = [_NVIDIA_CARD])
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_torch"
     assert hw.current_chat_only_verdict() == ("no_torch", None)
+
+
+@pytest.mark.parametrize("devices", [[], [_INTEL_IGPU]], ids = ["no-gpu", "intel-igpu"])
+def test_a_no_torch_install_without_a_trainable_gpu_stays_no_gpu(monkeypatch, devices):
+    # no_torch offers the Desktop's full install, a multi-GB download. On a host with no GPU a
+    # PyTorch build could use, that install ends at no_gpu with Train still off.
+    _no_torch_off_mac(monkeypatch, devices = devices)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_gpu"
+    assert hw.current_chat_only_verdict() == ("no_gpu", None)
+
+
+def test_a_no_torch_install_whose_inventory_cannot_answer_keeps_no_torch(monkeypatch):
+    # A probe that timed out is not "no GPU": telling a GPU host it needs one is the bug
+    # no_torch replaced.
+    _no_torch_off_mac(monkeypatch, devices = [], unknown = True)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_torch"
 
 
 def test_a_torch_install_off_mac_without_an_accelerator_stays_no_gpu(monkeypatch):

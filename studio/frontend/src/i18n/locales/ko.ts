@@ -742,6 +742,7 @@ export const ko = {
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
       newBadge: "신규",
+      addBadge: "추가",
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
@@ -1971,6 +1972,18 @@ export const ko = {
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
       },
+      fullInstall: {
+        label: "설치 유형",
+        description:
+          "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        action: "전체 설치로 업그레이드",
+        confirmTitle: "전체 설치로 업그레이드할까요?",
+        confirmDescription:
+          "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmAction: "업그레이드",
+        keywords:
+          "full install upgrade 설치 유형 전체 설치 업그레이드 채팅 전용 chat only gguf add training 학습 훈련 train fine-tune pytorch torch 내보내기 동영상 이미지 생성 safetensors",
+      },
       repairInstall: {
         label: "설치 복구",
         description:
@@ -1979,6 +1992,8 @@ export const ko = {
         confirmTitle: "이 설치를 복구할까요?",
         confirmDescription:
           "서버를 중지하고 설치 프로그램을 다시 실행하여 이 컴퓨터의 GPU에 맞는 PyTorch를 다시 설치합니다. 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionChatOnly:
+          "서버를 중지하고 설치 프로그램을 다시 실행합니다. 이 설치는 채팅 전용이므로 설치 프로그램이 PyTorch를 포함한 전체 설치로도 업그레이드합니다(총 수 GB). 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "지금 복구",
       },
       resetPreferences: {
