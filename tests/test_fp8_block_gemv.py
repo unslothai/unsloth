@@ -40,6 +40,12 @@ def _quantize(N, K, seed = 0):
     return q.contiguous(), s.float().contiguous()
 
 
+def _uncached(q):
+    # Gate tests flip device gates on the same weight: drop its cached eligibility first.
+    q.__dict__.pop("_unsloth_fp8_block_gemv", None)
+    return q
+
+
 def _oracle(X, q, s):
     S = s.double().repeat_interleave(128, 0).repeat_interleave(128, 1)[: q.shape[0], : q.shape[1]]
     return X.double().reshape(-1, q.shape[1]) @ (q.double() * S).T
@@ -114,13 +120,23 @@ def test_kill_switch_and_device_gates(monkeypatch):
     monkeypatch.setattr(F8, "_FP8_BLOCK_GEMV", True)
     # pre-sm89 (no e4m3 Triton) and Blackwell with Triton < 3.4 keep main's routing
     monkeypatch.setattr(F8, "_fp8_device_lacks_kernel", lambda device: True)
-    assert not F8.can_use_fp8_block_gemv(X, q, s)
+    assert not F8.can_use_fp8_block_gemv(X, _uncached(q), s)
     monkeypatch.undo()
     monkeypatch.setattr(F8, "_fp8_gemv_miscompiles", lambda device: True)
-    assert not F8.can_use_fp8_block_gemv(X, q, s)
+    assert not F8.can_use_fp8_block_gemv(X, _uncached(q), s)
     monkeypatch.undo()
     monkeypatch.setattr(torch.version, "hip", "6.4")
-    assert not F8.can_use_fp8_block_gemv(X, q, s)
+    assert not F8.can_use_fp8_block_gemv(X, _uncached(q), s)
+
+
+def test_weight_decision_cached_per_scale():
+    q, s = _quantize(256, 512)
+    X = torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16)
+    assert F8.can_use_fp8_block_gemv(X, q, s)
+    assert q._unsloth_fp8_block_gemv[0] is s and q._unsloth_fp8_block_gemv[1]
+    # a different scale tensor is re-checked, not served from the cache
+    assert not F8.can_use_fp8_block_gemv(X, q, s.t().contiguous())
+    assert F8.can_use_fp8_block_gemv(X, q, s)
 
 
 def test_compiled_call_is_one_opaque_op():
@@ -166,7 +182,7 @@ def test_routes_only_where_never_slower(monkeypatch):
     Xd = torch.randn(2, 1, 12288, device = "cuda", dtype = torch.bfloat16)
     qd, sd = _quantize(4096, 12288)
     monkeypatch.setattr(F8, "_sm_count", lambda device: 188)
-    assert F8.can_use_fp8_block_gemv(Xd, qd, sd)
+    assert F8.can_use_fp8_block_gemv(Xd, _uncached(qd), sd)
     monkeypatch.setattr(F8, "_sm_count", lambda device: 58)
-    assert not F8.can_use_fp8_block_gemv(Xd, qd, sd)
+    assert not F8.can_use_fp8_block_gemv(Xd, _uncached(qd), sd)
     assert F8.can_use_fp8_block_gemv(X, *_quantize(1024, 4096))

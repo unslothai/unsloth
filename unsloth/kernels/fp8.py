@@ -702,22 +702,14 @@ def _fp8_block_size(weight, weight_scale):
     )
 
 
-def can_use_fp8_block_gemv(X, weight, weight_scale):
-    # Not validated on ROCm yet: keep the block GEMM there.
-    if not _FP8_BLOCK_GEMV or torch.version.hip is not None:
-        return False
-    if not (X.is_cuda and weight.is_cuda and X.dtype in (torch.bfloat16, torch.float16)):
-        return False
-    if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
+def _fp8_block_gemv_weight_ok(weight, weight_scale):
+    # Everything that depends only on the weight: decided once per (weight, scale), not per decode call.
+    if not weight.is_cuda or weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
         return False
     N, K = weight.shape
-    if X.shape[-1] != K or X.device != weight.device:
-        return False
-    rows = X.numel() // K
-    # Decode only: one token per sequence, prefill keeps the block GEMM.
-    if not 1 <= rows <= _FP8_BLOCK_GEMV_MAX_ROWS or (X.dim() >= 3 and X.shape[-2] != 1):
-        return False
-    if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
+    # Only where it is never slower than the block GEMM, with L2 flushed or L2-hot (CUDA graph replay),
+    # on L4 (58 SMs) and RTX PRO 6000 (188): narrow outputs (down, kv, o), and small weights on small parts.
+    if 2 * N > K or (_sm_count(weight.device) < 100 and N * K > _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS):
         return False
     if (
         weight_scale.ndim != 2
@@ -734,14 +726,35 @@ def can_use_fp8_block_gemv(X, weight, weight_scale):
         return False
     if group_n < 1 or group_k < 16 or group_k & (group_k - 1):
         return False
-    # Only where it is never slower than the block GEMM, with L2 flushed or L2-hot (CUDA graph replay),
-    # on L4 (58 SMs) and RTX PRO 6000 (188): narrow outputs (down, kv, o), and small weights on small parts.
-    if 2 * N > K or (_sm_count(weight.device) < 100 and N * K > _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS):
-        return False
     if _fp8_kernel_unsupported(weight):
         return False
     # Triton 3.3 miscompiles fp8 GEMVs on Blackwell; keep the GEMM there.
     return not _fp8_gemv_miscompiles(weight.device)
+
+
+def can_use_fp8_block_gemv(X, weight, weight_scale):
+    # Not validated on ROCm yet: keep the block GEMM there.
+    if not _FP8_BLOCK_GEMV or torch.version.hip is not None:
+        return False
+    cached = getattr(weight, "_unsloth_fp8_block_gemv", None)
+    if cached is not None and cached[0] is weight_scale:
+        weight_ok = cached[1]
+    else:
+        weight_ok = _fp8_block_gemv_weight_ok(weight, weight_scale)
+        if not torch.compiler.is_compiling():
+            weight._unsloth_fp8_block_gemv = (weight_scale, weight_ok)
+    if not weight_ok:
+        return False
+    if not (X.is_cuda and X.dtype in (torch.bfloat16, torch.float16)) or X.device != weight.device:
+        return False
+    K = weight.shape[1]
+    if X.shape[-1] != K:
+        return False
+    rows = X.numel() // K
+    # Decode only: one token per sequence, prefill keeps the block GEMM.
+    if not 1 <= rows <= _FP8_BLOCK_GEMV_MAX_ROWS or (X.dim() >= 3 and X.shape[-2] != 1):
+        return False
+    return not (torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad))
 
 
 _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS = 16 * 1024 * 1024
