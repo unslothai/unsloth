@@ -6,8 +6,6 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// Pinned picker rows lift through the sidebar's helpers so the two never drift.
-
 const HOOK = readSrc("features/model-picker/components/model-selector/use-pinned-row-drag.ts");
 const SIDEBAR = readSrc("features/chat/hooks/use-sidebar-drag.ts");
 const PICKERS = readSrc("features/model-picker/components/model-selector/pickers.tsx");

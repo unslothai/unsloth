@@ -230,7 +230,6 @@ def test_fused_encoder_fp16_casts_weights_and_returns_the_input_dtype():
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("frames", [1, 9])
 def test_the_condition_encode_recipe_runs_through_the_fp16_encoder(frames, device):
-    # keyframe path: vae.encode feeds the encoder output to a float32 quant_conv, so it must be float32
     from core.inference.video_minimax_h3 import trim_h3_video_vae
 
     vae = _tiny_vae().to(device)
@@ -256,7 +255,6 @@ def test_the_condition_encode_recipe_runs_through_the_fp16_encoder(frames, devic
 
 @needs_cuda
 def test_the_decoder_residual_stream_stays_float32_under_the_decode_autocast(monkeypatch):
-    # the stock blocks keep the residual in float32 under float16 autocast, so must we
     from core.inference.video_minimax_h3 import trim_h3_video_vae
 
     vae = _tiny_vae().cuda()
@@ -335,7 +333,6 @@ def test_pending_bias_is_added_before_the_norm_and_the_pad():
     torch.testing.assert_close(
         H.norm_silu_pad(x, norm, (1, 1, 1, 1), 2, in_bias = pending), ref, rtol = 1e-5, atol = 1e-5
     )
-    # a zero frame stays zero: the bias belongs to real frames only
     got = H.norm_silu_pad(x, None, (0, 1, 0, 1), 2, in_bias = pending)
     assert got[:, :, :2].abs().max() == 0
 
@@ -360,7 +357,7 @@ def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
     vae = _tiny_vae()
     fast = copy.deepcopy(vae)
     assert H._install_tile_batch(fast)
-    z = torch.randn(1, 8, 3, 6, 9)  # 24x36 px: 2x3 tiles of 16 px
+    z = torch.randn(1, 8, 3, 6, 9)
     with torch.no_grad():
         ref = vae._decode_clip(z)
         for batch in ("1", "2", "4", "8"):
@@ -488,7 +485,6 @@ def test_int8_quant_rows_kernel_matches_the_torch_codes(dtype):
     rows, n = 4 * 1797, 2048
     x = torch.randn(rows, n, device = "cuda", generator = g)
     x = (x * (torch.rand(n, device = "cuda", generator = g) * 4 + 0.1)).to(dtype)
-    # exact halves: absmax 127 gives s = 1, where half-to-even and half-away-from-zero disagree
     x[0, :6] = torch.tensor([127.0, 2.5, -3.5, 0.5, -0.5, 126.5], dtype = dtype)
     x[0, 6:] = 0
     xf = x.float()
@@ -625,14 +621,12 @@ def test_the_fp16_encoder_falls_back_to_the_stock_encoder(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("no triton")
 
-    # the installed guard resolves the fused body at call time, so breaking it exercises the real fallback
     monkeypatch.setattr(H, "_fast_encoder_body", boom)
     with torch.no_grad():
         stock = vae.encoder(x)
         want = ref_vae.encoder(x)
     assert vae.encoder._unsloth_fast_failed
     assert stock.dtype is torch.float32
-    # the stock forward over the float16 weights: float16 arithmetic, so close to both, equal to neither
     assert ((stock - want).norm() / want.norm()) < 1e-2
     assert ((stock - fused).norm() / fused.norm()) < 1e-2
 
@@ -677,7 +671,7 @@ def test_settle_drops_a_lever_that_fell_back_from_the_status():
     )
     H.settle_h3_vae_fallback(state, pipe)
     assert state.speed_optims == ("cudnn_benchmark", "h3_vae_fused_encoder", "h3_vae_fp16_encoder")
-    H.settle_h3_vae_fallback(state, types.SimpleNamespace())  # no vae: a no-op, never raises
+    H.settle_h3_vae_fallback(state, types.SimpleNamespace())
 
 
 def test_int8_small_row_path_matches_the_int_mm_path():
@@ -686,10 +680,8 @@ def test_int8_small_row_path_matches_the_int_mm_path():
     holder.transformer_blocks = torch.nn.ModuleList([torch.nn.ModuleDict({"l": lin})])
     assert H._install_int8_decoder(types.SimpleNamespace(decoder = holder), keep_blocks = ()) > 0
     x = torch.randn(64, 64)
-    whole = lin(x)  # 64 rows: torch._int_mm
-    sliced = torch.cat(
-        [lin(x[i : i + 8]) for i in range(0, 64, 8)]
-    )  # 8 rows: the dequantised float path
+    whole = lin(x)
+    sliced = torch.cat([lin(x[i : i + 8]) for i in range(0, 64, 8)])
     assert ((whole - sliced).norm() / whole.norm()) < 0.02
 
 
@@ -734,14 +726,14 @@ def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
 @pytest.mark.parametrize(
     "platform, probe, expected",
     [
-        ("win32", lambda: False, False),  # Triton present but its JIT cannot find the CRT headers
+        ("win32", lambda: False, False),
         ("win32", lambda: True, True),
         (
             "win32",
             lambda: 1 / 0,
             True,
-        ),  # the probe itself failing is not evidence; per-call fallback covers it
-        ("linux", lambda: False, True),  # never asked off Windows
+        ),
+        ("linux", lambda: False, True),
     ],
 )
 def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, probe, expected):
@@ -1074,11 +1066,11 @@ def test_kernel_annotations_resolve_against_the_module_globals():
 @pytest.mark.parametrize(
     "version, ok",
     [
-        ("3.2.0", False),  # compiles, but wrong GroupNorm statistics for a channels-last input
+        ("3.2.0", False),
         ("3.1.0", False),
         ("3.3.1", True),
         ("3.6.0", True),
-        ("3.8.0.post28", True),  # triton-windows
+        ("3.8.0.post28", True),
         ("3.2.0+git35c6c7c6", False),
         ("not a version", False),
     ],
@@ -1100,8 +1092,8 @@ def test_the_fast_path_needs_a_verified_triton(monkeypatch, version, ok):
 @pytest.mark.parametrize(
     "before, planned, mid",
     [
-        (True, False, False),  # the bf16 model that turned it on unloads mid-decode
-        (False, False, True),  # a bf16 model loads and turns it on mid-decode
+        (True, False, False),
+        (False, False, True),
         (True, True, False),
         (False, True, True),
     ],
@@ -1217,7 +1209,6 @@ def test_int8_decoder_rotated_path_stays_close(monkeypatch):
 
 
 def test_the_fused_decoder_reservation_turns_off_the_forced_vae_block_compile(monkeypatch):
-    # UNSLOTH_DIFFUSION_COMPILE_VAE=1 used to compile the decoder blocks the fused decoder never calls, and report it
     from core.inference import diffusion_speed as ds_mod
 
     monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
@@ -1227,7 +1218,6 @@ def test_the_fused_decoder_reservation_turns_off_the_forced_vae_block_compile(mo
     pipe = types.SimpleNamespace(vae = vae)
     assert H.reserve_h3_fast_decoder(vae, speed_mode = "default", workflow = "t2va") is True
     assert ds_mod._vae_decode_compile_allowed(pipe, "default") is False
-    # the reservation predicts exactly what apply_h3_vae_speedups then engages
     assert H.LEVER_FUSED_DECODER in H.apply_h3_vae_speedups(
         vae, speed_mode = "default", workflow = "t2va"
     )
@@ -1271,7 +1261,6 @@ def test_the_h3_load_reserves_the_fused_decoder_before_the_speed_optims():
     (apply_vae,) = calls("apply_h3_vae_speedups")
     assert reserve.lineno < calls("apply_speed_optims")[0].lineno
     assert {k.arg for k in reserve.keywords} == {"speed_mode", "workflow"}
-    # the same tier and workflow as the call that engages the fused decoder
     for kw in ("speed_mode", "workflow"):
         got = {k.arg: ast.dump(k.value) for k in reserve.keywords}[kw]
         assert got == {k.arg: ast.dump(k.value) for k in apply_vae.keywords}[kw]

@@ -6,8 +6,9 @@ unfused decode op sequence they replace, both against an fp64 reference, plus th
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
-if not torch.cuda.is_available():
+if not has_real_cuda():
     pytest.skip("needs a CUDA device", allow_module_level = True)
 
 pytest.importorskip("triton")
@@ -227,7 +228,9 @@ def test_decode_split_sync_and_mixed_devices(monkeypatch):
     assert len(calls) == 0
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two real GPUs"
+)
 def test_decode_rope_on_another_device_orders_with_the_copy():
     # Rotate on GPU 1 with GPU 0 current, then copy to GPU 0: the copy must see rotated values.
     cos, sin = _table(4096, 128, torch.bfloat16)

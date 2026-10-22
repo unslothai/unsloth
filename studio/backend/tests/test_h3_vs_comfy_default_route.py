@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 routing and canvas gaps found against ComfyUI's H3 int8 template.
-
-* ``/api/system.diffusers_offload_tiers`` publishes the Diffusers tiers this backend can run, so the
-  picker stops sending 24-48 GB cards to the 2.5-3.2x slower GGUF (sd-cli) row. Off with
-  ``UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0``.
-* 864x480 (ComfyUI's template default, ResolutionSelector 16:9 at 0.4 MP, multiple 32) used to be
-  refused with 422. Off with ``UNSLOTH_VIDEO_H3_480P=0``.
-"""
+"""Publish Diffusers offload tiers so 24-48 GB cards avoid the slower GGUF row; 864x480 must not 422."""
 
 import ast
 import importlib
@@ -43,7 +36,6 @@ def test_the_route_reader_is_torch_free_and_keyed_by_lowercased_repo(monkeypatch
     for tier in tiers["minimaxai/minimax-h3"]:
         assert set(tier) == {"gpu_gb", "system_ram_gb", "requires_quantised_streaming"}
         assert tier["requires_quantised_streaming"] is True
-    # Strictly wider than the catalog's static 30 GiB / 80 GiB streamed tier somewhere.
     assert any(
         t["gpu_gb"] < 30.0 or t["system_ram_gb"] < 80.0 for t in tiers["minimaxai/minimax-h3"]
     )
@@ -157,8 +149,7 @@ _STREAMED_SET_TIER_GIB = _streamed_set_tier_gib()
 def test_each_widening_follows_the_kill_switch_of_the_behaviour_it_relies_on(
     monkeypatch, te_stream, arena, expected
 ):
-    # The 14 GiB tier is only true while the conditioner streams, the 61 GiB RAM tier only while the streamed denoiser
-    # holds one host copy; turning either behaviour off must withdraw exactly the widening it made possible.
+    # Each wide tier depends on its streaming behaviour; disabling one must withdraw only its widening.
     monkeypatch.delenv("UNSLOTH_H3_DIFFUSERS_WIDE_TIERS", raising = False)
     for name, value in (
         ("UNSLOTH_H3_TE_STREAM", te_stream),
@@ -247,5 +238,5 @@ def test_the_vram_tier_admits_only_cards_that_render_the_default_request(monkeyp
     )
     (tier,) = h3_diffusers_fit_tiers()
     assert floor_gib <= tier["gpu_gb"] < floor_gib + 0.5
-    assert tier["gpu_gb"] > 12.0  # a 12 GB card keeps GGUF
-    assert tier["gpu_gb"] <= 15.99  # a 16 GB card still routes to the Diffusers row
+    assert tier["gpu_gb"] > 12.0
+    assert tier["gpu_gb"] <= 15.99

@@ -3994,8 +3994,9 @@ class FastBaseModel:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 elif fsdp2_requested():
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
+                # Any dequantizing fp8 load (explicit config, pre-sm89 / CPU fallback); else a no-op.
+                _drop_fp8_dequantize_conversions(model)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
-                    _drop_fp8_dequantize_conversions(model)
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,

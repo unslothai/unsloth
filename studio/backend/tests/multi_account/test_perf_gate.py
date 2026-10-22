@@ -74,7 +74,6 @@ def test_steady_cost_drops_a_one_off_rebuild_but_keeps_a_persistent_one(tmp_path
 
     def one_off_rebuild():
         calls.append(None)
-        # A cache revalidation that happens to land inside the second measured call.
         for _ in range(2 if len(calls) == 2 else 1):
             with closing(sqlite3.connect(tmp_path / "one-off.db")) as conn:
                 conn.execute("SELECT 1")

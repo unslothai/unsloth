@@ -78,8 +78,7 @@ test("STT loading stays busy until authoritative residency refresh completes", (
 });
 
 test("cancelled deferred downloads remain cancelled on return", () => {
-  // `model` is null once the download thread has stopped, so the cancelled model id has to
-  // come from cancelled_model for a cancellation the user made while this page was hidden.
+  // `model` is null once the download thread stops, so the id comes from cancelled_model.
   assert.match(
     source,
     /const download = sttEngineStatusFor[\s\S]*download\?\.cancelled[\s\S]*\(download\.model \?\? download\.cancelled_model\) === deferred\.sidecarKey[\s\S]*return/,
