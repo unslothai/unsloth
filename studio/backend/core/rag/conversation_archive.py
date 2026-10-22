@@ -2620,10 +2620,16 @@ def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = N
     return len(removed)
 
 
-def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[str, str], bool]:
+def copy_thread_documents(
+    source_thread_id: str,
+    thread_id: str,
+    *,
+    created_before: Optional[str] = None,
+) -> tuple[dict[str, str], bool]:
     """Copy a thread's finished uploads into another thread. Returns the source-to-copy document id
     map and whether an upload still being ingested was left behind. Failed uploads are not copied
-    and not reported: the documents bar never shows them.
+    and not reported: the documents bar never shows them. ``created_before`` (ISO-8601 UTC) leaves
+    out uploads made after a fork point.
 
     Files are copied before the transaction so rag.db's write lock is never held across file I/O.
     """
@@ -2634,8 +2640,9 @@ def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[s
     conn = rag_db.get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE scope=? ORDER BY created_at",
-            (store.thread_scope(source_thread_id),),
+            "SELECT * FROM documents WHERE scope=? AND (? IS NULL OR created_at<?) "
+            "ORDER BY created_at",
+            (store.thread_scope(source_thread_id), created_before, created_before),
         ).fetchall()
         documents = [dict(row) for row in rows if row["status"] == "completed"]
         for document in documents:

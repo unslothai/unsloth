@@ -212,6 +212,29 @@ def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out,
 
 
 @pytest.mark.parametrize("dtype", _dtypes())
+@pytest.mark.parametrize("M", [1, 32])
+def test_sm89_unsplit_dx_matches_split(N, fused, monkeypatch, dtype, M):
+    # The sm89 dX rule (split 1 once the output fills every SM) against the split it replaced.
+    if torch.cuda.get_device_capability() < (8, 0):
+        pytest.skip("fp16 / bf16 Ampere tiles")
+    packed, scale, gs = _random_nvfp4(512, 14336, seed = 11)
+    G = torch.randn(M, 512, device = "cuda", dtype = dtype)
+    monkeypatch.setattr(N, "_device_capability", lambda index: (8, 9))
+    monkeypatch.setattr(N, "_sm_count", lambda index: 58)
+    assert N._fused_config(M, 14336, 512, G.device, True)[-1] == 1
+    dX = _dx(N, G, packed, scale, gs)
+    old = N._fused_config(M, 14336, 512, G.device, True)[:-1] + (4,)
+    monkeypatch.setattr(N, "_CONFIG_HOOK", lambda *a: old)
+    dX_split = _dx(N, G, packed, scale, gs)
+    W = N.nvfp4_dequantize(packed, scale, gs, dtype)
+    exact = G.double() @ W.double()
+    err_new, err_old = _oracle_errors(dX, dX_split, exact)
+    assert err_new <= 1.25 * err_old + 1e-6, (err_new, err_old)
+    _close_to_dense(dX, dX_split)
+    _close_to_dense(dX, G @ W)
+
+
+@pytest.mark.parametrize("dtype", _dtypes())
 def test_strided_operands(N, fused, monkeypatch, dtype):
     big_packed, big_scale, gs = _random_nvfp4(72, 512, seed = 3)
     packed, scale = big_packed[:, :96], big_scale[:, :12]

@@ -137,7 +137,7 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
-from ._custom_dtype import resolve_dtype, trusted_custom_dtype
+from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
@@ -155,6 +155,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _dequantize_leftover_fp8_params,
+    _drop_fp8_dequantize_conversions,
     _restore_dropped_fp8_scales,
     _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
@@ -242,6 +243,7 @@ try:
 except:
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
+    xpu_keeps_explicit_bf16,
     get_device_stats,
     clean_gpu_cache,
     is_hip,
@@ -3379,7 +3381,8 @@ class FastBaseModel:
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
             if dtype == torch.float16:
                 dtype = torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -3891,7 +3894,9 @@ class FastBaseModel:
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
 
-        verify_fp8_support_if_applicable(model_config)
+        verify_fp8_support_if_applicable(
+            model_config, fast_inference = bool(fast_inference and is_vLLM_available())
+        )
 
         raise_handler = RaiseUninitialized()
         try:
@@ -4016,6 +4021,7 @@ class FastBaseModel:
                 elif fsdp2_requested():
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                    _drop_fp8_dequantize_conversions(model)
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
@@ -4199,6 +4205,7 @@ class FastBaseModel:
             with torch.no_grad():
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
+                cast_mixed_linear_inputs(model, torch_dtype)
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()

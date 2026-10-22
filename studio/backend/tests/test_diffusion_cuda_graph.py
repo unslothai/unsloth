@@ -14,6 +14,7 @@ import contextlib
 import inspect
 import json
 import sys
+import threading
 import types
 import weakref
 
@@ -1617,3 +1618,60 @@ def test_eager_as_recorded_runs_the_original_call_when_the_copies_do_not_fit(mon
         assert torch.equal(got, hidden + txt.mean())
     finally:
         cg.uninstall_all([handle])
+
+
+def test_a_refused_capture_runs_eager_and_records_on_a_later_call(stub_torch, monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    retired = []
+    real_retire = cg.retire_failed_capture
+    monkeypatch.setattr(
+        cg, "retire_failed_capture", lambda *a, **k: retired.append(a) or real_retire(*a, **k)
+    )
+    module = _FakeDiT()
+    handle = _armed(module)
+    cg.capture_hold()  # replica-side work that does not drain
+    try:
+        handle(_t(), timestep = _t((1,)), return_dict = False)
+        assert handle.poisoned is False and handle.stats["captures"] == 0
+        assert handle.stats["capture_refusals"] == 1 and handle.stats["eager_calls"] == 1
+        assert retired == [] and not handle.cache and cg._CAPTURE_DEPTH == 0
+        calls = module.calls
+        # while the count stands a capture is refused up front, warm-ups included
+        handle(_t(), timestep = _t((1,)), return_dict = False)
+        assert handle.stats["capture_refusals"] == 2 and module.calls == calls + 1
+    finally:
+        cg.capture_release()
+    calls = module.calls
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned is False and handle.stats["captures"] == 1
+    assert module.calls == calls + cg.WARMUP_ITERS + 1
+    assert retired == []
+
+
+def test_capture_warmups_wait_for_held_replica_work(stub_torch):
+    seen = []
+
+    class Dit(_FakeDiT):
+        def forward(self, *args, **kwargs):
+            seen.append(cg._OUTSIDE_JOBS)
+            return super().forward(*args, **kwargs)
+
+    handle = _armed(Dit())
+    held, release = threading.Event(), threading.Event()
+
+    def replica_job():
+        with cg.outside_capture():
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target = replica_job)
+    worker.start()
+    assert held.wait(5)
+    timer = threading.Timer(0.3, release.set)
+    timer.start()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    worker.join(5)
+    timer.join(5)
+    assert handle.stats["captures"] == 1
+    assert seen == [0] * (cg.WARMUP_ITERS + 1)
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0

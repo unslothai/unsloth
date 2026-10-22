@@ -356,12 +356,12 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
     "renameChat",
     "clearAllUnreads",
   ]) {
-    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
+    const at = APP_SIDEBAR.indexOf(`useShortcut(\n    "${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
-    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at));
+    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  );", at));
     assert.match(
       body,
-      /if \(sidebarCovered\(\)\) return;/,
+      /\{ claims: sidebarUncovered \}/,
       `${id} acts on the chat behind an open dialog`,
     );
   }
@@ -456,13 +456,13 @@ test("the header pickers do not open behind a dialog", async () => {
     assert.notEqual(at, -1, `${id} is gone`);
     assert.match(
       CHAT_PAGE.slice(at, at + 260),
-      /if \(chatCovered\(\)\) return;/,
+      /claims: chatUncovered/,
       `${id} opens a control on the covered surface`,
     );
   }
   assert.match(
     CHAT_PAGE,
-    /isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\)/,
+    /const chatUncovered = \(\) => !isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\);/,
   );
 });
 
@@ -492,25 +492,27 @@ test("a tool call cannot be answered from behind a dialog", async () => {
   for (const id of ["approveToolRequest", "declineToolRequest"]) {
     const at = source.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
-    const body = source.slice(at, at + 200);
-    const guard = body.indexOf("if (chatCovered()) return;");
-    const call = body.indexOf("resolve(");
-    assert.notEqual(guard, -1, `${id} answers from behind a dialog`);
-    assert.ok(guard < call, `${id} resolves before it checks`);
+    assert.match(
+      source.slice(at, source.indexOf("\n  });", at)),
+      /claims: chatUncovered,/,
+      `${id} answers from behind a dialog`,
+    );
   }
-  assert.match(source, /isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\)/);
+  assert.match(
+    source,
+    /const chatUncovered = \(\) => !isSurfaceBackgrounded\(COMPOSER_INPUT_SELECTOR\);/,
+  );
 });
 
 // A selection made behind a dialog is invisible and still what the mutating
 // chords act on afterwards, and the clipboard is outside the app entirely.
 test("selection and clipboard chords stop at a covered sidebar", async () => {
   for (const id of ["selectAllChats", "copyChatAsMarkdown", "copySessionId"]) {
-    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
+    const at = APP_SIDEBAR.search(new RegExp(`useShortcut\\(\\n?\\s*"${id}",`));
     assert.notEqual(at, -1, `${id} is gone`);
-    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at));
     assert.match(
-      body,
-      /if \(sidebarCovered\(\)\) return;/,
+      APP_SIDEBAR.slice(at, at + 260),
+      /claims: sidebarUncovered/,
       `${id} acts behind an open dialog`,
     );
   }
@@ -543,8 +545,8 @@ test("the remaining chat-page chords stop at a covered surface", async () => {
     const at = CHAT_PAGE.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);
     assert.match(
-      CHAT_PAGE.slice(at, at + 220),
-      /if \(chatCovered\(\)\) return;/,
+      CHAT_PAGE.slice(at, at + 400),
+      /claims: chatUncovered/,
       `${id} acts on the covered surface`,
     );
   }
