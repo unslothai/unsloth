@@ -90,3 +90,15 @@ class TestNativePathLeaseRedactionStillWorks:
     def test_nested_native_path_lease_key_redacted(self):
         out = _run({"event": "load", "payload": {"nativePathLease": "AAAAAA.BBBBBB"}})
         assert out["payload"]["nativePathLease"] == "<redacted native path lease>"
+
+    def test_url_credentials_redacted_in_strings_args_and_exceptions(self):
+        url = "http://bob:hunter2@127.0.0.1:9/v1/models"
+        out = _run(
+            {
+                "event": f"Failed to list models: {url}",
+                "positional_args": ("custom", url),
+                "exc": ValueError(f"Client error for url '{url}'"),
+            }
+        )
+        assert "hunter2" not in repr(out)
+        assert "http://<redacted>@127.0.0.1:9/v1/models" in out["event"]

@@ -30383,7 +30383,7 @@ async def _proxy_to_external_provider(
     # refused target never sees a credential. A managed upstream is Unsloth's own loopback.
     if managed is None:
         try:
-            base_url = validate_provider_base_url(base_url)
+            base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from None
 
@@ -30936,7 +30936,8 @@ async def _proxy_to_external_provider(
             subject = current_subject,
         )
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = provider_type,
         base_url = base_url,
         api_key = api_key,
