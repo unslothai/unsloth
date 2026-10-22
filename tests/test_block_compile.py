@@ -132,7 +132,9 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
 
 
 @pytest.mark.parametrize(
-    "fullgraph, suppress", [(True, False), (False, False), (False, True)], ids = ["fullgraph", "default", "suppress_errors"]
+    "fullgraph, suppress",
+    [(True, False), (False, False), (False, True)],
+    ids = ["fullgraph", "default", "suppress_errors"],
 )
 def test_outer_compile_owns_the_block(monkeypatch, fullgraph, suppress):
     """A user's torch.compile around a wrapped layer: no maybe_mark_dynamic inside the trace (forbidden),
