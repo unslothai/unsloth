@@ -576,7 +576,9 @@ export {
   createChatProject,
   deleteChatProject,
   moveChatItemToProject,
+  projectActivityAt,
   renameChatProject,
+  sortProjectsByActivity,
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";

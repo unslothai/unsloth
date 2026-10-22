@@ -356,8 +356,11 @@ export const BUDGET = {
   // Chat fork affordances (the sidebar fork mark, the "Forked from" divider and the shared fork toasts) in the
   // eager chat chunk: +1_460 B raw / +361 B transfer against 77e742c8e2 (6_879_345 -> 6_880_805 raw,
   // 2_071_823 -> 2_072_184 transfer, 97 chunks). Raised by that growth.
-  transferBytes: 2_072_373,
-  rawBytes: 6_881_049,
+  // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
+  // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
+  // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
+  transferBytes: 2_072_682,
+  rawBytes: 6_881_554,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

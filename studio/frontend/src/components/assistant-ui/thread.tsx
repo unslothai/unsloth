@@ -178,7 +178,10 @@ import {
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
-import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import {
+  sortProjectsByActivity,
+  useChatProjects,
+} from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { ResearchMessage } from "@/features/chat/components/research-message";
 import {
@@ -6998,11 +7001,8 @@ const ComposerToolsMenu: FC<{
         externalSelection?.modelId,
       ) !== true) ||
     incognito;
-  // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
-  const recentProjects = [...projects]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 3);
+  const recentProjects = sortProjectsByActivity(projects).slice(0, 3);
   const openProject = (projectId: string) => {
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
