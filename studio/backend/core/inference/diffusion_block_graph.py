@@ -588,6 +588,7 @@ class BlockGraph:
         out_spec, metas = self.seen.pop(full)
         entry = _Entry()
         out_slot = (self.cls, key, "out", tuple(metas))
+        retired = False
         try:
             entry.static_in = self.shared.statics_for(slot, live)
             entry.static_out = self.shared.outputs_for(out_slot, metas)
@@ -624,6 +625,7 @@ class BlockGraph:
                             graph.capture_end()
                     except BaseException as exc:
                         # Later blocks record into a fresh pool; this one stays with the graphs already in it.
+                        retired = True
                         retire_failed_capture(graph, pool, exc)
                         if self.shared.pool == pool:
                             self.shared.pool = None
@@ -638,7 +640,10 @@ class BlockGraph:
             return None
         except Exception as exc:  # noqa: BLE001 - a block that cannot record runs its compute for the load's life
             self._poison(exc)
-            _flush_after_failed_capture()
+            if (
+                retired
+            ):  # a failure before capture_begin (exhausted budget, warm-up) retired no pool
+                _flush_after_failed_capture()
             return None
         entry.slots = (slot, out_slot)
         self.shared.hold(entry.slots)
@@ -1036,6 +1041,7 @@ class SegmentGraph:
         rec = self.seen.pop(full)
         entry = _SegEntry()
         slot = ("segment", id(self), full[0])
+        retired = False
         try:
             entry.static_in = self.shared.statics_for(slot, live)
             for dst, src in zip(entry.static_in, live):
@@ -1059,6 +1065,7 @@ class SegmentGraph:
                         finally:
                             graph.capture_end()
                     except BaseException as exc:
+                        retired = True
                         retire_failed_capture(graph, pool, exc)
                         if self.shared.pool == pool:
                             self.shared.pool = None
@@ -1070,7 +1077,8 @@ class SegmentGraph:
             self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1
             return None
         except Exception as exc:  # noqa: BLE001 - this layout stays per block for the load's life
-            _flush_after_failed_capture()
+            if retired:
+                _flush_after_failed_capture()
             self.capture_error = {"type": type(exc).__name__, "msg": str(exc)[:4000]}
             self.refused.add(full)
             self.stats["segment_fallbacks"] += 1

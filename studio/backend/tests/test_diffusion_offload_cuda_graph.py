@@ -205,6 +205,78 @@ def test_an_offloaded_re_record_hands_the_dropped_pool_back_first(monkeypatch):
     cg.uninstall_all(handles)
 
 
+def _two_shapes(net):
+    outs = []
+    with torch.no_grad():
+        for rows in (16, 8):
+            g = torch.Generator(device = "cpu").manual_seed(rows)
+            x = torch.randn(rows, 64, generator = g).cuda()
+            t = torch.rand(1, generator = g).cuda()
+            outs.append(net(x, t, return_dict = False)[0].clone())
+    torch.cuda.synchronize()
+    return outs
+
+
+def test_one_invalidation_flushes_the_retired_pool_once_for_every_re_recorded_key(monkeypatch):
+    """Two keys re-recorded under one new placement share one retired pool: the first re-record flushes it, the second
+    does not flush the allocator again."""
+    _cuda()
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 3)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    _two_shapes(net)
+    _two_shapes(net)
+    assert handles[0].stats["captures"] == 2
+    flushes = {"n": 0}
+    real = cg.flush_retired_pools
+
+    def counted():
+        flushes["n"] += 1
+        return real()
+
+    monkeypatch.setattr(cg, "flush_retired_pools", counted)
+    for cycle in range(2):
+        restore = dm.release_resident_groups(pipe, 10_000, None)
+        hold = torch.empty(16 << 20, dtype = torch.uint8, device = "cuda")
+        restore()
+        del hold
+        _two_shapes(net)
+        _two_shapes(net)
+        assert flushes["n"] == cycle + 1
+    assert handles[0].stats["captures"] == 6
+    cg.uninstall_all(handles)
+
+
+def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
+    """While the flush is refused (another thread records), the re-record is deferred and the step runs eager; it
+    records once the flush goes through."""
+    _cuda()
+    seeds = list(range(5))
+    want = _eager_reference(3, seeds)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 3)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    got = _run(net, seeds[:2])
+    assert handles[0].stats["captures"] == 1
+    real = cg.flush_retired_pools
+    monkeypatch.setattr(cg, "flush_retired_pools", lambda: False)
+    restore = dm.release_resident_groups(pipe, 10_000, None)
+    hold = torch.empty(16 << 20, dtype = torch.uint8, device = "cuda")
+    restore()
+    del hold
+    got += _run(net, seeds[2:3])
+    assert handles[0].stats["captures"] == 1
+    assert handles[0].stats.get("capture_refusals", 0) >= 1
+    monkeypatch.setattr(cg, "flush_retired_pools", real)
+    got += _run(net, seeds[3:])
+    assert handles[0].stats["captures"] == 2
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    cg.uninstall_all(handles)
+
+
 def test_unpinned_host_copies_keep_the_forward_eager_with_the_reason(monkeypatch):
     _cuda()
     monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")

@@ -15,6 +15,7 @@ import gc
 import inspect
 import os
 import threading
+import time
 import traceback
 import weakref
 import types
@@ -290,6 +291,15 @@ def hold_off_capture():
         _CAPTURE_LOCK.release()
 
 
+# An offloaded step's recordings were dropped under a new placement (``GraphedForward.__call__``): their pool is
+# retired, and the next re-record must flush it first. Cleared by the flush, so one invalidation flushes once.
+_RETIRED_POOL_DUE = [False]
+
+# Tries a re-record makes at the retired-pool flush before it defers to a later step (a 10 Hz progress poll holds
+# the capture lock only for an instant; another thread's recording holds it for the whole capture).
+_FLUSH_TRIES = 3
+
+
 def flush_retired_pools() -> bool:
     """Hand a retired graph pool's segments back to the device. A capture allocates only from its own pool or fresh
     device memory, never from another pool's cached segments, and the allocator does not empty its cache while a
@@ -305,6 +315,7 @@ def flush_retired_pools() -> bool:
                 torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001 - best effort
             return False
+    _RETIRED_POOL_DUE[0] = False
     return True
 
 
@@ -1285,6 +1296,7 @@ class GraphedForward:
                     # cudaMallocs again. The dropped pool's blocks stay with the allocator.
                     self.cache.clear()
                     _drop_pool_if_unused()  # the next capture must not record into a pool no graph holds
+                    _RETIRED_POOL_DUE[0] = True
                 self._warmed.clear()
                 self.valid_token = token
             refusal = self.placement.refusal(self.stats)
@@ -1647,16 +1659,30 @@ class GraphedForward:
                 torch.cuda.current_stream().wait_stream(side)
             torch.cuda.synchronize()
 
-            if self.placement is not None and key is not None and key in self._recorded:
-                # The weights moved: this key's previous recording was dropped with its pool. Its segments go back now,
+            if self.placement is not None and recapture and _RETIRED_POOL_DUE[0]:
+                # The weights moved: the previous recordings were dropped with their pool. Its segments go back now,
                 # before the new recording allocates beside them (the re-record skips torch.cuda.graph's own flush).
-                flush_retired_pools()
+                # No recording without it: a capture cannot reclaim cached segments, so this step runs eager instead.
+                for attempt in range(_FLUSH_TRIES):
+                    if flush_retired_pools():
+                        break
+                    if attempt + 1 < _FLUSH_TRIES:
+                        time.sleep(0.01)
+                else:
+                    if skip_stats is not None:
+                        skip.stats = skip_stats
+                    raise CaptureRefused(
+                        "the retired graph pool could not be flushed (another capture is recording); "
+                        "re-record deferred"
+                    )
             graph = torch.cuda.CUDAGraph()
             # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
             pool = _POOL_BOX[0]
             if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
                 pool = torch.cuda.graph_pool_handle()
             recorder = _graph_without_flush if recapture else torch.cuda.graph
+            if not recapture:
+                _RETIRED_POOL_DUE[0] = False  # torch.cuda.graph flushes on entry
             try:
                 with _capturing(), recorder(graph, pool = pool):
                     out = record(*static_args, **static_kwargs)

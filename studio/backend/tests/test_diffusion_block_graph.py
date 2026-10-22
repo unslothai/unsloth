@@ -894,6 +894,31 @@ def test_a_failed_block_capture_hands_its_pool_back(monkeypatch):
     handle.free()
 
 
+def test_a_block_capture_refused_before_recording_flushes_nothing(monkeypatch):
+    """Past the failure budget every block fails before capture_begin: no pool was retired, so no allocator flush."""
+    _cuda()
+    import core.inference.diffusion_cuda_graph as cg
+
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    flushes = {"n": 0}
+    monkeypatch.setattr(
+        cg,
+        "flush_retired_pools",
+        lambda: flushes.__setitem__("n", flushes["n"] + 1) or True,
+        raising = False,
+    )
+    monkeypatch.setattr(cg, "captures_exhausted", lambda: True)
+    x = torch.randn(7, 16, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(net(x), ref(x))
+    assert handle.stats["fallbacks"] + handle.stats.get("segment_fallbacks", 0) >= 1
+    assert flushes["n"] == 0
+    handle.free()
+
+
 def test_alternating_layouts_both_record():
     """True CFG calls each block with two text lengths in turn; each layout must still record and replay."""
     _cuda()
