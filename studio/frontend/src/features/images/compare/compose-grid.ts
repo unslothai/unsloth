@@ -63,6 +63,10 @@ export function wrapText(text: string, maxWidth: number, fontSize: number, measu
   return lines;
 }
 
+function clampLines(lines: string[], max: number): string[] {
+  return lines.length <= max ? lines : [...lines.slice(0, max - 1), `${lines[max - 1]}\u2026`];
+}
+
 function layoutAt(input: GridLayoutInput, cellWidth: number, cellHeight: number, measure: MeasureText, scale: number): GridLayout {
   const { cols, rows, legend } = input;
   const margin = Math.round(Math.max(0, input.margin) * scale);
@@ -74,9 +78,14 @@ function layoutAt(input: GridLayoutInput, cellWidth: number, cellHeight: number,
   const hasTitle = legend && Boolean(input.title);
   const padLeft = hasRow ? Math.floor((cellWidth * 3) / 4) : 0;
   const gridWidth = cols * cellWidth + (cols - 1) * margin;
-  const colLines = hasCol ? input.colLabels.map((t) => wrapText(t, cellWidth - gap, fontSize, measure)) : [];
-  const rowLines = hasRow ? input.rowLabels.map((t) => wrapText(t, padLeft - gap, fontSize, measure)) : [];
-  const titleLines = hasTitle ? wrapText(input.title, padLeft + gridWidth - 2 * gap, fontSize, measure) : [];
+  // A label band is never taller than a cell, so shrinking the cells always shrinks the grid (an overlong label
+  // is cut with an ellipsis instead of growing the canvas past its limits).
+  const maxLines = Math.max(1, Math.floor(cellHeight / lineHeight));
+  const colLines = hasCol ? input.colLabels.map((t) => clampLines(wrapText(t, cellWidth - gap, fontSize, measure), maxLines)) : [];
+  const rowLines = hasRow ? input.rowLabels.map((t) => clampLines(wrapText(t, padLeft - gap, fontSize, measure), maxLines)) : [];
+  const titleLines = hasTitle
+    ? clampLines(wrapText(input.title, padLeft + gridWidth - 2 * gap, fontSize, measure), maxLines)
+    : [];
   const padTop = hasCol ? Math.max(1, ...colLines.map((l) => l.length)) * lineHeight + gap * 2 : 0;
   const titleHeight = hasTitle ? titleLines.length * lineHeight + gap * 2 : 0;
   const top = titleHeight + padTop;
@@ -126,6 +135,8 @@ export function gridLayout(input: GridLayoutInput, measure: MeasureText): GridLa
       s,
     );
   }
+  // Cannot happen with bounded label bands; refused here rather than failing inside canvas allocation.
+  if (fitScale(layout) < 1) throw new Error(`the grid is too large to draw (${layout.width}x${layout.height})`);
   return layout;
 }
 

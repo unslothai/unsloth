@@ -798,7 +798,11 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     // Studio's compare grid: its adapters by exact id (Hub ones too, which a prompt tag matches only locally) and
     // the prompt enhancer it forced off.
     else if (key === "loras" && value) {
-      const loras = value.split(/,\s*/).flatMap((item) => {
+      // CSV items: an entry whose id holds a comma or quote is written "id: weight" with "" for a quote.
+      const items = [...value.matchAll(/\s*(?:"((?:[^"]|"")*)"|([^,]+))\s*(?:,|$)/g)].map((m) =>
+        m[1] !== undefined ? m[1].replace(/""/g, '"') : (m[2] ?? "").trim(),
+      );
+      const loras = items.flatMap((item) => {
         const at = item.lastIndexOf(":");
         return at > 0 ? [`${item.slice(0, at).trim()}:${item.slice(at + 1).trim()}`] : [];
       });

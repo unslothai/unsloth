@@ -831,6 +831,7 @@ test("variation seed table: a Var. strength sweep shares one seed across every c
 test("canvas table: the final, reflowed layout fits the side and pixel limits", () => {
   const long = Array.from({ length: 400 }, (_, i) => `word${i}`).join(" ");
   const wordy = Array.from({ length: 1000 }, (_, i) => `${"x".repeat(11)}${i % 10}`).join(" ");
+  const huge = Array.from({ length: 5000 }, (_, i) => `w${i}`).join(" ");
   // [cols, rows, cell side, column label, row label]
   const rows: Array<[number, number, number, string, string]> = [
     [8, 8, 2752, "", ""],
@@ -838,6 +839,9 @@ test("canvas table: the final, reflowed layout fits the side and pixel limits", 
     // Narrower cells rewrap labels onto more lines: one shrink pass leaves this at 97x19218 (over the side limit).
     [1, 64, 512, wordy, ""],
     [64, 1, 512, wordy, ""],
+    // So long that even 1 px cells with 10 px text cannot hold it: cut with an ellipsis, not drawn past the limits.
+    [5, 1, 1024, huge, ""],
+    [1, 64, 2752, huge, huge],
     [64, 1, 2752, "", long],
     [8, 8, 2752, long, long],
     [2, 2, 512, "a", "b"], // under the limits: unscaled
@@ -919,4 +923,24 @@ test("compare wiring: the request's ControlNet predicate gates CFG rescale; a fa
   const panel = readSrc("features/images/compare/compare-panel.tsx");
   assert.match(panel, /if \(!isDownloadCancelled\(err\)\) \{\n\s+toast\.error\(/);
   assert.doesNotMatch(panel, /\.catch\(\(\) => \{\}\)/);
+});
+
+test("LoRA ids with commas or quotes round-trip through the grid's LoRAs field", () => {
+  // [ids, expected restored entries]
+  const rows: Array<[string[], string[]]> = [
+    [["style, blue"], ["style, blue:0.5"]],
+    [['say "hi"', "plain"], ['say "hi":0.5', "plain:0.5"]],
+    [["a, b", "hub:odd/id", "c"], ["a, b:0.5", "hub:odd/id:0.5", "c:0.5"]],
+  ];
+  for (const [ids, expected] of rows) {
+    const ctx = sdxl({ loraCapable: true, loras: ids.map((id) => ({ id, weight: 0.5, label: id })) });
+    const first = base({ loras: ids.map((id) => ({ id, weight: 0.5 })) });
+    const info = gridParameters(plan([{ axisId: "steps", text: "4, 8" }], ctx), ctx, [first], { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false });
+    assert.deepEqual(parseA1111Parameters(info)?.loras, expected, ids.join(" | "));
+  }
+});
+
+test("an invalid typed Variation seed is refused for a compare run at any form strength", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /const checkVariation = varying \|\| \(compareOnce\.current !== null && Boolean\(sdCaps\?\.variation_seed\)\);\n\s+if \(checkVariation && runChoice\.variationSeed\.trim\(\) && parseVariationSeed\(runChoice\.variationSeed\) === null\) \{\n\s+toast\.error/);
 });

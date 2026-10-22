@@ -7,6 +7,7 @@
 import type { ControlNetSpecInput, DiffusionGenerateRequest, GalleryImage } from "../api.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "../lib/sampler-choice.ts";
 import { gridInfotext } from "./compose-grid.ts";
+import { joinAxisList } from "./compare-values.ts";
 import {
   buildCellRequest,
   gridNegativePrompt,
@@ -197,7 +198,8 @@ export function gridLoraField(
     if (!id) continue;
     items.push(`${id}: ${first?.loras?.find((l) => l.id === id)?.weight ?? 0}`);
   }
-  return items.length ? items.join(", ") : null;
+  // CSV-quoted where an id holds a comma or quote, so every id splits back out exactly.
+  return items.length ? joinAxisList(items) : null;
 }
 
 const AXIS_NAMES = ["X", "Y", "Z"] as const;

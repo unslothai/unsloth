@@ -5271,7 +5271,9 @@ export function ImagesPage({
       ? { ...sdChoice, variationSeed: String(vary.variationSeed), variationStrength: vary.strength }
       : sdChoice;
     const varying = Boolean(sdCaps?.variation_seed) && workflow === "create" && runChoice.variationStrength > 0;
-    if (varying && runChoice.variationSeed.trim() && parseVariationSeed(runChoice.variationSeed) === null) {
+    // A compare grid checks it at any form strength: a Var. strength axis can engage it with the form's at 0.
+    const checkVariation = varying || (compareOnce.current !== null && Boolean(sdCaps?.variation_seed));
+    if (checkVariation && runChoice.variationSeed.trim() && parseVariationSeed(runChoice.variationSeed) === null) {
       toast.error("Variation seed must be an integer from 0 to 4294967295");
       return;
     }
