@@ -1090,6 +1090,10 @@ export const de = {
       alternateSlot: "Alternatives Kürzel",
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
+      metaUnsupported: "Die Windows-Taste kann nicht in Tastenkürzeln verwendet werden.",
+      altGraphUnsupported: "AltGr-Kombinationen können nicht als Tastenkürzel verwendet werden.",
+      desktopOnly: "Nur in der Desktop-App",
+      builtInKey: "Integriert: {key}",
       actions: {
         findInPage: {
           label: "Auf der Seite suchen",
@@ -1290,6 +1294,10 @@ export const de = {
         steerMessage: {
           label: "Antwort steuern",
           description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
+        stopGeneration: {
+          label: "Generierung stoppen",
+          description: "Die laufende Antwort anhalten",
         },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
@@ -1835,9 +1843,6 @@ export const de = {
         showLoadedModels: "Anzeige geladener Modelle",
         showLoadedModelsDescription:
           "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
-        showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
-        showWhisperUpdatesDescription:
-          "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
         showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
         showAudioCppUpdatesDescription:
           "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
@@ -2097,9 +2102,9 @@ export const de = {
         longestStreak: "Längste Serie",
         activityTitle: "Token-Aktivität",
         activityDescription: {
-          daily: "Zeitraum: {weeks} · {total}",
-          weekly: "Spitzenwoche {total} · letzte {weeks}",
-          cumulative: "{total} kumuliert in den letzten {weeks}",
+          daily: "{total} seit {since}",
+          weekly: "Aktivste Woche {total} · seit {since}",
+          cumulative: "{total} insgesamt seit {since}",
         },
         mode: {
           daily: "Täglich",
@@ -2108,8 +2113,9 @@ export const de = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Woche vom {date} · {tokens}",
-        chartToggle: "Diagramm",
-        chartToggleHint: "Wöchentlich und Kumuliert als Diagramm mit beschrifteten Achsen anzeigen",
+        emptyDayTooltip: "{date} · Keine Aktivität",
+        apiRequests: "{count} über die API",
+        cumulativeTooltip: "Bis zur Woche vom {date} · {tokens} insgesamt",
         less: "Weniger",
         more: "Mehr",
         insightsTitle: "Aktivitätsauswertung",
@@ -2803,6 +2809,22 @@ export const de = {
         visibility: "Denken",
         visibilityDescription:
           "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
+      },
+      memory: {
+        title: "Gedächtnis",
+        description: "Notizen, die jeder Chat liest, für jedes Modell, lokal oder in der Cloud. Chats in einem Projekt lesen zusätzlich dessen AGENTS.md.",
+        enable: "Gedächtnis in Chats verwenden",
+        enableDescription: "Diese Notizen mit jedem Chat senden.",
+        locked: "Für diese Installation durch UNSLOTH_STUDIO_AGENTS_MD deaktiviert.",
+        editor: "Gedächtnisnotizen",
+        placeholder: "Zum Beispiel:\n- Ich schreibe Python und nutze uv.\n- Antworte kurz.",
+        hint: "Gespeichert in {path}. Du kannst diese Datei auch in jedem Texteditor bearbeiten.",
+        size: "{used} / {max} KB",
+        save: "Speichern",
+        saved: "Gedächtnis gespeichert",
+        loadError: "Gedächtnis konnte nicht geladen werden.",
+        saveError: "Gedächtnis konnte nicht gespeichert werden.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md gedächtnis erinnern merken personalisierung profil notizen",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",

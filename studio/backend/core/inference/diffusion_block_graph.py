@@ -575,7 +575,12 @@ class BlockGraph:
         return out
 
     def _record(self, full: tuple, live: list) -> Optional[_Entry]:
-        from .diffusion_cuda_graph import _capturing, refuse_if_exhausted, retire_failed_capture
+        from .diffusion_cuda_graph import (
+            CaptureRefused,
+            _capturing,
+            refuse_if_exhausted,
+            retire_failed_capture,
+        )
 
         torch = _torch()
         key = full[0]
@@ -626,6 +631,11 @@ class BlockGraph:
                 del out, flat
             current.wait_stream(stream)
             self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+        except CaptureRefused:
+            # Refused before capture_begin: nothing recorded, the pool untouched. Eager now, record on a later call.
+            self.seen[full] = (out_spec, metas)
+            self.stats["capture_refusals"] = self.stats.get("capture_refusals", 0) + 1
+            return None
         except Exception as exc:  # noqa: BLE001 - a block that cannot record runs its compute for the load's life
             self._poison(exc)
             return None
@@ -1013,6 +1023,7 @@ class SegmentGraph:
 
     def _capture(self, full: tuple, live: list) -> Optional[_SegEntry]:
         from .diffusion_cuda_graph import (
+            CaptureRefused,
             _capturing,
             capture_device,
             note_capture,
@@ -1053,6 +1064,10 @@ class SegmentGraph:
                         raise
             current.wait_stream(stream)
             self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+        except CaptureRefused:
+            self.seen[full] = rec
+            self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1
+            return None
         except Exception as exc:  # noqa: BLE001 - this layout stays per block for the load's life
             self.capture_error = {"type": type(exc).__name__, "msg": str(exc)[:4000]}
             self.refused.add(full)
@@ -1125,6 +1140,33 @@ def _is_original_forward(fn: Any, module: Any) -> bool:
     return getattr(fn, "__self__", None) is module and getattr(fn, "__func__", None) is getattr(
         type(module), "forward", None
     )
+
+
+def _own_forward(fn: Any, module: Any) -> Any:
+    """``module``'s live class ``forward`` (bound) when ``fn`` is the forward a hook captured from it, else None.
+
+    A hook registered before a class-level patch of ``forward`` (the deferred profile's per-arch fusions land on
+    render 3, after group offload hooked every block at load) still holds the class's own definition-time forward.
+    That is the same callable slot, so it is matched too, and the live (patched) forward is what runs below the hook,
+    exactly as when the patch came first."""
+    if getattr(fn, "__self__", None) is not module:
+        return None
+    func = getattr(fn, "__func__", None)
+    cls = type(module)
+    live = getattr(cls, "forward", None)
+    if func is None or live is None:
+        return None
+    if func is live:
+        return fn
+    qualname = getattr(func, "__qualname__", None)
+    owner = getattr(func, "__module__", None)
+    for base in cls.__mro__:
+        if qualname == f"{base.__qualname__}.forward" and owner == base.__module__:
+            try:
+                return live.__get__(module, cls)
+            except Exception:  # noqa: BLE001 - not a descriptor: leave the hook's forward alone
+                return None
+    return None
 
 
 def _inner_hook_reason(block: Any) -> Optional[str]:
@@ -1459,23 +1501,24 @@ def install_block_graphs(
                 registry = getattr(block, "_diffusers_hook", None)
                 refs = list(getattr(registry, "_fn_refs", None) or ())
                 target = getattr(block, "_unsloth_below_hook_ref", None)
-                if target not in refs:
-                    target = next(
-                        (
-                            r
-                            for r in refs
-                            if _is_original_forward(getattr(r, "forward", None), block)
-                        ),
-                        None,
-                    )
+                compute = None
+                if target in refs:
+                    compute = target.forward
+                else:
+                    target = None
+                    for r in refs:
+                        compute = _own_forward(getattr(r, "forward", None), block)
+                        if compute is not None:
+                            target = r
+                            break
                 if target is None:
                     refused["a stacked hook chain"] = refused.get("a stacked hook chain", 0) + 1
                     continue
-                compute = target.forward
+                original_fwd = target.forward
                 graph = BlockGraph(block, compute, block_shared)
                 target.forward = graph
 
-                def restore(ref: Any = target, fn: Any = compute) -> None:
+                def restore(ref: Any = target, fn: Any = original_fwd) -> None:
                     if ref.forward is not fn:
                         ref.forward = fn
             elif compiled is not None:
@@ -1595,26 +1638,29 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
         if compiled is None or _group_offload_hook(block) is None:
             continue
         registry = getattr(block, "_diffusers_hook", None)
-        target = next(
-            (
-                r
-                for r in list(getattr(registry, "_fn_refs", None) or ())
-                if _is_original_forward(getattr(r, "forward", None), block)
-            ),
-            None,
-        )
+        target = live = None
+        for r in list(getattr(registry, "_fn_refs", None) or ()):
+            live = _own_forward(getattr(r, "forward", None), block)
+            if live is not None:
+                target = r
+                break
         if target is None:
             continue
-        original = target.forward
-        fn = torch.compile(original, **dict(kwargs))
+        # compiles the live class forward: a per-arch patch installed after the hook captured the original runs too
+        fn = torch.compile(live, **dict(kwargs))
         if guard is not None and callable(getattr(guard, "wrap", None)):
-            fn = guard.wrap(fn, original, transformer)
-            guard.restores.append(lambda ref = target, f = original: setattr(ref, "forward", f))
+            fn = guard.wrap(fn, live, transformer)
+            # A failed compile falls back to the live forward, so a class patch keeps running eager below the hook.
+            guard.restores.append(lambda ref = target, f = live: setattr(ref, "forward", f))
         from . import diffusion_block_restride
 
         if diffusion_block_restride.is_wrapped(compiled):
             # FLUX.1's block 0 keeps the slice layout of the others, so all of them share one compiled graph.
             fn = diffusion_block_restride.wrap(fn)
+        rewrap = getattr(compiled, "_unsloth_rewrap", None)
+        if callable(rewrap):
+            # A family adapter around the compiled call (LTX-2's STG flag) must wrap the moved compile too.
+            fn = rewrap(fn)
         target.forward = fn
         block._compiled_call_impl = None
         block._unsloth_below_hook_ref = target

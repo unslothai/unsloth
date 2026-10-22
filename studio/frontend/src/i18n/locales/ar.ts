@@ -1085,6 +1085,10 @@ export const ar = {
       alternateSlot: "اختصار بديل",
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
+      metaUnsupported: "لا يمكن استخدام مفتاح Windows في الاختصارات.",
+      altGraphUnsupported: "لا يمكن استخدام تركيبات AltGr كاختصارات.",
+      desktopOnly: "تطبيق سطح المكتب فقط",
+      builtInKey: "مدمج: {key}",
       actions: {
         findInPage: {
           label: "البحث في الصفحة",
@@ -1285,6 +1289,10 @@ export const ar = {
         steerMessage: {
           label: "توجيه الرد",
           description: "إيقاف الرد الحالي وإرسال المسودة بعده",
+        },
+        stopGeneration: {
+          label: "إيقاف التوليد",
+          description: "إيقاف الرد الجاري",
         },
         cycleReasoningEffort: {
           label: "تدوير مستوى التفكير",
@@ -1814,9 +1822,6 @@ export const ar = {
         showLoadedModels: "مؤشر النماذج المحمّلة",
         showLoadedModelsDescription:
           "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
-        showWhisperUpdates: "إشعارات تحديث whisper.cpp",
-        showWhisperUpdatesDescription:
-          "التنبيه عند توفر إصدار أحدث من whisper.cpp لنماذج تحويل الكلام إلى نص. أوقف التشغيل إذا كنت لا تفرّغ الصوت.",
         showAudioCppUpdates: "إشعارات تحديث audio.cpp",
         showAudioCppUpdatesDescription:
           "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
@@ -2068,9 +2073,9 @@ export const ar = {
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
         activityDescription: {
-          daily: "{total} خلال آخر {weeks}",
-          weekly: "أسبوع الذروة {total} · آخر {weeks}",
-          cumulative: "{total} متراكمة خلال آخر {weeks}",
+          daily: "{total} منذ {since}",
+          weekly: "أكثر أسبوع نشاطا {total} · منذ {since}",
+          cumulative: "{total} إجمالا منذ {since}",
         },
         mode: {
           daily: "يومي",
@@ -2079,8 +2084,9 @@ export const ar = {
         },
         cellTooltip: "{date} · {tokens}، {messages}",
         weekTooltip: "أسبوع {date} · {tokens}",
-        chartToggle: "مخطط",
-        chartToggleHint: "عرض الأسبوعي والتراكمي كمخطط بمحاور معنونة",
+        emptyDayTooltip: "{date} · لا نشاط",
+        apiRequests: "{count} عبر API",
+        cumulativeTooltip: "حتى أسبوع {date} · {tokens} إجمالا",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",
@@ -2762,6 +2768,22 @@ export const ar = {
         visibility: "التفكير",
         visibilityDescription:
           "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
+      },
+      memory: {
+        title: "الذاكرة",
+        description: "ملاحظات تقرؤها كل محادثة، مع أي نموذج، محليًا أو سحابيًا. تقرأ محادثات المشروع أيضًا ملف AGENTS.md الخاص به.",
+        enable: "استخدام الذاكرة في المحادثات",
+        enableDescription: "إرسال هذه الملاحظات مع كل محادثة.",
+        locked: "معطّلة في هذا التثبيت بواسطة UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "ملاحظات الذاكرة",
+        placeholder: "مثال:\n- أكتب بلغة Python وأستخدم uv.\n- اجعل الإجابات قصيرة.",
+        hint: "تُحفظ في {path}. يمكنك أيضًا تعديل هذا الملف في أي محرر نصوص.",
+        size: "{used} / {max} كيلوبايت",
+        save: "حفظ",
+        saved: "تم حفظ الذاكرة",
+        loadError: "تعذّر تحميل الذاكرة.",
+        saveError: "تعذّر حفظ الذاكرة.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md الذاكرة تذكر تخصيص ملف شخصي ملاحظات",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",

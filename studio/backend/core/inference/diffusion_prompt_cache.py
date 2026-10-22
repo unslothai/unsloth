@@ -216,6 +216,13 @@ def _lora_state(pipe: Any) -> Any:
         return None
 
 
+def _embedding_state(pipe: Any) -> Any:
+    try:
+        return _plain(tuple(pipe.__dict__.get("_unsloth_embeddings", ()) or ()))
+    except (AttributeError, TypeError):
+        return None
+
+
 def _hash(payload: dict) -> str:
     raw = json.dumps(payload, sort_keys = True, separators = (",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -290,14 +297,17 @@ def _wrap_encode_prompt(
             keyed = {
                 k: _plain(v) for k, v in bound.arguments.items() if k not in _KEY_EXCLUDED_ARGS
             }
-            key = _hash(
-                {
-                    "load": load_fp,
-                    "encoders": _encoder_identity(pipe),
-                    "loras": _lora_state(lora_owner),
-                    "args": keyed,
-                }
-            )
+            payload = {
+                "load": load_fp,
+                "encoders": _encoder_identity(pipe),
+                "loras": _lora_state(lora_owner),
+                "args": keyed,
+            }
+            # Textual-inversion embeddings change what the same text encodes to; absent = the unchanged key.
+            embeddings = _embedding_state(pipe)
+            if embeddings:
+                payload["embeddings"] = embeddings
+            key = _hash(payload)
             hit = cache.get(key, bound.arguments.get("device"))
         except TypeError:
             cache.stats["bypassed"] += 1

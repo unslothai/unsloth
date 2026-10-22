@@ -1089,6 +1089,10 @@ export const hi = {
       alternateSlot: "वैकल्पिक शॉर्टकट",
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
+      metaUnsupported: "Windows कुंजी का उपयोग शॉर्टकट में नहीं किया जा सकता।",
+      altGraphUnsupported: "AltGr संयोजनों को शॉर्टकट के रूप में उपयोग नहीं किया जा सकता।",
+      desktopOnly: "केवल डेस्कटॉप ऐप में",
+      builtInKey: "अंतर्निहित: {key}",
       actions: {
         findInPage: {
           label: "पेज में खोजें",
@@ -1289,6 +1293,10 @@ export const hi = {
         steerMessage: {
           label: "उत्तर बदलें",
           description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
+        stopGeneration: {
+          label: "जनरेशन रोकें",
+          description: "लिखा जा रहा जवाब रोकें",
         },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
@@ -1818,9 +1826,6 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
-        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
-        showWhisperUpdatesDescription:
-          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
         showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
         showAudioCppUpdatesDescription:
           "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
@@ -2074,9 +2079,9 @@ export const hi = {
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
         activityDescription: {
-          daily: "अवधि: {weeks} · {total}",
-          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
-          cumulative: "पिछले {weeks} में कुल {total}",
+          daily: "{since} से {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · {since} से",
+          cumulative: "{since} से कुल {total}",
         },
         mode: {
           daily: "दैनिक",
@@ -2085,8 +2090,9 @@ export const hi = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} वाला हफ़्ता · {tokens}",
-        chartToggle: "चार्ट",
-        chartToggleHint: "साप्ताहिक और संचयी को लेबल वाले अक्षों के साथ चार्ट के रूप में दिखाएँ",
+        emptyDayTooltip: "{date} · कोई गतिविधि नहीं",
+        apiRequests: "API से {count}",
+        cumulativeTooltip: "{date} के सप्ताह तक · कुल {tokens}",
         less: "कम",
         more: "ज़्यादा",
         insightsTitle: "गतिविधि विश्लेषण",
@@ -2771,6 +2777,22 @@ export const hi = {
         visibility: "थिंकिंग",
         visibilityDescription:
           "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
+      },
+      memory: {
+        title: "मेमोरी",
+        description: "ऐसे नोट्स जिन्हें हर चैट पढ़ती है, हर मॉडल के लिए, लोकल या क्लाउड। किसी प्रोजेक्ट की चैट उस प्रोजेक्ट की AGENTS.md भी पढ़ती हैं।",
+        enable: "चैट में मेमोरी का उपयोग करें",
+        enableDescription: "ये नोट्स हर चैट के साथ भेजें।",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD ने इस इंस्टॉल के लिए इसे बंद कर दिया है।",
+        editor: "मेमोरी नोट्स",
+        placeholder: "उदाहरण:\n- मैं Python लिखता हूँ और uv का उपयोग करता हूँ।\n- जवाब छोटे रखें।",
+        hint: "{path} में सेव होता है। आप इस फ़ाइल को किसी भी टेक्स्ट एडिटर में भी बदल सकते हैं।",
+        size: "{used} / {max} KB",
+        save: "सेव करें",
+        saved: "मेमोरी सेव हो गई",
+        loadError: "मेमोरी लोड नहीं हो सकी।",
+        saveError: "मेमोरी सेव नहीं हो सकी।",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md मेमोरी याद पर्सनलाइज़ेशन प्रोफ़ाइल नोट्स",
       },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",
