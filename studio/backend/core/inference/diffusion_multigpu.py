@@ -1266,9 +1266,31 @@ def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
 
 def build_replica(module: Any, device: Any) -> Any:
     """A copy of ``module`` whose parameters and buffers are created directly on ``device`` (never staged on the
-    source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built."""
+    source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built.
+
+    Built outside inference mode: the router builds on the first guided step, inside the render's
+    ``torch.inference_mode()``, where detaching a torchao weight subclass (int8 / fp8 / NVFP4 / MX) made outside it
+    raises "Cannot set version_counter for inference tensor", and copying one made inside it silently left the copy
+    on the source card. Outside it every weight kind copies to ``device``; the copy holds ordinary tensors, which the
+    replica's inference-mode calls read the same way."""
     torch = _torch()
     device = torch.device(device)
+    with torch.inference_mode(False), torch.no_grad():
+        replica = _copy_module(module, device)
+    stray = sorted(
+        {
+            str(t.device)
+            for t in (*replica.parameters(), *replica.buffers())
+            if t.device.type == "cuda" and t.device != device
+        }
+    )
+    if stray:
+        raise RuntimeError(f"replica weights stayed on {', '.join(stray)}, not {device}")
+    return replica
+
+
+def _copy_module(module: Any, device: Any) -> Any:
+    torch = _torch()
     memo: dict[int, Any] = {}
     keep: list[Any] = []
     for _name, param in module.named_parameters(remove_duplicate = True):
@@ -1402,6 +1424,61 @@ def weights_fingerprint(module: Any) -> int:
             if value is not None and not callable(value):
                 parts.append((name, attr, repr(value)))
     return hash(tuple(parts))
+
+
+_PROBE_SAMPLES = 64
+
+
+def _dense_leaves(t: Any, depth: int = 0) -> Iterator[Any]:
+    """The plain tensors holding ``t``'s values: ``t`` itself, or a torchao subclass's inner tensors (qdata, scales)."""
+    flatten = getattr(type(t), "__tensor_flatten__", None)
+    if flatten is None or depth > 4:
+        yield t
+        return
+    try:
+        names, _ctx = t.__tensor_flatten__()
+    except Exception:  # noqa: BLE001 - an opaque subclass: probe the outer tensor
+        yield t
+        return
+    for name in names:
+        inner = getattr(t, name, None)
+        if inner is not None:
+            yield from _dense_leaves(inner, depth + 1)
+
+
+def weights_probe(module: Any, index_cache: Optional[dict] = None) -> Optional[bytes]:
+    """A sample of the values of every weight :func:`weights_fingerprint` cannot watch: an inference tensor (made under
+    ``torch.inference_mode()``) has no version counter, so an in-place edit of one (``mul_``, ``copy_``, a manual LoRA
+    fuse) leaves the fingerprint unchanged. ``_PROBE_SAMPLES`` evenly spaced bytes of each such tensor, gathered on
+    the device and read back in ONE host sync; None when every weight has a version counter (nothing to probe).
+    An edit that touches none of the sampled bytes is not seen; whole-tensor edits (scale, fuse, reload) are."""
+    torch = _torch()
+    cache = {} if index_cache is None else index_cache
+    by_device: dict = {}
+    with torch.no_grad():
+        for _name, t in (*module.named_parameters(), *module.named_buffers()):
+            if not t.is_inference():
+                continue
+            for leaf in _dense_leaves(t):
+                if not isinstance(leaf, torch.Tensor) or leaf.numel() == 0 or leaf.is_meta:
+                    continue
+                # bytes, not elements: a gather is not implemented for every weight dtype (fp8, packed fp4)
+                flat = _as_bytes(leaf)
+                n = flat.numel()
+                key = (n, flat.device)
+                idx = cache.get(key)
+                if idx is None:
+                    idx = torch.linspace(
+                        0, n - 1, steps = min(n, _PROBE_SAMPLES), device = flat.device
+                    ).long()
+                    cache[key] = idx
+                by_device.setdefault(flat.device, []).append(flat.index_select(0, idx))
+    if not by_device:
+        return None
+    return b"".join(
+        torch.cat(chunks).cpu().numpy().tobytes()
+        for _dev, chunks in sorted(by_device.items(), key = lambda kv: str(kv[0]))
+    )
 
 
 _LATENT_KEYS = ("hidden_states", "sample", "x", "latents", "img", "latent")
@@ -1822,6 +1899,10 @@ class CfgParallelRouter:
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
+        # Values sampled from the weights the fingerprint cannot watch (inference tensors), checked once per render.
+        self.probe: Optional[bytes] = None
+        self.probe_index: dict = {}
+        self.probed_this_render = False
         self.pairs: list = []
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
@@ -1874,6 +1955,8 @@ class CfgParallelRouter:
         # the next render shows its own guidance shape: no speculative branch before its first odd call
         self.cfg_seen = False
         self.singles = 0
+        # weights may be edited between renders: the next one re-reads the probe
+        self.probed_this_render = False
 
     def _note_refusal(self, exc: BaseException) -> None:
         from .diffusion_cuda_graph import OutsideWorkRefused
@@ -2163,6 +2246,20 @@ class CfgParallelRouter:
         except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
             self.disable(f"cannot fingerprint the denoiser: {exc}")
             return
+        if current == self.fingerprint and not self.probed_this_render:
+            from .diffusion_cuda_graph import OutsideWorkRefused, outside_capture
+            try:
+                with outside_capture():
+                    probe = weights_probe(module, self.probe_index)
+            except OutsideWorkRefused:
+                probe = self.probe  # another pipeline is recording: re-read on the next step
+            except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
+                self.disable(f"cannot probe the denoiser weights: {exc}")
+                return
+            else:
+                self.probed_this_render = True
+            if probe != self.probe:
+                current = None
         if current != self.fingerprint:
             if self.logger is not None:
                 self.logger.info(
@@ -2206,7 +2303,9 @@ class CfgParallelRouter:
             self.fingerprint = weights_fingerprint(module)
             # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
             with outside_capture(), _device_context(self.secondary):
+                self.probe = weights_probe(module, self.probe_index)
                 self.replica = self.replica_factory()
+            self.probed_this_render = True
             self.pairs = list(zip(module.modules(), self.replica.modules()))
             self.worker = _ReplicaWorker(self.secondary)
             weakref.finalize(self, self.worker.close)

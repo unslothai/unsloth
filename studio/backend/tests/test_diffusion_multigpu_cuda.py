@@ -204,3 +204,71 @@ def test_zimage_pair_runs_on_two_cards_and_stays_exact():
         zs.uninstall_zimage_cfg_split(pipe)
     assert torch.equal(out, reference)
     assert router.stats["pairs_parallel"] == 4 and router.disabled_reason is None
+
+
+def _int8_dit(load_under_inference_mode):
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import TQ_INT8, _make_quant_config
+
+    torch.manual_seed(0)
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = torch.nn.Linear(128, 128)
+            self.b = torch.nn.Linear(128, 128)
+
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            encoder_hidden_states,
+            return_dict = False,
+        ):
+            h = self.b(torch.nn.functional.gelu(self.a(hidden_states)))
+            return (h * timestep + encoder_hidden_states.sum(),)
+
+    ctx = torch.inference_mode() if load_under_inference_mode else torch.no_grad()
+    with ctx:
+        dit = Dit().to("cuda:0", torch.bfloat16).eval()
+        quantize_(dit, _make_quant_config(TQ_INT8))
+    return dit
+
+
+@pytest.mark.parametrize("load_under_inference_mode", [False, True])
+def test_int8_replica_builds_inside_inference_mode_on_the_second_card(load_under_inference_mode):
+    # Studio renders under inference_mode, so the router builds the replica there. Weights loaded outside it raised
+    # "Cannot set version_counter for inference tensor"; weights loaded inside it left the "replica" on cuda:0.
+    dit = _int8_dit(load_under_inference_mode)
+    latents = torch.randn(4, 128, device = "cuda:0", dtype = torch.bfloat16)
+    cond = torch.randn(3, 128, device = "cuda:0", dtype = torch.bfloat16)
+    neg = torch.randn(3, 128, device = "cuda:0", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        reference = _render(dit, latents, cond, neg, 4)
+        router = _arm(dit)
+        out = _render(dit, latents, cond, neg, 4)
+    torch.cuda.synchronize()
+    assert router.disabled_reason is None, router.disabled_reason
+    assert router.stats["steps_parallel"] > 0
+    assert {str(t.device) for t in router.replica.parameters()} == {"cuda:1"}
+    assert torch.equal(out, reference)
+
+
+def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica():
+    # Inference tensors carry no version counter: the fingerprint alone kept a replica holding the old values.
+    with torch.inference_mode():
+        dit, latents, cond, neg = _setup()
+        router = _arm(dit)
+        _render(dit, latents, cond, neg, 3)
+        router.end_render()
+        assert router.replica is not None
+        dit.scale.mul_(3.0)
+        dit.forward = dit.__class__.forward.__get__(dit)
+        reference = _render(dit, latents, cond, neg, 4)
+        dit.forward = router
+        out = _render(dit, latents, cond, neg, 4)
+    torch.cuda.synchronize()
+    assert router.stats["replica_rebuilds"] == 1
+    assert torch.equal(out, reference)

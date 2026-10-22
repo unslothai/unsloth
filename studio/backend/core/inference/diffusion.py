@@ -11881,6 +11881,7 @@ class DiffusionBackend:
                     pass
                 pipe._unsloth_loras = ()
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
 
         if _small_host_int8(pipe):
@@ -11944,10 +11945,12 @@ class DiffusionBackend:
             # The adapters the graphs were captured with are gone and the marker says none are applied,
             # so no later call reaches the resets above; without this a base-model render replays them.
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+            invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+        invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
 
     def _adjust_baked_loras(
         self,
@@ -11980,6 +11983,7 @@ class DiffusionBackend:
                 pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
         desired = self._resolve_lora_set(
             specs,
@@ -12010,6 +12014,7 @@ class DiffusionBackend:
         )
         pipe._unsloth_loras = updated
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+        invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
 
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:

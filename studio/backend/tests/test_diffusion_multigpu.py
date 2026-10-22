@@ -2366,3 +2366,90 @@ def test_replica_blocks_get_their_own_compile_guard():
     guard = getattr(wrapped, "_unsloth_compile_guard", None)
     assert guard is not None and guard is not source_guard
     assert replica.__dict__.get("_unsloth_compile_guard") is guard
+
+
+def test_replica_builds_inside_inference_mode_from_torchao_int8_weights():
+    # The router builds on the first guided step, inside the render's inference_mode: detaching a torchao weight made
+    # outside it raised "Cannot set version_counter for inference tensor", so CFG-parallel never engaged on int8.
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import TQ_INT8, _make_quant_config
+
+    torch.manual_seed(0)
+    dit = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.GELU(), torch.nn.Linear(64, 64))
+    with torch.no_grad():
+        quantize_(dit, _make_quant_config(TQ_INT8))
+    assert type(dit[0].weight).__module__.startswith("torchao")
+    x = torch.randn(8, 64)
+    with torch.inference_mode():
+        replica = mg.build_replica(dit, torch.device("cpu"))
+        assert torch.equal(replica(x), dit(x))
+    assert replica[0].weight is not dit[0].weight
+
+
+class _ScaleDit(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("scale", torch.ones(4))
+
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
+        return (hidden_states * self.scale * timestep + encoder_hidden_states.sum(),)
+
+
+def test_probe_sees_an_in_place_edit_of_an_inference_tensor():
+    with torch.inference_mode():
+        dit = _ScaleDit()
+        assert dit.scale.is_inference()
+    fp, probe = mg.weights_fingerprint(dit), mg.weights_probe(dit)
+    with torch.inference_mode():
+        dit.scale.mul_(3.0)
+    # no version counter on an inference tensor: the fingerprint cannot see the edit, the probe does
+    assert mg.weights_fingerprint(dit) == fp
+    assert probe is not None and mg.weights_probe(dit) != probe
+    # ordinary weights carry a version counter: nothing to probe, nothing read back
+    assert mg.weights_probe(_Dit()) is None
+
+
+def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica_on_the_next_render():
+    with torch.inference_mode():
+        dit = _ScaleDit()
+        router, replicas = _router(dit)
+        latents = torch.randn(2, 4)
+        _cfg_loop(dit, latents.clone(), steps = 3)
+        router.end_render()
+        assert len(replicas) == 1 and router.stats["replica_rebuilds"] == 0
+        _cfg_loop(dit, latents.clone(), steps = 3)
+        router.end_render()
+        assert len(replicas) == 1  # unchanged weights: the probe matches, no rebuild
+        dit.scale.mul_(3.0)
+        _cfg_loop(dit, latents.clone(), steps = 3)
+    assert router.stats["replica_rebuilds"] == 1 and len(replicas) == 2
+    assert router.disabled_reason is None
+
+
+def test_invalidate_cfg_replica_drops_a_built_replica():
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    dit = _Dit()
+    router, replicas = _router(dit)
+    mg._CFG_ROUTERS[pipe] = router
+    try:
+        with torch.no_grad():
+            _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+        assert router.replica is not None
+        assert mg.invalidate_cfg_replica(pipe, "test") is True
+        assert router.replica is None and router.stats["replica_rebuilds"] == 1
+        with torch.no_grad():
+            _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+        assert len(replicas) == 2
+    finally:
+        mg._CFG_ROUTERS.pop(pipe, None)

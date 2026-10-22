@@ -15275,3 +15275,31 @@ def test_untrusted_hub_single_file_header_is_checked_before_the_flux2_gguf_probe
             monkeypatch, tmp_path, lambda p: p.write_bytes(b"GGUF" + b"\x00" * 64), card_tag = None
         )
     assert probed == []
+
+
+def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
+    # set_adapters / load / unload change the denoiser's weights: a CFG-parallel replica built before must be rebuilt.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
+        ),
+    )
+    dropped: list = []
+    monkeypatch.setattr(
+        dmod, "invalidate_cfg_replica", lambda pipe, reason, logger = None: dropped.append(pipe)
+    )
+    ev = threading.Event()
+    pipe = _BakePipe()
+    pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 0.8),)
+    pipe._unsloth_loras_baked = True
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 0.8)], ev)
+    assert dropped == []  # same set: the weights did not change
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.4)], ev)
+    assert dropped == [pipe]
+    backend._apply_loras(_quant_lora_state(pipe), [], ev)
+    assert dropped == [pipe, pipe]
