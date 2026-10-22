@@ -43,7 +43,10 @@ ENV_PRECISION = "UNSLOTH_SAM3_PRECISION"
 # int8 loads the ConvRot artifact unless this is 0 (then the plain INT8 one).
 ENV_INT8_CONVROT = "UNSLOTH_SAM3_INT8_CONVROT"
 
-# What ``auto`` may pick on a CUDA card, best first; it also needs that file's GATE_PASSED. Empty: auto stays bf16.
+# What ``auto`` may pick on a CUDA card that is short of memory, best first; it also needs that file's GATE_PASSED.
+# Empty: auto stays bf16. With room for bf16 auto runs bf16: the 8-bit files save about 0.5 GB of peak memory but are
+# slower per Find (one shared B200, model card Checks: bf16 0.35 s, INT8-ConvRot 0.77 s, INT8 0.76 s), because at
+# this model size quantizing every activation costs more than the 8-bit matmuls save.
 AUTO_ORDER: tuple[str, ...] = (PRECISION_INT8,)
 
 # Minimum compute capability per scheme: fp8 scaled_mm needs Ada / Hopper (sm_89+), int8 _int_mm Ampere (sm_80+).
@@ -471,12 +474,17 @@ def resolve_precision(
     dtype: Any = None,
     *,
     available: tuple[str, ...] = QUANT_PRECISIONS,
+    memory_tight: bool = False,
 ) -> tuple[str, str]:
     """``(precision, why)`` for a run on ``device``. ``available`` is the quantized arms the variant ships (and, at
-    load, has on disk). bf16 when asked for, when nothing quantized can run here, or when auto has no gated arm."""
+    load, has on disk). bf16 when asked for, when nothing quantized can run here, or when auto has no gated arm.
+    ``auto`` also stays bf16 (the faster path) unless ``memory_tight``: the card has too little free memory to keep
+    the bf16 segmenter next to what it already holds. An explicit fp8 / int8 is honoured either way."""
     requested = requested_precision()
     if requested == PRECISION_BF16:
         return PRECISION_BF16, f"{ENV_PRECISION}=bf16"
+    if requested == PRECISION_AUTO and not memory_tight and device.startswith("cuda"):
+        return PRECISION_BF16, "auto: bf16 fits and is faster"
     candidates = AUTO_ORDER if requested == PRECISION_AUTO else (requested,)
     reasons = []
     for precision in candidates:
