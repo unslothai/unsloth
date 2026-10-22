@@ -475,11 +475,12 @@ def test_detect_releases_sam3_even_on_failure(monkeypatch):
     monkeypatch.setattr(
         diffusion_segment,
         "release_segmenter",
-        lambda reason, wait = False: released.append((reason, wait)),
+        lambda reason, wait = False, park = False: released.append((reason, wait, park)),
     )
     with pytest.raises(RuntimeError):
         det.detect([_scene()], det.DetailerSettings())
-    assert released == [("detailer", True)]
+    # Parked in host RAM, not dropped: the next pass reuses it.
+    assert released == [("detailer", True, True)]
 
 
 def test_detect_builds_full_size_instance_masks(monkeypatch):
@@ -501,7 +502,9 @@ def test_detect_builds_full_size_instance_masks(monkeypatch):
             )
 
     monkeypatch.setattr(diffusion_segment, "get_segmenter", lambda: _Seg())
-    monkeypatch.setattr(diffusion_segment, "release_segmenter", lambda reason, wait = False: True)
+    monkeypatch.setattr(
+        diffusion_segment, "release_segmenter", lambda reason, wait = False, park = False: True
+    )
     found, info = det.detect(
         [_scene()], det.DetailerSettings(targets = "face, hand:2", confidence = 0.3)
     )
@@ -628,3 +631,64 @@ def test_request_without_detailer_is_unchanged():
     request = DiffusionGenerateRequest(prompt = "p")
     assert request.detailer is None
     assert "detailer" not in request.model_dump(exclude_none = True)
+
+
+def test_stop_between_two_inpaints_ends_the_pass(monkeypatch):
+    """Stop pressed while no denoise runs (between two face inpaints): the next detection is not inpainted."""
+    _patch_detect(
+        monkeypatch,
+        [[_face((40, 30, 80, 80)), _face((150, 60, 200, 120))], [_face((150, 60, 200, 120))]],
+    )
+    calls = []
+
+    def _generate(**kwargs):
+        import base64
+        import io
+
+        calls.append(kwargs["seed"])
+        # The first inpaint finishes, then the user presses Stop before the second starts.
+        assert det.cancel_active() is True
+        crop = Image.open(io.BytesIO(base64.b64decode(kwargs["init_image"].split(",", 1)[1])))
+        return {"images": [crop.convert("RGB")]}
+
+    first, second = _scene(), _scene()
+    result = {"images": [first, second], "seeds": [1, 2]}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+    )
+    assert calls == [1]
+    assert [r["error"] for r in result["detailer"]] == ["cancelled", "cancelled"]
+    assert result["images"][0] is first and result["images"][1] is second
+    # Nothing is registered once the pass returned.
+    assert det.cancel_active() is False
+
+
+def test_cancel_route_stops_a_detailer_pass(monkeypatch):
+    import asyncio
+    import sys
+
+    import core.inference.diffusion_engine_router as router
+    import core.inference.flux3_prompt_upsampler as pup
+    from routes import inference as routes
+
+    stopped = []
+    fake = types.SimpleNamespace(cancel_active = lambda: stopped.append(1) or True)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_detailer", fake)
+    monkeypatch.setattr(routes.account_access, "generation_is_foreign", lambda kind: False)
+    monkeypatch.setattr(routes.account_access, "generation_is_mine", lambda kind: True)
+    monkeypatch.setattr(routes.account_access, "tracked_generation_account", lambda: None)
+    monkeypatch.setattr(pup, "cancel_active", lambda: False)
+    monkeypatch.setattr(
+        router,
+        "get_active_diffusion_engine",
+        lambda: types.SimpleNamespace(cancel_generate = lambda: False),
+    )
+    out = asyncio.run(routes.cancel_diffusion_generation(target = None, current_subject = "u"))
+    assert out == {"cancelled": True} and stopped == [1]

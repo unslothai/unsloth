@@ -53500,13 +53500,16 @@ async def cancel_diffusion_generation(
 
     # Both: another tab's request may be enhancing while this one denoises.
     upsampling = cancel_upsampling()
+    # A Detailer pass between two inpaints has no denoise for the engine to stop.
+    detailer = sys.modules.get("core.inference.diffusion_detailer")
+    detailing = bool(detailer is not None and detailer.cancel_active())
     # The slot can change hands before the executor callback, so the engine rechecks under the lock.
     expected = account_access.tracked_generation_account()
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:
         cancel = functools.partial(cancel, expected_account = expected)
     cancelled = await asyncio.get_running_loop().run_in_executor(_CANCEL_EXECUTOR, cancel)
-    return {"cancelled": bool(cancelled or upsampling)}
+    return {"cancelled": bool(cancelled or upsampling or detailing)}
 
 
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────
@@ -53635,7 +53638,8 @@ def _release_mask_segmenter_for_render() -> None:
     module = sys.modules.get("core.inference.diffusion_segment")
     if module is not None:
         try:
-            module.release_segmenter("image generation", wait = True)
+            # Parked in host RAM, not dropped: the next Find or Detailer pass moves it back in well under a second.
+            module.release_segmenter("image generation", wait = True, park = True)
         except Exception as exc:  # noqa: BLE001 -- never fail a render on this
             logger.warning("images.segment: could not release before a render: %s", exc)
 

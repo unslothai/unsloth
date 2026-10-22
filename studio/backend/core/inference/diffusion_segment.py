@@ -152,6 +152,13 @@ ENV_VARIANT = "UNSLOTH_SAM3_VARIANT"
 
 ENV_PATH_OVERRIDE = "UNSLOTH_SAM3_PATH"
 ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
+# How long a model parked in host RAM (release(park = True): an image render or the Detailer took the GPU back) is kept
+# for the next call before it is dropped; 0 never parks.
+ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
+PARK_SECONDS = 600.0
+# "1" keeps the parked copy in page-locked (pinned) host memory, so moving it back is a DMA a busy CPU does not slow
+# down. Off by default: pinning SAM 3's ~1,500 tensors one by one costs far more, once per load, than it saves.
+ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
 IMAGE_SIZE = 1008
@@ -1018,6 +1025,84 @@ def _free_device_cache(device: Optional[str]) -> None:
             torch.mps.empty_cache()
 
 
+def _pinned(tensor: Any) -> Any:
+    """``tensor`` (on the CPU) in page-locked memory; a tensor subclass (torchao's quantized weights) pins its inner
+    tensors. The tensor itself when it cannot be pinned."""
+    try:
+        return tensor.pin_memory()
+    except Exception:  # noqa: BLE001 -- a subclass without pin_memory
+        pass
+    flatten = getattr(tensor, "__tensor_flatten__", None)
+    if flatten is not None:
+        try:
+            names, ctx = flatten()
+            inner = {name: _pinned(getattr(tensor, name)) for name in names}
+            return type(tensor).__tensor_unflatten__(inner, ctx, tensor.size(), tensor.stride())
+        except Exception:  # noqa: BLE001
+            pass
+    return tensor
+
+
+class _StaleHostCopy(Exception):
+    pass
+
+
+def _tensor_kind(tensor: Any) -> type:
+    """The tensor's class, with nn.Parameter read as a plain Tensor (Module._apply hands parameters to ``fn``)."""
+    import torch
+    return torch.Tensor if isinstance(tensor, torch.nn.Parameter) else type(tensor)
+
+
+class _HostWeights:
+    """The parked model's weights in host RAM, kept across parks: SAM 3 never changes its weights, so after the first
+    park a later one only drops the GPU copy (no device-to-host copy), and moving back is a host-to-device copy from
+    the same (pinned) tensors. Tensors are matched in Module._apply's order, checked by type, shape, dtype and
+    device; any mismatch rebuilds the copy."""
+
+    def __init__(self, pin: bool) -> None:
+        self.pin = pin
+        self.tensors: Optional[list] = None
+
+    def park(self, model: Any) -> None:
+        cached = self.tensors
+        out: list = []
+
+        def _to_host(t: Any) -> Any:
+            index = len(out)
+            if cached is not None:
+                host = cached[index] if index < len(cached) else None
+                if (
+                    host is None
+                    or _tensor_kind(host) is not _tensor_kind(t)
+                    or host.shape != t.shape
+                    or host.dtype != t.dtype
+                    or host.device.type != "cpu"
+                ):
+                    raise _StaleHostCopy()
+            else:
+                host = t.detach().to("cpu")
+                if self.pin:
+                    host = _pinned(host)
+            out.append(host)
+            # A fresh alias: Module._apply swaps a tensor subclass's contents with what this returns, which must not
+            # be the kept copy.
+            return host.detach()
+
+        try:
+            model._apply(_to_host)
+        except _StaleHostCopy:
+            self.tensors = None
+            self.park(model)
+            return
+        self.tensors = out
+
+    def unpark(self, model: Any, device: str) -> None:
+        import torch
+        model.to(device, non_blocking = True)
+        if device.startswith("cuda"):
+            torch.cuda.synchronize(device)
+
+
 class MaskSegmenter:
     """One lazily loaded Sam3Model + its tokenizer. ``_run_lock`` serialises loads, calls and unloads."""
 
@@ -1054,6 +1139,16 @@ class MaskSegmenter:
         # Set (under _state_lock) once the call in flight has read its release flag: a release that times out after
         # that is not honoured by the call, so it waits out the call's short tail itself.
         self._call_settled = False
+        # A GPU model moved to host RAM by release(park = True), with what _load matches it against; the next call on
+        # the same card, weights and dtype moves it back instead of reading the files again. Never counts as loaded.
+        self._parked: Optional[dict] = None
+        self._park_timer: Optional[threading.Timer] = None
+        # The weights' host copy, kept while the same model is loaded so a later park copies nothing back.
+        self._host: Optional[_HostWeights] = None
+        try:
+            self.park_seconds = max(0.0, float(os.environ.get(ENV_PARK_SECONDS) or PARK_SECONDS))
+        except ValueError:
+            self.park_seconds = PARK_SECONDS
 
     @property
     def loaded(self) -> bool:
@@ -1061,6 +1156,10 @@ class MaskSegmenter:
 
     def holds_vram(self) -> bool:
         return self._model is not None and bool(self.device) and self.device != "cpu"
+
+    @property
+    def parked(self) -> bool:
+        return self._parked is not None
 
     # -- lifecycle -------------------------------------------------------------------------------------------------
     def _load(self, path: str, device: str, dtype: Any) -> None:
@@ -1076,6 +1175,8 @@ class MaskSegmenter:
             return
         if self._model is not None:
             self._unload_locked("reload")
+        if self._unpark_locked(path, key, device, dtype):
+            return
         from transformers import AutoTokenizer
 
         started = time.perf_counter()
@@ -1188,6 +1289,137 @@ class MaskSegmenter:
         model.eval()
         return model, plan
 
+    def _unpark_locked(self, path: str, key: tuple, device: str, dtype: Any) -> bool:
+        """Move the parked model back onto ``device`` when it is the same weights for the same card and dtype; any
+        other parked copy is dropped. False when nothing usable was parked (or the move failed)."""
+        parked = self._parked
+        if parked is None:
+            return False
+        if (parked["path"], parked["key"], parked["device"], parked["dtype"]) != (
+            path,
+            key,
+            device,
+            dtype,
+        ):
+            self._drop_parked_locked("another load")
+            return False
+        self._parked = None
+        self._cancel_park_timer()
+        started = time.perf_counter()
+        model = parked["model"]
+        try:
+            parked["host"].unpark(model, device)
+        except BaseException:
+            model = None
+            parked.clear()
+            self._host = None
+            _free_device_cache(device)
+            logger.warning(
+                "images.segment: the parked model did not move back to %s; loading again", device
+            )
+            return False
+        self._model, self._tokenizer = model, parked["tokenizer"]
+        self._host = parked["host"]
+        self._path, self.device, self._dtype, self._weights_key = path, device, dtype, key
+        self.precision, self.precision_reason, self.weights_file = (
+            parked["precision"],
+            parked["precision_reason"],
+            parked["weights_file"],
+        )
+        logger.info(
+            "images.segment: moved back from host RAM to %s in %.2fs",
+            device,
+            time.perf_counter() - started,
+        )
+        return True
+
+    def _park_locked(self, reason: str) -> bool:
+        """Move the GPU model to host RAM and free its VRAM, keeping it for the next call. Falls back to an unload
+        on a CPU / MPS model, with parking off, or when the move fails. True when the weights left the device."""
+        if self._model is None:
+            return False
+        device = self.device
+        if self.park_seconds <= 0 or not (device or "").startswith("cuda"):
+            return self._unload_locked(reason)
+        with self._state_lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+        started = time.perf_counter()
+        model = self._model
+        host = self._host or _HostWeights(pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1")
+        try:
+            host.park(model)
+        except Exception as exc:  # noqa: BLE001 -- a module that will not move is simply unloaded
+            logger.warning("images.segment: could not park in host RAM (%s); unloading", exc)
+            self._host = None
+            return self._unload_locked(reason)
+        self._drop_parked_locked("replaced")
+        self._host = None
+        self._parked = {
+            "model": model,
+            "host": host,
+            "tokenizer": self._tokenizer,
+            "path": self._path,
+            "key": self._weights_key,
+            "device": device,
+            "dtype": self._dtype,
+            "precision": self.precision,
+            "precision_reason": self.precision_reason,
+            "weights_file": self.weights_file,
+        }
+        self._model = self._tokenizer = None
+        self._path = self._weights_key = self.device = self._dtype = None
+        self.precision = self.precision_reason = self.weights_file = None
+        del model
+        _free_device_cache(device)
+        self._arm_park_timer()
+        logger.info(
+            "images.segment: parked in host RAM from %s in %.2fs (%s)",
+            device,
+            time.perf_counter() - started,
+            reason,
+        )
+        return True
+
+    def _drop_parked_locked(self, reason: str) -> bool:
+        self._cancel_park_timer()
+        if self._parked is None:
+            return False
+        self._parked = None
+        self._host = None
+        import gc
+
+        gc.collect()
+        logger.info("images.segment: dropped the host RAM copy (%s)", reason)
+        return True
+
+    def _cancel_park_timer(self) -> None:
+        with self._state_lock:
+            if self._park_timer is not None:
+                self._park_timer.cancel()
+                self._park_timer = None
+
+    def _arm_park_timer(self) -> None:
+        with self._state_lock:
+            if self._park_timer is not None:
+                self._park_timer.cancel()
+            timer = threading.Timer(self.park_seconds, self._park_expire)
+            timer.daemon = True
+            self._park_timer = timer
+            timer.start()
+
+    def _park_expire(self) -> None:
+        if not self._run_lock.acquire(blocking = False):
+            # A call is running: it either takes the parked copy or leaves it for a new timer.
+            if self._parked is not None:
+                self._arm_park_timer()
+            return
+        try:
+            self._drop_parked_locked("park expired")
+        finally:
+            self._run_lock.release()
+
     def _unload_locked(self, reason: str) -> bool:
         with self._state_lock:
             if self._timer is not None:
@@ -1198,6 +1430,7 @@ class MaskSegmenter:
         device = self.device
         self._model = None
         self._tokenizer = None
+        self._host = None
         self._path = None
         self._weights_key = None
         self.device = None
@@ -1219,10 +1452,13 @@ class MaskSegmenter:
         wait: bool = False,
         timeout: float = 30.0,
         handover: bool = False,
+        park: bool = False,
     ) -> bool:
         """Unload now if idle. A call in flight unloads when it ends (``wait`` waits up to ``timeout`` for it
         instead). True when the weights left now. ``handover`` (the GPU is changing hands) raises
-        SegmenterReleaseTimeoutError when the wait ran out on a call still on the accelerator."""
+        SegmenterReleaseTimeoutError when the wait ran out on a call still on the accelerator. ``park`` (an image
+        render takes the GPU back) moves a GPU model to host RAM for the next call instead of dropping it; without
+        it any parked copy is dropped too."""
         with self._state_lock:
             self._release_epoch += 1
             if handover:
@@ -1251,7 +1487,10 @@ class MaskSegmenter:
         try:
             with self._state_lock:
                 self._release_pending = False
-            return self._unload_locked(reason)
+            if park:
+                return self._park_locked(reason)
+            dropped = self._drop_parked_locked(reason)
+            return self._unload_locked(reason) or dropped
         finally:
             self._run_lock.release()
 
@@ -1517,11 +1756,16 @@ def release_segmenter(
     *,
     wait: bool = False,
     handover: bool = False,
+    park: bool = False,
 ) -> bool:
-    """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover``: see
+    """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover`` / ``park``: see
     MaskSegmenter.release."""
     segmenter = _segmenter
-    return segmenter is not None and segmenter.release(reason, wait = wait, handover = handover)
+    if segmenter is None:
+        return False
+    if park:
+        return segmenter.release(reason, wait = wait, handover = handover, park = True)
+    return segmenter.release(reason, wait = wait, handover = handover)
 
 
 _renders_pending = 0

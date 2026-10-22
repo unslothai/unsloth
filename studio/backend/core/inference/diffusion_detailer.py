@@ -29,8 +29,9 @@ overridden, as in ADetailer (its "use separate steps / CFG" are off by default).
 
 Two departures, both because Studio's detector is SAM 3 rather than a YOLO box model: the mask is SAM 3's instance mask
 (dilated), not the box rectangle, and a target with no ``:N`` keeps up to DEFAULT_PER_TARGET detections instead of
-SAM 3's usual single best one. SAM 3 is loaded only for the detection and released before the first inpaint, so it is
-never resident beside the image model while that denoises.
+SAM 3's usual single best one. SAM 3 is on the GPU only for the detection: before the first inpaint it is parked in
+host RAM (diffusion_segment MaskSegmenter.release(park = True)), so it is never resident beside the image model while
+that denoises, and the next pass moves it back instead of reading its weights again.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ import base64
 import io
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -75,6 +77,23 @@ DETAILER_UNAVAILABLE_INPAINT = (
 
 _MAX_SUFFIX = re.compile(r"^(.+?)\s*:\s*([\d.]+)\s*$")
 _SEP = re.compile(r"\s*\[SEP\]\s*")
+
+
+class DetailerCancelled(RuntimeError):
+    """Stop was pressed while the pass ran (between two inpaints, where no denoise is there to stop)."""
+
+
+# The stop events of the passes running now; POST /images/generate/cancel sets them all (cancel_active).
+_active: set[threading.Event] = set()
+_active_lock = threading.Lock()
+
+
+def cancel_active() -> bool:
+    """Stop every running pass at its next detection. True when one was running."""
+    with _active_lock:
+        for event in _active:
+            event.set()
+        return bool(_active)
 
 
 @dataclass(frozen = True)
@@ -322,6 +341,7 @@ def detail_image(
     prompt: str,
     negative_prompt: Optional[str],
     inpaint: InpaintFn,
+    stop: Optional[Callable[[], bool]] = None,
 ) -> DetailResult:
     """Run every detection in order on ``image`` (PIL RGB). ``inpaint(crop, mask, seed, prompt, negative)`` renders
     one enlarged crop with its binary mask and returns the image at that size."""
@@ -334,6 +354,8 @@ def detail_image(
     done: list[dict] = []
     skipped = 0
     for index, det in enumerate(detections[:MAX_DETECTIONS]):
+        if stop is not None and stop():
+            raise DetailerCancelled("cancelled")
         x1, y1, x2, y2 = det.box
         if not (x2 - x1 > settings.drop_size and y2 - y1 > settings.drop_size):
             skipped += 1
@@ -495,7 +517,8 @@ def _plane_to_mask(plane: Any, height: int, width: int) -> Any:
 
 
 def detect(images: list, settings: DetailerSettings) -> tuple[list[list[Detection]], dict]:
-    """SAM 3 on every image, then released: it never stays resident beside the image model while that denoises."""
+    """SAM 3 on every image, then parked in host RAM: it never stays on the GPU beside the image model while that
+    denoises."""
     from core.inference import diffusion_segment
 
     prompt = segment_prompt(settings.targets)
@@ -519,7 +542,8 @@ def detect(images: list, settings: DetailerSettings) -> tuple[list[list[Detectio
             )
             info = {"device": result.device, "precision": result.precision}
     finally:
-        diffusion_segment.release_segmenter("detailer", wait = True)
+        # Parked in host RAM: the next pass moves it back instead of reading the weights again.
+        diffusion_segment.release_segmenter("detailer", wait = True, park = True)
     info["model"] = diffusion_segment.active_variant().id
     info["detect_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
     return out, info
@@ -546,11 +570,45 @@ def detail_result(
     ``result["detailer"]`` holds one recipe record per image. ``generate`` is the engine's generate() with the
     run's model identity, LoRAs and sampler bound; a failure is recorded on the image (the render is kept), a cancel
     stops the pass."""
-    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-
     images = list(result.get("images") or [])
     if not images:
         return
+    stop_event = threading.Event()
+    with _active_lock:
+        _active.add(stop_event)
+    try:
+        _detail_images(
+            generate,
+            result,
+            images,
+            settings,
+            stop_event,
+            prompt_for = prompt_for,
+            negative_prompt = negative_prompt,
+            steps = steps,
+            guidance = guidance,
+            generate_kwargs = generate_kwargs,
+        )
+    finally:
+        with _active_lock:
+            _active.discard(stop_event)
+
+
+def _detail_images(
+    generate: Callable[..., dict],
+    result: dict,
+    images: list,
+    settings: DetailerSettings,
+    stop_event: threading.Event,
+    *,
+    prompt_for: Callable[[int], str],
+    negative_prompt: Optional[str],
+    steps: int,
+    guidance: float,
+    generate_kwargs: dict,
+) -> None:
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
     seeds = result.get("seeds") or []
     records: list[Optional[dict]] = [None] * len(images)
     try:
@@ -561,7 +619,7 @@ def detail_result(
         return
     step_count = settings.steps if settings.steps is not None else steps
     cfg = settings.guidance if settings.guidance is not None else guidance
-    cancelled = False
+    cancelled = stop_event.is_set()
     for index, image in enumerate(images):
         base_seed = seeds[index] if index < len(seeds) else result.get("seed") or 0
         if cancelled:
@@ -594,9 +652,10 @@ def detail_result(
                 prompt = prompt_for(index),
                 negative_prompt = negative_prompt,
                 inpaint = _inpaint,
+                stop = stop_event.is_set,
             )
         except Exception as exc:  # noqa: BLE001
-            if str(exc) == DIFFUSION_CANCELLED_MSG:
+            if isinstance(exc, DetailerCancelled) or str(exc) == DIFFUSION_CANCELLED_MSG:
                 cancelled = True
             else:
                 logger.warning("images.detailer: image %d failed: %s", index, exc)
