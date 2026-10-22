@@ -926,10 +926,9 @@ def _dW_accumulate_enabled():
 def _dW_accumulate_target(ctx, X, autotune):
     """The leaf parameter whose existing .grad the dW kernel may add into, else None.
 
-    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW.
-    Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook) cannot be
-    enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores the
-    returned-gradient path."""
+    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW,
+    including Node hooks that can rewrite dW: prehooks on W's AccumulateGrad and post hooks on this
+    GroupedGemmBackward. Post hooks on AccumulateGrad only observe (they see None for this dW)."""
     if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
         return None
     # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
@@ -970,7 +969,32 @@ def _dW_accumulate_target(ctx, X, autotune):
             return None
     except RuntimeError:
         return None  # autograd.grad(): W's gradient is captured, never accumulated
+    # Last: the only checks that cost Python work, so they run only for an otherwise eligible weight.
+    if _node_has_python_hooks(acc.register_prehook) or _node_has_python_hooks(ctx.register_hook):
+        return None
     return param
+
+
+def _node_hook_probe(*args):
+    return None
+
+
+def _node_has_python_hooks(register):
+    """True if the Node behind `register` (register_hook / register_prehook) already holds a Python hook.
+
+    Nodes cannot list their hooks, but every Python hook of one kind shares a single dict, and the
+    handle of a new registration points at it: register a no-op, count, remove it again."""
+    try:
+        handle = register(_node_hook_probe)
+    except Exception:
+        return True
+    try:
+        hooks = handle.hooks_dict_ref()
+        return hooks is None or len(hooks) > 1
+    except Exception:
+        return True
+    finally:
+        handle.remove()
 
 
 class GroupedGemm(torch.autograd.Function):
