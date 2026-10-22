@@ -2525,12 +2525,16 @@ const GeneratedImageViewportOverlay: FC<{
   );
 };
 
+// From the end: the footer follows every message row, and a forward walk costs O(rows) where Chromium's `:scope >` is O(1).
 const childWithClass = (
   parent: Element | null | undefined,
   className: string,
 ): HTMLElement | null => {
-  if (!parent) return null;
-  for (const child of parent.children) {
+  for (
+    let child = parent?.lastElementChild ?? null;
+    child;
+    child = child.previousElementSibling
+  ) {
     if (child instanceof HTMLElement && child.classList.contains(className)) {
       return child;
     }

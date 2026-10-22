@@ -22,12 +22,16 @@ const declaration = (name: string): string => {
   throw new Error(`${name} is not declared at module scope`);
 };
 
+let classChecks = 0;
+
 class FakeElement {
-  readonly children: FakeElement[];
   readonly classList: { contains: (name: string) => boolean };
+  lastElementChild: FakeElement | null = null;
+  previousElementSibling: FakeElement | null = null;
   constructor(classes: string[], children: FakeElement[] = []) {
-    this.children = children;
-    this.classList = { contains: (name) => classes.includes(name) };
+    this.classList = { contains: (name) => (classChecks++, classes.includes(name)) };
+    children.forEach((child, i) => { child.previousElementSibling = children[i - 1] ?? null; });
+    this.lastElementChild = children.at(-1) ?? null;
   }
 }
 
@@ -41,15 +45,15 @@ const load = () => {
   return context.exports.childWithClass;
 };
 
-test("the lookup returns the first direct child carrying the class and ignores descendants", () => {
+test("the lookup returns the last direct child carrying the class and ignores descendants", () => {
   const childWithClass = load();
   const nested = new FakeElement(["aui-thread-viewport-footer"]);
+  const earlier = new FakeElement(["aui-thread-viewport-footer"]);
   const footer = new FakeElement(["aui-thread-viewport-footer", "x"]);
-  const later = new FakeElement(["aui-thread-viewport-footer"]);
   const viewport = new FakeElement(["aui-thread-viewport"], [
     new FakeElement(["row"], [nested]),
+    earlier,
     footer,
-    later,
   ]);
   assert.equal(childWithClass(viewport, "aui-thread-viewport-footer"), footer);
   assert.equal(childWithClass(viewport, "missing"), null);
@@ -60,14 +64,14 @@ test("the lookup returns the first direct child carrying the class and ignores d
 test("a child that is not an HTML element is skipped even when it carries the class", () => {
   const childWithClass = load();
   class FakeSvgElement {
-    readonly children: FakeElement[] = [];
+    previousElementSibling: FakeElement | null = null;
     readonly classList = { contains: (name: string) => name === "aui-thread-viewport-footer" };
   }
   const footer = new FakeElement(["aui-thread-viewport-footer"]);
-  const viewport = new FakeElement(["aui-thread-viewport"], [
-    new FakeSvgElement() as unknown as FakeElement,
-    footer,
-  ]);
+  const svg = new FakeSvgElement() as unknown as FakeElement;
+  svg.previousElementSibling = footer;
+  const viewport = new FakeElement(["aui-thread-viewport"], [footer]);
+  viewport.lastElementChild = svg;
   assert.equal(childWithClass(viewport, "aui-thread-viewport-footer"), footer);
 });
 
@@ -77,6 +81,16 @@ test("a nested match is not mistaken for the column box", () => {
     new FakeElement(["row"], [new FakeElement(["aui-thread-viewport-footer"])]),
   ]);
   assert.equal(childWithClass(viewport, "aui-thread-viewport-footer"), null);
+});
+
+test("finding the footer after a long thread checks one child, not every row", () => {
+  const childWithClass = load();
+  const rows = Array.from({ length: 500 }, () => new FakeElement(["row"]));
+  const footer = new FakeElement(["aui-thread-viewport-footer"]);
+  const viewport = new FakeElement(["aui-thread-viewport"], [...rows, new FakeElement(["shrink-0"]), footer]);
+  classChecks = 0;
+  assert.equal(childWithClass(viewport, "aui-thread-viewport-footer"), footer);
+  assert.equal(classChecks, 1);
 });
 
 test("the composer dock finds its column boxes by walking children, not by a selector over the thread", () => {
