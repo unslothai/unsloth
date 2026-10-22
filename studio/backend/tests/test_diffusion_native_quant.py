@@ -1211,3 +1211,43 @@ def test_a_rotated_layer_passes_an_empty_input_through():
     )
     out = layer(torch.zeros(2, 0, 256, dtype = torch.bfloat16))
     assert out.shape == (2, 0, 64)
+
+
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_fp8_integer_decode_equals_the_cast_bit_for_bit(fmt):
+    """Integer decode equals the eager cast on all 256 codes."""
+    from core.inference.diffusion_native_quant import fp8_bits_to_float32
+
+    bits = torch.arange(256, dtype = torch.int32).to(torch.uint8)
+    want = bits.view(getattr(torch, fmt)).to(torch.float32)
+    got = fp8_bits_to_float32(bits, fmt)
+    nan = want.isnan()
+    assert torch.equal(got.isnan(), nan)
+    assert torch.equal(got[~nan].view(torch.int32), want[~nan].view(torch.int32))
+
+
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_fp8_codes_layer_matches_the_dequant_formula_eager_and_compiled(fmt):
+    """A native fp8 layer built from checkpoint codes + per-row scale: its forward equals F.linear on
+    ``(codes.float() * scale).to(dtype)`` (the load-time dequant) in eager, and the compiled forward (integer
+    decode) matches eager exactly with no graph break."""
+    from core.inference.diffusion_native_quant import NATIVE_FP8, native_linear_class
+
+    torch.manual_seed(0)
+    fp8 = getattr(torch, fmt)
+    base = torch.nn.Linear(64, 48).to(torch.bfloat16)
+    w = torch.randn(48, 64)
+    scale = w.abs().amax(dim = 1, keepdim = True) / torch.finfo(fp8).max
+    codes = (w / scale).to(fp8)
+    layer = native_linear_class()(base, NATIVE_FP8, codes = codes, scale = scale)
+    assert layer.weight_q.dtype is torch.uint8 and layer.fp8_format == fmt
+    dense = (codes.to(torch.float32) * scale).to(torch.bfloat16)
+    x = torch.randn(3, 64, dtype = torch.bfloat16)
+    want = torch.nn.functional.linear(x, dense, base.bias)
+    assert torch.equal(layer.weight, dense)
+    assert torch.equal(layer(x), want)
+    torch._dynamo.reset()
+    explained = torch._dynamo.explain(layer)(x)
+    assert explained.graph_break_count == 0
+    compiled = torch.compile(layer, fullgraph = True)
+    assert torch.equal(compiled(x), layer(x))
