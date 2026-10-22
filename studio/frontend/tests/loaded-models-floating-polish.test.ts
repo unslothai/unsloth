@@ -185,3 +185,18 @@ test("a drag from a handle no click follows clears the sentinel", () => {
   assert.equal(sentinelAfterSettle(true, false), false);
   assert.equal(sentinelAfterSettle(false, true), false);
 });
+
+test("a kept model sharing the active model's label still gets its own row", () => {
+  const rows = describeInferenceStatus({
+    active_model: "model",
+    model_identifier: "/x/model.gguf",
+    is_gguf: true,
+    loaded: ["model"],
+    serving: ["model", "model"],
+    serving_checkpoints: ["/x/model.gguf", "/y/model.gguf"],
+  } as never);
+  assert.deepEqual(
+    rows.filter((r) => r.servingCheckpoint).map((r) => r.servingCheckpoint),
+    ["/y/model.gguf"],
+  );
+});

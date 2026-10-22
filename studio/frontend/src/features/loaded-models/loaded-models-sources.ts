@@ -281,9 +281,12 @@ export function describeInferenceStatus(
   for (let i = 0; i < serving.length; i++) {
     const name = serving[i];
     const checkpoint = checkpoints[i] || name;
-    if (!name || (active && (checkpoint === activeCheckpoint || name === active))) {
-      continue;
-    }
+    // By checkpoint when both are known: a kept model may share the active one's label.
+    const isActive =
+      checkpoints[i] && status.model_identifier
+        ? checkpoint === status.model_identifier
+        : checkpoint === activeCheckpoint || name === active;
+    if (!name || (active && isActive)) continue;
     if (entries.some((entry) => entry.id === `chat:${checkpoint}`)) continue;
     entries.push({
       id: `chat:${checkpoint}`,
