@@ -1513,6 +1513,23 @@ def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, f
     assert getattr(args, "mixed_precision", expected) == expected
 
 
+@pytest.mark.parametrize(
+    "engine",
+    [{"deepspeed": {"zero_optimization": {"stage": 2}}}, {"fsdp": ["full_shard"]}],
+)
+def test_clef_float32_path_keeps_float32_under_deepspeed_and_fsdp(tmp_path, monkeypatch, engine):
+    # Both read fp16 as a request for their own fp16 engine, which would cast the float32 path away.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = True
+    args = _args(tmp_path)
+    for key, value in engine.items():
+        setattr(args, key, value)
+    decision._clef_mixed_precision(model, args)
+    assert not args.fp16 and not args.bf16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "no"
+
+
 def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):
     # A T4: evaluate and serving autocast fp16, so training does too.
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")

@@ -1068,6 +1068,16 @@ def _attach_gguf_saving(model) -> None:
     model.push_to_hub_gguf = types.MethodType(push_to_hub_gguf, model)
 
 
+def _sharded_engine(args) -> bool:
+    from .loader_utils import deepspeed_zero_stage, fsdp_version_requested
+    return bool(
+        getattr(args, "deepspeed", None)
+        or getattr(args, "fsdp", None)
+        or deepspeed_zero_stage() is not None
+        or fsdp_version_requested()
+    )
+
+
 def _clef_mixed_precision(model, args) -> None:
     # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
     # float16 NaNs the gated delta net; bfloat16 weights pair with bf16 only; an fp16 load (T4) keeps fp16.
@@ -1078,8 +1088,9 @@ def _clef_mixed_precision(model, args) -> None:
             )
         # fp16 only for its loss scaler: DecisionTrainer turns autocast off, but the float16 weights
         # still backpropagate in float16, and unscaled that left Gemma 3's adapter gradients mostly
-        # rounding noise, so it never learned (#14439).
-        args.fp16, args.bf16 = True, False
+        # rounding noise, so it never learned (#14439). DeepSpeed and FSDP read fp16 as a request
+        # for their own fp16 engines, which would cast the float32 path away: they keep float32.
+        args.fp16, args.bf16 = not _sharded_engine(args), False
     elif args.fp16 and getattr(model._backbone(), "dtype", None) == torch.bfloat16:
         print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
         args.fp16, args.bf16 = False, True
@@ -1215,7 +1226,7 @@ class DecisionTrainer(Trainer):
                 return backward(loss, **backward_kwargs)
 
         self.accelerator.backward = _backward
-        if clef and _clef_forced_float32(model):
+        if clef and _clef_forced_float32(model) and self.args.fp16:
             from accelerate.utils import AutocastKwargs
             self.accelerator.autocast_handler = AutocastKwargs(enabled = False)
 
