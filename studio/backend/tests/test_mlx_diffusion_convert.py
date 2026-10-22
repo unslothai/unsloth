@@ -31,13 +31,13 @@ def _blocks(
     return quants.quantize(x, kind)
 
 
-@pytest.mark.parametrize("kind", [T.Q4_0, T.Q4_1, T.Q8_0])
+@pytest.mark.parametrize("kind", [T.Q4_0, T.Q4_1, T.Q5_0, T.Q5_1, T.Q8_0])
 @pytest.mark.parametrize("cols", [64, 96])
 def test_affine_matches_gguf_dequantize_exactly(kind, cols):
     raw = _blocks(kind, 6, cols, seed = cols)
     reference = quants.dequantize(raw, kind).astype(np.float32)
     w, s, b, bits = conv.affine_from_ggml(kind.name, raw, 6, cols)
-    assert bits == (8 if kind == T.Q8_0 else 4)
+    assert bits == {T.Q8_0: 8, T.Q5_0: 5, T.Q5_1: 5}.get(kind, 4)
     assert w.dtype == np.uint32 and w.shape == (6, cols * bits // 32)
     assert s.shape == b.shape == (6, cols // 32)
     got = conv.dequantize_affine(w, s, b, bits)
@@ -49,7 +49,7 @@ def test_affine_matches_gguf_dequantize_exactly(kind, cols):
     assert np.array_equal(conv.dequantize_affine(w, s16, b16, bits), reference)
 
 
-@pytest.mark.parametrize("kind", [T.Q4_0, T.Q4_1, T.Q8_0])
+@pytest.mark.parametrize("kind", [T.Q4_0, T.Q4_1, T.Q5_0, T.Q5_1, T.Q8_0])
 def test_affine_bf16_scales_within_rounding_bound(kind):
     raw = _blocks(kind, 8, 128, seed = 3)
     reference = quants.dequantize(raw, kind).astype(np.float32)
@@ -63,11 +63,78 @@ def test_affine_bf16_scales_within_rounding_bound(kind):
     assert np.all(np.abs(sb - s) <= np.abs(s) * 2.0**-8)
 
 
-def test_affine_rejects_kquant_and_bad_sizes():
-    with pytest.raises(conv.UnsupportedGGUFError):
-        conv.affine_from_ggml("Q4_K", np.zeros(144, np.uint8), 1, 256)
+def test_affine_rejects_16_wide_kquants_and_bad_sizes():
+    for kind, size in (("Q2_K", 84), ("Q3_K", 110)):
+        with pytest.raises(conv.UnsupportedGGUFError):
+            conv.affine_from_ggml(kind, np.zeros(size, np.uint8), 1, 256)
     with pytest.raises(ValueError):
         conv.affine_from_ggml("Q4_0", np.zeros(17, np.uint8), 1, 32)
+    with pytest.raises(ValueError):
+        conv.affine_from_ggml("Q4_K", np.zeros(143, np.uint8), 1, 256)
+
+
+# Field offsets of the 256-wide super-blocks (ggml-common.h block_q4_K / block_q5_K / block_q6_K).
+_KQUANT_FP16_FIELDS = {"Q4_K": (0, 2), "Q5_K": (0, 2), "Q6_K": (208,)}
+
+
+def _kquant_raw(kind, rows, cols, seed = 0):
+    """Random K-quant blocks with finite, realistic fp16 super-block scales (gguf-py cannot quantize these)."""
+    size = conv._BLOCK_BYTES[kind]
+    rng = _rng(seed)
+    raw = rng.integers(0, 256, size = (rows * cols // 256, size), dtype = np.uint8)
+    for offset in _KQUANT_FP16_FIELDS[kind]:
+        d = (rng.uniform(1e-4, 3e-3, size = raw.shape[0])).astype(np.float16)
+        raw[:, offset : offset + 2] = d.view(np.uint8).reshape(-1, 2)
+    return raw
+
+
+@pytest.mark.parametrize("kind", ["Q4_K", "Q5_K"])
+def test_kquant_codes_and_scales_reproduce_gguf_dequantize_exactly(kind):
+    raw = _kquant_raw(kind, 4, 512, seed = 5)
+    reference = quants.dequantize(raw, getattr(T, kind)).astype(np.float32).reshape(4, 512)
+    w, s, b, bits = conv.affine_from_ggml(kind, raw, 4, 512)
+    assert bits == (4 if kind == "Q4_K" else 5)
+    assert w.shape == (4, 512 * bits // 32) and s.shape == b.shape == (4, 16)
+    # Same fp32 products as gguf-py: exact before the 16-bit scale store.
+    assert np.array_equal(conv.dequantize_affine(w, s, b, bits), reference)
+    # The fp16 store rounds d * sc only: error bounded by the rounding of each group's scale and bias.
+    s16 = s.astype(np.float16).astype(np.float32)
+    b16 = b.astype(np.float16).astype(np.float32)
+    q = conv._unpack(w, bits).astype(np.float32).reshape(4, 16, 32)
+    bound = (q * np.abs(s16 - s)[..., None] + np.abs(b16 - b)[..., None]).reshape(4, 512)
+    got = conv.dequantize_affine(w, s16, b16, bits)
+    assert np.all(np.abs(got - reference) <= bound * 1.0001 + 1e-12)
+    assert np.max(np.abs(got - reference)) <= 2.0**-10 * np.max(np.abs(reference))
+
+
+def test_q6_k_requantizes_to_8_bits_within_a_quarter_of_its_own_step():
+    raw = _kquant_raw("Q6_K", 4, 512, seed = 9)
+    reference = quants.dequantize(raw, T.Q6_K).astype(np.float32).reshape(4, 512)
+    w, s, b, bits = conv.affine_from_ggml("Q6_K", raw, 4, 512)
+    assert bits == 8
+    got = conv.dequantize_affine(w, s, b, bits)
+    # Q6_K's own step per 16 values is |d * scale|; the 8-bit group-32 step over the same values is <= 64 / 255 of
+    # the larger one, so the rounding error stays within half of that.
+    blocks = raw.reshape(-1, 210)
+    d = blocks[:, 208:210].copy().view(np.float16).astype(np.float32)
+    sc = blocks[:, 192:208].view(np.int8).astype(np.float32)
+    step = np.abs(d * sc).reshape(4, 32)
+    group_step = np.maximum(step[:, 0::2], step[:, 1::2])
+    err = np.abs(got - reference).reshape(4, 16, 32).max(axis = -1)
+    assert np.all(err <= group_step * 0.25 + 1e-7)
+
+
+@pytest.mark.parametrize("bits", [3, 4, 5, 6, 8])
+def test_pack_matches_mlx_layout_bit_for_bit(bits):
+    mx = pytest.importorskip("mlx.core")
+    w = mx.array(_rng(bits).standard_normal((8, 256)).astype(np.float32))
+    packed, scales, biases = mx.quantize(w, group_size = 32, bits = bits)
+    deq = np.array(mx.dequantize(packed, scales, biases, group_size = 32, bits = bits))
+    q = np.rint(
+        (deq.reshape(8, 8, 32) - np.array(biases)[..., None]) / np.array(scales)[..., None]
+    ).astype(np.int64)
+    assert np.array_equal(conv._pack(q.reshape(8, 256), bits), np.array(packed))
+    assert np.array_equal(conv._unpack(np.array(packed), bits), q.reshape(8, 256))
 
 
 @pytest.mark.parametrize("bits", [4, 8])
@@ -118,10 +185,16 @@ def test_zimage_rename(src, dst):
         ("z-image-turbo-Q8_0.gguf", True),
         ("z-image-turbo-BF16.gguf", True),
         ("z-image-turbo-F16.gguf", True),
-        ("z_image_turbo-Q4_K_M.gguf", False),
+        ("z_image_turbo-Q4_K_M.gguf", True),
+        ("z-image-turbo-Q4_K_S.gguf", True),
+        ("z-image-turbo-Q5_K_M.gguf", True),
+        ("z-image-turbo-Q5_K_S.gguf", True),
+        ("z-image-turbo-Q6_K.gguf", True),
+        ("z-image-turbo-Q5_0.gguf", True),
+        ("z-image-turbo-Q5_1.gguf", True),
         ("z-image-turbo-UD-Q4_K_XL.gguf", False),
-        ("z-image-turbo-Q6_K.gguf", False),
-        ("z-image-turbo-Q5_0.gguf", False),
+        ("z-image-turbo-Q3_K_M.gguf", False),
+        ("z-image-turbo-Q2_K.gguf", False),
         ("z-image-turbo-IQ4_XS.gguf", False),
         ("z-image-turbo-MXFP4.gguf", False),
         ("z-image-turbo.gguf", False),
@@ -137,8 +210,8 @@ def test_quant_convertible(name, ok):
 
 
 def test_quant_convertible_names_the_kquant():
-    _ok, reason = conv.quant_convertible("z_image_turbo-Q4_K_M.gguf")
-    assert "Q4_K_M" in reason and "not convertible" in reason
+    _ok, reason = conv.quant_convertible("z_image_turbo-Q3_K_M.gguf")
+    assert "Q3_K_M" in reason and "not convertible" in reason
 
 
 # ── End to end on a tiny synthetic GGUF ─────────────────────────────────────────────────────────
@@ -291,14 +364,14 @@ def test_convert_dense_bits_quantizes_dense_linears(tmp_path):
 
 
 def test_convert_refuses_kquant_before_writing(tmp_path):
-    src = tmp_path / "z-image-turbo-Q4_K_M.gguf"
+    src = tmp_path / "z-image-turbo-Q3_K_M.gguf"
 
     def extra(w):
-        raw = _rng(2).integers(0, 255, size = (4, 144), dtype = np.uint8)
-        w.add_tensor("layers.0.feed_forward.w2.weight", raw, raw_dtype = T.Q4_K)
+        raw = _rng(2).integers(0, 255, size = (4, 110), dtype = np.uint8)
+        w.add_tensor("layers.0.feed_forward.w2.weight", raw, raw_dtype = T.Q3_K)
 
     _write_gguf(src, extra = extra)
-    with pytest.raises(conv.UnsupportedGGUFError, match = "Q4_K"):
+    with pytest.raises(conv.UnsupportedGGUFError, match = "Q3_K"):
         conv.convert_gguf_to_mflux(src, tmp_path / "out")
     assert not (tmp_path / "out" / "transformer" / "0.safetensors").exists()
     assert not conv.conversion_complete(tmp_path / "out")
@@ -425,3 +498,50 @@ def test_mlx_loads_the_output_when_available(tmp_path):
     ).astype(mx.float32)
     kind, raw = sources["layers.0.attention.out.weight"]
     np.testing.assert_allclose(np.array(got), quants.dequantize(raw, kind), atol = 2e-3, rtol = 0)
+
+
+def test_a_q4_k_m_mixture_converts_and_mlx_reads_every_layer(tmp_path):
+    """Q4_K + Q5_K + Q6_K + Q5_0 beside the Q4_0 / Q8_0 / BF16 tensors, read back with MLX's own dequantize."""
+    mx = pytest.importorskip("mlx.core")
+    src = tmp_path / "z-image-turbo-Q4_K_M.gguf"
+    extra_sources = {}
+
+    def extra(w):
+        for name, kind, seed in (
+            ("layers.1.feed_forward.w1.weight", "Q4_K", 1),
+            ("layers.1.feed_forward.w2.weight", "Q5_K", 2),
+            ("layers.1.feed_forward.w3.weight", "Q6_K", 3),
+        ):
+            raw = _kquant_raw(kind, 4, 256, seed = seed)
+            extra_sources[name] = (kind, raw)
+            w.add_tensor(name, raw.reshape(4, -1), raw_dtype = getattr(T, kind))
+        x = (_rng(4).standard_normal((4, 64)) * 0.05).astype(np.float32)
+        raw = quants.quantize(x, T.Q5_0)
+        extra_sources["layers.1.attention.out.weight"] = ("Q5_0", raw)
+        w.add_tensor("layers.1.attention.out.weight", raw, raw_dtype = T.Q5_0)
+
+    _write_gguf(src, extra = extra)
+    summary = conv.convert_gguf_to_mflux(src, tmp_path / "out")
+    assert {"Q4_K", "Q5_K", "Q6_K", "Q5_0"} <= set(summary["counts"])
+    loaded, meta = mx.load(str(tmp_path / "out" / "transformer" / "0.safetensors"), return_metadata = True)
+    assert meta["quantization_level"] not in (None, "None")
+    renamed = {
+        "layers.1.feed_forward.w1.weight": ("layers.1.feed_forward.w1", 4),
+        "layers.1.feed_forward.w2.weight": ("layers.1.feed_forward.w2", 5),
+        "layers.1.feed_forward.w3.weight": ("layers.1.feed_forward.w3", 8),
+        "layers.1.attention.out.weight": ("layers.1.attention.to_out.0", 5),
+    }
+    for name, (kind, raw) in extra_sources.items():
+        base, bits = renamed[name]
+        got = mx.dequantize(
+            loaded[base + ".weight"],
+            loaded[base + ".scales"],
+            loaded[base + ".biases"],
+            group_size = 32,
+            bits = bits,
+        ).astype(mx.float32)
+        reference = quants.dequantize(raw, getattr(T, kind)).astype(np.float32).reshape(np.array(got).shape)
+        # bf16 scales and biases, and MLX dequantizes into bf16: a few bf16 ulps of the largest weight (a layout
+        # error would be off by the weight itself).
+        tol = 2.0**-6 * np.max(np.abs(reference))
+        np.testing.assert_allclose(np.array(got), reference, atol = tol, rtol = 0)
