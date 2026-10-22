@@ -706,6 +706,10 @@ def test_connection_images_record_no_local_engine(monkeypatch):
     remote = gallery.save(_img(), {**base, "model_kind": "connection"})
     assert local["engine"] == "diffusers"
     assert remote["engine"] is None
+    # Vary compares it with the loaded engine, so the served record must keep it (FastAPI drops undeclared fields).
+    from models.inference import GalleryImage
+
+    assert GalleryImage(**local).model_dump()["engine"] == "diffusers"
 
 
 def test_parameters_chunk_carries_the_encoded_caption():
