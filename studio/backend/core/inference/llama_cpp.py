@@ -10114,13 +10114,9 @@ class LlamaCppBackend:
         main_reserve_mib: float = 0.0,
         pipeline_mib: float = 0.0,
     ) -> Optional[List[float]]:
-        """Layer-count ``--tensor-split`` shares, positional over ``gpu_indices``, filling
-        discrete cards before shared-memory iGPUs (whose "free" is the host pool).
-
-        llama.cpp cuts contiguous layer runs by COUNT (get_layer_buft_list): a card takes
-        the most layers whose heaviest run of ``layer_mib`` fits its room, after
-        ``per_device_mib``, ``main_reserve_mib`` (device 0) and ``pipeline_mib`` (the
-        rest). None unless the pin mixes both kinds and every run fits."""
+        """Layer-count ``--tensor-split`` shares over ``gpu_indices``: discrete cards first,
+        iGPUs (whose "free" is the host pool) take the overflow. llama.cpp cuts contiguous runs
+        by COUNT (get_layer_buft_list). None unless the pin mixes both kinds and every run fits."""
         shared = set(shared_gpu_ids)
         discrete = [i for i in gpu_indices if i not in shared]
         igpus = [i for i in gpu_indices if i in shared]
@@ -10158,7 +10154,6 @@ class LlamaCppBackend:
         }
         for i in igpus:
             counts[i] = int(exact[i])
-        # Largest remainder: non-negative counts summing to exactly `left`.
         for i in sorted(igpus, key = lambda d: exact[d] - counts[d], reverse = True)[
             : left - sum(counts[i] for i in igpus)
         ]:
@@ -10206,7 +10201,6 @@ class LlamaCppBackend:
             or spill_inputs.get("host_mmproj_bytes")
             or not _kv_offload_from_args(extra_args, env)
             or _extra_args_have_tensor_split(extra_args, env)
-            # Row and tensor modes split within a tensor; per-layer shares don't describe them.
             # argv only: a non-layer inherited LLAMA_ARG_SPLIT_MODE is popped before launch.
             or _extra_args_split_mode(extra_args, {}) not in (None, "layer")
             # Extras follow the generated --fit off; the fitter rejects a multi-device split.
@@ -10237,8 +10231,7 @@ class LlamaCppBackend:
         kv_total = int(spill_inputs["kv_cache_bytes"] or 0)
         kv_weights = list(spill_inputs.get("kv_layer_weights") or ())
         if len(kv_weights) != n_blocks or sum(kv_weights) <= 0:
-            # Uniform is only right for a plain cache; MLA, hybrid recurrent and an
-            # unpriced sliding window put it on some layers only (_kv_layer_weights).
+            # MLA, hybrid recurrent and an unpriced sliding window are uneven (_kv_layer_weights).
             if kv_total and (
                 self._kv_lora_rank is not None
                 or self._ssm_inner_size is not None
@@ -10268,8 +10261,7 @@ class LlamaCppBackend:
             + spill_inputs["extra_gpu_bytes"]
             + int(spill_inputs.get("env_mmproj_bytes") or 0)
         )
-        # Context reserve per device (as _planned_tensor_spill); a hybrid run may hold one
-        # attention layer more than its uniform share.
+        # As _planned_tensor_spill; a hybrid run may hold one attention layer over its share.
         per_device = spill_inputs["ctx_compute_per_device"] + spill_inputs["soft_overhead"]
         if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
             per_device += kv_total / layout.n_attention_layers
@@ -28980,8 +28972,7 @@ class LlamaCppBackend:
                             # headroom threshold as _select_gpus (#5106). Rank by the
                             # active pin fraction so the order matches the fit budget.
                             pin_fraction = _pin_fraction
-                            # Floor = the most _reserve_at can ask, so a short card never hides an
-                            # iGPU that fits alone behind a failing prefix.
+                            # Max _reserve_at ask: a short card must not hide an iGPU that fits.
                             _rank_floor_mib = (
                                 _pipeline_overhead_bytes + _cc_bytes(effective_ctx, 2) // 2
                             ) / (1024 * 1024)
