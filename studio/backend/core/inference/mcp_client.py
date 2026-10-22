@@ -217,7 +217,9 @@ class _PostTracker:
             self.abandoned.pop(token, None)
 
     def install(self, client) -> None:
-        http = importlib.import_module(type(client).__module__.split(".")[0])
+        http = sys.modules[
+            type(client).__module__.split(".")[0]
+        ]  # already imported: it built ``client``
         tracker = self
 
         class Stream(http.AsyncByteStream):
