@@ -7889,15 +7889,19 @@ def _output_head_module_ids(model):
     return {id(m) for m in out_head.modules()}
 
 
-def _block_linear_filter(model, block_size, qat_scheme, skip_output_head):
-    """Linears with both dims divisible by the scale block, optionally excluding the output head."""
+def _block_linear_filter(
+    model, block_size, qat_scheme, skip_output_head, in_features_multiple = None
+):
+    """Linears with both dims divisible by the scale block (in_features by in_features_multiple if given),
+    optionally excluding the output head."""
     out_head_ids = _output_head_module_ids(model) if skip_output_head else set()
+    in_multiple = in_features_multiple or block_size
 
     def eligible(m):
         return isinstance(m, torch.nn.Linear) and id(m) not in out_head_ids
 
     def blocks_ok(m):
-        return m.in_features % block_size == 0 and m.out_features % block_size == 0
+        return m.in_features % in_multiple == 0 and m.out_features % block_size == 0
 
     filter_fn = lambda m, _: eligible(m) and blocks_ok(m)
     skipped = [
@@ -7906,9 +7910,14 @@ def _block_linear_filter(model, block_size, qat_scheme, skip_output_head):
         if eligible(module) and not blocks_ok(module) and not _is_lora_adapter_name(name)
     ]
     if skipped:
+        need = (
+            f"a dim not divisible by {block_size}"
+            if in_multiple == block_size
+            else f"in_features not divisible by {in_multiple} or out_features not divisible by {block_size}"
+        )
         warnings.warn(
             f"Unsloth: qat_scheme='{qat_scheme}' uses {block_size}-element scale blocks; these Linear "
-            f"layers have a dim not divisible by {block_size} and stay in full precision: "
+            f"layers have {need} and stay in full precision: "
             + ", ".join(skipped[:8])
             + (f", ... ({len(skipped) - 8} more)" if len(skipped) > 8 else ""),
             stacklevel = 3,
@@ -7973,10 +7982,23 @@ def _eligible_layer_placements(model, filter_fn):
 
 
 def _microscaling_qat_filter(
-    model, qat_scheme, base_config, block_size, dtypes, dtype_msg, gemm_msg
+    model,
+    qat_scheme,
+    base_config,
+    block_size,
+    dtypes,
+    dtype_msg,
+    gemm_msg,
+    in_features_multiple = None,
 ):
     """NVFP4 / MX QAT layer filter; raises at prepare time if this GPU / dtype cannot run the GEMM."""
-    candidates = _block_linear_filter(model, block_size, qat_scheme, skip_output_head = True)
+    candidates = _block_linear_filter(
+        model,
+        block_size,
+        qat_scheme,
+        skip_output_head = True,
+        in_features_multiple = in_features_multiple,
+    )
     placements = _eligible_layer_placements(model, candidates)
     unsupported = sorted({str(dtype) for _, dtype in placements if dtype not in dtypes})
     if unsupported:
@@ -8154,6 +8176,8 @@ def _prepare_model_for_qat(
                 qat_scheme,
                 base_config,
                 block_size = 16,
+                # Two FP4 values per byte: _scaled_mm needs the packed K / 2 divisible by 16, so K by 32.
+                in_features_multiple = 32,
                 dtypes = (torch.bfloat16, torch.float32),
                 dtype_msg = "bfloat16 or float32 activations only (torchao's NVFP4 quantizer)",
                 gemm_msg = "NVFP4 matmuls in the forward pass and needs a GPU with FP4 tensor cores "
