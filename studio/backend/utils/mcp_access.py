@@ -144,6 +144,10 @@ def set_mcp_settings(
                 raise ValueError(
                     "The stored MCP tool list could not be read; send the whole list instead."
                 )
+            from mcp_server import tool_names
+
+            # A name this build no longer serves is dropped, as a whole-list save drops it.
+            stored = stored & set(tool_names())
             disabled_tools = (stored - {n for n, on in tool_states.items() if on}) | {
                 n for n, on in tool_states.items() if not on
             }

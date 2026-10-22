@@ -201,6 +201,13 @@ def test_a_bad_tool_states_body_writes_nothing(client, body, code):
     assert _stored() == {}
 
 
+def test_tool_states_drops_a_stale_stored_name(client):
+    studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: ["gone_tool", "cancel"]})
+    put = client.put(URL, json = {"tool_states": {"voices": False}}, headers = _owner_session())
+    assert put.status_code == 200, put.text
+    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: ["cancel", "voices"]}
+
+
 def test_tool_states_on_an_unreadable_list_is_a_conflict(client):
     studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: "x"})
     response = client.put(URL, json = {"tool_states": {"cancel": True}}, headers = _owner_session())
