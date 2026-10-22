@@ -301,3 +301,53 @@ def test_split_mode_none_keeps_the_whole_reserve_on_the_main_card(tmp_path, _dis
 def test_a_repeated_draft_pin_is_one_card():
     argv = ["--device", "CUDA0", "--device-draft", "CUDA0,CUDA0"]
     assert _lc._spawn_draft_on_target(argv, "CUDA0")
+
+
+@pytest.mark.parametrize("pin, on_target", [("CUDA0", True), ("CUDA1", False)])
+def test_split_mode_none_defaults_to_the_lists_first_device(pin, on_target):
+    argv = ["--device", "CUDA0,CUDA1", "--split-mode", "none", "--spec-draft-device", pin]
+    assert _lc._spawn_draft_on_target(argv, "CUDA0,CUDA1", {}) is on_target
+
+
+@pytest.mark.parametrize(
+    "user, env, want",
+    [
+        # A short list sets only the entries it names; the rest keep the earlier value.
+        (["--fit-target", "4096", "--fit-target", "2048,3072"], {}, "3048,4072,5096"),
+        # The env applies first, the argv after it.
+        ([], {"LLAMA_ARG_FIT_TARGET": "4096"}, "5096,5096,5096"),
+        (["--fit-target", "2048"], {"LLAMA_ARG_FIT_TARGET": "4096,4096,8192"}, "3048,3048,3048"),
+        (["--fit-target=2048,3072"], {"LLAMA_ARG_FIT_TARGET": "8192"}, "3048,4072,9192"),
+    ],
+)
+def test_per_device_margins_follow_llama_cpps_update_order(user, env, want):
+    flags = _lc._sidecar_reserve_margin_flags(
+        ["--model-draft", "/d.gguf", "--fit", "on"],
+        user,
+        env,
+        1024,
+        1000,
+        per_device = [1000, 1000, 1000],
+    )
+    assert flags == ["--fit-target", want]
+
+
+def test_an_explicit_tensor_split_decides_the_draft_shares(tmp_path, _discrete):
+    """The drafter inherits the target's --tensor-split, so 3:1 puts 3/4 on card 0 even
+    though both cards are equally free."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    big, small = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,1"]))
+    assert 1024 + 6 * 1024 <= big < 1024 + 7 * 1024
+    assert 1024 + 2 * 1024 <= small < 1024 + 3 * 1024
+
+
+@pytest.mark.parametrize("pin, reserved", [("CUDA0", True), ("CUDA1", False)])
+def test_split_mode_none_narrows_an_inherited_device_list_at_planning(
+    tmp_path, monkeypatch, _discrete, pin, reserved
+):
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0,CUDA1")
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    extras = ["--split-mode", "none", "--spec-draft-device", pin]
+    cmd = _dspark(backend, gguf, tmp_path, extra_args = extras)
+    assert (_r4._margin(cmd) >= _FLOOR) is reserved

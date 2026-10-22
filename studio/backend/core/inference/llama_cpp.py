@@ -5296,9 +5296,11 @@ def _spawn_draft_on_target(
     if spawn_devices:
         # A repeated card (CUDA0,CUDA0) is one device, as _distinct_device_count counts it.
         named = [d.strip().lower() for d in spawn_devices.split(",") if d.strip()]
-        main = LlamaCppBackend._effective_main_gpu(run_cmd, env)
-        if main is not None and 0 <= main < len(named):
-            return pin.strip().lower() == named[main]
+        if _split_mode_confines_to_one_device(run_cmd, env):
+            # Only devices[main_gpu] is kept, main_gpu 0 by default.
+            main = LlamaCppBackend._effective_main_gpu(run_cmd, env)
+            main = 0 if main is None else main
+            return 0 <= main < len(named) and pin.strip().lower() == named[main]
         return set(named) == {d.strip().lower() for d in pin.split(",") if d.strip()}
     return int(re.sub(r"\D", "", pin)) == (LlamaCppBackend._effective_main_gpu(run_cmd, env) or 0)
 
@@ -6523,6 +6525,22 @@ def _single_device_fit_margin(
         return None
 
 
+def _fit_target_values(user_args: Iterable[str], env: Optional[Mapping[str, str]]) -> list[str]:
+    """Every --fit-target value llama.cpp applies, in order: LLAMA_ARG_FIT_TARGET, then each
+    -fitt / --fit-target in the argv (either spelling, ``=`` form too)."""
+    found = []
+    if env and env.get("LLAMA_ARG_FIT_TARGET"):
+        found.append(str(env["LLAMA_ARG_FIT_TARGET"]))
+    tokens = [str(a) for a in user_args]
+    for i, raw in enumerate(tokens):
+        name, eq, inline = raw.partition("=")
+        if name in ("-fitt", "--fit-target"):
+            value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
+            if value is not None:
+                found.append(value)
+    return found
+
+
 def _sidecar_reserve_margin_flags(
     child_args: Iterable[str],
     user_args: Optional[Iterable[str]],
@@ -6559,19 +6577,20 @@ def _sidecar_reserve_margin_flags(
     ):
         return []
     if per_device:
-        # Each card keeps its own user margin (a scalar is broadcast, as llama.cpp does).
-        raw = _last_flag_value(user_args or (), {"-fitt", "--fit-target"})
-        if raw is None and env:
-            raw = env.get("LLAMA_ARG_FIT_TARGET")
-        entries = [e.strip() for e in str(raw or "").replace("/", ",").split(",") if e.strip()]
-        try:
-            margins = [float(e) for e in entries]
-        except ValueError:
-            margins = []
-        margins = (
-            margins if len(margins) > 1 else margins * len(per_device) or [0.0] * len(per_device)
-        )
-        margins = (margins + [margins[-1]] * len(per_device))[: len(per_device)]
+        # Each card keeps its own user margin, applied as common/arg.cpp does: the env
+        # first, then every flag in order; a single value fills every card, a list sets
+        # only the entries it names.
+        margins = [float(base_margin_mib)] * len(per_device)
+        for raw in _fit_target_values(user_args or (), env):
+            entries = [e.strip() for e in str(raw).replace("/", ",").split(",") if e.strip()]
+            try:
+                values = [float(e) for e in entries]
+            except ValueError:
+                continue
+            if len(values) == 1:
+                margins = values * len(per_device)
+            else:
+                margins[: len(values)] = values[: len(per_device)]
         want_list = ",".join(
             str(math.ceil(max(base_margin_mib, m) + r)) for m, r in zip(margins, per_device)
         )
@@ -10927,8 +10946,12 @@ class LlamaCppBackend:
                     cls._capability_retry_after.pop(cache_key, None)
         if hit is not None:
             # Read off libllama-common in a shared build, which the key above does not cover.
+            # A copy: the cached dict is shared across threads and read outside the lock.
             if hit.get("supports_fit_target"):
-                hit["fit_measures_borrowed_drafts"] = _fit_measures_borrowed_drafts(bin_path)
+                hit = {
+                    **hit,
+                    "fit_measures_borrowed_drafts": _fit_measures_borrowed_drafts(bin_path),
+                }
             return hit
 
         mtp_token: Optional[str] = None
@@ -27816,6 +27839,14 @@ class LlamaCppBackend:
                             # only the spawned argv can tell (_spawn_draft_on_target).
                             return True
 
+                        # --split-mode none keeps only the list's --main-gpu entry (0 by default).
+                        if main and _split_mode_confines_to_one_device(extra_args, os.environ):
+                            listed = [d.strip() for d in str(main).split(",") if d.strip()]
+                            if len(listed) > 1:
+                                at = self._effective_main_gpu(extra_args, os.environ)
+                                at = 0 if at is None else at
+                                main = listed[at] if 0 <= at < len(listed) else None
+
                         # As sets: CUDA0,CUDA0 is one card on either side.
                         def _names(value: str) -> set:
                             return {d.strip().lower() for d in str(value).split(",") if d.strip()}
@@ -30347,14 +30378,17 @@ class LlamaCppBackend:
                                 )
                             except ValueError:
                                 pass  # a malformed -c is the launch's error to report, not this
-                            # llama_context caps every context's micro-batch at its batch, and
-                            # the draft context inherits the target's --batch-size.
+                            # llama_context caps every context's micro-batch at its batch, a
+                            # causal batch at its context, and the draft context inherits the
+                            # target's --batch-size.
                             _draft_ub = _draft_n_ubatch(run_args, child_env)
                             if _draft_ub:
                                 _ub = min(
                                     _draft_ub,
                                     _named_batch_sizes(run_args, child_env)[0] & 0xFFFFFFFF,
                                 )
+                                if _ctx and _ctx > 0:
+                                    _ub = min(_ub, int(_ctx))
                             _v = self._estimate_mtp_overhead_bytes(
                                 _ctx,
                                 spec_draft_n_max = _n,
@@ -31754,12 +31788,13 @@ class LlamaCppBackend:
                         None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
                     ),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
+                    # Log-only: a multi-device launch attaches its per-card reserve at spawn.
                     dspark_fit_sized = not use_fit
-                    or bool(_sidecar_fit_reserve_mib)
+                    or bool(_sidecar_fit_reserve_mib or _sidecar_fit_reserve_eligible_mib)
                     or bool(server_caps.get("fit_measures_borrowed_drafts")),
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit
-                    or bool(_sidecar_fit_reserve_mib)
+                    or bool(_sidecar_fit_reserve_mib or _sidecar_fit_reserve_eligible_mib)
                     or bool(server_caps.get("fit_measures_borrowed_drafts")),
                     # So the fallback says unopenable, not missing. DSpark/DFlash never
                     # reach the drop.
@@ -33764,15 +33799,27 @@ class LlamaCppBackend:
                                     else list(_child_gpu_physical_ids)
                                 )
                                 _spawn_free = [_free_by_idx.get(i) for i in _spawn_ids]
+                                # The drafter inherits the target's --tensor-split
+                                # (common_base_params_to_speculative copies the params), so
+                                # an explicit split's weights decide its shares, not free memory.
+                                _weights = None
                                 if _spawn_free and all(f and f > 0 for f in _spawn_free):
+                                    _weights = [float(f) for f in _spawn_free]
+                                _ts = _extra_args_tensor_split(run_cmd, env)
+                                if _ts and _spawn_ids:
+                                    _ts_w = [
+                                        float(_ts[i]) if i < len(_ts) else 0.0
+                                        for i in range(len(_spawn_ids))
+                                    ]
+                                    if sum(_ts_w) > 0 and all(w >= 0 for w in _ts_w):
+                                        _weights = _ts_w
+                                if _weights:
                                     _layers = _sidecar_draft_layers or 0
                                     _spawn_shares = [
-                                        min(
-                                            1.0, math.ceil(f / sum(_spawn_free) * _layers) / _layers
-                                        )
+                                        min(1.0, math.ceil(w / sum(_weights) * _layers) / _layers)
                                         if _layers > 0
-                                        else f / sum(_spawn_free)
-                                        for f in _spawn_free
+                                        else w / sum(_weights)
+                                        for w in _weights
                                     ]
                         if (
                             _sidecar_fit_reserve_eligible_mib
@@ -33804,11 +33851,11 @@ class LlamaCppBackend:
                             )
                             if _spawn_flags:
                                 run_cmd = [*run_cmd, *_spawn_flags]
-                                if _spawn_reserve != _sidecar_fit_reserve_eligible_mib:
+                                if _spawn_total != _sidecar_fit_reserve_eligible_mib:
                                     logger.info(
                                         "Sidecar reserve repriced for this launch's argv: "
                                         "%.2f GB.",
-                                        _spawn_reserve / 1024,
+                                        _spawn_total / 1024,
                                     )
                                 _sidecar_fit_reserve_mib = _spawn_reserve
                                 if list(_spawn_flags) not in _sidecar_override_pairs:
