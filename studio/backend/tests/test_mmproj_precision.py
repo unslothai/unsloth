@@ -325,6 +325,21 @@ def test_remote_pick_pairs_the_checkpoint_before_precision(device):
     )
 
 
+F16_WEIGHT_LISTING = [
+    "MiMo-VL-7B-F16.gguf",
+    "mmproj-MiMo-VL-7B-F16.gguf",
+    "mmproj-MiMo-VL-7B-BF16.gguf",
+]
+
+
+def test_f16_weight_does_not_pair_with_the_f16_projector(device, tmp_path):
+    from core.inference.llama_cpp import _mmproj_picker
+
+    pick = _mmproj_picker("org/collection-GGUF", "/c/snap/MiMo-VL-7B-F16.gguf")
+    assert pick(F16_WEIGHT_LISTING) == "mmproj-MiMo-VL-7B-BF16.gguf"
+    assert _local_pick(tmp_path, F16_WEIGHT_LISTING) == "mmproj-MiMo-VL-7B-BF16.gguf"
+
+
 def test_local_folder_named_after_mimo_vl_with_a_generic_weight(device, tmp_path):
     folder = tmp_path / "MiMo-VL-7B"
     for n in ("model-Q4_K_M.gguf", "mmproj-F16.gguf", "mmproj-BF16.gguf"):

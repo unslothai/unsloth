@@ -2052,6 +2052,7 @@ def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
 # MiMo-VL's F16 projector overflows to NaN on GPU: every image, then the rest of the chat, answers "!!!!".
 _F16_UNSAFE_MMPROJ_RE = _re.compile(r"mimo[-_ ]?vl", _re.IGNORECASE)
 _MMPROJ_PRECISION_RE = _re.compile(r"[-_.](bf16|f16|f32)(?:[-_.]mmproj)?\.gguf$", _re.IGNORECASE)
+_MMPROJ_PRECISION_TAIL_RE = _re.compile(r"(?:[-_.](?:bf16|f16|f32))?(?:[-_.]mmproj)?$")
 # None = a projector name with no precision tag.
 MMPROJ_ORDER_BF16 = ("bf16", "f16", "f32", None)
 MMPROJ_ORDER_NO_F16 = ("bf16", "f32", None, "f16")
@@ -2094,12 +2095,17 @@ def mmproj_precision(mmproj_name: str) -> Optional[str]:
     return m.group(1).lower() if m else None
 
 
+def _pairing_stem(name: str) -> str:
+    stem = _re.sub(r"^mmproj[-_]", "", Path(name).stem.lower())
+    return _MMPROJ_PRECISION_TAIL_RE.sub("", stem)
+
+
 def mmproj_weight_match(weight: Optional[str], mmproj_name: str) -> int:
-    """Shared name prefix of a weight and a projector, read past the ``mmproj-`` marker."""
+    """Shared name prefix of a weight and a projector, past ``mmproj-`` and before the precision
+    tag, so an F16 weight never pairs with the F16 projector over the BF16 one."""
     if not weight:
         return 0
-    stem = _re.sub(r"^mmproj[-_]", "", Path(mmproj_name).stem.lower())
-    return _shared_prefix_len(Path(weight).stem.lower(), stem)
+    return _shared_prefix_len(_pairing_stem(weight), _pairing_stem(mmproj_name))
 
 
 def mmproj_order_rank(mmproj_name: str, order: tuple) -> int:
@@ -2397,7 +2403,9 @@ def detect_mmproj_file(
         scored,
         key = lambda sc: (
             sc[0],
-            _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
+            mmproj_weight_match(p.name, sc[1].name)
+            if order
+            else _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
             mmproj_order_rank(sc[1].name, order) if order else 0,
             -len(sc[1].stem),
         ),
