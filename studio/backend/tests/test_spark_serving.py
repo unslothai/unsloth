@@ -163,7 +163,6 @@ def write_fake_llama_server(
     hidden_flags: tuple = (),
     refuses_groups_with_drafter: bool = False,
 ) -> Path:
-    """A stand-in for the real parser and the real load path."""
     if os.name == "nt":
         pytest.skip("the fake llama-server is a POSIX shell script; Windows cannot exec it")
     directory.mkdir(parents = True, exist_ok = True)
@@ -1710,7 +1709,6 @@ def test_the_crossover_constants_are_the_planners_measured_numbers(cluster):
 
 
 def _load_spark_cluster():
-    """spark_cluster is not importable as a package from here; load it by path."""
     import importlib.util
 
     path = Path(ss.__file__).resolve().parents[3] / "spark_cluster.py"
