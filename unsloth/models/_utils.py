@@ -1693,11 +1693,13 @@ def _placed_gpu_indices(model):
 def check_mixed_gpu_placement(model, dtype = None):
     """bf16 and the compile switches answer for the current device; check where the load really
     put the weights. A card that cannot compile turns Dynamo off before the first forward, and
-    bf16 weights on a card without bf16 get a warning. One-GPU hosts never walk anything."""
+    bf16 weights on a card without bf16 get a warning. A sole current-device placement is checked
+    too: the current device may have changed since import. One-GPU hosts never walk anything; the
+    capability reads hit the per-device cache."""
     if DEVICE_TYPE not in ("cuda", "hip") or DEVICE_COUNT <= 1:
         return
     indices = sorted(_placed_gpu_indices(model))
-    if not indices or indices == [torch.cuda.current_device()]:
+    if not indices:
         return
 
     def _name(i):

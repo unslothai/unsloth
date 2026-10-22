@@ -434,3 +434,59 @@ def test_placement_on_capable_cards_changes_nothing(monkeypatch, capsys, caps, d
 
     assert _check_placement(monkeypatch, caps, device_map, torch.bfloat16) == []
     assert capsys.readouterr().out == ""
+
+
+def test_set_device_to_a_pre_volta_card_turns_compile_off(monkeypatch, capsys):
+    # Imported on the H100, then torch.cuda.set_device(1) and the whole model loads on the GTX 1080.
+    import torch
+
+    disabled = _check_placement(monkeypatch, [SM90, SM61], {"": 1}, torch.float16, current = 1)
+    out = capsys.readouterr().out
+    assert disabled == [0]
+    assert "GPU 1 (card1)" in out and "torch.compile" in out
+
+
+def test_bf16_load_on_a_current_card_without_bf16_warns(monkeypatch, capsys):
+    # SUPPORTS_BFLOAT16 stays the import-time answer; the post-load check covers a set_device later.
+    import torch
+
+    disabled = _check_placement(monkeypatch, [SM86, SM75], {"": 1}, torch.bfloat16, current = 1)
+    out = capsys.readouterr().out
+    assert disabled == []
+    assert "bfloat16 layers on GPU 1 (card1)" in out
+
+
+def test_one_gpu_hosts_never_walk_the_placement(monkeypatch, capsys):
+    import torch
+
+    import unsloth.models._utils as model_utils
+
+    class _Untouchable:
+        @property
+        def hf_device_map(self):
+            raise AssertionError("one-GPU hosts must not walk the placement")
+
+    fake = _fake_torch([SM61])
+    monkeypatch.setattr(model_utils, "torch", fake)
+    monkeypatch.setattr(model_utils, "DEVICE_TYPE", "cuda")
+    monkeypatch.setattr(model_utils, "DEVICE_COUNT", 1)
+    monkeypatch.setattr(
+        model_utils,
+        "apply_pre_volta_compile_workaround",
+        lambda major: pytest.fail("one-GPU hosts keep the import-time switch"),
+    )
+    model_utils.check_mixed_gpu_placement(_Untouchable(), torch.bfloat16)
+    assert capsys.readouterr().out == ""
+
+
+def test_diffusion_loader_checks_the_placement():
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "unsloth" / "models" / "diffusion.py").read_text(encoding = "utf-8"))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "check_mixed_gpu_placement"
+    ]
+    assert calls, "FastDiffusionModel.from_pretrained must check where device_map put the weights"
+    assert [ast.unparse(a) for a in calls[0].args] == ["model", "dtype"]
