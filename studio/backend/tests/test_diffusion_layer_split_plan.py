@@ -1274,3 +1274,106 @@ def test_rocm_probe_runs_at_the_attention_dtype_not_an_fp32_stem(monkeypatch):
     )
     assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
     assert set(probed) == {torch.bfloat16}
+
+
+class _PackedLinear(torch.nn.Linear):
+    """diffusers' GGUFLinear surface: packed uint8 storage, the compute dtype on ``compute_dtype``, no bias."""
+
+    def __init__(
+        self,
+        fin,
+        fout,
+        compute_dtype = None,
+    ):
+        super().__init__(fin, fout, bias = False)
+        self.compute_dtype = compute_dtype
+        self.weight = torch.nn.Parameter(
+            torch.zeros(fout, fin, dtype = torch.uint8), requires_grad = False
+        )
+
+
+def _pack_attention(model, compute_dtype):
+    for module in list(model.modules()):
+        for attr in ("to_q", "to_k", "to_v", "to_gate", "to_qkv"):
+            linear = getattr(module, attr, None)
+            if isinstance(linear, torch.nn.Linear):
+                packed = _PackedLinear(linear.in_features, linear.out_features, compute_dtype)
+                setattr(module, attr, packed)
+    return model
+
+
+def _math_at_fp32_and_on_cuda1(monkeypatch):
+    from core.inference import diffusion_attention as da
+
+    probed = []
+    monkeypatch.setattr(
+        da,
+        "sdpa_math_only",
+        lambda t: probed.append(t.dtype) or t.dtype == torch.float32 or t.torch_device == "cuda:1",
+    )
+    return probed
+
+
+def _tiny_krea2():
+    """A real Krea-2 denoiser: bias-free attention projections, ``norm_q`` / ``norm_k`` pinned to fp32 the way
+    ``from_pretrained(torch_dtype=bf16)`` leaves them."""
+    krea2 = pytest.importorskip("diffusers.models.transformers.transformer_krea2")
+    model = krea2.Krea2Transformer2DModel(
+        in_channels = 4,
+        num_layers = 2,
+        attention_head_dim = 16,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        intermediate_size = 32,
+        timestep_embed_dim = 8,
+        text_hidden_dim = 8,
+        num_text_layers = 2,
+        text_num_attention_heads = 2,
+        text_num_key_value_heads = 2,
+        text_intermediate_size = 16,
+        num_layerwise_text_blocks = 1,
+        num_refiner_text_blocks = 1,
+        axes_dims_rope = (4, 6, 6),
+    ).to(torch.bfloat16)
+    for name, module in model.named_modules():
+        if name and any(k in name.split(".")[-1] for k in model._keep_in_fp32_modules):
+            module.to(torch.float32)
+    return model
+
+
+def test_rocm_probe_reads_a_quantized_projection_not_its_fp32_qk_norm(monkeypatch):
+    # GGUF / packed bias-free projections beside fp32 norm_q / norm_k (Krea-2, FLUX.3): the norm's fp32 would make the
+    # primary look math-only and hand a bf16-math-only secondary its blocks.
+    model = _tiny_krea2()
+    attn = next(m for m in model.modules() if getattr(m, "to_q", None) is not None)
+    assert attn.norm_q.weight.dtype == torch.float32
+    pipe = _Pipe()
+    pipe.transformer = _pack_attention(model, torch.bfloat16)
+    assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16
+    probed = _math_at_fp32_and_on_cuda1(monkeypatch)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
+    assert set(probed) == {torch.bfloat16}
+
+
+def test_rocm_probe_dtype_skips_fp32_pinned_modules_when_projections_carry_no_dtype(monkeypatch):
+    # No compute_dtype on the packed projections: the first parameter outside _keep_in_fp32_modules (diffusers'
+    # ModelMixin.dtype rule), never the pinned norm
+    pipe = _Pipe()
+    pipe.transformer = _pack_attention(_tiny_krea2(), None)
+    assert lsp._attention_dtype(pipe.transformer) is None
+    assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16
+    probed = _math_at_fp32_and_on_cuda1(monkeypatch)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == ()
+    assert set(probed) == {torch.bfloat16}
+
+
+def test_rocm_probe_dtype_packed_projection_with_fp32_norm_synthetic():
+    # The same layout without diffusers: packed bias-free to_q, an fp32 norm_q registered inside the attention module
+    attn = torch.nn.Module()
+    attn.norm_q = torch.nn.RMSNorm(4)
+    attn.to_q = _PackedLinear(4, 4, torch.bfloat16)
+    dit = torch.nn.Module()
+    dit.attn = attn
+    pipe = _Pipe()
+    pipe.transformer = dit
+    assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16

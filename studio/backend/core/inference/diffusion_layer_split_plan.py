@@ -721,21 +721,66 @@ def _denoiser_dtype(module: Any) -> Any:
         return None
 
 
-def _attention_dtype(module: Any) -> Any:
-    """The dtype attention computes in, read off the first attention module (``to_q``, or a fused ``to_qkv``): its first
-    fp16 / bf16 / fp32 parameter (a bias or norm when the projection weight is quantized storage). The module's first
-    parameter can be a stem kept in fp32 (MiniMax-H3's ``proj_in``) while the blocks, and their attention, run in bf16.
-    None when no attention module carries one."""
-    try:
-        for sub in module.modules():
-            if getattr(sub, "to_q", None) is None and getattr(sub, "to_qkv", None) is None:
-                continue
-            for param in sub.parameters():
-                if str(param.dtype) in _PROBE_DTYPES:
-                    return param.dtype
-    except Exception:  # noqa: BLE001
-        pass
+def _probe_dtype(dtype: Any) -> Any:
+    return dtype if str(dtype) in _PROBE_DTYPES else None
+
+
+def _projection_dtype(proj: Any) -> Any:
+    """The dtype a Q (or fused QKV) projection computes in: a layerwise-casting hook's compute dtype, a quantized
+    linear's ``compute_dtype`` (diffusers' GGUFLinear), else its weight's or bias's dtype. None when only packed or
+    fp8 storage is readable."""
+    registry = getattr(proj, "_diffusers_hook", None)
+    get_hook = getattr(registry, "get_hook", None)
+    if callable(get_hook):
+        with contextlib.suppress(Exception):
+            dtype = _probe_dtype(getattr(get_hook("layerwise_casting"), "compute_dtype", None))
+            if dtype is not None:
+                return dtype
+    for dtype in (
+        getattr(proj, "compute_dtype", None),
+        getattr(getattr(proj, "weight", None), "dtype", None),
+        getattr(getattr(proj, "bias", None), "dtype", None),
+    ):
+        dtype = _probe_dtype(dtype)
+        if dtype is not None:
+            return dtype
     return None
+
+
+def _attention_dtype(module: Any) -> Any:
+    """The dtype attention computes in, read off the attention projections (``to_q``, or a fused ``to_qkv``) only.
+    Neither the module's first parameter nor an attention module's other parameters: MiniMax-H3 registers an fp32
+    ``proj_in`` stem first, and Krea-2 / FLUX.3 keep ``norm_q`` / ``norm_k`` in fp32, while the blocks and their
+    attention run in bf16. None when no projection says."""
+    with contextlib.suppress(Exception):
+        for sub in module.modules():
+            proj = getattr(sub, "to_q", None)
+            if proj is None:
+                proj = getattr(sub, "to_qkv", None)
+            if proj is None:
+                continue
+            dtype = _projection_dtype(proj)
+            if dtype is not None:
+                return dtype
+    return None
+
+
+def _unpinned_param_dtype(module: Any) -> Any:
+    """The first fp16 / bf16 / fp32 parameter outside the model's ``_keep_in_fp32_modules`` (diffusers' own
+    ``ModelMixin.dtype`` rule): the load dtype when every projection is quantized storage."""
+    keep = tuple(getattr(module, "_keep_in_fp32_modules", None) or ())
+    with contextlib.suppress(Exception):
+        for name, param in module.named_parameters():
+            if keep and any(k in name for k in keep):
+                continue
+            dtype = _probe_dtype(param.dtype)
+            if dtype is not None:
+                return dtype
+    return None
+
+
+def _module_compute_dtype(module: Any) -> Any:
+    return _attention_dtype(module) or _unpinned_param_dtype(module)
 
 
 def _rocm_flash_runs_on(ordinal: int, dtype: Any) -> bool:
@@ -757,18 +802,24 @@ _PROBE_DTYPES = ("torch.float16", "torch.bfloat16", "torch.float32")
 
 
 def _rocm_attention_dtype(pipe: Any) -> Any:
-    """The compute dtype the SDPA probe should run at: the denoiser's attention dtype, else its first parameter's, else
-    the pipeline's; None (the probe's fp16 default) when only a quantized storage dtype is readable."""
+    """The compute dtype the SDPA probe should run at: the denoiser's attention projection dtype, else its first
+    parameter outside the fp32-pinned modules, else the pipeline's, else the denoiser's first parameter; None (the
+    probe's fp16 default) when only a quantized storage dtype is readable."""
     from . import diffusion_multigpu as mg
 
-    for name in mg.DENOISER_ATTRS:
-        module = getattr(pipe, name, None)
-        if module is not None:
-            dtype = _attention_dtype(module) or _denoiser_dtype(module)
-            if str(dtype) in _PROBE_DTYPES:
-                return dtype
-    dtype = getattr(pipe, "dtype", None)
-    return dtype if str(dtype) in _PROBE_DTYPES else None
+    modules = [m for m in (getattr(pipe, n, None) for n in mg.DENOISER_ATTRS) if m is not None]
+    for module in modules:
+        dtype = _module_compute_dtype(module)
+        if dtype is not None:
+            return dtype
+    dtype = _probe_dtype(getattr(pipe, "dtype", None))
+    if dtype is not None:
+        return dtype
+    for module in modules:
+        dtype = _probe_dtype(_denoiser_dtype(module))
+        if dtype is not None:
+            return dtype
+    return None
 
 
 def _rocm_sdpa_math_only(
@@ -858,7 +909,7 @@ def _rocm_backend_cards(
         return (), backend
     kept = tuple(o for o in cards if _rocm_gfx(o) == need)
     if backend == "flash":
-        dtype = _attention_dtype(module) or _denoiser_dtype(module)
+        dtype = _module_compute_dtype(module) or _denoiser_dtype(module)
         kept = tuple(o for o in kept if _rocm_flash_runs_on(o, dtype))
     return kept, backend
 
