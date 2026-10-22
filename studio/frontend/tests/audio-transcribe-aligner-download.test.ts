@@ -85,7 +85,7 @@ test("only a timestamped Transcribe waits for the aligner download", () => {
   );
   assert.match(
     page,
-    /const alignerBlocks =\s*alignerDownload\.staging && transcribeOptions\.request\.timestamps;\s*const transcribeBlocker: GenerateBlocker \| null = alignerBlocks\s*\?\s*\{ reason: "Downloading the timing aligner…" \}/,
+    /const alignerBlocks =\s*!transcribeConnection &&\s*alignerDownload\.staging &&\s*transcribeOptions\.request\.timestamps;\s*const transcribeBlocker: GenerateBlocker \| null = alignerBlocks\s*\?\s*\{ reason: "Downloading the timing aligner…" \}/,
   );
   // The run reads the page as it is when the download ends, and only while it is still showing.
   assert.match(

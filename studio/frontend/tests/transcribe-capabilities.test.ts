@@ -179,3 +179,11 @@ test("an OpenAI-typed Azure connection offers its deployments, not OpenAI's mode
     ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
   );
 });
+
+test("a connection's Voxtral TTS model stays out of Transcribe; its realtime ASR does not", () => {
+  const custom = {
+    providerType: "custom",
+    models: ["voxtral-mini-tts-latest", "voxtral-mini-transcribe-realtime"],
+  };
+  assert.deepEqual(connectionTranscribeModels(custom), ["voxtral-mini-transcribe-realtime"]);
+});

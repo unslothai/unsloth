@@ -96,7 +96,7 @@ export function connectionTranscribeModels(
     ...(isOpenAIApi(connection) ? OPENAI_TRANSCRIBE_MODELS : []),
     ...connection.models,
     ...(connection.availableModels ?? []),
-  ].filter((id) => TRANSCRIBE_MODEL_ID.test(id));
+  ].filter((id) => TRANSCRIBE_MODEL_ID.test(id) && !/tts/i.test(id));
   if (dictationModel) ids.push(dictationModel);
   // An owner-shared connection refuses any model outside the list the owner allowed (403).
   const allowed = connection.sharedByOwner ? new Set(connection.models) : null;

@@ -1528,8 +1528,11 @@ export function AudioPage({
     transcribeCaps.refresh,
     transcribeOptions.request.timestamps,
   );
+  // A connection never uses the local aligner, so its download does not hold Transcribe.
   const alignerBlocks =
-    alignerDownload.staging && transcribeOptions.request.timestamps;
+    !transcribeConnection &&
+    alignerDownload.staging &&
+    transcribeOptions.request.timestamps;
   const transcribeBlocker: GenerateBlocker | null = alignerBlocks
     ? { reason: "Downloading the timing aligner…" }
     : busy === "loading"
