@@ -70,7 +70,6 @@ def test_a_single_proxy_hop_still_names_the_client():
 
 @pytest.mark.parametrize("name", [b"x-forwarded-for", b"forwarded"])
 def test_a_proxy_appended_header_field_is_the_one_keyed_on(name):
-    # HAProxy's forwardfor appends its own header field after the caller's instead of extending it.
     def hop(addr):
         return addr.encode() if name == b"x-forwarded-for" else b"for=" + addr.encode()
 

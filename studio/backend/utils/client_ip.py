@@ -53,8 +53,7 @@ def _normalize_addr(value: str | None) -> str | None:
 
 
 def header_fields(headers, name: str) -> str:
-    """Every field of a repeated header, comma-joined in order. A proxy may append its own field
-    (HAProxy's forwardfor) instead of extending the caller's, and ``get`` returns only the first."""
+    """All fields of a repeated header, comma-joined (``get`` returns only the first; HAProxy appends a field)."""
     getlist = getattr(headers, "getlist", None)
     if getlist is not None:
         return ",".join(getlist(name))
