@@ -313,3 +313,23 @@ def test_an_instance_level_mover_is_kept_and_used(fake_pin):
     assert module.__dict__[dm._KEEP_ATTR]["pin_layout"]  # the chunk path was armed ...
     assert calls  # ... yet the onload went through the installed mover
     assert module.__dict__.get("to") is mover
+
+
+def test_tensors_left_out_of_the_layout_are_not_uploaded_with_the_chunk(fake_pin):
+    # A torchao wrapper weight is pinned into the chunk but left out of its entries (the stock module.to moves it).
+    module = _stack()
+    host = {n: p.data for n, p in module.named_parameters()}
+    owner = dict(module.named_parameters())
+    layout: list = []
+    assert dm._pin_host_weights(module, host, layout = layout) > 0
+    buf, entries = layout[0]
+    assert len(entries) > 1 and entries[0][1] == 0
+    span = max(start + view.nbytes for _, start, view in entries)
+    kept = entries[1:]
+    expect = {name: view.clone() for name, _, view in kept}
+    copied = dm._upload_pinned_chunks(module, [(buf, kept)], host, owner, {}, torch.device("cpu"))
+    assert copied <= span - entries[1][1]
+    params = dict(module.named_parameters())
+    for name, _, view in kept:
+        assert params[name].data_ptr() != view.data_ptr()
+        assert torch.equal(params[name].detach(), expect[name])
