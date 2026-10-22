@@ -2657,6 +2657,74 @@ def test_a_lone_vulkan_device_of_another_vendor_declines_the_warm_start(
     sidecar._cancel_idle_locked()
 
 
+@pytest.mark.parametrize(
+    "name", ["Tesla T4", "Quadro RTX 8000", "GeForce GTX 1080 Ti", "NVIDIA GeForce RTX 4090"]
+)
+def test_an_nvidia_vulkan_row_without_the_vendor_name_warm_starts(
+    spawn_argv, warmable, monkeypatch, name
+):
+    # Older NVIDIA drivers name the Vulkan device "Tesla T4": that is the image model's card, not another vendor's.
+    import torch
+
+    state, _run = spawn_argv
+    sidecar, _launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    state["names"] = [name]
+    state["ordinal"] = 0
+    state["rows"] = [{"index": 0, "name": name}]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize(
+    "rocm, card, row, other",
+    [
+        (False, "Tesla T4", "AMD Radeon Graphics (RADV RAPHAEL)", True),
+        (False, "NVIDIA GeForce RTX 4090", "Intel(R) Arc(tm) A770 Graphics (DG2)", True),
+        (False, "NVIDIA GeForce RTX 4090", "llvmpipe (LLVM 17.0.6, 256 bits)", True),
+        (True, "AMD Radeon RX 7900 XTX", "NVIDIA GeForce RTX 3060", True),
+        (True, "AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX (RADV NAVI31)", False),
+        (False, "Tesla T4", "Tesla T4", False),
+        (False, "GeForce GTX 1080 Ti", "NVIDIA GeForce GTX 1080 Ti", False),
+        (False, "NVIDIA A100-SXM4-40GB", "Virtual GPU 0", False),
+        (True, "AMD Radeon RX 7900 XTX", "Virtual GPU 0", False),
+    ],
+)
+def test_another_vendor_needs_positive_evidence(monkeypatch, rocm, card, row, other):
+    # Only a row naming a different vendor is another card; an unknown name is not evidence either way.
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda t = None: rocm)
+    )
+    assert pup._vulkan_row_is_another_vendor(row, object(), card) is other
+
+
+def test_repeated_prefetches_retry_an_empty_probe_once_per_window(monkeypatch):
+    # The retry stands for the window: two prefetches cost one probe and one retry, not two each.
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    pup._prefetch_vulkan_rows("b")
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b", "b"]
+    # A new window probes (and may retry) again.
+    monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 0.0)
+    pup._prefetch_vulkan_rows("b")
+    assert len(calls) == 4
+
+
+def test_concurrent_prefetches_share_one_probe(monkeypatch):
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    threads = [threading.Thread(target = pup._prefetch_vulkan_rows, args = ("b",)) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert calls == ["b", "b"]
+
+
 def test_maintenance_never_joins_an_unstarted_probe(monkeypatch):
     # A worker is registered only once started, so a maintenance pass cannot hit "cannot join thread".
     import inspect
