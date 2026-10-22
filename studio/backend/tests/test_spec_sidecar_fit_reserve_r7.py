@@ -97,8 +97,16 @@ def test_a_small_card_beside_a_large_one_is_not_over_reserved(tmp_path, _discret
     assert small < 1024 + 1024
 
 
-def test_a_share_rounds_up_to_whole_draft_layers(tmp_path, _discrete):
-    """Three draft blocks over two equal cards put two on one of them: 2/3, not 1/2."""
+@pytest.mark.parametrize(
+    "extras, bands",
+    [
+        # Equal cards: blocks 0-1 below 2/4, block 2 at it, so two on card 0 and one on card 1.
+        ([], [(5, 6), (2, 3)]),
+        # 3:2 keeps every block under 0.6 of n_layer + 1, so all three on card 0.
+        (["--tensor-split", "3,2"], [(8, 9), (0, 1)]),
+    ],
+)
+def test_draft_shares_follow_llama_cpps_whole_layer_split(tmp_path, _discrete, extras, bands):
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     backend._arch_gate_survivors = lambda binary = None: []
     read = backend._draft_backend_for
@@ -109,8 +117,9 @@ def test_a_share_rounds_up_to_whole_draft_layers(tmp_path, _discrete):
         return db
 
     backend._draft_backend_for = three_blocks
-    margins = _margins(_dspark(backend, gguf, tmp_path))
-    assert all(1024 + 5 * 1024 <= m < 1024 + 6 * 1024 for m in margins)
+    margins = _margins(_dspark(backend, gguf, tmp_path, extra_args = extras))
+    for m, (lo, hi) in zip(margins, bands):
+        assert 1024 + lo * 1024 <= m < 1024 + hi * 1024, margins
 
 
 @pytest.mark.parametrize("pin, reserved", [("CUDA1", True), ("CUDA0", False)])
@@ -354,3 +363,13 @@ def test_split_mode_none_narrows_an_inherited_device_list_at_planning(
     extras = ["--split-mode", "none", "--spec-draft-device", pin]
     cmd = _dspark(backend, gguf, tmp_path, extra_args = extras)
     assert (_r4._margin(cmd) >= _FLOOR) is reserved
+
+
+def test_per_device_margins_follow_an_inherited_mask_order(tmp_path, monkeypatch, _discrete):
+    """CUDA_VISIBLE_DEVICES=1,0 makes physical 1 the child's device 0, so the list's first
+    entry is the smaller card's share."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = ((0, 30_000, 30_000), (1, 10_000, 10_000)))
+    backend._arch_gate_survivors = lambda binary = None: []
+    first, second = _margins(_dspark(backend, gguf, tmp_path))
+    assert first < second

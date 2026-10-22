@@ -16,6 +16,7 @@ import ctypes
 import errno
 import functools
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -27812,14 +27813,22 @@ class LlamaCppBackend:
                         pin = distinct.pop() if len(distinct) == 1 else pin
                         # Passed by a caller ahead of the unified-memory budget (discrete: 0).
                         apple = _apple_budget_mib if apple_budget_mib is None else apple_budget_mib
-                        # The picker strips competing --device extras at emission.
-                        main = _extra_args_main_device(
+                        # The picker strips competing --device / --main-gpu extras and their
+                        # env twins at emission (manual mode the placement env too), so the
+                        # placement read here is the one the launch keeps.
+                        _pl_args = (
                             self._strip_device_extra_args(extra_args)
                             if _gpu_ids_own_device_flags
                             else extra_args
                         )
+                        _pl_env = dict(os.environ)
+                        if gpu_memory_mode == "manual":
+                            self._clear_manual_placement_env(_pl_env)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_pl_env)
+                        main = _extra_args_main_device(_pl_args)
                         if main is None and not _gpu_ids_own_device_flags:
-                            main = os.environ.get("LLAMA_ARG_DEVICE") or None
+                            main = _pl_env.get("LLAMA_ARG_DEVICE") or None
                         if main is None and is_vulkan_backend:
                             ids = (
                                 gpu_indices
@@ -27827,7 +27836,7 @@ class LlamaCppBackend:
                                 else [g[0] for g in _detected_gpus]
                             )
                             # --split-mode none puts the target on its --main-gpu, not ids[0].
-                            at = self._effective_main_gpu(extra_args, os.environ) or 0
+                            at = self._effective_main_gpu(_pl_args, _pl_env) or 0
                             main = (
                                 f"Vulkan{ids[at]}"
                                 if 0 <= at < len(ids)
@@ -27841,10 +27850,10 @@ class LlamaCppBackend:
                             return True
 
                         # --split-mode none keeps only the list's --main-gpu entry (0 by default).
-                        if main and _split_mode_confines_to_one_device(extra_args, os.environ):
+                        if main and _split_mode_confines_to_one_device(_pl_args, _pl_env):
                             listed = [d.strip() for d in str(main).split(",") if d.strip()]
                             if len(listed) > 1:
-                                at = self._effective_main_gpu(extra_args, os.environ)
+                                at = self._effective_main_gpu(_pl_args, _pl_env)
                                 at = 0 if at is None else at
                                 main = listed[at] if 0 <= at < len(listed) else None
 
@@ -29513,13 +29522,27 @@ class LlamaCppBackend:
                                 + _sc_host_embd_without_draft
                                 - _apple_host_embd
                             ) / (1024 * 1024)
+                            # The draft micro-batch the spawn reprice reads, capped by the
+                            # batch and the context as llama_context caps it.
+                            _sc_draft_ub = _draft_n_ubatch(extra_args, os.environ)
+                            if _sc_draft_ub is not None:
+                                _sc_batch = (
+                                    _named_batch_sizes(
+                                        extra_args,
+                                        os.environ,
+                                        _emitted_n_batch(n_batch, n_parallel),
+                                        n_ubatch,
+                                    )[0]
+                                    & 0xFFFFFFFF
+                                )
+                                _sc_draft_ub = min(_sc_draft_ub, _sc_batch, int(_sc_ctx))
                             if (
                                 _sc_target_only_mib
                                 <= _apple_budget_mib
                                 < _sc_target_mib
                                 # The same reserve the launch carries (flat when unsized).
                                 + self._sidecar_fit_reserve_mib(
-                                    _mtp_bytes(_sc_ctx),
+                                    _mtp_bytes(_sc_ctx, ubatch = _sc_draft_ub),
                                     mtp_draft_path,
                                     flat_mib = math.ceil(
                                         _flat_mtp_reserve * max(0, _apple_budget_mib)
@@ -33793,12 +33816,17 @@ class LlamaCppBackend:
                             _spawn_shares = None
                             if not _spawn_devices and _extra_args_draft_device_pin(run_cmd) is None:
                                 _free_by_idx = dict(gpus or _detected_gpus or ())
-                                _spawn_ids = (
-                                    [idx for idx, _free in _detected_gpus]
-                                    if _child_gpu_physical_ids is None
+                                if (
+                                    _child_gpu_physical_ids is None
                                     or _child_gpu_physical_ids is _parent_view_gpu_ids
-                                    else list(_child_gpu_physical_ids)
-                                )
+                                ):
+                                    # The child enumerates in the inherited mask's order.
+                                    _det_ids = [idx for idx, _free in _detected_gpus]
+                                    _spawn_ids = (
+                                        self._inherited_child_gpu_order(_det_ids) or _det_ids
+                                    )
+                                else:
+                                    _spawn_ids = list(_child_gpu_physical_ids)
                                 _spawn_free = [_free_by_idx.get(i) for i in _spawn_ids]
                                 # The drafter inherits the target's --tensor-split
                                 # (common_base_params_to_speculative copies the params), so
@@ -33816,12 +33844,22 @@ class LlamaCppBackend:
                                         _weights = _ts_w
                                 if _weights:
                                     _layers = _sidecar_draft_layers or 0
-                                    _spawn_shares = [
-                                        min(1.0, math.ceil(w / sum(_weights) * _layers) / _layers)
-                                        if _layers > 0
-                                        else w / sum(_weights)
-                                        for w in _weights
-                                    ]
+                                    if _layers > 0:
+                                        # llama.cpp's own layer split: block il goes to the
+                                        # first device whose cumulative share exceeds
+                                        # il / (n_layer + 1), the output layer counted too.
+                                        _cum = list(
+                                            itertools.accumulate(
+                                                w / sum(_weights) for w in _weights
+                                            )
+                                        )
+                                        _counts = [0] * len(_weights)
+                                        for _il in range(_layers):
+                                            _dev = bisect.bisect_right(_cum, _il / (_layers + 1))
+                                            _counts[min(_dev, len(_weights) - 1)] += 1
+                                        _spawn_shares = [c / _layers for c in _counts]
+                                    else:
+                                        _spawn_shares = [w / sum(_weights) for w in _weights]
                         if (
                             _sidecar_fit_reserve_eligible_mib
                             and _spawn_shares is not None
