@@ -283,8 +283,7 @@ export function PlaybackTime({
   );
 }
 
-/** HTML pills: an SVG stretched with preserveAspectRatio="none" squashes rx into square ends.
- * Whole-pixel bars and gaps, so no bar straddles a pixel and renders thinner than its neighbours. */
+/** HTML pills, not SVG: preserveAspectRatio="none" squashes rx; whole-pixel bars so none renders thinner. */
 export function WaveformBarGlyphs({
   peaks,
   isPlayed,
@@ -316,7 +315,6 @@ export function WaveformBarGlyphs({
     >
       {Array.from({ length: count }, (_, index) => {
         const peak = levels ? (levels[index] ?? 0) : 0;
-        // SoundCloud-style: each bar reaches further above the baseline than below it.
         const height = 10 + peak ** 0.8 * 90;
         return (
           <span

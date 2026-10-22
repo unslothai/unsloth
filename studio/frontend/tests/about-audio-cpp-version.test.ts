@@ -55,7 +55,6 @@ test("a self-managed llama.cpp still lets Update install an offered audio.cpp re
   const section = read(
     "features/settings/components/engine-versions-section.tsx",
   );
-  // The backend's `supported` describes llama.cpp only; audio.cpp joins update_available on its own.
   assert.match(
     section,
     /const unmanaged = status\?\.supported === false && !offered;/,
