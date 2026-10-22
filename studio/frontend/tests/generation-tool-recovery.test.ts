@@ -389,6 +389,7 @@ test("the live adapter saves identities for ordinary, approval and provider card
         ),
         toolConfirmationIdsByBackendId: new Map(),
         toolConfirmationScopeId: "session:thread",
+        resolvedThreadId: "thread",
         sandboxSessionId: "session",
         generationRunId,
         generationSeq: 7,

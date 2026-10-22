@@ -734,6 +734,7 @@ export const ja = {
       returnToChat: "チャットに戻る",
       returnToChats: "{count} 件のチャットに戻る",
       chatGenerating: "生成中",
+      chatAwaitingApproval: "承認待ち",
       compare: "比較",
       search: "検索",
       hub: "モデルハブ",

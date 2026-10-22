@@ -48,6 +48,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { ProgressiveRows } from "@/components/progressive-rows";
+import {
+  useApprovalWaitingStore,
+  watchApprovalWaiting,
+} from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
@@ -712,6 +716,22 @@ function NavItem({
       {flyout ? flyout(row) : row}
       {children}
     </SidebarMenuItem>
+  );
+}
+
+/** A chat row's spinner, swapped in while its run waits on an Allow / Deny prompt. The accent of
+ *  the unread dot, pulsing so the two read apart; boxed at the spinner's size so it centres on the
+ *  same column. */
+function ChatRowApprovalDot({ label }: { label: string }) {
+  return (
+    <span
+      role="status"
+      aria-label={label}
+      data-testid="chat-row-approval"
+      className="flex size-3.5 shrink-0 items-center justify-center"
+    >
+      <span className="size-2 rounded-full bg-primary motion-safe:animate-pulse" />
+    </span>
   );
 }
 
@@ -2018,6 +2038,10 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Chats whose run is parked on an Allow / Deny prompt. Watched here, where the rows read it,
+  // since only the open chat mounts its tool cards.
+  const approvalWaitingThreadIds = useApprovalWaitingStore((s) => s.threadIds);
+  useEffect(() => watchApprovalWaiting(useChatRuntimeStore), []);
   // Shared with the thread's own Fork, so neither surface can post a second one.
   const forkInFlight = useForkInFlight((s) => s.forking);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
@@ -5424,6 +5448,11 @@ export function AppSidebar() {
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
+    // Parked on an Allow / Deny prompt: still a live run, so it keeps the spinner's slot, but the
+    // run is waiting on the user rather than working.
+    const awaitingApproval =
+      isGenerating &&
+      threadIds.some((threadId) => approvalWaitingThreadIds.has(threadId));
     const alreadyUnread = threadIds.some((threadId) =>
       unreadThreadIds.has(threadId),
     );
@@ -5545,16 +5574,22 @@ export function AppSidebar() {
                     : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
               >
-                <Spinner
-                  data-testid="chat-row-spinner"
-                  // role="status" + label: announced, not motion-only.
-                  label={
-                    isGenerating
-                      ? translate("shell.navigation.chatGenerating")
-                      : "Queued"
-                  }
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                />
+                {awaitingApproval ? (
+                  <ChatRowApprovalDot
+                    label={translate("shell.navigation.chatAwaitingApproval")}
+                  />
+                ) : (
+                  <Spinner
+                    data-testid="chat-row-spinner"
+                    // role="status" + label: announced, not motion-only.
+                    label={
+                      isGenerating
+                        ? translate("shell.navigation.chatGenerating")
+                        : "Queued"
+                    }
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                  />
+                )}
               </span>
             ) : null}
             {hasUnreadActivity ? (

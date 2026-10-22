@@ -735,6 +735,7 @@ export const ru = {
       returnToChat: "Вернуться к чату",
       returnToChats: "Вернуться к чатам ({count})",
       chatGenerating: "Генерация",
+      chatAwaitingApproval: "Ожидает подтверждения",
       compare: "Сравнить",
       search: "Поиск",
       hub: "Хаб моделей",

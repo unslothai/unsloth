@@ -736,6 +736,7 @@ export const hi = {
       returnToChat: "चैट पर लौटें",
       returnToChats: "{count} चैट पर लौटें",
       chatGenerating: "जनरेट हो रहा है",
+      chatAwaitingApproval: "अनुमति की प्रतीक्षा में",
       compare: "तुलना करें",
       search: "खोजें",
       hub: "मॉडल हब",

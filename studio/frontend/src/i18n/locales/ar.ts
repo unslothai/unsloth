@@ -732,6 +732,7 @@ export const ar = {
       returnToChat: "العودة إلى المحادثة",
       returnToChats: "العودة إلى المحادثات قيد التشغيل ({count})",
       chatGenerating: "جارٍ الإنشاء",
+      chatAwaitingApproval: "بانتظار الموافقة",
       compare: "مقارنة",
       search: "بحث",
       hub: "مركز النماذج",

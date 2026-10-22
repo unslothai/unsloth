@@ -834,6 +834,7 @@ export const sv = {
       returnToChat: "Tillbaka till chatten",
       returnToChats: "Tillbaka till {count} chattar",
       chatGenerating: "Genererar",
+      chatAwaitingApproval: "Väntar på godkännande",
       compare: "Jämför",
       search: "Sök",
       projects: "Projekt",

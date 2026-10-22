@@ -7852,6 +7852,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
+                        resolvedThreadId ?? "",
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }

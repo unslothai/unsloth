@@ -735,6 +735,7 @@ export const ptBR = {
       returnToChat: "Voltar ao chat",
       returnToChats: "Voltar aos {count} chats",
       chatGenerating: "Gerando",
+      chatAwaitingApproval: "Aguardando aprovação",
       compare: "Comparar",
       search: "Buscar",
       hub: "Hub de modelos",

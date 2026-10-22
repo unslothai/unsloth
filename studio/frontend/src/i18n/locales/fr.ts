@@ -736,6 +736,7 @@ export const fr = {
       returnToChat: "Retour à la discussion",
       returnToChats: "Retour à {count} discussions",
       chatGenerating: "Génération en cours",
+      chatAwaitingApproval: "En attente d’approbation",
       compare: "Comparer",
       search: "Rechercher",
       hub: "Hub de modèles",
