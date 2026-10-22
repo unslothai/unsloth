@@ -1,19 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The property this PR exists to establish, checked over the whole hardware
-// matrix rather than on one host: the Load Model panel and the Hub memory bar
-// cannot describe one load differently.
-//
-// `model-memory-hardware-matrix.test.ts` already pins what the BAR does with
-// each kind of budget. This file is about the two surfaces AGREEING, which is a
-// different question and was not previously asked anywhere: each surface was
-// self-consistent the whole time, and that was never the problem.
-//
-// The matrix is [linux, wsl, win32, darwin] x nine device inventories, minus the
-// physically impossible cells (Apple unified memory on Windows). Every cell is
-// checked against six properties, so this is ~200 assertions rather than nine
-// hand-written cases.
+// The Load panel and Hub memory bar must agree on every platform x inventory cell.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -37,9 +25,7 @@ const GB = 1024 ** 3;
 type Platform = "linux" | "wsl" | "win32" | "darwin";
 const ALL: Platform[] = ["linux", "wsl", "win32", "darwin"];
 
-// Matches MemoryCapacityDevice in src/hooks/gpu-vram.ts. sharedMemory is
-// required there, so it is normalised at the call site rather than left optional
-// here, which tsc -b catches even though the tests pass either way.
+// Matches MemoryCapacityDevice in src/hooks/gpu-vram.ts.
 interface Device {
   memoryTotalGb: number;
   sharedMemory?: boolean;
@@ -49,14 +35,10 @@ interface Host {
   label: string;
   devices: Device[];
   systemRamTotalGb: number;
-  /** Any device reports a unified pool (Apple, ROCm APU). */
   unifiedMemory: boolean;
-  /** Which platforms this inventory can physically occur on. */
   platforms: Platform[];
 }
 
-// Nine inventories spanning [NVIDIA, AMD, Intel, Apple, none] and
-// [discrete, integrated, unified, mixed, multi].
 const HOSTS: Host[] = [
   {
     label: "NVIDIA single 24 GiB",
@@ -125,9 +107,7 @@ const HOSTS: Host[] = [
   },
 ];
 
-// Footprints spanning comfortably-under, near the line, and hopeless. The 22/24
-// case is the one that lands between 0.90 and 0.97 of a 24 GiB card, which is
-// exactly the band this PR's budget change moves.
+// 22/24 lands in the 0.90-0.97 band the budget change moves.
 const FOOTPRINTS = [
   { label: "tiny", weightsBytes: 2 * GB, kvBytes: 1 * GB },
   { label: "half", weightsBytes: 8 * GB, kvBytes: 4 * GB },
@@ -161,7 +141,7 @@ function cells() {
 }
 
 test("the matrix is actually a matrix", () => {
-  // A property suite that silently shrank to two cells is worse than none.
+  // Guards against the suite silently shrinking.
   const n = cells().length;
   assert.ok(n >= 100, `expected a full product, got ${n} cells`);
 });
@@ -190,9 +170,7 @@ test("P1: no cell ever reports a fit for a footprint over its budget", () => {
 });
 
 test("P2: the bar and the panel never contradict each other", () => {
-  // The property the whole PR is for. The bar's status and the panel's verdict
-  // are different vocabularies over the same question, so they are compared by
-  // direction: if one says the load does not fit, the other must not say it does.
+  // If one surface says the load does not fit, the other must not say it does.
   for (const { host, platform, fp } of cells()) {
     const cap = capacityFor(host);
     const bar = computeModelMemory({
@@ -216,12 +194,9 @@ test("P2: the bar and the panel never contradict each other", () => {
 });
 
 test("P3: one byte count formats identically wherever it is printed", () => {
-  // Two formatters, two units in, one label out. This is the collision that used
-  // to exist as two functions with the same name.
   for (const gib of [0.5, 2.33, 7.24, 24, 174, 1024]) {
     assert.equal(formatBytesGiB(gib * GB).endsWith(" GiB"), true);
     assert.equal(formatGiB(gib).endsWith(" GiB"), true);
-    // The same quantity, so the numeric part must agree once rounding is undone.
     const a = Number.parseFloat(formatBytesGiB(gib * GB));
     const b = Number.parseFloat(formatGiB(gib));
     assert.ok(
@@ -288,7 +263,7 @@ test("P6: no cell leaks a number that does not exist into a label", () => {
 });
 
 test("hostile and malformed figures never become a confident verdict", () => {
-  // JSON.parse turns 1e999 into Infinity, and a `?? 0` default never sees it.
+  // JSON.parse turns 1e999 into Infinity, and ?? 0 does not catch it.
   for (const evil of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0]) {
     const bar = computeModelMemory({
       weightsBytes: evil,

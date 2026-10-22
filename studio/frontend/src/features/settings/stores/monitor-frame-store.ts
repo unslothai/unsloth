@@ -63,3 +63,14 @@ export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
       return { frames };
     }),
 }));
+
+interface CornerCardFrameState {
+  frame: MonitorFrame | null;
+  setFrame: (frame: MonitorFrame | null) => void;
+}
+
+export const useCornerCardFrameStore = create<CornerCardFrameState>((set) => ({
+  frame: null,
+  setFrame: (frame) =>
+    set((state) => (sameFrame(state.frame, frame) ? state : { frame })),
+}));

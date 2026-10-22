@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The gap this closes: `confirmTransformersUpgradeIfNeeded` had two callers, both in
-// chat, so a Train-tab run on an architecture no installed transformers ships was
-// accepted and then died at model load with
-//   "... is not supported yet in transformers==5.3.0"
-// and no prompt. Reading the start paths rather than driving them keeps this a cheap
-// guard against the gate being dropped from either one.
+// Guards that both Train start paths still call the transformers-upgrade gate.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -30,14 +25,12 @@ test("both training start paths consult the transformers-upgrade gate", () => {
 });
 
 test("the upgrade dialog is raised before the custom-code dialog", () => {
-  // Chat's order, and for the same reason: installing a newer transformers changes
-  // what the load would even run, so consenting to the install has to come first.
+  // Same order as chat: installing changes what the load runs, so upgrade consent comes first.
   for (const file of START_PATHS) {
     const source = readText(file);
     const upgradeAt = source.indexOf("confirmTrainingTransformersUpgrade(");
     const remoteCodeAt = source.indexOf("confirmRemoteCodeIfNeeded(");
-    // Both must be present: a missing call indexes to -1, which would otherwise
-    // satisfy the ordering assertion without either gate existing.
+    // A missing call indexes to -1, which would satisfy the ordering assertion.
     assert.ok(
       upgradeAt >= 0 && remoteCodeAt >= 0,
       `${file} must run both gates`,
@@ -50,9 +43,7 @@ test("the upgrade dialog is raised before the custom-code dialog", () => {
 });
 
 test("both gates on a start path inspect the same copy of the model", () => {
-  // The upgrade check used to be handed the Hub identifier while the custom-code gate
-  // resolved the pinned snapshot, so a cached model could be judged on two different
-  // architectures. One resolver per start path keeps them from drifting apart again.
+  // One resolver per start path so both gates judge the same pinned snapshot.
   for (const [file, resolver] of [
     [
       "../src/features/training/lib/start-fresh-training-run.ts",
@@ -73,8 +64,7 @@ test("both gates on a start path inspect the same copy of the model", () => {
 });
 
 test("the resume gate names the run it precedes", () => {
-  // Without the run id the check cannot tell that installing would permanently strand
-  // a checkpoint attested against a 4-bit model load the latest sidecar refuses.
+  // Without the run id the check cannot tell the install would strand a 4-bit checkpoint.
   const source = readText(
     "../src/features/training/lib/resume-training-run.ts",
   );
@@ -82,7 +72,6 @@ test("the resume gate names the run it precedes", () => {
 });
 
 test("the gate reaches the install through the shared consent dialog", () => {
-  // Not a second implementation of the flow chat already owns.
   const gate = readText(
     "../src/features/training/lib/training-transformers-upgrade.ts",
   );
@@ -91,10 +80,7 @@ test("the gate reaches the install through the shared consent dialog", () => {
 });
 
 test("the Configure preview re-asks the check after an install", () => {
-  // The hook itself is React, so this guards the wiring the notice cache depends on:
-  // the store counts completed installs and the hook keys its answers on that count.
-  // Break either end and Configure keeps offering an install that already ran, and
-  // 4-bit for a run the new sidecar loads in 16-bit.
+  // The store counts completed installs and the hook keys its cache on that count.
   const store = readText(
     "../src/features/transformers-upgrade/stores/transformers-upgrade-dialog-store.ts",
   );
@@ -114,10 +100,7 @@ test("the Configure preview re-asks the check after an install", () => {
 });
 
 test("the consent dialog offers the custom-code way out before an install fails", () => {
-  // Training raises this dialog before a run starts, so what it offers decides what the
-  // run can be. For a model shipping its own code the install is the more expensive way
-  // forward, activating the 16-bit sidecar, so gating the fallback on the error phase
-  // left a QLoRA run with Install or Cancel and no way to the 4-bit run it asked for.
+  // The custom-code fallback must be offered up front, or a QLoRA run has no path to 4-bit.
   const dialog = readText(
     "../src/features/transformers-upgrade/components/transformers-upgrade-dialog.tsx",
   );
@@ -133,9 +116,8 @@ test("the consent dialog offers the custom-code way out before an install fails"
 });
 
 test("both start paths carry the upgrade gate's custom-code verdict forward", () => {
-  // confirmRemoteCodeIfNeeded falls back to the caller's requiresTrustRemoteCode when the
-  // scan request fails, and the stored flag is false on a fresh run. The upgrade check
-  // has already answered the question, so it has to be the one that travels.
+  // The upgrade check's trust-remote-code answer must travel, since the scan fallback uses a
+  // stored flag that is false on a fresh run.
   for (const file of START_PATHS) {
     const source = readText(file);
     assert.ok(

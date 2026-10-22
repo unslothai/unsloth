@@ -115,6 +115,7 @@ export const en = {
     reload: "Reload",
     more: "More",
     addressPlaceholder: "Search or enter a URL",
+    local: "Local",
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",
@@ -465,6 +466,8 @@ export const en = {
       downloadFailed: "Couldn't download {name}",
       notMarked: "{name} was saved but couldn't be marked as downloaded from the internet, so your system won't warn before opening it.",
       blocked: "This address can't open in the browser panel. It only opens public websites.",
+      blockedLocal: "This local address can't open here. Type it in the address bar to open it.",
+      studioAddress: "This is Unsloth's own address, so it can't open in the browser panel.",
       clearDataSettingDescription: "Clear browsing history, download history, cached pages, and the cookies and site data pages keep, which signs you out of sites.",
       clearDataDescription: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",
       clearDataFailed: "Couldn't clear site data. Try again.",
@@ -676,6 +679,8 @@ export const en = {
       "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
+    unifiedTightFit: "Tight fit",
+    unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -1143,6 +1148,10 @@ export const en = {
       alternateSlot: "Alternate shortcut",
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
+      metaUnsupported: "The Windows key can't be used in shortcuts.",
+      altGraphUnsupported: "AltGr chords can't be used as shortcuts.",
+      desktopOnly: "Desktop app only",
+      builtInKey: "Built in: {key}",
       actions: {
         findInPage: {
           label: "Find in page",
@@ -1343,6 +1352,10 @@ export const en = {
         steerMessage: {
           label: "Steer response",
           description: "Stop the current response and send the draft next",
+        },
+        stopGeneration: {
+          label: "Stop generating",
+          description: "Stop the response being written",
         },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",
@@ -1888,20 +1901,14 @@ export const en = {
       },
       notifications: {
         sectionTitle: "Notifications",
-        showLlamaUpdates: "llama.cpp update notifications",
-        showLlamaUpdatesDescription:
-          "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
-        showLoadedModels: "Loaded models indicator",
-        showLoadedModelsDescription:
-          "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
-        showAudioCppUpdates: "audio.cpp update notifications",
-        showAudioCppUpdatesDescription:
-          "Notify when the audio.cpp runtime needs an update to run the Audio pages. Turn off if you never use Audio.",
-        showUnslothUpdates: "Unsloth update notifications",
-        showUnslothUpdatesDescription:
-          "Notify when a newer version of Unsloth is available to install.",
+        showLoadedModels: "Loaded models card",
+        showLoadedModelsDescription: "A corner card with every loaded model, to unload one in a click.",
+        updateReminders: "Update reminders",
+        updateRemindersDescription: "How often to offer a new version when one is ready.",
+        llamaHint: "Chat and GGUF models",
+        audioHint: "Speech, music and transcription",
         frequency: {
-          always: "Always",
+          always: "Whenever available",
           daily: "Once a day",
           weekly: "Once a week",
           biweekly: "Every two weeks",
@@ -2059,6 +2066,18 @@ export const en = {
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
       },
+      fullInstall: {
+        label: "Install type",
+        description:
+          "Chat only (GGUF). The full install adds training, export, video, safetensors models and additional image generation features.",
+        action: "Upgrade to full install",
+        confirmTitle: "Upgrade to the full install?",
+        confirmDescription:
+          "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+        confirmAction: "Upgrade",
+        keywords:
+          "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",
+      },
       repairInstall: {
         label: "Repair installation",
         description:
@@ -2067,6 +2086,8 @@ export const en = {
         confirmTitle: "Repair this installation?",
         confirmDescription:
           "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU at the newest supported release. Chats and settings are kept. This can take several minutes.",
+        confirmDescriptionChatOnly:
+          "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
       },
       resetPreferences: {
@@ -2128,9 +2149,9 @@ export const en = {
         longestStreak: "Longest streak",
         activityTitle: "Token activity",
         activityDescription: {
-          daily: "{total} over the last {weeks}",
-          weekly: "Peak week {total} · last {weeks}",
-          cumulative: "{total} accumulated over the last {weeks}",
+          daily: "{total} since {since}",
+          weekly: "Busiest week {total} · since {since}",
+          cumulative: "{total} in total since {since}",
         },
         mode: {
           daily: "Daily",
@@ -2138,9 +2159,10 @@ export const en = {
           cumulative: "Cumulative",
         },
         cellTooltip: "{date} · {tokens}, {messages}",
+        emptyDayTooltip: "{date} · No activity",
+        apiRequests: "{count} via API",
         weekTooltip: "Week of {date} · {tokens}",
-        chartToggle: "Chart",
-        chartToggleHint: "Show Weekly and Cumulative as a chart with labelled axes",
+        cumulativeTooltip: "By the week of {date} · {tokens} in total",
         less: "Less",
         more: "More",
         insightsTitle: "Activity insights",
@@ -2762,6 +2784,10 @@ export const en = {
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
+      showReplyTimes: "Reply times",
+      showReplyTimesDescription: "Show when each reply finished, below the reply.",
+      showReplyTimesKeywords:
+        "timestamp time clock date hour when finished arrived reply response message",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
@@ -3124,7 +3150,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
@@ -3169,6 +3195,7 @@ export const en = {
       relativeNever: "never",
       relativeJustNow: "just now",
       expired: "expired",
+      expiredStatus: "Expired",
       today: "today",
       created: "Created {value}",
       used: "Used {value}",
@@ -3198,6 +3225,14 @@ export const en = {
         autoSwitchOff:
           "The model loads by name only while Model auto-switch is on. Turn it on, or load the model on its Audio page first.",
         useViaApi: "Use via API",
+      },
+      mediaApi: {
+        title: "Image and video API",
+        description: "Generate images and videos from your own code with the OpenAI-compatible endpoints.",
+        images: "Images",
+        video: "Video",
+        placeholderModel: "The model shown is an example. Load a model on the Images or Video page and open this from its API button to fill it in.",
+        autoSwitchOff: "Media auto-switch is off, so requests run on the model the page has loaded, whatever they name.",
       },
       decisionApi: {
         title: "Decision API",
@@ -3276,6 +3311,24 @@ export const en = {
       desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
+      whisperCppVersion: "whisper.cpp Version",
+      engines: {
+        title: "Engines",
+        description: "The runtimes Unsloth uses to run models. Updates install in the background, with no restart.",
+        updatesLabel: "Engine updates",
+        notInstalled: "Not installed",
+        available: "{version} available",
+        upToDate: "Up to date",
+        updatesAvailable: "Updates available",
+        checking: "Checking for updates...",
+        checkFailed: "Couldn't check for updates. Try again later.",
+        unsupported: "This install's engines are managed outside Unsloth.",
+        checkForUpdates: "Check for updates",
+        update: "Update",
+        updating: "Updating...",
+        updated: "Engines updated.",
+        updateFailed: "Update failed: {error}",
+      },
       hardware: "Hardware",
       gpu: "GPU",
       gpuIntegrated: "integrated",
@@ -3360,6 +3413,9 @@ export const en = {
         docsUpdating: "Updating",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4715,5 +4771,46 @@ export const en = {
     cantRun: "Could not run",
     failed: "Error {status}",
     invalidJson: "The request body is not valid JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Loaded models",
+      countOne: "{count} model loaded",
+      countMany: "{count} models loaded",
+      pillLabel: "{count}. Show details, or drag to move",
+      dragToMove: "Drag to move",
+      dragHandleLabel: "Drag to move",
+      collapse: "Collapse",
+      collapseLabel: "Collapse loaded models",
+      close: "Close",
+      closeLabel: "Close loaded models",
+      backOnNextLoad: "Back on the next model load",
+      ejectToFree: "Eject to free memory",
+      ejectLabel: "Eject {model}",
+      openTarget: "Open {target}",
+      rowLabel: "{model}. Open {target}",
+      loading: "Loading",
+      ejecting: "Ejecting",
+      stillInMemory: "Still in memory",
+      alsoServing: "Also serving",
+      noneLoaded: "No models loaded",
+      noneLoadedDetail: "Models you load will show here.",
+      otherAccount: "In use by another account",
+      otherAccountDetail: "Memory is held by a model you cannot see",
+      toastStillResident:
+        "\"{model}\" was loaded while ejecting, so it is still using memory. Eject again to release it.",
+      toastUnverified:
+        "{model} was asked to unload, but its runtime did not confirm. Check the card in a moment.",
+      toastAlreadyFree: "{model} was no longer loaded.",
+      toastReplaced:
+        "{model} is no longer loaded. \"{resident}\" took its place and was left alone.",
+      toastEjected: "Ejected {model}",
+      toastFailed: "Failed to eject {model}",
+    },
+    monitor: {
+      dragHandleLabel:
+        "Move the live monitor. Arrow keys nudge it, double-click resets it.",
+      reconnecting: "Reconnecting...",
+    },
   },
 } as const;

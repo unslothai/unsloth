@@ -78,6 +78,8 @@ export function applyPerModelConfigToRuntime(
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
     mlxInt8Prefill: config.mlxInt8Prefill ?? false,
+    mlxPleOffload: config.mlxPleOffload ?? null,
+    mlxExpertOffload: config.mlxExpertOffload ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -154,6 +156,8 @@ export function currentRuntimePerModelConfig(
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
     mlxInt8Prefill: s.mlxInt8Prefill ?? false,
+    mlxPleOffload: s.mlxPleOffload ?? null,
+    mlxExpertOffload: s.mlxExpertOffload ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -211,6 +215,8 @@ export function perModelConfigsEqual(
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
     Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
+    (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
+    (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&

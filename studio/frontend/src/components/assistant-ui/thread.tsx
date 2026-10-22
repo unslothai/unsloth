@@ -51,6 +51,7 @@ import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-lis
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
+import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
@@ -247,12 +248,15 @@ import {
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
+  isModEnter,
   isSurfaceInForeground,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
   useShortcut,
+  useShortcutAvailable,
   useSettingsDialogStore,
   isMacPlatform,
+  resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
@@ -2561,6 +2565,23 @@ const GeneratedImageViewportOverlay: FC<{
   );
 };
 
+// From the end: the footer follows every message row, and a forward walk costs O(rows) where Chromium's `:scope >` is O(1).
+const childWithClass = (
+  parent: Element | null | undefined,
+  className: string,
+): HTMLElement | null => {
+  for (
+    let child = parent?.lastElementChild ?? null;
+    child;
+    child = child.previousElementSibling
+  ) {
+    if (child instanceof HTMLElement && child.classList.contains(className)) {
+      return child;
+    }
+  }
+  return null;
+};
+
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
@@ -2619,17 +2640,13 @@ const ThreadComposerDock: FC<{
   useLayoutEffect(() => {
     const dock = dockRef.current;
     const inner = dockInnerRef.current;
-    const viewport = dock?.parentElement?.querySelector<HTMLElement>(
-      ":scope > .aui-thread-viewport",
-    );
+    const viewport = childWithClass(dock?.parentElement, "aui-thread-viewport");
     if (!dock || !inner || !viewport) return;
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
-      const footer = viewport.querySelector(
-        ":scope > .aui-thread-viewport-footer",
-      );
+      const footer = childWithClass(viewport, "aui-thread-viewport-footer");
       if (footer && footer !== observedFooter) {
         if (observedFooter) resizeObserver.unobserve(observedFooter);
         resizeObserver.observe(footer);
@@ -3900,6 +3917,14 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
+  // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
+  // Only when decline would take that Escape: its card is keyboard-ready on this screen (not parked in a
+  // background chat, where Escape would then stop nothing), and not once rebound.
+  const declineMounted = useShortcutAvailable("declineToolRequest", true);
+  const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
+    const bindings = resolveBindings(s.overrides, "declineToolRequest");
+    return bindings.primary === "Escape" || bindings.alternate === "Escape";
+  });
   const composerFocusable = useContext(ChatComposerFocusableContext);
   // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
   // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
@@ -5880,6 +5905,7 @@ const Composer: FC<{
                 // no effect on Latin / CJK / Devanagari.
                 dir="auto"
                 {...inputProps}
+                cancelOnEscape={!(declineMounted && declineOwnsEscape)}
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
@@ -7629,8 +7655,32 @@ const ComposerRightControls: FC<{
     // A reply replayed after a reload has no adapter run for Cancel to abort.
     stopRecoveredRun(threadRemoteId);
   };
+  const aui = useAui();
+  const chatActive = useChatActive();
+  const threadRunning = useAuiState(({ thread }) => thread.isRunning);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  // Claimed only while foreground: Compare keeps this composer mounted and inert behind its own.
+  useShortcut(
+    "stopGeneration",
+    () => {
+      const research = isResearchActive;
+      stop();
+      if (research) return;
+      const composer = aui.composer();
+      if (composer.getState().canCancel) composer.cancel();
+    },
+    {
+      enabled: chatActive && (threadRunning || isResearchActive),
+      claims: () =>
+        controlsRef.current !== null &&
+        !controlsRef.current.closest('[aria-hidden="true"], [inert]'),
+    },
+  );
   return (
-    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+    <div
+      ref={controlsRef}
+      className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5"
+    >
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
@@ -8443,7 +8493,7 @@ const AssistantMessage: FC = () => {
               onInput={adjustHeight}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                if (isModEnter(e)) {
                   handleSave();
                 }
                 if (e.key === 'Escape') {
@@ -8486,6 +8536,8 @@ const AssistantMessage: FC = () => {
       </div>
 
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+        {/* First, so the action bar mounting on hover never moves it. */}
+        <AssistantMessageTime />
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>

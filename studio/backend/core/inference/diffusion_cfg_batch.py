@@ -499,6 +499,15 @@ class CfgBatchRouter:
         if first is None:
             return
         if not self._sync(latent):
+            if not self.offloaded and cfg_batch_mode() != "force":
+                # A resident denoiser off CUDA (CPU, MPS): nothing can time the doubled call, and the gate only turns
+                # batching on where it was measured to win, so the shape stays plain unless forced.
+                self._shape_off(
+                    shape,
+                    f"no device timer on {getattr(latent.device, 'type', 'this device')} to price the doubled call "
+                    f"({CFG_BATCH_ENV}=force batches anyway)",
+                )
+                return
             self._judge(shape)
             return
         if not self._memory_ok(latent, shape):

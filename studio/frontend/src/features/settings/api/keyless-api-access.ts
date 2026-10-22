@@ -15,12 +15,16 @@ export type KeylessApiAccessSettings = {
   scope: KeylessApiAccessScope;
   tools: boolean;
   exposure: KeylessApiAccessExposure | null;
+  /** a managed account turns keyless off install-wide, whatever scope is saved */
+  suspendedByAccounts: boolean;
 };
 
 type ApiKeylessApiAccessSettings = {
   scope: KeylessApiAccessScope;
   tools: boolean;
   exposure?: KeylessApiAccessExposure | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  suspended_by_accounts?: boolean | null;
 };
 
 function fromApi(
@@ -30,6 +34,7 @@ function fromApi(
     scope: settings.scope,
     tools: settings.tools,
     exposure: settings.exposure ?? null,
+    suspendedByAccounts: settings.suspended_by_accounts === true,
   };
 }
 

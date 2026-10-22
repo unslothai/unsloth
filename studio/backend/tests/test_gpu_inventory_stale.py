@@ -43,7 +43,7 @@ def test_failed_probe_after_a_good_read_keeps_the_gpu(monkeypatch):
     assert good["available"] and [d["name"] for d in good["devices"]] == ["NVIDIA B200"]
     assert "stale" not in good
 
-    _smi(monkeypatch, None)  # timeout / non-zero exit
+    _smi(monkeypatch, None)
     kept = hw.get_backend_visible_gpu_info()
     assert kept["available"] is True and kept["stale"] is True
     assert [d["name"] for d in kept["devices"]] == ["NVIDIA B200"]
@@ -51,7 +51,7 @@ def test_failed_probe_after_a_good_read_keeps_the_gpu(monkeypatch):
     for key in ("probe_failed", "smi_absent", "_confirmed_empty"):
         assert key not in kept
 
-    _smi(monkeypatch, [dict(B200)])  # answers again: fresh, no longer stale
+    _smi(monkeypatch, [dict(B200)])
     assert "stale" not in hw.get_backend_visible_gpu_info()
 
 
@@ -64,10 +64,10 @@ def test_failed_probe_with_no_prior_read_claims_no_gpu(monkeypatch):
 def test_nvidia_smi_answering_zero_rows_reports_none(monkeypatch):
     _smi(monkeypatch, [dict(B200)])
     assert hw.get_backend_visible_gpu_info()["available"]
-    _smi(monkeypatch, [])  # the driver answered: no card under this mask
+    _smi(monkeypatch, [])
     info = hw.get_backend_visible_gpu_info()
     assert info["available"] is False and info["devices"] == [] and "stale" not in info
-    _smi(monkeypatch, None)  # and a later failure does not resurrect it
+    _smi(monkeypatch, None)
     assert hw.get_backend_visible_gpu_info()["available"] is False
 
 
