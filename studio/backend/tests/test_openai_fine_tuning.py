@@ -46,10 +46,11 @@ def studio(monkeypatch):
 
     async def start_training(request, current_subject, via_api_key):
         calls["start"].append(request)
-        live["status"] = _Status("job_20261021_101500_ab12cd34", "loading_model")
-        return TrainingJobResponse(
-            job_id = "job_20261021_101500_ab12cd34", status = "queued", message = "queued"
+        job_id = "job_20261021_101500_ab12cd34" + (
+            "" if len(calls["start"]) == 1 else f"{len(calls['start'])}"
         )
+        live["status"] = _Status(job_id, "loading_model")
+        return TrainingJobResponse(job_id = job_id, status = "queued", message = "queued")
 
     async def stop_training(body, current_subject):
         calls["stop"].append(body)
@@ -58,6 +59,9 @@ def studio(monkeypatch):
     async def get_training_status(current_subject, via_api_key):
         return live["status"]
 
+    # Module state the routes keep between requests.
+    monkeypatch.setattr(openai_fine_tuning, "_STARTED", {})
+    monkeypatch.setattr(openai_fine_tuning, "_CANCELLING", set())
     monkeypatch.setattr(training_routes, "start_training", start_training)
     monkeypatch.setattr(training_routes, "stop_training", stop_training)
     monkeypatch.setattr(training_routes, "get_training_status", get_training_status)
@@ -372,3 +376,113 @@ def test_an_overflowed_grad_norm_keeps_events_readable(studio, tmp_path):
     [step2] = [e for e in events.data if e.type == "metrics" and e.data["step"] == 2]
     assert step2.data["grad_norm"] is None
     assert checkpoints.data[0].step_number == 2
+
+
+@pytest.fixture
+def queue(studio, monkeypatch):
+    """The queue with the GPU busy and the background drainer replaced by explicit drains."""
+    client, calls, live = studio
+    monkeypatch.setattr(openai_fine_tuning, "_QUEUE", [])
+    monkeypatch.setattr(openai_fine_tuning, "_ALIASES", {})
+    monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
+    monkeypatch.setattr(openai_fine_tuning, "_ensure_drainer", lambda: None)
+    gpu = {"busy": True}
+    monkeypatch.setattr(openai_fine_tuning, "_training_busy", lambda: gpu["busy"])
+    return client, calls, live, gpu
+
+
+def _create(client, file_id, **kwargs):
+    return client.fine_tuning.jobs.create(
+        model = "unsloth/Qwen3-0.6B", training_file = file_id, **kwargs
+    )
+
+
+def test_a_busy_gpu_queues_jobs_and_starts_them_in_order(queue):
+    client, calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        first = await _create(client, uploaded.id, suffix = "first")
+        second = await _create(client, uploaded.id, suffix = "second")
+        listed = await client.fine_tuning.jobs.list()
+        events = await client.fine_tuning.jobs.list_events(second.id)
+        await openai_fine_tuning._drain_once()  # GPU still busy: nothing starts
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()  # the head starts; the GPU is now taken by it
+        gpu["busy"] = True
+        await openai_fine_tuning._drain_once()
+        after_first = [await client.fine_tuning.jobs.retrieve(j.id) for j in (first, second)]
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return first, second, listed, events, after_first
+
+    first, second, listed, events, (started, waiting) = _run(flow())
+    assert first.status == second.status == "queued"
+    assert [j.id for j in listed.data[:2]] == [second.id, first.id]
+    assert events.data[0].message == "Waiting for the GPU: position 2 in the queue"
+    assert [r.project_name for r in calls["start"]] == ["first", "second"]
+    # The started job keeps the id the client was given.
+    assert started.id == first.id and started.status == "validating_files"
+    assert waiting.status == "queued"
+
+
+def test_a_queued_job_can_be_cancelled_and_never_starts(queue):
+    client, calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        cancelled = await client.fine_tuning.jobs.cancel(job.id)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return cancelled, await client.fine_tuning.jobs.retrieve(job.id)
+
+    cancelled, retrieved = _run(flow())
+    assert cancelled.status == retrieved.status == "cancelled"
+    assert calls["start"] == []
+
+
+def test_a_refused_start_fails_the_queued_job(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def refuse(request, current_subject, via_api_key):
+        return TrainingJobResponse(
+            job_id = "", status = "error", message = "The model is gated.", error = "gated"
+        )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", refuse)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return await client.fine_tuning.jobs.retrieve(job.id), openai_fine_tuning._QUEUE
+
+    job, remaining = _run(flow())
+    assert job.status == "failed" and job.error.message == "The model is gated."
+    assert remaining == []
+
+
+def test_another_account_cannot_see_or_cancel_a_queued_job(queue, monkeypatch):
+    client, _calls, _live, _gpu = queue
+    from utils.account_context import AccountContext
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(
+            openai_fine_tuning,
+            "current_account_id",
+            lambda: AccountContext("bob", "bob").account_id,
+        )
+        statuses = []
+        for call in (client.fine_tuning.jobs.retrieve, client.fine_tuning.jobs.cancel):
+            try:
+                await call(job.id)
+            except openai.NotFoundError:
+                statuses.append(404)
+        listed = await client.fine_tuning.jobs.list()
+        return statuses, [j.id for j in listed.data]
+
+    statuses, listed = _run(flow())
+    assert statuses == [404, 404] and listed == []

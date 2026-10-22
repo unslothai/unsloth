@@ -7,6 +7,9 @@ A thin translation layer: uploads land where ``/api/hub/datasets/upload`` puts t
 same ``start_training`` handler as ``/api/train/start`` (every guard and refusal included), and job state is
 read back from the training history, so a job is just a Studio training run under another name. Nothing here
 grants a capability an API key does not already have through ``/api/train``.
+
+A job created while the GPU is busy waits in a first-in-first-out queue and starts, as its own account, once
+training is idle. The queue lives in this process: queued jobs do not survive a Studio restart.
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import secrets
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -27,6 +32,7 @@ from hub.utils.host_paths import host_paths_visible, redact_host_paths, redact_p
 from loggers import get_logger
 from models.training import TrainingStartRequest
 from storage.studio_db import get_connection, get_run, list_runs
+from utils.account_context import AccountContext, arun_as, current_account, current_account_id
 from utils.training_runs import drop_non_finite
 
 logger = get_logger(__name__)
@@ -204,7 +210,7 @@ def _job_object(
     datasets = config.get("local_datasets") or []
     eval_datasets = config.get("local_eval_datasets") or []
     return {
-        "id": _job_id(run_id),
+        "id": _RUN_ALIAS.get(run_id) or _job_id(run_id),
         "object": "fine_tuning.job",
         "created_at": created_at or int(datetime.now(timezone.utc).timestamp()),
         "error": {"code": "training_failed", "message": error, "param": None} if error else None,
@@ -403,6 +409,151 @@ def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
     return config
 
 
+# Queue
+
+QUEUE_POLL_S = 5.0
+# A 409 with training idle is a conflict that will not clear by waiting (resume, offline state): give up.
+QUEUE_IDLE_CONFLICTS = 12
+_TERMINAL_KEEP = 256
+
+
+@dataclass
+class _Queued:
+    alias: str
+    account: AccountContext
+    subject: str
+    via_api_key: bool
+    request: TrainingStartRequest
+    created_at: int
+    status: str = "queued"  # queued, started, failed, cancelled
+    run_id: Optional[str] = None
+    error: Optional[str] = None
+    finished_at: Optional[int] = None
+    idle_conflicts: int = 0
+
+
+_QUEUE: list[_Queued] = []
+_ALIASES: dict[str, _Queued] = {}
+_RUN_ALIAS: dict[str, str] = {}
+_drainer: Optional[asyncio.Task] = None
+
+
+def _now() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _training_busy() -> bool:
+    from core.training import get_training_backend
+    from routes import training as training_routes
+    return bool(
+        get_training_backend().is_training_active() or training_routes._diffusion_training_active()
+    )
+
+
+def _queued_job(entry: _Queued) -> dict[str, Any]:
+    job = _job_object(
+        entry.alias,
+        status = entry.status,
+        config = entry.request.model_dump(),
+        created_at = entry.created_at,
+        finished_at = entry.finished_at,
+        error = entry.error,
+    )
+    return {**job, "id": entry.alias}
+
+
+def _finish(
+    entry: _Queued,
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    entry.status, entry.error, entry.finished_at = status, error, _now()
+    if entry in _QUEUE:
+        _QUEUE.remove(entry)
+    done = [e for e in _ALIASES.values() if e.status != "queued"]
+    for old in done[: max(0, len(done) - _TERMINAL_KEEP)]:
+        _ALIASES.pop(old.alias, None)
+        if old.run_id:
+            _RUN_ALIAS.pop(old.run_id, None)
+
+
+async def _start_queued(entry: _Queued) -> bool:
+    """Start the queue head as its own account; False while the GPU is still taken."""
+    from routes import training as training_routes
+
+    if _training_busy():
+        return False
+    try:
+        started = await arun_as(
+            entry.account,
+            training_routes.start_training(
+                entry.request, current_subject = entry.subject, via_api_key = entry.via_api_key
+            ),
+        )
+    except HTTPException as exc:
+        entry.idle_conflicts += 1
+        if exc.status_code == 409 and entry.idle_conflicts < QUEUE_IDLE_CONFLICTS:
+            return False
+        _finish(entry, "failed", str(exc.detail))
+        return True
+    if started.status == "error" or not started.job_id:
+        if started.error == "Training already active":
+            return False
+        _finish(entry, "failed", started.message or started.error or "Training did not start")
+        return True
+    entry.run_id = started.job_id
+    _RUN_ALIAS[started.job_id] = entry.alias
+    _remember_start(started.job_id, entry.request.model_dump(), entry.created_at)
+    _finish(entry, "started")
+    return True
+
+
+async def _drain_once() -> None:
+    """Start the head of the queue if the GPU is free."""
+    if not _QUEUE:
+        return
+    entry = _QUEUE[0]
+    try:
+        await _start_queued(entry)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Could not start queued fine-tuning job %s", entry.alias)
+        _finish(entry, "failed", f"Training did not start: {type(exc).__name__}")
+
+
+async def _drain() -> None:
+    while _QUEUE:
+        head = _QUEUE[0]
+        await _drain_once()
+        if _QUEUE and _QUEUE[0] is head:
+            await asyncio.sleep(QUEUE_POLL_S)
+
+
+def _ensure_drainer() -> None:
+    global _drainer
+    if _drainer is None or _drainer.done():
+        _drainer = asyncio.get_running_loop().create_task(_drain())
+
+
+def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: bool) -> _Queued:
+    entry = _Queued(
+        alias = f"ftjob_q{secrets.token_hex(8)}",
+        account = current_account(),
+        subject = current_subject,
+        via_api_key = via_api_key,
+        request = request,
+        created_at = _now(),
+    )
+    _QUEUE.append(entry)
+    _ALIASES[entry.alias] = entry
+    _ensure_drainer()
+    return entry
+
+
+def _own_alias(job_id: str) -> Optional[_Queued]:
+    entry = _ALIASES.get(job_id)
+    return entry if entry is not None and entry.account.account_id == current_account_id() else None
+
+
 @router.post("/fine_tuning/jobs")
 async def create_fine_tuning_job(
     body: FineTuningJobCreate,
@@ -420,9 +571,18 @@ async def create_fine_tuning_job(
         first = exc.errors()[0]
         field = ".".join(str(part) for part in first.get("loc", ()))
         raise _bad_request(f"Invalid parameter {field}: {first.get('msg')}") from None
+    # First come, first served: with jobs already waiting, a new one joins the back of the queue.
+    if _QUEUE or _training_busy():
+        return _for_caller(
+            _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
+        )
     started = await training_routes.start_training(
         request, current_subject = current_subject, via_api_key = via_api_key
     )
+    if started.error == "Training already active":
+        return _for_caller(
+            _queued_job(_enqueue(request, current_subject, via_api_key)), via_api_key
+        )
     if started.status == "error" or not started.job_id:
         message = started.message or started.error or "Training did not start"
         raise _bad_request(
@@ -471,6 +631,14 @@ async def list_fine_tuning_jobs(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
+    own = [e for e in _ALIASES.values() if e.status != "started" and _own_alias(e.alias)]
+    # Newest first, as the history lists runs; insertion order breaks same-second ties.
+    pending = [_for_caller(_queued_job(e), via_api_key) for e in reversed(own)]
+    pending_ids = [job["id"] for job in pending]
+    if after in pending_ids:
+        pending, after = pending[pending_ids.index(after) + 1 :], None
+    elif after:
+        pending = []
     after_run = _run_id(after) if after else None
     runs = await asyncio.to_thread(_runs_after, after_run, limit + 1)
     if after_run and not runs:
@@ -485,6 +653,7 @@ async def list_fine_tuning_jobs(
         live_phase = _status_field(status, "phase") if status is not None else None
         if live_id and live_phase != "idle" and all(run["id"] != live_id for run in runs):
             jobs.insert(0, await _job(live_id, current_subject, via_api_key))
+    jobs = pending + jobs
     return {"object": "list", "data": jobs[:limit], "has_more": len(jobs) > limit}
 
 
@@ -494,7 +663,10 @@ async def retrieve_fine_tuning_job(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await _job(_run_id(job_id), current_subject, via_api_key)
+    entry = _own_alias(job_id)
+    if entry is not None and entry.status != "started":
+        return _for_caller(_queued_job(entry), via_api_key)
+    return await _job(entry.run_id if entry else _run_id(job_id), current_subject, via_api_key)
 
 
 def _events(run: dict[str, Any], via_api_key: bool) -> list[dict[str, Any]]:
@@ -567,6 +739,24 @@ def _events(run: dict[str, Any], via_api_key: bool) -> list[dict[str, Any]]:
     return events
 
 
+def _queue_event(entry: _Queued) -> dict[str, Any]:
+    if entry.status == "queued":
+        message = f"Waiting for the GPU: position {_QUEUE.index(entry) + 1} in the queue"
+    elif entry.status == "cancelled":
+        message = "The job was cancelled before it started"
+    else:
+        message = entry.error or "Training did not start"
+    return {
+        "id": f"ftevent_{entry.alias}_{entry.status}",
+        "object": "fine_tuning.job.event",
+        "created_at": entry.finished_at or entry.created_at,
+        "level": "error" if entry.status == "failed" else "info",
+        "message": message,
+        "data": None,
+        "type": "message",
+    }
+
+
 @router.get("/fine_tuning/jobs/{job_id}/events")
 async def list_fine_tuning_events(
     job_id: str,
@@ -575,7 +765,10 @@ async def list_fine_tuning_events(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    run_id = _run_id(job_id)
+    entry = _own_alias(job_id)
+    if entry is not None and entry.status != "started":
+        return {"object": "list", "data": [_queue_event(entry)], "has_more": False}
+    run_id = entry.run_id if entry else _run_id(job_id)
     run = await asyncio.to_thread(get_run, run_id)
     if run is None:
         # Known but not started yet: no events, rather than a 404 a polling client would give up on.
@@ -637,7 +830,10 @@ async def list_fine_tuning_checkpoints(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    run_id = _run_id(job_id)
+    entry = _own_alias(job_id)
+    if entry is not None and entry.status != "started":
+        return {"object": "list", "data": [], "has_more": False}
+    run_id = entry.run_id if entry else _run_id(job_id)
     run = await asyncio.to_thread(get_run, run_id)
     if run is None:
         await _job(run_id, current_subject, via_api_key)
@@ -653,7 +849,13 @@ async def cancel_fine_tuning_job(
 ):
     from routes import training as training_routes
 
-    run_id = _run_id(job_id)
+    entry = _own_alias(job_id)
+    if entry is not None and entry.status == "queued":
+        _finish(entry, "cancelled")
+        return _for_caller(_queued_job(entry), via_api_key)
+    if entry is not None and entry.status != "started":
+        raise _bad_request(f"Job {entry.alias} has already {entry.status}.")
+    run_id = entry.run_id if entry else _run_id(job_id)
     job = await _job(run_id, current_subject, via_api_key)
     if job["status"] in ("succeeded", "failed", "cancelled"):
         raise _bad_request(f"Job {job['id']} has already {job['status']}.")
