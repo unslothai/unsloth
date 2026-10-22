@@ -1061,6 +1061,19 @@ def test_pipeline_groups_plan_gives_every_group_a_slot(cluster, monkeypatch):
         assert ss.ENV_PIPELINE_GROUPS in plan["reason"], (value, plan)
 
 
+def test_pipeline_groups_plan_is_off_when_fit_is_off(cluster, monkeypatch):
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
+    for args in (["-fit", "off"], ["--fit=off"], ["--fit", "0"], ["-fit", "on", "--fit", "false"]):
+        out = ss.pipeline_groups_plan(8, args)
+        assert out["pipeline_groups"] == 0 and "--fit off" in out["reason"], args
+    # fit on (or unset), or a later -fit on, keeps the groups: the fit pass reserves the extra groups' KV
+    for args in ([], ["-fit", "on"], ["--fit", "off", "-fit", "on"]):
+        assert (
+            ss.pipeline_groups_plan(8, args)["pipeline_groups"] == ss.PIPELINE_GROUPS_DEFAULT
+        ), args
+
+
 def test_pipeline_groups_plan_is_off_when_the_bundle_lacks_the_flag(cluster, monkeypatch):
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
     monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
