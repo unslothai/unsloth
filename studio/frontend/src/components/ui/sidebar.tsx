@@ -10,10 +10,7 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 // Deep import, not the feature barrel: the barrel pulls in SettingsDialog,
 // which renders sidebar-aware panels and would close an import cycle.
-import {
-  isSurfaceBackgrounded,
-  useShortcut,
-} from "@/features/settings/hooks/use-shortcut"
+import { useShortcut } from "@/features/settings/hooks/use-shortcut"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
@@ -75,6 +72,9 @@ function useSidebar() {
 
   return context
 }
+
+const OPEN_DIALOG_SELECTOR =
+  '[data-slot="dialog-content"][data-state="open"], [data-slot="alert-dialog-content"][data-state="open"]'
 
 function SidebarProvider({
   defaultOpen = true,
@@ -150,10 +150,10 @@ function SidebarProvider({
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
   // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it. Not
-  // behind a modal, read off the app root: a collapsed sidebar is itself aria-hidden, and the open
-  // mobile drawer is a modal whose own sidebar is the foreground.
+  // behind an open dialog (Settings leaves the app un-hidden); the open mobile drawer is itself one.
   useShortcut("toggleSidebar", toggleSidebar, {
-    claims: () => (isMobile && openMobile) || !isSurfaceBackgrounded("#root"),
+    claims: () =>
+      (isMobile && openMobile) || document.querySelector(OPEN_DIALOG_SELECTOR) === null,
   })
 
   const pinned = pinnedProp ?? false

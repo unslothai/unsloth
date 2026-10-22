@@ -330,6 +330,6 @@ test("search chats fires from the composer, and toggleSidebar not behind a modal
   );
   assert.match(
     readSrc("components/ui/sidebar.tsx"),
-    /useShortcut\("toggleSidebar", toggleSidebar, \{\n\s*claims: \(\) => \(isMobile && openMobile\) \|\| !isSurfaceBackgrounded\("#root"\),/,
+    /useShortcut\("toggleSidebar", toggleSidebar, \{\n\s*claims: \(\) =>\n\s*\(isMobile && openMobile\) \|\| document\.querySelector\(OPEN_DIALOG_SELECTOR\) === null,/,
   );
 });
