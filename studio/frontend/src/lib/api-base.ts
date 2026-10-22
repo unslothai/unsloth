@@ -69,8 +69,7 @@ export function backendPathUrl(url: string): string {
   return /^\/(v1|api)\//.test(url) ? apiUrl(url) : url
 }
 
-// A signed backend media URL (its token is the credential). Desktop's page origin is not the backend's
-// and its img-src blocks the loopback backend, so such an image is fetched into a blob instead.
+// Signed backend media (the token is the credential): Desktop's img-src blocks the loopback backend, so fetch it.
 export function desktopSignedMediaPath(url: string): string | null {
   return apiBase && /^\/(?:api|v1)\/[^?#]+\/file-signed\?token=[^&#]+$/.test(url) ? url : null
 }
