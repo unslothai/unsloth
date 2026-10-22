@@ -208,11 +208,12 @@ def test_tool_states_drops_a_stale_stored_name(client):
     assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: ["cancel", "voices"]}
 
 
-def test_tool_states_on_an_unreadable_list_is_a_conflict(client):
+def test_tool_states_recover_an_unreadable_list(client):
     studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: "x"})
     response = client.put(URL, json = {"tool_states": {"cancel": True}}, headers = _owner_session())
-    assert response.status_code == 409, response.text
-    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: "x"}
+    assert response.status_code == 200, response.text
+    everything_else = sorted(e["name"] for e in tool_catalog() if e["name"] != "cancel")
+    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: everything_else}
 
 
 @pytest.mark.parametrize(
