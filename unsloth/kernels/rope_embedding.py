@@ -679,7 +679,8 @@ def decode_rope_inplace(Q, K, cos, sin, position_ids):
         or sin2.stride(-1) != 1
     ):
         return False
-    rope_ptr = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device)
+    # The kernel indexes positions densely; an int32 last-column slice keeps its row stride.
+    rope_ptr = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
     with torch_gpu_device(Q.device):
         _rope_qk(Q, K, Q, K, cos2, sin2, rope_ptr, True, False, _eager_kernel)
     return True

@@ -498,7 +498,8 @@ def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
         or cos2.device != Q.device
     ):
         return None
-    rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device)
+    # The kernel indexes positions densely; an int32 last-column slice keeps its row stride.
+    rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
     with torch_gpu_device(Q.device):
         Qo, Ko, _, _ = _launch_forward(
             Q, K, Wq.contiguous(), Wk.contiguous(), cos2, sin2, rope_indices,

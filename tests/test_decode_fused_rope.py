@@ -165,3 +165,37 @@ def test_decode_kill_switch(monkeypatch):
     monkeypatch.setattr(QK, "DECODE_FUSED_ROPE", False)
     assert not RE.decode_rope_inplace(q, k, cos, sin, p)
     assert QK.decode_qk_norm_rope(n, n, q.transpose(1, 2), k.transpose(1, 2), cos, sin, p) is None
+
+
+def test_decode_strided_int32_positions():
+    # The decoder slices the last column of [bsz, seq] positions; an int32 slice keeps its row
+    # stride through reshape / to, and the kernels index positions densely.
+    torch.manual_seed(0)
+    dtype, d = torch.bfloat16, 128
+    cos, sin = _table(64, d, dtype)
+    pos = torch.tensor([[0, 1, 2], [2, 3, 4], [9, 10, 11]], device = "cuda", dtype = torch.int32)[
+        :, -1:
+    ]
+    assert pos.stride(0) == 3
+    Q = 3 * torch.randn(3, 4, 1, d, device = "cuda", dtype = dtype)
+    K = 3 * torch.randn(3, 2, 1, d, device = "cuda", dtype = dtype)
+    Qu, Ku = _unfused_rope(Q.clone(), K.clone(), cos, sin, pos.long())
+    Qf, Kf = Q.clone(), K.clone()
+    assert RE.decode_rope_inplace(Qf, Kf, cos, sin, pos)
+    assert torch.allclose(Qf.float(), Qu.float(), atol = 0.05) and torch.allclose(
+        Kf.float(), Ku.float(), atol = 0.05
+    )
+    n = _Norm(d, dtype)
+    Qs, Ks = Q.transpose(1, 2).contiguous(), K.transpose(1, 2).contiguous()
+    Qu, Ku = _unfused_rope(
+        _unfused_norm(n, Qs.clone()).transpose(1, 2),
+        _unfused_norm(n, Ks.clone()).transpose(1, 2),
+        cos,
+        sin,
+        pos.long(),
+    )
+    out = QK.decode_qk_norm_rope(n, n, Qs, Ks, cos, sin, pos)
+    assert out is not None
+    assert torch.allclose(out[0].float(), Qu.float(), atol = 0.05) and torch.allclose(
+        out[1].float(), Ku.float(), atol = 0.05
+    )
