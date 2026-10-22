@@ -51419,6 +51419,17 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
         )
 
 
+def _mlx_load_blocker(request: DiffusionLoadRequest) -> Optional[str]:
+    """The load option, if any, that keeps this pick off the MLX engine under UNSLOTH_DIFFUSION_MLX=auto."""
+    from core.inference.diffusion_engine_router import mlx_load_blocker
+    return mlx_load_blocker(
+        loras = request.loras,
+        component_files = _component_file_kwargs(request),
+        transformer_quant = request.transformer_quant,
+        text_encoder_quant = request.text_encoder_quant,
+    )
+
+
 def _refuse_mlx_loras(request: DiffusionLoadRequest) -> None:
     if request.loras:
         raise HTTPException(
@@ -51519,6 +51530,7 @@ async def diffusion_download_plan(
                 gpu_ordinal = gpu_ordinal,
                 gguf_filename = request.gguf_filename,
                 engine = request.engine,
+                mlx_blocker = _mlx_load_blocker(request),
             )
             if fam is not None
             else None
@@ -51528,7 +51540,7 @@ async def diffusion_download_plan(
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
         elif predicted == ENGINE_MLX:
-            # Opt-in MLX engine (UNSLOTH_DIFFUSION_MLX=1): same single-GGUF contract as native.
+            # MLX engine (Apple Silicon): same single-GGUF contract as native.
             _refuse_native_component_files(request)
             _refuse_mlx_loras(request)
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
@@ -51832,6 +51844,7 @@ async def load_diffusion_model_gated(
                     gpu_ordinal = gpu_ordinal,
                     gguf_filename = request.gguf_filename,
                     engine = request.engine,
+                    mlx_blocker = _mlx_load_blocker(request),
                 )
                 if fam is not None
                 else None
@@ -51976,6 +51989,8 @@ async def load_diffusion_model_gated(
                 gguf_filename = request.gguf_filename,
                 # The load's own engine pick (auto when absent); refused there rather than swapped.
                 engine = request.engine,
+                # A load option the MLX engine cannot honour keeps an auto-routed Apple Silicon load on diffusers.
+                mlx_blocker = _mlx_load_blocker(request),
             ),
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
@@ -52820,6 +52835,9 @@ async def _generate_diffusion_image_run(
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
                         "model": result.get("repo_id"),
+                        # The engine that drew it, when the active one routes per request (MLX auto on Apple
+                        # Silicon); otherwise the gallery records the active engine.
+                        **({"engine": result["engine"]} if result.get("engine") else {}),
                         # The BUILD the image came off, not just the repo id: a GGUF repo holds many quants, a dense load may be torchao-
                         # quantised, and a bake is not the same build as the adapter-less one. Absent on records written before this existed.
                         "model_kind": result.get("model_kind"),
@@ -54512,6 +54530,8 @@ async def _generate_openai_images(
     want_b64 = body.response_format == "b64_json"
     # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.
     recipe = {
+        # The routed MLX engine names the engine that drew it; others leave it to the gallery.
+        **({"engine": result["engine"]} if result.get("engine") else {}),
         "prompt": body.prompt,
         "negative_prompt": result.get("negative_prompt"),
         "width": width,

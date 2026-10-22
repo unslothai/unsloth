@@ -5934,8 +5934,14 @@ class DiffusionStatusResponse(BaseModel):
     )
     mlx_fallback_reason: Optional[str] = Field(
         None,
-        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
-        "MLX was not requested or is in use)",
+        description = "Why an Apple Silicon load did not get the MLX engine (null when MLX is off, the host is "
+        "not an Apple Silicon Mac, or MLX is in use)",
+    )
+    engine_routing: Optional[dict[str, Any]] = Field(
+        None,
+        description = "Per-request routing of the default Apple Silicon MLX engine: mode, default_engine, resident "
+        "engines, txt2img_engine (where plain text-to-image runs next), engines_fit_together, last_served_by and "
+        "last_reason. Null for every other engine.",
     )
     engine_forced: Optional[str] = Field(
         None,
