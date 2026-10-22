@@ -159,3 +159,28 @@ def test_a_zero2_launch_with_partitioned_params_still_gets_no_grad(no_launcher):
     model = torch.nn.Linear(2, 2)
     model.weight.ds_id = 0
     assert _mode_inside(model) == (False, False)
+
+
+def test_only_the_selected_deepspeed_plugin_counts(no_launcher):
+    import types
+
+    state = pytest.importorskip("accelerate.state")
+    no_launcher.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
+    active = types.SimpleNamespace(zero_stage = 2, selected = True, hf_ds_config = None)
+    inactive = types.SimpleNamespace(zero_stage = 3, selected = False, hf_ds_config = None)
+    no_launcher.setattr(
+        state.AcceleratorState,
+        "_shared_state",
+        {"distributed_type": "DistributedType.DEEPSPEED", "deepspeed_plugins": {"a": active, "b": inactive}},
+    )
+    assert _mode_inside(torch.nn.Linear(2, 2)) == (True, False)
+
+
+def test_the_grpo_preamble_copy_is_self_contained():
+    # rl_replacements appends only this function's source to the generated GRPO trainer.
+    import ast, inspect
+    from unsloth.models._utils import _get_inference_mode_context_manager as fn
+
+    tree = ast.parse(inspect.getsource(fn))
+    called = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "_deepspeed_zero_stage" not in called
