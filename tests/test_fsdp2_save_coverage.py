@@ -121,3 +121,28 @@ def test_full_and_merged_saves_stage_4bit_on_the_cpu(monkeypatch):
     )
     assert unsloth_save.unsloth_generic_push_to_hub_merged(model, "user/repo", None) is None
     assert seen == [True, True, True, True, True], seen
+
+
+def test_streamed_merge_failure_clears_every_merged_layer(monkeypatch):
+    # A later layer's merge raising must not leave earlier layers claiming a merge the gather undoes.
+    import torch
+
+    class _Layer(torch.nn.Module):
+        def __init__(self, fail):
+            super().__init__()
+            self.base_layer = torch.nn.Linear(2, 2, bias = False)
+            self.merged_adapters = []
+            self.fail = fail
+
+        def merge(self):
+            if self.fail:
+                raise RuntimeError("merge failed")
+            self.merged_adapters.append("default")
+
+    model = torch.nn.Sequential(_Layer(False), _Layer(False), _Layer(True))
+    staged = {id(layer.base_layer.weight): "cpu" for layer in model}
+    monkeypatch.setattr(fsdp2_save, "_STAGED_4BIT", [staged])
+    monkeypatch.setattr(fsdp2_save, "_restage_4bit", lambda weight, device: weight)
+    with pytest.raises(RuntimeError, match = "merge failed"):
+        fsdp2_save.merge_4bit_lora_layer_by_layer(model)
+    assert [layer.merged_adapters for layer in model] == [[], [], []]
