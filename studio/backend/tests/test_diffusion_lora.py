@@ -658,3 +658,49 @@ def test_replica_fingerprint_sees_an_in_place_scale_write():
     assert weights_fingerprint(pipe.transformer) == before
     assert diff._set_pinned_lora_scales(pipe, {"a": 1.0})
     assert weights_fingerprint(pipe.transformer) != before
+
+
+def test_pinned_lora_change_also_sets_the_text_encoder_scales(monkeypatch):
+    # A LoRA file can carry text-encoder weights too. The pinned path skips set_adapters, so it has to set the text
+    # encoder's scales itself, or prompts encode with the bake-time weight while the marker names the new one.
+    import threading
+
+    import torch
+    from peft import LoraConfig
+    from peft.tuners.lora.layer import Linear
+
+    from core.inference import diffusion as diff
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: None)
+    pipe, _layer = _peft_two_adapter_pipe()
+    config = LoraConfig(r = 2, lora_alpha = 4, lora_dropout = 0.0, init_lora_weights = False)
+    te = Linear(
+        torch.nn.Linear(8, 8, bias = False),
+        "a",
+        config = config,
+        r = 2,
+        lora_alpha = 4,
+        init_lora_weights = False,
+    )
+    te.update_layer(
+        "b", r = 2, lora_alpha = 4, config = config, lora_dropout = 0.0, init_lora_weights = False
+    )
+    pipe.components = {"transformer": pipe.transformer, "text_encoder": torch.nn.Sequential(te)}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set(
+        [("a", 1.0), ("b", 1.0)], family = "flux.1", hf_token = None
+    )
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
+    b._apply_loras(state, [("a", 0.5)], threading.Event())
+    assert te.scaling == {"a": 1.0, "b": 0.0}  # 0.5 * alpha / r, and the omitted adapter off

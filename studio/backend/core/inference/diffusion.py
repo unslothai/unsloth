@@ -790,6 +790,32 @@ def _baked_lora_names(pipe: Any) -> list:
 
 # ``(module, adapter, base)`` for every baked LoRA scale held as a device tensor; ``base`` is lora_alpha / r.
 _PINNED_LORA_SCALES_ATTR = "_unsloth_pinned_lora_scales"
+# ``(module, adapter)`` for the baked LoRA layers OUTSIDE the denoisers (a text encoder carrying the same file's
+# adapter): their scales stay floats and are set the way set_adapters would set them.
+_PINNED_LORA_SIDE_ATTR = "_unsloth_pinned_lora_side"
+
+
+def _side_lora_layers(pipe: Any) -> list:
+    """``(module, adapter)`` for every PEFT LoRA layer on a pipeline component that is not a denoiser."""
+    import torch
+
+    skip = {id(m) for _a, m in denoiser_modules(pipe)}
+    components = getattr(pipe, "components", None)
+    if not isinstance(components, dict):
+        components = dict(vars(pipe))
+    out = []
+    seen: set[int] = set()
+    for value in components.values():
+        if not isinstance(value, torch.nn.Module) or id(value) in skip or id(value) in seen:
+            continue
+        seen.add(id(value))
+        for module in value.modules():
+            scaling = module.__dict__.get("scaling")
+            lora_b = getattr(module, "lora_B", None)
+            if not isinstance(scaling, dict) or lora_b is None or not hasattr(module, "set_scale"):
+                continue
+            out.extend((module, adapter) for adapter in scaling if adapter in lora_b)
+    return out
 
 
 def _pin_baked_lora_scales(pipe: Any, target_device: Any) -> int:
@@ -839,6 +865,7 @@ def _pin_baked_lora_scales(pipe: Any, target_device: Any) -> int:
         for module, adapter, base, value, device in found:
             module.scaling[adapter] = torch.tensor(value, dtype = torch.float32, device = device)
             pinned.append((module, adapter, base))
+    setattr(pipe, _PINNED_LORA_SIDE_ATTR, tuple(_side_lora_layers(pipe)))
     setattr(pipe, _PINNED_LORA_SCALES_ATTR, tuple(pinned))
     return len(pinned)
 
@@ -863,6 +890,10 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     with torch.no_grad():
         for module, adapter, base in pinned:
             module.scaling[adapter].fill_(float(weights.get(adapter, 0.0)) * base)
+    # The same adapter on a text encoder (SD / SDXL / SD3 / FLUX files can carry one): set_adapters is skipped, so
+    # set its scale here, or prompt encoding keeps the bake-time weight while the marker names the new one.
+    for module, adapter in getattr(pipe, _PINNED_LORA_SIDE_ATTR, None) or ():
+        module.set_scale(adapter, float(weights.get(adapter, 0.0)))
     return True
 
 
