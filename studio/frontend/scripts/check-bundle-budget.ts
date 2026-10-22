@@ -374,11 +374,14 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
-  // Chat's "Save for this model" button (#14515) in the eager chat chunk; the save itself is lazy. +1,067 B raw /
-  // +308 B transfer against 173153b07f (6,893,194 -> 6,894,261 B raw, 2,076,783 -> 2,077,091 B transfer, 98 chunks).
-  // Raised by that.
-  transferBytes: 2_077_203,
-  rawBytes: 6_894_283,
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // Chat's "Save for this model" button (#14515) in the eager chat chunk; the save itself is lazy. +1,073 B raw /
+  // +341 B transfer against 8334168874 (6,894,833 -> 6,895,906 B raw, 2,077,197 -> 2,077,538 B transfer, 98 chunks,
+  // Node 24). That main build was already 103 B raw over, so raw is set to the measured build plus the same margin.
+  transferBytes: 2_077_654,
+  rawBytes: 6_895_928,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

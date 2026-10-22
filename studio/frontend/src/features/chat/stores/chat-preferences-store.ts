@@ -28,7 +28,8 @@ import {
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 // showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
 // More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
-// window is hidden or unfocused. filesPanelCollapsed: on shrinks Chat with files to a header and
+// window is hidden or unfocused. showReplyTimes: on shows when each reply finished under it.
+// filesPanelCollapsed: on shrinks Chat with files to a header and
 // a row of pills.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
@@ -47,6 +48,8 @@ export interface ChatPreferencesState {
   setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showReplyTimes: boolean;
+  setShowReplyTimes: (value: boolean) => void;
   showInlineEditResponse: boolean;
   setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
@@ -97,6 +100,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
+      // Off by default: it adds text under every reply, so it stays opt in.
+      showReplyTimes: false,
+      setShowReplyTimes: (showReplyTimes) => set({ showReplyTimes }),
       showInlineEditResponse: true,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
@@ -150,6 +156,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showReplyTimes: saved?.showReplyTimes === true,
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
