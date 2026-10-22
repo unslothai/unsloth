@@ -1608,6 +1608,7 @@ async def _with_lookup_tables(
                             hf_token,
                         )
                 if lazy_architecture(arch):
+                    _fingerprint = hf_cache_scan.token_fingerprint(hf_token)
                     tasks = {}
                     for index, v in unresolved:
                         identity = int(v.size_bytes or 0)
@@ -1615,7 +1616,9 @@ async def _with_lookup_tables(
                         if cached is not None:
                             found[index] = cached[1]
                             continue
-                        key = ("table", repo_id, v.filename, identity, mode)
+                        # Per credential: another token's read may be one this caller
+                        # could not make, or the reverse.
+                        key = ("table", repo_id, v.filename, identity, mode, _fingerprint)
                         with _lookup_arch_lock:
                             busy = key in _lookup_inflight
                             if not busy:

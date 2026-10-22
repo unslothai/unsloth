@@ -681,6 +681,54 @@ class TestListing:
         assert sorted(asked) == ["hf_first", "hf_second"]
         assert other.response.variants[0].lookup_table_bytes == FLASH_NEXT_TABLE
 
+    def test_a_table_scan_in_flight_for_another_token_does_not_skip_the_row(self, monkeypatch):
+        import threading
+
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        second = threading.Event()
+        readers = []
+
+        def read(
+            repo,
+            name,
+            token,
+            identity = None,
+            **k,
+        ):
+            readers.append(token)
+            if token == "hf_first":
+                # Still reading when the other credential's listing reaches the row.
+                second.wait(1.5)
+            else:
+                second.set()
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(glt, "remote_lookup_info", read)
+        rows = [GgufVariantDetail(filename = "t.gguf", quant = "Q2", size_bytes = 40 * GIB + 7)]
+
+        def listing(token):
+            return gv._with_lookup_tables(
+                _answer(rows),
+                "o/tables",
+                hf_token = token,
+                offline = False,
+                prefer_local_cache = False,
+            )
+
+        async def both():
+            first = asyncio.ensure_future(listing("hf_first"))
+            await asyncio.sleep(0.2)
+            other = await listing("hf_second")
+            return await first, other
+
+        _first, other = asyncio.run(both())
+        assert sorted(readers) == ["hf_first", "hf_second"]
+        assert other.response.variants[0].lookup_table_bytes == FLASH_NEXT_TABLE
+
     def test_a_capability_read_never_falls_back_to_a_torch_context(self, monkeypatch):
         from core.inference import llama_cpp as lc
 
