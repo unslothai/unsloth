@@ -186,9 +186,8 @@ def _torchao_float8_weights(transformer: Any) -> bool:
         for t in torchao_weight_tensors(transformer):
             if "float8" in type(t).__name__.lower():
                 return True
-            layout = getattr(
-                t, "_layout", None
-            )  # torchao < 0.12: AffineQuantizedTensor + Float8Layout
+            # torchao < 0.12: AffineQuantizedTensor + Float8Layout
+            layout = getattr(t, "_layout", None)
             if layout is not None and "float8" in type(layout).__name__.lower():
                 return True
     except Exception:  # noqa: BLE001 - unreadable: keep the family's choice
