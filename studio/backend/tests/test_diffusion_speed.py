@@ -684,7 +684,9 @@ def test_split_vae_families_hold_cudnn_benchmark_off(repo, pipeline_class):
         ("black-forest-labs/FLUX.2-klein-4B", (10, 0), True),
         ("black-forest-labs/FLUX.2-klein-base-4B", (10, 0), True),
         ("black-forest-labs/FLUX.2-klein-4B", (8, 9), False),
-        ("black-forest-labs/FLUX.1-schnell", (10, 0), False),
+        ("black-forest-labs/FLUX.1-schnell", (10, 0), True),
+        ("black-forest-labs/FLUX.1-Kontext-dev", (10, 0), True),
+        ("black-forest-labs/FLUX.1-schnell", (9, 0), False),
     ],
 )
 def test_reduction_filter_archs(monkeypatch, repo, cap, pinned):
