@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TRL < 0.28 GRPO: _move_model_to_vllm is a no-op only for fast_inference, TRL's own vLLM still gets weights."""
+"""TRL < 0.28 GRPO: _move_model_to_vllm is a no-op only for fast_inference, TRL's own vLLM still gets weights
+(dense as is, LoRA merged out of place); a quantized base raises instead of training against frozen rollouts."""
 
 import types
 from contextlib import nullcontext
@@ -149,56 +150,138 @@ class Params4bit(torch.nn.Parameter):
     pass
 
 
-def test_bnb_quantized_base_keeps_no_op():
+_STALE_ENV = "UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS"
+
+
+def test_bnb_quantized_base_raises(monkeypatch):
     # merge_adapter on a bitsandbytes base requantizes it from the fp32 LoRA delta and the next
-    # fast_lora backward fails on dtype, so a quantized model must not enter TRL's sync body.
+    # fast_lora backward fails on dtype, and packed bytes are not vLLM's layout: rollouts would stay
+    # at the initial weights, so refuse before the first rollout instead of training against them.
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    trainer, rec = _trainer("colocate")
+    trainer.model.weight = Params4bit(trainer.model.weight.data, requires_grad = False)
+    with pytest.raises(RuntimeError, match = "fast_inference = True"):
+        _patched_method()(trainer)
+    assert rec.loaded == [] and rec.resets == 0
+
+
+def test_bnb_quantized_base_opt_in_keeps_no_op(monkeypatch):
+    monkeypatch.setenv(_STALE_ENV, "1")
     trainer, rec = _trainer("colocate")
     trainer.model.weight = Params4bit(trainer.model.weight.data, requires_grad = False)
     method = _patched_method()
     assert method(trainer) is None and method(trainer) is None
     assert rec.loaded == [] and rec.resets == 0
+    assert trainer._unsloth_vllm_sync_skip is True
 
 
-def test_quantized_load_flag_keeps_no_op():
+@pytest.mark.parametrize("vllm_mode", ["colocate", "server"])
+def test_quantized_load_flag_raises(vllm_mode, monkeypatch):
     # FSDP2 wraps Params4bit into a DTensor; the model's load flag still marks it quantized.
-    trainer, rec = _trainer("colocate")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    trainer, rec = _trainer(vllm_mode)
     trainer.model.is_loaded_in_4bit = True
-    method = _patched_method()
-    assert method(trainer) is None
+    with pytest.raises(RuntimeError, match = "quantized"):
+        _patched_method()(trainer)
     assert rec.loaded == [] and rec.resets == 0
 
 
-def _lora_model(dtype):
+class _WeightRecorder(_Recorder):
+    def __init__(self):
+        super().__init__()
+        self.tensors = []
+
+    def load_weights(self, weights):
+        for name, tensor in weights:
+            self.loaded.append(name)
+            self.tensors.append((name, tensor.detach().clone()))
+
+    def update_named_param(self, name, data):
+        self.loaded.append(name)
+        self.tensors.append((name, data.detach().clone()))
+
+
+def _lora_model(dtype, **kwargs):
     peft = pytest.importorskip("peft")
     torch.manual_seed(1)
-    base = torch.nn.Sequential(torch.nn.Linear(64, 64, bias = False)).to(dtype)
-    config = peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["0"], init_lora_weights = False)
+    base = torch.nn.Sequential(torch.nn.Linear(64, 64, bias = False), torch.nn.Linear(64, 8)).to(dtype)
+    config = peft.LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["0"], init_lora_weights = False, **kwargs
+    )
     return peft.get_peft_model(base, config)
+
+
+def _lora_trainer(vllm_mode, dtype, **kwargs):
+    model = _lora_model(dtype, **kwargs)
+    trainer, _ = _trainer(vllm_mode)
+    rec = _WeightRecorder()
+    trainer.model = model
+    trainer.vllm_client = rec
+    if vllm_mode == "colocate":
+        trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model = rec
+        trainer.llm.reset_prefix_cache = rec.reset_prefix_cache
+    return trainer, rec, model
+
+
+def _expected_merged(model):
+    layer = model.base_model.model[0]
+    weight = layer.base_layer.weight
+    delta = layer.lora_B["default"].weight.float() @ layer.lora_A["default"].weight.float()
+    return (weight.float() + delta * layer.scaling["default"]).to(weight.dtype)
+
+
+@pytest.mark.parametrize("vllm_mode", ["colocate", "server"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_lora_sync_pushes_merged_weights_every_step(vllm_mode, dtype):
+    # TRL's own vLLM engine (fast_inference = False) must sample from the trained adapter: push
+    # the merged weight under the base-layer name each step, as TRL's PEFT branch does.
+    trainer, rec, model = _lora_trainer(vllm_mode, dtype)
+    method = _patched_method()
+    for step in range(2):
+        with torch.no_grad():
+            model.base_model.model[0].lora_B["default"].weight.add_(0.5)
+        before = len(rec.tensors)
+        assert method(trainer) is None
+        pushed = dict(rec.tensors[before:])
+        assert sorted(pushed) == ["0.weight", "1.bias", "1.weight"]
+        assert torch.equal(pushed["0.weight"], _expected_merged(model))
+        assert torch.equal(pushed["1.weight"], model.base_model.model[1].weight)
+    assert rec.resets == 2
+    assert trainer._unsloth_vllm_sync_skip is False
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_lora_sync_never_touches_frozen_base(dtype):
-    # merge_adapter + unmerge_adapter is a lossy round trip in fp16 / bf16, so syncing a LoRA
-    # model through TRL's PEFT branch would drift the frozen base weights every step.
-    model = _lora_model(dtype)
-    weight = model.base_model.model[0].base_layer.weight
-    before = weight.detach().clone()
-    trainer, rec = _trainer("colocate")
-    trainer.model = model
+    # merge_adapter + unmerge_adapter is a lossy round trip in fp16 / bf16, so the merged weights
+    # are built out of place and the frozen base stays bit-identical across syncs.
+    trainer, rec, model = _lora_trainer("colocate", dtype)
+    layer = model.base_model.model[0]
+    before = layer.base_layer.weight.detach().clone()
     method = _patched_method()
     for _ in range(3):
         assert method(trainer) is None
-    assert torch.equal(weight, before)
-    assert rec.loaded == [] and rec.resets == 0
+    assert torch.equal(layer.base_layer.weight, before)
+    assert not layer.merged
+    assert len(rec.tensors) == 9
 
 
-def test_fp8_base_keeps_no_op():
+def test_dora_uses_trl_peft_branch():
+    # DoRA needs PEFT's own merge (magnitude vector): fall back to TRL's body, which still syncs.
+    trainer, rec, model = _lora_trainer("colocate", torch.float32, use_dora = True)
+    assert _patched_method()(trainer) is None
+    assert "0.weight" in rec.loaded and not model.base_model.model[0].merged
+    assert rec.resets == 1
+
+
+def test_fp8_base_raises(monkeypatch):
     # merge_adapter refuses FP8 grouped-linear bases, and a 1-byte float base is not a dense sync.
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("no float8 dtype")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
     trainer, rec = _trainer("colocate")
     trainer.model.weight = torch.nn.Parameter(
         trainer.model.weight.data.to(torch.float8_e4m3fn), requires_grad = False
     )
-    assert _patched_method()(trainer) is None
+    with pytest.raises(RuntimeError, match = "fast_inference = True"):
+        _patched_method()(trainer)
     assert rec.loaded == [] and rec.resets == 0

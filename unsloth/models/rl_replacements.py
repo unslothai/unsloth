@@ -2476,21 +2476,124 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
-def _unsloth_vllm_sync_unsafe(model):
+def _unsloth_vllm_quantized(model):
     # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
     if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
         return True
-    if getattr(model, "peft_config", None):
-        return True
-    for module in model.modules():
-        if hasattr(module, "lora_A") or hasattr(module, "base_layer"):
-            return True
     for param in model.parameters():
         if type(param).__name__ in ("Params4bit", "Int8Params"):
             return True
         if param.is_floating_point() and param.element_size() == 1:
             return True
     return False
+
+
+def _unsloth_vllm_lora_layers(model):
+    return [
+        module
+        for module in model.modules()
+        if hasattr(module, "lora_A") and getattr(module, "base_layer", None) is not None
+    ]
+
+
+def _unsloth_vllm_sync_unsafe(model):
+    if _unsloth_vllm_quantized(model):
+        return True
+    if getattr(model, "peft_config", None):
+        return True
+    return len(_unsloth_vllm_lora_layers(model)) != 0
+
+
+def _unsloth_vllm_sync_kind(trainer):
+    """How _move_model_to_vllm syncs TRL's own vLLM engine (fast_inference = False):
+    "trl" = TRL's body (dense), "peft_merged" = merged weights computed out of place,
+    "skip" = no sync (explicit opt-in only). A quantized base raises: rollouts would be frozen."""
+    model = trainer.model
+    if _unsloth_vllm_quantized(model):
+        if os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1":
+            print(
+                "Unsloth: UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1, so vLLM weight sync is skipped for this "
+                "quantized model and every rollout uses the initial weights."
+            )
+            return "skip"
+        raise RuntimeError(
+            "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a quantized "
+            "(bitsandbytes 4-bit / 8-bit or FP8) model into TRL's own vLLM engine, so every rollout "
+            "would come from the initial weights while the policy trains.\n"
+            "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
+            "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
+        )
+    if not _unsloth_vllm_sync_unsafe(model):
+        return "trl"
+    state = getattr(getattr(trainer, "accelerator", None), "state", None)
+    deepspeed_plugin = getattr(state, "deepspeed_plugin", None)
+    sharded = getattr(trainer, "is_fsdp_enabled", False) or (
+        deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
+    )
+    for module in _unsloth_vllm_lora_layers(model):
+        if any(getattr(module, "use_dora", {}).values()) or any(
+            getattr(module, "lora_bias", {}).values()
+        ):
+            sharded = True
+    # Sharded params need TRL's gathers, and DoRA / lora_bias need PEFT's own merge: use TRL's body.
+    return "trl" if sharded else "peft_merged"
+
+
+def _unsloth_vllm_merged_weight(module, weight):
+    # W + sum of active deltas, computed out of place in fp32 and rounded once. merge_adapter +
+    # unmerge_adapter would round twice in place and drift the frozen base every sync.
+    merged = None
+    if not getattr(module, "disable_adapters", False) and not getattr(module, "merged", False):
+        for adapter in module.active_adapters:
+            lora_A = module.lora_A[adapter] if adapter in module.lora_A else None
+            if isinstance(lora_A, torch.nn.Linear) and adapter in module.lora_B:
+                delta = module.lora_B[adapter].weight.float() @ lora_A.weight.float()
+                delta = delta * module.scaling[adapter]
+                if getattr(module, "fan_in_fan_out", False):
+                    delta = delta.T
+            elif adapter in module.lora_A or adapter in getattr(module, "lora_embedding_A", {}):
+                delta = module.get_delta_weight(adapter).float()
+            else:
+                continue
+            delta = delta.to(weight.device).reshape(weight.shape)
+            merged = delta if merged is None else merged + delta
+    if merged is None:
+        return weight.data
+    return (weight.float() + merged).to(weight.dtype)
+
+
+@torch.no_grad()
+def _unsloth_vllm_sync_peft_merged(trainer):
+    """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
+    model = trainer.model
+    lora_of = {}
+    for module in _unsloth_vllm_lora_layers(model):
+        weight = getattr(module.base_layer, "weight", None)
+        if weight is not None:
+            lora_of[id(weight)] = module
+    prefix = getattr(model, "prefix", "lora_")
+    mode = getattr(trainer, "vllm_mode", "server")
+    is_main = getattr(trainer.accelerator, "is_main_process", True)
+    llm_model = None
+    if mode == "colocate":
+        llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    for name, param in model.named_parameters():
+        name = name.removeprefix("base_model.model.").replace(".base_layer", "")
+        if prefix in name or "original_module" in name:
+            continue
+        name = trainer._fix_param_name_to_vllm(name.replace("modules_to_save.default.", ""))
+        module = lora_of.get(id(param))
+        tensor = param.data if module is None else _unsloth_vllm_merged_weight(module, param)
+        if mode == "server":
+            if is_main:
+                trainer.vllm_client.update_named_param(name, tensor)
+        elif mode == "colocate":
+            llm_model.load_weights([(name, tensor)])
+    if mode == "server" and is_main:
+        trainer.vllm_client.reset_prefix_cache()
+    elif mode == "colocate":
+        trainer.llm.reset_prefix_cache()
+    return None
 
 
 def grpo_trainer__move_model_to_vllm(function_name, function):
@@ -2514,22 +2617,26 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
 
         return inspect.getsource(_move_model_to_vllm)
     indent = body_indent.group(1)
-    # Keep the old no-op where TRL's sync is unsafe:
-    # - LoRA / PEFT: merge_adapter + unmerge_adapter on the live model is a lossy round trip in
-    #   fp16 / bf16, so frozen base weights drift every sync; it also requantizes bitsandbytes bases
-    #   from the fp32 delta (fast_lora backward then fails) and refuses FP8 grouped-linear bases.
-    # - Quantized bases (bitsandbytes, 1-byte floats such as FP8) cannot be loaded into vLLM as is.
-    # So the sync only runs for dense full finetuning.
+    # Only the fast_inference engine shares weights; every other engine must get the trained weights:
+    # - Dense: TRL's own body.
+    # - LoRA / PEFT on a 16-bit base: merged weights under the base-layer names, as TRL does, but
+    #   computed out of place. merge_adapter + unmerge_adapter on the live model is a lossy round
+    #   trip in fp16 / bf16, so the frozen base would drift every sync.
+    # - Quantized bases (bitsandbytes, 1-byte floats such as FP8): merge_adapter requantizes from the
+    #   fp32 delta (fast_lora backward then fails) or refuses FP8, and the packed weights are not
+    #   vLLM's layout, so raise instead of sampling from the initial weights all run.
     guard = (
         f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
         f"{indent}    return None\n"
-        f"{indent}if getattr(self, '_unsloth_vllm_sync_skip', None) is None:\n"
-        f"{indent}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_unsafe\n"
-        f"{indent}    self._unsloth_vllm_sync_skip = _unsloth_vllm_sync_unsafe(self.model)\n"
-        f"{indent}    if self._unsloth_vllm_sync_skip:\n"
-        f"{indent}        print('Unsloth: vLLM weight sync is skipped for a LoRA / PEFT or quantized model without fast_inference, so rollouts use the initial weights. Load with fast_inference = True to sample from the trained model.')\n"
-        f"{indent}if self._unsloth_vllm_sync_skip:\n"
+        f"{indent}if getattr(self, '_unsloth_vllm_sync_kind', None) is None:\n"
+        f"{indent}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_kind\n"
+        f"{indent}    self._unsloth_vllm_sync_kind = _unsloth_vllm_sync_kind(self)\n"
+        f"{indent}    self._unsloth_vllm_sync_skip = self._unsloth_vllm_sync_kind == 'skip'\n"
+        f"{indent}if self._unsloth_vllm_sync_kind == 'skip':\n"
         f"{indent}    return None\n"
+        f"{indent}if self._unsloth_vllm_sync_kind == 'peft_merged':\n"
+        f"{indent}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_peft_merged\n"
+        f"{indent}    return _unsloth_vllm_sync_peft_merged(self)\n"
     )
     return function[: match.end()] + guard + function[match.end() :]
 
