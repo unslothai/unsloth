@@ -1535,14 +1535,8 @@ function BrowserFileToolbar({
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
   const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
-  // The preview is a frame the annotation layer can't select in, so marks go on the source.
-  useEffect(() => {
-    if (annotating && htmlPreview) useBrowserStore.getState().setAnnotating(null);
-  }, [annotating, htmlPreview]);
-  const toggleAnnotating = () => {
-    if (!annotating && htmlPreview) setView({ mode: "source" });
+  const toggleAnnotating = () =>
     useBrowserStore.getState().setAnnotating(annotating ? null : tab.id);
-  };
   const copyContents = () => {
     if (!blob) return;
     void copyToClipboardFrom(() => blob.text()).then((ok) => {
@@ -1800,14 +1794,8 @@ function FloatingFileToolbar({
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
   const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
-  // The preview is a frame the annotation layer can't select in, so marks go on the source.
-  useEffect(() => {
-    if (annotating && htmlPreview) useBrowserStore.getState().setAnnotating(null);
-  }, [annotating, htmlPreview]);
-  const toggleAnnotating = () => {
-    if (!annotating && htmlPreview) setView({ mode: "source" });
+  const toggleAnnotating = () =>
     useBrowserStore.getState().setAnnotating(annotating ? null : tab.id);
-  };
   const copyContents = () => {
     if (!blob) return;
     void copyToClipboardFrom(() => blob.text()).then((ok) => {
@@ -2450,6 +2438,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
+  const fileMode = useBrowserStore((state) => state.fileViews[state.activeTabId ?? ""]?.mode) ?? DEFAULT_FILE_VIEW.mode;
   const tabTitle = useTabTitle();
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
@@ -2497,6 +2486,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
     device !== "off" && activeEntry?.kind === "web"
       ? DEVICE_WIDTHS[device]
       : null;
+  const htmlAnnotating = activeEntry?.kind === "file" &&
+    fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
 
   return (
@@ -2613,12 +2604,21 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           annotateTabId === activeTab.id &&
           pageElement ? (
             // Refreshed bytes are a new document: the marks were on the old one.
-            <AnnotateLayer
-              key={`${activeTab.id}:${activeEntry.fileId}`}
-              page={pageElement}
-              fileName={activeEntry.name}
-              zoom={activeTab.zoom}
-            />
+            htmlAnnotating ? (
+              <WebAnnotateLayer
+                key={`${activeTab.id}:${activeEntry.fileId}:${activeTab.reloadKey}`}
+                tabId={activeTab.id}
+                title={activeEntry.name}
+                page={pageElement}
+              />
+            ) : (
+              <AnnotateLayer
+                key={`${activeTab.id}:${activeEntry.fileId}:${fileMode}`}
+                page={pageElement}
+                fileName={activeEntry.name}
+                zoom={activeTab.zoom}
+              />
+            )
           ) : null}
           {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
             // A new page, a reload or a replacement starts over: its marks were the last page's.

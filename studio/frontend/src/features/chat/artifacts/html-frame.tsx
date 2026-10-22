@@ -147,6 +147,7 @@ export function ArtifactHtmlFrame({
   onConsoleOpenChange,
   onOutputCountChange,
   onFixWithModel,
+  onFrameReady,
   kind = "html",
 }: {
   code: string;
@@ -162,6 +163,8 @@ export function ArtifactHtmlFrame({
   onFixWithModel?: (prompt: string) => void;
   // A React preview runs compiled code, so its runtime line numbers aren't shown.
   kind?: "html" | "react";
+  // Browser file previews register the frame for rendered-page annotations.
+  onFrameReady?: (frame: HTMLIFrameElement) => (() => void) | undefined;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -277,6 +280,9 @@ export function ArtifactHtmlFrame({
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
   }, [networkAllowed, loadVersion]);
+  useEffect(() => {
+    if (iframeRef.current) return onFrameReady?.(iframeRef.current);
+  }, [onFrameReady, src]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {

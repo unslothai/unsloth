@@ -80,6 +80,27 @@ export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) 
   };
 }
 
+/** Register an artifact's opaque-origin frame for annotation commands only. */
+export function registerArtifactFrame(tabId: string, frame: HTMLIFrameElement): () => void {
+  frames.set(tabId, frame);
+  const listener = (event: MessageEvent) => {
+    if (event.source !== frame.contentWindow || event.origin !== "null") return;
+    const message = parseFrameMessage(event.data);
+    if (message?.type === "annotate") annotateListeners.get(tabId)?.(message.event);
+  };
+  window.addEventListener("message", listener);
+  return () => {
+    window.removeEventListener("message", listener);
+    if (frames.get(tabId) === frame) frames.delete(tabId);
+  };
+}
+
+/** CSS zoom on a file preview scales the frame as well as its annotation coordinates. */
+export function frameScale(tabId: string): number {
+  const frame = frames.get(tabId);
+  return frame?.offsetWidth ? frame.getBoundingClientRect().width / frame.offsetWidth : 1;
+}
+
 const snapshotRequests = new Map<string, (html: string | null) => void>();
 
 /** The page's markup as it is now (see `snapshot` in routes/browser.py); null if it can't say. */

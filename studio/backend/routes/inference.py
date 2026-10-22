@@ -4369,6 +4369,32 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           captureConsole();
           document.write(html);
           document.close();
+          // Install only on a parent command. Inline script insertion works under the strict
+          // preview CSP without unsafe-eval, and keeps all code inside the opaque sandbox.
+          let annotation = null;
+          const postAnnotation = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
+          window.addEventListener("message", (event) => {
+            if (event.source !== parent) return;
+            const data = event.data;
+            if (!data || data.type !== "unsloth:browser-command") return;
+            if (data.command === "annotateInstall") {
+              if (annotation || typeof data.code !== "string" || data.code.length > 262144) return;
+              const script = document.createElement("script");
+              window.__unslothInstallAnnotation = (factory) => { annotation = factory(postAnnotation); };
+              try {
+                script.textContent = "window.__unslothInstallAnnotation((post) => {" + data.code + "\\n});";
+                (document.head || document.documentElement).appendChild(script);
+              } finally {
+                script.remove();
+                delete window.__unslothInstallAnnotation;
+              }
+            } else if (data.command === "annotate") {
+              if (data.on === true) annotation?.start(data.color);
+              else annotation?.stop();
+            } else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
+            else if (data.command === "annotateNumbers") annotation?.number(data.numbers);
+          });
+          postAnnotation({ type: "annotate", event: "ready" });
           // document.open() drops listeners bound before it, so rebind here.
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };

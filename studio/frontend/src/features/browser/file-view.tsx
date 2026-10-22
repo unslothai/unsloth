@@ -16,6 +16,7 @@ import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { canShowFile, mediaKind, textFileKind } from "./file-kind";
+import { registerArtifactFrame } from "./page-frame";
 import { stageEditsPrompt } from "./stage-edits";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 import { VideoFile } from "./video-file";
@@ -96,6 +97,10 @@ function TextFile({
     ({ errors }: { errors: number }) => tabId && useBrowserStore.getState().setFileView(tabId, { errorCount: errors }),
     [tabId],
   );
+  const onFrameReady = useCallback(
+    (frame: HTMLIFrameElement) => tabId ? registerArtifactFrame(tabId, frame) : undefined,
+    [tabId],
+  );
   const language = useMemo(() => {
     if (!text || text.length > MAX_HIGHLIGHT_CHARS) return null;
     if (kind === "html") return "html";
@@ -150,6 +155,7 @@ function TextFile({
           <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
             <ArtifactHtmlFrame
               code={text}
+              onFrameReady={onFrameReady}
               title={name}
               fill={true}
               reloadNonce={reloadNonce}
