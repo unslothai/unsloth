@@ -504,3 +504,74 @@ def test_discover_rejects_negative_seconds_but_allows_zero(fakes):
     assert bad.exit_code == 2 and "Traceback" not in bad.output
     assert not isinstance(bad.exception, ValueError)
     assert invoke("cluster", "discover", "--seconds", "0").exit_code == 0
+
+
+def test_list_on_a_fresh_machine_or_a_worker_explains_instead_of_failing(fakes):
+    fakes.master = None
+    fresh = invoke("cluster", "list")
+    assert fresh.exit_code == 0 and "unsloth cluster pair" in fresh.output
+    fakes.worker = ident("worker")
+    on_worker = invoke("cluster", "list")
+    assert on_worker.exit_code == 0 and "is a worker" in on_worker.output
+    assert "on its master" in on_worker.output
+
+
+def test_join_errors_read_as_sentences_and_never_show_the_token(fakes, monkeypatch):
+    from studio.cluster_link.tokens import TokenError
+    pairing = sys.modules["studio.cluster_link.pairing"]
+    for exc, wanted in (
+        (TokenError("not an unsloth pairing token"), "unsloth-pair-"),
+        (
+            pairing.PairingError("could not reach the master at 10.0.0.2 port 50071: refused"),
+            "still running there",
+        ),
+    ):
+
+        async def join(
+            token,
+            exc = exc,
+            **kw,
+        ):
+            raise exc
+
+        monkeypatch.setattr(pairing, "join", join)
+        result = invoke("cluster", "join", "--token-stdin", input = TOKEN + "\n")
+        assert result.exit_code == 1 and wanted in result.output, result.output
+        assert type(exc).__name__ not in result.output and TOKEN not in result.output
+        assert "Traceback" not in result.output
+
+
+def test_list_says_why_a_worker_is_unreachable_in_words(fakes, monkeypatch):
+    fakes.peers = [worker_peer()]
+    relay = sys.modules["studio.cluster_link.relay"].RelayManager
+    raw = "cannot reach node-aaaa111 at 192.168.1.20:50070: [Errno 111] Connect call failed"
+    monkeypatch.setattr(
+        relay,
+        "status",
+        lambda self, node_id, timeout = 3.0: {"type": "error", "error": raw, "reachable": False},
+    )
+    out = invoke("cluster", "list").output
+    assert "unreachable (not running: start `unsloth worker` there)" in out and "Errno" not in out
+
+
+def test_worker_port_in_use_and_ctrl_c_are_plain_messages(fakes, monkeypatch):
+    import errno
+
+    fakes.worker = ident("worker")
+    monkeypatch.setattr(cli, "_rpc_server_binary", lambda: "/bin/true")
+    agent_cls = sys.modules["studio.cluster_link.agent"].Agent
+
+    async def busy(self):
+        raise OSError(errno.EADDRINUSE, "error while attempting to bind: address already in use")
+
+    monkeypatch.setattr(agent_cls, "start", busy)
+    result = invoke("worker", "--no-discovery")
+    assert result.exit_code == 1 and "already in use" in result.output
+    assert "another `unsloth worker`" in result.output and "Errno" not in result.output
+
+    async def interrupted(self):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(agent_cls, "start", interrupted)
+    stopped = invoke("worker", "--no-discovery")
+    assert stopped.exit_code == 0 and "Worker stopped." in stopped.output and fakes.agent_stopped
