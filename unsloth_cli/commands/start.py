@@ -4833,9 +4833,9 @@ def _connect(
         launch = launch,
         server_options = server_options,
     )
-    # A running server resolves a relative path against its own working directory, not the user's.
+    # A running server resolves a relative path against its own working directory, not the user's; only this machine's Studio shares our filesystem (an SSH tunnel on loopback does not).
     if model and server is None and is_loopback_url(base) and _is_model_path(model):
-        if os.path.exists(os.path.expanduser(model)):
+        if os.path.exists(os.path.expanduser(model)) and verify_studio_identity(base):
             model = os.path.abspath(os.path.expanduser(model))
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
@@ -6651,7 +6651,8 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
             context = max(int(window), _HERMES_MIN_CONTEXT)
             provider["models"] = {entry["id"]: {"context_length": context}}
         changes = [(("providers", _HERMES_PROVIDER), provider)]
-        providers = (_parse_app_config(path, text) or {}).get("providers")
+        config = _parse_app_config(path, text) or {}
+        providers = config.get("providers")
         legacy = providers.get(_HERMES_LEGACY_PROVIDER) if isinstance(providers, dict) else None
         # Only the entry an earlier --app wrote: it points here and carries nothing of the user's.
         if (
@@ -6660,6 +6661,13 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
             and set(legacy) <= {"base_url", "api_mode", "api_key", "models", "extra_body"}
         ):
             changes.append((("providers", _HERMES_LEGACY_PROVIDER), _APP_DELETE))
+            # A default the user picked in the app still names the old entry; move it along.
+            model = config.get("model")
+            if (
+                isinstance(model, dict)
+                and model.get("provider") == f"custom:{_HERMES_LEGACY_PROVIDER}"
+            ):
+                changes.append((("model", "provider"), f"custom:{_HERMES_PROVIDER}"))
         return changes
 
     return _AppTarget("hermes", "Hermes app", path, updates)

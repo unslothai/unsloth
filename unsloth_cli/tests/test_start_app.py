@@ -502,13 +502,21 @@ def test_hermes_app_replaces_the_provider_an_earlier_run_named_unsloth(studio):
     config.parent.mkdir(parents = True, exist_ok = True)
     legacy = {"base_url": f"{BASE}/v1", "api_mode": "openai", "api_key": "sk-unsloth-old"}
     mine = {"base_url": "http://elsewhere.test/v1", "api_key": "k"}
-    config.write_text(yaml.safe_dump({"providers": {"unsloth": legacy, "other": mine}}))
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "model": {"provider": "custom:unsloth", "default": "m"},
+                "providers": {"unsloth": legacy, "other": mine},
+            }
+        )
+    )
 
     result = CliRunner().invoke(start.start_app, ["hermes", "--app"])
 
     assert result.exit_code == 0, result.output
-    providers = yaml.safe_load(config.read_text())["providers"]
-    assert set(providers) == {"unsloth-studio", "other"}
+    data = yaml.safe_load(config.read_text())
+    assert set(data["providers"]) == {"unsloth-studio", "other"}
+    assert data["model"] == {"provider": "custom:unsloth-studio", "default": "m"}
 
     providers = {"unsloth": {**mine, "base_url": f"{BASE}/v1", "headers": {"x": "1"}}}
     config.write_text(yaml.safe_dump({"providers": providers}))

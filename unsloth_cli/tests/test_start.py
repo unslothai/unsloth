@@ -3047,6 +3047,12 @@ def test_connect_sends_a_running_server_the_users_absolute_path(fake_studio, tmp
     _, _, entry = start._connect(None, "./foo.gguf")
     assert entry["id"] == str(tmp_path / "foo.gguf")
 
+    # A tunnelled server has its own filesystem, so the path stays relative to it.
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
+    monkeypatch.setattr(start, "_agent_api_key", lambda *a, **k: "sk-unsloth-saved")
+    _, _, entry = start._connect(None, "./foo.gguf")
+    assert entry["id"] == "./foo.gguf"
+
 
 def test_no_launch_says_why_no_server_was_started(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
