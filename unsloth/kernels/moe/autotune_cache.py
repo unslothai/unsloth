@@ -42,8 +42,10 @@ def _get_cache_key(
     device_capability: Tuple[int, int],
     seq_len: int = 8192,  # Default sequence length for tuning
     weight_dtype: Optional[torch.dtype] = None,
+    device_model: Optional[Tuple[Any, ...]] = None,
 ) -> str:
-    """Generate a unique cache key based on model configuration."""
+    """Generate a unique cache key based on model configuration. ``device_model`` (GPU name, capability,
+    SM count) separates GPU models sharing a capability; None gives the key older releases wrote."""
     key_data = {
         "num_experts": num_experts,
         "hidden_dim": hidden_dim,
@@ -57,6 +59,8 @@ def _get_cache_key(
     }
     if weight_dtype is not None and weight_dtype != dtype:
         key_data["weight_dtype"] = str(weight_dtype)
+    if device_model is not None:
+        key_data["device_model"] = list(device_model)
     key_str = json.dumps(key_data, sort_keys = True)
     return hashlib.md5(key_str.encode()).hexdigest()
 
@@ -203,11 +207,42 @@ def _operand_cuda_index(device) -> Optional[int]:
     return device.index
 
 
+_DEVICE_MODELS: Dict[int, Optional[Tuple[Any, ...]]] = {}
+
+
+def _device_model(index: int) -> Optional[Tuple[Any, ...]]:
+    """(name, major, minor, SM count) of card ``index``, read once per card, as
+    grouped_gemm.interface._device_model keys its tuning caches. None when the properties are unreadable."""
+    if index not in _DEVICE_MODELS:
+        try:
+            p = torch.cuda.get_device_properties(index)
+            model = (
+                getattr(p, "name", None),
+                getattr(p, "major", None),
+                getattr(p, "minor", None),
+                getattr(p, "multi_processor_count", None),
+            )
+        except Exception:
+            model = None
+        _DEVICE_MODELS[index] = model
+    return _DEVICE_MODELS[index]
+
+
+def _all_cards_match(model) -> bool:
+    """True when every visible card is the same GPU model, so a pre-model-key disk entry is this card's."""
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return False
+    return all(_device_model(i) == model for i in range(count))
+
+
 def _get_or_autotune_moe_kernels(
     num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
 ):
     device_capability = torch.cuda.get_device_capability()
-    cache_key = _get_cache_key(
+    device_model = _device_model(torch.cuda.current_device())
+    key_args = (
         num_experts,
         hidden_dim,
         intermediate_dim,
@@ -217,6 +252,7 @@ def _get_or_autotune_moe_kernels(
         seq_len,
         weight_dtype,
     )
+    cache_key = _get_cache_key(*key_args, device_model = device_model)
 
     # Env override to disable autotuning
     if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
@@ -232,6 +268,9 @@ def _get_or_autotune_moe_kernels(
 
     if not force_autotune:
         cached_data = load_cached_config(cache_key)
+        if cached_data is None and device_model is not None and _all_cards_match(device_model):
+            # Entries written before the key carried the GPU model; on a single-model host they are this card's.
+            cached_data = load_cached_config(_get_cache_key(*key_args))
         if cached_data is not None:
             try:
                 from .grouped_gemm.kernels.tuning import (
@@ -716,6 +755,7 @@ def clear_cache() -> None:
     """Clear all cached kernel configurations."""
     global _kernel_config_cache, _autotune_completed
     _kernel_config_cache.clear()
+    _DEVICE_MODELS.clear()
     _autotune_completed.clear()
     logger.info("Cleared MoE kernel cache")
 
