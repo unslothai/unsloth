@@ -5306,6 +5306,27 @@ def _spawn_draft_on_target(
     return int(re.sub(r"\D", "", pin)) == (LlamaCppBackend._effective_main_gpu(run_cmd, env) or 0)
 
 
+def _draft_pin_device_index(
+    pin: Optional[str], spawn_devices: Optional[str], device_count: int
+) -> Optional[int]:
+    """The child's device index a one-card CUDA / ROCm draft pin names, among the target's
+    devices: its position in the --device list (None if absent or the list repeats a card),
+    else CUDA<k> of the masked child. None for any other pin."""
+    names = {d.strip().lower() for d in (pin or "").split(",") if d.strip()}
+    if len(names) != 1:
+        return None
+    (name,) = names
+    if not _CUDA_LIKE_DEVICE_RE.match(name):
+        return None
+    if spawn_devices:
+        listed = [d.strip().lower() for d in spawn_devices.split(",") if d.strip()]
+        if name not in listed or len(set(listed)) != len(listed):
+            return None
+        return listed.index(name)
+    k = int(re.sub(r"\D", "", name))
+    return k if 0 <= k < device_count else None
+
+
 def _distinct_device_count(devices) -> int:
     """Distinct names in a ``--device`` list: a repeated card is one memory pool."""
     return len({d.strip().lower() for d in str(devices).split(",") if d.strip()})
@@ -27874,7 +27895,8 @@ class LlamaCppBackend:
                         def _names(value: str) -> set:
                             return {d.strip().lower() for d in str(value).split(",") if d.strip()}
 
-                        return bool(main) and _names(pin) == _names(main)
+                        # A pin naming one of the target's cards is colocated with it there.
+                        return bool(main) and bool(_names(pin)) and _names(pin) <= _names(main)
 
                     _draft_share_unknown = bool(
                         _mtp_draft_for_budget
@@ -33865,10 +33887,24 @@ class LlamaCppBackend:
                         # by --device) get none.
                         _spawn_shares: Optional[list[float]] = [1.0]
                         _spawn_output_dev: Optional[int] = None
+                        _spawn_pinned_at: Optional[int] = None
                         if _spawn_device_count > 1 and not _split_mode_confines_to_one_device(
                             run_cmd, env
                         ):
                             _spawn_shares = None
+                            # A draft pinned to one of the target's cards runs wholly there:
+                            # that card carries the whole reserve, the others none.
+                            _spawn_pinned_at = _draft_pin_device_index(
+                                _extra_args_draft_device_pin(run_cmd),
+                                _spawn_devices,
+                                _spawn_device_count,
+                            )
+                            if _spawn_pinned_at is not None:
+                                _spawn_shares = [
+                                    1.0 if i == _spawn_pinned_at else 0.0
+                                    for i in range(_spawn_device_count)
+                                ]
+                                _spawn_output_dev = _spawn_pinned_at
                             if not _spawn_devices and _extra_args_draft_device_pin(run_cmd) is None:
                                 _free_by_idx = dict(gpus or _detected_gpus or ())
                                 if (
@@ -33951,7 +33987,10 @@ class LlamaCppBackend:
                         if (
                             _sidecar_fit_reserve_eligible_mib
                             and _spawn_shares is not None
-                            and _spawn_draft_on_target(run_cmd, _spawn_devices, env)
+                            and (
+                                _spawn_pinned_at is not None
+                                or _spawn_draft_on_target(run_cmd, _spawn_devices, env)
+                            )
                             and server_caps.get("supports_fit_target")
                         ):
                             # Emitted flags and extras are final only here.

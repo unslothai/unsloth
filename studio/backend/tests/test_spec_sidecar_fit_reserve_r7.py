@@ -474,3 +474,20 @@ def test_shares_follow_each_cards_free_memory_past_its_own_margin(tmp_path, _dis
     assert len(margins) == 2
     assert margins[0] < 24_000
     assert margins[1] > 1024 + 4 * 1024
+
+
+@pytest.mark.parametrize(
+    "extras, at",
+    [
+        (["--device", "CUDA0,CUDA1", "--spec-draft-device", "CUDA0"], 0),
+        (["--device", "CUDA0,CUDA1", "--spec-draft-device", "CUDA1"], 1),
+        (["--spec-draft-device", "CUDA1"], 1),
+    ],
+)
+def test_a_draft_pinned_to_one_target_card_reserves_there(tmp_path, _discrete, extras, at):
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    margins = _margins(_dspark(backend, gguf, tmp_path, extra_args = extras))
+    assert len(margins) == 2, margins
+    assert margins[at] >= _FLOOR, margins
+    assert margins[1 - at] < 1024 + 1024, margins
