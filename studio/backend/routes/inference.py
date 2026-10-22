@@ -34594,10 +34594,12 @@ async def produce_openai_chat_completions(
                             _tool_decode_finished = True
                             break
 
-                        # Anything after the gated tool_start is the answer, except the context meter sent before the wait.
+                        # Anything after the gated tool_start is the answer, except the context meter sent before the wait
+                        # and the approval notice: other tabs clear their prompt on it, so it must not wait for the slot.
                         if not (
                             (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
                             or event["type"] == "context_usage"
+                            or event["type"] == "tool_approved"
                             or (
                                 event["type"] == "skill_load"
                                 and event.get("status") == "awaiting_approval"

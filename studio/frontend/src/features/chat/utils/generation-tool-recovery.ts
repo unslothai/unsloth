@@ -157,12 +157,20 @@ export function createGenerationToolRecovery(
    *  unconditionally because it owns every card in its stream; a recovery shares the store with
    *  whatever else is on screen, so reaching for a card it never raised is not its business. */
   const armed = new Set<string>();
+  /** Approvals this run has reported as granted. The seeded check's answer can be older than that
+   *  frame, so an approval seen here is never armed again, whichever path asks. */
+  const approved = new Set<string>();
   const armApproval = (
     entry: CarriedPart,
     approvalId: unknown,
     sessionId: string,
   ) => {
-    if (!toolConfirmations || typeof approvalId !== "string" || !approvalId)
+    if (
+      !toolConfirmations ||
+      typeof approvalId !== "string" ||
+      !approvalId ||
+      approved.has(approvalId)
+    )
       return;
     const partId = record(entry.part)?.toolCallId;
     if (typeof partId === "string" && partId) {
@@ -393,9 +401,13 @@ export function createGenerationToolRecovery(
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
     // Answered, possibly in another tab: the card stops offering the decision now, not at tool_end, which
-    // can be a whole tool run later. A frame older than the snapshot was already settled by the seeded
-    // check, which asks the backend whether the call is still parked.
+    // can be a whole tool run later. Remembered first, so a seeded check still in flight, whose answer
+    // may predate this frame, cannot arm it again. A frame older than the snapshot names no card armed
+    // here yet, so it only needs remembering.
     if (event.type === "tool_approved") {
+      if (typeof event.approval_id === "string" && event.approval_id) {
+        approved.add(event.approval_id);
+      }
       if (seq <= snapshotSeq) return;
       const entry =
         (backendId ? pending.get(backendId) : undefined) ??

@@ -3170,6 +3170,9 @@ def test_an_allowed_call_tells_every_follower_before_tool_end(monkeypatch, verdi
         }
     ]
     assert events.index(gated[0]) < events.index(approved[0]) < events.index(ends[0])
+    # Before the running status: the route waits for the model slot on that frame, and other tabs must not.
+    between = events[events.index(gated[0]) + 1 : events.index(approved[0])]
+    assert [e for e in between if e.get("type") == "status"] == [], between
 
 
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):

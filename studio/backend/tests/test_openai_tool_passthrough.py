@@ -5391,6 +5391,116 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
+    def test_gguf_approval_reaches_other_tabs_while_another_chat_holds_the_slot(self, monkeypatch):
+        """tool_approved clears the prompt in every other tab, so it must not wait for the model slot."""
+        import routes.inference as inf_mod
+
+        async def _run():
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            approved = threading.Event()
+
+            # The GGUF loop's own order after an Allow: the approval, then the running status.
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                yield {"type": "status", "text": "Waiting for approval: Python"}
+                yield {
+                    "type": "tool_start",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "arguments": {"code": "print(1)"},
+                    "awaiting_confirmation": True,
+                    "approval_id": "approval_0",
+                }
+                while not approved.is_set() and not cancel_event.is_set():
+                    time.sleep(0.005)
+                yield {
+                    "type": "tool_approved",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "approval_id": "approval_0",
+                }
+                yield {"type": "status", "text": "Running Python..."}
+                yield {
+                    "type": "tool_end",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "result": "1",
+                }
+                yield {"type": "content", "text": "done"}
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.approval.test",
+                effective_parallel_slots = 1,
+                count_chat_tokens = lambda *_args, **_kwargs: 10,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "run python"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(ui_events = True),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+
+            async def next_frame(needle):
+                async for chunk in iterator:
+                    if needle in chunk:
+                        return chunk
+                pytest.fail(f"{needle} never arrived")
+
+            blocker = None
+            try:
+                await asyncio.wait_for(next_frame('"tool_start"'), timeout = 2)
+                # The parked run gave up its slot; another chat takes it.
+                queue = get_llama_admission_queue("http://llama.approval.test")
+                blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+                assert blocker is not None
+                approved.set()
+                await asyncio.wait_for(next_frame('"tool_approved"'), timeout = 2)
+
+                # The run itself still waits for the slot before it goes on.
+                running = asyncio.create_task(next_frame("Running Python"))
+                await asyncio.sleep(0.2)
+                assert not running.done()
+                blocker.release()
+                blocker = None
+                await asyncio.wait_for(running, timeout = 2)
+            finally:
+                approved.set()
+                if blocker is not None:
+                    blocker.release()
+                await iterator.aclose()
+
+        asyncio.run(_run())
+
     def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():

@@ -387,8 +387,11 @@ export const BUDGET = {
   // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
   // (a CI build measured about 100 B over a local one). Raised by that.
-  transferBytes: 2_084_696,
-  rawBytes: 6_920_821,
+  // The sidebar's waiting-for-approval dot, the Desktop attention request and the tool_approved handling in
+  // the stream parsers, the adapter and the reload follower: +2,341 B raw / +772 B transfer against e1b3124110
+  // (6,920,155 -> 6,922,496 B raw, 2,084,273 -> 2,085,045 B transfer, Node 22, 97 chunks). Raised by that.
+  transferBytes: 2_085_468,
+  rawBytes: 6_923_162,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -414,6 +414,56 @@ test("a card finished while its status request was in flight is not armed afterw
   );
 });
 
+// The status answer was taken before another tab approved the call, so it still says pending. The
+// approval frame that arrived meanwhile is the newer fact and has to win.
+test("a call approved while its status request was in flight is not armed afterwards", async () => {
+  const spy = spyConfirmations();
+  const carried = [
+    {
+      at: 12,
+      part: {
+        type: "tool-call",
+        toolCallId: "sess-1:thread-1:appr-9",
+        toolName: "terminal",
+        backendToolCallId: "call-9",
+        toolApprovalId: "appr-9",
+        args: { command: "du -sh ~/models" },
+      },
+    },
+  ];
+  const recovery = createGenerationToolRecovery(
+    carried,
+    "run-1",
+    40,
+    spy.hooks,
+  );
+
+  let release: (value: boolean) => void = () => {};
+  const gate = new Promise<boolean>((resolve) => {
+    release = resolve;
+  });
+  const arming = recovery.armSeededApprovals("sess-1", () => gate);
+
+  recovery.apply(
+    {
+      _toolEvent: {
+        type: "tool_approved",
+        tool_name: "terminal",
+        tool_call_id: "call-9",
+        approval_id: "appr-9",
+      },
+    },
+    0,
+    41,
+    "sess-1",
+  );
+  release(true);
+  await arming;
+
+  assert.deepEqual(spy.registered, [], "an approved call never offers Allow / Deny again");
+  assert.equal(spy.live.size, 0);
+});
+
 test("a card still unresolved when the status request returns is armed as before", async () => {
   const spy = spyConfirmations();
   const carried = [

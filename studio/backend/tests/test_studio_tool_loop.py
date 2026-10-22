@@ -722,6 +722,8 @@ def test_an_allowed_call_tells_every_follower_before_tool_end(executed, monkeypa
         if line.startswith("data: ") and line[6:] != "[DONE]"
     ]
     assert kinds.index("tool_start") < kinds.index("tool_approved") < kinds.index("tool_end")
+    # Same order as the GGUF loop: the approval before the running status.
+    assert "tool_status" not in kinds[kinds.index("tool_start") + 1 : kinds.index("tool_approved")]
 
 
 def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):

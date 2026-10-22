@@ -2302,6 +2302,9 @@ class TestLoopBasic:
             }
         ]
         assert events.index(gated[0]) < events.index(approved[0]) < events.index(ends[0])
+        # Same order as the GGUF loop: the approval before the running status.
+        between = events[events.index(gated[0]) + 1 : events.index(approved[0])]
+        assert [e for e in between if e["type"] == "status"] == [], between
 
     def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
         """bypass_permissions wins over the confirm gate, so the early provisional

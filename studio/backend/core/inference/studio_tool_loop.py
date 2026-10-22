@@ -2065,8 +2065,9 @@ async def stream_with_studio_tools(
                     decision_slot = None
                     denied = True
                 elif verdict is not None:
-                    yield _status_sse(decision.status_text)
+                    # Same order as the GGUF loop.
                     yield _sse(decision.tool_approved_event(approval_id))
+                    yield _status_sse(decision.status_text)
                 if not denied:
                     decision_slot = None
             finally:

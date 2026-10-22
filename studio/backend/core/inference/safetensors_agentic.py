@@ -1640,8 +1640,9 @@ def run_safetensors_tool_loop(
                 # answered. Read before decision_slot is dropped in the deny branch below.
                 _decision_reason = decision_reason(decision_slot)
                 if _decision is not None and _decision != "deny":
-                    yield {"type": "status", "text": decision.status_text}
+                    # Same order as the GGUF loop.
                     yield decision.tool_approved_event(approval_id)
+                    yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
                     decision_slot = None
                     if provisional_match:
