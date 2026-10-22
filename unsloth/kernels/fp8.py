@@ -520,11 +520,6 @@ def _small_m_config(M, N, K, device):
     return block_n, split_k, 4, _SMALL_M_STAGES[block_n]
 
 
-@functools.lru_cache(maxsize = None)
-def _sm_count(device):
-    return torch.cuda.get_device_properties(device).multi_processor_count
-
-
 def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
     if not _FP8_BLOCK_SMALL_M or fp8_block_matmul is not w8a8_block_fp8_matmul_triton or torch.compiler.is_compiling():
