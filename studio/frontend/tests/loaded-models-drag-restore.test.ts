@@ -150,15 +150,15 @@ test("every drag handle goes through startDrag, which resets the sentinel", () =
 
 test("only the pill consumes the sentinel, since only it has a click", () => {
   const pill = INDICATOR.slice(
-    INDICATOR.indexOf("Show details, or drag to move"),
-    INDICATOR.indexOf("Show details, or drag to move") + 400,
+    INDICATOR.indexOf("floatingPanels.loadedModels.pillLabel"),
+    INDICATOR.indexOf("floatingPanels.loadedModels.pillLabel") + 600,
   );
   assert.match(pill, /onPointerDown=\{startDrag\}/);
   assert.match(pill, /if \(!justDragged\(\)\) setCollapsed\(false\)/);
 });
 
-// Only a landed drag persists; reclamps are display-time and must not overwrite the save.
-test("only a drag persists a position, never a reclamp", () => {
+// Only a landed drag or a keyboard nudge persists; reclamps are display-time and must not overwrite the save.
+test("only a drag or a nudge persists a position, never a reclamp", () => {
   const settleAt = USE_DRAG_POSITION.indexOf("const settle = useCallback(");
   const settle = USE_DRAG_POSITION.slice(
     settleAt,
@@ -168,7 +168,9 @@ test("only a drag persists a position, never a reclamp", () => {
   assert.doesNotMatch(USE_DRAG_POSITION, /useEffect\(\(\) => \{\s*if \(pressing\) return;\s*store\(/);
   assert.equal(
     USE_DRAG_POSITION.split("store(storageKey").length - 1,
-    1,
-    "one write, in settle",
+    2,
+    "one write in settle, one in nudge",
   );
+  const nudge = USE_DRAG_POSITION.slice(USE_DRAG_POSITION.indexOf("const nudge = useCallback("));
+  assert.match(nudge, /store\(storageKey, next\)/);
 });

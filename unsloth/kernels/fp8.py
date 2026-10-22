@@ -184,6 +184,20 @@ def _has_fbgemm_rowwise():
         return False
 
 
+def _scale_mul(x, s, dtype):
+    # fp16: an fp16 scale goes subnormal below 6.1e-5 and overflows above 65504, zeroing or inf-ing
+    # the weight, so multiply by the fp32 scale and round once. fp8 values are exact in fp16, and an
+    # fp16 out= makes TensorIterator compute in fp32 per element without fp32 temporaries. Dynamo
+    # refuses a strided out=; under compile Inductor fuses the fp32 expression instead (same bits).
+    # Other dtypes keep their dtype-native expression.
+    if dtype != torch.float16:
+        return x.to(dtype) * s.to(dtype)
+    if torch.compiler.is_compiling():
+        return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
+    x16 = x.to(dtype)
+    return torch.mul(x16, s.to(torch.float32), out = torch.empty_like(x16))
+
+
 def weight_dequant(
     x: torch.Tensor,
     s: torch.Tensor,
@@ -194,14 +208,14 @@ def weight_dequant(
         return weight_dequant(x.t(), s, dtype).t()
     # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
-        return x.to(dtype) * s.view(1, 1).to(dtype)
+        return _scale_mul(x, s.view(1, 1), dtype)
     # Row quantized weight: scale shape is (m, 1) or (n, 1)
     elif s.ndim == 2 and s.shape[1] == 1:
         if x.shape[0] == s.shape[0]:
-            y = x.to(dtype) * s.to(dtype)
+            y = _scale_mul(x, s, dtype)
         elif x.shape[1] == s.shape[0]:
             # Sometimes called with the transpose of the weight.
-            y = x.t().to(dtype) * s.to(dtype)
+            y = _scale_mul(x.t(), s, dtype)
             y = y.t()
         else:
             raise ValueError(f"Incompatible shapes {x.shape = }, {s.shape = }")

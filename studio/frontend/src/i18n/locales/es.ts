@@ -626,6 +626,8 @@ export const es = {
       "Este chat no aparecerá en tu historial ni se guardará. Desaparece cuando salgas.",
   },
   picker: {
+    unifiedTightFit: "Ajuste justo",
+    unifiedTightFitHint: "Puede cargarse con un contexto más corto o ir más lento en este Mac.",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -2006,6 +2008,18 @@ export const es = {
         openError: "No se pudo abrir la carpeta",
         copyError: "No se pudo copiar la ruta",
       },
+      fullInstall: {
+        label: "Tipo de instalación",
+        description:
+          "Solo chat (GGUF). La instalación completa añade entrenamiento, exportación, vídeo, modelos safetensors y más funciones de generación de imágenes.",
+        action: "Actualizar a la instalación completa",
+        confirmTitle: "¿Actualizar a la instalación completa?",
+        confirmDescription:
+          "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa añade PyTorch para la GPU de este equipo, lo que habilita el entrenamiento, la exportación, el vídeo, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
+        confirmAction: "Actualizar",
+        keywords:
+          "full install upgrade tipo de instalación instalación completa actualizar solo chat chat only gguf add training entrenamiento entrenar train fine-tune pytorch torch exportar vídeo generación de imágenes safetensors",
+      },
       repairInstall: {
         label: "Reparar la instalación",
         description:
@@ -2014,6 +2028,8 @@ export const es = {
         confirmTitle: "¿Reparar esta instalación?",
         confirmDescription:
           "Detiene el servidor y vuelve a ejecutar el instalador, que reinstala PyTorch para la GPU de este equipo. Se conservan las conversaciones y los ajustes. Puede tardar varios minutos.",
+        confirmDescriptionChatOnly:
+          "Detiene el servidor y vuelve a ejecutar el instalador. Esta es una instalación de solo chat, así que el instalador también la actualiza a la instalación completa con PyTorch, varios gigabytes en total. Se conservan las conversaciones y los ajustes. Puede tardar varios minutos.",
         confirmAction: "Reparar ahora",
       },
       resetPreferences: {
@@ -2742,6 +2758,10 @@ export const es = {
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
+      showReplyTimes: "Hora de las respuestas",
+      showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
+      showReplyTimesKeywords:
+        "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       modelDisclaimer: "Mostrar aviso del modelo",
@@ -3157,6 +3177,7 @@ export const es = {
       relativeNever: "nunca",
       relativeJustNow: "justo ahora",
       expired: "caducado",
+      expiredStatus: "Caducado",
       today: "hoy",
       created: "Creado {value}",
       used: "Usado {value}",
@@ -4754,5 +4775,42 @@ export const es = {
     cantRun: "No se pudo ejecutar",
     failed: "Error {status}",
     invalidJson: "El cuerpo de la solicitud no es JSON válido.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Modelos cargados",
+      countOne: "{count} modelo cargado",
+      countMany: "{count} modelos cargados",
+      pillLabel: "{count}. Mostrar detalles o arrastrar para mover",
+      dragToMove: "Arrastra para mover",
+      dragHandleLabel: "Mover los modelos cargados. Las teclas de flecha lo desplazan un poco.",
+      collapse: "Contraer",
+      collapseLabel: "Contraer los modelos cargados",
+      close: "Cerrar",
+      closeLabel: "Cerrar los modelos cargados",
+      backOnNextLoad: "Vuelve al cargar el siguiente modelo",
+      ejectToFree: "Expulsar para liberar memoria",
+      ejectLabel: "Expulsar {model}",
+      openTarget: "Abrir {target}",
+      rowLabel: "{model}. Abrir {target}",
+      loading: "Cargando",
+      ejecting: "Expulsando",
+      stillInMemory: "Sigue en memoria",
+      alsoServing: "También en servicio",
+      noneLoaded: "No hay modelos cargados",
+      noneLoadedDetail: "Los modelos que cargues aparecerán aquí.",
+      otherAccount: "En uso por otra cuenta",
+      otherAccountDetail: "La memoria la ocupa un modelo que no puedes ver",
+      toastStillResident: "«{model}» se cargó mientras se expulsaba, así que sigue usando memoria. Expúlsalo de nuevo para liberarla.",
+      toastUnverified: "Se pidió descargar {model}, pero el entorno de ejecución no lo confirmó. Revisa la tarjeta en un momento.",
+      toastAlreadyFree: "{model} ya no estaba cargado.",
+      toastReplaced: "{model} ya no está cargado. «{resident}» ocupó su lugar y no se tocó.",
+      toastEjected: "{model} expulsado",
+      toastFailed: "No se pudo expulsar {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Mover el monitor en vivo. Las teclas de flecha lo desplazan un poco; con doble clic se restablece.",
+      reconnecting: "Reconectando...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
