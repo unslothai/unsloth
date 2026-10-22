@@ -186,7 +186,7 @@ test("recording is gated on the preference, not on whether the card shows", () =
   // preference alone polled four protected endpoints every 5s on /login.
   assert.match(
     INDICATOR,
-    /useLoadedModels\(\s*enabled,\s*showIndicator && reachable,\s*\)/,
+    /useLoadedModels\(\s*enabled,\s*showIndicator && reachable,?\s*\)/,
     "recording survives a dismissal but not a route with no session",
   );
 });

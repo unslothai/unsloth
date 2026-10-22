@@ -36,6 +36,7 @@ export interface DiffusionStatus {
   repo_id: string | null;
   /** Logical Hub identity when repo_id is an exact local snapshot. */
   display_repo_id?: string | null;
+  resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];
   // Of those, the families shipped as Modular Diffusers pipelines (the family override classes an opaque folder).

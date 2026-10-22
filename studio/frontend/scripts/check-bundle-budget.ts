@@ -362,8 +362,12 @@ export const BUDGET = {
   // Lighter system polling (#14592: hidden-tab gating, Vulkan retry backoff, idle export poll, request
   // timeout): +1,899 B raw / +657 B transfer (6,881,340 -> 6,883,239 B raw,
   // 2,072,543 -> 2,073,200 B transfer against cb2590f395, Node 26, 97 chunks). Raised by that.
-  transferBytes: 2_073_339,
-  rawBytes: 6_883_453,
+  // Floating panels (#14601, on top of #14592): loaded models sources, sizes and empty states, live
+  // monitor stale and keyboard handling, and their strings in the eager locales:
+  // +10,586 B raw / +2,861 B transfer (6,883,239 -> 6,893,825 B raw,
+  // 2,073,200 -> 2,076,061 B transfer against #14592 at f7cc09db67, Node 26, 97 chunks). Raised by that.
+  transferBytes: 2_076_200,
+  rawBytes: 6_894_039,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

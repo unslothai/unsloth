@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { disposableTimeoutSignal } from "../features/hub/lib/abort-signals";
 import {
+  isReadingStale,
+  nextFailedPolls,
   settledFailureStatus,
   shouldRetrySystemDiscovery,
   type SystemInfoStatus,
@@ -58,6 +60,7 @@ export interface SystemInfoResponse {
   /** Client-side, not sent by the backend. Readers rendering a host verdict -- "no GPU",
    * "CPU only" -- must check it, or they state the placeholder below as fact. */
   status: SystemInfoStatus;
+  stale?: boolean;
   platform: string;
   python_version: string;
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
@@ -256,6 +259,7 @@ export function useSystemInfo({
   enabled = true,
 }: UseSystemInfoOptions = {}): SystemInfoResponse {
   const [systemInfo, setSystemInfo] = useState<SystemInfoResponse>(cachedSystem ?? DEFAULT_SYSTEM);
+  const [failedPolls, setFailedPolls] = useState(0);
 
   useEffect(() => {
     if (!enabled) return;
@@ -276,6 +280,7 @@ export function useSystemInfo({
       void fetchSystemInfo({ force })
         .then((info) => {
           if (cancelled) return;
+          setFailedPolls((previous) => nextFailedPolls(previous, info !== null));
           if (info) {
             setSystemInfo(info);
             return;
@@ -314,5 +319,9 @@ export function useSystemInfo({
     };
   }, [enabled, pollMs]);
 
-  return systemInfo;
+  const stale = enabled && isReadingStale(systemInfo.status, failedPolls, Boolean(pollMs));
+  return useMemo(
+    () => (stale ? { ...systemInfo, stale: true } : systemInfo),
+    [stale, systemInfo],
+  );
 }

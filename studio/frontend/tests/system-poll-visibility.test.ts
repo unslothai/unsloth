@@ -29,6 +29,7 @@ function loadSystem(body: unknown) {
     {
       react: {
         useState: (initial: unknown) => [initial, () => {}],
+        useMemo: (factory: () => unknown) => factory(),
         useEffect: (effect: () => (() => void) | undefined) => {
           cleanup = effect();
         },
