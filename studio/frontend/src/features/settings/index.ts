@@ -117,6 +117,7 @@ export {
   currentBinding,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
+  resolveBindings,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";

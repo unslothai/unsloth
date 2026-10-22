@@ -308,9 +308,10 @@ test("Escape in the composer is left to a sole pending tool request", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(
     thread,
-    /const soleToolRequest = useChatRuntimeStore\(\n\s*\(s\) => Object\.keys\(s\.toolConfirmations\)\.length === 1,\n\s*\);/,
+    /const soleToolRequest = useChatRuntimeStore\(\(s\) => \{/,
   );
-  assert.match(thread, /cancelOnEscape=\{!soleToolRequest\}/);
+  assert.match(thread, /cancelOnEscape=\{!\(soleToolRequest && declineOwnsEscape\)\}/);
+  assert.match(thread, /pending.length === 1 && !pending\[0\].imageDisclosure/);
 });
 
 test("search chats fires from the composer, and toggleSidebar not behind a modal", () => {

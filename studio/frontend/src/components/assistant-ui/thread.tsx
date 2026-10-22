@@ -251,6 +251,7 @@ import {
   useShortcut,
   useSettingsDialogStore,
   isMacPlatform,
+  resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
@@ -3866,9 +3867,15 @@ const Composer: FC<{
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
   // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
-  const soleToolRequest = useChatRuntimeStore(
-    (s) => Object.keys(s.toolConfirmations).length === 1,
-  );
+  // Only when decline would take that Escape: not for an image disclosure (no keyboard), nor once rebound.
+  const soleToolRequest = useChatRuntimeStore((s) => {
+    const pending = Object.values(s.toolConfirmations);
+    return pending.length === 1 && !pending[0].imageDisclosure;
+  });
+  const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
+    const bindings = resolveBindings(s.overrides, "declineToolRequest");
+    return bindings.primary === "Escape" || bindings.alternate === "Escape";
+  });
   const composerFocusable = useContext(ChatComposerFocusableContext);
   // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
   // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
@@ -5849,7 +5856,7 @@ const Composer: FC<{
                 // no effect on Latin / CJK / Devanagari.
                 dir="auto"
                 {...inputProps}
-                cancelOnEscape={!soleToolRequest}
+                cancelOnEscape={!(soleToolRequest && declineOwnsEscape)}
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
