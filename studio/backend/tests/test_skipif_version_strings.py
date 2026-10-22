@@ -23,7 +23,7 @@ def _string_operands(condition: ast.expr) -> list[str]:
 
 def test_no_skip_condition_can_evaluate_to_a_version_string():
     offenders = []
-    for path in sorted(_TESTS.glob("*.py")):
+    for path in sorted(_TESTS.rglob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding = "utf-8"))
         except SyntaxError:
@@ -36,5 +36,5 @@ def test_no_skip_condition_can_evaluate_to_a_version_string():
                 and node.args
             ):
                 for operand in _string_operands(node.args[0]):
-                    offenders.append(f"{path.name}:{node.lineno}: {operand}")
+                    offenders.append(f"{path.relative_to(_TESTS)}:{node.lineno}: {operand}")
     assert not offenders, offenders

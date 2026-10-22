@@ -165,9 +165,13 @@ print("DEV0_CONTEXT", primary_active(0))
 
 
 @pytest.mark.skipif(
-    # bool(): a bare torch.version.hip is a string on ROCm, which pytest evaluates as a Python expression ("7.13.99004"
-    # is a SyntaxError), so a two-card ROCm host errored here instead of skipping. The probe reads CUDA driver contexts.
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2 or bool(torch.version.hip),
+    # Never a bare torch.version.* string: pytest evaluates a string condition as code ("7.13.99004" is a SyntaxError).
+    # NVIDIA only (the probe reads CUDA driver contexts): AMD SDK / Radeon wheels tag only __version__ with +rocm.
+    not torch.cuda.is_available()
+    or torch.cuda.device_count() < 2
+    or torch.version.cuda is None
+    or bool(torch.version.hip)
+    or "rocm" in torch.__version__,
     reason = "needs two NVIDIA CUDA devices (reads CUDA driver primary contexts)",
 )
 def test_releasing_a_buffer_on_another_thread_syncs_its_own_card():
