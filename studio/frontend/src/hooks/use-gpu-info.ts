@@ -288,6 +288,32 @@ export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
   return next;
 }
 
+const RAM_DRIFT_TOLERANCE_GB = 0.25;
+
+/**
+ * The snapshot a poll should publish: `current` when nothing moved but free RAM by under
+ * RAM_DRIFT_TOLERANCE_GB, so every subscribed page does not re-render on each /api/system probe.
+ */
+export function nextGpuInfo(current: GpuInfo, next: GpuInfo): GpuInfo {
+  const ramDrift = Math.max(
+    Math.abs(current.systemRamAvailableGb - next.systemRamAvailableGb),
+    Math.abs(current.systemRamAvailableHostGb - next.systemRamAvailableHostGb),
+  );
+  const withoutLiveRam = (info: GpuInfo) =>
+    JSON.stringify({
+      ...info,
+      systemRamAvailableGb: 0,
+      systemRamAvailableHostGb: 0,
+    });
+  if (
+    ramDrift < RAM_DRIFT_TOLERANCE_GB &&
+    withoutLiveRam(current) === withoutLiveRam(next)
+  ) {
+    return current;
+  }
+  return withStableSchemes(current, next);
+}
+
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
 function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
   const cachedSystem = getCachedSystemInfo();
@@ -301,11 +327,7 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
     const sync = (data: SystemInfoResponse) => {
       if (cancelled) return;
       const next = toGpuInfo(data, source);
-      setGpu((current) =>
-        JSON.stringify(current) === JSON.stringify(next)
-          ? current
-          : withStableSchemes(current, next),
-      );
+      setGpu((current) => nextGpuInfo(current, next));
     };
     const update = () => {
       fetchSystemInfo().then((d) => {

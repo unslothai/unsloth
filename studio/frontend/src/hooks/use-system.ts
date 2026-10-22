@@ -3,10 +3,12 @@
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
+import { disposableTimeoutSignal } from "../features/hub/lib/abort-signals";
 import {
   settledFailureStatus,
   shouldRetrySystemDiscovery,
   type SystemInfoStatus,
+  vulkanRetryDelayMs,
 } from "./system-discovery";
 
 export interface GpuDevice {
@@ -117,6 +119,10 @@ let systemFetchPromise: Promise<SystemInfoResponse | null> | null = null;
 const systemSubscribers = new Set<(data: SystemInfoResponse) => void>();
 let vulkanRetrySubscribers = 0;
 let vulkanRetryId: number | null = null;
+let vulkanRetryAttempt = 0;
+let vulkanRetryDeferred = false;
+// A hung request must not hold systemFetchPromise, which every refreshMemory caller awaits.
+const SYSTEM_FETCH_TIMEOUT_MS = 15_000;
 
 const DEFAULT_SYSTEM: SystemInfoResponse = {
   status: "pending",
@@ -148,12 +154,24 @@ export function subscribeSystemInfo(
     systemSubscribers.delete(subscriber);
     if (options.retryUnavailableVulkan) {
       vulkanRetrySubscribers = Math.max(0, vulkanRetrySubscribers - 1);
-      if (vulkanRetrySubscribers === 0 && vulkanRetryId !== null) {
-        window.clearTimeout(vulkanRetryId);
+      if (vulkanRetrySubscribers === 0) {
+        if (vulkanRetryId !== null) window.clearTimeout(vulkanRetryId);
         vulkanRetryId = null;
+        if (vulkanRetryDeferred) cancelDeferredVulkanRetry();
       }
     }
   };
+}
+
+function cancelDeferredVulkanRetry(): void {
+  vulkanRetryDeferred = false;
+  document.removeEventListener("visibilitychange", retryVulkanWhenVisible);
+}
+
+function retryVulkanWhenVisible(): void {
+  if (document.hidden) return;
+  cancelDeferredVulkanRetry();
+  void fetchSystemInfo({ force: true });
 }
 
 function scheduleVulkanRetry(): void {
@@ -170,15 +188,25 @@ function scheduleVulkanRetry(): void {
       window.clearTimeout(vulkanRetryId);
       vulkanRetryId = null;
     }
+    vulkanRetryAttempt = 0;
+    if (vulkanRetryDeferred) cancelDeferredVulkanRetry();
     return;
   }
-  if (vulkanRetryId !== null) {
+  if (vulkanRetryId !== null || vulkanRetryDeferred) {
     return;
   }
-  vulkanRetryId = window.setTimeout(() => {
-    vulkanRetryId = null;
-    void fetchSystemInfo({ force: true });
-  }, 3000);
+  vulkanRetryId = window.setTimeout(
+    () => {
+      vulkanRetryId = null;
+      if (document.hidden) {
+        vulkanRetryDeferred = true;
+        document.addEventListener("visibilitychange", retryVulkanWhenVisible);
+        return;
+      }
+      void fetchSystemInfo({ force: true });
+    },
+    vulkanRetryDelayMs(vulkanRetryAttempt++),
+  );
 }
 
 export async function fetchSystemInfo({
@@ -194,9 +222,11 @@ export async function fetchSystemInfo({
   if (!force && !refreshMemory && cachedSystem) return cachedSystem;
 
   systemFetchPromise = (async () => {
+    const timeout = disposableTimeoutSignal(SYSTEM_FETCH_TIMEOUT_MS);
     try {
       const res = await authFetch(
         refreshMemory ? "/api/system?refresh_memory=true" : "/api/system",
+        { signal: timeout.signal },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -207,6 +237,7 @@ export async function fetchSystemInfo({
     } catch {
       return null;
     } finally {
+      timeout.dispose();
       systemFetchPromise = null;
       scheduleVulkanRetry();
     }
@@ -230,6 +261,7 @@ export function useSystemInfo({
     if (!enabled) return;
 
     let cancelled = false;
+    let inFlight = false;
     let timeoutId: number | null = null;
 
     // A placeholder has nothing to retry it once its own request settled, so it takes any
@@ -240,6 +272,7 @@ export function useSystemInfo({
     });
 
     const update = (force: boolean) => {
+      inFlight = true;
       void fetchSystemInfo({ force })
         .then((info) => {
           if (cancelled) return;
@@ -255,16 +288,30 @@ export function useSystemInfo({
           });
         })
         .finally(() => {
+          inFlight = false;
           if (cancelled || !pollMs) return;
-          timeoutId = window.setTimeout(() => update(true), pollMs);
+          // A hidden tab skips its poll; visibilitychange resumes the loop.
+          timeoutId = window.setTimeout(() => {
+            timeoutId = null;
+            if (!document.hidden) update(true);
+          }, pollMs);
         });
     };
 
+    const onVisibilityChange = () => {
+      if (document.hidden || inFlight || cancelled) return;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      timeoutId = null;
+      update(true);
+    };
+
     update(Boolean(pollMs));
+    if (pollMs) document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       unsubscribe();
       if (timeoutId !== null) window.clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, pollMs]);
 

@@ -179,6 +179,8 @@ function FloatingMonitorPanel({
   const ramAvailable = systemInfo.memory?.available_gb ?? 0;
   const ramUsed = Math.max(0, ramTotal - ramAvailable);
   const ramPercent = clampPercent(systemInfo.memory?.percent_used ?? 0);
+  // The placeholder's zeros are not a reading: loading or a failed first request shows "--".
+  const ramKnown = systemInfo.status === "ready";
 
   const displayedGpu = systemInfo.gpu?.available
     ? systemInfo.gpu
@@ -198,6 +200,8 @@ function FloatingMonitorPanel({
   const memoryTotals = gpuMemoryTotalsGb(devices);
   const vramTotal = memoryTotals.total;
   const hasSharedPool = memoryTotals.shared > 0;
+  // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
+  const unifiedPool = hasSharedPool && memoryTotals.dedicated === 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
@@ -322,16 +326,23 @@ function FloatingMonitorPanel({
               <div className="flex justify-between text-ui-11 font-medium font-mono">
                 <span>{t("settings.resources.liveMonitor.ram")}</span>
                 <span
-                  className={cn("tabular-nums", usageTextClass(ramPercent))}
+                  className={cn(
+                    "tabular-nums",
+                    ramKnown
+                      ? usageTextClass(ramPercent)
+                      : "text-muted-foreground",
+                  )}
                 >
-                  {Math.round(ramPercent)}%
+                  {ramKnown ? `${Math.round(ramPercent)}%` : "--"}
                 </span>
               </div>
               <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                {formatGiB(ramUsed)} / {formatGiB(ramTotal)}
+                {ramKnown
+                  ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
+                  : "-- / --"}
               </div>
               <Progress
-                value={ramPercent}
+                value={ramKnown ? ramPercent : 0}
                 className="mt-1 h-1.5 rounded-full bg-muted"
                 indicatorClassName={usageIndicatorClass(ramPercent)}
               />
@@ -359,13 +370,25 @@ function FloatingMonitorPanel({
                 </div>
                 <div className="text-xs text-muted-foreground font-mono tabular-nums">
                   {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                  {hasSharedPool
+                  {hasSharedPool && !unifiedPool
                     ? t("settings.resources.environment.vramWithShared", {
                         vram: formatGiB(memoryTotals.dedicated),
                         shared: formatGiB(memoryTotals.shared),
                       })
                     : formatGiB(vramTotal)}
                 </div>
+                {unifiedPool && memoryDisplay.sharedDevices.length === 0 && (
+                  <div className="text-xs font-mono text-muted-foreground">
+                    {t("settings.resources.gpu.sharedWithSystemRam")}
+                    {memoryDisplay.unifiedAvailableGb !== null && (
+                      <span className="block">
+                        {t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(memoryDisplay.unifiedAvailableGb),
+                        })}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <Progress
                   value={vramUsageKnown ? vramPercent : 0}
                   className="mt-1 h-1.5 rounded-full bg-muted"

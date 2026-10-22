@@ -11,6 +11,8 @@ import {
 import { useExportRuntimeStore } from "../stores/export-runtime-store";
 
 const STATUS_POLL_INTERVAL_MS = 5000;
+// Idle: only catches a run started in another tab, so slow and skipped while hidden.
+const IDLE_STATUS_POLL_INTERVAL_MS = 30_000;
 const STREAM_RECONNECT_DELAY_MS = 600;
 // Short-response fallback cadence, for a proxy that drops or stalls the log stream.
 const LOG_POLL_INTERVAL_MS = 750;
@@ -37,6 +39,7 @@ export function useExportRuntimeLifecycle(): void {
     let logPolling = false;
     let logPollTimer: ReturnType<typeof setTimeout> | null = null;
     let statusPolling = false;
+    let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
     const store = useExportRuntimeStore;
 
@@ -151,8 +154,28 @@ export function useExportRuntimeLifecycle(): void {
       }
     };
 
+    const scheduleStatusPoll = () => {
+      if (disposed) return;
+      if (statusTimer) clearTimeout(statusTimer);
+      const { isExporting, backendActive } = store.getState();
+      const active = isExporting || backendActive;
+      statusTimer = setTimeout(
+        () => {
+          statusTimer = null;
+          // A hidden idle tab skips the poll; visibilitychange resumes it.
+          if (!active && document.hidden) return;
+          void pollStatus();
+        },
+        active ? STATUS_POLL_INTERVAL_MS : IDLE_STATUS_POLL_INTERVAL_MS,
+      );
+    };
+
     const pollStatus = async () => {
-      if (!hasAuthToken() || statusPolling) return;
+      if (statusPolling) return;
+      if (!hasAuthToken()) {
+        scheduleStatusPoll();
+        return;
+      }
       statusPolling = true;
       try {
         const status = await getExportStatus();
@@ -166,7 +189,15 @@ export function useExportRuntimeLifecycle(): void {
         // ignore transient status failures
       } finally {
         statusPolling = false;
+        scheduleStatusPoll();
       }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden || statusPolling || disposed) return;
+      if (statusTimer) clearTimeout(statusTimer);
+      statusTimer = null;
+      void pollStatus();
     };
 
     // React to isExporting flipping (run start / terminal) without needing the
@@ -175,6 +206,7 @@ export function useExportRuntimeLifecycle(): void {
     const unsubscribe = store.subscribe((state) => {
       if (state.isExporting === prevExporting) return;
       prevExporting = state.isExporting;
+      if (!statusPolling) scheduleStatusPoll();
       if (state.isExporting) {
         void ensureStream();
         startLogPolling();
@@ -189,13 +221,12 @@ export function useExportRuntimeLifecycle(): void {
       startLogPolling();
     }
 
-    const statusTimer = setInterval(() => {
-      void pollStatus();
-    }, STATUS_POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       disposed = true;
-      clearInterval(statusTimer);
+      if (statusTimer) clearTimeout(statusTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       unsubscribe();
       stopStream();
     };

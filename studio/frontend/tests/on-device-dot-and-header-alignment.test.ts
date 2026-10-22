@@ -498,13 +498,17 @@ test("each fit verdict is an info mark that explains itself", () => {
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
   // An over-budget figure is a TOTAL: `partial` splits across VRAM and RAM, and the number is
   // weights plus activations plus KV, so "Needs ~47GB VRAM" argued with the offload verdict.
-  assert.ok(PICKERS.includes("`Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`"));
   assert.ok(
-    !PICKERS.includes("GB VRAM (GPU:"),
+    PICKERS.includes(
+      "`Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`",
+    ),
+  );
+  assert.ok(
+    !PICKERS.includes("VRAM (GPU:"),
     "no VRAM wording on an overage",
   );
   // A load that stays on the card still says VRAM, which is what it means there.
-  assert.ok(PICKERS.includes("GB VRAM (tight fit on"));
+  assert.ok(PICKERS.includes("} VRAM (tight fit on ${formatGiB(gpuGb)})"));
   // A marginal row is a full GPU load, so it is not dimmed with the over budget ones.
   assert.ok(
     PICKERS.includes(

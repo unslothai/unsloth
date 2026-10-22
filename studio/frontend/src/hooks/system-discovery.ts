@@ -31,3 +31,14 @@ export function shouldRetrySystemDiscovery(
   }
   return inferenceGpu?.backend === "vulkan" && !inferenceGpu.available;
 }
+
+const VULKAN_RETRY_BASE_MS = 3000;
+const VULKAN_RETRY_MAX_MS = 60_000;
+
+/** Backoff for re-probing an unavailable Vulkan inventory: 3 s doubling to a 60 s cap. */
+export function vulkanRetryDelayMs(attempt: number): number {
+  return Math.min(
+    VULKAN_RETRY_BASE_MS * 2 ** Math.max(0, attempt),
+    VULKAN_RETRY_MAX_MS,
+  );
+}
