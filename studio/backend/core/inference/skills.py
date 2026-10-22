@@ -51,7 +51,8 @@ _WINDOWS_RESERVED_STEMS = frozenset(
     | {f"lpt{index}" for index in "¹²³"}
 )
 _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
-_FRONTMATTER_KEY = re.compile(r"[a-zA-Z_-]+:[ \t]+(?=[^\s\"'])")
+# Only plain scalars are repaired; a rejected quoted, block, flow, anchored or tagged value is broken.
+_FRONTMATTER_KEY = re.compile(r"([a-zA-Z_-]+):[ \t]+(?=[^\s\"'|>&!\[{])(?![-?:]\s)")
 MAX_FRONTMATTER_REPAIRS = 16
 
 
@@ -287,45 +288,47 @@ def _read_limited(
     return raw
 
 
-def _quote_frontmatter_value(text: str, line: int) -> Optional[str]:
+def _quote_frontmatter_value(text: str, line: int) -> Optional[tuple[str, str, str]]:
     lines = text.splitlines(keepends = True)
-    start = next(
-        (
-            index
-            for index in range(min(line, len(lines) - 1), -1, -1)
-            if lines[index].strip() and not lines[index][0].isspace()
-        ),
-        None,
-    )
-    match = _FRONTMATTER_KEY.match(lines[start]) if start is not None else None
+    match = _FRONTMATTER_KEY.match(lines[line]) if line < len(lines) else None
     if match is None:
         return None
-    end = start + 1
-    while end < len(lines) and (not lines[end].strip() or lines[end][0].isspace()):
-        end += 1
-    while not lines[end - 1].strip():
-        end -= 1
-    block = re.sub(r"[ \t]+#[^\r\n]*", "", "".join(lines[start:end]))
-    value = block[match.end() :].rstrip()
-    tail = block[match.end() + len(value) :]
-    value = value.replace("\\", "\\\\").replace('"', '\\"')
-    lines[start:end] = [f'{block[: match.end()]}"{value}"{tail}']
-    return "".join(lines)
+    rest = lines[line][match.end() :]
+    value = rest.splitlines()[0]
+    ending = rest[len(value) :]
+    value = re.sub(r"[ \t]+#.*", "", value).rstrip()
+    if not re.search(r":[ \t]", value):
+        return None
+    quoted = value.replace("\\", "\\\\").replace('"', '\\"')
+    lines[line] = f'{lines[line][: match.end()]}"{quoted}"{ending}'
+    return "".join(lines), match.group(1), value
 
 
 def _load_frontmatter(text: str):
+    repaired = []
     for _ in range(MAX_FRONTMATTER_REPAIRS):
         try:
-            return yaml.safe_load(text)
-        except yaml.MarkedYAMLError as exc:
+            frontmatter = yaml.safe_load(text)
+            break
+        except (yaml.scanner.ScannerError, yaml.composer.ComposerError) as exc:
             # Agent skill loaders accept unquoted values such as `description: Use when: ...`.
-            repaired = (
+            # Parser errors are structural, such as a colon inside a flow collection.
+            repair = (
                 _quote_frontmatter_value(text, exc.problem_mark.line) if exc.problem_mark else None
             )
-            if repaired is None:
+            if repair is None:
                 raise
-            text = repaired
-    return yaml.safe_load(text)
+            text, key, value = repair
+            repaired.append((key, value))
+    else:
+        frontmatter = yaml.safe_load(text)
+    # A line that only looked top-level, such as one inside a flow mapping, would not read back.
+    if repaired and (
+        not isinstance(frontmatter, dict)
+        or any(frontmatter.get(key) != value for key, value in repaired)
+    ):
+        raise yaml.YAMLError("Repaired frontmatter does not read back as written.")
+    return frontmatter
 
 
 def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:

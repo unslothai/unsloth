@@ -156,6 +156,28 @@ def test_bundled_image_prompting_skill_parses_and_ships_disabled(isolated_skills
             "---\nname: bad-metadata\ndescription: valid\nmetadata:\n  version: 1\n---\n",
         ),
         ("no-description", "---\nname: no-description\n---\n"),
+        ("bad-literal", "---\nname: bad-literal\ndescription: |\n  Use when: a\n b\n---\n"),
+        ("bad-folded", "---\nname: bad-folded\ndescription: > Use when: a\n---\n"),
+        ("bad-anchor", "---\nname: bad-anchor\ndescription: &d |\n  a\n b\n---\n"),
+        ("bad-tag", '---\nname: bad-tag\ndescription: !!str "Use "a": b"\n---\n'),
+        ("wrapped", "---\nname: wrapped\ndescription: Use when: a\n  author: b\n---\n"),
+        ("bad-flow", '---\nname: bad-flow\ndescription: ["a: b",, "c"]\n---\n'),
+        (
+            "bad-flow-map",
+            '---\nname: bad-flow-map\ndescription: d\nmetadata: {\nauthor: *a* b: c, v: "1"\n}\n---\n',
+        ),
+        (
+            "bad-flow-key",
+            "---\nname: bad-flow-key\nmetadata: {\ndescription: *a* b: c, v: d\n}\n"
+            "description: Use when: e\n---\n",
+        ),
+        (
+            "bad-merge",
+            "---\nname: bad-merge\n<<: &d {\ndescription: Use when: a, license: MIT\n}\n"
+            "metadata: *d\n---\n",
+        ),
+        ("bad-entry", "---\nname: bad-entry\ndescription: - Use when: a\n---\n"),
+        ("bad-alias", "---\nname: bad-alias\ndescription: valid\nlicense: *missing\n---\n"),
     ],
 )
 def test_invalid_skill_is_reported_without_hiding_valid_skills(
@@ -956,14 +978,6 @@ def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skil
         (
             'Fill PDF forms. Use when: the user attaches a "PDF" form',
             'Fill PDF forms. Use when: the user attaches a "PDF" form',
-        ),
-        (
-            "Fill PDF forms. Use when: the user attaches\n  a PDF form",
-            "Fill PDF forms. Use when: the user attaches a PDF form",
-        ),
-        (
-            "Fill PDF forms. Use when: the user attaches\n  a PDF form\n\n  Then check the fields.",
-            "Fill PDF forms. Use when: the user attaches a PDF form\nThen check the fields.",
         ),
         (
             "Fill PDF forms. Use when: the user attaches a PDF form # draft",
