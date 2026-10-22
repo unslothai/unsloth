@@ -190,7 +190,7 @@ class _PostTracker:
                 if request.method != "POST":
                     return await self.inner.handle_async_request(request)
                 token = object()
-                posts[token] = time.monotonic()
+                posts[token] = (time.monotonic(), *_rpc_target(request))
                 try:
                     response = await self.inner.handle_async_request(request)
                 except BaseException:
@@ -211,8 +211,24 @@ class _PostTracker:
         client._mounts = {k: (v if v is None else Transport(v)) for k, v in client._mounts.items()}
         self.installed = True
 
-    def open_since(self, t: float) -> bool:
-        return any(started <= t for started in list(self.open.values()))
+    def opened(self, since: float, method: Optional[str], target: Optional[str]) -> dict:
+        """Open POSTs sent at or after ``since`` for this JSON-RPC method and tool name / URI (None = any request)."""
+        return {
+            token: started
+            for token, (started, m, t) in list(self.open.items())
+            if started >= since
+            and (m == method and t == target if method else m not in (None, "notifications"))
+        }
+
+
+def _rpc_target(request) -> tuple:
+    try:
+        msg = json.loads(request.content)
+        params = msg.get("params") or {}
+        method = msg["method"] if "id" in msg else "notifications"
+        return method, params.get("name") or params.get("uri")
+    except Exception:  # noqa: BLE001
+        return None, None
 
 
 # Set by _McpSession.connect so _tool_http_client_factory can hook the client the SDK builds for that session.
@@ -943,9 +959,9 @@ class _McpSession:
         self.defunct = False  # discarded; close once in_flight drains (see _retire)
         self.dirty = False  # a call was abandoned on it; ping before reuse
         self.abandoned_at: Optional[float] = None
-        self.abandoned_last: Optional[float] = None
         self.abandoned = 0
         self.posts = _PostTracker()
+        self.abandoned_posts: dict = {}  # tracker token -> send time, for abandoned calls' still-open POSTs
         self._close_lock = threading.Lock()
         self.call_lock = threading.Lock()
         # One stdio subprocess is one ordered byte stream, so overlapping calls must not interleave on it. HTTP has no
@@ -967,28 +983,36 @@ class _McpSession:
         self._thread = account_thread(target = self._run_loop, name = "mcp-session", daemon = True)
         self._thread.start()
 
-    def note_abandoned(self) -> None:
+    def note_abandoned(
+        self,
+        sent_at: float,
+        method: Optional[str] = None,
+        target: Optional[str] = None,
+    ) -> None:
         """Record a call abandoned mid-flight on an HTTP transport (stdio has no reply socket to leak)."""
         if is_stdio(self.url):
             return
-        now = time.monotonic()
+        if self.posts.installed:
+            self.abandoned_posts.update(self.posts.opened(sent_at, method, target))
+            return
         if self.abandoned_at is None:
-            self.abandoned_at = now
-        self.abandoned_last = now
+            self.abandoned_at = time.monotonic()
         self.abandoned += 1
 
     def abandoned_overdue(self, now: Optional[float] = None) -> bool:
         """Whether still-open abandoned replies require closing the session rather than probing it."""
-        if self.abandoned_at is None:
-            return False
-        if self.posts.installed and not self.posts.open_since(self.abandoned_last):
-            self.abandoned_at = self.abandoned_last = None
-            self.abandoned = 0
-            return False
-        if self.abandoned >= _MAX_ABANDONED_REPLIES:
-            return True
         now = time.monotonic() if now is None else now
-        return now - self.abandoned_at >= _ABANDONED_REPLY_TIMEOUT
+        if self.posts.installed:
+            pending = {t: s for t, s in self.abandoned_posts.items() if t in self.posts.open}
+            self.abandoned_posts = pending
+            if not pending:
+                return False
+            oldest, count = min(pending.values()), len(pending)
+        elif self.abandoned_at is None:
+            return False
+        else:
+            oldest, count = self.abandoned_at, self.abandoned
+        return count >= _MAX_ABANDONED_REPLIES or now - oldest >= _ABANDONED_REPLY_TIMEOUT
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -2219,6 +2243,7 @@ def _call_session_tool(
                 _drop_session(key, session)
             raise
         discard_session = ephemeral
+        sent_at = None
         retry = False
         try:
             # We may have waited on the call lock while another caller's timeout retired this session, a server
@@ -2278,6 +2303,7 @@ def _call_session_tool(
                     # Only a cached session is worth waiting on.
                     0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
+                sent_at = time.monotonic()
                 out = session.run(coro, rem)
                 # A completed round trip proves the transport better than any probe could, so it resets the idle clock
                 # the recheck reads.
@@ -2287,8 +2313,8 @@ def _call_session_tool(
             # Keep the session so a Stop doesn't destroy the server's state; the SDK drops the abandoned reply, and
             # reuse is gated on a live probe.
             session.dirty = True
-            if not ephemeral:
-                session.note_abandoned()
+            if not ephemeral and sent_at is not None:
+                session.note_abandoned(*((sent_at,) if dispatch else (sent_at, "tools/call", name)))
             raise
         except _SessionWedged:
             discard_session = True
