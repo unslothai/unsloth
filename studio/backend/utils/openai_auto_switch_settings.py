@@ -550,7 +550,6 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_int8_prefill")):
         entry["mlx_int8_prefill"] = True
 
-    # Auto, the default, is stored as absence.
     for key in ("mlx_ple_offload", "mlx_expert_offload"):
         value = payload.get(key)
         if value == "off" or (

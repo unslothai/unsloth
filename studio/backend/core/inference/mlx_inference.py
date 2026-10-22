@@ -1086,7 +1086,6 @@ def mlx_resolve_offload(
         return fixed
     from core.inference.mlx_memory import mlx_offload_plan, mlx_offload_planner
 
-    # Also keeps the estimate working where MLX is not importable: the budget needs it.
     if mlx_offload_planner() is None:
         return fixed
     budget = mlx_memory_budget(retains_history = retains_history)
@@ -1115,7 +1114,6 @@ def mlx_resolve_offload(
 
 
 def mlx_checkpoint_window(model_dir) -> Optional[int]:
-    """The window *model_dir*'s config declares, held to what a load may be asked for."""
     from types import SimpleNamespace
 
     from core.inference.mlx_memory import _snapshot_config
@@ -1205,7 +1203,6 @@ def _mlx_offload_status(offload, model):
     for part, what in _MLX_OFFLOAD_PARTS:
         applied = offload["wanted"][part] if part in reports else None
         reason = None
-        # An "auto" knob unsloth_zoo never decided was turned off for this load.
         if offload["wanted"][part] not in (None, "auto") and applied is None:
             reason = offload["reason"] or (
                 "unsloth_zoo cannot offload this load (an adapter, a bitsandbytes checkpoint or "
@@ -5188,20 +5185,25 @@ class MLXInferenceBackend:
             from hub.utils.mlx_variants import download_precision_folder
             load_source = download_precision_folder(model_name, precision_folder, hf_token)
 
+        knobs = offload
+
         # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.
-        offload = _mlx_offload_request(
-            offload,
-            None
-            if is_distributed or is_lora or dtype is not None
-            else functools.partial(
-                mlx_resolve_offload,
-                pinned = _positive_int(max_seq_length),
-                load_in_4bit = load_in_4bit,
-                retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
-                kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
-                vision = True if speculates and not is_vision else None,
-            ),
-        )
+        def offload_request():
+            return _mlx_offload_request(
+                knobs,
+                None
+                if is_distributed or is_lora or dtype is not None
+                else functools.partial(
+                    mlx_resolve_offload,
+                    pinned = _positive_int(max_seq_length),
+                    load_in_4bit = load_in_4bit,
+                    retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                    kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
+                    vision = True if speculates and not is_vision else None,
+                ),
+            )
+
+        offload = offload_request()
         load_kwargs.update(offload["kwargs"])
 
         # Freed before the replacement weights are allocated, for headroom.
@@ -5251,6 +5253,9 @@ class MLXInferenceBackend:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
             load_kwargs["text_only"] = True
+            # Auto planned on the mlx-vlm route, and decide() consumed its knobs: plan this route afresh.
+            offload = offload_request()
+            load_kwargs.update(offload["kwargs"])
             model, tokenizer_or_processor = _load_offloading(
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
@@ -5283,7 +5288,6 @@ class MLXInferenceBackend:
             self._model, max_seq_length
         )
         _offload = _mlx_offload_status(offload, self._model)
-        # Priced as applied: a knob unsloth_zoo did not apply prices as resident.
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
         self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None

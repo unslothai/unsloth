@@ -172,7 +172,6 @@ def build_memory_estimate(
         layer_count = getattr(breakdown, "layer_count", None),
         gpu_layers = getattr(breakdown, "gpu_layers", None),
         moe_offload_unmodelled = bool(moe_offload_unmodelled),
-        # Only an MLX breakdown says what it can offload.
         mlx_offload = (
             None
             if getattr(breakdown, "offloadable", None) is None

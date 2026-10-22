@@ -1368,18 +1368,15 @@ class TestEstimateMemoryRoute:
         )  # a hand-set fraction prefills in the load's own chunk
         off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
         assert off.mlx_offload.offloadable == ["experts"] and seen[-1] == (None, None)
-        # Auto decides as the load does, at the pinned context.
         assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
         assert seen[-1][1] == 8192
         assert planned[-1]["vision"] is None
-        # A speculative load goes through mlx-vlm, so Auto is planned there.
         with monkeypatch.context() as patch:
             patch.setattr(ri, "_mlx_estimate_speculates", lambda request, model_dir: True)
             estimate(mlx_ple_offload = "off")
         assert planned[-1]["vision"] is True and len(planned) == 2
         four_bit["on"] = True  # already quantized: nothing for the load to quantize, so it offloads
         assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
-        # unsloth_zoo refuses offload when the load quantizes the checkpoint itself.
         (tmp_path / "config.json").write_text("{}")
         assert price(mlx_ple_offload = 1.0) is None and len(planned) == 3
         off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
@@ -4197,6 +4194,7 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     offload = pytest.importorskip("unsloth_zoo.mlx.offload")
     if not _HAVE_MLX or not hasattr(offload, "plan_offload"):
         pytest.skip("needs MLX and an unsloth_zoo that offloads")
+    mm.mlx_offload_planner.cache_clear()
     planner = mm.mlx_offload_planner()
     assert planner is offload
     import mlx.core as mx
@@ -4239,7 +4237,6 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     )
     config["quantization"] = {"group_size": 32, "bits": 4}
     (tmp_path / "config.json").write_text(json.dumps(config))
-    # The checkpoint lazily loaded on the load's route, its experts sized as stored.
     experts = sum(v.nbytes for k, v in weights.items() if ".switch_mlp." in k)
     found = offload.offloadable(mm._lazy_checkpoint(str(tmp_path), config), str(tmp_path))
     assert (found["expert_bytes"], found["experts"]) == (experts, None)
@@ -4274,7 +4271,6 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
         assert mm.mlx_offload_planner() is None
     mm.mlx_offload_planner.cache_clear()
 
-    # Priced by the runtime's own verdict, at the width the rest of the weights are priced at.
     mm._clear_sizing_cache()
     seen = []
     kept = {
@@ -4319,7 +4315,6 @@ def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
         lambda d, kv, chunk, four, vision = None: routes.append(("sized", vision))
         or SimpleNamespace(weights = 10, chunk = 512),
     )
-    # Each route's tree is built once, then cached.
     monkeypatch.setattr(mm, "_lazy_checkpoint", lambda d, config: mm._builds_on_mlx_vlm(config))
     found = lambda tree: {
         "ple_bytes": 0,
@@ -4357,6 +4352,55 @@ def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(
     monkeypatch.setattr(mlx_lm.utils, "load_model", lambda path, **kw: ("mlx-lm", None))
     assert mm._lazy_checkpoint("/x", {"model_type": "deepseek_v4"}) == "mlx-vlm"
     assert mm._lazy_checkpoint("/x", {"model_type": "llama"}) == "mlx-lm"
+
+
+def test_the_offload_probe_never_evaluates_a_converted_checkpoint(tmp_path, monkeypatch):
+    if not _HAVE_MLX:
+        pytest.skip("needs MLX to build and load a checkpoint")
+    checkpoint = pytest.importorskip("mlx_vlm.quantization.checkpoint")
+    if not hasattr(checkpoint, "transform_quantized_weights"):
+        pytest.skip("this mlx-vlm converts no ModelOpt checkpoint")
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from mlx_lm.models import qwen3
+
+    config = {
+        "model_type": "qwen3",
+        "hidden_size": 128,
+        "intermediate_size": 256,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 64,
+        "vocab_size": 64,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 1e6,
+        "max_position_embeddings": 512,
+        "tie_word_embeddings": True,
+        # mlx-vlm decodes ModelOpt's lone-scale FP8 linears to dense weights, evaluating them.
+        "quantization_config": {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION"},
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    weights = {}
+    for name, value in tree_flatten(qwen3.Model(qwen3.ModelArgs.from_dict(config)).parameters()):
+        if name.endswith("proj.weight"):
+            weights[name] = mx.zeros(value.shape, dtype = mx.uint8)
+            weights[name[: -len("weight")] + "weight_scale"] = mx.array(0.5)
+        else:
+            weights[name] = value
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+    evaluated = []
+    real_eval = mx.eval
+    monkeypatch.setattr(mx, "eval", lambda *a, **k: evaluated.append(1) or real_eval(*a, **k))
+    with mm._on_route(True):
+        mm._lazy_checkpoint(str(tmp_path), json.loads((tmp_path / "config.json").read_text()))
+    assert evaluated == []
+
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"lm_head.weight": "../outside.safetensors"}})
+    )
+    with pytest.raises(ValueError, match = "outside the snapshot"):
+        mm._lazy_checkpoint(str(tmp_path), config)
 
 
 try:
@@ -5067,7 +5111,6 @@ class TestPricingALoad:
         assert offloaded.weights_bytes == resident.weights_bytes - 1000
         assert offloaded.total_bytes == resident.total_bytes - 1000
         assert (offloaded.ple_offload, offloaded.expert_offload) == (None, 0.5)
-        # Its context is fitted inside unsloth_zoo's offload safety margin.
         monkeypatch.setattr(
             mm, "mlx_offload_planner", lambda: SimpleNamespace(SAFETY_MARGIN = (2 << 30, 0.03))
         )
@@ -5103,14 +5146,12 @@ class TestPricingALoad:
             str(tmp_path), dict(config, **change), q
         )
         config = {"model_type": "deepseek_v41"}
-        # As stored, or re-sized at the width the load gives it: only the gate is priced; quantized
-        # at load, the table becomes a resident one.
+        # Quantized at load, the table becomes a resident one.
         held = 64 * 128 * mm._runtime_dtype().size
         assert price(quantization = {"bits": 2}) == os.path.getsize(path) - 64 * 128 * 4
         assert (price(), price(model_type = "deepseek_v4")) == (held, 2 * held)
         assert price(True) == price(True, model_type = "deepseek_v4")
         assert price(model_type = "deepseek_v4", text_config = {"model_type": "deepseek_v41"}) == held
-        # Priced as stored when the architecture cannot be sized.
         monkeypatch.setattr(mm, "_whole_model", lambda *_: 1 / 0)
         assert (price(), price(True)) == (
             os.path.getsize(path) - 64 * 128 * 4,

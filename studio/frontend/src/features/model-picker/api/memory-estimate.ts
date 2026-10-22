@@ -63,11 +63,9 @@ export interface MemoryEstimate {
   gpuLayers: number | null;
   /** `--n-cpu-moe` is set, so the GPU figure ignores it and reads high. */
   moeOffloadUnmodelled: boolean;
-  /** MLX: share of the PLE tables / routed experts the load reads from disk, Auto decided; priced in
-   *  `weightsBytes`. */
+  /** MLX: share of the PLE tables / routed experts read from disk, priced in `weightsBytes`. */
   mlxPleOffload: number | null;
   mlxExpertOffload: number | null;
-  /** MLX: the parts this load can read from disk at all. */
   mlxOffloadable: MlxOffloadablePart[];
 }
 

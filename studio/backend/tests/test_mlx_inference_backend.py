@@ -1128,8 +1128,6 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
         **kwargs,
     ):
         refused = refusal["on"] and isinstance(offload, dict)
-        # unsloth_zoo hands its planner the checkpoint it downloaded, and turns the planner off
-        # for a load it cannot offload.
         if callable(offload):
             offload = None if refusal["on"] else offload("/snapshot")
         kwargs.update(
@@ -1265,18 +1263,15 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     priced = {"pinned": None, "load_in_4bit": False, "retains_history": True, "kv_bits": 2}
     auto = lambda at, *knobs: mi.mlx_resolve_offload(at, knobs, **priced)
     assert auto("/snap", "auto", "auto") == (1.0, 0.5, 8192) and plans[-1]["vision"] is None
-    # A KV width the cache refuses is priced at full width.
     assert (plans[-1]["budget_bytes"], plans[-1]["kv_bits"]) == (1 << 40, None)
     mi.mlx_resolve_offload("/snap", ("auto", None), vision = True, **priced)
     assert plans[-1]["vision"] is True
     plans.pop()
-    # Not planned: nothing auto, no checkpoint, no budget.
     assert (
         auto("/snap", 0.5, None) == (0.5, None, None) and auto(None, "auto", "auto") == (None,) * 3
     )
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: None)
     assert auto("/snap", "auto", "auto") == (None,) * 3 and len(plans) == 1
-    # An unsloth_zoo that cannot offload (or no MLX at all) is never asked for an MLX budget.
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: None)
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 / 0)
     assert auto("/snap", "auto", 0.5) == (None, 0.5, None) and len(plans) == 1
@@ -1286,6 +1281,54 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     decide = request["kwargs"]["offload"]
     assert decide("/snap") == decide("/snap") == {"ple": None, "experts": 0.6}
     assert request["prefill_step"] == 8192
+
+
+@pytest.mark.parametrize("decided_on_mlx_vlm", [False, True])
+def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, decided_on_mlx_vlm):
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference as mi
+    from core.inference import mlx_memory as mm
+    from core.inference import mlx_speculative
+
+    plans, applied = [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            offload = kwargs.get("offload")
+            if not kwargs["text_only"]:
+                if decided_on_mlx_vlm and callable(offload):
+                    offload("/snap")
+                raise ValueError("mlx-vlm has no such architecture")
+            applied.append(offload("/snap") if callable(offload) else offload)
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    def resolve(model_dir, knobs, **kw):
+        plans.append((knobs, kw["vision"]))
+        # A plan for the mlx-vlm route differs from the one mlx-lm needs, so a reused plan shows.
+        return (None, 0.25, 4096) if kw["vision"] else (None, 1.0, 8192)
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(mi, "mlx_resolve_offload", resolve)
+    monkeypatch.setattr(mi, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mi.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    source = mlx_speculative.DrafterSource("dflash", "/drafter", False)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+    )
+    config = SimpleNamespace(identifier = "org/moe", is_vision = False, is_lora = False)
+
+    mi.MLXInferenceBackend().load_model(config, speculative_type = "dflash")
+    assert plans[-1] == (("auto", "auto"), None)
+    assert applied == [{"ple": None, "experts": 1.0}]
 
 
 def test_offload_knobs_validate_and_reload_on_change():
@@ -1310,7 +1353,6 @@ def test_offload_knobs_validate_and_reload_on_change():
                     mlx_expert_offload = bad,
                 )
     be = SimpleNamespace(active_model_name = "m", models = {"m": {"mlx_kv_quant_requested": "auto"}})
-    # Auto however it is spelled, and an entry from before these knobs, are the same load.
     assert _mlx_runtime_settings_match(be, req(mlx_ple_offload = "auto", mlx_expert_offload = None))
     assert not _mlx_runtime_settings_match(be, req(mlx_ple_offload = "off"))
     assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
@@ -1322,7 +1364,6 @@ def test_offload_knobs_validate_and_reload_on_change():
 
     from routes import inference as routes
 
-    # The load and status responses warn when auto put weights on disk, not when the user did.
     part = lambda applied, requested: {"applied": applied, "requested": requested}
     info = {"mlx_offload": {"ple": part(1.0, 1.0), "experts": part(0.6, None)}}
     assert "reads 60% of its MoE experts from disk" in routes._mlx_offload_warning(info)

@@ -16032,7 +16032,6 @@ def _mlx_offload_warning(info: dict) -> Optional[str]:
 
 
 def _mlx_estimate_speculates(request, model_dir) -> bool:
-    """Whether an MLX load of *request* speculates, and so loads through mlx-vlm."""
     from core.inference import mlx_speculative
     from core.inference.mlx_inference import parse_mlx_kv_quant
     from core.inference.mlx_memory import _loads_as_vision, _snapshot_config

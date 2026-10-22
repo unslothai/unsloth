@@ -129,7 +129,6 @@ type FieldCase = {
    * it, so sweeping them under Auto would assert a comparison that does not happen.
    */
   live?: { config: Record<string, unknown>; status: Record<string, unknown> };
-  /** How the status nests the value, when it is not a field of its own. */
   wrap?: (value: unknown) => unknown;
 };
 
