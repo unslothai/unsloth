@@ -53909,9 +53909,10 @@ async def cancel_diffusion_generation(
     upsampling = cancel_upsampling()
     # A Detailer pass between two inpaints has no denoise for the engine to stop.
     detailer = sys.modules.get("core.inference.diffusion_detailer")
-    detailing = bool(detailer is not None and detailer.cancel_active())
     # The slot can change hands before the executor callback, so the engine rechecks under the lock.
     expected = account_access.tracked_generation_account()
+    # Only this account's passes (all of them with no account scope).
+    detailing = bool(detailer is not None and detailer.cancel_active(expected))
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:
         cancel = functools.partial(cancel, expected_account = expected)
@@ -53998,6 +53999,8 @@ def _run_detailer(
 ) -> None:
     """The Detailer pass over a finished render: one inpaint per detection on the same load, LoRAs, sampler and
     shift, with no live preview (the preview would show a crop)."""
+    from types import SimpleNamespace
+
     from core.inference import diffusion_detailer
     from core.inference.diffusion_families import load_identity
 
@@ -54019,12 +54022,21 @@ def _run_detailer(
         )
         return enhancement.encoded(typed)
 
+    # Only what an inpaint can apply: variation seeds are text to image only.
+    sd_controls = SimpleNamespace(
+        prompt_weighting = getattr(request, "prompt_weighting", None),
+        clip_skip = getattr(request, "clip_skip", None),
+        cfg_rescale = getattr(request, "cfg_rescale", None),
+    )
     diffusion_detailer.detail_result(
         backend.generate,
         result,
         settings,
         prompt_for = _prompt_for,
-        negative_prompt = result.get("negative_prompt"),
+        # The submitted one, not the render's: that is None when the base CFG left it off, and the Detailer's own
+        # CFG may engage it.
+        negative_prompt = request.negative_prompt,
+        account = account_access.tracked_generation_account(),
         steps = request.steps,
         guidance = request.guidance,
         generate_kwargs = {
@@ -54035,6 +54047,7 @@ def _run_detailer(
             "loras": [(l.id, l.weight) for l in request.loras] if request.loras else None,
             **_live_preview_kwarg(backend.generate, False),
             **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+            **_sd_controls_kwargs(backend.generate, sd_controls),
             **_shift_kwargs(backend.generate, request),
         },
     )

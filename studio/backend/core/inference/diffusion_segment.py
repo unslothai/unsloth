@@ -1167,6 +1167,8 @@ class MaskSegmenter:
         # Planning reads the Hub cache only for the active variant's own snapshot, not an explicit folder.
         self._use_cache = True
         self._timer: Optional[threading.Timer] = None
+        # Batch holds (hold()): while one is open a call keeps the model loaded; the holder releases it at the end.
+        self._holds = 0
         self._release_pending = False
         self._release_epoch = 0
         # Bumped by every GPU handover's release: a call that queued before one never runs on the accelerator.
@@ -1536,6 +1538,18 @@ class MaskSegmenter:
         finally:
             self._run_lock.release()
 
+    @contextmanager
+    def hold(self) -> Iterator[None]:
+        """Keep the model loaded across several calls (one batch pass): no tight-card or keep-alive unload between
+        them. A release asked for meanwhile still applies. The holder releases (or parks) the model afterwards."""
+        with self._state_lock:
+            self._holds += 1
+        try:
+            yield
+        finally:
+            with self._state_lock:
+                self._holds -= 1
+
     def _arm_keep_alive(self) -> None:
         with self._state_lock:
             if self._timer is not None:
@@ -1566,6 +1580,10 @@ class MaskSegmenter:
         if pending:
             self._unload_locked("released during a call")
             return
+        with self._state_lock:
+            held = self._holds > 0
+        if held:
+            return  # a batch pass: its holder parks or unloads once, after the last image
         if self.device and self.device.startswith("cuda"):
             free_mib, total_mib = _cuda_free_mib(int(self.device.split(":", 1)[1]))
             if vram_is_tight(free_mib, total_mib):

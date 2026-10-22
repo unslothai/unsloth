@@ -900,7 +900,7 @@ def test_cancel_route_stops_a_detailer_pass(monkeypatch):
     from routes import inference as routes
 
     stopped = []
-    fake = types.SimpleNamespace(cancel_active = lambda: stopped.append(1) or True)
+    fake = types.SimpleNamespace(cancel_active = lambda account = None: stopped.append(1) or True)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_detailer", fake)
     monkeypatch.setattr(routes.account_access, "generation_is_foreign", lambda kind: False)
     monkeypatch.setattr(routes.account_access, "generation_is_mine", lambda kind: True)
@@ -962,3 +962,222 @@ def test_route_runs_the_pass_on_a_display_id_load_and_stays_in_flight(monkeypatc
     assert seen == {"in_flight": True}
     assert response.images[0].detailer == {"targets": "face", "detections": []}
     assert routes.generation_in_flight() is False
+
+
+# ── round 3: cancel scope, batch SAM hold, cap after drop_size, late Stop, SD controls, inherited negative ──────────
+def _crop_back(kwargs):
+    import base64
+    import io
+    return Image.open(io.BytesIO(base64.b64decode(kwargs["init_image"].split(",", 1)[1]))).convert(
+        "RGB"
+    )
+
+
+def test_cancel_stops_only_the_callers_pass(monkeypatch):
+    _patch_detect(monkeypatch, [[_face((40, 30, 80, 80)), _face((150, 60, 200, 120))]])
+    calls = []
+
+    def _generate(**kwargs):
+        calls.append(kwargs["seed"])
+        # Another account presses Stop: this account's pass carries on.
+        assert det.cancel_active("someone-else") is False
+        return {"images": [_crop_back(kwargs)]}
+
+    result = {"images": [_scene()], "seeds": [1]}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+        account = "me",
+    )
+    assert calls == [1, 2] and "error" not in result["detailer"][0]
+
+    calls.clear()
+
+    def _generate_own(**kwargs):
+        calls.append(kwargs["seed"])
+        assert det.cancel_active("me") is True
+        return {"images": [_crop_back(kwargs)]}
+
+    result = {"images": [_scene()], "seeds": [1]}
+    det.detail_result(
+        _generate_own,
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+        account = "me",
+    )
+    assert calls == [1] and result["detailer"][0]["error"] == "cancelled"
+
+
+def test_stop_after_the_last_inpaint_returns_keeps_the_render(monkeypatch):
+    _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
+    render = _scene()
+
+    def _generate(**kwargs):
+        out = {"images": [_crop_back(kwargs).point(lambda v: 255 - v)]}
+        assert det.cancel_active() is True  # Stop lands while the patch is still being composited
+        return out
+
+    result = {"images": [render], "seeds": [1]}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+    )
+    assert result["images"][0] is render
+    assert result["detailer"][0]["error"] == "cancelled"
+    assert det.cancel_active() is False
+
+
+def test_undersized_detections_take_no_cap_slot(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_segment
+
+    tiny = [
+        diffusion_segment.Instance("eye", 0.9, (1.0, 1.0, 5.0, 5.0))
+        for _ in range(det.MAX_DETECTIONS)
+    ]
+    big = [diffusion_segment.Instance("face", 0.8, (10.0, 10.0, 60.0, 70.0)) for _ in range(20)]
+
+    class _Seg:
+        def segment(self, image, prompt, threshold, instance_masks):
+            return types.SimpleNamespace(
+                instances = tiny + big,
+                instance_logits = [torch.zeros(8, 8) for _ in tiny + big],
+                device = "cpu",
+                precision = "bf16",
+            )
+
+    monkeypatch.setattr(diffusion_segment, "get_segmenter", lambda: _Seg())
+    monkeypatch.setattr(
+        diffusion_segment, "release_segmenter", lambda reason, wait = False, park = False: True
+    )
+    found, info = det.detect([_scene()], det.DetailerSettings())
+    assert [d.concept for d in found[0]] == ["face"] * 20
+    assert info["found"] == [det.MAX_DETECTIONS + 20] and info["undersized"] == [det.MAX_DETECTIONS]
+
+
+def test_detect_keeps_sam_loaded_across_the_batch(monkeypatch):
+    from core.inference import diffusion_segment
+
+    events = []
+    seg = diffusion_segment.MaskSegmenter(
+        keep_alive_seconds = 0
+    )  # keep-alive off: every call would unload
+    seg.device = "cpu"
+    monkeypatch.setattr(seg, "_unload_locked", lambda reason: events.append(("unload", reason)))
+
+    def _segment(image, prompt, threshold, instance_masks):
+        seg._after_call()  # what every real call ends with
+        events.append(("segment", None))
+        return types.SimpleNamespace(
+            instances = [], instance_logits = [], device = "cpu", precision = "bf16"
+        )
+
+    seg.segment = _segment
+    monkeypatch.setattr(diffusion_segment, "get_segmenter", lambda: seg)
+    monkeypatch.setattr(
+        diffusion_segment,
+        "release_segmenter",
+        lambda reason, wait = False, park = False: events.append(("park", reason)),
+    )
+    det.detect([_scene(), _scene(), _scene()], det.DetailerSettings())
+    assert events == [("segment", None)] * 3 + [("park", "detailer")]
+    # Outside a hold the call settles as before.
+    seg._after_call()
+    assert events[-1] == ("unload", "no keep-alive")
+
+
+def test_hold_still_honours_a_release_asked_mid_call(monkeypatch):
+    from core.inference import diffusion_segment
+
+    seg = diffusion_segment.MaskSegmenter()
+    unloads = []
+    monkeypatch.setattr(seg, "_unload_locked", lambda reason: unloads.append(reason))
+    with seg.hold():
+        seg._release_pending = True
+        seg._after_call()
+    assert unloads == ["released during a call"]
+
+
+def test_inherited_negative_prompt_is_recorded_when_the_detailer_cfg_engages_it(monkeypatch):
+    _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
+    seen = []
+
+    def _generate(**kwargs):
+        seen.append(kwargs["negative_prompt"])
+        return {"images": [_crop_back(kwargs)], "negative_prompt": kwargs["negative_prompt"]}
+
+    # The base render's CFG was too low for the negative prompt, so its result records none.
+    result = {"images": [_scene()], "seeds": [1], "negative_prompt": None}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(guidance = 5.0),
+        prompt_for = lambda i: "p",
+        negative_prompt = "blurry",
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+    )
+    assert seen == ["blurry"] and result["detailer"][0]["negative_prompt"] == "blurry"
+
+
+def test_route_passes_sd_controls_submitted_negative_and_account(monkeypatch):
+    from core.inference.diffusion_sd_controls import SdControls
+    from models.inference import DiffusionGenerateRequest
+    from routes import inference as routes
+
+    captured = {}
+
+    class _Backend:
+        def status(self):
+            return {"loaded": True, "repo_id": "org/m", "family": "sdxl", "base_repo": None}
+
+        def generate(
+            self,
+            sd_controls = None,
+            **kwargs,
+        ):
+            raise AssertionError("not called")
+
+    def _detail_result(generate, result, settings, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(det, "detail_result", _detail_result)
+    monkeypatch.setattr(routes.account_access, "tracked_generation_account", lambda: "acct-1")
+    request = DiffusionGenerateRequest(
+        prompt = "p",
+        negative_prompt = "blurry",
+        steps = 4,
+        guidance = 1.0,
+        prompt_weighting = False,
+        clip_skip = 2,
+        cfg_rescale = 0.7,
+        variation_seed = 5,
+        variation_strength = 0.3,
+    )
+    result = {"images": [_scene()], "repo_id": "org/m", "negative_prompt": None}
+    enhancement = types.SimpleNamespace(encoded = lambda text: text)
+    routes._run_detailer(_Backend(), request, result, enhancement, det.DetailerSettings())
+    controls = captured["generate_kwargs"]["sd_controls"]
+    assert isinstance(controls, SdControls)
+    assert (controls.prompt_weighting, controls.clip_skip, controls.cfg_rescale) == (False, 2, 0.7)
+    # Variation seeds are text to image only.
+    assert controls.variation_seed is None and not controls.variation_strength
+    assert captured["negative_prompt"] == "blurry" and captured["account"] == "acct-1"

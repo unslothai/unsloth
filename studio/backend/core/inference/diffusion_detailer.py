@@ -37,6 +37,7 @@ that denoises, and the next pass moves it back instead of reading its weights ag
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import json
 import re
@@ -83,17 +84,20 @@ class DetailerCancelled(RuntimeError):
     """Stop was pressed while the pass ran (between two inpaints, where no denoise is there to stop)."""
 
 
-# The stop events of the passes running now; POST /images/generate/cancel sets them all (cancel_active).
-_active: set[threading.Event] = set()
+# The stop events of the passes running now, each with the account that started it (None: no account scope);
+# POST /images/generate/cancel sets the caller's (cancel_active).
+_active: dict[threading.Event, Optional[str]] = {}
 _active_lock = threading.Lock()
 
 
-def cancel_active() -> bool:
-    """Stop every running pass at its next detection. True when one was running."""
+def cancel_active(account: Optional[str] = None) -> bool:
+    """Stop the running passes at their next detection: every pass when ``account`` is None (no account scope),
+    else only that account's. True when one was stopped."""
     with _active_lock:
-        for event in _active:
+        hit = [event for event, owner in _active.items() if account is None or owner == account]
+        for event in hit:
             event.set()
-        return bool(_active)
+        return bool(hit)
 
 
 @dataclass(frozen = True)
@@ -343,6 +347,12 @@ def detection_prompt(template: Optional[str], main: str, index: int) -> Optional
 InpaintFn = Callable[[Any, Any, int, str, Optional[str]], Any]
 
 
+def _big_enough(box: tuple[float, float, float, float], drop_size: int) -> bool:
+    """Impact-Pack's detector filter: both box sides above ``drop_size``."""
+    x1, y1, x2, y2 = box
+    return x2 - x1 > drop_size and y2 - y1 > drop_size
+
+
 def detail_image(
     image: Any,
     detections: list[Detection],
@@ -363,15 +373,11 @@ def detail_image(
     current = np.array(image.convert("RGB"), dtype = np.uint8)
     height, width = current.shape[:2]
     done: list[dict] = []
-    capped = detections[:MAX_DETECTIONS]
-    # Undersized boxes go before the loop, as Impact-Pack's detectors drop them: they take no [SEP] prompt or seed.
-    sized = [
-        d
-        for d in capped
-        if d.box[2] - d.box[0] > settings.drop_size and d.box[3] - d.box[1] > settings.drop_size
-    ]
-    skipped = len(capped) - len(sized)
-    for index, det in enumerate(sized):
+    # Undersized boxes go before the loop and the cap, as Impact-Pack's detectors drop them: they take no [SEP]
+    # prompt, seed or cap slot.
+    sized = [d for d in detections if _big_enough(d.box, settings.drop_size)]
+    skipped = len(detections) - len(sized)
+    for index, det in enumerate(sized[:MAX_DETECTIONS]):
         if stop is not None and stop():
             raise DetailerCancelled("cancelled")
         x1, y1, x2, y2 = det.box
@@ -435,8 +441,8 @@ def detail_image(
     }
     if skipped:
         record["skipped"] = skipped
-    if len(detections) > MAX_DETECTIONS:
-        record["dropped"] = len(detections) - MAX_DETECTIONS
+    if len(sized) > MAX_DETECTIONS:
+        record["dropped"] = len(sized) - MAX_DETECTIONS
     return DetailResult(Image.fromarray(current), record)
 
 
@@ -557,12 +563,14 @@ def detect(
 ) -> tuple[list[list[Detection]], dict]:
     """SAM 3 on every image, then parked in host RAM: it never stays on the GPU beside the image model while that
     denoises. Each image keeps at most MAX_DETECTIONS detections (the pass's cap) as low-resolution planes;
-    ``info["found"]`` has how many SAM 3 kept per image. ``stop`` is checked before each image."""
+    ``info["found"]`` has how many SAM 3 kept per image, ``info["undersized"]`` how many of those were at or below
+    drop_size (filtered before the cap). ``stop`` is checked before each image."""
     from core.inference import diffusion_segment
 
     prompt = segment_prompt(settings.targets)
     out: list[list[Detection]] = []
     found: list[int] = []
+    undersized: list[int] = []
     info: dict = {}
     started = time.perf_counter()
     # The image engine's generation slot through detection and the park: a queued render waits for SAM 3 to leave
@@ -570,22 +578,28 @@ def detect(
     slot = _take_generation_slot(stop)
     try:
         segmenter = diffusion_segment.get_segmenter()
-        for image in images:
-            if stop is not None and stop():
-                raise DetailerCancelled("cancelled")
-            result = segmenter.segment(
-                image.convert("RGB"), prompt, threshold = settings.confidence, instance_masks = True
-            )
-            pairs = list(zip(result.instances, result.instance_logits))
-            found.append(len(pairs))
-            out.append(
-                [
-                    Detection(inst.concept, inst.score, inst.box, plane = plane)
-                    for inst, plane in pairs[:MAX_DETECTIONS]
-                ]
-            )
-            info = {"device": result.device, "precision": result.precision}
-            del result, pairs
+        # One load for the whole batch: no tight-card unload between images, parked once below.
+        hold = getattr(segmenter, "hold", None)
+        with hold() if hold is not None else contextlib.nullcontext():
+            for image in images:
+                if stop is not None and stop():
+                    raise DetailerCancelled("cancelled")
+                result = segmenter.segment(
+                    image.convert("RGB"), prompt, threshold = settings.confidence, instance_masks = True
+                )
+                pairs = list(zip(result.instances, result.instance_logits))
+                found.append(len(pairs))
+                # Undersized boxes never run, so they take no cap slot (Impact-Pack drops them at detection).
+                sized = [p for p in pairs if _big_enough(p[0].box, settings.drop_size)]
+                undersized.append(len(pairs) - len(sized))
+                out.append(
+                    [
+                        Detection(inst.concept, inst.score, inst.box, plane = plane)
+                        for inst, plane in sized[:MAX_DETECTIONS]
+                    ]
+                )
+                info = {"device": result.device, "precision": result.precision}
+                del result, pairs, sized
     finally:
         try:
             # Parked in host RAM: the next pass moves it back instead of reading the weights again.
@@ -595,6 +609,7 @@ def detect(
                 slot.release()
     info["model"] = diffusion_segment.active_variant().id
     info["found"] = found
+    info["undersized"] = undersized
     info["detect_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
     return out, info
 
@@ -638,17 +653,20 @@ def detail_result(
     steps: int,
     guidance: float,
     generate_kwargs: dict,
+    account: Optional[str] = None,
 ) -> None:
     """Detail every image of a finished render in place: ``result["images"]`` are replaced and
     ``result["detailer"]`` holds one recipe record per image. ``generate`` is the engine's generate() with the
     run's model identity, LoRAs and sampler bound; a failure is recorded on the image (the render is kept), a cancel
-    stops the pass."""
+    stops the pass. ``account`` owns the pass for cancel_active."""
     images = list(result.get("images") or [])
     if not images:
         return
+    renders = list(images)
     stop_event = threading.Event()
     with _active_lock:
-        _active.add(stop_event)
+        _active[stop_event] = account
+    finished = False
     try:
         _detail_images(
             generate,
@@ -662,9 +680,21 @@ def detail_result(
             guidance = guidance,
             generate_kwargs = generate_kwargs,
         )
+        finished = True
     finally:
         with _active_lock:
-            _active.discard(stop_event)
+            _active.pop(stop_event, None)
+            # Under the lock cancel_active sets events with: a Stop it answered "cancelled" for is honoured here,
+            # even one that arrived after the last inpaint returned.
+            stopped = stop_event.is_set()
+    if finished and stopped:
+        result["images"] = renders
+        result["detailer"] = [
+            record
+            if record and record.get("error")
+            else {**settings_record(settings), "error": "cancelled"}
+            for record in (result.get("detailer") or [None] * len(renders))
+        ]
 
 
 def _detail_images(
@@ -694,6 +724,7 @@ def _detail_images(
         result["detailer"] = [{**settings_record(settings), "error": error} for _ in images]
         return
     totals = info.get("found") or []
+    tiny = info.get("undersized") or []
     step_count = settings.steps if settings.steps is not None else steps
     cfg = settings.guidance if settings.guidance is not None else guidance
     cancelled = stop_event.is_set()
@@ -702,6 +733,8 @@ def _detail_images(
         if cancelled:
             records[index] = {**settings_record(settings), "error": "cancelled"}
             continue
+
+        inherited: dict = {}
 
         def _inpaint(crop, mask, seed, det_prompt, det_negative):
             out = generate(
@@ -721,6 +754,14 @@ def _detail_images(
             if not same_build(result, out):
                 # Same repo, other build (GGUF file, quantization, baked adapters): not the render's weights.
                 raise ValueError("the model changed")
+            if (
+                not settings.negative_prompt
+                and det_negative
+                and out.get("negative_prompt")
+                and not result.get("negative_prompt")
+            ):
+                # The image's negative prompt engaged only at the Detailer's CFG: the recipe keeps it.
+                inherited["negative_prompt"] = det_negative
             return out["images"][0]
 
         try:
@@ -747,14 +788,19 @@ def _detail_images(
         images[index] = detailed.image
         records[index] = {
             **detailed.record,
+            **inherited,
             "model": info.get("model"),
             "detect_device": info.get("device"),
         }
+        small = tiny[index] if index < len(tiny) else 0
+        if small:
+            records[index]["skipped"] = records[index].get("skipped", 0) + small
         # Detection kept only the first MAX_DETECTIONS: the record counts what SAM 3 found.
         total = totals[index] if index < len(totals) else None
         if total is not None and total > len(found[index]):
             records[index]["found"] = total
-            records[index]["dropped"] = total - len(found[index])
+            if total - small > len(found[index]):
+                records[index]["dropped"] = total - small - len(found[index])
         if index == 0:
             records[index]["detect_ms"] = info.get("detect_ms")
     result["images"] = images
