@@ -1800,16 +1800,13 @@ export const ja = {
       },
       notifications: {
         sectionTitle: "通知",
-        showLlamaUpdates: "llama.cpp のアップデート通知",
-        showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
-        showLoadedModels: "読み込み済みモデルのインジケーター",
-        showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
-        showAudioCppUpdates: "audio.cpp のアップデート通知",
-        showAudioCppUpdatesDescription:
-          "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
-        showUnslothUpdates: "Unsloth のアップデート通知",
-        showUnslothUpdatesDescription:
-          "新しいバージョンの Unsloth をインストールできるようになったときに通知します。",
+        showLoadedModels: "読み込み済みモデルのカード",
+        showLoadedModelsDescription: "メモリ上のすべてのモデルを一覧表示し、個別に取り出せるボタンを備えた隅のカードです。",
+        updateReminders: "更新のお知らせ",
+        updateRemindersDescription: "更新の準備ができたときにカードを表示する頻度です。",
+        unslothHint: "アプリ本体",
+        llamaHint: "チャットモデル",
+        audioHint: "Audio ページ",
         frequency: {
           always: "常に",
           daily: "1日1回",

@@ -1809,18 +1809,13 @@ export const ar = {
       },
       notifications: {
         sectionTitle: "الإشعارات",
-        showLlamaUpdates: "إشعارات تحديث llama.cpp",
-        showLlamaUpdatesDescription:
-          "التنبيه عند توفر إصدار أحدث من llama.cpp لتشغيل نماذج جديدة. أوقف التشغيل إذا كنت تُدرّب فقط.",
-        showLoadedModels: "مؤشر النماذج المحمّلة",
-        showLoadedModelsDescription:
-          "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
-        showAudioCppUpdates: "إشعارات تحديث audio.cpp",
-        showAudioCppUpdatesDescription:
-          "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
-        showUnslothUpdates: "إشعارات تحديث Unsloth",
-        showUnslothUpdatesDescription:
-          "الإشعار عند توفر إصدار أحدث من Unsloth للتثبيت.",
+        showLoadedModels: "بطاقة النماذج المحمّلة",
+        showLoadedModelsDescription: "بطاقة في الزاوية تعرض كل نموذج في الذاكرة، مع زر لإخراج كل منها.",
+        updateReminders: "تذكيرات التحديث",
+        updateRemindersDescription: "عدد مرات إظهار بطاقة عندما يكون التحديث جاهزًا.",
+        unslothHint: "التطبيق",
+        llamaHint: "نماذج المحادثة",
+        audioHint: "صفحات الصوت",
         frequency: {
           always: "دائمًا",
           daily: "مرة يوميًا",

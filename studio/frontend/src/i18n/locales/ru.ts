@@ -1815,18 +1815,13 @@ export const ru = {
       },
       notifications: {
         sectionTitle: "Уведомления",
-        showLlamaUpdates: "Уведомления об обновлениях llama.cpp",
-        showLlamaUpdatesDescription:
-          "Уведомлять о доступности новой сборки llama.cpp для запуска новых моделей. Отключите, если вы только обучаете модели.",
-        showLoadedModels: "Индикатор загруженных моделей",
-        showLoadedModelsDescription:
-          "Показывает в правом нижнем углу небольшую карточку со всеми моделями, находящимися сейчас в памяти (чат, речь, изображения, видео), и кнопку для выгрузки каждой из них.",
-        showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
-        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
-        showUnslothUpdatesDescription:
-          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        showLoadedModels: "Карточка загруженных моделей",
+        showLoadedModelsDescription: "Карточка в углу со всеми моделями в памяти и кнопкой выгрузки для каждой.",
+        updateReminders: "Напоминания об обновлениях",
+        updateRemindersDescription: "Как часто показывать карточку, когда готово обновление.",
+        unslothHint: "Приложение",
+        llamaHint: "Чат-модели",
+        audioHint: "Страницы аудио",
         frequency: {
           always: "Всегда",
           daily: "Раз в день",

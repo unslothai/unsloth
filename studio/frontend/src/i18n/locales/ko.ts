@@ -1806,18 +1806,13 @@ export const ko = {
       },
       notifications: {
         sectionTitle: "알림",
-        showLlamaUpdates: "llama.cpp 업데이트 알림",
-        showLlamaUpdatesDescription:
-          "새 모델 실행을 위한 최신 llama.cpp 업데이트가 있으면 알려드립니다. 학습 기능만 사용하는 경우 꺼두세요.",
-        showLoadedModels: "로드된 모델 표시기",
-        showLoadedModelsDescription:
-          "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
-        showAudioCppUpdates: "audio.cpp 업데이트 알림",
-        showAudioCppUpdatesDescription:
-          "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
-        showUnslothUpdates: "Unsloth 업데이트 알림",
-        showUnslothUpdatesDescription:
-          "설치할 수 있는 새 Unsloth 버전이 있으면 알립니다.",
+        showLoadedModels: "로드된 모델 카드",
+        showLoadedModelsDescription: "메모리에 있는 모든 모델을 보여 주고 각각 내릴 수 있는 버튼이 있는 모서리 카드입니다.",
+        updateReminders: "업데이트 알림",
+        updateRemindersDescription: "업데이트가 준비되면 카드를 얼마나 자주 표시할지 정합니다.",
+        unslothHint: "앱",
+        llamaHint: "채팅 모델",
+        audioHint: "오디오 페이지",
         frequency: {
           always: "항상",
           daily: "하루에 한 번",

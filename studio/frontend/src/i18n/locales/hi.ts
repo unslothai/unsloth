@@ -1813,18 +1813,13 @@ export const hi = {
       },
       notifications: {
         sectionTitle: "सूचनाएं",
-        showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
-        showLlamaUpdatesDescription:
-          "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
-        showLoadedModels: "लोड किए गए मॉडल का संकेतक",
-        showLoadedModelsDescription:
-          "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
-        showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
-        showAudioCppUpdatesDescription:
-          "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
-        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
-        showUnslothUpdatesDescription:
-          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        showLoadedModels: "लोड किए गए मॉडल कार्ड",
+        showLoadedModelsDescription: "कोने में एक कार्ड जो मेमोरी में हर मॉडल दिखाता है, हर एक को हटाने के बटन के साथ।",
+        updateReminders: "अपडेट रिमाइंडर",
+        updateRemindersDescription: "अपडेट तैयार होने पर कितनी बार कार्ड दिखाना है।",
+        unslothHint: "ऐप",
+        llamaHint: "चैट मॉडल",
+        audioHint: "ऑडियो पेज",
         frequency: {
           always: "हमेशा",
           daily: "दिन में एक बार",

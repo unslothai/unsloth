@@ -1920,18 +1920,13 @@ export const he = {
       },
       notifications: {
         sectionTitle: "התראות",
-        showLlamaUpdates: "התראות עדכון llama.cpp",
-        showLlamaUpdatesDescription:
-          "הודע כאשר גרסה חדשה יותר של llama.cpp זמינה להרצת מודלים חדשים. כבה אם אתה רק מאמן מודלים.",
-        showLoadedModels: "חיווי מודלים טעונים",
-        showLoadedModelsDescription:
-          "הצג כרטיס קטן בפינה הימנית התחתונה המפרט כל מודל שנמצא כרגע בזיכרון (צ'אט, דיבור, תמונה, וידאו), עם כפתור לפריקת כל אחד מהם.",
-        showAudioCppUpdates: "התראות עדכון של audio.cpp",
-        showAudioCppUpdatesDescription:
-          "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
-        showUnslothUpdates: "התראות עדכון של Unsloth",
-        showUnslothUpdatesDescription:
-          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        showLoadedModels: "כרטיס מודלים טעונים",
+        showLoadedModelsDescription: "כרטיס בפינה שמציג כל מודל בזיכרון, עם כפתור לפריקת כל אחד.",
+        updateReminders: "תזכורות עדכון",
+        updateRemindersDescription: "באיזו תדירות להציג כרטיס כשעדכון מוכן.",
+        unslothHint: "האפליקציה",
+        llamaHint: "מודלי צ'אט",
+        audioHint: "דפי אודיו",
         frequency: {
           always: "תמיד",
           daily: "פעם ביום",

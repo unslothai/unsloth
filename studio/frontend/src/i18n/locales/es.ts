@@ -1826,18 +1826,13 @@ export const es = {
       },
       notifications: {
         sectionTitle: "Notificaciones",
-        showLlamaUpdates: "Notificaciones de actualización de llama.cpp",
-        showLlamaUpdatesDescription:
-          "Avisa cuando haya una compilación más reciente de llama.cpp para ejecutar nuevos modelos. Desactívalo si solo entrenas.",
-        showLoadedModels: "Indicador de modelos cargados",
-        showLoadedModelsDescription:
-          "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
-        showAudioCppUpdates: "Notificaciones de actualización de audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Avisa cuando el entorno de ejecución de audio.cpp necesite una actualización para las páginas de Audio. Desactívalo si nunca usas Audio.",
-        showUnslothUpdates: "Notificaciones de actualización de Unsloth",
-        showUnslothUpdatesDescription:
-          "Avisar cuando haya una versión más reciente de Unsloth para instalar.",
+        showLoadedModels: "Tarjeta de modelos cargados",
+        showLoadedModelsDescription: "Una tarjeta en la esquina con cada modelo en memoria y un botón para expulsar cada uno.",
+        updateReminders: "Recordatorios de actualización",
+        updateRemindersDescription: "Con qué frecuencia mostrar una tarjeta cuando hay una actualización lista.",
+        unslothHint: "La app",
+        llamaHint: "Modelos de chat",
+        audioHint: "Páginas de audio",
         frequency: {
           always: "Siempre",
           daily: "Una vez al día",

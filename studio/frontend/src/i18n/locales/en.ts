@@ -1889,18 +1889,13 @@ export const en = {
       },
       notifications: {
         sectionTitle: "Notifications",
-        showLlamaUpdates: "llama.cpp update notifications",
-        showLlamaUpdatesDescription:
-          "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
-        showLoadedModels: "Loaded models indicator",
-        showLoadedModelsDescription:
-          "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
-        showAudioCppUpdates: "audio.cpp update notifications",
-        showAudioCppUpdatesDescription:
-          "Notify when the audio.cpp runtime needs an update to run the Audio pages. Turn off if you never use Audio.",
-        showUnslothUpdates: "Unsloth update notifications",
-        showUnslothUpdatesDescription:
-          "Notify when a newer version of Unsloth is available to install.",
+        showLoadedModels: "Loaded models card",
+        showLoadedModelsDescription: "A corner card listing every model in memory, with a button to eject each.",
+        updateReminders: "Update reminders",
+        updateRemindersDescription: "How often to show a card when an update is ready.",
+        unslothHint: "The app",
+        llamaHint: "Chat models",
+        audioHint: "Audio pages",
         frequency: {
           always: "Always",
           daily: "Once a day",
