@@ -80,6 +80,27 @@ def _create_research_run(account) -> None:
     )
 
 
+BENCHMARK_RUN_ID = "benchmark-matrix-run"
+BENCHMARK_RUN = {
+    "id": BENCHMARK_RUN_ID,
+    "kind": "sweep",
+    "sweep": "draft",
+    "model": MARKER,
+    "config": {"sweep": "draft"},
+    "results": [],
+    "createdAt": 1000,
+}
+
+
+@seeder("benchmark-run")
+def seed_benchmark_run(account) -> dict[str, str]:
+    from storage.benchmark_runs_db import upsert_run
+    from utils.account_context import run_as
+
+    run_as(account, upsert_run, BENCHMARK_RUN)
+    return {"run_id": BENCHMARK_RUN_ID}
+
+
 @seeder("runs-research")
 def seed_research_run(account) -> dict[str, str]:
     _create_research_run(account)
@@ -154,6 +175,17 @@ def _preview(fragment: str, query: dict, **overrides) -> Factory:
 
 
 FACTORIES = {
+    "routes.benchmarks:GET:/runs/{run_id}": Factory("benchmark-run", fragment = MARKER),
+    "routes.benchmarks:PUT:/runs/{run_id}": Factory(
+        "benchmark-run",
+        BENCHMARK_RUN,
+        fragment = MARKER,
+        owner = (200,),
+        wrong = (200,),
+        reason = "PUT upserts into the caller's own studio.db, so another account writing the "
+        "same id saves its own run and never reaches Alice's.",
+    ),
+    "routes.benchmarks:DELETE:/runs/{run_id}": Factory("benchmark-run", success = 204),
     "routes.research_runs:GET:/{run_id}": Factory("runs-research", fragment = MARKER),
     "routes.research_runs:PUT:/{run_id}/plan": Factory(
         "runs-research", UPDATE_PLAN_BODY, fragment = '"status":"awaiting_approval"'
