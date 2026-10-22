@@ -1311,11 +1311,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             quant_names = ("moss-image-base",),
             # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
-            # NVFP4 (torchao W4A4, same keep-list) scored LPIPS 0.383 / max 0.546 against bf16 (12 prompts, SFT);
-            # INT8-ConvRot 0.058. Same as FLUX.3: a passing NVFP4 gate record for a base still lifts it.
+            # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
             scheme_deny = frozenset({"nvfp4"}),
-            # A 5.08B DiT, inside the small-DiT rule: INT8-ConvRot LPIPS 0.058 vs bf16 (SFT; one-ulp floor 0.041),
-            # Base 0.096. bf16 while it fits, INT8-ConvRot when bf16 would offload.
+            # Small-DiT rule: bf16 while it fits, INT8-ConvRot (LPIPS 0.058) when bf16 would offload.
             auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "flux2",
         ),
@@ -2445,8 +2443,8 @@ def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Opt
 
 
 _CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
-# Remote-code components Studio loads through an in-tree diffusers port, judged by the layout that port reads (MOSS-Image
-# names its own ``pipeline_moss_image`` module, which would otherwise pass on any file: a config-only transformer/).
+# Remote-code components loaded via an in-tree port, judged by the layout that port reads (else a config-only
+# MOSS-Image transformer/ would pass).
 _IN_TREE_PORT_LIBRARIES = {
     ("pipeline_moss_image", "MOSSImageTransformer"): "diffusers",
     ("pipeline_moss_image", "MOSSImageScheduler"): "diffusers",

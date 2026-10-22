@@ -288,10 +288,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // MOSS-Image SFT: text to image, 5.1B single-stream DiT + Qwen3.5-9B encoder + FLUX.2 small VAE. The bf16 row
-    // keeps the OpenMOSS id; the backend fetches every component from unsloth/MOSS-Image-SFT-FP8 (the upstream
-    // diffusers folders byte-identical beside the FP8 / INT8 files). The GGUFs run through stable-diffusion.cpp only
-    // and pair with the same repo for the VAE and tokenizer.
+    // MOSS-Image SFT: the bf16 row keeps the OpenMOSS id but fetches from unsloth/MOSS-Image-SFT-FP8 (upstream
+    // folders mirrored byte-identical). GGUFs are sd.cpp only, VAE and tokenizer from the same repo.
     canonicalId: "OpenMOSS-Team/MOSS-Image-SFT",
     displayName: "MOSS-Image",
     description: "Text-to-image",
