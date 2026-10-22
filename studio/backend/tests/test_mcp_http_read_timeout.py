@@ -107,6 +107,12 @@ def _abandon_call(url, scope):
     assert out.startswith("Error"), out
 
 
+def _hold_reply_open(session):
+    # SDKs that abort an abandoned POST leave nothing open; pin the case where one stays open (older SDKs, legacy
+    # protocol) by recording an open POST started before the abandonment.
+    session.posts.open[object()] = session.abandoned_last
+
+
 def test_abandoned_reply_is_recorded_on_the_cached_session(slow_server, cached_scope):
     _abandon_call(slow_server, cached_scope)
     session = _cached_session(slow_server, cached_scope)
@@ -120,6 +126,7 @@ def test_overdue_abandoned_reply_retires_the_session_without_probing(
     monkeypatch.setattr(mcp_client, "_ABANDONED_REPLY_TIMEOUT", 0.2)
     _abandon_call(slow_server, cached_scope)
     stale = _cached_session(slow_server, cached_scope)
+    _hold_reply_open(stale)
     time.sleep(0.3)
     assert stale.abandoned_overdue()
 
@@ -140,6 +147,7 @@ def test_too_many_abandoned_replies_retire_the_session(slow_server, cached_scope
     monkeypatch.setattr(mcp_client, "_MAX_ABANDONED_REPLIES", 2)
     _abandon_call(slow_server, cached_scope)
     stale = _cached_session(slow_server, cached_scope)
+    _hold_reply_open(stale)
     _abandon_call(slow_server, cached_scope)
     assert _cached_session(slow_server, cached_scope) is stale and stale.abandoned == 2
     out = mcp_client.call_tool_sync(
@@ -156,9 +164,32 @@ def test_reaper_closes_an_idle_session_with_an_overdue_reply(
     monkeypatch.setattr(mcp_client, "_ABANDONED_REPLY_TIMEOUT", 0.2)
     _abandon_call(slow_server, cached_scope)
     stale = _cached_session(slow_server, cached_scope)
+    _hold_reply_open(stale)
     mcp_client._reap_idle_sessions()  # not overdue yet, and far inside the idle TTL
     assert not stale.closed.is_set()
     time.sleep(0.3)
     mcp_client._reap_idle_sessions()
     assert stale.closed.is_set()
     assert mcp_client._session_key(slow_server, None, cached_scope) not in mcp_client._mcp_sessions
+
+
+def test_finished_abandoned_reply_keeps_the_session(slow_server, cached_scope, monkeypatch):
+    # A Stop whose reply the server then finished leaks nothing, so the chat keeps its session (and server state).
+    monkeypatch.setattr(mcp_client, "_ABANDONED_REPLY_TIMEOUT", 0.2)
+    out = mcp_client.call_tool_sync(
+        slow_server, None, "slow", {"seconds": 0}, timeout = 30, scope = cached_scope
+    )
+    assert "slept 0" in out, out
+    session = _cached_session(slow_server, cached_scope)
+    out = mcp_client.call_tool_sync(
+        slow_server, None, "slow", {"seconds": 1}, timeout = 0.3, scope = cached_scope
+    )
+    assert out.startswith("Error"), out
+    assert session.abandoned == 1
+    time.sleep(1.5)
+    assert not session.abandoned_overdue() and session.abandoned == 0
+    out = mcp_client.call_tool_sync(
+        slow_server, None, "slow", {"seconds": 0}, timeout = 30, scope = cached_scope
+    )
+    assert "slept 0" in out, out
+    assert _cached_session(slow_server, cached_scope) is session and not session.closed.is_set()
