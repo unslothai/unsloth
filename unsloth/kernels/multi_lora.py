@@ -4,27 +4,13 @@
 """
 Batched multi-LoRA training: many LoRA adapters on one frozen base model, trained in one batch.
 
-Every token belongs to one adapter (or none, id -1). The base matmul runs once for the whole batch; each
-adapter's low rank update only touches its own tokens:
+Each token belongs to one adapter (or none, id -1). Tokens are stable-sorted by adapter once per batch
+(``MultiLoraBatch``) and every kernel gathers rows through that order, like Punica's SGMV and vLLM's
+``lora_shrink`` / ``lora_expand``, which are inference only. Training adds dX and per-adapter dA / dB
+reduced over each adapter's own tokens (``_seg_wgrad_kernel``), so with ``per_adapter_loss``,
+``clip_grad_norm_per_adapter_`` and an elementwise optimizer each adapter trains as it would alone.
 
-    H = X_u @ A_u.T                  shrink, d_in -> r
-    Y_u += s_u * H @ B_u.T           expand, r -> d_out, accumulated into the base output
-
-Tokens are stable-sorted by adapter once per batch (``MultiLoraBatch``) and every kernel gathers its rows
-through that order, as Punica's SGMV and vLLM's ``lora_shrink`` / ``lora_expand`` do for inference. Neither
-has a backward pass; training adds
-
-    dH = s_u * dY_u @ B_u            dX_u += dH @ A_u
-    dA_u = dH.T @ X_u                dB_u = s_u * dY_u.T @ H
-
-where the weight gradients reduce over each adapter's own tokens (``_seg_wgrad_kernel``). Adapter u's
-gradients therefore depend only on adapter u's rows, so with a per-adapter loss (``per_adapter_loss``),
-per-adapter clipping (``clip_grad_norm_per_adapter_``) and an elementwise optimizer (Adam, AdamW, SGD) each
-adapter trains as it would alone. Adapters of different rank are zero padded to the largest rank: padded
-rows and columns get exactly zero gradient, so they stay zero.
-
-``UNSLOTH_MULTI_LORA_TRITON=0`` (or no CUDA / XPU Triton) uses a plain PyTorch loop over adapters instead.
-LoRA dropout is not supported (Unsloth's default is 0).
+``UNSLOTH_MULTI_LORA_TRITON=0`` (or no CUDA / XPU) uses a PyTorch loop. LoRA dropout is unsupported.
 """
 
 from __future__ import annotations
@@ -84,8 +70,8 @@ class MultiLoraBatch:
     so a new batch never changes a kernel grid or a compiled graph.
     """
 
-    sorted_idx: torch.Tensor  # (M,) int32
-    seg_start: torch.Tensor  # (U + 1,) int32
+    sorted_idx: torch.Tensor
+    seg_start: torch.Tensor
     num_adapters: int
 
     @classmethod
@@ -112,8 +98,6 @@ class MultiLoraBatch:
     def num_tokens(self) -> int:
         return self.sorted_idx.numel()
 
-
-# Kernels
 
 if HAS_TRITON:
 
@@ -218,8 +202,7 @@ if HAS_TRITON:
         BLOCK_I: tl.constexpr,
         BLOCK_J: tl.constexpr,
     ):
-        # OUT_u = scale_u * P[seg_u].T @ Q[seg_u]: a reduction over adapter u's tokens only. An adapter with
-        # no tokens stores zeros.
+        # OUT_u = scale_u * P[seg_u].T @ Q[seg_u]; an adapter with no tokens stores zeros.
         pid = tl.program_id(0)
         u = tl.program_id(1)
         j_tiles = tl.cdiv(J, BLOCK_J)
@@ -326,7 +309,6 @@ def _seg_wgrad(
     p_sorted: bool,
     q_sorted: bool,
 ) -> torch.Tensor:
-    # out: (U, I, J) with I = P.shape[1], J = Q.shape[1].
     _, I, J = out.shape
     BLOCK_I = _block(I, 16, 64)
     BLOCK_J = _block(J, 16, 64)
@@ -372,7 +354,6 @@ def _shrink(
     batch,
     H = None,
 ):
-    # H[sorted] = X[rows] @ A_u.T; A: (U, r, d_in).
     if H is None:
         H = torch.empty(X.shape[0], A.shape[1], dtype = X.dtype, device = X.device)
     return _seg_mm(
@@ -390,7 +371,6 @@ def _shrink(
 
 
 def _expand_add(H, B, scales, Y, batch):
-    # Y[rows] += s_u * H[sorted] @ B_u.T; B: (U, d_out, r).
     return _seg_mm(
         H,
         B,
@@ -443,7 +423,6 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
-        # dH[sorted] = s_u * dY[rows] @ B_u
         dH = torch.empty(X.shape[0], R, dtype = dtype, device = X.device)
         _seg_mm(
             dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False
@@ -455,7 +434,6 @@ class MultiLoRA_W(torch.autograd.Function):
         W = fast_dequantize(W.t(), W_quant, dtype = dtype).to(dtype)
         dX = dY @ W.t()
         del W
-        # dX[rows] += dH[sorted] @ A_u
         _seg_mm(
             dH,
             A,
@@ -502,9 +480,6 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
     if bias is not None:
         Y = Y + bias.to(Y.dtype)
     return Y
-
-
-# Modules and training helpers
 
 
 class MultiLoraLinear(nn.Module):

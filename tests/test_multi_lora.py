@@ -44,7 +44,6 @@ def _case(
 
 
 def _dense(X, W, A, B, scales, ids):
-    # Per-token loop: the definition, not the kernel's segmented form.
     rows = []
     for t in range(X.shape[0]):
         y = X[t] @ W.t()
@@ -116,7 +115,6 @@ def test_batched_training_matches_each_adapter_trained_alone():
         for _ in range(steps):
             opt.zero_grad()
             err = (model(x[rows]) - target[rows]).pow(2).mean(1)
-            # Mean within each adapter, summed: per_adapter_loss's reduction.
             loss = sum(err[row_ids == u].mean() for u in range(U) if (row_ids == u).any())
             loss.backward()
             ml.clip_grad_norm_per_adapter_(model, 0.5)
