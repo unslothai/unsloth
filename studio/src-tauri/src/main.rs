@@ -505,7 +505,12 @@ fn enable_autostart_entry(app: &tauri::AppHandle) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
         windows_autostart_builder(&app.package_info().name, &exe.display().to_string())
             .build()
-            .and_then(|launcher| launcher.enable())
+            .and_then(|launcher| {
+                // An elevated run under an older build may have left the value in HKLM, which would
+                // start a second copy at login. disable() removes it when allowed and skips it otherwise.
+                let _ = launcher.disable();
+                launcher.enable()
+            })
             .map_err(|error| error.to_string())
     }
     #[cfg(not(windows))]
