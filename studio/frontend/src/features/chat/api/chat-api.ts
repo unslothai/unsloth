@@ -477,11 +477,11 @@ export async function countChatInputTokens(payload: {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: serializedPayload,
   });
   return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
@@ -907,41 +907,6 @@ export async function deleteFineTunedModel(args: {
       export_type: args.exportType ?? null,
       gguf_variant: args.ggufVariant ?? null,
     }),
-  });
-  await parseJsonOrThrow<unknown>(response);
-}
-
-export interface ScanFolderInfo {
-  id: number;
-  path: string;
-  created_at: string;
-  /** Sub-folders are scanned too. Absent on older backends. */
-  recursive?: boolean;
-  /** Result of the last scan. Absent on older backends, which means "ok". */
-  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
-}
-
-export async function listScanFolders(): Promise<ScanFolderInfo[]> {
-  const response = await authFetch("/api/models/scan-folders");
-  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
-  return data.folders;
-}
-
-export async function addScanFolder(
-  path: string,
-  recursive?: boolean,
-): Promise<ScanFolderInfo> {
-  const response = await authFetch("/api/models/scan-folders", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, recursive }),
-  });
-  return parseJsonOrThrow<ScanFolderInfo>(response);
-}
-
-export async function removeScanFolder(id: number): Promise<void> {
-  const response = await authFetch(`/api/models/scan-folders/${id}`, {
-    method: "DELETE",
   });
   await parseJsonOrThrow<unknown>(response);
 }

@@ -744,7 +744,7 @@ export interface OpenAIChatCompletionsRequest {
   sandbox_level?: "high" | "low";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
-  /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
+  /** `kb_id` replaces `thread_id`; `project_id` combines with either. */
   rag_scope?: {
     kb_id?: string;
     project_id?: string;

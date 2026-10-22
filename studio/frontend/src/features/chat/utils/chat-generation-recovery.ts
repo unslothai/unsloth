@@ -7,6 +7,9 @@ import {
   extractDeltaText,
   parseAssistantContent,
 } from "./parse-assistant-content";
+import type { ContextUsageMarkers } from "./saved-context-usage";
+import { isExternalModelId } from "../external-providers";
+import { contextUsageReasoningKey, type ContextUsageReasoningFields } from "./context-usage-reasoning";
 
 export type StoredGenerationStatus = ChatGenerationStatus;
 
@@ -183,7 +186,7 @@ export function recoveredGenerationFinalMetadata(options: {
   current: Record<string, unknown>;
   run: {
     id: string;
-    requestPayload: { model?: unknown };
+    requestPayload: { model?: unknown } & ContextUsageReasoningFields;
     createdAt: number;
     startedAt: number | null;
     completedAt: number | null;
@@ -193,8 +196,9 @@ export function recoveredGenerationFinalMetadata(options: {
   firstChunkAt?: number;
   totalChunks: number;
   toolCalls?: string[];
+  markers: ContextUsageMarkers;
 }): Record<string, unknown> {
-  const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
+  const { current, run, usage, timings, firstChunkAt, totalChunks, markers } = options;
   const modelId =
     typeof run.requestPayload.model === "string"
       ? run.requestPayload.model
@@ -239,6 +243,14 @@ export function recoveredGenerationFinalMetadata(options: {
           : 0),
       cacheWriteTokens: usageCacheWriteTokens(usage),
       modelId,
+      ...(!isExternalModelId(modelId)
+        ? { reasoningKey: contextUsageReasoningKey(run.requestPayload) }
+        : {}),
+      // Revisions only grow: above zero, an edit may have landed after this run started, so the
+      // count calibrates an estimate instead of being certified for the revised branch.
+      ...(markers.revision > 0
+        ? { messageCount: markers.messageCount, estimatedTokens: markers.estimatedTokens }
+        : markers),
     };
   }
   if (next.responseDetails === undefined) {

@@ -37,6 +37,8 @@ export interface ExternalProviderConfig {
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
+  shared?: boolean;
+  sharedByOwner?: boolean;
 
   /** Sanitized backend-owned authorization state; never contains OAuth material. */
   authKind?: ProviderAuthKind;
@@ -417,7 +419,7 @@ export const CUSTOM_PROVIDER_PRESETS = [
   {
     providerType: "llama_cpp",
     displayName: "llama.cpp",
-    baseUrlPlaceholder: "http://localhost:8080/v1",
+    baseUrlPlaceholder: "http://localhost:9931/v1",
     modelIdsPlaceholder: "gpt-oss-20b\nqwen3-14b",
   },
   {

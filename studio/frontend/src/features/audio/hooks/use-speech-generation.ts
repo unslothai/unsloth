@@ -375,7 +375,10 @@ export function useSpeechGeneration({
     };
     const savedVoice =
       workflow === "speak" ? toolRequest.patch.inputs?.reference : undefined;
-    const language = audioLanguage.trim();
+    // MOSS Local's language rides its Style panel; Supertonic's has its own.
+    const language = (
+      toolRequest.patch.language ?? (mossLocalGeneration ? audioLanguage : "")
+    ).trim();
     saveLastPrompt(ttsDraftKey("prompt", workflow), prompt);
     if (savedVoice) {
       const voiceController = new AbortController();
@@ -388,7 +391,7 @@ export function useSpeechGeneration({
             text,
             instructions:
               instructionsKind !== null && instructions ? instructions : null,
-            language: mossLocalGeneration && language ? language : null,
+            language: language || null,
             inputs: { reference: savedVoice },
             options: requestOptions,
             speed: toolRequest.patch.speed ?? null,
@@ -441,9 +444,7 @@ export function useSpeechGeneration({
         ...(instructionsKind !== null && instructions
           ? { audio_instructions: instructions }
           : {}),
-        ...(mossLocalGeneration && language
-          ? { audio_language: language }
-          : {}),
+        ...(language ? { audio_language: language } : {}),
         ...(Object.keys(requestOptions).length > 0
           ? { audio_options: requestOptions }
           : {}),

@@ -587,6 +587,7 @@ class _Turn:
     # result twice
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
     provider_compaction: dict[str, Any] | None = None
+    usage: dict[str, Any] | None = None
 
     def note_reasoning_extra(self, extra: Any) -> None:
         """Accumulate Gemini's per-part replay envelopes across one provider turn."""
@@ -1265,7 +1266,7 @@ def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
     if not isinstance(usage, dict):
         return
     for field, value in usage.items():
-        if isinstance(value, bool):
+        if isinstance(value, bool) or field == "context_tokens":
             continue
         if isinstance(value, int):
             totals[field] = totals.get(field, 0) + value
@@ -1278,6 +1279,34 @@ def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
         for detail, count in value.items():
             if isinstance(count, int) and not isinstance(count, bool):
                 bucket[detail] = bucket.get(detail, 0) + count
+
+
+def _update_usage_snapshot(snapshot: dict[str, Any], usage: dict[str, Any]) -> None:
+    for field, value in usage.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            snapshot[field] = value
+        elif field in _USAGE_DETAIL_FIELDS and isinstance(value, dict):
+            bucket = snapshot.setdefault(field, {})
+            if not isinstance(bucket, dict):
+                continue
+            for detail, count in value.items():
+                if isinstance(count, int) and not isinstance(count, bool):
+                    bucket[detail] = count
+
+
+def _usage_int(usage: dict[str, Any], field: str) -> int:
+    value = usage.get(field)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _pass_context_tokens(usage: dict[str, Any]) -> int:
+    own = _usage_int(usage, "context_tokens")
+    if own > 0:
+        return own
+    parts = _usage_int(usage, "prompt_tokens") + _usage_int(usage, "completion_tokens")
+    return max(parts, _usage_int(usage, "total_tokens"))
 
 
 def _usage_chunk_line(
@@ -1698,7 +1727,10 @@ async def stream_with_studio_tools(
                 if isinstance(upstream_model, str) and upstream_model:
                     model_name = upstream_model
                 if "usage" in payload:
-                    _merge_usage(usage_totals, payload.get("usage"))
+                    if isinstance(payload.get("usage"), dict):
+                        if turn.usage is None:
+                            turn.usage = {}
+                        _update_usage_snapshot(turn.usage, payload["usage"])
                     if isinstance(payload.get("timings"), dict):
                         last_timings = payload["timings"]
                     if _is_usage_only(payload):
@@ -1835,6 +1867,17 @@ async def stream_with_studio_tools(
                     await aclose()
                 except (RuntimeError, GeneratorExit):
                     pass
+
+        if turn.usage is not None:
+            parts = _usage_int(turn.usage, "prompt_tokens") + _usage_int(
+                turn.usage, "completion_tokens"
+            )
+            if parts > _usage_int(turn.usage, "total_tokens"):
+                turn.usage["total_tokens"] = parts
+            _merge_usage(usage_totals, turn.usage)
+            context = _pass_context_tokens(turn.usage)
+            if context > 0:
+                usage_totals["context_tokens"] = context
 
         # The provider turn is over, whichever way it ended. Said explicitly because a turn closed on [DONE] alone
         # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel.

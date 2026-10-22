@@ -137,6 +137,17 @@ def _rebuild(param, full, module):
         return torch.nn.Parameter(full, requires_grad = param.requires_grad)
     from bitsandbytes.nn import Params4bit
 
+    as_uint8 = (
+        full.is_floating_point()
+        and full.dim() == 2
+        and full.shape[-1] == 1
+        and full.is_contiguous()
+    )
+    if as_uint8:
+        # FSDP2 packs the 4-bit bytes in the compute dtype only to shard them. Saved (merged_4bit
+        # requantizes with the weight's own quant_storage) they are the uint8 bitsandbytes writes
+        # without FSDP2, so the checkpoint matches a single-GPU one and its quantization_config.
+        full = full.reshape(-1).view(torch.uint8).reshape(-1, 1)
     new = torch.Tensor._make_subclass(Params4bit, full, False)
     for key in (
         "quant_state",
@@ -145,9 +156,12 @@ def _rebuild(param, full, module):
         "quant_type",
         "quant_storage",
         "bnb_quantized",
+        "_original_shape",
     ):
         if hasattr(param, key):
             setattr(new, key, getattr(param, key))
+    if as_uint8:
+        new.quant_storage = torch.uint8
     new.module = module
     return new
 
@@ -163,6 +177,7 @@ def fsdp2_gathered(
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
     not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
     plus those `include(name, param)` selects (frozen ones the save still writes).
+    `offload_to_cpu` may be a predicate `(name, param) -> bool`.
     Packed 4-bit weights stay on their device: the merge dequantizes them there."""
     if _ACTIVE:
         yield _ACTIVE[-1]
@@ -206,7 +221,8 @@ def fsdp2_gathered(
                 del full
                 continue
             module = owners[id(param)][0][0]
-            if offload_to_cpu and getattr(param, "quant_state", None) is None:
+            offload = offload_to_cpu(name, param) if callable(offload_to_cpu) else offload_to_cpu
+            if offload and getattr(param, "quant_state", None) is None:
                 full = full.cpu()
             replaced[id(param)] = (param, _rebuild(param, full.detach(), module))
         if writer:
@@ -225,6 +241,40 @@ def fsdp2_gathered(
         replaced.clear()
         if dist is not None:
             _wait_for_writer(dist, writer)
+
+
+def _is_4bit_base(base_layer):
+    weight = getattr(base_layer, "weight", None)
+    if weight is not None and getattr(weight, "quant_state", None) is not None:
+        return True
+    # The weight object an eval forward left unsharded need not carry the QuantState attribute.
+    return any(c.__name__ == "Linear4bit" for c in type(base_layer).__mro__)
+
+
+def offload_all_but_4bit_merge_operands(model):
+    """`offload_to_cpu` for a merged 4-bit save: PEFT merges a LoRA layer where its packed 4-bit base
+    weight stays (its GPU), so only the adapter weights of those layers stay there too. Everything
+    else (embeddings, unquantized towers, LoRA on unquantized layers with their base) goes to the CPU.
+    Selected by parameter name, not identity: `fsdp2_gathered` reshards first, and a parameter an eval
+    forward left unsharded is a different object from the DTensor the gather then sees."""
+    prefixes = []
+    modules = model.named_modules() if isinstance(model, torch.nn.Module) else ()
+    for module_name, module in modules:
+        base_layer = getattr(module, "base_layer", None)
+        if not isinstance(base_layer, torch.nn.Module) or not _is_4bit_base(base_layer):
+            continue
+        prefix = f"{module_name}." if module_name else ""
+        for attr in (
+            "lora_A",
+            "lora_B",
+            "lora_embedding_A",
+            "lora_embedding_B",
+            "lora_magnitude_vector",
+        ):
+            if isinstance(getattr(module, attr, None), torch.nn.Module):
+                prefixes.append(f"{prefix}{attr}.")
+    prefixes = tuple(prefixes)
+    return lambda name, param: not name.startswith(prefixes)
 
 
 def fsdp2_gather_active():
@@ -269,6 +319,25 @@ def _has_sharded_4bit(args, kwargs):
     )
 
 
+def _has_native_replicated_4bit(args, kwargs):
+    """A natively sharded model (fsdp2_native, fit layout) whose Linear4bit weights FSDP2 left replicated:
+    they keep bitsandbytes' own `weight.absmax` / `quant_state` entries, which a strict DCP load rejects
+    as unexpected keys although the in-memory QuantState already equals them."""
+    model = args[0] if args else kwargs.get("model", None)
+    if not isinstance(model, torch.nn.Module) or not getattr(model, "_unsloth_fsdp2_native", False):
+        return False
+    DTensor = _dtensor_class()
+    try:
+        from bitsandbytes.nn import Linear4bit
+    except Exception:
+        return False
+    return any(
+        isinstance(m, Linear4bit)
+        and not (DTensor is not None and isinstance(getattr(m, "weight", None), DTensor))
+        for m in model.modules()
+    )
+
+
 def _wrap_accelerate_adapter_only():
     try:
         import accelerate.utils.fsdp_utils as fsdp_utils
@@ -302,7 +371,9 @@ def install_dcp_bnb_state_dict():
     bitsandbytes' `weight.absmax` / `weight.quant_state.bitsandbytes__nf4` entries are not one
     (AttributeError in `_get_fqns`). That breaks every FSDP2 Trainer adapter checkpoint of a 4-bit
     model. Inside adapter-only DCP calls (`_drops_frozen_weights`) Linear4bit reports just its weight
-    and bias; the QuantState is unchanged in memory. Other DCP calls keep bitsandbytes' entries."""
+    and bias; the QuantState is unchanged in memory. A full DCP state dict of a sharded 4-bit model is
+    built the same way and then gets bitsandbytes' entries back under their usual keys
+    (`_add_quant_state_entries`), which loading drops again. Other DCP calls are untouched."""
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
         from bitsandbytes.nn import Linear4bit
@@ -322,16 +393,27 @@ def install_dcp_bnb_state_dict():
     _save_to_state_dict._unsloth_fsdp2_patched = True
     Linear4bit._save_to_state_dict = _save_to_state_dict
 
-    def _wrap(fn):
+    def _wrap(fn, name):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            if not (_drops_frozen_weights(kwargs) or _has_sharded_4bit(args, kwargs)):
+            adapter_only = _drops_frozen_weights(kwargs)
+            full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
+            if not (adapter_only or full_4bit):
+                if name.startswith("set_") and _has_native_replicated_4bit(args, kwargs):
+                    args, kwargs = _without_quant_state_entries(name, args, kwargs)
                 return fn(*args, **kwargs)
+            if full_4bit and name.startswith("set_"):
+                args, kwargs = _without_quant_state_entries(name, args, kwargs)
             _DCP_DEPTH[0] += 1
             try:
-                return fn(*args, **kwargs)
+                out = fn(*args, **kwargs)
             finally:
                 _DCP_DEPTH[0] -= 1
+            if full_4bit and name in ("get_model_state_dict", "get_state_dict"):
+                model = args[0] if args else kwargs.get("model")
+                state_dict = out[0] if name == "get_state_dict" else out
+                _add_quant_state_entries(model, state_dict, kwargs.get("options", None))
+            return out
 
         wrapper._unsloth_fsdp2_patched = True
         return wrapper
@@ -339,34 +421,206 @@ def install_dcp_bnb_state_dict():
     for name in _DCP_FUNCTIONS:
         fn = getattr(dcp_state_dict, name, None)
         if fn is not None and not getattr(fn, "_unsloth_fsdp2_patched", False):
-            setattr(dcp_state_dict, name, _wrap(fn))
+            setattr(dcp_state_dict, name, _wrap(fn, name))
     return True
+
+
+def _linear4bit_entries(model):
+    """(state dict key prefix, module) of every bitsandbytes Linear4bit with a QuantState, keyed the way
+    torch.distributed.checkpoint names them (no torch.compile `_orig_mod.` segment)."""
+    try:
+        from bitsandbytes.nn import Linear4bit
+    except Exception:
+        return []
+    entries = []
+    for name, module in model.named_modules():
+        if not isinstance(module, Linear4bit):
+            continue
+        if getattr(getattr(module, "weight", None), "quant_state", None) is None:
+            continue
+        prefix = name.replace("_orig_mod.", "")
+        entries.append((prefix + "." if prefix else "", module))
+    return entries
+
+
+def _add_quant_state_entries(model, state_dict, options):
+    """A full (not adapter-only) DCP state dict of a sharded 4-bit model: DCP cannot name bitsandbytes'
+    `weight.absmax` / `weight.quant_state.*` entries (they are not attribute paths of a DTensor), so
+    they are built without them and added here, next to each packed weight the dict holds. Without them
+    the packed bytes cannot be dequantized after a reload. The QuantState is replicated on every rank."""
+    if not isinstance(state_dict, dict) or not isinstance(model, torch.nn.Module):
+        return
+    cpu = bool(getattr(options, "cpu_offload", False))
+    for prefix, module in _linear4bit_entries(model):
+        if prefix + "weight" not in state_dict:
+            continue
+        for key, value in module.weight.quant_state.as_dict(packed = True).items():
+            value = value.detach()
+            state_dict[prefix + "weight." + key] = value.cpu() if cpu else value
+
+
+def _without_quant_state_entries(name, args, kwargs):
+    """Loading: drop the entries `_add_quant_state_entries` wrote (DCP would reject them as unexpected
+    keys); the QuantState is rebuilt identically when the 4-bit model is loaded again."""
+    model = args[0] if args else kwargs.get("model")
+    if not isinstance(model, torch.nn.Module):
+        return args, kwargs
+    drop = set()
+    for prefix, module in _linear4bit_entries(model):
+        drop.update(
+            prefix + "weight." + key for key in module.weight.quant_state.as_dict(packed = True)
+        )
+    if not drop:
+        return args, kwargs
+
+    def strip(state_dict):
+        if not isinstance(state_dict, dict) or not drop.intersection(state_dict):
+            return state_dict
+        return {k: v for k, v in state_dict.items() if k not in drop}
+
+    if name == "set_model_state_dict":
+        if len(args) > 1:
+            args = (args[0], strip(args[1])) + tuple(args[2:])
+        elif "model_state_dict" in kwargs:
+            kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
+    elif "model_state_dict" in kwargs:
+        kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
+    return args, kwargs
+
+
+def _in_backward():
+    try:
+        return torch._C._current_graph_task_id() != -1
+    except Exception:
+        return False
+
+
+def model_mesh(model):
+    """The device mesh `model` is sharded over: the one shard_model recorded, else its first DTensor
+    parameter's; None when neither exists (the default world group applies)."""
+    mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
+    if mesh is not None:
+        return mesh
+    DTensor = _dtensor_class()
+    if DTensor is None:
+        return None
+    for p in model.parameters():
+        if isinstance(p, DTensor):
+            return p.device_mesh
+    return None
+
+
+def mesh_all_reduce(tensor, mesh, dist):
+    """Sum `tensor` in place over every rank of `mesh` (the world when None), one all_reduce per mesh
+    dimension (the groups of each dimension partition the mesh, so an HSDP mesh is summed whole).
+    Returns the number of ranks summed. A sub-mesh (several models or replicas on disjoint ranks)
+    reduces only over its own ranks."""
+    if mesh is None:
+        dist.all_reduce(tensor)
+        return dist.get_world_size()
+    for dim in range(mesh.ndim):
+        dist.all_reduce(tensor, group = mesh.get_group(dim))
+    return mesh.size()
+
+
+def _sync_replicated_grads(
+    params,
+    dist,
+    mesh = None,
+):
+    """One all_reduce per (device, reduce dtype) over the fixed parameter list, in its order, issued
+    by every rank: a gradient this rank did not produce counts as zeros, and a per-parameter
+    "has a gradient" flag rides along so a parameter no rank used keeps grad None (as with DDP).
+    Sums in float32 (float64 stays float64), as FSDP2's reduce_dtype does: two fp16 gradients of
+    40000 overflow an fp16 sum although their mean is finite. Linear, so averaging the running
+    accumulation after each micro-step equals averaging the accumulated sum once. Over the ranks of
+    `mesh`, the model's own (mesh_all_reduce), not the whole world."""
+    groups = {}
+    for p in params:
+        dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
+        groups.setdefault((str(p.device), dtype), []).append(p)
+    for (device, dtype), group in groups.items():
+        sizes = [p.numel() for p in group]
+        total = sum(sizes)
+        flat = torch.zeros(total + len(group), dtype = dtype, device = group[0].device)
+        offset = 0
+        for i, (p, n) in enumerate(zip(group, sizes)):
+            if p.grad is not None:
+                flat[offset : offset + n].copy_(p.grad.detach().reshape(-1))
+                flat[total + i] = 1
+            offset += n
+        world = mesh_all_reduce(flat, mesh, dist)
+        flat[:total].div_(world)
+        used = flat[total:].tolist()  # one device sync, not one per parameter
+        offset = 0
+        for i, (p, n) in enumerate(zip(group, sizes)):
+            if used[i] > 0:
+                value = flat[offset : offset + n].view(p.shape)
+                if p.grad is None:
+                    p.grad = value.to(p.dtype).clone()
+                else:
+                    p.grad.copy_(value)
+            offset += n
 
 
 def reduce_unsharded_trainable_grads(model):
     """Trainable parameters FSDP2 does not manage (e.g. in `ignored_modules`) get no gradient
     reduction, so every rank would step on its own gradient and the replicas drift apart. Average
-    their gradient over ranks as it is produced, like DDP. Returns the parameter names."""
+    their gradients over the model's mesh ranks like DDP, once per backward, at its end, on every rank: a per-parameter
+    hook would make a rank that did not use the parameter (a branch, a routed MoE expert) skip the
+    collective the others enter, and hang. The sync is queued as an autograd engine callback from a
+    hook on `model`'s forward outputs (and, as a fallback, on each of these parameters), so it runs
+    after all gradients are accumulated and before the optimizer step / clip. Returns the names."""
     dist = _dist()
     DTensor = _dtensor_class()
-    if dist is None or DTensor is None or dist.get_world_size() == 1:
+    if dist is None or DTensor is None:
+        return []
+    mesh = model_mesh(model)
+    if (mesh.size() if mesh is not None else dist.get_world_size()) == 1:
         return []
     names = []
     seen = set()
+    params = model.__dict__.setdefault("_unsloth_replicated_grad_params", [])
+    state = model.__dict__.setdefault("_unsloth_replicated_grad_state", {"queued": False})
+
+    def _sync():
+        state["queued"] = False
+        _sync_replicated_grads(params, dist, mesh)
+
+    def _queue(*_):
+        if not state["queued"]:
+            state["queued"] = True
+            torch.autograd.Variable._execution_engine.queue_callback(_sync)
+
     for name, param in model.named_parameters():
         if id(param) in seen or not param.requires_grad or isinstance(param, DTensor):
             continue
         seen.add(id(param))
         if getattr(param, "_unsloth_grad_all_reduce", False):
             continue
-        world = dist.get_world_size()
-
-        def _average(grad, world = world):
-            grad = grad.clone()
-            dist.all_reduce(grad)
-            return grad.div_(world)
-
-        param.register_hook(_average)
+        param.register_hook(_queue)
         param._unsloth_grad_all_reduce = True
+        params.append(param)
         names.append(name)
+    if params and not getattr(model, "_unsloth_replicated_grad_hooked", False):
+
+        def _pre_forward(module, args):
+            if not _in_backward():
+                state["queued"] = False  # a backward that raised never ran its callback
+
+        def _post_forward(module, args, output):
+            if not torch.is_grad_enabled():
+                return
+            from torch.utils._pytree import tree_flatten
+
+            leaves = tree_flatten(output)[0]
+            if not any(isinstance(t, torch.Tensor) for t in leaves) and isinstance(output, dict):
+                leaves = list(output.values())
+            for t in leaves:
+                if isinstance(t, torch.Tensor) and t.requires_grad:
+                    t.register_hook(_queue)
+
+        model.register_forward_pre_hook(_pre_forward)
+        model.register_forward_hook(_post_forward)
+        model.__dict__["_unsloth_replicated_grad_hooked"] = True
     return names

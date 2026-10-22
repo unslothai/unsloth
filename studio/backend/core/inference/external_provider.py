@@ -49,6 +49,29 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
     {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
 )
 
+
+# LM Studio 400s on {"type": "json_object"} ("must be 'json_schema' or 'text'"); a json_schema of the same object is the
+# same constraint. A retry, not the default: some OpenAI-compatible APIs accept json_object but not json_schema.
+def _json_object_as_schema(response_format: dict[str, Any]) -> dict[str, Any]:
+    """Keep the llama.cpp-style `schema` member; absent or empty means any object, as in grammar_constraint."""
+    schema = response_format.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        schema = {"type": "object"}
+    return {"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}
+
+
+def _json_object_refused_for_schema(
+    status_code: int, error_text: str, response_format: Optional[dict[str, Any]]
+) -> bool:
+    """True when the server refused JSON mode but names json_schema as the accepted spelling."""
+    if status_code != 400 or not isinstance(response_format, dict):
+        return False
+    if response_format.get("type") != "json_object":
+        return False
+    text = error_text.lower()
+    return "response_format" in text and "json_schema" in text
+
+
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
 _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 # refresh within one or two turns to detect server restarts.
@@ -1141,25 +1164,26 @@ def _with_max_completion_tokens(body: dict[str, Any]) -> dict[str, Any]:
 
 
 @contextlib.asynccontextmanager
-async def _stream_post_retrying_max_tokens(
+async def _stream_post_with_compat_fallbacks(
     http: httpx.AsyncClient, url: str, body: dict[str, Any], **kwargs
 ):
-    """`http.stream("POST", ...)` that resends once with `max_completion_tokens` if the upstream rejects `max_tokens`.
-    Nothing has been yielded to the caller at the status check, so the retry is invisible."""
-    async with http.stream("POST", url, json = body, **kwargs) as response:
-        retry = (
-            response.status_code == 400
-            and "max_tokens" in body
-            and _rejects_max_tokens(400, (await response.aread()).decode("utf-8", errors = "replace"))
-        )
-        if not retry:
-            yield response
-            return
-    logger.info("Upstream rejected max_tokens; retrying with max_completion_tokens")
-    async with http.stream(
-        "POST", url, json = _with_max_completion_tokens(body), **kwargs
-    ) as response:
-        yield response
+    """Resend on a refused `max_tokens` or `json_object` before yielding; each rewrite removes its own trigger,
+    so each field changes at most once."""
+    while True:
+        async with http.stream("POST", url, json = body, **kwargs) as response:
+            if response.status_code != 400:
+                yield response
+                return
+            error_text = (await response.aread()).decode("utf-8", errors = "replace")
+            if "max_tokens" in body and _rejects_max_tokens(400, error_text):
+                body = _with_max_completion_tokens(body)
+                logger.info("Upstream rejected max_tokens; retrying with max_completion_tokens")
+            elif _json_object_refused_for_schema(400, error_text, body.get("response_format")):
+                body = {**body, "response_format": _json_object_as_schema(body["response_format"])}
+                logger.info("Upstream refused json_object; retrying as json_schema")
+            else:
+                yield response
+                return
 
 
 def _client() -> httpx.AsyncClient:
@@ -1963,7 +1987,7 @@ class ExternalProviderClient:
         )
 
         try:
-            async with _stream_post_retrying_max_tokens(
+            async with _stream_post_with_compat_fallbacks(
                 _loopback_http_client if getattr(self, "_managed_loopback", False) else _client(),
                 url,
                 body,
@@ -3879,7 +3903,9 @@ class ExternalProviderClient:
                                 )
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
-                                last_usage.update(delta_usage)
+                                last_usage.update(
+                                    {k: v for k, v in delta_usage.items() if v is not None}
+                                )
                                 # Compaction iterations are not in top-level input/output_tokens; fold them into
                                 # compaction_{input,output}_tokens for billing.
                                 iterations = delta_usage.get("iterations")
@@ -7646,7 +7672,11 @@ class ExternalProviderClient:
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
-            f"{self.base_url}/models", headers = self._auth_headers(), timeout = timeout
+            f"{self.base_url}/models",
+            # Anthropic pages 20 models by default; 1000 is its documented maximum.
+            params = {"limit": 1000} if self.provider_type == "anthropic" else None,
+            headers = self._auth_headers(),
+            timeout = timeout,
         )
         response.raise_for_status()
         data = response.json()
@@ -7892,6 +7922,28 @@ class ExternalProviderClient:
                 exc,
             )
             raise
+
+    async def api_key_rejected(self) -> bool:
+        """True when an endpoint that needs auth refuses the key. OpenRouter and the Hugging Face
+        router answer /models without one, so that check alone passes any key. Errors other than
+        401/403 count as not rejected."""
+        if self.provider_type == "openrouter":
+            url = f"{self.base_url}/key"
+        elif (
+            self.provider_type == "huggingface"
+            and (urlparse(self.base_url).hostname or "").lower() == "router.huggingface.co"
+        ):
+            url = "https://huggingface.co/api/whoami-v2"
+        else:
+            return False
+        if not self.api_key:
+            return False
+        try:
+            response = await _client().get(url, headers = self._auth_headers(), timeout = self._timeout)
+        except httpx.HTTPError as exc:
+            logger.debug("API key check for %s skipped: %s", self.provider_type, exc)
+            return False
+        return response.status_code in (401, 403)
 
     def _container_headers(self) -> dict[str, str]:
         """Auth headers plus the required ``OpenAI-Beta: containers=v1`` opt-in; without it DELETE
@@ -8225,6 +8277,27 @@ def _build_usage_chunk(
         # OpenAI-shaped totals so monitors and cost consumers do not undercount the turn.
         compaction_input = last_usage.get("compaction_input_tokens") or 0
         compaction_output = last_usage.get("compaction_output_tokens") or 0
+        context_tokens = uncached_input + cache_creation + cache_read + completion_tokens
+        # Top-level counts sum every sampling iteration (server tools add some); the last one is the context.
+        iterations = last_usage.get("iterations")
+        final = next(
+            (
+                it
+                for it in reversed(iterations if isinstance(iterations, list) else [])
+                if isinstance(it, dict) and it.get("type") in ("message", "fallback_message")
+            ),
+            None,
+        )
+        if final is not None:
+            context_tokens = sum(
+                int(final.get(field) or 0)
+                for field in (
+                    "input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "output_tokens",
+                )
+            )
         prompt_tokens = uncached_input + cache_creation + cache_read + compaction_input
         completion_tokens += compaction_output
         if not (prompt_tokens or completion_tokens):
@@ -8233,6 +8306,7 @@ def _build_usage_chunk(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            "context_tokens": context_tokens,
             "prompt_tokens_details": {"cached_tokens": cache_read},
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
