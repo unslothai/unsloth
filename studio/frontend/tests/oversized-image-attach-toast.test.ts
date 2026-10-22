@@ -4,26 +4,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getChatImageSizeError } from "../src/features/chat/image-normalize.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const RUNTIME_PROVIDER = readSrc("features/chat/runtime-provider.tsx");
 const SHARED_COMPOSER = readSrc("features/chat/shared-composer.tsx");
+const MB = 1024 * 1024;
 
-test("the chat composer toasts an image over the size limit before refusing it", () => {
-  const sizeCheck = RUNTIME_PROVIDER.match(
-    /class VisionImageAdapter[\s\S]*?if \(picked\.size > maxSize\) \{([\s\S]*?)\n {4}\}/,
+test("an image over 20 MB is named in the refusal", () => {
+  assert.equal(getChatImageSizeError({ name: "a.png", size: 20 * MB }), null);
+  assert.equal(
+    getChatImageSizeError({ name: "big.png", size: 20 * MB + 1 }),
+    "big.png is over the 20 MB image limit.",
   );
-  assert.ok(sizeCheck, "VisionImageAdapter size check not found");
-  assert.match(sizeCheck[1], /toast\.error\([\s\S]*?throw new Error\(/);
 });
 
-test("the compare composer reports an image over the size limit instead of skipping it", () => {
-  const sizeCheck = SHARED_COMPOSER.match(
-    /if \(file\.size > MAX_IMAGE_SIZE\) \{\s*(\w+) \?\?= file\.name;\s*continue;\s*\}/,
+test("the chat composer toasts an oversized image before refusing it", () => {
+  assert.match(
+    RUNTIME_PROVIDER,
+    /class VisionImageAdapter[\s\S]*?const sizeError = getChatImageSizeError\(picked\);\s*if \(sizeError\) \{\s*toast\.error\(sizeError\);\s*throw new Error\(sizeError\);/,
   );
-  assert.ok(sizeCheck, "oversized compare images are dropped without a record");
+});
+
+test("the compare composer toasts each oversized image, including a pasted one", () => {
   assert.match(
     SHARED_COMPOSER,
-    new RegExp(`if \\(${sizeCheck[1]}\\) \\{\\s*toast\\.error\\(`),
+    /const sizeError = getChatImageSizeError\(file\);\s*if \(sizeError\) \{\s*toast\.error\(sizeError\);\s*continue;/,
+  );
+  assert.match(
+    SHARED_COMPOSER,
+    /const supported = files\.some\(\s*\(file\) => isAudioAttachmentFile\(file\) \|\| isChatImageFile\(file\),\s*\);/,
   );
 });
