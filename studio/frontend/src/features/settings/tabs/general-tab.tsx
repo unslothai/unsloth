@@ -717,6 +717,9 @@ export function GeneralTab() {
         </SettingsSection>
       ) : null}
 
+      {/* Owner-only like the installation-wide block below: its routes are. */}
+      {isOwner ? <DocumentsRagSection /> : null}
+
       <EngineVersionsSection />
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
@@ -798,8 +801,6 @@ export function GeneralTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
-
-      <DocumentsRagSection />
 
       <HubSettingsSection />
 
