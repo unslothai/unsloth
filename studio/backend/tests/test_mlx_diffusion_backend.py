@@ -1813,3 +1813,59 @@ def test_the_runtime_releases_mlx_buffer_cache_after_every_generation(monkeypatc
             runtime.generate(model, **kwargs)
     assert cleared == [1]
     assert model.callbacks.in_loop == []
+
+
+def test_every_mlx_cache_clear_goes_through_the_drain():
+    """MLX does not keep a dropped output's buffer alive for the command buffer writing it, so a clear must drain
+    first. The only ``clear_cache`` call is the one inside ``release_buffer_cache``, right after its synchronize."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(mb))
+    sites = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "clear_cache"
+            ):
+                sites.append(func.name)
+    assert sites == ["release_buffer_cache"]
+
+
+def _recording_mx(sync_error = None, clear_error = None):
+    events = []
+
+    class _Mx:
+        @staticmethod
+        def synchronize(stream = None):
+            events.append("synchronize")
+            if sync_error is not None:
+                raise sync_error
+
+        @staticmethod
+        def clear_cache():
+            events.append("clear_cache")
+            if clear_error is not None:
+                raise clear_error
+
+    return _Mx, events
+
+
+def test_release_buffer_cache_drains_before_clearing():
+    mx, events = _recording_mx()
+    mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]
+
+
+def test_release_buffer_cache_never_replaces_the_callers_exception():
+    mx, events = _recording_mx(sync_error = RuntimeError("sync"), clear_error = RuntimeError("clear"))
+    with pytest.raises(ValueError, match = "generation failed"):
+        try:
+            raise ValueError("generation failed")
+        finally:
+            mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]

@@ -361,6 +361,20 @@ def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> boo
     return untiled_decode_bytes(width, height) > free_bytes
 
 
+def release_buffer_cache(mx: Any) -> None:
+    """Drain queued GPU work, then return MLX's cached buffers. MLX does not keep a dropped output array's buffer alive
+    for the command buffer still writing it, so a clear with work in flight can release memory the GPU is using. mflux
+    runs on the default stream. Best effort: this runs in cleanup paths and must not replace the caller's exception."""
+    try:
+        mx.synchronize()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.drain_skipped: %s", exc)
+    try:
+        mx.clear_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.clear_cache_skipped: %s", exc)
+
+
 class MfluxRuntime:
     """The only code that imports mlx / mflux. Tests replace it with a fake (``backend.runtime_factory``)."""
 
@@ -459,7 +473,7 @@ class MfluxRuntime:
                 pass
             # Freed step and decode activations stay in MLX's buffer cache: on unified memory that is system RAM
             # held idle between generations. Only unused buffers go; the weights are live arrays.
-            mx.clear_cache()
+            release_buffer_cache(mx)
         if cancelled:
             raise MlxCancelled("cancelled")
         return image
@@ -515,9 +529,9 @@ class MfluxRuntime:
         gc.collect()
         try:
             import mlx.core as mx
-            mx.clear_cache()
         except Exception:  # noqa: BLE001
-            pass
+            return
+        release_buffer_cache(mx)
 
     def supports_guidance(self, model: Any) -> bool:
         return bool(getattr(getattr(model, "model_config", None), "supports_guidance", False))
