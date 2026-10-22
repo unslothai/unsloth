@@ -359,11 +359,14 @@ export const BUDGET = {
   // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
   // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
   // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
   // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
-  // +3,375 B raw / +1,616 B transfer (6,881,340 -> 6,884,715 B raw,
-  // 2,072,543 -> 2,074,159 B transfer against cb2590f395, Node 26, 98 chunks). Raised by that.
-  transferBytes: 2_074_298,
-  rawBytes: 6_884_929,
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  transferBytes: 2_075_036,
+  rawBytes: 6_885_450,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
