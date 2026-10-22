@@ -369,8 +369,11 @@ export const BUDGET = {
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
-  transferBytes: 2_076_193,
-  rawBytes: 6_891_324,
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate),
+  // about +1.5 KB raw / +0.4 KB transfer: merged with main at c2f75c4 the build measures 6,892,776 B raw /
+  // 2,076,549 B transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_076_749,
+  rawBytes: 6_892_976,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
