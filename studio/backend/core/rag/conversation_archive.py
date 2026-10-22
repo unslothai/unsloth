@@ -472,6 +472,8 @@ def archive_turns(
     written = 0
     conn = None
     try:
+        if cancel_check is not None and cancel_check():
+            return 0
         count = embeddings.token_counter(model)
         chunk_limit = None
         conn = rag_db.get_connection()
@@ -482,7 +484,11 @@ def archive_turns(
         # Chunk everything first, then embed it in ONE pass. Per group, a first compaction of a long chat ran dozens
         # of one-item embedding jobs back to back before the reply could start, and both backends serialise them.
         pending = []
+        max_chunks = _archive_embed_max_chunks()
+        collected = skipped = 0
         for group, span in groups:
+            if cancel_check is not None and cancel_check():
+                return 0
             text = render_turn(group)
             if not text:
                 continue
@@ -507,6 +513,10 @@ def archive_turns(
                 )
                 _widen_span(conn, scope, digest, span)
                 continue
+            if collected >= max_chunks:
+                # Past the cap: chunking the rest is wasted work, later requests take it.
+                skipped += 1
+                continue
             if chunk_limit is None:
                 chunk_limit = embeddings.chunk_tokens(model)
             chunks = chunk_pages(
@@ -517,6 +527,7 @@ def archive_turns(
             )
             if chunks:
                 pending.append((group, span, digest, chunks, seats, budget))
+                collected += len(chunks)
         if not pending:
             return 0
 
@@ -528,9 +539,8 @@ def archive_turns(
             )
             return 0
 
-        max_chunks = _archive_embed_max_chunks()
         chunk_total = sum(len(entry[3]) for entry in pending)
-        if chunk_total > max_chunks:
+        if chunk_total > max_chunks or skipped:
             kept, used = [], 0
             for entry in pending:
                 need = len(entry[3])
@@ -543,7 +553,7 @@ def archive_turns(
                     break
                 kept.append(entry)
                 used += need
-            deferred = len(pending) - len(kept)
+            deferred = len(pending) - len(kept) + skipped
             logger.info(
                 "conversation_archive.embed_capped thread_id=%s groups=%s chunks=%s "
                 "cap=%s deferred_groups=%s",

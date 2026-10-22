@@ -1739,13 +1739,9 @@ def test_archive_embed_honors_cancel_between_batches(conn, monkeypatch):
         evicted.append({"role": "user", "content": f"cancel question {index} unique {index}"})
         evicted.append({"role": "assistant", "content": f"cancel answer {index} unique {index}"})
 
-    # Calls: 1 = pre-encode guard, 2 = before batch 0, 3 = before batch 1.
-    # Allow the first encode batch, then cancel so later groups stay unindexed.
-    state = {"n": 0}
-
+    # Stop lands once the first batch is embedded, so later groups stay unindexed.
     def cancel_check():
-        state["n"] += 1
-        return state["n"] > 2
+        return bool(calls)
 
     written = conversation_archive.archive_turns(thread_id, evicted, cancel_check = cancel_check)
     assert 0 < written < 8
@@ -1790,6 +1786,44 @@ def test_archive_embed_caps_chunks_per_call(conn, monkeypatch):
     assert total == 10
     assert all(n <= 4 for n in calls)
     assert conversation_archive.archive_turns(thread_id, evicted) == 0
+
+
+def test_a_stop_before_chunking_skips_the_embedder_entirely(conn, monkeypatch):
+    """Stop already set: no tokenizer load, no chunking, no encode (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "stop-early-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    touched = []
+    monkeypatch.setattr(embeddings, "token_counter", lambda *_a, **_k: touched.append("count"))
+    monkeypatch.setattr(
+        conversation_archive, "chunk_pages", lambda *_a, **_k: touched.append("chunk")
+    )
+    evicted = _turn("early question", "early answer")
+
+    assert conversation_archive.archive_turns(thread_id, evicted, cancel_check = lambda: True) == 0
+    assert touched == []
+
+
+def test_chunking_stops_once_the_cap_is_reached(conn, monkeypatch):
+    """A long backlog must not be tokenized in full when only the cap's worth is embedded."""
+    thread_id = "cap-chunk-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "3")
+    real = conversation_archive.chunk_pages
+    chunked = []
+
+    def counted(*args, **kwargs):
+        chunked.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "chunk_pages", counted)
+    evicted = []
+    for index in range(20):
+        evicted += _turn(f"chunk question {index} unique {index}", f"chunk answer {index}")
+
+    assert conversation_archive.archive_turns(thread_id, evicted) == 3
+    assert len(chunked) == 3
 
 
 def test_archive_embed_restarts_in_the_new_space_after_a_backend_swap(conn, monkeypatch):
