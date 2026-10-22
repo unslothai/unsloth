@@ -350,11 +350,23 @@ export const BUDGET = {
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
   // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
   // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
-  // Naming an attached image over the 20 MB limit (#14538) adds 111 B raw / 58 B transfer to the eager chat chunk
-  // (6,879,345 -> 6,879,456 B raw, 2,071,823 -> 2,071,881 B transfer against 38d21245d0, Node 22, 97 chunks), where
-  // main was already 7 B transfer over; transfer set to the measured build, raw still fits.
-  transferBytes: 2_071_881,
-  rawBytes: 6_879_589,
+  // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
+  // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
+  // (already 244 B above the measured 6_879_345).
+  // Chat fork affordances (the sidebar fork mark, the "Forked from" divider and the shared fork toasts) in the
+  // eager chat chunk: +1_460 B raw / +361 B transfer against 77e742c8e2 (6_879_345 -> 6_880_805 raw,
+  // 2_071_823 -> 2_072_184 transfer, 97 chunks). Raised by that growth.
+  // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
+  // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
+  // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  transferBytes: 2_075_036,
+  rawBytes: 6_885_450,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
