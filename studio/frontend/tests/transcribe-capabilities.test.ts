@@ -160,3 +160,9 @@ test("OpenAI's gpt-4o transcribe models never ask for timestamps", () => {
     assert.equal(result.request.timestamps, false);
   }
 });
+
+test("an owner-shared connection lists only the models the owner allowed", () => {
+  const shared = { providerType: "openai", models: ["gpt-5.5", "whisper-1"], sharedByOwner: true };
+  assert.deepEqual(connectionTranscribeModels(shared, "gpt-4o-transcribe"), ["whisper-1"]);
+  assert.deepEqual(connectionTranscribeModels({ ...shared, models: ["gpt-5.5"] }), []);
+});

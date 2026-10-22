@@ -76,6 +76,7 @@ export function connectionTranscribeModels(
     providerType: string;
     models: readonly string[];
     availableModels?: readonly string[];
+    sharedByOwner?: boolean;
   },
   dictationModel?: string,
 ): string[] {
@@ -85,7 +86,9 @@ export function connectionTranscribeModels(
     ...(connection.availableModels ?? []),
   ].filter((id) => TRANSCRIBE_MODEL_ID.test(id));
   if (dictationModel) ids.push(dictationModel);
-  return [...new Set(ids)];
+  // An owner-shared connection refuses any model outside the list the owner allowed (403).
+  const allowed = connection.sharedByOwner ? new Set(connection.models) : null;
+  return [...new Set(ids)].filter((id) => !allowed || allowed.has(id));
 }
 
 const OPENAI_UNTIMED_MODELS = new Set([
