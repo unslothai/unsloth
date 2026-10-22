@@ -165,8 +165,7 @@ class _PostSlot:
 
 
 class _PostTracker:
-    """POSTs open on a cached session's httpx client, each bound to the dispatch that sent it, so only a still-open
-    reply of an abandoned call counts against the session."""
+    """Open POSTs of a cached session, each bound to its call, so only an abandoned call's open reply counts."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -2531,8 +2530,7 @@ def _ui_request_sync(
     rpc = None,
     **oauth,
 ) -> Any:
-    """``dispatch(client)`` on the transport call_tool_sync would pick for this scope. ``rpc`` is the request's
-    (JSON-RPC method, tool name or URI), which ties an abandoned reply to its POST."""
+    """``dispatch(client)`` on the transport call_tool_sync picks for this scope; ``rpc`` = (method, name or URI)."""
 
     async def _one_shot() -> Any:
         # As the session branch: an edit during discovery must not reach the old endpoint.
