@@ -1221,9 +1221,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "update(contextPinPatch(value, pinsContextLength))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
-        "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
+        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
         in page
     )
+    assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.
     assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
@@ -1422,7 +1423,8 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     before = src.split("<Checkbox id={rememberId}", 1)[0]
-    footer = before.rsplit("<div", 2)[1]
+    # Footer is the third <div back: the status line sits in the Remember column.
+    footer = before.rsplit("<div", 3)[1]
     assert "flex-wrap" not in footer, footer[:200]
     assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
 
@@ -2550,8 +2552,8 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
-        "{ syncModelOverride(" in src
+        "if ( saved && (remember || forgets) && (target.apiLoadable ?? target.isGguf) && "
+        "!nativePathToken ) { syncModelOverride(" in src
     )
     assert "const saved = remember ? savePerModelConfig(" in src
 
@@ -2561,7 +2563,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken) { syncModelOverride(" in page
+    assert "&& !nativePathToken ) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page
