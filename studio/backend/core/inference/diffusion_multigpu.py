@@ -1639,6 +1639,34 @@ def _bitwise_equal(a: Any, b: Any) -> bool:
         return False
 
 
+def _bitwise_equal_all(pairs: Any) -> bool:
+    """``all(_bitwise_equal(a, b) for a, b in pairs)`` with one host read per device instead of one per pair: each
+    pair's comparison stays on its device and only the combined flag is read back. Same verdict as the per-pair form
+    (a byte view compared elementwise is what ``torch.equal`` does on it); metadata mismatches still answer on the host
+    without touching the device."""
+    torch = _torch()
+    by_device: dict = {}
+    for a, b in pairs:
+        if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)):
+            return False
+        if a.shape != b.shape or a.dtype != b.dtype or a.device != b.device:
+            return False
+        if a is b or a.numel() == 0:
+            continue
+        try:
+            if a.device.type == "cpu":
+                if not torch.equal(_as_bytes(a), _as_bytes(b)):
+                    return False
+                continue
+            by_device.setdefault(a.device, []).append((_as_bytes(a) == _as_bytes(b)).all())
+        except Exception:  # noqa: BLE001 - a layout that cannot be viewed as bytes is never assumed equal
+            return False
+    try:
+        return all(bool(torch.stack(flags).all().item()) for flags in by_device.values())
+    except Exception:  # noqa: BLE001 - an unreadable verdict is never assumed equal
+        return False
+
+
 def _unchanged_since_launch(snapshots: list) -> bool:
     """True when every (source, launch-time copy) pair still holds the same bytes. One host sync for all pairs, on
     the replica's card; it waits for the primary branch (the copy is ordered after it), which the guidance combine
@@ -2127,9 +2155,16 @@ class CfgParallelRouter:
         actual = _leaves((args, kwargs))
         predicted = pending["leaves"]
         by_value = pending["by_value"]
-        ok = len(actual) == len(predicted) and all(
-            pa == pp and (_bitwise_equal(va, vp) if pa in by_value else _same_value(va, vp))
-            for (pa, va), (pp, vp) in zip(actual, predicted)
+        # Host-side checks first (paths, plain values), then every by-value tensor pair under one device read.
+        ok = (
+            len(actual) == len(predicted)
+            and all(
+                pa == pp and (pa in by_value or _same_value(va, vp))
+                for (pa, va), (pp, vp) in zip(actual, predicted)
+            )
+            and _bitwise_equal_all(
+                (va, vp) for (pa, va), (_pp, vp) in zip(actual, predicted) if pa in by_value
+            )
         )
         # the source's root hooks have now run for THIS call: the replica must have seen the same per-call state
         ok = ok and _hook_state(self.pairs) == pending["hook_state"]
