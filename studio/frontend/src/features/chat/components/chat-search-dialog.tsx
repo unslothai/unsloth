@@ -9,6 +9,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import {
+  COMPOSER_INPUT_SELECTOR,
   type ShortcutId,
   isImeComposing,
   triggerShortcut,
@@ -252,10 +253,11 @@ export function ChatSearchDialog() {
     return () => clearTimeout(timer);
   }, [isOpen]);
 
-  // skipInTextFields keeps the composer's own Cmd-K and any browser find intact while the user is
-  // typing, as the hand-rolled handler did.
+  // The composer has no Cmd-K of its own and is where focus sits on Chat. Other fields keep it: an
+  // editor there may chord on it.
   useShortcut("searchChats", () => useChatSearchStore.getState().open(), {
     skipInTextFields: true,
+    textFieldException: COMPOSER_INPUT_SELECTOR,
   });
 
   const go = (to: () => void) => () => {

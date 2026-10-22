@@ -269,6 +269,16 @@ export const useKeyboardShortcutsStore = create<KeyboardShortcutsState>(
   }),
 );
 
+// An edit in another tab lands here too, or the next edit in this one would write its stale copy
+// over it. A null key is localStorage.clear(), which "Reset all local preferences" can be.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === STORAGE_KEY || event.key === null) {
+      useKeyboardShortcutsStore.setState({ overrides: loadOverrides() });
+    }
+  });
+}
+
 /** Binding in force right now, for non-React callers (keydown handlers). */
 export function currentBinding(
   id: ShortcutId,

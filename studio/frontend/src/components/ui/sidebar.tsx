@@ -10,7 +10,10 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 // Deep import, not the feature barrel: the barrel pulls in SettingsDialog,
 // which renders sidebar-aware panels and would close an import cycle.
-import { useShortcut } from "@/features/settings/hooks/use-shortcut"
+import {
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings/hooks/use-shortcut"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
@@ -146,8 +149,12 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it.
-  useShortcut("toggleSidebar", toggleSidebar)
+  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it. Not
+  // behind a modal, read off the app root: a collapsed sidebar is itself aria-hidden, and the open
+  // mobile drawer is a modal whose own sidebar is the foreground.
+  useShortcut("toggleSidebar", toggleSidebar, {
+    claims: () => (isMobile && openMobile) || !isSurfaceBackgrounded("#root"),
+  })
 
   const pinned = pinnedProp ?? false
   const setPinned = setPinnedProp ?? noop

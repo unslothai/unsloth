@@ -1204,6 +1204,10 @@ export const sv = {
       alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
+      metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
+      altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
+      desktopOnly: "Endast i skrivbordsappen",
+      builtInKey: "Inbyggt: {key}",
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1404,6 +1408,10 @@ export const sv = {
         steerMessage: {
           label: "Styr svaret",
           description: "Stoppa det aktuella svaret och skicka utkastet härnäst",
+        },
+        stopGeneration: {
+          label: "Stoppa genereringen",
+          description: "Stoppa svaret som skrivs",
         },
         cycleReasoningEffort: {
           label: "Växla resonemangsnivå",

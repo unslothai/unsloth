@@ -1087,6 +1087,10 @@ export const ja = {
       alternateSlot: "代替ショートカット",
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
+      metaUnsupported: "Windows キーはショートカットに使用できません。",
+      altGraphUnsupported: "AltGr の組み合わせはショートカットに使用できません。",
+      desktopOnly: "デスクトップアプリのみ",
+      builtInKey: "組み込み: {key}",
       actions: {
         findInPage: {
           label: "ページ内検索",
@@ -1287,6 +1291,10 @@ export const ja = {
         steerMessage: {
           label: "応答を修正",
           description: "現在の応答を停止して下書きを次に送信します",
+        },
+        stopGeneration: {
+          label: "生成を停止",
+          description: "生成中の応答を停止します",
         },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",

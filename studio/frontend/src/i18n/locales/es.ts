@@ -1089,6 +1089,10 @@ export const es = {
       alternateSlot: "Atajo alternativo",
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
+      metaUnsupported: "La tecla Windows no se puede usar en atajos.",
+      altGraphUnsupported: "Las combinaciones con AltGr no se pueden usar como atajos.",
+      desktopOnly: "Solo en la app de escritorio",
+      builtInKey: "Integrado: {key}",
       actions: {
         findInPage: {
           label: "Buscar en la página",
@@ -1289,6 +1293,10 @@ export const es = {
         steerMessage: {
           label: "Dirigir la respuesta",
           description: "Detener la respuesta actual y enviar el borrador a continuación",
+        },
+        stopGeneration: {
+          label: "Detener generación",
+          description: "Detener la respuesta en curso",
         },
         cycleReasoningEffort: {
           label: "Alternar esfuerzo de razonamiento",

@@ -1174,6 +1174,10 @@ export const he = {
       alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
+      metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
+      altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
+      desktopOnly: "באפליקציית שולחן העבודה בלבד",
+      builtInKey: "מובנה: {key}",
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1375,6 +1379,10 @@ export const he = {
         steerMessage: {
           label: "הכוונת התשובה",
           description: "עצור את התשובה הנוכחית ושלח את הטיוטה מיד אחריה",
+        },
+        stopGeneration: {
+          label: "עצירת היצירה",
+          description: "עצירת התשובה שנכתבת",
         },
         cycleReasoningEffort: {
           label: "החלף רמת מאמץ חשיבה",
