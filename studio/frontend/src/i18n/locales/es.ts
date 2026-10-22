@@ -1089,6 +1089,10 @@ export const es = {
       alternateSlot: "Atajo alternativo",
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
+      metaUnsupported: "La tecla Windows no se puede usar en atajos.",
+      altGraphUnsupported: "Las combinaciones con AltGr no se pueden usar como atajos.",
+      desktopOnly: "Solo en la app de escritorio",
+      builtInKey: "Integrado: {key}",
       actions: {
         findInPage: {
           label: "Buscar en la página",
@@ -1289,6 +1293,10 @@ export const es = {
         steerMessage: {
           label: "Dirigir la respuesta",
           description: "Detener la respuesta actual y enviar el borrador a continuación",
+        },
+        stopGeneration: {
+          label: "Detener generación",
+          description: "Detener la respuesta en curso",
         },
         cycleReasoningEffort: {
           label: "Alternar esfuerzo de razonamiento",
@@ -1831,9 +1839,6 @@ export const es = {
         showLoadedModels: "Indicador de modelos cargados",
         showLoadedModelsDescription:
           "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
-        showWhisperUpdates: "Notificaciones de actualización de whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Avisa cuando haya una compilación más reciente de whisper.cpp para los modelos de voz a texto. Desactívalo si nunca transcribes audio.",
         showAudioCppUpdates: "Notificaciones de actualización de audio.cpp",
         showAudioCppUpdatesDescription:
           "Avisa cuando el entorno de ejecución de audio.cpp necesite una actualización para las páginas de Audio. Desactívalo si nunca usas Audio.",
@@ -2092,9 +2097,9 @@ export const es = {
         longestStreak: "Racha más larga",
         activityTitle: "Actividad de tokens",
         activityDescription: {
-          daily: "Período: {weeks} · {total}",
-          weekly: "Semana pico {total} · últimas {weeks}",
-          cumulative: "{total} acumulados en las últimas {weeks}",
+          daily: "{total} desde el {since}",
+          weekly: "Semana más activa {total} · desde el {since}",
+          cumulative: "{total} en total desde el {since}",
         },
         mode: {
           daily: "Diaria",
@@ -2103,8 +2108,9 @@ export const es = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana del {date} · {tokens}",
-        chartToggle: "Gráfico",
-        chartToggleHint: "Mostrar Semanal y Acumulada como gráfico con ejes etiquetados",
+        emptyDayTooltip: "{date} · Sin actividad",
+        apiRequests: "{count} vía API",
+        cumulativeTooltip: "Hasta la semana del {date} · {tokens} en total",
         less: "Menos",
         more: "Más",
         insightsTitle: "Análisis de actividad",

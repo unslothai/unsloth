@@ -1087,6 +1087,10 @@ export const ja = {
       alternateSlot: "代替ショートカット",
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
+      metaUnsupported: "Windows キーはショートカットに使用できません。",
+      altGraphUnsupported: "AltGr の組み合わせはショートカットに使用できません。",
+      desktopOnly: "デスクトップアプリのみ",
+      builtInKey: "組み込み: {key}",
       actions: {
         findInPage: {
           label: "ページ内検索",
@@ -1287,6 +1291,10 @@ export const ja = {
         steerMessage: {
           label: "応答を修正",
           description: "現在の応答を停止して下書きを次に送信します",
+        },
+        stopGeneration: {
+          label: "生成を停止",
+          description: "生成中の応答を停止します",
         },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",
@@ -1803,8 +1811,6 @@ export const ja = {
         showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
         showLoadedModels: "読み込み済みモデルのインジケーター",
         showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
-        showWhisperUpdates: "whisper.cpp のアップデート通知",
-        showWhisperUpdatesDescription: "音声認識モデル向けの新しい whisper.cpp ビルドが利用可能になったときに通知します。音声を文字起こししない場合はオフにしてください。",
         showAudioCppUpdates: "audio.cpp のアップデート通知",
         showAudioCppUpdatesDescription:
           "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
@@ -2048,9 +2054,9 @@ export const ja = {
         longestStreak: "最長の連続日数",
         activityTitle: "トークンの推移",
         activityDescription: {
-          daily: "直近{weeks}で{total}",
-          weekly: "ピーク週 {total} · 直近{weeks}",
-          cumulative: "直近{weeks}で累計{total}",
+          daily: "{since}以降 {total}",
+          weekly: "最も多い週 {total} · {since}以降",
+          cumulative: "{since}以降の累計 {total}",
         },
         mode: {
           daily: "日次",
@@ -2059,8 +2065,9 @@ export const ja = {
         },
         cellTooltip: "{date} · {tokens}、{messages}",
         weekTooltip: "{date} の週 · {tokens}",
-        chartToggle: "グラフ",
-        chartToggleHint: "週次と累計を軸ラベル付きのグラフで表示",
+        emptyDayTooltip: "{date} · アクティビティなし",
+        apiRequests: "API経由 {count}",
+        cumulativeTooltip: "{date}の週まで · 累計 {tokens}",
         less: "少ない",
         more: "多い",
         insightsTitle: "アクティビティの分析",

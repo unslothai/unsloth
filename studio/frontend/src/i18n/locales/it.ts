@@ -993,6 +993,10 @@ export const it = {
       alternateSlot: "Scorciatoia alternativa",
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
+      metaUnsupported: "Il tasto Windows non può essere usato nelle scorciatoie.",
+      altGraphUnsupported: "Le combinazioni con AltGr non possono essere usate come scorciatoie.",
+      desktopOnly: "Solo nell'app desktop",
+      builtInKey: "Integrato: {key}",
       actions: {
         findInPage: {
           label: "Trova nella pagina",
@@ -1193,6 +1197,10 @@ export const it = {
         steerMessage: {
           label: "Reindirizza la risposta",
           description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
+        stopGeneration: {
+          label: "Interrompi generazione",
+          description: "Interrompi la risposta in corso",
         },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",
@@ -1759,9 +1767,6 @@ export const it = {
         showLoadedModels: "Indicatore dei modelli caricati",
         showLoadedModelsDescription:
           "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
-        showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
         showAudioCppUpdates: "Notifiche di aggiornamento di audio.cpp",
         showAudioCppUpdatesDescription:
           "Avvisa quando il runtime di audio.cpp deve essere aggiornato per le pagine Audio. Disattiva le notifiche se non usi mai Audio.",
@@ -2001,9 +2006,9 @@ export const it = {
         longestStreak: "Serie più lunga",
         activityTitle: "Attività in token",
         activityDescription: {
-          daily: "Periodo: {weeks} · {total}",
-          weekly: "Settimana di punta {total} · ultime {weeks}",
-          cumulative: "{total} accumulati nelle ultime {weeks}",
+          daily: "{total} dal {since}",
+          weekly: "Settimana più attiva {total} · dal {since}",
+          cumulative: "{total} in totale dal {since}",
         },
         mode: {
           daily: "Giornaliera",
@@ -2012,8 +2017,9 @@ export const it = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Settimana del {date} · {tokens}",
-        chartToggle: "Grafico",
-        chartToggleHint: "Mostra Settimanale e Cumulativa come grafico con assi etichettati",
+        emptyDayTooltip: "{date} · Nessuna attività",
+        apiRequests: "{count} tramite API",
+        cumulativeTooltip: "Fino alla settimana del {date} · {tokens} in totale",
         less: "Meno",
         more: "Più",
         insightsTitle: "Analisi dell'attività",

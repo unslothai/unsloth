@@ -112,7 +112,7 @@ test("the draft follows whichever project is open", () => {
 test("the dialog commits on Enter and on the chord", () => {
   assert.match(
     DIALOG,
-    /if \(e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\)\) \{\n\s*e\.preventDefault\(\);\n\s*void save\(\);/,
+    /if \(isModEnter\(e\)\) \{\n\s*e\.preventDefault\(\);\n\s*void save\(\);/,
   );
   const nameInput = DIALOG.slice(
     DIALOG.indexOf("<input"),
