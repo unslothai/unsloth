@@ -1090,6 +1090,10 @@ export const fr = {
       alternateSlot: "Raccourci alternatif",
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
+      metaUnsupported: "La touche Windows ne peut pas être utilisée dans les raccourcis.",
+      altGraphUnsupported: "Les combinaisons AltGr ne peuvent pas servir de raccourcis.",
+      desktopOnly: "Application de bureau uniquement",
+      builtInKey: "Intégré : {key}",
       actions: {
         findInPage: {
           label: "Rechercher dans la page",
@@ -1290,6 +1294,10 @@ export const fr = {
         steerMessage: {
           label: "Réorienter la réponse",
           description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
+        stopGeneration: {
+          label: "Arrêter la génération",
+          description: "Arrêter la réponse en cours",
         },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
@@ -1827,20 +1835,14 @@ export const fr = {
       },
       notifications: {
         sectionTitle: "Notifications",
-        showLlamaUpdates: "Notifications de mise à jour de llama.cpp",
-        showLlamaUpdatesDescription:
-          "Notifier lorsqu'une nouvelle version de llama.cpp est disponible pour exécuter de nouveaux modèles. Désactivez si vous ne faites que de l'entraînement.",
-        showLoadedModels: "Indicateur des modèles chargés",
-        showLoadedModelsDescription:
-          "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
-        showAudioCppUpdates: "Notifications de mise à jour d'audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Notifier lorsque le moteur audio.cpp doit être mis à jour pour les pages Audio. Désactivez si vous n'utilisez jamais Audio.",
-        showUnslothUpdates: "Notifications de mise à jour d'Unsloth",
-        showUnslothUpdatesDescription:
-          "Prévenir lorsqu'une version plus récente d'Unsloth est disponible à l'installation.",
+        showLoadedModels: "Carte des modèles chargés",
+        showLoadedModelsDescription: "Une carte dans le coin avec chaque modèle chargé, à décharger en un clic.",
+        updateReminders: "Rappels de mise à jour",
+        updateRemindersDescription: "À quelle fréquence proposer une nouvelle version quand elle est prête.",
+        llamaHint: "Modèles de chat et GGUF",
+        audioHint: "Voix, musique et transcription",
         frequency: {
-          always: "Toujours",
+          always: "Dès que disponible",
           daily: "Une fois par jour",
           weekly: "Une fois par semaine",
           biweekly: "Toutes les deux semaines",
@@ -2093,9 +2095,9 @@ export const fr = {
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
         activityDescription: {
-          daily: "{total} au cours des {weeks} dernières",
-          weekly: "Semaine record {total} · {weeks} dernières",
-          cumulative: "{total} cumulés sur les {weeks} dernières",
+          daily: "{total} depuis le {since}",
+          weekly: "Semaine la plus active {total} · depuis le {since}",
+          cumulative: "{total} au total depuis le {since}",
         },
         mode: {
           daily: "Quotidienne",
@@ -2104,8 +2106,9 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
-        chartToggle: "Graphique",
-        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
+        emptyDayTooltip: "{date} · Aucune activité",
+        apiRequests: "{count} via l'API",
+        cumulativeTooltip: "Jusqu'à la semaine du {date} · {tokens} au total",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",
@@ -3188,6 +3191,14 @@ export const fr = {
           "Le modèle ne se charge par son nom que si le changement automatique de modèle est activé. Activez-le, ou chargez d'abord le modèle sur sa page Audio.",
         useViaApi: "Utiliser via l'API",
       },
+      mediaApi: {
+        title: "API image et vidéo",
+        description: "Générez des images et des vidéos depuis votre propre code avec les points de terminaison compatibles OpenAI.",
+        images: "Images",
+        video: "Vidéo",
+        placeholderModel: "Le modèle affiché est un exemple. Chargez un modèle sur la page Images ou Vidéo et ouvrez ceci depuis son bouton API pour le renseigner.",
+        autoSwitchOff: "Le changement automatique de média est désactivé : les requêtes utilisent le modèle chargé par la page, quel que soit celui qu'elles nomment.",
+      },
       decisionApi: {
         title: "API de décision",
         docs: "Documentation",
@@ -3268,6 +3279,24 @@ export const fr = {
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
       audioCppVersion: "Version d'audio.cpp",
+      whisperCppVersion: "Version de whisper.cpp",
+      engines: {
+        title: "Moteurs",
+        description: "Les environnements d'exécution qu'Unsloth utilise pour faire tourner les modèles. Les mises à jour s'installent en arrière-plan, sans redémarrage.",
+        updatesLabel: "Mises à jour des moteurs",
+        notInstalled: "Non installé",
+        available: "{version} disponible",
+        upToDate: "À jour",
+        updatesAvailable: "Mises à jour disponibles",
+        checking: "Recherche de mises à jour...",
+        checkFailed: "Impossible de rechercher les mises à jour. Réessayez plus tard.",
+        unsupported: "Les moteurs de cette installation sont gérés en dehors d'Unsloth.",
+        checkForUpdates: "Rechercher des mises à jour",
+        update: "Mettre à jour",
+        updating: "Mise à jour...",
+        updated: "Moteurs mis à jour.",
+        updateFailed: "Échec de la mise à jour : {error}",
+      },
       hardware: "Matériel",
       gpu: "GPU",
       gpuIntegrated: "intégrée",
@@ -3355,6 +3384,9 @@ export const fr = {
         docsUpdating: "Mise à jour",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

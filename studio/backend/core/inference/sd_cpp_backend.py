@@ -2884,6 +2884,8 @@ _UNREAD_LOADING_CARD = object()
 class SdCppDiffusionBackend:
     """Native sd.cpp backend with the diffusers ``DiffusionBackend`` method surface."""
 
+    # sd.cpp parses A1111 attention syntax ((word:1.2), [word]) in every prompt; it cannot be turned off.
+    parses_prompt_attention = True
     # Class-level defaults so an instance built with ``__new__`` answers before any load ran.
     _loading_cards = None
     _committed_loading_card: Optional[str] = None
