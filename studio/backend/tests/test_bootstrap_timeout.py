@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coverage for the exposed-first-run auto-shutdown deadline.
-
-Tests the env parsing, the pure arm/no-arm decision matrix, and the deadline
-handler (shut down iff the seeded admin password is still unchanged). The
-threading.Timer itself is not exercised; the handler is invoked directly.
-"""
+"""Deadline handler shuts down only while the seeded admin password is unchanged."""
 
 import time
 from types import SimpleNamespace
@@ -22,9 +17,6 @@ from auth.bootstrap_timeout import (
     record_bootstrap_deadline,
     should_arm_bootstrap_timeout,
 )
-
-
-# ── bootstrap_timeout_seconds ───────────────────────────────────────
 
 
 def test_default_when_unset():
@@ -50,13 +42,9 @@ def test_negative_disables():
 
 
 def test_invalid_falls_back_to_default():
-    # A typo must keep the protection, not silently disable it.
     assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "abc"}) == (
         DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
     )
-
-
-# ── should_arm_bootstrap_timeout matrix ─────────────────────────────
 
 
 def _arm_kwargs(**overrides):
@@ -78,7 +66,6 @@ def test_arm_exposed_wildcard_web_ui():
 
 
 def test_arm_secure_loopback_bind():
-    # --secure forces a loopback bind but exposes a public tunnel.
     assert should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = True)) is True
 
 
@@ -104,9 +91,6 @@ def test_no_arm_password_already_changed():
 
 def test_no_arm_timeout_disabled():
     assert should_arm_bootstrap_timeout(**_arm_kwargs(timeout_seconds = 0)) is False
-
-
-# ── enforce_bootstrap_password_deadline ─────────────────────────────
 
 
 def _fake_storage(requires_change: bool):
@@ -142,16 +126,12 @@ def test_deadline_swallows_shutdown_errors():
     def _boom():
         raise RuntimeError("shutdown failed")
 
-    # A failing shutdown must not propagate out of the timer thread.
     result = enforce_bootstrap_password_deadline(
         _fake_storage(requires_change = True),
         _boom,
         timeout_seconds = 3600,
     )
     assert result is True
-
-
-# ── _format_duration ────────────────────────────────────────────────
 
 
 def test_format_duration_sub_minute_uses_seconds():
@@ -172,8 +152,6 @@ def test_format_duration_minutes_and_seconds():
 
 
 def test_shutdown_message_uses_formatted_duration():
-    # The deadline message must reflect the real timeout, not a rounded
-    # "minute(s)" placeholder. Capture the warning via a fake logger.
     logged = []
 
     class _Logger:
@@ -200,7 +178,6 @@ def test_recorded_deadline_counts_down():
     try:
         remaining = bootstrap_deadline_remaining_seconds()
         assert remaining is not None
-        # Allow for the clock moving between the two calls.
         assert 3595 <= remaining <= 3600
     finally:
         clear_bootstrap_deadline()

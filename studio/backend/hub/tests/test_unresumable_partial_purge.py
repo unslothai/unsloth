@@ -51,7 +51,6 @@ def blobs(monkeypatch, tmp_path):
     blobs_dir.mkdir(parents = True)
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
     monkeypatch.setattr(download_registry, "hf_cache_root", lambda **_kwargs: root)
-    # The cache-dir iterators resolve the root through hf_cache_state, not the caller.
     monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda **_kwargs: root)
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [root])
     return blobs_dir
@@ -95,11 +94,7 @@ def _prepare(**kwargs):
     ],
 )
 def test_writer_resumability_tracks_the_installed_version(monkeypatch, hf_version, resumable):
-    """1.18 is the line: before it a partial is appended to, after it a new file is written.
-
-    Pinned with the restoration in :mod:`hub.utils.resumable_partials` unavailable, which is what
-    a machine whose filesystem cannot prove ``flock`` excludes a second writer sees.
-    """
+    """huggingface_hub 1.18 stopped appending to partials, so resumability tracks the installed version."""
     monkeypatch.setattr(resumable_partials, "can_restore_partials", lambda _c = None: False)
     monkeypatch.setattr("huggingface_hub.__version__", hf_version, raising = False)
     hf_cache_state.invalidate_partial_resumability()
@@ -159,7 +154,6 @@ def test_resumable_partial_survives_a_matching_marker(monkeypatch, blobs):
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
-    # Too fresh at download start, so prepare leaves it alone.
     assert _prepare() == 0
     assert partial.exists()
 
@@ -215,11 +209,7 @@ def test_a_peer_being_written_is_still_protected(monkeypatch, blobs):
 
 
 def test_transport_status_does_not_promise_a_resume_it_cannot_keep(monkeypatch, blobs):
-    """``resumable`` drives a dialog offering to keep existing progress.
-
-    The marker is written rather than stubbed: the verdict reads each cache entry's own
-    marker, since one repo can own several and only the one beside a partial vouches for it.
-    """
+    """Only the transport marker beside a partial vouches for resuming it, as one repo can own several."""
     download_registry._write_marker(blobs.parent, download_registry.TRANSPORT_HTTP)
     (blobs / _NONCE_PARTIAL).write_bytes(b"x" * 25)
 
@@ -237,7 +227,6 @@ def test_a_skipped_partial_is_swept_once_it_ages_out(monkeypatch, blobs):
     assert _prepare() == 0
     assert partial.exists()
 
-    # By the time that download reaches a terminal state the grace has elapsed.
     _abandon(partial)
     assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 1
     assert not partial.exists()
@@ -352,7 +341,6 @@ def test_a_reaped_job_does_not_wait_out_the_grace_on_its_own_blobs(monkeypatch, 
     partial.write_bytes(b"x" * 25)
     _shared_setup_1(blobs, monkeypatch)
 
-    # Without the ownership claim it has to wait, which is what stranded it for the session.
     assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 0
     assert partial.exists()
 
@@ -405,11 +393,7 @@ def test_ownership_never_overrides_peer_protection(monkeypatch, blobs):
 
 
 def test_the_sweep_accepts_the_string_root_the_metadata_holds(monkeypatch, tmp_path):
-    """DownloadMetadata.hub_cache is a str, and the caller hands it straight through.
-
-    Deliberately not using the ``blobs`` fixture: patching hf_cache_root would hand the
-    resolver a Path and hide the very conversion under test.
-    """
+    """DownloadMetadata.hub_cache is a str, so the sweep must accept a str root, not only a Path."""
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: False)
     blobs = tmp_path / "hub" / "models--Org--Model" / "blobs"
     blobs.mkdir(parents = True)
@@ -417,8 +401,7 @@ def test_the_sweep_accepts_the_string_root_the_metadata_holds(monkeypatch, tmp_p
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
-    # A Path-only signature raised AttributeError here and the caller's broad except swallowed it, so
-    # the terminal sweep silently did nothing for every real download.
+    # A Path-only signature raised AttributeError that the caller swallowed.
     swept = download_registry.sweep_abandoned_partials(
         "model",
         "Org/Model",
@@ -503,7 +486,6 @@ def test_a_companion_the_dead_worker_was_writing_is_owned_too(monkeypatch, blobs
     companion.write_bytes(b"x" * 25)
     _shared_setup_1(blobs, monkeypatch)
 
-    # Ownership limited to the variant's own quant leaves the companion waiting out the grace.
     assert (
         download_registry.sweep_abandoned_partials(
             "model",
@@ -670,11 +652,8 @@ def test_a_filesystem_without_flock_does_not_escape_the_probe(monkeypatch, tmp_p
 
     monkeypatch.setattr(filelock, "FileLock", _NoFlock)
 
-    # No lock file: nobody has locked this blob, whatever the filesystem supports.
     assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is False
 
-    # With one, the answer is "held" rather than an exception, which is also what a SoftFileLock would
-    # say, since its file IS the lock.
     lock_path.touch()
     assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is True
 

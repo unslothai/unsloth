@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Endpoint-level cover for the /v1/responses message-attachment refusal.
-
-The unit tests in test_responses_tool_passthrough.py call
-``_normalise_responses_input`` directly. These drive the real router instead, because
-three things only the route can answer:
-
-- the refusal has to arrive as a JSON 400, not as a 500 out of request handling;
-- a streaming request has to be refused *before* the SSE stream opens, or the client
-  gets a broken stream with a 200 already on the wire;
-- the refusal has to land before the model switch, or an unservable request evicts the
-  resident model on its way to being rejected.
-
-No running server, no GPU, no model.
-"""
+"""The attachment refusal must be a JSON 400, raised before the SSE stream opens and the model switch."""
 
 import os
 import sys
@@ -116,7 +102,6 @@ def test_the_route_refuses_an_attachment_on_a_non_user_turn(role):
 
 @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
 def test_the_route_refuses_a_servable_image_on_a_role_that_flattens(role):
-    # These roles are flattened to a string, so the image was dropped and the turn answered.
     part = {"type": "input_image", "image_url": "https://example.com/a.png"}
     with _route_client() as client:
         response = client.post("/v1/responses", json = _body(part, role = role))
@@ -157,11 +142,7 @@ def test_the_refusal_lands_before_the_model_switch(case, monkeypatch):
     ids = ["url", "url+detail", "url+file_id", "text"],
 )
 def test_a_servable_turn_is_not_refused(part):
-    """The refusal must not reach past the shapes it owns.
-
-    No model here, so a servable turn stops at the load check below; reaching it is the
-    assertion, since only an accepted normalisation gets that far.
-    """
+    """A servable turn must reach the no-model-loaded check, since only an accepted turn gets that far."""
     with _route_client() as client:
         response = client.post("/v1/responses", json = _body(part))
 
