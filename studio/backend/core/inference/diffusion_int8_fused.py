@@ -1063,6 +1063,20 @@ def _resolve_intmm() -> Any:
     return None
 
 
+def ensure_intmm_module() -> Any:
+    """Resolve and cache ``_INTMM_MODULE`` (idempotent). Must run eagerly, outside any trace: ``int8_linear`` runs on
+    every int8 Linear of a fused attention processor whether or not ``_finalize`` installed anything (an offloaded or
+    not yet resident denoiser), and an ``importlib.import_module`` reached from ``_int_mm`` under ``torch.compile`` is
+    a graph break in every one of them."""
+    global _INTMM_MODULE
+    module = _INTMM_MODULE
+    if module is None:
+        module = _resolve_intmm()
+        if module is not None:
+            _INTMM_MODULE = module
+    return module
+
+
 def _int_mm(a: Any, weight: Any) -> Any:
     module = _INTMM_MODULE
     if module is None:  # a direct call before any install (tests): resolve eagerly
@@ -1562,6 +1576,11 @@ def install(
         _LINEAR_OFF = True
         return 0
     _LINEAR_OFF = False
+    # Before the offload / residency returns: int8_linear (fused attention processors) runs either way.
+    try:
+        ensure_intmm_module()
+    except Exception:  # noqa: BLE001 - _int_mm resolves on its own
+        pass
     if transformer is None or offload_active:
         return 0
     if resident_cuda_device(transformer) is not None:
@@ -1612,7 +1631,9 @@ def _has_eligible(transformer: Any) -> bool:
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
-    global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE
+    global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES
+    # Before every early return below: an offloaded denoiser keeps int8_linear in its attention processors.
+    intmm = ensure_intmm_module()
     dev = resident_cuda_device(transformer)
     cards: tuple = ()
     if dev is None:
@@ -1623,12 +1644,10 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     # Before the probe: it compiles and launches both Triton kernels, pure latency for a bf16 / fp16 model.
     if not _has_eligible(transformer):
         return 0
-    intmm = _resolve_intmm()
     if (
         intmm is None
     ):  # an int8 GEMM home this file does not know: keep the stock path rather than fail the render
         return 0
-    _INTMM_MODULE = intmm
     import torch
 
     if cards:

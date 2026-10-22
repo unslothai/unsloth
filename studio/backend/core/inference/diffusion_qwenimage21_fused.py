@@ -99,7 +99,9 @@ def _qkv_intact(attn: Any) -> Any:
 def _make_prepare(stock: Any, mod: Any) -> Any:
     import torch
 
-    from .diffusion_int8_fused import int8_linear
+    from .diffusion_int8_fused import ensure_intmm_module, int8_linear
+
+    ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
 
     def _qwenimage21_prepare_qkv(
         attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
