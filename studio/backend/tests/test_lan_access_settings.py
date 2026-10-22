@@ -739,17 +739,17 @@ def test_a_wildcard_launch_in_a_container_advertises_no_bridge_address(monkeypat
 
 
 def test_veth_addresses_reads_the_peer_link_from_sysfs(monkeypatch, tmp_path):
-    import psutil
-
     entry = lambda address: SimpleNamespace(address = address)
-    monkeypatch.setattr(
-        psutil,
-        "net_if_addrs",
-        lambda: {
-            "eth0": [entry("172.17.0.2")],
-            "enp3s0": [entry("172.20.1.5")],
-            "enp3s0.100": [entry("172.21.0.5")],
-        },
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        SimpleNamespace(
+            net_if_addrs = lambda: {
+                "eth0": [entry("172.17.0.2")],
+                "enp3s0": [entry("172.20.1.5")],
+                "enp3s0.100": [entry("172.21.0.5")],
+            }
+        ),
     )
     # eth0's peer (index 12) is the host-side veth, outside this namespace; a NIC and its VLAN link to index 2.
     for name, (iflink, ifindex) in {
