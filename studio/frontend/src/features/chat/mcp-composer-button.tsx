@@ -64,8 +64,8 @@ type McpPreset = {
   disablesWebSearch?: boolean; // turn the built-in Search pill off when enabled
 };
 
-// Unsloth's own tools, then keyless remote MCP presets (rate-limited free tiers, no API
-// key). Hugging Face runs anonymously; add a token via "Manage MCP servers".
+// Unsloth's own tools, then keyless remote presets (rate-limited free tiers). Hugging Face
+// runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "unsloth-studio",

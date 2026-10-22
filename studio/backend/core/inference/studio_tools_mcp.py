@@ -187,8 +187,7 @@ def call(
             hf_token = None,
             call_scoped = True,
         )
-        # An empty context: the tool-loop thread may carry another request's fastmcp HTTP request, which would
-        # outrank the bound caller.
+        # Empty context: another request's fastmcp HTTP request on this thread would outrank the bound caller.
         ticket = GenerationTicket()
         future = contextvars.Context().run(
             asyncio.run_coroutine_threadsafe,

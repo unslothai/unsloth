@@ -25,8 +25,7 @@ class AccountContext:
     account_id: str
     username: str
     role: str = ROLE_USER
-    # The credential generation the request authenticated under, for work that mints a credential later
-    # (the chat's Unsloth Studio tools). Not part of the account's identity.
+    # Generation the request authenticated under, for minting a credential later; not identity.
     credential_gen: Optional[str] = field(default = None, compare = False, repr = False)
     # An sk-unsloth key or keyless API access admitted the request, not a UI session; not part of identity.
     via_api_key: bool = field(default = False, compare = False)

@@ -14541,8 +14541,8 @@ async def get_enabled_mcp_tools(
     if not servers:
         return []
 
-    # cool-off avoids blocking every send for the full probe timeout when a server is down. The Unsloth Studio
-    # tools row is listed in process, so it is re-listed every send and an owner's tool toggles apply at once.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down. The in-process
+    # Unsloth Studio row is re-listed every send, so tool toggles apply at once.
     uncached = [
         s
         for s in servers
