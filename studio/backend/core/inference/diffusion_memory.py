@@ -23,6 +23,7 @@ import os
 import sys
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 
 MEMORY_MODE_AUTO = "auto"
@@ -937,10 +938,7 @@ def _torch_is_rocm(torch) -> bool:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._torch_is_rocm(torch)
     except Exception:  # noqa: BLE001 - the answer still has to be right
-        return (
-            getattr(getattr(torch, "version", None), "hip", None) is not None
-            or "rocm" in getattr(torch, "__version__", "").lower()
-        )
+        return is_rocm_torch(torch)
 
 
 def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int, int]:
@@ -4541,7 +4539,7 @@ def _fast_pin_supported() -> bool:
     try:
         import torch
 
-        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+        if is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
         cudart = torch.cuda.cudart()
         return hasattr(cudart, "cudaHostRegister") and hasattr(cudart, "cudaHostUnregister")

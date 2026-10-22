@@ -15,6 +15,7 @@ import os
 import threading
 import types
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 Q21_CONVROT_FUSED_ENV = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED"
 _PREPARE = "_qwenimage21_prepare_qkv"
@@ -40,7 +41,7 @@ def arch_ok(device: Any = None) -> bool:
     try:
         import torch
 
-        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return False
         dev = torch.device(device) if device is not None else None
         if dev is None or dev.type != "cuda":
