@@ -1388,7 +1388,15 @@ async def upload_unstructured_file(
         original_filename = file.filename or "upload"
         # Before the read: a rejected 500 MB upload must not be pulled into memory first.
         _require_unstructured_ext(original_filename)
-        content = await file.read()
+        limit = max(0, min(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES, budget))
+        content = await file.read(limit + 1)
+        if len(content) > limit:
+            # Only limit + 1 bytes were read: report the real size the full read used to.
+            declared = getattr(file, "size", None)
+            _require_within_budget(
+                declared if isinstance(declared, int) and declared > limit else len(content),
+                budget,
+            )
     else:
         raise HTTPException(400, "No file was provided.")
 
