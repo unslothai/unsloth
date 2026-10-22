@@ -34,9 +34,10 @@ const CHAT_ONLY = {
 const DETECTING = { chat_only: true, hardware_detecting: true, version: "2026.1.1" };
 const FULL = { ...CHAT_ONLY, chat_only: false, chat_only_reason: null };
 
-let reply: Record<string, unknown> = CHAT_ONLY;
+let reply: Record<string, unknown> | null = CHAT_ONLY;
 globalThis.fetch = (async () => {
   const body = reply;
+  if (body === null) throw new TypeError("Failed to fetch");
   const res = { ok: true, json: async () => ({ ...body }), clone: () => res };
   return res;
 }) as unknown as typeof fetch;
@@ -89,6 +90,19 @@ test("a replaced backend under deferred detection does not inherit the old reaso
   assert.equal(s.isChatOnly(), true);
   assert.equal(s.chatOnlyReason, null);
   assert.equal(s.deviceType, "windows");
+});
+
+test("a failed read after replacing a deferred backend stays unmeasured", async () => {
+  reply = { ...DETECTING, hardware_detection_deferred: true };
+  await fetchDeviceType({ force: true });
+  assert.equal(usePlatformStore.getState().detectionDeferred, true);
+  forgetMeasuredVerdict();
+  assert.equal(usePlatformStore.getState().capabilitiesUnknown(), true);
+  // The catch path stores the browser guess (chat_only false on Windows): it must not read as settled.
+  reply = null;
+  await fetchDeviceType({ force: true });
+  assert.equal(usePlatformStore.getState().capabilitiesUnknown(), true);
+  reply = CHAT_ONLY;
 });
 
 test("only a backend that already answered marks the verdict stale", async () => {

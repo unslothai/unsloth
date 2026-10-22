@@ -117,7 +117,8 @@ let hardwareWaitSpent = false;
 /** A repair or restart replaced the backend: its predecessor's verdict is no longer measured. Platform fields stay. */
 export function forgetMeasuredVerdict(): void {
   hardwareWaitSpent = false;
-  usePlatformStore.setState({ verdictStale: true });
+  // The old deferred flag would mask staleness, so a failed first read would look settled.
+  usePlatformStore.setState({ verdictStale: true, detectionDeferred: false });
 }
 
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
