@@ -196,3 +196,24 @@ test("keep-loaded mode keeps the live budget: the resident may stay beside the n
   );
   assert.equal(src.match(/loadFreesResident\s*\?/g)?.length, 2);
 });
+
+test("after unload the budget gains the resident's AGX memory, not every app's", () => {
+  // 20 GiB resident in AGX: the loader sees 22 + 20 = 42 GiB once it frees it.
+  const resident = macInfo({ metal_working_set_gb: 51.84, vram_free_gb: 22, vram_used_gb: 20 });
+  assert.equal(resident.unifiedLoadCeilingGb, Math.floor(42 * 0.85 * 4) / 4);
+  // 5 GiB resident, 25 GiB held by other apps: only 10 + 5 GiB returns, so 22.2 GiB stays tight.
+  const pressured = macInfo({ metal_working_set_gb: 51.84, vram_free_gb: 10, vram_used_gb: 5 });
+  assert.equal(pressured.unifiedLoadCeilingGb, Math.floor(15 * 0.85 * 4) / 4);
+  const fit = classifyGgufFit(bytesRequiring(22.2), {
+    gpuGb: pressured.memoryTotalGb,
+    systemRamGb: pressured.systemRamAvailableGb,
+    gpuCount: pressured.deviceCount,
+    unifiedLoadBudgetGb: pressured.unifiedLoadCeilingGb,
+  });
+  assert.equal(fit, "marginal");
+});
+
+test("a 0 GiB free reading is the tightest budget, not an unknown one", () => {
+  const gpu = macInfo({ metal_working_set_gb: 51.84, vram_free_gb: 0 });
+  assert.equal(gpu.unifiedLoadBudgetGb, 0);
+});
