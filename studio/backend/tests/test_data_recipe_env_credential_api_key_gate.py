@@ -104,7 +104,6 @@ def _hf_seed(**source):
 
 
 def test_api_key_hf_seed_on_another_endpoint_must_bring_its_own_token():
-    # No token means the host's HF token, and it would go to the endpoint the caller typed.
     with pytest.raises(HTTPException) as exc:
         service.require_ui_session_for_host_env_credentials(
             _hf_seed(endpoint = "https://attacker.example"), via_api_key = True
