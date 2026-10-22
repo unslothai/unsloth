@@ -250,7 +250,7 @@ export function MusicEditInputs({
                 ? "Lo-fi jazz, warm piano, brushed drums…"
                 : "A soaring guitar solo over the same groove…"
             }
-            className="min-h-20 rounded-xl"
+            className="min-h-20 rounded-lg"
           />
         </div>
       ) : null}

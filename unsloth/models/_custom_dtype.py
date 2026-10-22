@@ -25,6 +25,7 @@ __all__ = [
     "neutralize_inherited_custom_dtype",
     "resolve_dtype",
     "DTYPE_ALIASES",
+    "cast_mixed_linear_inputs",
 ]
 
 import os
@@ -120,6 +121,50 @@ def trusted_custom_dtype():
     if value == "":
         return "", False
     return value, value in _REGISTERED
+
+
+def _autocast_enabled(device_type):
+    try:
+        return torch.is_autocast_enabled(device_type)
+    except TypeError:
+        # torch < 2.4 takes no device argument and answers for CUDA only.
+        return torch.is_autocast_enabled()
+
+
+def _cast_input_to_weight_dtype(module, args):
+    if not args:
+        return None
+    x = args[0]
+    weight = module.weight
+    if (
+        not isinstance(x, torch.Tensor)
+        or not x.is_floating_point()
+        or x.dtype == weight.dtype
+        or _autocast_enabled(x.device.type)
+    ):
+        return None
+    return (x.to(weight.dtype),) + tuple(args[1:])
+
+
+def cast_mixed_linear_inputs(model, load_dtype):
+    """Outside autocast, cast inputs of Linears moved off load_dtype (Falcon-H1 / Nemotron-H fp16) to the weight dtype."""
+    hooked = 0
+    for module in model.modules():
+        if not isinstance(module, torch.nn.Linear) or getattr(
+            module, "_unsloth_casts_input_dtype", False
+        ):
+            continue
+        weight = getattr(module, "weight", None)
+        if (
+            not isinstance(weight, torch.Tensor)
+            or not weight.is_floating_point()
+            or weight.dtype == load_dtype
+        ):
+            continue
+        module.register_forward_pre_hook(_cast_input_to_weight_dtype)
+        module._unsloth_casts_input_dtype = True
+        hooked += 1
+    return hooked
 
 
 # On import, before either package reads the variable.

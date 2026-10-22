@@ -178,7 +178,10 @@ import {
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
-import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import {
+  sortProjectsByActivity,
+  useChatProjects,
+} from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { ResearchMessage } from "@/features/chat/components/research-message";
 import {
@@ -244,12 +247,15 @@ import {
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
+  isModEnter,
   isSurfaceInForeground,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
   useShortcut,
+  useShortcutAvailable,
   useSettingsDialogStore,
   isMacPlatform,
+  resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
@@ -333,6 +339,7 @@ import {
   subscribeForkCounts,
   useForkInFlight,
   showForkCreatedToast,
+  showForkFailedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -1929,6 +1936,21 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   }, [threadId, anchor]);
 };
 
+// One read per source chat for the divider's label; a failed read is dropped so a later mount retries.
+const forkSourceTitles = new Map<string, Promise<string | null>>();
+
+function forkSourceTitle(sourceThreadId: string): Promise<string | null> {
+  let title = forkSourceTitles.get(sourceThreadId);
+  if (!title) {
+    title = readBackendChatThread(sourceThreadId).then((source) => {
+      if (source === undefined) forkSourceTitles.delete(sourceThreadId);
+      return source?.title?.trim() || null;
+    });
+    forkSourceTitles.set(sourceThreadId, title);
+  }
+  return title;
+}
+
 // Closes the history a fork inherited. Rendered by the message it follows, since the row slot
 // is propless and the boundary arrives through the store.
 const ForkContinuationRule: FC = () => {
@@ -1945,11 +1967,28 @@ const ForkContinuationRule: FC = () => {
       : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
   );
   const navigate = useNavigate();
+  const isAnchor = anchor !== undefined && anchor === messageId;
+  const [source, setSource] = useState<{ id: string; title: string | null } | null>(null);
+  useEffect(() => {
+    if (!isAnchor || !sourceThreadId) return;
+    let live = true;
+    void forkSourceTitle(sourceThreadId).then((title) => {
+      if (live) setSource({ id: sourceThreadId, title });
+    });
+    return () => {
+      live = false;
+    };
+  }, [isAnchor, sourceThreadId]);
   if (anchor === undefined || anchor !== messageId) return null;
+  const sourceTitle = source?.id === sourceThreadId ? source.title : null;
   const label = (
     <>
       <HugeiconsIcon icon={WorkflowCircle05Icon} strokeWidth={1.75} className="size-3.5" />
-      Continued from chat
+      {sourceTitle ? (
+        <span className="max-w-80 truncate">Forked from {sourceTitle}</span>
+      ) : (
+        "Continued from chat"
+      )}
     </>
   );
   const labelClass =
@@ -3864,6 +3903,14 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
+  // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
+  // Only when decline would take that Escape: its card is keyboard-ready on this screen (not parked in a
+  // background chat, where Escape would then stop nothing), and not once rebound.
+  const declineMounted = useShortcutAvailable("declineToolRequest", true);
+  const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
+    const bindings = resolveBindings(s.overrides, "declineToolRequest");
+    return bindings.primary === "Escape" || bindings.alternate === "Escape";
+  });
   const composerFocusable = useContext(ChatComposerFocusableContext);
   // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
   // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
@@ -5844,6 +5891,7 @@ const Composer: FC<{
                 // no effect on Latin / CJK / Devanagari.
                 dir="auto"
                 {...inputProps}
+                cancelOnEscape={!(declineMounted && declineOwnsEscape)}
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
@@ -6965,11 +7013,8 @@ const ComposerToolsMenu: FC<{
         externalSelection?.modelId,
       ) !== true) ||
     incognito;
-  // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
-  const recentProjects = [...projects]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 3);
+  const recentProjects = sortProjectsByActivity(projects).slice(0, 3);
   const openProject = (projectId: string) => {
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
@@ -7596,8 +7641,32 @@ const ComposerRightControls: FC<{
     // A reply replayed after a reload has no adapter run for Cancel to abort.
     stopRecoveredRun(threadRemoteId);
   };
+  const aui = useAui();
+  const chatActive = useChatActive();
+  const threadRunning = useAuiState(({ thread }) => thread.isRunning);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  // Claimed only while foreground: Compare keeps this composer mounted and inert behind its own.
+  useShortcut(
+    "stopGeneration",
+    () => {
+      const research = isResearchActive;
+      stop();
+      if (research) return;
+      const composer = aui.composer();
+      if (composer.getState().canCancel) composer.cancel();
+    },
+    {
+      enabled: chatActive && (threadRunning || isResearchActive),
+      claims: () =>
+        controlsRef.current !== null &&
+        !controlsRef.current.closest('[aria-hidden="true"], [inert]'),
+    },
+  );
   return (
-    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+    <div
+      ref={controlsRef}
+      className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5"
+    >
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
@@ -8410,7 +8479,7 @@ const AssistantMessage: FC = () => {
               onInput={adjustHeight}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                if (isModEnter(e)) {
                   handleSave();
                 }
                 if (e.key === 'Escape') {
@@ -8589,12 +8658,10 @@ const useForkMessageAction = () => {
         search: { thread: result.thread.id },
         replace: false,
       });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
       console.error("Failed to fork", error);
-      toast.error("Failed to fork", {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      showForkFailedToast(error);
     } finally {
       setPending(false);
     }
@@ -8642,7 +8709,7 @@ const ForkMessageButton: FC = () => {
 
   return (
     <TooltipIconButton
-      tooltip="Fork in new chat"
+      tooltip="Fork from here"
       disabled={forkDisabled}
       onClick={forkMessage}
     >

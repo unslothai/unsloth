@@ -40,6 +40,7 @@ import {
   stripChromeHeadings,
   stripFrontmatter,
 } from "../lib/hf-readme";
+import { rehypeReadmeUrls } from "../lib/rehype-readme-urls";
 
 type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
 
@@ -73,7 +74,6 @@ const README_ALLOWED_TAGS: NonNullable<
   source: ["src", "type", "media"],
   track: ["src", "kind", "srclang", "label", "default"],
 };
-const README_REHYPE_PLUGINS = withLiteralUnknownTags(README_ALLOWED_TAGS);
 
 const README_RENDER_CHAR_LIMIT = 120_000;
 const README_CACHE_TTL_MS = 60_000;
@@ -410,6 +410,16 @@ export function ModelReadme({
       current.baseUrl ? createReadmeUrlTransform(current.baseUrl) : undefined,
     [current.baseUrl],
   );
+  const rehypePlugins = useMemo(
+    () =>
+      withLiteralUnknownTags(
+        README_ALLOWED_TAGS,
+        current.baseUrl
+          ? [[rehypeReadmeUrls, { baseUrl: current.baseUrl }]]
+          : [],
+      ),
+    [current.baseUrl],
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -542,7 +552,7 @@ export function ModelReadme({
           components={README_COMPONENTS}
           icons={MARKDOWN_TABLE_ICONS}
           allowedTags={README_ALLOWED_TAGS}
-          rehypePlugins={README_REHYPE_PLUGINS}
+          rehypePlugins={rehypePlugins}
           urlTransform={urlTransform}
         >
           {current.body}

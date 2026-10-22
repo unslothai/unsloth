@@ -3170,7 +3170,7 @@ def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
     assert backend._prompt_cache_history is None
 
 
-def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
+def test_mlx_prompt_cache_keeps_entries_over_budget_out_of_the_lru(monkeypatch):
     from core.inference.mlx_inference import _MLXPromptCacheHistory
 
     _install_fake_prompt_cache_api(monkeypatch)
@@ -3183,6 +3183,132 @@ def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
     stored = history._lru.entries.get("key", {})
     assert tuple([1, 2, 3]) in stored
     assert tuple(range(50)) not in stored
+
+
+def test_mlx_prompt_cache_keeps_reusing_a_conversation_over_budget(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch)
+
+    history = _MLXPromptCacheHistory(6, 1000)
+    turn = list(range(50))
+    history.insert("key", turn[:3], [_FakeCacheEntry(offset = 3, nbytes = 400)])
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+    history.insert("key", turn, long_cache)
+    assert tuple(turn) not in history._lru.entries["key"]
+
+    cache, rest = history.fetch(object(), "key", turn + [50, 51])
+    assert cache is long_cache
+    assert rest == [50, 51]
+
+    cache[0].offset = 52
+    history.insert("key", turn + [50, 51], cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is long_cache
+    assert cache[0].offset == 45
+    assert rest == [99]
+
+    history.insert("key", turn[:45], cache)
+    cache, rest = history.fetch(object(), "key", turn[:5] + [99])
+    assert cache is not long_cache
+    assert rest == turn[3:5] + [99]
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+    assert rest == turn[3:45] + [99]
+
+    history.insert("key", turn[:45], long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45])
+    assert cache is long_cache
+    assert (cache[0].offset, rest) == (44, turn[44:45])
+
+    history.insert("key", turn[:44], cache)
+    cache, rest = history.fetch(object(), "other-adapter", turn[:44] + [99])
+    assert cache is not long_cache
+    assert rest == turn[:44] + [99]
+
+
+def test_mlx_prompt_cache_never_serves_an_over_budget_cache_it_cannot_rewind(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch, trimmable = False)
+    history = _MLXPromptCacheHistory(6, 1000)
+    turn = list(range(50))
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn + [50])
+    assert (cache, rest) == (long_cache, [50])
+
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+    assert rest == turn[:45] + [99]
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    history = _MLXPromptCacheHistory(6, 1000)
+    history._trim = lambda cache, num: num - 1
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+
+
+def test_mlx_batch_releases_an_over_budget_cache_while_another_row_decodes(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory, _TextBatchSession
+
+    _install_fake_prompt_cache_api(monkeypatch)
+
+    history = _MLXPromptCacheHistory(6, 1000)
+    turn = list(range(50))
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+    banked = {"long": (turn, long_cache), "short": ([7, 8, 9], [_FakeCacheEntry(offset = 3)])}
+    session = object.__new__(_TextBatchSession)
+    session.backend = SimpleNamespace(
+        _prompt_cache_history = history,
+        _bank_row_cache = lambda key, *_: history.insert("key", *banked[key]),
+    )
+    session._settled = {}
+    stream = SimpleNamespace(settle = lambda: [], drain = lambda cancelled: [])
+
+    def feed(row, event):
+        if event.finish_reason is not None:
+            session.backend._bank_row_cache(row.cache_key)
+            yield from session._retire(row, cancelled = False)
+
+    session._feed = feed
+
+    def held_after(ended, withdraw = False):
+        rows = {
+            handle: SimpleNamespace(
+                handle = handle,
+                uid = handle,
+                cache_key = handle,
+                all_tokens = [],
+                plan = SimpleNamespace(stream = stream),
+                ready_at = None,
+                processing_at = None,
+                prompt_len = 1,
+                generated = 1,
+                cached = 0,
+                reason = "stop",
+            )
+            for handle in banked
+        }
+        session._rows, session._by_uid = rows, dict(rows)
+        events = [
+            SimpleNamespace(uid = handle, finish_reason = "stop" if handle in ended else None)
+            for handle in banked
+        ]
+        session.generator = SimpleNamespace(
+            next = lambda: ([], events),
+            remove = lambda uids, return_prompt_caches: {},
+        )
+        list(session.withdraw(ended) if withdraw else session.step())
+        return history.fetch(object(), "key", turn + [50])[0] is long_cache
+
+    assert not held_after(["long"])
+    assert held_after(["long", "short"])
+    assert not held_after(["long"], withdraw = True)
+    assert held_after(["long", "short"], withdraw = True)
 
 
 def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):

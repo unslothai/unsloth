@@ -64,6 +64,17 @@ const MODEL_DEFAULTS: Array<{
   { match: "sdxl", steps: 25, guidance: 7 },
 ];
 
+// The Steps slider's usual top, and the request's (DiffusionGenerateRequest.steps is 1-100).
+export const STEPS_SLIDER_MAX = 50;
+export const STEPS_REQUEST_MAX = 100;
+
+/** Steps slider top: 50, widened to twice the model's default (Krea-2-raw ships 52) and to the
+ *  current value (an import or restore), never past what the request accepts. */
+export function stepsSliderMax(modelDefault: number, current: number): number {
+  const wanted = Math.max(STEPS_SLIDER_MAX, modelDefault * 2, current);
+  return Math.min(STEPS_REQUEST_MAX, Number.isFinite(wanted) ? Math.ceil(wanted) : STEPS_SLIDER_MAX);
+}
+
 export function defaultsFor(repoId: string): {
   steps: number;
   guidance: number;

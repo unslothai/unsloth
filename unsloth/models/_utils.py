@@ -7972,6 +7972,80 @@ def _eligible_layer_placements(model, filter_fn):
     return placements
 
 
+def _microscaling_qat_filter(
+    model, qat_scheme, base_config, block_size, dtypes, dtype_msg, gemm_msg
+):
+    """NVFP4 / MX QAT layer filter; raises at prepare time if this GPU / dtype cannot run the GEMM."""
+    candidates = _block_linear_filter(model, block_size, qat_scheme, skip_output_head = True)
+    placements = _eligible_layer_placements(model, candidates)
+    unsupported = sorted({str(dtype) for _, dtype in placements if dtype not in dtypes})
+    if unsupported:
+        raise RuntimeError(
+            f"Unsloth: qat_scheme='{qat_scheme}' quantizes {dtype_msg}; this model has "
+            f"{', '.join(unsupported)} layers. Load it with dtype = torch.bfloat16."
+        )
+    for device, dtype in placements:
+        if not _qat_forward_runs(base_config, device, dtype):
+            raise RuntimeError(
+                f"Unsloth: qat_scheme='{qat_scheme}' runs {gemm_msg} and a torch / torchao that "
+                f"support it. Layers of this model are on {device}. Use qat_scheme='fp8-fp8' instead."
+            )
+    # torchao's own NVFP4 filter skips out_features <= 64 (cuBLAS): probe each such width instead.
+    small_widths = sorted(
+        {
+            module.out_features
+            for name, module in model.named_modules()
+            if candidates(module, name) and module.out_features <= 64
+        }
+    )
+    bad_widths = {
+        n
+        for n in small_widths
+        if not all(_qat_forward_runs(base_config, d, t, n) for d, t in placements)
+    }
+    if bad_widths:
+        narrow = [
+            name
+            for name, module in model.named_modules()
+            if not _is_lora_adapter_name(name)
+            and candidates(module, name)
+            and module.out_features in bad_widths
+        ]
+        warnings.warn(
+            f"Unsloth: qat_scheme='{qat_scheme}': the low precision matmul fails for out_features "
+            f"{sorted(bad_widths)} here, so these Linear layers stay in full precision: "
+            + ", ".join(narrow[:8])
+            + (f", ... ({len(narrow) - 8} more)" if len(narrow) > 8 else ""),
+            stacklevel = 3,
+        )
+        candidates = lambda m, fqn, _c = candidates, _bad = frozenset(bad_widths): (
+            _c(m, fqn) and m.out_features not in _bad
+        )
+    biased = [
+        name
+        for name, module in model.named_modules()
+        if not _is_lora_adapter_name(name) and candidates(module, name) and module.bias is not None
+    ]
+    if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
+        warnings.warn(
+            f"Unsloth: qat_scheme='{qat_scheme}': this torchao's QAT backward returns no bias "
+            "gradient, so these biased Linear layers stay in full precision: "
+            + ", ".join(biased[:8])
+            + (f", ... ({len(biased) - 8} more)" if len(biased) > 8 else ""),
+            stacklevel = 3,
+        )
+        return lambda m, fqn, _c = candidates: _c(m, fqn) and m.bias is None
+    return candidates
+
+
+def _mx_autocast_forward(self, x):
+    # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
+    from torchao.prototype.qat import MXFakeQuantizedLinear
+    if x.dtype != torch.bfloat16 and torch.is_autocast_enabled(x.device.type):
+        x = x.to(torch.bfloat16)
+    return MXFakeQuantizedLinear.forward(self, x)
+
+
 def _nvfp4_any_rank_forward(self, x):
     # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs; vision layers see rank 4+.
     from torchao.prototype.qat import NVFP4FakeQuantizedLinear
@@ -7982,15 +8056,25 @@ def _nvfp4_any_rank_forward(self, x):
     return out.view(*x.shape[:-1], out.shape[-1])
 
 
-def _accept_any_rank_nvfp4_inputs(model) -> None:
+def _patch_microscaling_qat_forwards(model) -> None:
     import types
+
     try:
-        from torchao.prototype.qat import NVFP4FakeQuantizedLinear
+        from torchao.prototype import qat as prototype_qat
     except Exception:
         return
+    forwards = [
+        (getattr(prototype_qat, name, None), forward)
+        for name, forward in (
+            ("NVFP4FakeQuantizedLinear", _nvfp4_any_rank_forward),
+            ("MXFakeQuantizedLinear", _mx_autocast_forward),
+        )
+    ]
+    forwards = [(cls, forward) for cls, forward in forwards if isinstance(cls, type)]
     for module in model.modules():
-        if isinstance(module, NVFP4FakeQuantizedLinear):
-            module.forward = types.MethodType(_nvfp4_any_rank_forward, module)
+        for cls, forward in forwards:
+            if isinstance(module, cls):
+                module.forward = types.MethodType(forward, module)
 
 
 def _is_lora_adapter_name(fqn: str) -> bool:
@@ -8065,79 +8149,42 @@ def _prepare_model_for_qat(
                 base_config = NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
             except TypeError:  # older torchao without the knob
                 base_config = NVFP4DynamicActivationNVFP4WeightConfig()
-            candidates = _block_linear_filter(model, 16, qat_scheme, skip_output_head = True)
-            placements = _eligible_layer_placements(model, candidates)
-            unsupported = sorted(
-                {
-                    str(dtype)
-                    for _, dtype in placements
-                    if dtype not in (torch.bfloat16, torch.float32)
-                }
+            filter_fn = _microscaling_qat_filter(
+                model,
+                qat_scheme,
+                base_config,
+                block_size = 16,
+                dtypes = (torch.bfloat16, torch.float32),
+                dtype_msg = "bfloat16 or float32 activations only (torchao's NVFP4 quantizer)",
+                gemm_msg = "NVFP4 matmuls in the forward pass and needs a GPU with FP4 tensor cores "
+                "(compute capability 10.0+: B200, GB200, RTX 50 series)",
             )
-            if unsupported:
-                raise RuntimeError(
-                    "Unsloth: qat_scheme='nvfp4' quantizes bfloat16 or float32 activations only (torchao's "
-                    f"NVFP4 quantizer); this model has {', '.join(unsupported)} layers. Load it with "
-                    "dtype = torch.bfloat16."
-                )
-            for device, dtype in placements:
-                if not _qat_forward_runs(base_config, device, dtype):
-                    raise RuntimeError(
-                        "Unsloth: qat_scheme='nvfp4' runs NVFP4 matmuls in the forward pass and needs a GPU "
-                        "with FP4 tensor cores (compute capability 10.0+: B200, GB200, RTX 50 series) and a "
-                        f"torch / torchao that support it. Layers of this model are on {device}. Use "
-                        "qat_scheme='fp8-fp8' instead."
-                    )
-            # torchao's own NVFP4 filter skips out_features <= 64 (cuBLAS): probe each such width instead.
-            small_widths = sorted(
-                {
-                    module.out_features
-                    for name, module in model.named_modules()
-                    if candidates(module, name) and module.out_features <= 64
-                }
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
             )
-            bad_widths = {
-                n
-                for n in small_widths
-                if not all(_qat_forward_runs(base_config, d, t, n) for d, t in placements)
-            }
-            if bad_widths:
-                narrow = [
-                    name
-                    for name, module in model.named_modules()
-                    if not _is_lora_adapter_name(name)
-                    and candidates(module, name)
-                    and module.out_features in bad_widths
-                ]
-                warnings.warn(
-                    "Unsloth: qat_scheme='nvfp4': the NVFP4 matmul fails for out_features "
-                    f"{sorted(bad_widths)} here, so these Linear layers stay in full precision: "
-                    + ", ".join(narrow[:8])
-                    + (f", ... ({len(narrow) - 8} more)" if len(narrow) > 8 else ""),
-                    stacklevel = 2,
+        elif qat_scheme == "mxfp8":
+            try:
+                from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
+                from torchao.prototype.qat import MXFakeQuantizedLinear  # noqa: F401, MX QAT is torchao 0.16+
+            except ImportError:
+                raise ImportError(
+                    "Unsloth: qat_scheme='mxfp8' needs torchao 0.16 or newer: pip install --upgrade torchao"
                 )
-                candidates = lambda m, fqn, _c = candidates, _bad = frozenset(bad_widths): (
-                    _c(m, fqn) and m.out_features not in _bad
-                )
-            biased = [
-                name
-                for name, module in model.named_modules()
-                if not _is_lora_adapter_name(name)
-                and candidates(module, name)
-                and module.bias is not None
-            ]
-            filter_fn = candidates
-            if biased and not all(
-                _qat_bias_grad_supported(base_config, d, t) for d, t in placements
-            ):
-                warnings.warn(
-                    "Unsloth: qat_scheme='nvfp4': this torchao's NVFP4 QAT backward returns no bias "
-                    "gradient, so these biased Linear layers stay in full precision: "
-                    + ", ".join(biased[:8])
-                    + (f", ... ({len(biased) - 8} more)" if len(biased) > 8 else ""),
-                    stacklevel = 2,
-                )
-                filter_fn = lambda m, fqn, _c = candidates: _c(m, fqn) and m.bias is None
+            base_config = MXDynamicActivationMXWeightConfig(
+                activation_dtype = torch.float8_e4m3fn,
+                weight_dtype = torch.float8_e4m3fn,
+            )
+            filter_fn = _microscaling_qat_filter(
+                model,
+                qat_scheme,
+                base_config,
+                block_size = 32,
+                dtypes = (torch.bfloat16,),
+                dtype_msg = "bfloat16 layers only (torchao's MX matmul always returns bfloat16)",
+                gemm_msg = "MXFP8 matmuls in the forward pass and needs a GPU with MX tensor cores "
+                "(compute capability 10.0+, e.g. B200 / GB200)",
+            )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -8275,7 +8322,7 @@ def _prepare_model_for_qat(
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
-    _accept_any_rank_nvfp4_inputs(model)
+    _patch_microscaling_qat_forwards(model)
 
     return model
 
@@ -8311,7 +8358,19 @@ def patch_hf_quantizer():
 patch_hf_quantizer()
 
 
-def verify_fp8_support_if_applicable(model_config):
+def _fp8_checkpoint_dequantizes_below_sm89():
+    # transformers 5.x dequantizes FP8 below sm89 (same release added `dequantize`); 4.57.x raises.
+    try:
+        from transformers.utils.quantization_config import FineGrainedFP8Config
+    except Exception:
+        return False
+    try:
+        return "dequantize" in inspect.signature(FineGrainedFP8Config.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def verify_fp8_support_if_applicable(model_config, fast_inference = False):
     quant_method = get_quant_type(model_config)
     if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE not in ("cuda", "xpu"):
         # In case of block quantized, we allow L4 because we fall back to torchao kernels.
@@ -8327,6 +8386,12 @@ def verify_fp8_support_if_applicable(model_config):
                 f"Unsloth: FBGEMM FP8 quantization is only supported on H100 and higher GPUs. L4 is not supported. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
             )
         if quant_method == "fp8" and major_version * 10 + minor_version < 89:
+            # Only vLLM keeps FP8 weights; transformers dequantizes them.
+            if not fast_inference and _fp8_checkpoint_dequantizes_below_sm89():
+                logger.warning_once(
+                    f"Unsloth: {torch.cuda.get_device_name()} has no FP8 compute (compute capability 8.9 or higher), so this FP8 checkpoint is dequantized to 16-bit on load."
+                )
+                return
             raise ValueError(
                 f"Unsloth: FP8 quantization is only supported on L4 and higher GPUs with compute capability 8.9 or higher. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
             )
@@ -10290,14 +10355,13 @@ def widen_target_regex_to_expert_submodules(
     leaves = sorted(set(get_moe_expert_submodule_leaves(model, detect_targets)) | named_leaves)
     if not leaves:
         return target_modules, detect_targets, []
-    if any(
-        re.fullmatch(target_modules, name)
-        for name, _ in model.named_modules()
-        if ".experts." in name
-    ):
+    expert_regex = moe_expert_submodule_regex(leaves, parents)
+    # Skip only if every expert matches: Zoo may reach down_proj alone, gate_proj / up_proj still need adding.
+    eligible = [name for name, _ in model.named_modules() if re.fullmatch(expert_regex, name)]
+    if eligible and all(re.fullmatch(target_modules, name) for name in eligible):
         return target_modules, detect_targets, []
     detect_was_the_regex = detect_targets is target_modules
-    target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(leaves, parents)})"
+    target_modules = f"(?:{target_modules})|(?:{expert_regex})"
     if detect_was_the_regex:
         detect_targets = target_modules
     return target_modules, detect_targets, leaves
