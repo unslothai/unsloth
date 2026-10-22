@@ -158,7 +158,7 @@ test("rejects damaged framed exports rather than importing partial messages", as
   ]) {
     assert.throws(
       () => parseConversationMarkdownDocument(invalid, "chat"),
-      /Studio Markdown/,
+      /Unsloth Markdown/,
     );
   }
 });

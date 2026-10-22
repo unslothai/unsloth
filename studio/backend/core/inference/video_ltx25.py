@@ -413,6 +413,7 @@ def load_ltx25_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
@@ -438,6 +439,7 @@ def load_ltx25_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
         family = family,
         target = target,
         logger = logger,
@@ -562,7 +564,9 @@ def ltx25_transformer_config_dir() -> str:
     import json
     import tempfile
 
-    root = Path(tempfile.gettempdir()) / "unsloth_ltx25_config"
+    from utils.paths.private_tmp import private_tmp_dir
+
+    root = private_tmp_dir("unsloth_ltx25_config")
     target = root / "transformer" / "config.json"
     payload = json.dumps(
         {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},

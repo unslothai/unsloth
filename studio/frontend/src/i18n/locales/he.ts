@@ -1174,6 +1174,10 @@ export const he = {
       alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
+      metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
+      altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
+      desktopOnly: "באפליקציית שולחן העבודה בלבד",
+      builtInKey: "מובנה: {key}",
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1375,6 +1379,10 @@ export const he = {
         steerMessage: {
           label: "הכוונת התשובה",
           description: "עצור את התשובה הנוכחית ושלח את הטיוטה מיד אחריה",
+        },
+        stopGeneration: {
+          label: "עצירת היצירה",
+          description: "עצירת התשובה שנכתבת",
         },
         cycleReasoningEffort: {
           label: "החלף רמת מאמץ חשיבה",
@@ -1925,9 +1933,6 @@ export const he = {
         showLoadedModels: "חיווי מודלים טעונים",
         showLoadedModelsDescription:
           "הצג כרטיס קטן בפינה הימנית התחתונה המפרט כל מודל שנמצא כרגע בזיכרון (צ'אט, דיבור, תמונה, וידאו), עם כפתור לפריקת כל אחד מהם.",
-        showWhisperUpdates: "התראות עדכון של whisper.cpp",
-        showWhisperUpdatesDescription:
-          "הודע כאשר גרסת build חדשה יותר של whisper.cpp זמינה עבור מודלים של המרת דיבור לטקסט. כבה אם אינך מתמלל אודיו אף פעם.",
         showAudioCppUpdates: "התראות עדכון של audio.cpp",
         showAudioCppUpdatesDescription:
           "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
@@ -2164,9 +2169,9 @@ export const he = {
         longestStreak: "רצף שיא",
         activityTitle: "פעילות טוקנים",
         activityDescription: {
-          daily: "{total} במהלך {weeks} האחרונים",
-          weekly: "שבוע שיא: {total} · {weeks} אחרונים",
-          cumulative: "{total} נצברו במהלך {weeks} האחרונים",
+          daily: "{total} מאז {since}",
+          weekly: "השבוע העמוס ביותר {total} · מאז {since}",
+          cumulative: "{total} בסך הכול מאז {since}",
         },
         mode: {
           daily: "יומי",
@@ -2175,8 +2180,9 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
-        chartToggle: "תרשים",
-        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
+        emptyDayTooltip: "{date} · אין פעילות",
+        apiRequests: "{count} דרך API",
+        cumulativeTooltip: "עד שבוע {date} · {tokens} בסך הכול",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
@@ -2879,6 +2885,22 @@ export const he = {
         visibility: "חשיבה",
         visibilityDescription:
           "כיצד תהליך החשיבה נפתח. עדיין תוכל להרחיב או לכווץ כל מקטע בעצמך.",
+      },
+      memory: {
+        title: "זיכרון",
+        description: "הערות שכל צ'אט קורא, בכל מודל, מקומי או בענן. צ'אטים בפרויקט קוראים גם את קובץ AGENTS.md של הפרויקט.",
+        enable: "שימוש בזיכרון בצ'אטים",
+        enableDescription: "שליחת ההערות האלה עם כל צ'אט.",
+        locked: "כבוי בהתקנה זו על ידי UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "הערות זיכרון",
+        placeholder: "לדוגמה:\n- אני כותב ב-Python ומשתמש ב-uv.\n- תשובות קצרות.",
+        hint: "נשמר ב-{path}. אפשר גם לערוך את הקובץ בכל עורך טקסט.",
+        size: "{used} / {max} KB",
+        save: "שמירה",
+        saved: "הזיכרון נשמר",
+        loadError: "טעינת הזיכרון נכשלה.",
+        saveError: "שמירת הזיכרון נכשלה.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md זיכרון לזכור התאמה אישית פרופיל הערות",
       },
       currentDate: {
         label: "ספק למודל את התאריך של היום",

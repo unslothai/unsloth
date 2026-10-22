@@ -1083,6 +1083,10 @@ export const zhCN = {
       alternateSlot: "备用快捷键",
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
+      metaUnsupported: "Windows 键不能用于快捷键。",
+      altGraphUnsupported: "AltGr 组合不能用作快捷键。",
+      desktopOnly: "仅限桌面应用",
+      builtInKey: "内置：{key}",
       actions: {
         findInPage: {
           label: "在页面中查找",
@@ -1283,6 +1287,10 @@ export const zhCN = {
         steerMessage: {
           label: "引导回复",
           description: "停止当前回复并接着发送草稿",
+        },
+        stopGeneration: {
+          label: "停止生成",
+          description: "停止正在生成的回复",
         },
         cycleReasoningEffort: {
           label: "循环切换推理强度",
@@ -1795,9 +1803,6 @@ export const zhCN = {
         showLoadedModels: "已加载模型指示器",
         showLoadedModelsDescription:
           "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
-        showWhisperUpdates: "whisper.cpp 更新通知",
-        showWhisperUpdatesDescription:
-          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
         showAudioCppUpdates: "audio.cpp 更新通知",
         showAudioCppUpdatesDescription:
           "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
@@ -2044,9 +2049,9 @@ export const zhCN = {
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
         activityDescription: {
-          daily: "过去{weeks}共{total}",
-          weekly: "峰值周 {total} · 最近{weeks}",
-          cumulative: "过去{weeks}累计{total}",
+          daily: "自 {since} 起共 {total}",
+          weekly: "最活跃的一周 {total} · 自 {since} 起",
+          cumulative: "自 {since} 起累计 {total}",
         },
         mode: {
           daily: "按天",
@@ -2055,8 +2060,9 @@ export const zhCN = {
         },
         cellTooltip: "{date} · {tokens}，{messages}",
         weekTooltip: "{date} 当周 · {tokens}",
-        chartToggle: "图表",
-        chartToggleHint: "以带坐标轴标签的图表显示按周和累计",
+        emptyDayTooltip: "{date} · 无活动",
+        apiRequests: "通过 API {count} 次",
+        cumulativeTooltip: "截至 {date} 那一周 · 累计 {tokens}",
         less: "较少",
         more: "较多",
         insightsTitle: "活跃度分析",
@@ -2719,6 +2725,22 @@ export const zhCN = {
         visibility: "思考过程",
         visibilityDescription:
           "思考过程如何展开。你仍可自行展开或折叠任意区块。",
+      },
+      memory: {
+        title: "记忆",
+        description: "每个对话都会读取的笔记，适用于所有本地或云端模型。项目中的对话还会读取该项目的 AGENTS.md。",
+        enable: "在对话中使用记忆",
+        enableDescription: "在每个对话中发送这些笔记。",
+        locked: "已被 UNSLOTH_STUDIO_AGENTS_MD 在此安装中关闭。",
+        editor: "记忆笔记",
+        placeholder: "例如：\n- 我用 Python 编程，使用 uv。\n- 回答尽量简短。",
+        hint: "保存在 {path}。你也可以用任意文本编辑器编辑该文件。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "记忆已保存",
+        loadError: "无法加载记忆。",
+        saveError: "无法保存记忆。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md 记忆 记住 个性化 个人资料 笔记",
       },
       currentDate: {
         label: "告诉模型今天的日期",

@@ -881,7 +881,9 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     recorded, pinned = _recorded_install_flavor()
     if recorded == "cpu" and not pinned:
         # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
-        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair. A stated GPU index wins.
+        if _stated_torch_index_source():
+            return False
         from utils.tegra import tegra_before_cuda13
         return tegra_before_cuda13()
     return recorded == "cpu" and pinned
@@ -1563,6 +1565,12 @@ def _detect_hardware_locked() -> DeviceType:
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
         force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
+        # cuInit off the GIL first: torch's probe below holds it for the whole driver init.
+        try:
+            from utils.cuda_driver_prime import prime_cuda_driver
+            prime_cuda_driver(torch)
+        except Exception:  # noqa: BLE001 - never fatal (also loaded standalone, without the package)
+            pass
         try:
             cuda_unavailable = not torch.cuda.is_available()
         except Exception:
@@ -2799,7 +2807,24 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 
 
 # APU architectures that are unified memory but sit outside the shared classifier's positive set, which names anything else from hipDeviceProp_t::integrated. clr never assigned deviceProps.integrated before rocm-6.2.0 and the legacy R0000 property ABI still does not, while paldevice.cpp inflates globalMemSize_ off settings().apuSystem_ in both cases -- harmless for the cap and the total, wrong for a NUMERATOR. gfx1103 Phoenix / Hawk Point never shipped as a discrete board, so naming it here can only upgrade a part whose props.total_memory really does span host memory.
-_ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
+# The rest of LLVM's AMDGPUUsage processor table rows typed APU are named here on the same footing (none ever shipped as a
+# discrete board): gfx1153 Krackan Point 2 (Windows-supported), gfx1033 Van Gogh, gfx1035 Rembrandt, gfx1036 Raphael /
+# Granite Ridge iGPU, gfx1013 Cyan Skillfish, gfx90c / gfx902 / gfx909 Renoir / Raven, gfx801 / gfx810 Carrizo / Stoney.
+_ROCM_UNNAMED_APU_ARCHES = frozenset(
+    {
+        "gfx801",
+        "gfx810",
+        "gfx902",
+        "gfx909",
+        "gfx90c",
+        "gfx1013",
+        "gfx1033",
+        "gfx1035",
+        "gfx1036",
+        "gfx1103",
+        "gfx1153",
+    }
+)
 
 
 def _rocm_props_unified_status(props: Any) -> Optional[bool]:

@@ -1204,6 +1204,10 @@ export const sv = {
       alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
+      metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
+      altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
+      desktopOnly: "Endast i skrivbordsappen",
+      builtInKey: "Inbyggt: {key}",
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1404,6 +1408,10 @@ export const sv = {
         steerMessage: {
           label: "Styr svaret",
           description: "Stoppa det aktuella svaret och skicka utkastet härnäst",
+        },
+        stopGeneration: {
+          label: "Stoppa genereringen",
+          description: "Stoppa svaret som skrivs",
         },
         cycleReasoningEffort: {
           label: "Växla resonemangsnivå",
@@ -1987,9 +1995,6 @@ export const sv = {
         showLoadedModels: "Indikator för inlästa modeller",
         showLoadedModelsDescription:
           "Visa ett litet kort i nedre högra hörnet med alla modeller som för närvarande finns i minnet (chatt, tal, bild, video), med en knapp för att mata ut var och en.",
-        showWhisperUpdates: "Aviseringar om whisper.cpp-uppdateringar",
-        showWhisperUpdatesDescription:
-          "Avisera när en nyare whisper.cpp-version finns för tal-till-text-modeller. Stäng av om du aldrig transkriberar ljud.",
         showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
         showAudioCppUpdatesDescription:
           "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
@@ -2236,9 +2241,9 @@ export const sv = {
         longestStreak: "Längsta svit",
         activityTitle: "Tokenaktivitet",
         activityDescription: {
-          daily: "{total} under de senaste {weeks}",
-          weekly: "Toppvecka {total} · senaste {weeks}",
-          cumulative: "{total} sammanlagt under de senaste {weeks}",
+          daily: "{total} sedan {since}",
+          weekly: "Mest aktiva veckan {total} · sedan {since}",
+          cumulative: "{total} totalt sedan {since}",
         },
         mode: {
           daily: "Dagligen",
@@ -2247,8 +2252,9 @@ export const sv = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Veckan som börjar {date} · {tokens}",
-        chartToggle: "Diagram",
-        chartToggleHint: "Visa Veckovis och Kumulativt som ett diagram med märkta axlar",
+        emptyDayTooltip: "{date} · Ingen aktivitet",
+        apiRequests: "{count} via API",
+        cumulativeTooltip: "Till veckan {date} · {tokens} totalt",
         less: "Mindre",
         more: "Mer",
         insightsTitle: "Aktivitetsinsikter",
@@ -2963,6 +2969,22 @@ export const sv = {
         visibility: "Resonemang",
         visibilityDescription:
           "Hur resonemang öppnas. Du kan fortfarande fälla ut eller ihop valfritt block själv.",
+      },
+      memory: {
+        title: "Minne",
+        description: "Anteckningar som varje chatt läser, för alla modeller, lokala eller i molnet. Chattar i ett projekt läser också projektets AGENTS.md.",
+        enable: "Använd minne i chattar",
+        enableDescription: "Skicka de här anteckningarna med varje chatt.",
+        locked: "Avstängt för den här installationen av UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Minnesanteckningar",
+        placeholder: "Till exempel:\n- Jag skriver Python och använder uv.\n- Svara kort.",
+        hint: "Sparas i {path}. Du kan också redigera filen i valfri textredigerare.",
+        size: "{used} / {max} KB",
+        save: "Spara",
+        saved: "Minnet sparat",
+        loadError: "Det gick inte att läsa in minnet.",
+        saveError: "Det gick inte att spara minnet.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md minne komma ihåg anpassning profil anteckningar",
       },
       currentDate: {
         label: "Berätta dagens datum för modellen",

@@ -1090,6 +1090,10 @@ export const fr = {
       alternateSlot: "Raccourci alternatif",
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
+      metaUnsupported: "La touche Windows ne peut pas être utilisée dans les raccourcis.",
+      altGraphUnsupported: "Les combinaisons AltGr ne peuvent pas servir de raccourcis.",
+      desktopOnly: "Application de bureau uniquement",
+      builtInKey: "Intégré : {key}",
       actions: {
         findInPage: {
           label: "Rechercher dans la page",
@@ -1290,6 +1294,10 @@ export const fr = {
         steerMessage: {
           label: "Réorienter la réponse",
           description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
+        stopGeneration: {
+          label: "Arrêter la génération",
+          description: "Arrêter la réponse en cours",
         },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
@@ -1833,9 +1841,6 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
-        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
         showAudioCppUpdates: "Notifications de mise à jour d'audio.cpp",
         showAudioCppUpdatesDescription:
           "Notifier lorsque le moteur audio.cpp doit être mis à jour pour les pages Audio. Désactivez si vous n'utilisez jamais Audio.",
@@ -2096,9 +2101,9 @@ export const fr = {
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
         activityDescription: {
-          daily: "{total} au cours des {weeks} dernières",
-          weekly: "Semaine record {total} · {weeks} dernières",
-          cumulative: "{total} cumulés sur les {weeks} dernières",
+          daily: "{total} depuis le {since}",
+          weekly: "Semaine la plus active {total} · depuis le {since}",
+          cumulative: "{total} au total depuis le {since}",
         },
         mode: {
           daily: "Quotidienne",
@@ -2107,8 +2112,9 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
-        chartToggle: "Graphique",
-        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
+        emptyDayTooltip: "{date} · Aucune activité",
+        apiRequests: "{count} via l'API",
+        cumulativeTooltip: "Jusqu'à la semaine du {date} · {tokens} au total",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",
@@ -2800,6 +2806,22 @@ export const fr = {
         visibility: "Réflexion",
         visibilityDescription:
           "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
+      },
+      memory: {
+        title: "Mémoire",
+        description: "Des notes lues par chaque discussion, avec n'importe quel modèle, local ou cloud. Les discussions d'un projet lisent aussi le AGENTS.md de ce projet.",
+        enable: "Utiliser la mémoire dans les discussions",
+        enableDescription: "Envoyer ces notes avec chaque discussion.",
+        locked: "Désactivé pour cette installation par UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Notes de mémoire",
+        placeholder: "Par exemple :\n- J'écris du Python et j'utilise uv.\n- Réponds brièvement.",
+        hint: "Enregistré dans {path}. Vous pouvez aussi modifier ce fichier dans n'importe quel éditeur de texte.",
+        size: "{used} / {max} Ko",
+        save: "Enregistrer",
+        saved: "Mémoire enregistrée",
+        loadError: "Impossible de charger la mémoire.",
+        saveError: "Impossible d'enregistrer la mémoire.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md mémoire souvenir personnalisation profil notes",
       },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
