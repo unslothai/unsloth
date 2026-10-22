@@ -72,7 +72,11 @@ APPLY_AND_MEASURE = (
 CASE_ATTEMPTS = 3
 
 
-def measure_case(page, case: dict, server = None) -> list:
+def measure_case(
+    page,
+    case: dict,
+    server = None,
+) -> list:
     """Measures a case, re-running it on a fresh render when the page navigates away mid-case.
 
     The vite dev page sometimes reloads itself on Windows runners after its buttons have rendered
@@ -81,7 +85,10 @@ def measure_case(page, case: dict, server = None) -> list:
         try:
             return page.evaluate(APPLY_AND_MEASURE, case)
         except Exception as exc:
-            if attempt == CASE_ATTEMPTS or "execution context was destroyed" not in str(exc).lower():
+            if (
+                attempt == CASE_ATTEMPTS
+                or "execution context was destroyed" not in str(exc).lower()
+            ):
                 raise
             tail = "\n".join(getattr(server, "vite_tail", []))
             print(

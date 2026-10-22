@@ -41,14 +41,22 @@ def mod(monkeypatch):
 class FakePage:
     """Holds the applied display case; a reload resets it and kills the evaluate in flight."""
 
-    def __init__(self, reloads_on_calls = (), error = LOST):
+    def __init__(
+        self,
+        reloads_on_calls = (),
+        error = LOST,
+    ):
         self.state = dict(DEFAULT)
         self.calls = 0
         self.reloads_on_calls = set(reloads_on_calls)
         self.error = error
         self.waits = 0
 
-    def evaluate(self, expression, arg = None):
+    def evaluate(
+        self,
+        expression,
+        arg = None,
+    ):
         self.calls += 1
         if self.calls in self.reloads_on_calls:
             self.state = dict(DEFAULT)
@@ -81,9 +89,9 @@ def test_a_case_is_applied_and_measured_in_one_evaluate(mod):
 def test_a_reload_mid_case_re_measures_the_same_case(mod, reload_on):
     page = FakePage(reloads_on_calls = range(1, reload_on + 1))
     measures = mod.measure_case(page, CASE)
-    assert _case_state(measures) == [{k: CASE[k] for k in DEFAULT}] * 6, (
-        "a reload reset the display case and the default layout was recorded under its name"
-    )
+    assert (
+        _case_state(measures) == [{k: CASE[k] for k in DEFAULT}] * 6
+    ), "a reload reset the display case and the default layout was recorded under its name"
     assert page.waits == reload_on
 
 
