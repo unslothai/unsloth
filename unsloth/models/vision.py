@@ -2081,6 +2081,15 @@ def _missing_torchvision_error(error = None):
     return False
 
 
+def _is_speech_forward(model):
+    """forward reads audio features and no input_ids (Whisper, Canary, Moonshine, wav2vec2, AST)."""
+    try:
+        params = inspect.signature(type(model).forward).parameters
+    except (TypeError, ValueError):
+        return False
+    return "input_ids" not in params and ("input_features" in params or "input_values" in params)
+
+
 def _from_pretrained_left_padded(loader, name, **kwargs):
     """`loader.from_pretrained(name, padding_side = "left", ...)`, retried without padding_side when the
     processor forwards it into a sub-model's __init__ (Dia's DacModel, Higgs Audio's tokenizer model).
@@ -4739,8 +4748,12 @@ class FastBaseModel:
         ):
             # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
             task_type = TaskType.SEQ_2_SEQ_LM
-        if task_type == TaskType.CAUSAL_LM and not hasattr(model, "prepare_inputs_for_generation"):
-            # CTC / audio classification heads (Wav2Vec2ForCTC) cannot generate; PeftModelForCausalLM reads that hook in __init__.
+        if task_type in (TaskType.CAUSAL_LM, TaskType.SEQ_2_SEQ_LM) and (
+            _is_speech_forward(model)
+            or (task_type == TaskType.CAUSAL_LM and not hasattr(model, "prepare_inputs_for_generation"))
+        ):
+            # Speech / CTC / audio classification models: the task wrappers pass input_ids = None (it reaches
+            # Whisper's decoder twice), and PeftModelForCausalLM reads prepare_inputs_for_generation in __init__.
             task_type = None
         if _is_text_seq2seq_config(getattr(model, "config", None)):
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
