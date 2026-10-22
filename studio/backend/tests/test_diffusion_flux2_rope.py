@@ -243,3 +243,31 @@ def test_call_after_uninstall_reaches_stock(fake_kernel):
     x = torch.randn(1, 4, 2, 8)
     freqs = (torch.ones(4, 8), torch.zeros(4, 8))
     assert torch.equal(patched(x, freqs, sequence_dim = 1), x)
+
+
+def test_a_failed_launch_disables_the_fused_path_for_the_load(monkeypatch):
+    calls = []
+
+    def failing_launch(x, cos, sin):
+        calls.append(1)
+        raise RuntimeError("PTX JIT compilation failed")
+
+    monkeypatch.setattr(fr, "_kernel", lambda: failing_launch)
+    monkeypatch.setattr(fr, "_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    assert fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
+    x = torch.randn(1, 6, 2, 8)
+    pos = torch.randn(6, 4, dtype = torch.float64)
+    freqs = (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
+    want = stock_rope(x, freqs, sequence_dim = 1)
+    for _ in range(4):
+        assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), want)
+    assert len(calls) == 1
+    # The next load re-arms, whether or not the previous one was torn down first.
+    assert fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
+    fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
+    assert len(calls) == 2
+    fr.uninstall()
+    fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
+    fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
+    assert len(calls) == 3

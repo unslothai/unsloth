@@ -27,6 +27,14 @@
       "reason": "Loads the installed torchao package file it is stubbing around, located via find_spec."
     },
     {
+      "file": "studio/backend/core/export/reap.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "9f96fe82c04e1bd3",
+      "count": 1,
+      "reason": "Loads Unsloth's own installed models/mapper.py (plain data), located via find_spec, to read its 16-bit Hub id table without importing unsloth."
+    },
+    {
       "file": "studio/backend/core/export/worker.py",
       "rule": "trust-remote-code",
       "sink": "assignment",
@@ -449,6 +457,14 @@
       "digest": "5f461f0c8175f45a",
       "count": 1,
       "reason": "Loads unsloth/models/decision_mlx.py from a fixed path inside this package on Apple Silicon, where importing unsloth.models would import torch; never a downloaded or user-supplied file."
+    },
+    {
+      "file": "unsloth/__init__.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "8840de300c0740e6",
+      "count": 1,
+      "reason": "Loads unsloth/dataprep/ebooks.py from a fixed path derived from this package's __file__ on MLX to avoid importing torch through dataprep; never an ebook-provided or downloaded code path."
     },
     {
       "file": "unsloth/_gpu_init.py",

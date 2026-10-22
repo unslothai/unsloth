@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""W8A8 for the small-host int8 denoiser on Turing (``Int8WeightLinear`` with ``act_int8``).
-
-Qwen-Image on a T4 is promoted to float32 and stored as int8 weights; the float32 dequantised GEMM runs on SIMT
-cores. With ``act_int8`` the Linear quantises its activation per row and runs ``torch._int_mm`` instead. CPU only:
-the int8 GEMM is replaced by an exact integer reference where a CUDA kernel would run.
-"""
+"""act_int8 runs torch._int_mm on per-row int8 activations; CPU uses an exact integer reference."""
 
 from __future__ import annotations
 
@@ -79,7 +74,7 @@ def _fake_cuda(
     monkeypatch.setattr(torch, "_int_mm", int_mm, raising = False)
     real_to = torch.Tensor.to
 
-    def to(self, *a, **k):  # the probe moves its operands to "cuda"; keep them on the CPU
+    def to(self, *a, **k):  # the probe moves operands to cuda; keep them on the CPU
         if a and isinstance(a[0], torch.device) and a[0].type == "cuda":
             return self
         return real_to(self, *a, **k)
@@ -120,7 +115,7 @@ def test_int8_act_math_matches_the_reference_and_the_dense_layer(monkeypatch):
     x = torch.randn(4, 9, 256)
     y = layer._forward_int8_act(x)
     assert y.shape == (4, 9, 128) and y.dtype == torch.float32
-    # reference: per-row symmetric absmax, round half to even, int32 product, scales in float32
+    # reference: per-row symmetric absmax, round half to even, int32 product, fp32 scales
     x2 = x.reshape(-1, 256)
     xs = x2.abs().amax(1, keepdim = True).clamp_min(1e-12) / 127.0
     xq = torch.round(x2 / xs).clamp(-127, 127).to(torch.int8)
@@ -153,12 +148,12 @@ def test_forward_routes_by_dtype_rows_alignment_and_device(monkeypatch):
     layer.act_int8 = False
     assert not layer._int8_act_ok(cuda_x)
     layer.act_int8 = True
-    layer.out_features = 129  # unaligned N
+    layer.out_features = 129
     assert not layer._int8_act_ok(cuda_x)
     layer.out_features = 128
     monkeypatch.setattr(sh, "int8_act_device_ok", lambda dev: False)
     assert not layer._int8_act_ok(cuda_x)
-    # a CPU float32 call takes the dequantised path, bit-identical to a layer without the flag
+    # CPU float32 takes the dequantised path, bit-identical to a layer without the flag
     x = torch.randn(32, 256)
     off, _ = _layer(k = 256, n = 128, act_int8 = False)
     assert torch.equal(layer(x), off(x))

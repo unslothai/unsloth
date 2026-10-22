@@ -19,6 +19,8 @@ STATUS_MISSING = "missing"
 STATUS_UNREADABLE = "unreadable"
 # The folder works, but something inside it is refused.
 STATUS_PARTIAL = "partial"
+# The last scan outran its time budget: a hung network mount or a very large tree.
+STATUS_SLOW = "slow"
 # Internal only: the probe ran out of budget before it saw everything
 STATUS_UNKNOWN = "unknown"
 
@@ -127,6 +129,18 @@ def record_scan_failure(path: str, error: OSError) -> None:
     _record(path, classify_scan_error(error), path)
 
 
+def record_scan_slow(path: str) -> None:
+    """Remember that a scan of ``path`` was abandoned for taking too long."""
+    _record(path, STATUS_SLOW, path)
+
+
+def clear_scan_slow(path: str) -> None:
+    """Forget a slow mark once the abandoned scan finishes; a failure it recorded itself stays."""
+    entry = _failed.get(path)
+    if entry is not None and entry[0] == STATUS_SLOW:
+        _failed.pop(path, None)
+
+
 def clear_scan_failure(path: str) -> None:
     """Forget a past failure once the folder reads again."""
     if _failed:
@@ -173,7 +187,8 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
     for folder in folders:
         path = str(folder.get("path", ""))
         entry = _failed.get(path)
-        if entry is None:
+        # A slow folder is not probed here: the open could hang this request too. Its abandoned scan clears it on finishing.
+        if entry is None or entry[0] == STATUS_SLOW:
             continue
         previous = entry[0]
         status, cause = probe_folder(path, children = True)

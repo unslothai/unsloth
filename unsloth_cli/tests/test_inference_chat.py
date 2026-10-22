@@ -1195,7 +1195,7 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
     def refuse(*a, **k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(_inference, "urlopen_local", refuse)
     assert _inference.find_studio_server() is None
 
 
@@ -1220,7 +1220,7 @@ def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tm
             raise OSError("HTTP Error 404: File not found")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", default_port_taken)
+    monkeypatch.setattr(_inference, "urlopen_local", default_port_taken)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
     assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
 
@@ -1254,7 +1254,7 @@ def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monke
             raise OSError("connection refused")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_inference, "urlopen_local", urlopen)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
     assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
 
@@ -1279,7 +1279,7 @@ def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkey
         probed.append(request.full_url)
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", nothing_answers)
+    monkeypatch.setattr(_inference, "urlopen_local", nothing_answers)
     assert _inference.find_studio_server() is None
     assert probed == [
         "http://127.0.0.1:8888/api/health",
@@ -1309,8 +1309,81 @@ def test_find_studio_server_keeps_looking_past_a_stranger_on_the_default_port(
             return _HealthResponse(b'{"status": "healthy", "service": "some-other-app"}')
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", stranger_on_8888)
+    monkeypatch.setattr(_inference, "urlopen_local", stranger_on_8888)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+
+
+def test_loopback_requests_bypass_an_exported_proxy(monkeypatch):
+    import http.server
+    import threading
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    seen = []
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            body = b'{"status": "healthy", "service": "Unsloth UI Backend"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        for name in ("http_proxy", "HTTP_PROXY"):
+            monkeypatch.setenv(name, "http://127.0.0.1:9")
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising = False)
+        monkeypatch.setenv("UNSLOTH_STUDIO_URL", base)
+        assert _inference.find_studio_server(timeout = 2) == base
+        request = urllib.request.Request(
+            f"{base}/api/health", headers = {"Authorization": "Bearer sk-unsloth-test"}
+        )
+        with _inference.urlopen_no_redirect(request, timeout = 2) as response:
+            assert response.status == 200
+        assert seen[-1] == "Bearer sk-unsloth-test"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_find_studio_server_prefers_its_own_recorded_studio_over_a_foreign_default(
+    monkeypatch, tmp_path
+):
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_inference, "urlopen_local", lambda *a, **k: _HealthResponse())
+    verified = []
+
+    def identity(base, timeout = 3.0):
+        verified.append(base)
+        return base.endswith(":8889")
+
+    monkeypatch.setattr(_inference, "verify_studio_identity", identity)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
+    assert verified == []
+
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n127.0.0.1", encoding = "utf-8")
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert verified == ["http://127.0.0.1:8888"]
+
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base, timeout = 3.0: True)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
@@ -1334,7 +1407,7 @@ def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
             raise OSError("connection refused")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", only_ipv4)
+    monkeypatch.setattr(_inference, "urlopen_local", only_ipv4)
     assert _inference.find_studio_server() == "http://127.0.0.1:8888"
 
 

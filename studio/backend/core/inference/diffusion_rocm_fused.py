@@ -5,13 +5,15 @@
 
 RoPE reuses ``diffusion_flux2_rope``'s kernel (bit-identical to stock). AdaLN keeps stock's rounding chain; only the
 row-reduction order differs. Inference only, never while compiling; any ineligible call runs the forward live at
-install. ``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` (auto = ROCm only), ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1``
-(auto = off: no gfx1151 speedup and not bit-identical).
+install. ``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` (auto = ROCm and NVIDIA CUDA on Linux; ComfyUI runs FLUX RoPE
+through comfy-kitchen's fused kernel by default), ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1`` (auto = off: no gfx1151
+speedup and not bit-identical).
 """
 
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import sys
 import threading
@@ -33,6 +35,23 @@ _ADALN_PREV: dict = {}
 # Survives uninstall, so a fused forward restored later by another layer still reaches a real forward.
 _ADALN_ORIGINAL: dict = {}
 COUNTS = {"rope_fused": 0, "rope_stock": 0, "adaln_fused": 0, "adaln_stock": 0}
+# Set by the first failed RoPE launch (JIT / driver / PTX): the rest of the load runs stock, not one failing JIT per call.
+_ROPE_FAILED = [False]
+# Same latch for the fused AdaLN modulation launch.
+_ADALN_FAILED = [False]
+
+
+def _log_failed(path: str, exc: BaseException) -> None:
+    try:
+        logging.getLogger(__name__).warning(
+            "diffusion.rocm_fused: fused %s launch failed (%s: %s); stock %s for the rest of this load",
+            path,
+            type(exc).__name__,
+            exc,
+            path,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _mode(env: str) -> str:
@@ -52,13 +71,33 @@ def _is_rocm() -> bool:
     return bool(getattr(torch.version, "hip", None))
 
 
+def _is_nvidia_linux() -> bool:
+    """NVIDIA CUDA torch on Linux (WSL included). Windows keeps stock: a Triton JIT failure would retry per call."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return False
+    return getattr(torch.version, "hip", None) is None and bool(
+        getattr(torch.version, "cuda", None)
+    )
+
+
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
+_AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
 
 
 def _switch_on(env: str) -> bool:
     mode = _mode(env)
-    return mode == "on" or (mode == "auto" and _AUTO_ON.get(env, False) and _is_rocm())
+    if mode == "on":
+        return True
+    if mode != "auto":
+        return False
+    if _AUTO_ON.get(env, False) and _is_rocm():
+        return True
+    return _AUTO_ON_NVIDIA.get(env, False) and _is_nvidia_linux()
 
 
 def wanted(
@@ -79,7 +118,6 @@ def wanted(
     return _adaln_kernel() is not None
 
 
-# ----------------------------------------------------------------------------------------------------------------- RoPE
 @functools.lru_cache(maxsize = 1)
 def _rope_kernel() -> Optional[Callable]:
     from .diffusion_flux2_rope import _kernel
@@ -131,7 +169,7 @@ def _make_rope(module_name: str) -> Callable:
         stock = _ROPE_STOCK.get(module_name) or _ROPE_ORIGINAL[module_name]
         # Checked first: Dynamo graph-breaks on Triton's import path, so a compiled block stays whole on stock.
         if not torch.compiler.is_compiling():
-            launch = _rope_kernel()
+            launch = None if _ROPE_FAILED[0] else _rope_kernel()
             if launch is not None and _rope_eligible(
                 x, freqs_cis, use_real, use_real_unbind_dim, sequence_dim
             ):
@@ -139,8 +177,9 @@ def _make_rope(module_name: str) -> Callable:
                     out = launch(x, freqs_cis[0], freqs_cis[1])
                     COUNTS["rope_fused"] += 1
                     return out
-                except Exception:  # noqa: BLE001 -- never fail a render over the fast path
-                    pass
+                except Exception as exc:  # noqa: BLE001 -- never fail a render over the fast path
+                    _ROPE_FAILED[0] = True
+                    _log_failed("RoPE", exc)
             COUNTS["rope_stock"] += 1
         return stock(
             x,
@@ -188,6 +227,7 @@ def install_rope(
 
 def uninstall_rope() -> None:
     with _LOCK:
+        _ROPE_FAILED[0] = False
         for name in list(_ROPE_STOCK):
             stock = _ROPE_STOCK.pop(name)
             mod = sys.modules.get(name)
@@ -195,7 +235,6 @@ def uninstall_rope() -> None:
                 setattr(mod, _ROPE_ATTR, stock)
 
 
-# ----------------------------------------------------------------------------------------------------------------- AdaLN
 @functools.lru_cache(maxsize = 1)
 def _adaln_kernel() -> Optional[Callable]:
     try:
@@ -269,12 +308,10 @@ def _plain_layer_norm(norm: Any) -> Optional[float]:
     return float(norm.eps)
 
 
-def _fused_modulate(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[Any]:
-    """``norm(x) * (1 + scale[:, None]) + shift[:, None]`` in one kernel, or None when not eligible."""
+def _adaln_eligible(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[float]:
+    """The LayerNorm eps when the fused kernel can take this call, else None."""
     import torch
 
-    if torch.compiler.is_compiling():
-        return None
     eps = _plain_layer_norm(norm)
     if eps is None or not torch.is_tensor(x) or not x.is_cuda or x.dim() != 3:
         return None
@@ -300,12 +337,26 @@ def _fused_modulate(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[Any]:
             return None
         if t.stride(1) != 1:
             return None
+    return eps
+
+
+def _fused_modulate(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[Any]:
+    """``norm(x) * (1 + scale[:, None]) + shift[:, None]`` in one kernel, or None when not eligible."""
+    import torch
+
+    if torch.compiler.is_compiling() or _ADALN_FAILED[0]:
+        return None
+    eps = _adaln_eligible(norm, x, scale, shift)
+    if eps is None:
+        return None
     launch = _adaln_kernel()
     if launch is None:
         return None
     try:
         return launch(x, scale, shift, eps)
-    except Exception:  # noqa: BLE001 -- never fail a render over the fast path
+    except Exception as exc:  # noqa: BLE001 -- never fail a render over the fast path
+        _ADALN_FAILED[0] = True
+        _log_failed("AdaLN", exc)
         return None
 
 
@@ -440,6 +491,7 @@ def install_adaln(dtype: Any, device: Any = "cuda") -> int:
 
 def uninstall_adaln() -> None:
     with _LOCK:
+        _ADALN_FAILED[0] = False
         for cls, prev in list(_ADALN_PREV.items()):
             # Not ours on top (deferred eager patch): keep the entry for the uninstall after that layer's.
             if cls.__dict__.get("forward") in _FORWARDS.values():
@@ -447,7 +499,6 @@ def uninstall_adaln() -> None:
                 del _ADALN_PREV[cls]
 
 
-# ------------------------------------------------------------------------------------------------------------- lifecycle
 def install_for_pipe(
     pipe: Any,
     dtype: Any,

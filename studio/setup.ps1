@@ -3657,7 +3657,10 @@ function Test-MasterRootNoteIsHonoured {
         Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
         return $false
     }
-    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
+    # A note must describe the tree it is written into: every reader requires the Studio
+    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
+    # a removal at the original install. A split layout, with the runtimes under the master root
+    # and Studio outside it, is that shape: say so, rather than leave a note no reader honours.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true

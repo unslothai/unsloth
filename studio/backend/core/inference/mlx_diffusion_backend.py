@@ -998,7 +998,11 @@ class MlxDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         expected_load: Optional[LoadIdentity] = None,
         allow_oversized: bool = False,
+        # Interface parity with the other engines; status advertises no Hires fix here, so a request is refused.
+        hires: Any = None,
     ) -> dict[str, Any]:
+        if hires is not None:
+            raise ValueError("Hires fix is not available on the MLX engine.")
         if (
             init_image is not None
             or mask_image is not None

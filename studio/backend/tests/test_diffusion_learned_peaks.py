@@ -1209,7 +1209,109 @@ def test_peak_model_identity_names_the_whole_build(monkeypatch):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)" in src
+    # whitespace-free: the formatter may wrap the call
+    assert "peak_model=_peak_model_identity(repo_id,gguf_filename,kind,base,fetch_base)" in "".join(
+        src.split()
+    )
+
+
+def test_peak_model_identity_reads_the_unsloth_mirror_on_a_fresh_install(monkeypatch):
+    """Studio fetches a mirrored vendor base from unsloth/: with only the mirror cached, the key must still name a
+    revision (the mirror's), or learned peaks are never recorded nor read on a default install."""
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_component_sizes as sizes
+    import core.inference.diffusion_families as families
+
+    revisions = {
+        ("unsloth/FLUX.2-klein-4B", None): "m1",
+        ("unsloth/dit-GGUF", "dit-Q4.gguf"): "g1",
+    }
+    monkeypatch.setattr(
+        sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename))
+    )
+    monkeypatch.setattr(
+        families,
+        "mirror_repo",
+        lambda repo: {"black-forest-labs/flux.2-klein-4b": "unsloth/FLUX.2-klein-4B"}.get(
+            (repo or "").lower()
+        ),
+    )
+    assert (
+        diffusion._peak_model_identity("black-forest-labs/FLUX.2-klein-4B", None, "pipeline", None)
+        == "unsloth/FLUX.2-klein-4B@m1"
+    )
+    assert diffusion._peak_model_identity(
+        "unsloth/dit-GGUF", "dit-Q4.gguf", "gguf", "black-forest-labs/FLUX.2-klein-4B"
+    ) == ("unsloth/dit-GGUF/dit-Q4.gguf@g1+unsloth/FLUX.2-klein-4B@m1")
+    # No mirror and no cached revision: still unknown.
+    assert diffusion._peak_model_identity("org/unmirrored", None, "pipeline", None) == "unknown"
+
+
+def test_peak_model_identity_keys_on_the_repo_the_load_fetched(monkeypatch):
+    """An upstream cache holding only model_index.json while the load pulled the weights from the mirror: the key
+    names the mirror the load read, not the upstream id whose index happens to be cached (and vice versa)."""
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_component_sizes as sizes
+    import core.inference.diffusion_families as families
+
+    revisions = {
+        ("black-forest-labs/FLUX.2-klein-4B", None): "u1",
+        ("unsloth/FLUX.2-klein-4B", None): "m1",
+        ("unsloth/dit-GGUF", "dit-Q4.gguf"): "g1",
+    }
+    monkeypatch.setattr(
+        sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename))
+    )
+    monkeypatch.setattr(
+        families,
+        "mirror_repo",
+        lambda repo: {"black-forest-labs/flux.2-klein-4b": "unsloth/FLUX.2-klein-4B"}.get(
+            (repo or "").lower()
+        ),
+    )
+    up, mirror = "black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, mirror) == f"{mirror}@m1"
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, up) == f"{up}@u1"
+    assert (
+        diffusion._peak_model_identity("unsloth/dit-GGUF", "dit-Q4.gguf", "gguf", up, mirror)
+        == f"unsloth/dit-GGUF/dit-Q4.gguf@g1+{mirror}@m1"
+    )
+    # The load read the upstream bytes but only the mirror's revision is cached: no key, never the mirror's.
+    del revisions[(up, None)]
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, up) == "unknown"
+    assert diffusion._peak_model_identity(up, None, "pipeline", up, mirror) == f"{mirror}@m1"
+
+
+def test_video_peak_key_names_the_repo_the_load_fetched(monkeypatch):
+    """An upstream video cache holding only model_index.json while the load staged the complete mirror: the video
+    calibration key names the mirror the weights came from, not the partial upstream snapshot."""
+    import core.inference.diffusion_component_sizes as sizes
+    import core.inference.video as video
+
+    up, mirror = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-Diffusers"
+    revisions = {(up, None): "u1", (mirror, None): "m1"}
+    monkeypatch.setattr(
+        sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename))
+    )
+
+    def state(fetch_base):
+        return types.SimpleNamespace(
+            pipe = types.SimpleNamespace(),
+            repo_id = up,
+            base_repo = up,
+            kind = "pipeline",
+            gguf_filename = None,
+            fetch_base = fetch_base,
+        )
+
+    assert video._calibration_revision(state(mirror)) == f"{mirror}@m1"
+    assert video._calibration_revision(state(up)) == f"{up}@u1"
+    # no load decision: the upstream's own revision, as before
+    assert video._calibration_revision(state(None)) == f"{up}@u1"
+    src = "".join((__import__("pathlib").Path(video.__file__)).read_text(encoding = "utf-8").split())
+    assert "fetch_base" in video._VideoLoadState.__dataclass_fields__
+    # both torch loaders (load_pipeline, the H3 modular pipeline) hand their fetch repo to the state
+    assert src.count("base_repo=base,fetch_base=fetch_base,") == 2
 
 
 def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
@@ -1544,18 +1646,108 @@ def test_live_graph_count_is_per_device_and_drops_reset_graphs():
         bg._LIVE_BLOCKS.discard(blocks)
 
 
-def test_render_without_the_familys_cfg_is_not_probed(monkeypatch):
+def test_render_without_the_familys_cfg_records_under_its_cfg_off_key(monkeypatch):
     diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
     monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    monkeypatch.delenv(dm.LEARNED_PEAKS_CFG_OFF_ENV, raising = False)
     state.family = types.SimpleNamespace(uses_negative_prompt = True)
     state.pipe._unsloth_peak_cfg = True
     assert diffusion._start_peak_probe(state) is not None
-    state.pipe._unsloth_peak_cfg = False  # guidance off: half the denoiser batch
+    assert "cfg:off" not in diffusion._live_peak_identity(state)[1]
+    # guidance off (Z-Image-Turbo's default): half the denoiser batch, recorded under its own key, not skipped
+    state.pipe._unsloth_peak_cfg = False
+    assert diffusion._start_peak_probe(state) is not None
+    assert diffusion._live_peak_identity(state)[1].endswith("|cfg:off")
+    # an unknown guidance mode and CFG on a family that never runs it still record nothing
+    state.pipe._unsloth_peak_cfg = None
     assert diffusion._start_peak_probe(state) is None
+    state.family = types.SimpleNamespace(uses_negative_prompt = False)
+    state.pipe._unsloth_peak_cfg = True
+    assert diffusion._start_peak_probe(state) is None
+    # kill switch: the old behaviour (a render without CFG records nothing)
+    state.family = types.SimpleNamespace(uses_negative_prompt = True)
+    state.pipe._unsloth_peak_cfg = False
+    monkeypatch.setenv(dm.LEARNED_PEAKS_CFG_OFF_ENV, "0")
+    assert diffusion._start_peak_probe(state) is None
+
+
+def test_cfg_family_places_from_its_cfg_off_peak_and_cfg_requests_take_the_flat_estimate(
+    klein_pipe, monkeypatch
+):
+    monkeypatch.delenv(dm.LEARNED_PEAKS_CFG_OFF_ENV, raising = False)
+    klein_pipe._unsloth_peak_expects_cfg = True
+    plan = _klein_flat_plan()
+    kw = dict(family = "some-new-dit", speed_mode = "default", attention = "native")
+    assert dm.refine_plan_from_loaded_weights(klein_pipe, plan, **kw) is plan
+    mp.record(
+        family = "some-new-dit",
+        quant = "torchao:Int8Tensor|attn:native|cfg:off",
+        speed_mode = "default",
+        width = 1024,
+        height = 1024,
+        peak_mib = 2600,
+    )
+    new = dm.refine_plan_from_loaded_weights(klein_pipe, plan, **kw)
+    assert new is not plan and new.estimates["measured_learned_cfg_off"] is True
+    assert new.estimates["measured_runtime_headroom_mib"] == 3072
+    klein_pipe._unsloth_peak_identity = (
+        "some-new-dit",
+        "torchao:Int8Tensor|attn:native",
+        "default",
+    )
+    klein_pipe._unsloth_measured_reserve = (
+        3072,
+        "some-new-dit",
+        "default",
+        None,
+        None,
+        2600,
+        1024 * 1024,
+        False,
+        True,
+        True,
+    )
+    # a request without CFG is covered by the peak the load reserved
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, cfg = False) == 0
+    # a CFG request (or unknown) is sized from the flat estimate: the doubled batch was never measured
+    flat = dm.estimate_image_runtime_mib(
+        width = 1024, height = 1024, batch_size = 1, family = "some-new-dit"
+    )
+    assert (
+        dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, cfg = True)
+        == flat - 3072
+        > 0
+    )
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == flat - 3072
+    # once a CFG render is recorded, the CFG key wins
+    mp.record(
+        family = "some-new-dit",
+        quant = "torchao:Int8Tensor|attn:native",
+        speed_mode = "default",
+        width = 1024,
+        height = 1024,
+        peak_mib = 3400,
+    )
+    cfg_new = dm.refine_plan_from_loaded_weights(klein_pipe, plan, **kw)
+    assert cfg_new.estimates["measured_learned_cfg_off"] is False
+    assert cfg_new.estimates["measured_runtime_headroom_mib"] == 4096
+    # a family that never runs CFG never reads a cfg:off key
+    klein_pipe._unsloth_peak_expects_cfg = False
+    mp._cache.update(path = None, mtime = None, data = None)
+
+
+def test_cfg_off_keys_are_wired_into_the_load_and_guard():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)" in src
+    src = "".join(src.split())  # whitespace-free: the formatter may wrap these lines
+    for needle in (
+        'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))',
+        "cfg = guard_cfg,",
+        'plan.estimates.get("measured_learned_cfg_off", False),',
+        "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)",
+    ):
+        assert "".join(needle.split()) in src, needle
 
 
 def test_render_forced_eager_while_the_compile_is_pending_is_not_probed(monkeypatch):

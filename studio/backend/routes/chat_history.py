@@ -67,6 +67,7 @@ from storage.studio_db import (
     get_chat_project,
     get_chat_thread,
     get_chat_message,
+    next_message_created_at,
     list_chat_attachments_page,
     list_chat_projects,
     list_chat_sidebar_rows,
@@ -1006,7 +1007,32 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
             logger.warning("Could not remove the uploaded documents for %s", thread_id)
 
 
-def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
+def _fork_document_cutoff(
+    source_thread_id: str, branch_message_id: Optional[str], client_now_ms: int
+) -> Optional[str]:
+    """Uploads made once the source moved past the fork point stay behind; None at the tip.
+
+    Message times come from the browser's clock and upload times from this server's, so the
+    cutoff is shifted by the skew the fork request itself shows (its browser ``createdAt``
+    against server now)."""
+    import time
+    from datetime import datetime, timezone
+
+    if not branch_message_id:
+        return None
+    next_at = next_message_created_at(source_thread_id, branch_message_id)
+    if next_at is None:
+        return None
+    skew_ms = int(time.time() * 1000) - client_now_ms
+    return datetime.fromtimestamp((next_at + skew_ms) / 1000, timezone.utc).isoformat()
+
+
+def _copy_thread_rag_documents(
+    source_thread_id: str,
+    thread_id: str,
+    *,
+    created_before: Optional[str] = None,
+) -> bool:
     """Copy the source's uploads into the fork. False when the fork should warn that some were
     left behind."""
     try:
@@ -1016,7 +1042,7 @@ def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
         if not rag_db.rag_available():
             return not conversation_archive.thread_has_documents(source_thread_id)
         document_ids, missed = conversation_archive.copy_thread_documents(
-            source_thread_id, thread_id
+            source_thread_id, thread_id, created_before = created_before
         )
         if get_chat_thread(thread_id) is None:
             conversation_archive.delete_thread_documents(thread_id)
@@ -1279,11 +1305,16 @@ def delete_attachment(
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
+    # Backfill only projects without a recorded root; the rest are ensured where their files are used.
     return ChatProjectListResponse(
         projects = [
             ChatProject(
                 **{
-                    **(ensure_chat_project_workspace(project["id"]) or project),
+                    **(
+                        project
+                        if project.get("rootPath")
+                        else (ensure_chat_project_workspace(project["id"]) or project)
+                    ),
                     "lastActivityAt": project["lastActivityAt"],
                 }
             )
@@ -2092,7 +2123,12 @@ def fork_thread(
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
-    if not _copy_thread_rag_documents(thread_id, payload.newThreadId):
+    created_before = _fork_document_cutoff(
+        thread_id, forked.get("forkedFromMessageId"), payload.createdAt
+    )
+    if not _copy_thread_rag_documents(
+        thread_id, payload.newThreadId, created_before = created_before
+    ):
         warning = " ".join(
             filter(None, [warning, "Documents attached to the parent chat were not copied."])
         )
