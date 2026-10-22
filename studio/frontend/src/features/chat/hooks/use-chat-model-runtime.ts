@@ -388,6 +388,9 @@ const LORA_SUFFIX_RE = /_(\d{9,})$/;
 
 const CLI_LOAD_POLL_IDLE_MS = 60_000;
 const CLI_LOAD_POLL_MAX_MS = 600_000;
+const CLI_LOAD_POLL_FAST_MS = 5_000;
+const CLI_LOAD_POLL_FAST_INTERVAL_MS = 500;
+const CLI_LOAD_POLL_IDLE_INTERVAL_MS = 2_000;
 
 async function waitForServerModel(signal?: AbortSignal): Promise<void> {
   const started = Date.now();
@@ -429,7 +432,15 @@ async function waitForServerModel(signal?: AbortSignal): Promise<void> {
     const elapsed = Date.now() - started;
     if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
     if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Runs for a minute per chat open with nothing loaded: fast first, then slow for an idle page.
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        sawLoad || elapsed < CLI_LOAD_POLL_FAST_MS
+          ? CLI_LOAD_POLL_FAST_INTERVAL_MS
+          : CLI_LOAD_POLL_IDLE_INTERVAL_MS,
+      ),
+    );
   }
 }
 
