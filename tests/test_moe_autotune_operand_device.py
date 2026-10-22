@@ -54,7 +54,9 @@ def ac(monkeypatch, tmp_path):
     monkeypatch.setattr(torch.cuda, "current_device", lambda: current["index"])
     monkeypatch.setattr(torch.cuda, "device", device)
     monkeypatch.setattr(
-        torch.cuda, "get_device_capability", lambda index = None: CAPS[current["index"] if index is None else index]
+        torch.cuda,
+        "get_device_capability",
+        lambda index = None: CAPS[current["index"] if index is None else index],
     )
     module = importlib.import_module("unsloth.kernels.moe.autotune_cache")
     monkeypatch.setattr(module, "_device_smem_per_block", lambda: SMEM[current["index"]])

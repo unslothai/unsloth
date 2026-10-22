@@ -179,7 +179,14 @@ def get_or_autotune_moe_kernels(
                 weight_dtype,
             )  # fmt: skip
     return _get_or_autotune_moe_kernels(
-        num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
+        num_experts,
+        hidden_dim,
+        intermediate_dim,
+        top_k,
+        dtype,
+        force_autotune,
+        seq_len,
+        weight_dtype,
     )
 
 
