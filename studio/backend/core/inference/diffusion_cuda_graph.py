@@ -418,6 +418,15 @@ def _has_float(key: tuple) -> bool:
 
 # Private pools per graph OOM a dual-DiT family; the graphs never replay concurrently, so share.
 _POOL_BOX: list = [None]
+# Bumped whenever the shared pool id is dropped: that pool's segments stay reserved until an empty_cache (or an
+# allocation that finds no room) hands them back. diffusion_memory's encode release flushes only after a drop.
+_POOL_DROPS: list = [0]
+
+
+def pool_drops() -> int:
+    """How many shared graph pools were dropped in this process (each leaves reserved segments behind)."""
+    return _POOL_DROPS[0]
+
 
 # A pool id handed to a capture after the last graph recorded into it died is a dangling pointer.
 _LIVE_WRAPPERS: "weakref.WeakSet" = weakref.WeakSet()
@@ -436,6 +445,7 @@ def _drop_pool_if_unused() -> None:
                 if getattr(entry, "pool_token", pool) == pool:  # handles are fresh tuples per call
                     return
         _POOL_BOX[0] = None
+        _POOL_DROPS[0] += 1
     except Exception:  # noqa: BLE001
         pass
 
@@ -542,6 +552,7 @@ def retire_failed_capture(
         (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
     if pool is not None and _POOL_BOX[0] == pool:
         _POOL_BOX[0] = None
+        _POOL_DROPS[0] += 1
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:

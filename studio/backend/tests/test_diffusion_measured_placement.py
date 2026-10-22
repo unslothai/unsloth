@@ -808,7 +808,8 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
 def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
     """The encode release streams groups and pins them back on every new prompt. It leaves the freed blocks cached:
     an encoder allocation that needs the room gets it back from the allocator itself. An empty_cache per prompt cost a
-    device sync plus fresh cudaMallocs for the encoder on every render."""
+    device sync plus fresh cudaMallocs for the encoder on every render. Only a step-graph pool dropped since the last
+    flush is handed back, once."""
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     block_mib = 4
     assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1
@@ -826,6 +827,14 @@ def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
         assert on_device() == ["cuda"] * 6
         assert torch.equal(net(x.cuda()).cpu(), ref)
     assert flushes["n"] == 0
+    # a re-record dropped a step-graph pool: the next encode hands its segments back, once
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "_POOL_DROPS", [cg._POOL_DROPS[0] + 1])
+    for _ in range(2):
+        enc(torch.randn(2, 8, device = "cuda"))
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert flushes["n"] == 1
 
 
 def test_encode_release_restores_after_a_failed_encode(monkeypatch):
