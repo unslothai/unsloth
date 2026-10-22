@@ -1714,7 +1714,9 @@ def check_mixed_gpu_placement(model, dtype = None):
             no_compile = [
                 i
                 for i in indices
-                if arch_breaks_compile(getattr(torch.cuda.get_device_properties(i), "gcnArchName", ""))
+                if arch_breaks_compile(
+                    getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")
+                )
             ]
             no_bf16 = []
         else:
@@ -1725,11 +1727,7 @@ def check_mixed_gpu_placement(model, dtype = None):
         return
     import torch._dynamo as torch_dynamo
 
-    if (
-        no_compile
-        and not torch_dynamo.config.disable
-        and apply_pre_volta_compile_workaround(0)
-    ):
+    if no_compile and not torch_dynamo.config.disable and apply_pre_volta_compile_workaround(0):
         print(
             f"Unsloth: the model has layers on {', '.join(map(_name, no_compile))}, which cannot run "
             "torch.compile, so training runs without it."

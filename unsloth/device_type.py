@@ -244,7 +244,9 @@ def hip_current_arch():
     """gcnArchName of the current HIP device, or "" when it cannot be read."""
     try:
         return str(
-            getattr(torch.cuda.get_device_properties(torch.cuda.current_device()), "gcnArchName", "")
+            getattr(
+                torch.cuda.get_device_properties(torch.cuda.current_device()), "gcnArchName", ""
+            )
         )
     except Exception:
         return ""

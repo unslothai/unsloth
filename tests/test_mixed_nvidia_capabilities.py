@@ -389,7 +389,13 @@ class _Placed:
         self.hf_device_map = device_map
 
 
-def _check_placement(monkeypatch, caps, device_map, dtype, current = 0):
+def _check_placement(
+    monkeypatch,
+    caps,
+    device_map,
+    dtype,
+    current = 0,
+):
     import torch
 
     import unsloth.models._utils as model_utils
@@ -404,7 +410,9 @@ def _check_placement(monkeypatch, caps, device_map, dtype, current = 0):
     monkeypatch.setattr(model_utils, "DEVICE_TYPE", "cuda")
     monkeypatch.setattr(model_utils, "DEVICE_COUNT", len(caps))
     monkeypatch.setattr(
-        model_utils, "apply_pre_volta_compile_workaround", lambda major: disabled.append(major) or True
+        model_utils,
+        "apply_pre_volta_compile_workaround",
+        lambda major: disabled.append(major) or True,
     )
     model_utils.check_mixed_gpu_placement(_Placed(device_map), dtype)
     return disabled
@@ -442,7 +450,6 @@ def test_bf16_layers_on_a_card_without_bf16_warn(monkeypatch, capsys):
 )
 def test_placement_on_capable_cards_changes_nothing(monkeypatch, capsys, caps, device_map):
     import torch
-
     assert _check_placement(monkeypatch, caps, device_map, torch.bfloat16) == []
     assert capsys.readouterr().out == ""
 
@@ -493,7 +500,9 @@ def test_one_gpu_hosts_never_walk_the_placement(monkeypatch, capsys):
 def test_diffusion_loader_checks_the_placement():
     import ast
 
-    tree = ast.parse((REPO_ROOT / "unsloth" / "models" / "diffusion.py").read_text(encoding = "utf-8"))
+    tree = ast.parse(
+        (REPO_ROOT / "unsloth" / "models" / "diffusion.py").read_text(encoding = "utf-8")
+    )
     calls = [
         n
         for n in ast.walk(tree)
