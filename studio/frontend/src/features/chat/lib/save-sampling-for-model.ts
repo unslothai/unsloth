@@ -5,8 +5,8 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { InferenceParams } from "../types/runtime";
 
-/** Store the sampling on screen as this model's defaults, the same row the run settings editor writes,
- *  so API requests that leave a value out get it too. Min P on the server's choice stays unsaved. */
+/** Store the sampling on screen as this model's defaults, which API requests that leave a value out
+ *  also get. Min P on the server's choice stays unsaved. */
 export async function saveSamplingForModel(
   modelId: string,
   params: InferenceParams,
