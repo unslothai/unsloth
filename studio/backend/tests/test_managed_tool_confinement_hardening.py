@@ -253,3 +253,13 @@ def test_registered_folders_on_removable_mounts_stay_silent(monkeypatch):
     assert path_gate._path_needs_approval("/run/host/etc/hostname") is True
     assert path_gate._path_needs_approval("/run/user/1000/bus") is True
     assert path_gate._path_needs_approval("/dev/sda") is True
+    # A link inside the registered folder pointing at the rest of the drive or at /run/user still asks.
+    links = {
+        f"{models}/link": "/run/media/alice/SSD/private/notes.txt",
+        f"{models}/bus": "/run/user/1000/bus",
+        f"{models}/same": f"{models}/x.gguf",
+    }
+    monkeypatch.setattr(path_gate, "_resolved_fs_text", lambda text: links.get(text, text))
+    assert path_gate._path_needs_approval(f"{models}/link") is True
+    assert path_gate._path_needs_approval(f"{models}/bus") is True
+    assert path_gate._path_needs_approval(f"{models}/same") is False

@@ -498,6 +498,13 @@ def _contained_in(candidate: str, roots) -> bool:
     return any(candidate == root or candidate.startswith(root + os.sep) for root in roots)
 
 
+def _uncovered_runtime_subtree(path: str, roots) -> bool:
+    """*path* is in a writable runtime subtree that no silent root on user storage covers."""
+    return _contained_in(path, _WRITABLE_RUNTIME_SUBTREES) and not _contained_in(
+        path, tuple(root for root in roots if _contained_in(root, _USER_STORAGE_MOUNTS))
+    )
+
+
 def _resolved_fs_text(text: str) -> str:
     """*text* with its symlinked components resolved, folded the way the roots are."""
     try:
@@ -586,13 +593,7 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # covers the candidate; `/run` itself never does, and the checks below still run.
     read_roots, write_roots = _silent_roots()
     roots = write_roots if writing else read_roots
-    if any(
-        candidate == root or candidate.startswith(root + os.sep)
-        for root in _WRITABLE_RUNTIME_SUBTREES
-    ) and not _contained_in(
-        candidate,
-        tuple(root for root in roots if _contained_in(root, _USER_STORAGE_MOUNTS)),
-    ):
+    if _uncovered_runtime_subtree(candidate, roots):
         return True
     if not _contained_in(candidate, roots):
         return True
@@ -607,6 +608,10 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # allowed rather than on every token. A link planted between this and the open is not covered;
     # that TOCTOU gap is the OS sandbox's to close.
     resolved = _resolved_fs_text(candidate)
+    # The same carve-out for the target: a link inside a silent root (a registered folder on a drive
+    # included) can point into /run/user or elsewhere on the drive, which the broad `/run` root holds.
+    if resolved != candidate and _uncovered_runtime_subtree(resolved, roots):
+        return True
     # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
     # macOS `/tmp`, `/dev/stdout`) would otherwise reject everything under it.
     if resolved != candidate and not _contained_in(resolved, roots):
