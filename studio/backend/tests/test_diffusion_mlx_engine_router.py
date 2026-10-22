@@ -335,7 +335,9 @@ def test_a_later_default_selection_clears_the_mlx_reason(monkeypatch):
 
 @pytest.mark.parametrize("env", [None, "0", "auto", "1"])
 @pytest.mark.parametrize("backend", ["mps", "cpu", "cuda"])
-@pytest.mark.parametrize("gguf", [_Q4, "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-Q3_K_M.gguf", None])
+@pytest.mark.parametrize(
+    "gguf", [_Q4, "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-Q3_K_M.gguf", None]
+)
 @pytest.mark.parametrize("fam", ["z-image", "flux.1"])
 def test_predict_matches_selection(monkeypatch, env, backend, gguf, fam):
     _host(monkeypatch)

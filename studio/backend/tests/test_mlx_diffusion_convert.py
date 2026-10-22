@@ -77,7 +77,12 @@ def test_affine_rejects_16_wide_kquants_and_bad_sizes():
 _KQUANT_FP16_FIELDS = {"Q4_K": (0, 2), "Q5_K": (0, 2), "Q6_K": (208,)}
 
 
-def _kquant_raw(kind, rows, cols, seed = 0):
+def _kquant_raw(
+    kind,
+    rows,
+    cols,
+    seed = 0,
+):
     """Random K-quant blocks with finite, realistic fp16 super-block scales (gguf-py cannot quantize these)."""
     size = conv._BLOCK_BYTES[kind]
     rng = _rng(seed)
@@ -461,7 +466,9 @@ def test_a_q4_k_m_mixture_converts_and_mlx_reads_every_layer(tmp_path):
     _write_gguf(src, extra = extra)
     summary = conv.convert_gguf_to_mflux(src, tmp_path / "out")
     assert {"Q4_K", "Q5_K", "Q6_K", "Q5_0"} <= set(summary["counts"])
-    loaded, meta = mx.load(str(tmp_path / "out" / "transformer" / "0.safetensors"), return_metadata = True)
+    loaded, meta = mx.load(
+        str(tmp_path / "out" / "transformer" / "0.safetensors"), return_metadata = True
+    )
     assert meta["quantization_level"] not in (None, "None")
     renamed = {
         "layers.1.feed_forward.w1.weight": ("layers.1.feed_forward.w1", 4),
@@ -478,7 +485,9 @@ def test_a_q4_k_m_mixture_converts_and_mlx_reads_every_layer(tmp_path):
             group_size = 32,
             bits = bits,
         ).astype(mx.float32)
-        reference = quants.dequantize(raw, getattr(T, kind)).astype(np.float32).reshape(np.array(got).shape)
+        reference = (
+            quants.dequantize(raw, getattr(T, kind)).astype(np.float32).reshape(np.array(got).shape)
+        )
         # bf16 scales and biases, and MLX dequantizes into bf16: a few bf16 ulps of the largest weight (a layout
         # error would be off by the weight itself).
         tol = 2.0**-6 * np.max(np.abs(reference))

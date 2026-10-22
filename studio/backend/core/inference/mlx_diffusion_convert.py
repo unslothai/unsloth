@@ -64,7 +64,16 @@ _BLOCK_BYTES = {
     "Q6_K": 210,
 }
 # Bits of the MLX layer each block type becomes.
-_BLOCK_BITS = {"Q4_0": 4, "Q4_1": 4, "Q5_0": 5, "Q5_1": 5, "Q8_0": 8, "Q4_K": 4, "Q5_K": 5, "Q6_K": 8}
+_BLOCK_BITS = {
+    "Q4_0": 4,
+    "Q4_1": 4,
+    "Q5_0": 5,
+    "Q5_1": 5,
+    "Q8_0": 8,
+    "Q4_K": 4,
+    "Q5_K": 5,
+    "Q6_K": 8,
+}
 _QK_K = 256
 _DENSE_TYPES = frozenset({"BF16", "F16", "F32"})
 _PAD_TOKENS = ("cap_pad_token", "x_pad_token")
@@ -207,7 +216,9 @@ _KQUANT_TYPES = frozenset({"Q4_K", "Q5_K", "Q6_K"})
 
 def _kquant_blocks(kind: str, raw: np.ndarray, rows: int, cols: int) -> np.ndarray:
     if cols % _QK_K:
-        raise ValueError(f"{kind}: {cols} columns are not a whole number of {_QK_K}-wide super-blocks")
+        raise ValueError(
+            f"{kind}: {cols} columns are not a whole number of {_QK_K}-wide super-blocks"
+        )
     raw = np.ascontiguousarray(np.asarray(raw)).view(np.uint8).reshape(-1)
     expected = rows * (cols // _QK_K) * _BLOCK_BYTES[kind]
     if raw.size != expected:
@@ -236,7 +247,9 @@ def _affine_from_kquant(
     bias = -(dmin * m.astype(np.float32)).reshape(rows, cols // GROUP_SIZE)
     if kind == "Q4_K":
         qs = blocks[:, 16:]
-        q = (qs.reshape(n, -1, 1, 32) >> np.array([0, 4], dtype = np.uint8).reshape(1, 1, 2, 1)) & 0x0F
+        q = (
+            qs.reshape(n, -1, 1, 32) >> np.array([0, 4], dtype = np.uint8).reshape(1, 1, 2, 1)
+        ) & 0x0F
         return _pack(q.reshape(rows, cols), 4), scale, bias, 4
     qh = blocks[:, 16:48]
     qs = blocks[:, 48:]
