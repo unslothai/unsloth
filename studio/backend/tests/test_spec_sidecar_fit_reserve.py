@@ -206,15 +206,14 @@ class TestMetalLaunch:
         assert backend.spec_fallback_reason is None
 
 
-def test_reserve_is_read_after_the_budget_price():
-    """The reserve must not make an unpriced child look budget-priced: it joins the
-    rebuild after ``_fit_target_priced`` is read, like the Metal floor."""
+def test_the_integrity_margin_never_carries_the_reserve():
+    """The reserve rides only on the trailing pair the spawn appends, so it can neither make
+    an unpriced child look budget-priced nor be mistaken for a user's equal margin."""
     import core.inference.llama_cpp as _llama_cpp
 
     src = Path(_llama_cpp.__file__).read_text()
-    priced = src.index('_fit_target_priced = "--fit-target" in _integrity_flags')
-    reserve = src.index("fit_target_reserve_mib = _sidecar_fit_reserve_mib")
-    assert priced < reserve
+    assert "fit_target_reserve_mib = _sidecar_fit_reserve_mib" not in src
+    assert "fit_target_reserve_mib = 0," in src
 
 
 def test_multi_gpu_cuda_does_not_broadcast_the_reserve(tmp_path):

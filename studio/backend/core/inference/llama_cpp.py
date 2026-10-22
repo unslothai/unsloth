@@ -31564,7 +31564,10 @@ class LlamaCppBackend:
                         *_integrity_args,
                         fit_target_delta_mib = _fit_target_delta_mib,
                         fit_target_floor_mib = _metal_fit_target_floor_mib,
-                        fit_target_reserve_mib = _sidecar_fit_reserve_mib,
+                        # The reserve rides on the trailing pair the spawn appends after
+                        # every user override; here it could equal a user's own value,
+                        # which retry cleanup would then take for Studio's.
+                        fit_target_reserve_mib = 0,
                     )
                     if _sidecar_fit_reserve_mib and "--fit-target" in _integrity_flags:
                         logger.info(

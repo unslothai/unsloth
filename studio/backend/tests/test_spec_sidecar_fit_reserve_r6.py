@@ -663,3 +663,43 @@ def test_an_unsized_sidecar_carries_the_flat_reserve():
     assert b._sidecar_fit_reserve_mib(0, "o/remote-dspark", flat_mib = 1200) == 1200
     # A sized one keeps its own bytes.
     assert b._sidecar_fit_reserve_mib(2 * 1024**3, "o/remote-dspark", flat_mib = 1200) == 2048
+
+
+def _fit_targets(cmd):
+    return [cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "--fit-target"]
+
+
+def test_the_one_slot_retry_keeps_a_user_margin_equal_to_the_reserve(tmp_path):
+    """A user --fit-target that happens to equal Studio's reserved margin stays theirs: the
+    retry drops only Studio's trailing pair and reprices it for the one slot left."""
+    refused = ("a unified KV cache is only supported with a single sequence",)
+    intent = dict(
+        n_ctx = 4096,
+        n_parallel = 4,
+        speculative_type = "dspark",
+    )
+    backend, gguf = _slot_priced_backend(tmp_path)
+    plain = _run(
+        backend,
+        gguf,
+        stdout = lambda i, cmd: (),
+        healthy = lambda i, cmd: True,
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        **intent,
+    )[0]
+    reserved = str(_r4._margin(plain))
+    backend, gguf = _slot_priced_backend(tmp_path)
+    cmds = _run(
+        backend,
+        gguf,
+        stdout = lambda i, cmd: refused if i == 0 else (),
+        healthy = lambda i, cmd: i > 0,
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = ["--fit-target", reserved, "--fit-target", "1024"],
+        **intent,
+    )
+    assert len(cmds) >= 2, [c[-6:] for c in cmds]
+    retry = _fit_targets(cmds[1])
+    # The user's two pairs in their order, then Studio's one-slot reserve on the last.
+    assert retry[-3:-1] == [reserved, "1024"], retry
+    assert _FLOOR + 1024 <= int(retry[-1]) < _FLOOR + 2 * 1024, retry
