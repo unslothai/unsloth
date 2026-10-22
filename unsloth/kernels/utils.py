@@ -1662,7 +1662,7 @@ def _rows_plans(quant_state):
 def _fast_lora_weights(lora_A, lora_B, dtype):
     if lora_A.dtype == dtype and lora_B.dtype == dtype:
         return lora_A, lora_B
-    # Cast once per weight version: adapters keep training between decodes (GRPO, SFT then generate).
+    # Keyed on _version: adapters keep training between decodes (GRPO).
     key = (lora_A._version, lora_B._version, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
@@ -1718,8 +1718,7 @@ def fast_linear_forward(
     ):
         out = rows
     elif (
-        # _is_compiling() first: reading the lazily set global while tracing guards on it, so the first
-        # eager call (None -> False) would recompile every captured graph.
+        # _is_compiling() first: reading the lazy global while tracing guards on it and recompiles later.
         not _is_compiling()
         and _BNB_GEMM_4BIT is not False
         and bsz <= _BNB_GEMM_4BIT_MAX_ROWS
@@ -1735,7 +1734,6 @@ def fast_linear_forward(
         dtype = X.dtype
 
         if _is_compiling():
-            # No lazy attribute while tracing: it guards, so the first eager call would recompile.
             A, B = lora_A.to(dtype), lora_B.to(dtype)
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)

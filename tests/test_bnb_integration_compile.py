@@ -495,7 +495,6 @@ def test_fast_linear_forward_cold_compile_fullgraph(nf4_kernels, monkeypatch, bs
 
 
 def test_fast_linear_forward_eager_setup_does_not_recompile(nf4_kernels, monkeypatch):
-    # Compile cold, let an eager call set the GEMM gate up, then call the compiled fn again: no new graph.
     monkeypatch.setattr(U, "_BNB_GEMM_4BIT", None)
     monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
     _, block = _lora_block(dtype = torch.float16)
@@ -517,7 +516,6 @@ def test_fast_linear_forward_eager_setup_does_not_recompile(nf4_kernels, monkeyp
 
 
 def test_fast_linear_forward_sees_lora_updates(nf4_kernels):
-    # fp32 adapters, fp16 decode: the cast copy must follow in-place updates (an optimizer step).
     _, block = _lora_block(dtype = torch.float16)
     proj = block.o_proj
     X = torch.randn(8, 1, 256, dtype = torch.float16, device = DEVICE)
@@ -534,7 +532,6 @@ def test_fast_linear_forward_sees_lora_updates(nf4_kernels):
 
 
 def test_bnb_gemm_gate_declines_a_different_autocast_dtype(nf4_kernels, monkeypatch):
-    # The fused GEMM keeps X.dtype, so under a different autocast dtype it must fall back to torch.matmul.
     monkeypatch.setattr(U, "_BNB_GEMM_4BIT", True)
     monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DTYPES", (torch.float16, torch.bfloat16))
     monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
