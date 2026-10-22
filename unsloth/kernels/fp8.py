@@ -1000,6 +1000,14 @@ def _with_fp8_block_gemv(block_forward):
 
     @functools.wraps(block_forward)
     def forward(X, weight, weight_scale):
+        # Settled weights skip the per-call checks: not GEMV shaped, or left (eager, 100+ SMs) to the fused kernel.
+        cached = getattr(weight, "_unsloth_fp8_block_gemv", None)
+        if (
+            cached is not None
+            and cached[0] is weight_scale
+            and (not cached[1] or (cached[2:] and _FP8_BLOCK_SMALL_M and not torch.compiler.is_compiling()))
+        ):
+            return block_forward(X, weight, weight_scale)
         if can_use_fp8_block_gemv(X, weight, weight_scale):
             # On 100+ SM parts the fused act_quant + w8a8 kernel decodes faster end to end where it applies
             # (eager only, so compiled regions keep the GEMV); on smaller ones the GEMV does.
@@ -1008,7 +1016,8 @@ def _with_fp8_block_gemv(block_forward):
                 and _sm_count(X.device) >= 100
                 and can_use_fp8_block_small_m(X, weight, weight_scale, _fp8_block_size(weight, weight_scale))
             ):
-                return fp8_block_small_m_linear(X, weight, weight_scale)
+                weight._unsloth_fp8_block_gemv = (weight_scale, True, "small_m")
+                return block_forward(X, weight, weight_scale)
             return fp8_block_gemv(X, weight, weight_scale)
         return block_forward(X, weight, weight_scale)
 
