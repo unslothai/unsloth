@@ -29,8 +29,8 @@ class _FakeUpload:
         self.filename = filename
         self._content = content
 
-    async def read(self) -> bytes:
-        return self._content
+    async def read(self, size: int = -1) -> bytes:
+        return self._content if size < 0 else self._content[:size]
 
 
 def _load_seed_route(
@@ -346,6 +346,30 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     # Another block starts with its own untouched budget.
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
+
+
+def test_an_oversized_upload_is_refused_after_reading_one_byte_past_the_cap(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES", 32)
+    upload = _FakeUpload("big.txt", b"x" * 4096)
+    upload.size = 4096
+    sizes: list[int] = []
+    real_read = upload.read
+
+    async def tracking_read(size: int = -1) -> bytes:
+        sizes.append(size)
+        return await real_read(size)
+
+    upload.read = tracking_read
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.upload_unstructured_file(upload, "block"))
+
+    assert sizes == [33]
+    assert exc.value.status_code == 413
+    # Same message as the full read gave: the declared size, not the bytes read.
+    assert "(4096 bytes)" in exc.value.detail
+    assert _block_files(seed_route) == []
 
 
 # A desktop drop names a local file of any size, so the cap has to be enforced

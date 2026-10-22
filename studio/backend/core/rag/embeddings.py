@@ -808,6 +808,13 @@ def _release_st_model() -> bool:
             released = _model is not None
             _model = None
             _name = None
+    if released:
+        # Dropping the reference alone leaves its blocks reserved in the torch allocator.
+        try:
+            from utils.hardware import clear_gpu_cache
+            clear_gpu_cache()
+        except Exception as e:  # noqa: BLE001 - freeing is best effort
+            logger.debug("GPU cache clear after embedder release failed: %s", e)
     return released
 
 
