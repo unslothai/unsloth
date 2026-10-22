@@ -7672,7 +7672,11 @@ class ExternalProviderClient:
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
-            f"{self.base_url}/models", headers = self._auth_headers(), timeout = timeout
+            f"{self.base_url}/models",
+            # Anthropic pages 20 models by default; 1000 is its documented maximum.
+            params = {"limit": 1000} if self.provider_type == "anthropic" else None,
+            headers = self._auth_headers(),
+            timeout = timeout,
         )
         response.raise_for_status()
         data = response.json()
@@ -7918,6 +7922,28 @@ class ExternalProviderClient:
                 exc,
             )
             raise
+
+    async def api_key_rejected(self) -> bool:
+        """True when an endpoint that needs auth refuses the key. OpenRouter and the Hugging Face
+        router answer /models without one, so that check alone passes any key. Errors other than
+        401/403 count as not rejected."""
+        if self.provider_type == "openrouter":
+            url = f"{self.base_url}/key"
+        elif (
+            self.provider_type == "huggingface"
+            and (urlparse(self.base_url).hostname or "").lower() == "router.huggingface.co"
+        ):
+            url = "https://huggingface.co/api/whoami-v2"
+        else:
+            return False
+        if not self.api_key:
+            return False
+        try:
+            response = await _client().get(url, headers = self._auth_headers(), timeout = self._timeout)
+        except httpx.HTTPError as exc:
+            logger.debug("API key check for %s skipped: %s", self.provider_type, exc)
+            return False
+        return response.status_code in (401, 403)
 
     def _container_headers(self) -> dict[str, str]:
         """Auth headers plus the required ``OpenAI-Beta: containers=v1`` opt-in; without it DELETE
