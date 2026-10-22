@@ -7405,6 +7405,29 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
+def _hipcc_available() -> bool:
+    """hipcc where setup.sh's HIP source build looks: PATH, /opt/rocm/bin, /opt/rocm-*/bin."""
+    return bool(
+        shutil.which("hipcc")
+        or os.access("/opt/rocm/bin/hipcc", os.X_OK)
+        or glob.glob("/opt/rocm-*/bin/hipcc")
+    )
+
+
+def _uncovered_rocm_gpu_takes_vulkan(host: HostInfo) -> bool:
+    """A Linux x86_64 ROCm host whose GPU no ROCm bundle covers takes the Vulkan bundle when the
+    HIP source build would end CPU-only (no hipcc). Not under a HIP mask (Vulkan ignores it) or
+    beside an NVIDIA card (Vulkan would reach it too)."""
+    return (
+        host.is_linux
+        and host.is_x86_64
+        and not host.has_physical_nvidia
+        and not _hip_visible_device_mask_set()
+        and not _vulkan_visible_device_mask_set()
+        and not _hipcc_available()
+    )
+
+
 def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
     bundle: CUDA, per-gfx ROCm, Vulkan, or CPU. Same selection the upstream filename
@@ -7433,6 +7456,16 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
         if published_rocm is not None:
             attempts.append(published_rocm)
+        elif _uncovered_rocm_gpu_takes_vulkan(host):
+            # No bundle covers this gfx (gfx1153, gfx1152, ...) and no hipcc can build one: the
+            # source build would end CPU-only, while the Vulkan bundle runs this GPU.
+            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
+            if vulkan_choice is not None:
+                log(
+                    f"no ROCm prebuilt covers {_active_rocm_gfx_target(host) or 'this AMD GPU'} "
+                    "and hipcc is not installed -- using the Vulkan prebuilt"
+                )
+                attempts.append(vulkan_choice)
     else:
         # Same condition as direct_upstream_release_plan and resolve_upstream_asset_choice,
         # which all three must state; this is the normal published-bundle branch. Reaching here

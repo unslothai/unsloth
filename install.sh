@@ -4793,6 +4793,14 @@ _amd_prefer_discrete_gfx() {
     case "${3:-}:$_apdg_sel" in
         torch:gfx1150|torch:gfx1151|torch:gfx1152) _apdg_strix=1 ;;
     esac
+    # Strix defers only when the picked generic index already ships AMD's Strix fixes (rocm7.13+,
+    # whose wheels also carry its kernels); below that, or on another index, it keeps its own wheels.
+    if [ -n "$_apdg_strix" ]; then
+        case "${_torch_index_leaf:-}" in
+            rocm[0-9]*.[0-9]*) _rocm_leaf_below "$_torch_index_leaf" 7 13 && _apdg_strix="" ;;
+            *) _apdg_strix="" ;;
+        esac
+    fi
     # A readable HSA override spoofs every agent, the dGPU included: keep the Strix wheels.
     if [ -n "$_apdg_strix" ] && [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && \
        [ -n "$(_hsa_override_gfx_arch "$HSA_OVERRIDE_GFX_VERSION" 2>/dev/null)" ]; then
@@ -5968,7 +5976,7 @@ get_torch_index_url() {
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
                 # Torch ends here, llama.cpp does not. `export` is load-bearing: a bare assignment never reaches the re-run (the #8458 mistake).
                 if [ "$_amd_unsup_gfx" = gfx1153 ]; then
-                    echo "[INFO] GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed." >&2
+                    echo "[INFO] GGUF chat still uses this GPU: a llama.cpp ROCm build when one covers gfx1153 or hipcc can build it, otherwise the Vulkan build." >&2
                 else
                     echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
                 fi
@@ -6038,7 +6046,7 @@ get_torch_index_url() {
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
             echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2
             if [ "$_amd_unsup_all" = gfx1153 ]; then
-                echo "[INFO] GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed." >&2
+                echo "[INFO] GGUF chat still uses this GPU: a llama.cpp ROCm build when one covers gfx1153 or hipcc can build it, otherwise the Vulkan build." >&2
             else
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
             fi
@@ -7729,7 +7737,7 @@ case "$TORCH_INDEX_URL" in
                     substep "AMD GPU detected ($_unsup_disp_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." "$C_WARN"
                     substep "Installing the ROCm/HIP SDK will not give this GPU ROCm PyTorch." "$C_WARN"
                     if [ "$_unsup_disp_gfx" = gfx1153 ]; then
-                        substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
+                        substep "GGUF chat still uses this GPU: a llama.cpp ROCm build when one covers gfx1153 or hipcc can build it, otherwise the Vulkan build."
                     else
                         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
                         substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"

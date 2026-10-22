@@ -4639,14 +4639,14 @@ EOF
             substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
         fi
         if [ "$_setup_unsup_gfx" = gfx1153 ]; then
-            substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
+            substep "GGUF chat still uses this GPU: a llama.cpp ROCm build when one covers gfx1153 or hipcc can build it, otherwise the Vulkan build."
         else
             substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
             substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
             substep "it afterwards has no effect until you install or update again."
         fi
-        # gfx1153 keeps its llama.cpp HIP bundle: forward the arch, which a runtime-less probe
-        # cannot read. RDNA 1 / Polaris have none, so they stay unforwarded.
+        # Forward gfx1153, which a runtime-less probe cannot read: the installer takes a ROCm bundle
+        # that covers it, else the Vulkan one when hipcc cannot build HIP. RDNA 1 / Polaris stay unforwarded.
         if [ "$_setup_unsup_gfx" = gfx1153 ] && [ -z "$_setup_gfx" ]; then
             _setup_gfx=gfx1153
         fi
