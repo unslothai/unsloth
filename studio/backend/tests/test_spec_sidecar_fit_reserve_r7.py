@@ -318,6 +318,9 @@ def test_split_mode_none_defaults_to_the_lists_first_device(pin, on_target):
         ([], {"LLAMA_ARG_FIT_TARGET": "4096"}, "5096,5096,5096"),
         (["--fit-target", "2048"], {"LLAMA_ARG_FIT_TARGET": "4096,4096,8192"}, "3048,3048,3048"),
         (["--fit-target=2048,3072"], {"LLAMA_ARG_FIT_TARGET": "8192"}, "3048,4072,9192"),
+        # The underscore spelling, spaced and inline.
+        (["--fit_target", "4096"], {}, "5096,5096,5096"),
+        (["--fit_target=2048,3072", "-fitt", "4096"], {}, "5096,5096,5096"),
     ],
 )
 def test_per_device_margins_follow_llama_cpps_update_order(user, env, want):

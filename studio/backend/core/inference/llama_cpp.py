@@ -6533,8 +6533,9 @@ def _fit_target_values(user_args: Iterable[str], env: Optional[Mapping[str, str]
         found.append(str(env["LLAMA_ARG_FIT_TARGET"]))
     tokens = [str(a) for a in user_args]
     for i, raw in enumerate(tokens):
-        name, eq, inline = raw.partition("=")
-        if name in ("-fitt", "--fit-target"):
+        _, eq, inline = raw.partition("=")
+        # _flag_name folds the --fit_target spelling llama.cpp also accepts.
+        if _flag_name(raw) in ("-fitt", "--fit-target"):
             value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
             if value is not None:
                 found.append(value)
