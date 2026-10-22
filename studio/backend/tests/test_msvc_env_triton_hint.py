@@ -20,6 +20,7 @@ from core import _msvc_env
         ("2.12.1+cu130", "triton-windows>=3.7,<3.8"),
         ("2.12.0", "triton-windows>=3.7,<3.7.1"),
         ("2.12.0+cu130", "triton-windows>=3.7,<3.7.1"),
+        ("2.13.0a0+gitabc", "triton-windows>=3.7,<3.8"),
         ("2.9.1", "triton-windows<3.7"),
     ],
 )
