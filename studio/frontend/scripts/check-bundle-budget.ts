@@ -359,13 +359,19 @@ export const BUDGET = {
   // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
   // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
   // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
-  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier, model picker and memory bar adds
-  // 911 B raw / 466 B transfer (6,879,331 -> 6,880,242 B raw, 2,071,848 -> 2,072,314 B transfer against 463e3f348,
-  // one machine and build, 97 chunks). Raised to that build plus a 400 B raw / 189 B transfer margin (another
-  // reviewer's build of the same tree measured 282 B larger raw).
-  // Both on main (merged at cb2590f39): measured within budget with 0.5 KB transfer / 0.6 KB raw to spare.
-  transferBytes: 2_073_400,
-  rawBytes: 6_882_900,
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
+  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier, model picker and memory bar:
+  // +911 B raw / +466 B transfer against 463e3f348 (97 chunks). Raised by that plus a 400 B raw / 200 B
+  // transfer margin (another build of the same tree measured 282 B larger raw).
+  transferBytes: 2_076_250,
+  rawBytes: 6_888_400,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

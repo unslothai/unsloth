@@ -965,6 +965,7 @@ def collect_local_models(
     thing the two do not share; see :func:`_scan_ollama_dir`.
     """
     from storage.studio_db import list_scan_folders
+    from hub.services.models.local_inventory import run_custom_folder_bounded_sync
     from hub.utils import gguf as gguf_utils
     from hub.utils import inventory_scan as hf_cache_scan
     from utils.models.model_config import detect_gguf_model
@@ -1005,11 +1006,14 @@ def collect_local_models(
 
     state_repositories = []
     state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
-    state_cache_dirs.extend(
-        cache_dir
-        for folder in custom_folders
-        for cache_dir in hf_cache_scan.scan_folder_hf_caches(Path(folder["path"]))
-    )
+    for folder in custom_folders:
+        state_cache_dirs.extend(
+            run_custom_folder_bounded_sync(
+                str(folder["path"]),
+                lambda path = Path(folder["path"]): hf_cache_scan.scan_folder_hf_caches(path),
+            )
+            or ()
+        )
     for cache_dir in dict.fromkeys(state_cache_dirs):
         try:
             for repo_dir in cache_dir.glob("models--*"):
@@ -1062,81 +1066,92 @@ def collect_local_models(
     from hub.services.models.local_inventory import _local_model_path_is_symlink
 
     custom_identities: set[str] = set()
-    for folder in custom_folders:
-        folder_path = Path(folder["path"])
-        try:
-            # Filter Ollama .studio_links/ from generic scanners: duplicates and internal paths.
-            _generic = [
-                m
-                for m in (
-                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + [
-                        row
-                        for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
-                        for row in _scan_hf_cache(
-                            cache_dir,
-                            active_cache = False,
-                            variant_states = variant_states,
-                        )
-                    ]
-                    + _scan_lmstudio_dir(folder_path)
-                )
-                if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
-            ]
-            if folder.get("recursive"):
-                _generic += _scan_nested_compat_rows(
-                    folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
-                )
-            _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
-            custom_models = []
-            for model in _generic:
-                path = Path(model.path)
-                is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
-                if not is_gguf_row or model.partial:
-                    custom_models.append(model)
-                    continue
-                if path.is_dir():
-                    patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
-                    if any(
-                        detect_gguf_model(str(file), model_root = str(folder_path)) is not None
-                        for pattern in patterns
-                        for file in path.glob(pattern)
-                        if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
-                    ):
-                        custom_models.append(model)
-                elif (
-                    detect_gguf_model(
-                        model.path,
-                        model_root = str(folder_path),
+
+    def _scan_custom_folder(folder_path: Path, recursive: bool) -> list:
+        # Filter Ollama .studio_links/ from generic scanners: duplicates and internal paths.
+        _generic = [
+            m
+            for m in (
+                _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                + [
+                    row
+                    for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
+                    for row in _scan_hf_cache(
+                        cache_dir,
+                        active_cache = False,
+                        variant_states = variant_states,
                     )
-                    is not None
+                ]
+                + _scan_lmstudio_dir(folder_path)
+            )
+            if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
+        ]
+        if recursive:
+            _generic += _scan_nested_compat_rows(
+                folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
+            )
+        _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
+        custom_models = []
+        for model in _generic:
+            path = Path(model.path)
+            is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
+            if not is_gguf_row or model.partial:
+                custom_models.append(model)
+                continue
+            if path.is_dir():
+                patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
+                if any(
+                    detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                    for pattern in patterns
+                    for file in path.glob(pattern)
+                    if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
                 ):
                     custom_models.append(model)
-            custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
-            if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
-                # Registering ~/.hermes/models was how Hermes downloads were listed before this
-                # scan; the walk lists every download a second time under the same id. Anything
-                # else kept in that folder is still the user's custom row.
-                staged = {
-                    _compat_inventory_path_identity(m.path) for m in _scan_hermes_dir(folder_path)
-                }
-                custom_models = [
-                    m
-                    for m in custom_models
-                    if _compat_inventory_path_identity(m.path) not in staged
-                ]
-            if len(custom_models) < _MAX_MODELS_PER_FOLDER:
-                custom_models += _scan_ollama_dir(
-                    folder_path,
-                    limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
-                    materialize_links = materialize_ollama_links,
+            elif (
+                detect_gguf_model(
+                    model.path,
+                    model_root = str(folder_path),
                 )
+                is not None
+            ):
+                custom_models.append(model)
+        custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
+        if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
+            # Registering ~/.hermes/models was how Hermes downloads were listed before this
+            # scan; the walk lists every download a second time under the same id. Anything
+            # else kept in that folder is still the user's custom row.
+            staged = {
+                _compat_inventory_path_identity(m.path) for m in _scan_hermes_dir(folder_path)
+            }
+            custom_models = [
+                m for m in custom_models if _compat_inventory_path_identity(m.path) not in staged
+            ]
+        if len(custom_models) < _MAX_MODELS_PER_FOLDER:
+            custom_models += _scan_ollama_dir(
+                folder_path,
+                limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                materialize_links = materialize_ollama_links,
+            )
+        return custom_models
+
+    for folder in custom_folders:
+        folder_path = Path(folder["path"])
+        row_path = str(folder.get("path", folder_path))
+        try:
+            custom_models = run_custom_folder_bounded_sync(
+                row_path,
+                lambda path = folder_path, recursive = bool(folder.get("recursive")): (
+                    _scan_custom_folder(path, recursive)
+                ),
+            )
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             # Keep the reason so the folder list can show it instead of nothing.
-            record_scan_failure(str(folder.get("path", folder_path)), e)
+            record_scan_failure(row_path, e)
             continue
-        note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
+        if custom_models is None:
+            continue
+        note_scan_folder_scanned(row_path, found = bool(custom_models))
         # Links below the scan root are distinct aliases (as in the Hub inventory), not twins.
         for m in custom_models:
             try:
@@ -1341,8 +1356,8 @@ async def list_local_models(
     Redacted as ``/api/hub/local`` is: this router mirrors it over the same scan roots, so
     leaving it alone recovers the layout that route hides.
     """
-    # Resolve all scan directories up front.
-    sources = _compat_local_inventory_sources()
+    # Off the loop: the probes stat every source root.
+    sources = await asyncio.to_thread(_compat_local_inventory_sources)
     hf_cache_dir = sources.hf_cache_dir
     legacy_hf = sources.legacy_hf
     hf_default = sources.hf_default
@@ -1406,7 +1421,7 @@ async def get_scan_folders(
     """List all registered custom model scan folders. Redacted like ``/api/hub/scan-folders``."""
     from storage.studio_db import list_scan_folders
 
-    folders = list_scan_folders()
+    folders = await asyncio.to_thread(list_scan_folders)
     # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
     await asyncio.to_thread(refresh_failed_scan_folders, folders)
     return redact_inventory_host_paths(

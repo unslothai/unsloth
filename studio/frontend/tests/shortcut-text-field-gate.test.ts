@@ -68,7 +68,7 @@ test("the decline chord takes the exception and the approve chord does not", asy
   // Escape leaves the text alone. Enter sends, so it stays behind the gate.
   assert.match(
     controls,
-    /useShortcut\(\n\s*"declineToolRequest",[\s\S]{0,800}?textFieldException: COMPOSER_INPUT_SELECTOR,/,
+    /useShortcut\(\n?\s*"declineToolRequest",[\s\S]{0,800}?textFieldException: COMPOSER_INPUT_SELECTOR,/,
   );
   const approve = controls.slice(
     controls.indexOf('"approveToolRequest",'),
