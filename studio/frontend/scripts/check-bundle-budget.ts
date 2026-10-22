@@ -379,8 +379,10 @@ export const BUDGET = {
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
   // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_080_908,
-  rawBytes: 6_907_798,
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_081_018,
+  rawBytes: 6_908_086,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

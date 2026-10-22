@@ -3342,6 +3342,7 @@ export const sv = {
       relativeNever: "aldrig",
       relativeJustNow: "just nu",
       expired: "har löpt ut",
+      expiredStatus: "Har löpt ut",
       today: "i dag",
       created: "Skapad {value}",
       used: "Senast använd {value}",

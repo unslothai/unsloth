@@ -3067,6 +3067,7 @@ export const zhCN = {
       relativeNever: "从未",
       relativeJustNow: "刚刚",
       expired: "已过期",
+      expiredStatus: "已过期",
       today: "今天",
       created: "创建于 {value}",
       used: "上次使用：{value}",
