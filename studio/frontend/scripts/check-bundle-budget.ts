@@ -359,11 +359,15 @@ export const BUDGET = {
   // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
   // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
   // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
-  // Lighter system polling (#14592: hidden-tab gating, Vulkan retry backoff, idle export poll, request
-  // timeout): +1,899 B raw / +657 B transfer (6,881,340 -> 6,883,239 B raw,
-  // 2,072,543 -> 2,073,200 B transfer against cb2590f395, Node 26, 97 chunks). Raised by that.
-  transferBytes: 2_073_339,
-  rawBytes: 6_883_453,
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Lighter system polling (#14592: hidden-tab gating, Vulkan retry backoff, idle export poll,
+  // request timeout):
+  // +1,903 B raw / +545 B transfer (6,881,936 -> 6,883,839 B raw,
+  // 2,073,188 -> 2,073,733 B transfer against b2ba86a514, Node 26, 97 chunks). Raised by that.
+  transferBytes: 2_073_854,
+  rawBytes: 6_884_014,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

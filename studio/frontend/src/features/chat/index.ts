@@ -4,7 +4,6 @@
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
-  addScanFolder,
   browseFolders,
   ChatThreadDeletedError,
   deleteChatAttachment,
@@ -21,12 +20,10 @@ export {
   listLoras,
   listModels,
   listRecommendedFolders,
-  listScanFolders,
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
   notifyChatProjectsUpdated,
-  removeScanFolder,
   subscribeChatHistoryUpdated,
   revealCachedModel,
   revealFineTunedModel,
@@ -38,7 +35,6 @@ export {
   type ChatAttachmentRecord,
   type KvCacheEstimate,
   type LocalModelInfo,
-  type ScanFolderInfo,
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
 } from "./api/chat-api";
