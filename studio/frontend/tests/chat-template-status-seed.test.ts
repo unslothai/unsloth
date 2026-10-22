@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How /api/inference/status moves the chat-template override pair. The control is what the
-// next load or Apply sends and what the Hub settings page presents as the live config; the
-// loaded baseline is what the resident server is running and what a rollback resends.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -23,7 +19,6 @@ const { resolveChatTemplateSeed } = await import(
   "../src/features/chat/lib/resolve-chat-template-seed.ts"
 );
 
-/** The applier must route the pair through the resolver, not re-inline the old guard. */
 const DELEGATES_TO_RESOLVER = /resolveChatTemplateSeed\(\{/;
 
 const OLD = "{{ bos_token }}{% for m in messages %}A{% endfor %}";
@@ -54,8 +49,6 @@ function pair(
 }
 
 test("a same-model reload from another client advances an undirty pair", () => {
-  // Another tab, or an OpenAI-compatible caller whose auto-switch load applied this
-  // model's saved override, relaunched the same checkpoint and quant on NEW.
   assert.deepEqual(seed(NEW, pair(OLD, OLD)), {
     chatTemplateOverride: NEW,
     loadedChatTemplateOverride: NEW,
@@ -70,7 +63,6 @@ test("a same-model reload that drops the override is adopted too", () => {
 });
 
 test("a genuinely dirty control survives, while its baseline advances", () => {
-  // A staged Apply put STAGED on the control and no load is in flight yet.
   const result = seed(NEW, pair(STAGED, OLD));
   assert.equal(result.loadedChatTemplateOverride, NEW);
   assert.ok(
@@ -88,7 +80,6 @@ test("a control the user blanked is not re-pinned", () => {
 test("a steady poll touches neither field", () => {
   assert.deepEqual(seed(OLD, pair(OLD, OLD)), {});
   assert.deepEqual(seed(OLD, pair(STAGED, OLD)), {});
-  // Blank and absent are the same template, so neither is a spurious change.
   assert.deepEqual(seed(null, pair("", "")), {});
   assert.deepEqual(seed("", pair(null, null)), {
     chatTemplateOverride: "",

@@ -795,10 +795,10 @@ def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
     calls = []
 
     class Process:
-        exitcode = None
+        exitcode = pid = None
 
         def __init__(self, **kwargs):
-            self.child = kwargs["args"][0]
+            self.child = kwargs["args"][1]
 
         def start(self):
             # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
@@ -835,10 +835,10 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
     calls = []
 
     class Process:
-        exitcode = None
+        exitcode = pid = None
 
         def __init__(self, **kwargs):
-            self.child = kwargs["args"][0]
+            self.child = kwargs["args"][1]
 
         def start(self):
             # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
@@ -869,6 +869,114 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
             del child.close
             child.close()
     assert "kill" in calls
+
+
+def test_unsloth_shutting_down_stops_a_clef_worker_still_loading(monkeypatch):
+    from core.systemone import clef_runtime
+    from utils import process_lifetime
+
+    calls = []
+
+    class Process:
+        exitcode = pid = None
+
+        def __init__(self, **kwargs):
+            self.child = kwargs["args"][1]
+
+        def start(self):
+            held.append(self.child)
+            self.child.close = lambda: None
+
+        def join(self, timeout = None):
+            calls.append("join")
+
+        def is_alive(self):
+            return "kill" not in calls
+
+        def kill(self):
+            calls.append("kill")
+
+    held = []
+    reads = iter([False])
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: next(reads, True))
+    monkeypatch.setattr(clef_runtime._CTX, "Process", Process)
+    monkeypatch.setattr(clef_runtime, "LOAD_TIMEOUT_S", 600)
+    try:
+        started = time.monotonic()
+        with pytest.raises(clef_runtime.ClefWorkerError, match = "stopped while it loaded"):
+            clef_runtime.ClefAgent("unused")
+        assert time.monotonic() - started < 30
+    finally:
+        for child in held:
+            del child.close
+            child.close()
+    assert "kill" in calls
+
+
+def _running(pid):
+    try:
+        with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PDEATHSIG is Linux only")
+def test_a_loading_clef_worker_dies_with_unsloth(tmp_path):
+    import signal
+    import subprocess
+
+    # The worker's load never returns, as a long GPU load would: its first import blocks.
+    (tmp_path / "torch").mkdir()
+    (tmp_path / "torch" / "__init__.py").write_text(
+        "import os, time\n"
+        "with open(os.environ['CLEF_WORKER_PID'], 'w') as f:\n"
+        "    f.write(str(os.getpid()))\n"
+        "time.sleep(600)\n",
+        encoding = "utf-8",
+    )
+    pid_file = tmp_path / "worker.pid"
+    unsloth = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import threading\n"
+            "from core.systemone.clef_runtime import ClefAgent\n"
+            "threading.Thread(target = ClefAgent, args = ('unused',)).start()\n"
+            "threading.Event().wait()\n",
+        ],
+        cwd = Path(laya_runtime.__file__).resolve().parents[2],
+        env = dict(os.environ, PYTHONPATH = str(tmp_path), CLEF_WORKER_PID = str(pid_file)),
+    )
+    worker = None
+    try:
+        deadline = time.monotonic() + 60
+        while worker is None and time.monotonic() < deadline:
+            text = pid_file.read_text(encoding = "utf-8") if pid_file.exists() else ""
+            worker = int(text) if text else None
+            time.sleep(0.1)
+        assert worker is not None, "the Clef worker never started loading"
+        unsloth.kill()
+        unsloth.wait()
+        deadline = time.monotonic() + 15
+        while _running(worker) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _running(worker)
+    finally:
+        unsloth.kill()
+        unsloth.wait()
+        if worker is not None and _running(worker):
+            os.kill(worker, signal.SIGKILL)
+
+
+def test_shutdown_ends_a_clef_worker(home, client, clef):
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    laya_runtime.shutdown()
+    assert clef.agents[0].closed
+    assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
 def test_the_catalog_offers_the_stock_clef_models():

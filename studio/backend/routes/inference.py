@@ -95,6 +95,7 @@ from utils.first_token_timeout import (
     start_first_token_wait,
     timeout_seconds as configured_first_token_timeout_s,
 )
+from utils.hidden_models import is_decision_api_model
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_errors import modelscope_missing
@@ -12446,11 +12447,18 @@ async def _maybe_auto_download_model(
     unknown id like "gpt-4" still falls through to the resident model.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
-    from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
+    from core.inference.openai_auto_download import (
+        is_downloadable_ref,
+        maybe_auto_download,
+        split_model_ref,
+    )
 
     if not requested_model or not get_openai_auto_download_enabled():
         return
     if not is_downloadable_ref(requested_model):
+        return
+    # The resolver never serves a Decision API repo, so fetching one would only fill the disk.
+    if is_decision_api_model(split_model_ref(requested_model)[0]):
         return
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
     if await asyncio.to_thread(_loaded_satisfies, requested_model):
@@ -20690,6 +20698,14 @@ async def load_model_gated(
     return mid-load and hide a late failure in an unread body. This blocks until the
     model is resident and raises the real exception.
     """
+    if is_decision_api_model(request.model_path):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This is a Decision API model, not a chat model. "
+                "Use it from Settings > API > Decision API (POST /v1/systemone)."
+            ),
+        )
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate

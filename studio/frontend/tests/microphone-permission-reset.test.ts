@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Issue 9001: WebView2 saves "Don't allow" in its profile and has no site-settings UI, so
-// one accidental deny blocked dictation for good. Allow microphone now clears that saved
-// answer before asking, and the toast no longer sends desktop users to a padlock that does
-// not exist. The reset is best effort: a browser tab has no command to call and an older
-// runtime has no permission API, but getUserMedia must still be attempted in both.
+// WebView2 persists a deny with no settings UI, so Allow resets it first (best effort).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -17,10 +13,7 @@ import { readSrc, readText } from "./helpers/kit.ts";
 
 register("./helpers/tauri-core-resolver.mjs", import.meta.url);
 
-// A file:// URL, not a native path. `import()` takes a URL or a relative specifier, and
-// on Windows fileURLToPath gives a "D:\..." path, which the default ESM loader rejects
-// with ERR_UNSUPPORTED_ESM_URL_SCHEME. The "?bust=N" suffix below also only means
-// anything on a URL, and tauri-core-resolver.mjs reads it back off the parent URL.
+// Use a file:// URL: Windows paths fail ESM import, and ?bust=N only works on a URL.
 const MODULE = new URL(
   "../src/features/settings/api/microphone-permission.ts",
   import.meta.url,
@@ -36,7 +29,6 @@ type StubControl = { calls: { command: string }[]; mode: "ok" | "rejects" };
 
 let generation = 0;
 
-/** Install the globals api-base reads, then import a fresh copy of the module. */
 async function load(options: { tauri: boolean; mode?: "ok" | "rejects" }) {
   const control: StubControl = { calls: [], mode: options.mode ?? "ok" };
   Object.defineProperty(globalThis, "__TAURI_CORE_STUB__", {
@@ -112,8 +104,6 @@ test("the blocked message stops pointing desktop users at a padlock", () => {
 });
 
 test("the blocked toast only promises another prompt on the desktop", () => {
-  // resetMicrophonePermission returns early off the desktop app, so a browser
-  // tab keeps its saved deny and cannot be asked again by clicking the button.
   assert.match(
     VOICE_TAB,
     /isTauri\s*\?\s*"settings\.voice\.dictation\.micAccessBlockedDesktop"\s*:\s*"settings\.voice\.dictation\.micAccessBlocked"/,
@@ -151,7 +141,6 @@ test("every locale carries both blocked messages", () => {
 });
 
 test("the command is registered with the app", () => {
-  // A command that is only defined is not callable; invoke fails at runtime instead.
   assert.ok(
     MAIN_RS.includes("webview_permissions::reset_microphone_permission"),
     "reset_microphone_permission is missing from the invoke handler",

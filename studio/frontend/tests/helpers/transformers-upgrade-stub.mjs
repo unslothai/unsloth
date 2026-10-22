@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stands in for src/features/transformers-upgrade/index.ts.
-//
-// The real barrel re-exports the consent dialog (.tsx) and node
-// --experimental-strip-types cannot parse JSX, so importing the training-side gate here
-// would pull in the whole React tree. Same cut as export-api-stub.mjs.
-// `checkTransformersUpgrade` answers from `checkResult` (or throws it), the consent
-// answer comes from `consentResult`, and every call is recorded on `calls`.
+// Stands in for features/transformers-upgrade: the real barrel re-exports a .tsx dialog
+// that node --experimental-strip-types cannot parse.
 
 export const calls = [];
 

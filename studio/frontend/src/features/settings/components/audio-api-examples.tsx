@@ -72,7 +72,7 @@ const RUN_LABEL: Record<AudioRunWorkflow, TranslationKey> = {
   edit: "settings.apiKeys.audioApi.edit",
 };
 
-function Pill({
+export function Pill({
   active,
   pillGroup,
   onClick,

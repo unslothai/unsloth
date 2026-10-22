@@ -379,8 +379,10 @@ export const BUDGET = {
   // Re-measured merged with main at 3ba06aa596: +7,310 B raw / +2,259 B transfer (6,886,472 -> 6,893,782 B raw,
   // 2,075,354 -> 2,077,613 B transfer, one machine and build, Node 24, 98 chunks). Set to main's limits plus that
   // growth, keeping main's 528 B raw / 196 B transfer above the measured build.
-  transferBytes: 2_077_809,
-  rawBytes: 6_894_310,
+  // Merged with main at c0c0759bb9, which adds the passive Settings update check (+24 B raw / +43 B transfer):
+  // raised by that.
+  transferBytes: 2_077_852,
+  rawBytes: 6_894_334,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
