@@ -501,7 +501,11 @@ def _gif_palette_supported() -> bool:
         import av.filter
 
         filters = av.filter.filters_available
-        return "palettegen" in filters and "paletteuse" in filters and "gif" in av.codecs_available
+        if "palettegen" not in filters or "paletteuse" not in filters:
+            return False
+        # codecs_available lists a codec usable in either direction; only an encoder writes the GIF
+        av.codec.Codec("gif", "w")
+        return True
     except Exception:  # noqa: BLE001 -- an old or partial build: use the Pillow path
         return False
 

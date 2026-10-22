@@ -770,6 +770,31 @@ def test_gif_export_falls_back_to_pillow_without_the_palette_filters(monkeypatch
     assert all(d == 8 for d in info["delays"]), info["delays"]
 
 
+def test_gif_export_falls_back_to_pillow_without_a_gif_encoder(monkeypatch):
+    """A build with the GIF decoder but no encoder takes the Pillow path instead of failing in add_stream."""
+    import av.codec
+
+    from core.inference import video_gallery as vg
+
+    pytest.importorskip("PIL.Image")
+    real_codec = av.codec.Codec
+
+    def _decoder_only(name, mode = "r"):
+        if name == "gif" and mode == "w":
+            raise av.codec.codec.UnknownCodecError(name)
+        return real_codec(name, mode)
+
+    monkeypatch.setattr(av.codec, "Codec", _decoder_only)
+    assert "gif" in av.codecs_available
+    assert vg._gif_palette_supported() is False
+    pillow_calls = _count_calls(monkeypatch, vg, "_transcode_gif_pillow")
+
+    record = gallery.save(_gradient_mp4_bytes(frames = 24, size = (96, 64), rate = 24), _meta())
+    info = _gif_blocks(vg._transcode_gif(vg.gallery_dir() / f"{record['id']}.mp4"))
+
+    assert pillow_calls["n"] == 1 and info["loop"] == 0
+
+
 def test_gif_export_missing_deps_keeps_the_error_message(monkeypatch):
     import builtins
 
