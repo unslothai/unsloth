@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { psSingle, shSingle } from "./agent-command";
+import { psSingle, shSingle } from "./agent-command.ts";
 import type { AudioApiLang, AudioApiOs } from "./audio-api-snippets";
 
 export type MediaApiKind = "images" | "video";
@@ -79,9 +79,9 @@ fs.writeFileSync("image.png", Buffer.from(result.data[0].b64_json, "base64"));`;
   if (os === "windows") {
     return `$base = '${psSingle(base)}'
 $key = '${psSingle(apiKey)}'
-$body = @"
+$body = @'
 ${jsonBody(body, "")}
-"@
+'@
 Set-Content -Path body.json -Value $body -Encoding ascii
 $result = curl.exe -sSf "$base/v1/images/generations" \`
   -H "Authorization: Bearer $key" \`
@@ -159,9 +159,9 @@ fs.writeFileSync("video.mp4", Buffer.from(await video.arrayBuffer()));`;
   if (os === "windows") {
     return `$base = '${psSingle(base)}'
 $key = '${psSingle(apiKey)}'
-$body = @"
+$body = @'
 ${jsonBody(body, "")}
-"@
+'@
 Set-Content -Path body.json -Value $body -Encoding ascii
 $job = curl.exe -sSf "$base/v1/videos" \`
   -H "Authorization: Bearer $key" \`
