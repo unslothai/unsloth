@@ -529,3 +529,40 @@ def test_readiness_check_is_best_effort(patched):
         ),
     )
     assert s._port_is_ours() is True
+
+
+def test_readiness_refuses_a_hidden_owner_when_our_child_is_not_listening():
+    # Another OS user's socket lists no pid on Linux/macOS; our own child's sockets are readable.
+    import http.server
+    import subprocess
+    import sys
+    import threading
+
+    psutil = pytest.importorskip("psutil")
+
+    class _Ok(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    squatter = http.server.HTTPServer(("127.0.0.1", 0), _Ok)
+    threading.Thread(target = squatter.serve_forever, daemon = True).start()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        s = srv.SdCppServer.__new__(srv.SdCppServer)
+        s._process = child
+        s.port = squatter.server_address[1]
+        real = psutil.net_connections
+        psutil.net_connections = lambda kind = "inet": [c._replace(pid = None) for c in real(kind = kind)]
+        try:
+            assert s._port_is_ours() is False
+        finally:
+            psutil.net_connections = real
+    finally:
+        child.kill()
+        child.wait()
+        squatter.shutdown()
+        squatter.server_close()
