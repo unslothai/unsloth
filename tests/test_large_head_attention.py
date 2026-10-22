@@ -697,6 +697,10 @@ def test_shapes_qualify_bounds_the_reachable_row_offset():
 
 
 def _wide_row_stride(shape, dtype, seed):
+    # The storage runs to the last row's offset: 2**29 elements per row, over 4 GiB for five rows.
+    need = ((shape[-2] - 1) * (1 << 29) + shape[-1]) * torch.empty((), dtype = dtype).element_size()
+    if torch.cuda.mem_get_info()[0] < need + (1 << 30):
+        pytest.skip(reason = f"needs {need / 2**30:.1f} GiB free for a 2**29 element row stride")
     gen = torch.Generator(device = "cuda").manual_seed(seed)
     x = torch.empty_strided(shape, (0, 0, 1 << 29, 1), device = "cuda", dtype = dtype)
     x.copy_(torch.randn(shape, device = "cuda", dtype = dtype, generator = gen))
@@ -705,7 +709,6 @@ def _wide_row_stride(shape, dtype, seed):
 
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_sends_a_wide_row_stride_query_to_sdpa():
-    # Needs a ~4 GiB storage: the query's rows sit 2**29 elements apart.
     dtype = _cuda_dtype()
     S = 5
     q = _wide_row_stride((1, 1, S, 512), dtype, 0)
