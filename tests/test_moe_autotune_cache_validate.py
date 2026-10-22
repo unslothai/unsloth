@@ -94,7 +94,6 @@ class _Autotune:
 
 
 def _legacy_key(dims, dtype = torch.bfloat16, capability = (8, 6), seq_len = 8192):
-    # The pre-schema key: no schema or Triton identity.
     key_data = dict(
         num_experts = dims["num_experts"],
         hidden_dim = dims["hidden_dim"],
@@ -123,7 +122,6 @@ def test_legacy_unversioned_cache_file_is_ignored(ac, monkeypatch):
     legacy = _configs(SMALL, SMALL, (128, 256, 256, 8, 4))
     payload = _legacy_payload(legacy)
     cache_dir = Path(ac._get_cache_file_path("x")).parent
-    # Under both the legacy key and whatever key the module now computes.
     legacy_file = cache_dir / f"{_legacy_key(DIMS)}.json"
     current_key = ac._get_cache_key(
         dtype = torch.bfloat16, device_capability = (8, 6), **DIMS
@@ -177,7 +175,6 @@ def test_valid_current_entry_hits_without_autotune(ac, monkeypatch):
     assert tuner.calls == 0
     assert [c.__dict__ for c in first] == [c.__dict__ for c in saved]
     assert os.path.exists(ac._get_cache_file_path(key))
-    # Warm path: the same in-memory tuple, no further disk read or refit.
     monkeypatch.setattr(ac, "load_cached_config", lambda *a, **k: pytest.fail("disk re-read"))
     assert ac.get_or_autotune_moe_kernels(dtype = torch.bfloat16, **DIMS) is first
     assert tuner.calls == 0

@@ -29,8 +29,7 @@ logger = logging.getLogger(__name__)
 _kernel_config_cache: Dict[str, Any] = {}
 _autotune_completed: Dict[str, bool] = {}
 
-# Bump when a kernel change alters which tiles fit (e.g. the per-expert dW kernel): entries
-# written under another revision or Triton version are misses, never reused unvalidated.
+# Bump when a kernel change alters which tiles fit; other revisions / Triton versions are misses.
 _CACHE_SCHEMA_VERSION = 2
 
 
@@ -89,7 +88,6 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
             os.remove(cache_file)
             return None
 
-        # Unversioned (pre-schema) or other-revision entries are misses; the next save overwrites.
         if cached_data.get("schema_version") != _CACHE_SCHEMA_VERSION or cached_data.get(
             "triton_version"
         ) != getattr(triton, "__version__", None):
@@ -207,7 +205,7 @@ def get_or_autotune_moe_kernels(
                 config_bwd_dx = KernelConfigBackward_dX(**cached_data["config_bwd_dx"])
                 config_bwd_dw = KernelConfigBackward_dW(**cached_data["config_bwd_dw"])
 
-                # Re-check dims and shared memory once per process: a disk entry may predate a kernel change.
+                # A disk entry may predate a kernel change: refit to dims and SMEM.
                 configs = _fit_configs_to_dims(
                     (config_fwd, config_bwd_dx, config_bwd_dw), 2 * intermediate_dim, hidden_dim
                 )
