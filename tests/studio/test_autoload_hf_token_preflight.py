@@ -178,7 +178,9 @@ def test_autoload_preflight_classifies_when_automatic_pins_a_default():
     """Automatic pins a default pick on a mixed iGPU host, so the GGUF is classified first."""
     script = _SCRIPT % json.dumps(_STALE_TOKEN)
     script = script.replace("selectedGpuIds: [0]", "selectedGpuIds: null")
-    script = script.replace("reconcilePersistedGpuIds: () => null", "reconcilePersistedGpuIds: () => [0]")
+    script = script.replace(
+        "reconcilePersistedGpuIds: () => null", "reconcilePersistedGpuIds: () => [0]"
+    )
     out = _run(script, _harness())
     assert out["sent"] == [None]
     assert out["threw"] is None
