@@ -726,6 +726,9 @@ class FlowEngine:
             for src, _ in sources:
                 if src in rs.plan.executable and not env.has(src):
                     return False
+        for src in rs.plan.waits.get(nid, ()):
+            if src in rs.plan.executable and not env.has(src):
+                return False
         owner = rs.plan.owner.get(nid)
         if owner is not None and not env.has(owner):
             return False

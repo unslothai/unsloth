@@ -192,6 +192,45 @@ async def test_for_each_runs_body_per_item_and_collects():
     assert iterations == [[0], [1], [2]]
 
 
+@run_async
+async def test_for_each_waits_for_outside_inputs_of_its_body():
+    async def slow_ref(ctx):
+        await asyncio.sleep(0.3)
+        return {"text": "ref"}
+
+    seen = []
+
+    async def body(ctx):
+        seen.append(ctx.inputs.get("values"))
+        return {"text": "x"}
+
+    eng = _engine(
+        {
+            **BASE,
+            "llm.generate": slow_ref,
+            "input.list": lambda ctx: _ret({"items": ["a", "b"]}),
+            "text.template": body,
+        }
+    )
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("ref", "llm.generate"),
+            node("fe", "logic.for_each"),
+            node("t", "text.template", group = "fe"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("ref", "text", "t", "values"),
+            edge("t", "text", "fe", "collect"),
+        ],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed", rs.error
+    assert _status(rs, "t") != "skipped" and len(seen) == 2 and all("ref" in v for v in seen)
+
+
 async def _ret(value):
     return value
 

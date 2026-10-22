@@ -136,6 +136,8 @@ class Plan:
     owner: dict[str, Optional[str]]
     # Topological order of every executable node.
     order: list[str]
+    # For Each node -> nodes outside its body that the body reads; the For Each waits for them before it starts.
+    waits: dict[str, set[str]] = field(default_factory = dict)
     flow_edges: list[dict] = field(default_factory = list)
     warnings: list[dict] = field(default_factory = list)
 
@@ -363,6 +365,15 @@ def compile_flow(doc: dict) -> Plan:
             continue
         if nid not in executable and not specs[nid]["player"] and nodes[nid].get("disabled"):
             warnings.append(issue("Disabled: skipped", node_id = nid))
+    waits: dict[str, set[str]] = {}
+    for nid, fid in owner.items():
+        sources = {src for ports in inputs.get(nid, {}).values() for src, _ in ports}
+        cursor = fid
+        while cursor is not None:
+            for src in sources:
+                if src != cursor and src != nid and not _within(src, cursor, owner):
+                    waits.setdefault(cursor, set()).add(src)
+            cursor = owner.get(cursor)
     return Plan(
         doc = doc,
         nodes = nodes,
@@ -374,6 +385,7 @@ def compile_flow(doc: dict) -> Plan:
         bodies = bodies,
         owner = owner,
         order = order,
+        waits = waits,
         flow_edges = flow_edges,
         warnings = warnings,
     )
