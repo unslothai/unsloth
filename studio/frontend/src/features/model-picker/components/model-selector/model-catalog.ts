@@ -51,7 +51,13 @@ export interface ModelArtifact {
   prequantRepo?: string;
   /** Size (GB) per scheme, transformer only; int8 stores scales fp8 does not. */
   prequantSizeGb?: Readonly<Partial<Record<DenseQuantScheme, number>>>;
-  /** Resident size for routing. Omitted = never auto-picked unless downloaded (GGUF self-fits). */
+  /** The quantised text-encoder companion an AUTO load takes in place of the bf16 encoder: the family's
+   *  `te_quant_auto` resolved by `diffusion_te_prequant.te_prequant_sources` to a hosted file. `denseGb` is the bf16
+   *  encoder `approxSizeGb` counts, `quantisedGb` the hosted file the backend loads instead (GiB, Hub file sizes).
+   *  Absent = an auto load keeps the bf16 encoder (no `te_quant_auto`, ComfyUI's bf16 choice, or no hosted file). */
+  autoQuantTextEncoderGb?: Readonly<{ denseGb: number; quantisedGb: number }>;
+  /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless
+   *  downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
   approxSizeGb?: number;
   /** Measured CPU-offload fit tiers; a met tier bypasses the resident 70% rule. */
   offloadFitTiers?: readonly OffloadFitTier[];
@@ -199,6 +205,16 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
 
 // Sizes are resident GB used only for routing; GGUF entries have none (pickDefaultQuant sizes them).
 
+// The text encoders an auto load quantises (diffusion_families `te_quant_auto` with a hosted file the backend
+// confirms), in GiB from the Hub file sizes. FLUX.3 Klein and its base share one Qwen3-VL-4B: 8,875,719,344 bytes
+// bf16 against the 5,247,076,320-byte int8 ConvRot file. Qwen-Image 2.1 and its Turbo share one Qwen3-VL-8B:
+// 17,534,340,584 bf16 against 9,349,769,248 int8 ConvRot. FLUX.1 Kontext's auto pick is fp8 on T5-XXL only
+// (CLIP-L stays bf16): 9,524,648,584 against 6,163,991,880. Families whose auto int8 file is not hosted
+// (Qwen-Image, Qwen-Image-Edit, HunyuanImage 2.1, Krea 2) load the dense encoder, so they carry none.
+const FLUX3_KLEIN_AUTO_TE = { denseGb: 8.27, quantisedGb: 4.89 } as const;
+const QWEN_IMAGE_21_AUTO_TE = { denseGb: 16.33, quantisedGb: 8.71 } as const;
+const FLUX1_KONTEXT_AUTO_TE = { denseGb: 8.87, quantisedGb: 5.74 } as const;
+
 export const IMAGE_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "unsloth/Z-Image-Turbo",
@@ -245,6 +261,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         prequantRepo: "unsloth/flux-3-image-klein-FP8",
         fetchedFrom: "unsloth/flux-3-image-klein-FP8",
         prequantSizeGb: { fp8: 6.0, int8: 6.0 },
+        autoQuantTextEncoderGb: FLUX3_KLEIN_AUTO_TE,
       }),
       gguf("unsloth/flux-3-image-klein-GGUF"),
     ],
@@ -264,6 +281,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         fetchedFrom: "unsloth/flux-3-image-klein-base-FP8",
         // The INT8 file is BFL's own int8_convrot denoiser, smaller than the FP8.
         prequantSizeGb: { fp8: 5.98, int8: 5.41 },
+        autoQuantTextEncoderGb: FLUX3_KLEIN_AUTO_TE,
       }),
       gguf("unsloth/flux-3-image-klein-base-GGUF"),
     ],
@@ -281,6 +299,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+        autoQuantTextEncoderGb: QWEN_IMAGE_21_AUTO_TE,
       }),
       gguf("unsloth/Qwen-Image-2.1-GGUF"),
     ],
@@ -301,6 +320,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+        autoQuantTextEncoderGb: QWEN_IMAGE_21_AUTO_TE,
       }),
       gguf("unsloth/Qwen-Image-2.1-Turbo-GGUF"),
     ],
@@ -402,7 +422,10 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      bf16Mirror("black-forest-labs/FLUX.1-Kontext-dev", 32, { totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-Kontext-dev", 32, {
+        totalParams: 11901408320,
+        autoQuantTextEncoderGb: FLUX1_KONTEXT_AUTO_TE,
+      }),
       gguf("unsloth/FLUX.1-Kontext-dev-GGUF"),
     ],
   },
@@ -1364,8 +1387,21 @@ const FORMAT_QUALITY: Record<ArtifactFormat, number> = {
 
 const BF16_BYTES_PER_PARAM = 2;
 
-/** Pre-quantised transformer plus companions, clamped to the dense figure. Schemes are a ladder:
- *  the first rung fitting `allowanceGb` is what the backend loads. */
+/** GiB an auto load saves by taking the hosted quantised text encoder instead of the bf16 one. */
+function autoQuantTextEncoderSavingGb(artifact: ModelArtifact): number {
+  const te = artifact.autoQuantTextEncoderGb;
+  return te ? Math.max(0, te.denseGb - te.quantisedGb) : 0;
+}
+
+/** What a row is sized by here: the pre-quantised transformer plus the companions, which are
+ *  `approxSizeGb` minus the bf16 transformer, with the text encoder at the quantised size an auto load really
+ *  takes (`autoQuantTextEncoderGb`). Clamped to the dense figure.
+ *
+ *  The reported schemes are a LADDER: `_pipeline_planned_denoiser_scheme` walks every rung below
+ *  its winner and seeds the first whose hosted artifact stays resident, so the first rung fitting
+ *  `allowanceGb` is what the load uses. Sizing by `schemes[0]` alone would refuse rows the backend
+ *  would run (Qwen-Image hosts int8 at 25.4 GB against fp8's 19.06). With no allowance, or when no
+ *  rung fits, the first hosted rung. */
 function residentSizeGb(
   group: CatalogGroup,
   artifact: ModelArtifact,
@@ -1379,16 +1415,23 @@ function residentSizeGb(
   const denseTransformerGb = artifact.totalParams
     ? (artifact.totalParams * BF16_BYTES_PER_PARAM) / BYTES_PER_GB
     : 0;
-  const companionsGb = Math.max(0, dense - denseTransformerGb);
+  // The host runs a dense scheme, so it is a CUDA bf16 card, which is also where the backend's auto text-encoder
+  // pick loads its hosted file (te_prequant_sources needs fp8 to run). Anywhere else the encoder stays bf16.
+  const teSavingGb = autoQuantTextEncoderSavingGb(artifact);
+  const denseResidentGb = Math.max(0, dense - teSavingGb);
+  const companionsGb = Math.max(
+    0,
+    Math.max(0, dense - denseTransformerGb) - teSavingGb,
+  );
   let firstHosted: number | undefined;
   for (const scheme of schemes) {
     const quantised = artifact.prequantSizeGb?.[scheme as DenseQuantScheme];
     if (quantised === undefined) continue;
-    const sizeGb = Math.min(dense, quantised + companionsGb);
+    const sizeGb = Math.min(denseResidentGb, quantised + companionsGb);
     if (firstHosted === undefined) firstHosted = sizeGb;
     if (allowanceGb === undefined || sizeGb <= allowanceGb) return sizeGb;
   }
-  return firstHosted ?? dense;
+  return firstHosted ?? denseResidentGb;
 }
 
 function fitsArtifactBudget(

@@ -7331,10 +7331,13 @@ class DiffusionBackend:
                 # its dense size): out of both the share and the hosted bytes.
                 te4_in_table = "text_encoder_4" in sources
                 share = table_priced / max(1, len(sources) - (1 if te4_in_table else 0))
-                # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
+                # MPS and an automatic int8 pick only take the int8 ConvRot file, smaller than the fp8 one.
+                from .diffusion_te_prequant import auto_int8_takes_file_only
+
                 scale = (
                     te_int8_convrot_budget_scale(fam)
                     if int8_convrot_te_runs_on(target)
+                    or auto_int8_takes_file_only(text_encoder_quant)
                     else TE_PREQUANT_BUDGET_SCALE
                 )
                 from .diffusion_te_prequant import _TE_DENSE_SIBLING_GB

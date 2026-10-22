@@ -377,6 +377,8 @@ _FLUX3_SD_CPP_TEXT_ENCODERS = (
 # FLUX.3 landed upstream in master-968 (leejet/stable-diffusion.cpp#2143), after builds were in the wild. The model
 # version name is in every sd-cli / sd-server that can run it and in none before.
 _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
+# Krea 2 support: sd.cpp master-721 (leejet/stable-diffusion.cpp#1705).
+_KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
@@ -1158,6 +1160,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Adapters trained on Raw run on Turbo; deploy previews them there (same bf16 precision).
         deploy_base_repo = "krea/Krea-2-Turbo",
         fp16_incompatible = True,
+        # VAE is byte-identical in Raw and Turbo; the text encoder is stock Qwen3-VL-4B, shared with FLUX.3.
+        sd_cpp_vae = ("unsloth/Krea-2-Turbo", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _KREA2_SD_CPP_ARCH_MARKER,
     ),
     # Lumina Image 2.0: a 2.6B single-stream DiT with a Gemma2-2B encoder and a standard AutoencoderKL, so the generic
     # from_pretrained path loads it. NOT aliased to bare "lumina": Lumina-Next checkpoints are a different arch.
@@ -2017,6 +2024,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.1-krea", 20, 3.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
+    # The same Raw checkpoint as GGUFs name it (realrebelai/KREA-2_GGUFs BASE/Krea-2-Base-*, krea2_raw-*).
+    ("krea-2-base", 52, 3.5),
+    ("krea2-raw", 52, 3.5),
+    ("krea2-base", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
     ("flux1-krea", 20, 3.5),  # before Krea-2's generic row
     ("krea", 8, 0.0),
@@ -2156,14 +2167,37 @@ def transformer_variant_differs_from_base(
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
-def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
-    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+def _generation_defaults_row(*identifiers: Optional[str]) -> Optional[tuple[str, int, float]]:
     for identifier in identifiers:
         needle = model_identity(identifier).lower()
-        for key, steps, guidance in _GENERATION_DEFAULTS:
-            if name_key_in(key, needle):
-                return steps, guidance
+        for row in _GENERATION_DEFAULTS:
+            if name_key_in(row[0], needle):
+                return row
     return None
+
+
+def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
+    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+    row = _generation_defaults_row(*identifiers)
+    return (row[1], row[2]) if row is not None else None
+
+
+_KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})
+
+
+def krea2_raw_checkpoint(*identifiers: Optional[str]) -> bool:
+    """Whether the identifiers name Krea 2 Raw, with the same precedence as the generation defaults."""
+    row = _generation_defaults_row(*identifiers)
+    return row is not None and row[0] in _KREA2_RAW_KEYS
+
+
+def krea2_sd_cpp_flow_shift(width: int, height: int) -> float:
+    """sd.cpp ``--flow-shift`` matching diffusers' Krea 2 Raw schedule. Raw computes mu from the packed latent tokens
+    (calculate_shift: 0.5 at 256 tokens, 1.15 at 6400); Turbo fixes mu = 1.15, sd.cpp's Krea2 default. sd.cpp's FLUX
+    flow denoiser takes the shift as mu itself."""
+    tokens = (int(height) // 16) * (int(width) // 16)
+    slope = (1.15 - 0.5) / (6400 - 256)
+    return tokens * slope + (0.5 - slope * 256)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
@@ -3067,6 +3101,9 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # A full mirror of a loadable base stays loadable even when used as a VAE source (unsloth/Krea-2-Turbo).
+    loadable_lower = {r.strip().lower() for r in loadable if r}
+    loadable.update(m for u, m in _ALL_MIRROR_PAIRS if u.strip().lower() in loadable_lower)
     return (
         frozenset(r.strip().lower() for r in companions - loadable if r)
         | _RETIRED_SD_CPP_COMPANION_REPOS

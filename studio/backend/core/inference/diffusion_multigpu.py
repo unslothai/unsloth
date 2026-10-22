@@ -414,7 +414,42 @@ def plan_companion_split(
     return None
 
 
-def choose_component_assignment(
+@dataclasses.dataclass(frozen = True)
+class AssignmentTrial:
+    """One companion assignment the planner tried: what moves, and each card's need against its resident limit."""
+
+    moved: tuple[str, ...]
+    moved_mib: int
+    primary_need_mib: int
+    primary_limit_mib: int
+    secondary_need_mib: int
+    secondary_limit_mib: int
+
+    @property
+    def fits(self) -> bool:
+        return (
+            self.primary_need_mib <= self.primary_limit_mib
+            and self.secondary_need_mib <= self.secondary_limit_mib
+        )
+
+    def why_not(self, primary: int, secondary: int) -> str:
+        moved = "+".join(self.moved)
+        if self.primary_need_mib > self.primary_limit_mib:
+            return (
+                f"{moved} on cuda:{secondary}: cuda:{primary} still needs {_gib(self.primary_need_mib)} of "
+                f"{_gib(self.primary_limit_mib)}"
+            )
+        return (
+            f"{moved} on cuda:{secondary}: needs {_gib(self.secondary_need_mib)} there, "
+            f"{_gib(self.secondary_limit_mib)} allowed"
+        )
+
+
+def _gib(mib: Optional[int]) -> str:
+    return "unknown" if mib is None else f"{int(mib) / 1024:.1f} GiB"
+
+
+def component_assignment_trials(
     sizes: dict[str, tuple[int, str]],
     *,
     headroom_mib: int,
@@ -422,16 +457,15 @@ def choose_component_assignment(
     primary_limit_mib: int,
     secondary_limit_mib: int,
     move_denoisers: bool = True,
-) -> Optional[tuple[str, ...]]:
-    """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
-    -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
-    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
-    Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
-    companions. The first denoiser always stays on the primary; ``move_denoisers=False`` (the secondary cannot run the
-    denoiser's attention backend) keeps every denoiser there."""
+    encoders_only_limit_mib: Optional[int] = None,
+) -> list[AssignmentTrial]:
+    """Every assignment :func:`choose_component_assignment` tries, in its order, priced (the first that fits wins).
+    ``encoders_only_limit_mib``: what a secondary holding nothing but text encoders may take (its free memory minus
+    ComfyUI's per-card floor); such a card runs one encoder forward per prompt, so it is priced with the weights and
+    an encoder forward's room instead of the base overhead and the 85% resident margin of a card that denoises."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
     if not dits:
-        return None
+        return []
     first = "transformer" if "transformer" in dits else dits[0]
     seconds = [n for n in dits if n != first]
     companions = [
@@ -455,10 +489,59 @@ def choose_component_assignment(
         busy = any(sizes[n][1] != "text_encoder" for n in names)
         return weights + (headroom_mib if busy else TEXT_ENCODER_HEADROOM_MIB) + overhead_mib
 
+    def secondary(moved: tuple[str, ...]) -> tuple[int, int]:
+        standard = (need(list(moved)), int(secondary_limit_mib))
+        if encoders_only_limit_mib is None or any(sizes[n][1] != "text_encoder" for n in moved):
+            return standard
+        encoders = (
+            sum(sizes[n][0] for n in moved) + TEXT_ENCODER_HEADROOM_MIB,
+            int(encoders_only_limit_mib),
+        )
+        return encoders if encoders[1] - encoders[0] > standard[1] - standard[0] else standard
+
+    trials = []
     for moved in candidates:
-        on_primary = [n for n in sizes if n not in moved]
-        if need(on_primary) <= primary_limit_mib and need(list(moved)) <= secondary_limit_mib:
-            return moved
+        sec_need, sec_limit = secondary(moved)
+        trials.append(
+            AssignmentTrial(
+                moved = moved,
+                moved_mib = sum(sizes[n][0] for n in moved),
+                primary_need_mib = need([n for n in sizes if n not in moved]),
+                primary_limit_mib = int(primary_limit_mib),
+                secondary_need_mib = sec_need,
+                secondary_limit_mib = sec_limit,
+            )
+        )
+    return trials
+
+
+def choose_component_assignment(
+    sizes: dict[str, tuple[int, str]],
+    *,
+    headroom_mib: int,
+    overhead_mib: int,
+    primary_limit_mib: int,
+    secondary_limit_mib: int,
+    move_denoisers: bool = True,
+    encoders_only_limit_mib: Optional[int] = None,
+) -> Optional[tuple[str, ...]]:
+    """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
+    -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
+    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
+    Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
+    companions. The first denoiser always stays on the primary; ``move_denoisers=False`` (the secondary cannot run the
+    denoiser's attention backend) keeps every denoiser there."""
+    for trial in component_assignment_trials(
+        sizes,
+        headroom_mib = headroom_mib,
+        overhead_mib = overhead_mib,
+        primary_limit_mib = primary_limit_mib,
+        secondary_limit_mib = secondary_limit_mib,
+        move_denoisers = move_denoisers,
+        encoders_only_limit_mib = encoders_only_limit_mib,
+    ):
+        if trial.fits:
+            return trial.moved
     return None
 
 
@@ -488,6 +571,88 @@ def _secondary_runs_denoiser(
     return False
 
 
+@dataclasses.dataclass(frozen = True)
+class PlacementCandidate:
+    """One placement the automatic planner considered: ``kind`` is one of ``one_card`` (everything resident on the
+    primary), ``companion_split``, ``layer_split``, ``offload`` (one card, streamed) or ``cfg_parallel``."""
+
+    kind: str
+    reason: str
+
+
+@dataclasses.dataclass(frozen = True)
+class PlacementDecision:
+    """What the multi-GPU refinement chose for a load under a multi-card selection, and why every other candidate
+    was rejected. Recorded per pipeline; ``status()["multi_gpu"]["decision"]`` shows it (``"placement"`` there stays
+    the companion split's component-to-device map). ``fallback_resident``: the one-card plan a split would fall back
+    to keeps everything resident (a forced split of a model that fits one card)."""
+
+    chosen: str
+    summary: str
+    primary: int
+    automatic: bool
+    rejected: tuple[PlacementCandidate, ...] = ()
+    fallback_resident: bool = False
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "chosen": self.chosen,
+            "summary": self.summary,
+            "primary": f"cuda:{self.primary}",
+            "automatic": self.automatic,
+            "rejected": [{"kind": c.kind, "reason": c.reason} for c in self.rejected],
+        }
+
+
+_DECISIONS: "weakref.WeakKeyDictionary[Any, PlacementDecision]" = weakref.WeakKeyDictionary()
+
+
+def placement_decision(pipe: Any) -> Optional[PlacementDecision]:
+    try:
+        return _DECISIONS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return None
+
+
+def _record_decision(
+    pipe: Any,
+    selection: MultiGpuSelection,
+    chosen: str,
+    summary: str,
+    rejected: Sequence[PlacementCandidate] = (),
+    *,
+    fallback_resident: bool = False,
+) -> None:
+    with contextlib.suppress(TypeError):
+        _DECISIONS[pipe] = PlacementDecision(
+            chosen = chosen,
+            summary = f"placement: {summary}",
+            primary = int(selection.primary),
+            automatic = bool(selection.automatic),
+            rejected = tuple(rejected),
+            fallback_resident = bool(fallback_resident),
+        )
+
+
+def forget_placement_decision(pipe: Any) -> None:
+    with contextlib.suppress(TypeError):
+        _DECISIONS.pop(pipe, None)
+
+
+def _denoiser_mib(sizes: dict[str, tuple[int, str]]) -> int:
+    return sum(m for m, role in sizes.values() if role == "dit")
+
+
+def _one_card_rejection(plan: Any, primary: int) -> PlacementCandidate:
+    required = plan.estimates.get("resident_required_mib")
+    budget = plan.estimates.get("safe_device_budget_mib")
+    return PlacementCandidate(
+        "one_card",
+        f"everything resident on cuda:{primary} needs {_gib(required)}, {_gib(budget)} free after the reserve; "
+        f"one card would use '{plan.offload_policy}'",
+    )
+
+
 def refine_plan_for_multigpu(
     pipe: Any,
     plan: Any,
@@ -497,52 +662,96 @@ def refine_plan_for_multigpu(
 
     No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
     or an unknown budget. When no component assignment fits, a layer split (diffusion_layer_split_plan) is tried before
-    keeping the offload plan. Returns the plan (a ``dataclasses.replace`` copy when it changed)."""
+    keeping the offload plan. Returns the plan (a ``dataclasses.replace`` copy when it changed). Under a selection the
+    decision and every rejected candidate are recorded for :func:`placement_status`."""
     selection = current_selection()
     if selection is None or plan is None:
         return plan
-    if (
-        getattr(plan, "secondary_ordinal", None) is not None
-        or getattr(plan, "layer_split", None) is not None
-    ):
+    primary = int(selection.primary)
+
+    def keep(chosen: str, summary: str, *rejected: PlacementCandidate) -> Any:
+        fallback = getattr(plan, "fallback_plan", None)
+        _record_decision(
+            pipe,
+            selection,
+            chosen,
+            summary,
+            rejected,
+            fallback_resident = getattr(fallback, "offload_policy", None) == "none",
+        )
         return plan
+
+    def one_card_plan(why: str) -> Any:
+        if plan.offload_policy == "none":
+            return keep("one_card", f"one card: everything resident on cuda:{primary} ({why})")
+        return keep(
+            "offload", f"one card with '{plan.offload_policy}' offload on cuda:{primary} ({why})"
+        )
+
+    if getattr(plan, "secondary_ordinal", None) is not None:
+        return keep(
+            "companion_split",
+            f"companion split: {', '.join(plan.secondary_components or ('companions',))} on "
+            f"cuda:{plan.secondary_ordinal}, the denoiser resident on cuda:{primary} (planned before the load)",
+        )
+    if getattr(plan, "layer_split", None) is not None:
+        return keep("layer_split", f"layer split across {_cards(plan.layer_split.cards)}")
     from .diffusion_layer_split_plan import layer_split_mode, refine_plan_for_layer_split
 
     layer_force = layer_split_mode() == "force"
     if plan.offload_policy == "none" and multigpu_mode() != "force" and not layer_force:
-        return plan
+        required = plan.estimates.get("resident_required_mib")
+        budget = plan.estimates.get("safe_device_budget_mib")
+        not_needed = f"not needed: the model fits cuda:{primary}"
+        return keep(
+            "one_card",
+            f"one card: everything resident on cuda:{primary} (needs {_gib(required)}, {_gib(budget)} free after "
+            "the reserve)",
+            PlacementCandidate("companion_split", not_needed),
+            PlacementCandidate("layer_split", not_needed),
+        )
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
-        return plan
+        return one_card_plan(
+            f"memory mode '{getattr(plan, 'requested_mode', None)}' was chosen explicitly"
+        )
     if plan.estimates.get("explicit_cpu_offload"):
-        return plan
+        return one_card_plan("CPU offload was requested explicitly")
     memory = plan.device_memory
     if memory.is_unified or getattr(memory, "device", None) != "cuda":
         if memory.is_unified:
             from .diffusion_layer_split_plan import note_unified_primary
             note_unified_primary(pipe, selection, logger)
-        return plan
+        return one_card_plan("unified memory" if memory.is_unified else "not a CUDA card")
     budget = plan.estimates.get("safe_device_budget_mib")
     if budget is None:
-        return plan
+        return one_card_plan(f"free memory of cuda:{primary} is unknown")
     from .diffusion_memory import _loaded_component_mib
 
     sizes = _loaded_component_mib(pipe)
     if not sizes:
-        return plan
+        return one_card_plan("component sizes are unreadable")
     secondary = best_secondary(selection)
     if secondary is None:
-        return plan
+        return one_card_plan("no second card")
     mode = getattr(plan, "requested_mode", None)
     sec_limit = secondary_resident_limit_mib(secondary, mode)
     if sec_limit is None:
-        return plan
+        return one_card_plan(f"free memory of cuda:{secondary} is unknown")
     from .diffusion_memory import _fast_device_budget_mib
 
     primary_limit = (
         _fast_device_budget_mib(memory) if mode == "fast" else int(int(budget) * _RESIDENT_FRACTION)
     )
     if primary_limit is None:
-        return plan
+        return one_card_plan(f"free memory of cuda:{primary} is unknown")
+    from .diffusion_memory import plan_keeps_transformer_resident
+
+    if mode != "fast" and plan.offload_policy != "none" and plan_keeps_transformer_resident(plan):
+        # The one-card plan already holds the denoiser resident against the full budget and streams only the
+        # encoders: moving companions off leaves the primary holding no more than that, so the 85% margin would
+        # refuse a split that is lighter than the plan it replaces (the text encoder then streamed from host memory
+        # beside an idle second card).
+        primary_limit = max(int(primary_limit), int(budget))
     headroom = int(
         plan.estimates.get("measured_runtime_headroom_mib")
         or plan.estimates.get("calibrated_headroom_mib")
@@ -550,9 +759,12 @@ def refine_plan_for_multigpu(
         or 0
     )
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
+    rejected: list[PlacementCandidate] = []
+    if plan.offload_policy != "none":
+        rejected.append(_one_card_rejection(plan, primary))
 
     def layer_split_or_plan() -> Any:
-        return refine_plan_for_layer_split(
+        refined = refine_plan_for_layer_split(
             pipe,
             plan,
             selection = selection,
@@ -563,18 +775,76 @@ def refine_plan_for_multigpu(
             overhead_mib = overhead,
             logger = logger,
         )
+        split = getattr(refined, "layer_split", None)
+        if split is not None:
+            _record_decision(
+                pipe,
+                selection,
+                "layer_split",
+                f"layer split: denoiser blocks across {_cards(split.cards)} (denoiser "
+                f"{_gib(_denoiser_mib(sizes))} does not fit one card with its working memory)",
+                rejected,
+                fallback_resident = plan.offload_policy == "none",
+            )
+            return refined
+        from .diffusion_layer_split_plan import (
+            LAYER_SPLIT_ENV,
+            engine_available,
+            layer_split_status,
+            plan_offloads_denoiser,
+        )
+
+        if layer_split_mode() == "off":
+            declined = f"{LAYER_SPLIT_ENV}=0"
+        elif not engine_available():
+            declined = "the layer split engine is unavailable"
+        elif not plan_offloads_denoiser(plan) and not layer_force:
+            declined = f"not needed: the denoiser stays resident on cuda:{primary}"
+        else:
+            declined = (layer_split_status(pipe) or {}).get("declined") or "no split fits"
+        rejected.append(PlacementCandidate("layer_split", str(declined)))
+        if plan.offload_policy == "none":
+            # a forced split of a model one card already holds: the plan returned is that resident one-card plan
+            _record_decision(
+                pipe,
+                selection,
+                "one_card",
+                f"one card: everything resident on cuda:{primary} (no forced split fits)",
+                rejected,
+            )
+        else:
+            _record_decision(
+                pipe,
+                selection,
+                "offload",
+                f"one card with '{plan.offload_policy}' offload on cuda:{primary} (no split fits)",
+                rejected,
+            )
+        return refined
 
     if layer_force:
         return layer_split_or_plan()
-    moved = choose_component_assignment(
+    move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger)
+    trials = component_assignment_trials(
         sizes,
         headroom_mib = headroom,
         overhead_mib = overhead,
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
-        move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger),
+        move_denoisers = move_denoisers,
+        encoders_only_limit_mib = encoder_card_limit_mib(secondary),
     )
+    winner = next((t for t in trials if t.fits), None)
+    moved = winner.moved if winner is not None else None
+    for trial in trials:
+        if trial is winner:
+            break
+        rejected.append(PlacementCandidate("companion_split", trial.why_not(primary, secondary)))
     if moved is None:
+        if not trials:
+            rejected.append(
+                PlacementCandidate("companion_split", "no denoiser among the loaded components")
+            )
         return layer_split_or_plan()
     reason = (
         f"multi-GPU (loaded sizes): {', '.join(moved)} on cuda:{secondary}, the rest resident on "
@@ -582,6 +852,17 @@ def refine_plan_for_multigpu(
     )
     if logger is not None:
         logger.info("diffusion.multigpu: %s", reason)
+    on_primary = winner.primary_need_mib
+    _record_decision(
+        pipe,
+        selection,
+        "companion_split",
+        f"companion split: {', '.join(moved)} on cuda:{secondary} (denoiser {_gib(_denoiser_mib(sizes))} fits "
+        f"cuda:{primary}, {_gib(on_primary)} of {_gib(int(primary_limit))} with its working memory; "
+        f"{', '.join(moved)} {_gib(winner.moved_mib)} does not fit beside it)",
+        rejected,
+        fallback_resident = plan.offload_policy == "none",
+    )
     return dataclasses.replace(
         plan,
         offload_policy = "none",
@@ -598,6 +879,19 @@ def refine_plan_for_multigpu(
         secondary_components = tuple(moved),
         fallback_plan = plan,
     )
+
+
+def _cards(ordinals: Sequence[int]) -> str:
+    return ", ".join(f"cuda:{int(o)}" for o in ordinals)
+
+
+def encoder_card_limit_mib(ordinal: int) -> Optional[int]:
+    """What a secondary that only runs text encoders may hold: free memory minus ComfyUI's per-card floor (the layer
+    split prices its block-only cards the same way). None when the card cannot be read."""
+    from .diffusion_layer_split_plan import secondary_reserve_mib
+
+    free, _total = _free_total_mib(int(ordinal))
+    return None if free is None else max(0, int(free) - secondary_reserve_mib())
 
 
 def secondary_device_memory(ordinal: int) -> Any:
@@ -1009,7 +1303,8 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     from .diffusion_layer_split_plan import layer_split_status
 
     layer = layer_split_status(pipe)
-    if info is None and cfg is None and declined is None and layer is None:
+    decision = placement_decision(pipe)
+    if info is None and cfg is None and declined is None and layer is None and decision is None:
         return None
     out: dict[str, Any] = dict(info or {})
     from .diffusion_layer_split import layer_split_stats
@@ -1032,6 +1327,42 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         out["cfg_parallel"] = cfg.describe()
     elif declined is not None:
         out["cfg_parallel"] = {"armed": False, "declined": declined}
+    if decision is not None:
+        out["decision"] = _live_decision(
+            pipe, decision, info, layer, declined if cfg is None else None
+        )
+    return out
+
+
+def _live_decision(
+    pipe: Any,
+    decision: PlacementDecision,
+    info: Optional[dict],
+    layer: Optional[dict],
+    cfg_declined: Optional[str],
+) -> dict[str, Any]:
+    """The recorded decision, corrected by what engaged: a split whose placement failed reports its one-card fallback,
+    and a declined CFG-parallel replica joins the rejected candidates."""
+    out = decision.describe()
+    failed = None
+    if decision.chosen == "companion_split" and info is None:
+        failed = "the companion split did not engage at placement"
+    elif decision.chosen == "layer_split" and not (layer or {}).get("cards"):
+        failed = f"the layer split did not engage ({(layer or {}).get('declined') or 'placement failed'})"
+    if failed is not None:
+        out["rejected"] = [{"kind": decision.chosen, "reason": failed}, *out["rejected"]]
+        if decision.fallback_resident:
+            out["chosen"] = "one_card"
+            out["summary"] = (
+                f"placement: one card: everything resident on cuda:{decision.primary} ({failed})"
+            )
+        else:
+            out["chosen"] = "offload"
+            out["summary"] = (
+                f"placement: one card with offload on cuda:{decision.primary} ({failed})"
+            )
+    if cfg_declined is not None:
+        out["rejected"] = [*out["rejected"], {"kind": "cfg_parallel", "reason": cfg_declined}]
     return out
 
 
