@@ -20,6 +20,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse = True)
+def _no_block_gemv(monkeypatch):
+    # The GEMV, which takes some decode shapes first, is tested in test_fp8_block_gemv.py.
+    monkeypatch.setattr(f, "_FP8_BLOCK_GEMV", False, raising = False)
+
+
 def _block_weight(N, K, scale_dtype = torch.float32):
     W = torch.randn(N, K, device = "cuda") * 0.02
     s = W.abs().view(N // 128, 128, K // 128, 128).amax((1, 3)) / 448.0
