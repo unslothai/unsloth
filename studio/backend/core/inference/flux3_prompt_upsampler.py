@@ -901,7 +901,11 @@ _vulkan_rows_memo: dict = {}
 _vulkan_rows_lock = threading.Lock()
 
 
-def _vulkan_rows(binary: str, retry_empty: bool = False, throttle_retry: bool = False) -> list:
+def _vulkan_rows(
+    binary: str,
+    retry_empty: bool = False,
+    throttle_retry: bool = False,
+) -> list:
     """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer. With
     ``throttle_retry`` (a speculative prefetch) an empty answer that already was a retry stands until the window ends."""
     from core.inference.llama_cpp import LlamaCppBackend
