@@ -1920,12 +1920,11 @@ export const he = {
       notifications: {
         sectionTitle: "התראות",
         showLoadedModels: "כרטיס מודלים טעונים",
-        showLoadedModelsDescription: "מציג כרטיס קטן בפינה הימנית התחתונה עם כל מודל טעון, כדי לפרוק כל אחד בלחיצה.",
+        showLoadedModelsDescription: "כרטיס בפינה עם כל מודל טעון, לפריקה בלחיצה.",
         updateReminders: "תזכורות עדכון",
-        updateRemindersDescription: "כשגרסה חדשה מוכנה, Unsloth מציג כרטיס להתקנתה. בחרו באיזו תדירות הוא יופיע לכל חלק.",
-        unslothHint: "האפליקציה עצמה",
-        llamaHint: "מריץ מודלי צ'אט ו-GGUF",
-        audioHint: "מריץ דיבור, מוזיקה ותמלול",
+        updateRemindersDescription: "באיזו תדירות להציע גרסה חדשה כשהיא מוכנה.",
+        llamaHint: "מודלי צ'אט ו-GGUF",
+        audioHint: "דיבור, מוזיקה ותמלול",
         frequency: {
           always: "כשזמין",
           daily: "פעם ביום",

@@ -1809,12 +1809,11 @@ export const ar = {
       notifications: {
         sectionTitle: "الإشعارات",
         showLoadedModels: "بطاقة النماذج المحمّلة",
-        showLoadedModelsDescription: "يعرض بطاقة صغيرة في الزاوية السفلية اليمنى بكل نموذج محمّل، لتتمكن من إخراج أي منها بنقرة.",
+        showLoadedModelsDescription: "بطاقة في الزاوية بكل نموذج محمّل، لإخراجه بنقرة.",
         updateReminders: "تذكيرات التحديث",
-        updateRemindersDescription: "عندما يتوفر إصدار أحدث، يعرض Unsloth بطاقة لتثبيته. اختر عدد مرات ظهورها لكل جزء.",
-        unslothHint: "التطبيق نفسه",
-        llamaHint: "يشغّل نماذج المحادثة وGGUF",
-        audioHint: "يشغّل الكلام والموسيقى والنسخ",
+        updateRemindersDescription: "عدد مرات عرض إصدار جديد عندما يكون جاهزًا.",
+        llamaHint: "نماذج المحادثة وGGUF",
+        audioHint: "الكلام والموسيقى والنسخ",
         frequency: {
           always: "عند توفره",
           daily: "مرة يوميًا",

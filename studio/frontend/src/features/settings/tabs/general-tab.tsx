@@ -101,13 +101,9 @@ import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/projec
 const UPDATE_REMINDER_CHANNELS: {
   channel: NotificationChannel;
   name: string;
-  hintKey: TranslationKey;
+  hintKey?: TranslationKey;
 }[] = [
-  {
-    channel: "unsloth",
-    name: "Unsloth",
-    hintKey: "settings.general.notifications.unslothHint",
-  },
+  { channel: "unsloth", name: "Unsloth" },
   {
     channel: "llama",
     name: "llama.cpp",
@@ -750,9 +746,11 @@ export function GeneralTab() {
             >
               <div className="flex min-w-0 items-baseline gap-2">
                 <span className="text-sm text-foreground">{name}</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  {t(hintKey)}
-                </span>
+                {hintKey ? (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {t(hintKey)}
+                  </span>
+                ) : null}
               </div>
               <NotificationFrequencySelect
                 channel={channel}

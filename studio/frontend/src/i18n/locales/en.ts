@@ -1889,12 +1889,11 @@ export const en = {
       notifications: {
         sectionTitle: "Notifications",
         showLoadedModels: "Loaded models card",
-        showLoadedModelsDescription: "Show a small card in the bottom-right corner with every model that is loaded, so you can unload one in a click.",
+        showLoadedModelsDescription: "A corner card with every loaded model, to unload one in a click.",
         updateReminders: "Update reminders",
-        updateRemindersDescription: "When a newer version is ready, Unsloth shows a card to install it. Choose how often it may appear for each part.",
-        unslothHint: "The app itself",
-        llamaHint: "Runs chat and GGUF models",
-        audioHint: "Runs speech, music and transcription",
+        updateRemindersDescription: "How often to offer a new version when one is ready.",
+        llamaHint: "Chat and GGUF models",
+        audioHint: "Speech, music and transcription",
         frequency: {
           always: "Whenever available",
           daily: "Once a day",

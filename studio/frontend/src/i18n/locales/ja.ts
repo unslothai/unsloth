@@ -1800,12 +1800,11 @@ export const ja = {
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "読み込み済みモデルのカード",
-        showLoadedModelsDescription: "右下に読み込み中のすべてのモデルを示す小さなカードを表示し、ワンクリックで取り出せるようにします。",
+        showLoadedModelsDescription: "読み込み中のモデルを並べた隅のカード。ワンクリックで取り出せます。",
         updateReminders: "更新のお知らせ",
-        updateRemindersDescription: "新しいバージョンの準備ができると、Unsloth はインストール用のカードを表示します。項目ごとに表示する頻度を選べます。",
-        unslothHint: "アプリ本体",
-        llamaHint: "チャットと GGUF モデルを実行",
-        audioHint: "音声、音楽、文字起こしを実行",
+        updateRemindersDescription: "新しいバージョンの準備ができたときに案内する頻度です。",
+        llamaHint: "チャットと GGUF モデル",
+        audioHint: "音声、音楽、文字起こし",
         frequency: {
           always: "出るたびに",
           daily: "1日1回",

@@ -1817,12 +1817,11 @@ export const ptBR = {
       notifications: {
         sectionTitle: "Notificações",
         showLoadedModels: "Cartão de modelos carregados",
-        showLoadedModelsDescription: "Mostra um pequeno cartão no canto inferior direito com cada modelo carregado, para descarregá-lo com um clique.",
+        showLoadedModelsDescription: "Um cartão no canto com cada modelo carregado, para descarregá-lo com um clique.",
         updateReminders: "Lembretes de atualização",
-        updateRemindersDescription: "Quando há uma versão mais nova, o Unsloth mostra um cartão para instalá-la. Escolha com que frequência ele pode aparecer para cada parte.",
-        unslothHint: "O próprio app",
-        llamaHint: "Executa modelos de chat e GGUF",
-        audioHint: "Executa voz, música e transcrição",
+        updateRemindersDescription: "Com que frequência oferecer uma versão nova quando estiver pronta.",
+        llamaHint: "Modelos de chat e GGUF",
+        audioHint: "Voz, música e transcrição",
         frequency: {
           always: "Assim que houver",
           daily: "Uma vez por dia",

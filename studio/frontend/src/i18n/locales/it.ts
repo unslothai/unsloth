@@ -1754,12 +1754,11 @@ export const it = {
       notifications: {
         sectionTitle: "Notifiche",
         showLoadedModels: "Scheda dei modelli caricati",
-        showLoadedModelsDescription: "Mostra una piccola scheda in basso a destra con ogni modello caricato, per scaricarlo con un clic.",
+        showLoadedModelsDescription: "Una scheda nell'angolo con ogni modello caricato, da scaricare con un clic.",
         updateReminders: "Promemoria di aggiornamento",
-        updateRemindersDescription: "Quando è pronta una versione più recente, Unsloth mostra una scheda per installarla. Scegli ogni quanto può comparire per ciascuna parte.",
-        unslothHint: "L'app stessa",
-        llamaHint: "Esegue i modelli di chat e GGUF",
-        audioHint: "Esegue voce, musica e trascrizione",
+        updateRemindersDescription: "Ogni quanto proporre una nuova versione quando è pronta.",
+        llamaHint: "Modelli di chat e GGUF",
+        audioHint: "Voce, musica e trascrizione",
         frequency: {
           always: "Appena disponibile",
           daily: "Una volta al giorno",

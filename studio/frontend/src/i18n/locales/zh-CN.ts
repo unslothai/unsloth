@@ -1790,12 +1790,11 @@ export const zhCN = {
       notifications: {
         sectionTitle: "通知",
         showLoadedModels: "已加载模型卡片",
-        showLoadedModelsDescription: "在右下角显示一张小卡片，列出每个已加载的模型，一键即可卸载。",
+        showLoadedModelsDescription: "角落卡片列出每个已加载的模型，一键卸载。",
         updateReminders: "更新提醒",
-        updateRemindersDescription: "有新版本时，Unsloth 会显示一张卡片供你安装。为每一项选择它出现的频率。",
-        unslothHint: "应用本身",
-        llamaHint: "运行聊天和 GGUF 模型",
-        audioHint: "运行语音、音乐和转录",
+        updateRemindersDescription: "新版本就绪时多久提醒一次。",
+        llamaHint: "聊天和 GGUF 模型",
+        audioHint: "语音、音乐和转录",
         frequency: {
           always: "一有就提醒",
           daily: "每天一次",

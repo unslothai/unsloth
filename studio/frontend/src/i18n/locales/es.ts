@@ -1826,12 +1826,11 @@ export const es = {
       notifications: {
         sectionTitle: "Notificaciones",
         showLoadedModels: "Tarjeta de modelos cargados",
-        showLoadedModelsDescription: "Muestra una tarjeta pequeña en la esquina inferior derecha con cada modelo cargado, para descargarlo con un clic.",
+        showLoadedModelsDescription: "Una tarjeta en la esquina con cada modelo cargado, para descargarlo con un clic.",
         updateReminders: "Recordatorios de actualización",
-        updateRemindersDescription: "Cuando hay una versión más nueva, Unsloth muestra una tarjeta para instalarla. Elige con qué frecuencia puede aparecer para cada parte.",
-        unslothHint: "La app en sí",
-        llamaHint: "Ejecuta modelos de chat y GGUF",
-        audioHint: "Ejecuta voz, música y transcripción",
+        updateRemindersDescription: "Con qué frecuencia ofrecer una versión nueva cuando esté lista.",
+        llamaHint: "Modelos de chat y GGUF",
+        audioHint: "Voz, música y transcripción",
         frequency: {
           always: "Cuando haya una",
           daily: "Una vez al día",

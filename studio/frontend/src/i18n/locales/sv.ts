@@ -1982,12 +1982,11 @@ export const sv = {
       notifications: {
         sectionTitle: "Aviseringar",
         showLoadedModels: "Kort för inlästa modeller",
-        showLoadedModelsDescription: "Visar ett litet kort nere till höger med varje inläst modell, så att du kan mata ut en med ett klick.",
+        showLoadedModelsDescription: "Ett hörnkort med varje inläst modell, mata ut med ett klick.",
         updateReminders: "Uppdateringspåminnelser",
-        updateRemindersDescription: "När en nyare version är klar visar Unsloth ett kort för att installera den. Välj hur ofta det får visas för varje del.",
-        unslothHint: "Själva appen",
-        llamaHint: "Kör chatt- och GGUF-modeller",
-        audioHint: "Kör tal, musik och transkribering",
+        updateRemindersDescription: "Hur ofta en ny version erbjuds när den är klar.",
+        llamaHint: "Chatt- och GGUF-modeller",
+        audioHint: "Tal, musik och transkribering",
         frequency: {
           always: "Så fort den finns",
           daily: "En gång om dagen",

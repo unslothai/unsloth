@@ -1830,12 +1830,11 @@ export const de = {
       notifications: {
         sectionTitle: "Benachrichtigungen",
         showLoadedModels: "Karte geladener Modelle",
-        showLoadedModelsDescription: "Zeigt unten rechts eine kleine Karte mit allen geladenen Modellen, damit du jedes mit einem Klick entladen kannst.",
+        showLoadedModelsDescription: "Eine Eckkarte mit allen geladenen Modellen, mit einem Klick entladbar.",
         updateReminders: "Update-Erinnerungen",
-        updateRemindersDescription: "Ist eine neuere Version bereit, zeigt Unsloth eine Karte zum Installieren. Lege fest, wie oft sie für jeden Teil erscheinen darf.",
-        unslothHint: "Die App selbst",
-        llamaHint: "Führt Chat- und GGUF-Modelle aus",
-        audioHint: "Führt Sprache, Musik und Transkription aus",
+        updateRemindersDescription: "Wie oft eine neue Version angeboten wird, sobald sie bereit ist.",
+        llamaHint: "Chat- und GGUF-Modelle",
+        audioHint: "Sprache, Musik und Transkription",
         frequency: {
           always: "Sobald verfügbar",
           daily: "Einmal täglich",

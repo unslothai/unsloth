@@ -1813,12 +1813,11 @@ export const hi = {
       notifications: {
         sectionTitle: "सूचनाएं",
         showLoadedModels: "लोड किए गए मॉडल कार्ड",
-        showLoadedModelsDescription: "नीचे दाएँ कोने में हर लोड किए गए मॉडल का एक छोटा कार्ड दिखाएँ, ताकि आप एक क्लिक में उसे अनलोड कर सकें।",
+        showLoadedModelsDescription: "कोने में हर लोड किए गए मॉडल का कार्ड, एक क्लिक में अनलोड करने के लिए।",
         updateReminders: "अपडेट रिमाइंडर",
-        updateRemindersDescription: "नया संस्करण तैयार होने पर Unsloth उसे इंस्टॉल करने के लिए एक कार्ड दिखाता है। चुनें कि हर हिस्से के लिए यह कितनी बार दिखे।",
-        unslothHint: "खुद ऐप",
-        llamaHint: "चैट और GGUF मॉडल चलाता है",
-        audioHint: "स्पीच, संगीत और ट्रांसक्रिप्शन चलाता है",
+        updateRemindersDescription: "नया संस्करण तैयार होने पर उसे कितनी बार पेश करना है।",
+        llamaHint: "चैट और GGUF मॉडल",
+        audioHint: "स्पीच, संगीत और ट्रांसक्रिप्शन",
         frequency: {
           always: "उपलब्ध होते ही",
           daily: "दिन में एक बार",

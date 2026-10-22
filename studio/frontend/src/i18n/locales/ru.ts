@@ -1815,12 +1815,11 @@ export const ru = {
       notifications: {
         sectionTitle: "Уведомления",
         showLoadedModels: "Карточка загруженных моделей",
-        showLoadedModelsDescription: "Показывает в правом нижнем углу небольшую карточку со всеми загруженными моделями, чтобы выгрузить любую одним щелчком.",
+        showLoadedModelsDescription: "Карточка в углу со всеми загруженными моделями, выгрузка одним щелчком.",
         updateReminders: "Напоминания об обновлениях",
-        updateRemindersDescription: "Когда готова новая версия, Unsloth показывает карточку для установки. Выберите, как часто она может появляться для каждой части.",
-        unslothHint: "Само приложение",
-        llamaHint: "Запускает чат-модели и GGUF",
-        audioHint: "Запускает речь, музыку и расшифровку",
+        updateRemindersDescription: "Как часто предлагать новую версию, когда она готова.",
+        llamaHint: "Чат-модели и GGUF",
+        audioHint: "Речь, музыка и расшифровка",
         frequency: {
           always: "Как только выйдет",
           daily: "Раз в день",
