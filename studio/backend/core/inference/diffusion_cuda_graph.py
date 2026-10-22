@@ -1727,7 +1727,8 @@ class OffloadPlacement:
     replaces the module's hooked forward, so ONE graph records the whole step: the copy-stream copies of every
     streamed group from its pinned host tensor into the graph pool, the compute stream waiting on each copy's event,
     and the resident groups read in place. The pool holds the in-flight window at fixed addresses, so it plays the
-    prefetch ring. Recorded again when a residency change, a release / restore or a host-copy swap moves an address.
+    prefetch ring. Recorded again when a residency change or a host-copy swap moves an address. A prompt encode's
+    release / restore does not: once armed, the re-pin lands in each group's stable range (diffusion_stable_arena).
 
     ``model``: whole-module CPU offload (accelerate). By default only over the stable device range
     (``diffusion_stable_arena``: every onload lands at the same addresses, so render 1's recording replays on every
@@ -2177,6 +2178,11 @@ def arm_after_placement(
                 )
                 stable = placement.mode == "model" and _stable_range(module)
                 modes.append("model_stable" if stable else placement.mode)
+                if placement.mode == "group":
+                    # A prompt encode streams resident groups and pins them again: from now on that re-pin lands
+                    # at the addresses this step records (diffusion_stable_arena.GroupRange).
+                    from .diffusion_stable_arena import want_stable_repin
+                    want_stable_repin(module)
         except Exception as exc:  # noqa: BLE001
             if placement is not None and placement.mode == "model":
                 _detach_stable_range(module)
@@ -2475,6 +2481,11 @@ def stats(handles: Any) -> dict:
                 arena = arena_of(placement.module)
                 if arena is not None:
                     out["stable_range"] = arena.describe()
+            if placement is not None and placement.mode == "group":
+                from .diffusion_stable_arena import repin_stats
+                repin = repin_stats(placement.module)
+                if repin is not None:
+                    out["stable_repin"] = repin
             if handle.poisoned:
                 out["poisoned"] = True
             error = handle.capture_error

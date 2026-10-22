@@ -175,6 +175,105 @@ def test_release_and_restore_records_again_and_stays_exact():
     assert handles[0].stats["invalidations"] >= 1 and handles[0].stats["captures"] >= 2
 
 
+class _Encoder(torch.nn.Module):
+    """A text encoder whose output takes the VRAM the encode release frees, as a real encode's weights and activations
+    do: the stock re-pin then cannot land on the blocks the resident groups gave back."""
+
+    def __init__(self, net, nbytes):
+        super().__init__()
+        self.net = net
+        self.nbytes = nbytes
+        self.proj = torch.nn.Linear(8, 8).cuda()
+        self.mapped: list = []
+
+    def forward(self, x):
+        ranges = self.net.__dict__.get("_unsloth_repin_ranges") or []
+        self.mapped.append([r.arena.mapped for r in ranges])
+        held = torch.empty(self.nbytes, dtype = torch.uint8, device = "cuda")
+        return self.proj(x), held
+
+
+@pytest.mark.parametrize("stable", [True, False])
+def test_an_encode_release_re_pins_where_the_step_recorded(monkeypatch, stable):
+    """12 GiB tier (partial residency + the encode release): every new prompt encode streams resident groups and pins
+    them again before step 0. The re-pin lands in each group's stable range, so the step recorded on prompt 1 replays
+    on every later prompt (captures per prompt 1, 0, 0, 0), bit-identical to the eager forward; the ranges hold no
+    memory during the encode. UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0 is the stock re-pin: later prompts record again."""
+    _cuda()
+    if not stable:
+        monkeypatch.setenv(sa.REPIN_ENV, "0")
+    prompts = 4
+    seeds = list(range(2 * prompts))
+    want = _eager_reference(6, seeds)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 6)
+    resident = [g for g in dm._offload_groups(net) if getattr(g, "_unsloth_resident", False)]
+    streamed = [g for g in dm._offload_groups(net) if not getattr(g, "_unsloth_resident", False)]
+    assert (
+        len(resident) >= 4 and streamed
+    )  # partial residency: some blocks pinned, the rest streamed
+    enc = _Encoder(net, 6 << 20)
+    pipe = types.SimpleNamespace(
+        transformer = net, components = {"transformer": net, "text_encoder": enc}
+    )
+    plan = types.SimpleNamespace(
+        resident_transformer_mib = 6, estimates = {"encode_resident_transformer_mib": 2}
+    )
+    handles, reason = cg.arm_after_placement(pipe)
+    assert len(handles) == 1 and handles[0].placement.mode == "group", reason
+    assert dm.install_encode_release(pipe, plan, None) == 1
+    h = handles[0]
+    got, per_prompt = [], []
+    for prompt in range(prompts):
+        with torch.no_grad():
+            out = enc(torch.randn(2, 8, device = "cuda"))  # releases, then pins back before step 0
+        before = h.stats["captures"]
+        got += _run(net, seeds[2 * prompt : 2 * prompt + 2])
+        per_prompt.append(h.stats["captures"] - before)
+        del out
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    repin = cg.stats(handles).get("stable_repin")
+    if stable:
+        assert per_prompt == [1, 0, 0, 0]
+        assert h.stats["replays"] == 2 * prompts  # the recording call replays too
+        assert repin["groups"] >= 1 and repin["unmaps"] == repin["groups"] * (prompts - 1)
+        # the first encode released the load's stock pins; every later one found the ranges unmapped during it
+        assert all(not any(m) for m in enc.mapped[1:]) and all(enc.mapped[1:])
+        assert all(r.arena.mapped for r in net.__dict__["_unsloth_repin_ranges"])
+    else:
+        # the stock re-pin lands wherever the allocator has room after the encode: a later prompt records again
+        assert per_prompt[0] == 1 and sum(per_prompt[1:]) >= 1
+        assert repin is None or repin["groups"] == 0
+    cg.uninstall_all(handles)
+
+
+def test_the_render_peak_counts_weights_moved_into_a_stable_range():
+    """A render that first moves resident groups into their ranges drops the allocator by their size; the learned peak
+    counts the mapped range, so it never reads low on the stock scale."""
+    _cuda()
+    from core.inference.diffusion_measured_peaks import PeakProbe
+
+    try:
+        sa._driver()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"CUDA VMM unavailable ({exc})")
+    dev = torch.cuda.current_device()
+    held = torch.empty(
+        8 << 20, dtype = torch.uint8, device = "cuda"
+    )  # a resident group, pinned the stock way
+    arena = sa.VmmArena(8 << 20, dev)
+    before = sa.mapped_bytes(dev)
+    probe = PeakProbe("cuda")
+    del held  # the re-pin: the group leaves the allocator ...
+    arena.map()  # ... and lands in its range
+    assert sa.mapped_bytes(dev) == before + arena.size
+    peak = probe.finish()
+    assert peak is not None and peak >= arena.size >> 20
+    arena.close()
+    assert sa.mapped_bytes(dev) == before
+
+
 def test_unpinned_host_copies_keep_the_forward_eager_with_the_reason(monkeypatch):
     _cuda()
     monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")
