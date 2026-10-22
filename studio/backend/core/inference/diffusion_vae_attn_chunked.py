@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 VAE_ATTN_CHUNK_ENV = "UNSLOTH_VAE_ATTN_CHUNKED"
 VAE_ATTN_CHUNK_MB_ENV = "UNSLOTH_VAE_ATTN_CHUNK_MB"
@@ -189,7 +190,7 @@ def wants_install(vae: Any, target: Any = None) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return bool(getattr(torch.version, "hip", None))
+    return is_rocm_torch(torch)
 
 
 def patch_attention_modules(vae: Any) -> int:

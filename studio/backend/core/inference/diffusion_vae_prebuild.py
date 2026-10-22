@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import threading
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 _ENV = "UNSLOTH_DIFFUSION_VAE_PREBUILD"
 _FALSE = ("0", "false", "no", "off")
@@ -89,7 +90,7 @@ def maybe_kick(
     try:
         import torch
 
-        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+        if is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
         if compile_ctx is None or getattr(compile_ctx, "hit", False):
             return False  # a restart's Triton cache already holds the kernels

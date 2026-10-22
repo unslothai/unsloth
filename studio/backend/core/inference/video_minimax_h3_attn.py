@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
 FUSED_QKV_ENV = "UNSLOTH_H3_FUSED_QKV"
@@ -34,7 +35,7 @@ def _enabled(env: str) -> bool:
 def _capability(device: Any = None) -> Optional[tuple[int, int]]:
     try:
         import torch
-        if not torch.cuda.is_available() or torch.version.hip is not None:
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return None
         return tuple(torch.cuda.get_device_capability(device))  # type: ignore[return-value]
     except Exception:  # noqa: BLE001

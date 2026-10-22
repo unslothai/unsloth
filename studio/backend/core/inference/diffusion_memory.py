@@ -23,6 +23,7 @@ import os
 import sys
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 
 MEMORY_MODE_AUTO = "auto"
@@ -4449,7 +4450,7 @@ def _fast_pin_supported() -> bool:
     try:
         import torch
 
-        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+        if is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
         cudart = torch.cuda.cudart()
         return hasattr(cudart, "cudaHostRegister") and hasattr(cudart, "cudaHostUnregister")

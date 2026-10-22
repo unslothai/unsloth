@@ -15,6 +15,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST"
 HOST_RAM_CHECK_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_CHECK"
@@ -310,7 +311,7 @@ def int8_act_device_ok(device: Any) -> bool:
 
     try:
         dev = torch.device(device)
-        if dev.type != "cuda" or getattr(torch.version, "hip", None):
+        if dev.type != "cuda" or is_rocm_torch(torch):
             return False
         idx = dev.index if dev.index is not None else torch.cuda.current_device()
     except Exception:  # noqa: BLE001

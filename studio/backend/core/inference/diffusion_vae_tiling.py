@@ -21,6 +21,7 @@ from typing import Any, Optional
 from .diffusion_device import float64_device
 from .diffusion_vae_oom import clear_partial_decode
 from .diffusion_vae_oom import free_first as oom_free_first
+from .rocm_bf16 import is_rocm_torch
 
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
 
@@ -287,7 +288,7 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
 
     if (
         z.device.type == "cuda"
-        and getattr(torch.version, "hip", None)
+        and is_rocm_torch(torch)
         and type(vae).__name__ == "AutoencoderKLQwenImage21"
     ):
         return TILE_LATENTS**2

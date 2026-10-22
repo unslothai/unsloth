@@ -33,6 +33,7 @@ import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
 _MIN_TRITON = (3, 2)
@@ -853,7 +854,7 @@ def _device_ok(index: int) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     if (
         not (_triton_version_ok() and _triton_jit_toolchain_ok())
@@ -1492,7 +1493,7 @@ def resident_cuda_device(module: Any) -> Any:
     """The one CUDA device every parameter of ``module`` lives on (NVIDIA, not ROCm), else None."""
     try:
         import torch
-        if getattr(torch.version, "hip", None):
+        if is_rocm_torch(torch):
             return None
         devices = {p.device for p in module.parameters()}
     except Exception:  # noqa: BLE001
