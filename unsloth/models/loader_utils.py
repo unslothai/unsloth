@@ -4104,24 +4104,23 @@ def _checkpoint_tensor_dtypes(
     try:
         if os.path.isdir(model_name):
             root = os.path.join(model_name, subfolder) if subfolder else model_name
-            for index_file in index_files:
-                index_path = os.path.join(root, index_file)
-                if not os.path.exists(index_path):
+            # transformers' order: a lone file beats an index of the same format, so a stale index
+            # left beside a re-saved model.safetensors must not decide the layout.
+            for filename in (st_single, st_index, bin_single, bin_index):
+                path = os.path.join(root, filename) if filename else None
+                if not path or not os.path.isfile(path):
                     continue
-                weight_map = _index_weight_map(index_path)
-                return _fill_fused_dtypes(
-                    weight_map,
-                    lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
-                )
-            single_path = os.path.join(root, st_single) if st_single else None
-            if single_path and os.path.exists(single_path):
-                return _safetensors_dtypes(single_path)
-            single_path = os.path.join(root, bin_single) if bin_single else None
-            if single_path and os.path.exists(single_path):
+                if filename in index_files:
+                    return _fill_fused_dtypes(
+                        _index_weight_map(path),
+                        lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
+                    )
+                if filename == st_single:
+                    return _safetensors_dtypes(path)
                 try:
-                    return _bin_dtypes(single_path)
+                    return _bin_dtypes(path)
                 except Exception:
-                    raise _UnreadableCheckpointNames(single_path)
+                    raise _UnreadableCheckpointNames(path)
             return None
 
         if not local_files_only and not subfolder and not variant and st_single:
@@ -4139,13 +4138,14 @@ def _checkpoint_tensor_dtypes(
         from huggingface_hub import hf_hub_download
 
         hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
-        for index_file in index_files:
+
+        def _hub_index_dtypes(index_file):
             try:
                 index_path = hf_hub_download(
                     model_name, index_file, local_files_only = local_files_only, **hub
                 )
             except Exception:
-                continue
+                return None
             weight_map = _index_weight_map(index_path)
 
             def _hub_shard_dtypes(shard, names):
@@ -4161,6 +4161,8 @@ def _checkpoint_tensor_dtypes(
                 return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
 
             return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
+
+        # Same order as transformers: model.safetensors, its index, pytorch_model.bin, its index.
         if st_single:
             try:
                 return _safetensors_dtypes(
@@ -4174,8 +4176,12 @@ def _checkpoint_tensor_dtypes(
                     return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
                 except Exception:
                     pass
+        if st_index:
+            found = _hub_index_dtypes(st_index)
+            if found is not None:
+                return found
         if not bin_single:
-            return None
+            return _hub_index_dtypes(bin_index) if bin_index else None
         try:
             cached_bin = hf_hub_download(model_name, bin_single, local_files_only = True, **hub)
         except Exception:
@@ -4195,7 +4201,7 @@ def _checkpoint_tensor_dtypes(
                 exists = False
             if exists:
                 raise _UnreadableCheckpointNames(f"{model_name}/{remote}")
-        return None
+        return _hub_index_dtypes(bin_index) if bin_index else None
     except _UnreadableCheckpointNames:
         raise
     except Exception:

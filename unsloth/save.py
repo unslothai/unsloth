@@ -254,6 +254,49 @@ def _normalize_safe_serialization(safe_serialization):
     return True if safe_serialization is None else safe_serialization
 
 
+@contextmanager
+def _save_bare_params4bit_quant_state(model):
+    """Write the bitsandbytes quant state of bare `Params4bit` parameters (fused MoE experts).
+
+    bitsandbytes only serializes a QuantState from `Linear4bit._save_to_state_dict`, so a
+    fused expert stack quantized in place (gpt-oss `experts.gate_up_proj`) is saved as
+    packed bytes alone and cannot be reloaded. This adds the same `<name>.absmax`,
+    `<name>.quant_map`, `<name>.quant_state.bitsandbytes__nf4`, ... entries Linear4bit
+    writes, for the duration of one save. Models without such parameters are untouched.
+    """
+    try:
+        from bitsandbytes.nn import Linear4bit, Params4bit
+    except Exception:
+        yield
+        return
+    handles = []
+    try:
+        for module in model.modules():
+            if isinstance(module, Linear4bit):
+                continue
+            names = [
+                name
+                for name, param in module.named_parameters(recurse = False)
+                if isinstance(param, Params4bit) and getattr(param, "quant_state", None) is not None
+            ]
+            if not names:
+                continue
+
+            def _hook(module, state_dict, prefix, local_metadata, _names = tuple(names)):
+                for name in _names:
+                    if prefix + name not in state_dict:
+                        continue
+                    quant_state = getattr(module, name).quant_state
+                    for key, value in quant_state.as_dict(packed = True).items():
+                        state_dict[f"{prefix}{name}.{key}"] = value.detach()
+
+            handles.append(module._register_state_dict_hook(_hook))
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
 def _filter_push_to_hub_kwargs(push_fn, kwargs):
     """Keep only the keywords `push_fn` actually accepts.
 
@@ -8436,6 +8479,10 @@ def patch_saving_functions(model, vision = False):
         import inspect
 
         original = self.original_model_save_pretrained
+        # Adapter saves never write base weights; full saves also need fused 4-bit experts' quant state.
+        quant_state = (
+            nullcontext() if isinstance(self, PeftModel) else _save_bare_params4bit_quant_state(self)
+        )
         if kwargs.get("safe_serialization", True) is None:
             kwargs["safe_serialization"] = _normalize_safe_serialization(None)
         elif args:
@@ -8445,8 +8492,10 @@ def patch_saving_functions(model, vision = False):
                 bound = None
             if bound is not None and bound.arguments.get("safe_serialization", True) is None:
                 bound.arguments["safe_serialization"] = _normalize_safe_serialization(None)
-                return original(*bound.args, **bound.kwargs)
-        return original(*args, **kwargs)
+                with quant_state:
+                    return original(*bound.args, **bound.kwargs)
+        with quant_state:
+            return original(*args, **kwargs)
 
     if isinstance(model, PreTrainedTokenizerBase):
         if model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained":
