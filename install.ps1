@@ -4574,8 +4574,11 @@ function Install-UnslothStudio {
                 if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
                 $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
             }
+            # uv reads UV_CONFIG_FILE in place of every discovered file, and none with UV_NO_CONFIG.
             $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
             $dir = (Get-Location -PSProvider FileSystem).ProviderPath
+            if ($env:UV_NO_CONFIG -and $env:UV_NO_CONFIG -notmatch '^(0|false|no|off)$') { $files = @(); $dir = $null }
+            elseif ($env:UV_CONFIG_FILE) { $files = @($env:UV_CONFIG_FILE); $dir = $null }
             while ($dir) {
                 $pyproject = Join-Path $dir 'pyproject.toml'
                 if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
