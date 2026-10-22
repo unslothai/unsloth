@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
+
 """Qwen3-ASR checkpoints in the qwen-asr package layout (Qwen/Qwen3-ASR-0.6B, -1.7B) load their real weights."""
 
 import ast
