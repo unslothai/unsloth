@@ -9,7 +9,6 @@ CPU-pinned prelude in which device index i is cpu:i.
 from __future__ import annotations
 
 import ast
-import contextlib
 import math
 import pathlib
 import types
@@ -76,7 +75,6 @@ def _load(
     ns = {
         "torch": _CPUTorch(),
         "math": math,
-        "contextlib": contextlib,
         "DEVICE_COUNT": DEVICES,
         "DEVICE_TYPE_TORCH": "cpu",
         "get_current_device": lambda: 0,

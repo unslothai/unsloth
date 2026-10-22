@@ -2318,6 +2318,8 @@ class _PerDeviceRopeCache:
     def _rope_build_mode():
         # The first build often runs inside generate's inference_mode; inference tensors cannot be
         # saved for backward, so the compiled training block failed and fell back to eager.
+        import contextlib
+
         if not torch.is_inference_mode_enabled():
             return contextlib.nullcontext()
         stack = contextlib.ExitStack()
