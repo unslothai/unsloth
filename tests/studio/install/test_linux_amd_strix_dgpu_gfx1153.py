@@ -51,7 +51,11 @@ def _reset_probe(monkeypatch):
     stack_mod._invalidate_torch_runtime_probe()
 
 
-def _sh_routing_leaf(arches, env = "", leaf = "rocm7.1"):
+def _sh_routing_leaf(
+    arches,
+    env = "",
+    leaf = "rocm7.1",
+):
     """install.sh's routing block on a rocminfo stub; the index leaf it leaves selected."""
     source = _INSTALL_SH.read_text(encoding = "utf-8")
     start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')

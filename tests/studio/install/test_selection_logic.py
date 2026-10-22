@@ -5119,7 +5119,12 @@ class TestLinuxUncoveredRocmGpuTakesVulkan:
         defaults.update(overrides)
         return make_host(**defaults)
 
-    def _resolve(self, gfx, backend = None, **host_overrides):
+    def _resolve(
+        self,
+        gfx,
+        backend = None,
+        **host_overrides,
+    ):
         route = INSTALL_LLAMA_PREBUILT.route_backend_request(
             backend = backend,
             published_repo = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO,
@@ -5148,7 +5153,9 @@ class TestLinuxUncoveredRocmGpuTakesVulkan:
             monkeypatch.delenv(var, raising = False)
         monkeypatch.setenv("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
         monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: False)
-        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_hipcc_available", lambda: False, raising = False)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "_hipcc_available", lambda: False, raising = False
+        )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "github_release_assets",
