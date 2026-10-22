@@ -2369,8 +2369,7 @@ def test_replica_blocks_get_their_own_compile_guard():
 
 
 def test_warm_signature_turns_cold_exactly_when_dynamo_recompiles_a_number():
-    # A call the router reads as warm runs beside the other side, so it must not compile: up to torch 2.13
-    # FX tracing is process-wide and would trip the other branch's compiled frames.
+    # A warm call runs beside the other side, so it must never compile (FX tracing is process-wide up to 2.13).
     compiles = []
 
     def backend(gm, _example_inputs):

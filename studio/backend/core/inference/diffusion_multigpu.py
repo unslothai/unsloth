@@ -1735,11 +1735,8 @@ def _call_signature(
     kwargs: dict,
     scalars: Optional[dict] = None,
 ) -> tuple:
-    """What a compiled forward's guards key on: tensor layout, flags, modes and Python numbers.
-
-    Dynamo specialises an int / float argument on its first value and recompiles it as dynamic on the
-    second distinct one, so ``scalars`` (one dict per side, updated here) keys a number by value until
-    its path has changed once, then by type: a per-step number turns warm again after one cold call."""
+    """What a compiled forward's guards key on. Dynamo specialises a number on its first value and recompiles it
+    dynamic on the second, so ``scalars`` (per side, updated here) keys it by value until it changes once."""
     torch = _torch()
     sig: list = []
     for path, leaf in _leaves((args, kwargs)):
