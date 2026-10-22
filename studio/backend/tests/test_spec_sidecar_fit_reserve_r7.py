@@ -373,3 +373,21 @@ def test_per_device_margins_follow_an_inherited_mask_order(tmp_path, monkeypatch
     backend._arch_gate_survivors = lambda binary = None: []
     first, second = _margins(_dspark(backend, gguf, tmp_path))
     assert first < second
+
+
+def test_the_output_card_keeps_the_draft_compute_buffers_without_a_block(tmp_path, _discrete):
+    """3:2 puts all three blocks on card 0, but the draft still runs (and writes its
+    logits) on the last card, so its compute floor stays reserved there."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    read = backend._draft_backend_for
+
+    def three_blocks(path):
+        db = read(path)
+        db._n_layers = 3
+        return db
+
+    backend._draft_backend_for = three_blocks
+    floor = math.ceil(_lc.LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024))
+    _big, small = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
+    assert small >= 1024 + floor

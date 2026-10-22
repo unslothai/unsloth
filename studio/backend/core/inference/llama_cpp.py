@@ -27290,6 +27290,7 @@ class LlamaCppBackend:
                 # fitter cannot size; 0 when none launches or it runs on the CPU.
                 _sidecar_fit_reserve_mib = 0
                 _sidecar_fit_reserve_eligible_mib = 0
+                _sidecar_compute_mib = 0
                 # The drafter's block count, for rounding a multi-device share to whole layers.
                 _sidecar_draft_layers: Optional[int] = None
                 # The trailing --fit-target that re-adds the reserve over a user margin.
@@ -30411,8 +30412,9 @@ class LlamaCppBackend:
                                     _draft_ub,
                                     _named_batch_sizes(run_args, child_env)[0] & 0xFFFFFFFF,
                                 )
-                                if _ctx and _ctx > 0:
-                                    _ub = min(_ub, int(_ctx))
+                            # Inherited or explicit, the same context cap.
+                            if _ub and _ctx and _ctx > 0:
+                                _ub = min(_ub, int(_ctx))
                             _v = self._estimate_mtp_overhead_bytes(
                                 _ctx,
                                 spec_draft_n_max = _n,
@@ -33830,10 +33832,19 @@ class LlamaCppBackend:
                                 _spawn_free = [_free_by_idx.get(i) for i in _spawn_ids]
                                 # The drafter inherits the target's --tensor-split
                                 # (common_base_params_to_speculative copies the params), so
-                                # an explicit split's weights decide its shares, not free memory.
+                                # an explicit split's weights decide its shares. Without one,
+                                # --fit writes the target's per-card layer counts there, which
+                                # on full cards follow each card's free memory past its margin.
+                                _spawn_base = self._fit_target_margin_mib(
+                                    auto_fit = auto_fit,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    floor_mib = _metal_fit_target_floor_mib,
+                                )
                                 _weights = None
                                 if _spawn_free and all(f and f > 0 for f in _spawn_free):
-                                    _weights = [float(f) for f in _spawn_free]
+                                    _weights = [
+                                        max(1.0, float(f) - _spawn_base) for f in _spawn_free
+                                    ]
                                 _ts = _extra_args_tensor_split(run_cmd, env)
                                 if _ts and _spawn_ids:
                                     _ts_w = [
@@ -33872,7 +33883,18 @@ class LlamaCppBackend:
                                 if _sidecar_reserve_reprice is not None
                                 else _sidecar_fit_reserve_eligible_mib
                             )
-                            _spawn_per_device = [math.ceil(_spawn_total * f) for f in _spawn_shares]
+                            # Blocks follow the shares; the draft's compute buffers sit on
+                            # every card it runs on, the output (last) card included.
+                            _spawn_body = max(0, _spawn_total - _sidecar_compute_mib)
+                            _spawn_per_device = [
+                                math.ceil(_spawn_body * f)
+                                + (
+                                    _sidecar_compute_mib
+                                    if f > 0 or i == len(_spawn_shares) - 1
+                                    else 0
+                                )
+                                for i, f in enumerate(_spawn_shares)
+                            ]
                             _spawn_reserve = max(_spawn_per_device)
                             _spawn_flags = _sidecar_reserve_margin_flags(
                                 run_cmd,
