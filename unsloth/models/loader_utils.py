@@ -2032,6 +2032,89 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
     return Version(vllm.__version__) < Version("0.12.0")
 
 
+def _drop_fp8_dequantize_conversions(model):
+    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
+    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
+    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    conversions = getattr(model, "_weight_conversions", None)
+    if not conversions:
+        return 0
+    try:
+        from transformers.integrations.finegrained_fp8 import Fp8Dequantize
+    except Exception:
+        return 0
+
+    def _targets(conversion):
+        patterns = getattr(conversion, "_original_target_patterns", None) or []
+        return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
+
+    plain = None
+    kept, changed = [], 0
+    for conversion in conversions:
+        operations = getattr(conversion, "operations", None) or []
+        if not any(isinstance(op, Fp8Dequantize) for op in operations):
+            kept.append(conversion)
+            continue
+        if all(isinstance(op, Fp8Dequantize) for op in operations):
+            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
+            changed += 1
+            continue
+        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
+        if plain is None:
+            try:
+                from transformers.conversion_mapping import get_model_conversion_mapping
+                plain = get_model_conversion_mapping(model, None, None)
+            except Exception:
+                plain = []
+        match = next(
+            (
+                c
+                for c in plain
+                if type(c) is type(conversion) and _targets(c) == _targets(conversion)
+            ),
+            None,
+        )
+        if match is None:
+            print(
+                "Unsloth: an fp8 load conversion has no 16bit counterpart; save_pretrained may write fp8 "
+                f"weights for {list(_targets(conversion))}."
+            )
+            kept.append(conversion)
+            continue
+        kept.append(match)
+        changed += 1
+    if changed:
+        model._weight_conversions = kept
+    return changed
+
+
+def _fp8_dequantize_quantization_config(model_config):
+    """The checkpoint's fine-grained fp8 config with `dequantize = True` for an explicit 16bit load, else None.
+    On FP8-capable GPUs transformers otherwise keeps FP8Linear layers; FastModel passes the same flag."""
+    quantization_config = getattr(model_config, "quantization_config", None)
+    if quantization_config is None:
+        return None
+    as_dict = (
+        quantization_config
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "to_dict", lambda: {})()
+    )
+    quant_method = as_dict.get("quant_method", "")
+    # A config object's to_dict() can keep the QuantizationMethod enum, whose str() is not its value.
+    if str(getattr(quant_method, "value", quant_method)).lower() != "fp8":
+        return None
+    try:
+        from transformers import FineGrainedFP8Config
+    except Exception:
+        return None
+    if "dequantize" not in inspect.signature(FineGrainedFP8Config).parameters:
+        return None
+    try:
+        return FineGrainedFP8Config.from_dict(dict(as_dict), dequantize = True)
+    except Exception:
+        return None
+
+
 def _fp8_load_as_is(
     model_name,
     revision = None,

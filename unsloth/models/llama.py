@@ -118,6 +118,7 @@ except ImportError:
     # Older unsloth_zoo: fall back to reading the config fields directly.
     detect_logit_transforms = None
 from ..device_type import (
+    xpu_keeps_explicit_bf16,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -149,6 +150,7 @@ from unsloth.models._attn_mask_compat import (
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
+from ..kernels.rope_embedding import decode_rope_inplace
 from ..kernels.fused_add_rms_layernorm import (
     fast_add_rms_layernorm_inference,
     fast_add_rms_layernorm_inference_ok,
@@ -762,24 +764,26 @@ def LlamaAttention_fast_forward_inference(
     self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)  # +1 slack
     cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index or 0)
 
-    cos = cos[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
-    sin = sin[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
+    # One in-place launch for both rotations; False (nothing written) where it does not apply.
+    if not decode_rope_inplace(Qn, Kn, cos, sin, position_ids):
+        cos = cos[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
+        sin = sin[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
 
-    h = self.half_head_dim
+        h = self.half_head_dim
 
-    RH_Q = self.RH_Q
-    RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
-    RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    RH_Q[:, :, :, :h].neg_()
-    Qn *= cos
-    Qn.addcmul_(RH_Q, sin)
+        RH_Q = self.RH_Q
+        RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
+        RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
+        RH_Q[:, :, :, :h].neg_()
+        Qn *= cos
+        Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[:, :n_kv_heads, :, :]
-    RH_K[:, :, :, :h] = Kn[:, :, :, h:]
-    RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    RH_K[:, :, :, :h].neg_()
-    Kn *= cos
-    Kn.addcmul_(RH_K, sin)
+        RH_K = RH_Q[:, :n_kv_heads, :, :]
+        RH_K[:, :, :, :h] = Kn[:, :, :, h:]
+        RH_K[:, :, :, h:] = Kn[:, :, :, :h]
+        RH_K[:, :, :, :h].neg_()
+        Kn *= cos
+        Kn.addcmul_(RH_K, sin)
 
     self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
     self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
@@ -2313,14 +2317,28 @@ class _PerDeviceRopeCache:
         rows = max(self._rope_cache_floor, _round_rope_size(self._rope_cache_needed))
         return min(self.current_rope_size, rows)
 
+    @staticmethod
+    def _rope_build_mode():
+        # The first build often runs inside generate's inference_mode; inference tensors cannot be
+        # saved for backward, so the compiled training block failed and fell back to eager.
+        import contextlib
+
+        if not torch.is_inference_mode_enabled():
+            return contextlib.nullcontext()
+        stack = contextlib.ExitStack()
+        stack.enter_context(torch.inference_mode(False))
+        stack.enter_context(torch.no_grad())
+        return stack
+
     def _build_rope_cache(self, device_index):
         # _set_cos_sin_cache records its length as current_rope_size; a lazy build may be shorter.
         current_rope_size = self.current_rope_size
-        self._set_cos_sin_cache(
-            seq_len = self._rope_cache_rows(),
-            device = torch.device(device_index),
-            dtype = self._rope_cache_dtype,
-        )
+        with self._rope_build_mode():
+            self._set_cos_sin_cache(
+                seq_len = self._rope_cache_rows(),
+                device = torch.device(device_index),
+                dtype = self._rope_cache_dtype,
+            )
         self.current_rope_size = current_rope_size
         self._rope_cache_versions[device_index] = self._rope_cache_version
 
@@ -2716,12 +2734,13 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             device_index = get_current_device()
         if self.multi_gpu_short_cos_cached[device_index] is None:
             device = torch.device(device_index)
-            self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
-                device = device, non_blocking = True
-            )
-            self.multi_gpu_short_sin_cached[device_index] = self._unsloth_short_sin_cpu.to(
-                device = device, non_blocking = True
-            )
+            with self._rope_build_mode():
+                self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
+                    device = device, non_blocking = True
+                )
+                self.multi_gpu_short_sin_cached[device_index] = self._unsloth_short_sin_cpu.to(
+                    device = device, non_blocking = True
+                )
         if self._rope_cache_version > 0 and self._rope_cache_stale(
             self.multi_gpu_long_cos_cached[device_index], device_index
         ):
@@ -3345,7 +3364,8 @@ class FastLlamaModel:
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
 
@@ -3406,7 +3426,9 @@ class FastLlamaModel:
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
 
-        verify_fp8_support_if_applicable(model_config)
+        verify_fp8_support_if_applicable(
+            model_config, fast_inference = _vllm_will_load_weights(fast_inference, num_labels)
+        )
 
         # Check if RoPE Scaling is even allowed
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
@@ -3624,7 +3646,9 @@ class FastLlamaModel:
         _fp8_to_nf4 = fp8_to_nf4_armed(model_config)
         _modelopt_rewritten = modelopt_rewritten(model_config)
         if _modelopt_rewritten:
-            verify_fp8_support_if_applicable(model_config)
+            verify_fp8_support_if_applicable(
+                model_config, fast_inference = _vllm_will_load_weights(fast_inference, num_labels)
+            )
         if _modelopt_rewritten and num_labels is not None:
             keep_task_heads_unquantized(model_config, AutoModelForSequenceClassification)
         pop_modelopt_key_mapping(model_config, kwargs)
