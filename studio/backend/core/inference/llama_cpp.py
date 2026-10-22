@@ -4817,11 +4817,21 @@ def _request_selects_stateful_sampler(body: Mapping) -> bool:
     )
     samplers = body.get("samplers")
     probe = [False, False, False, False]
+    adaptive = False
     if isinstance(samplers, list) and all(isinstance(name, str) for name in samplers):
-        stateful = stateful or any(name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in samplers)
+        adaptive = any(name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in samplers)
     elif isinstance(samplers, str):
         _apply_sampler_setting(probe, "seq", samplers)
-        stateful = stateful or probe[1]
+        adaptive = probe[1]
+    # adaptive-p is a plain dist draw below target 0 (llama_sampler_adaptive_p_apply), read
+    # as the float32 llama-server stores. An omitted target stays the launch's, so it counts.
+    target = body.get("adaptive_target")
+    if adaptive and isinstance(target, (int, float)) and not isinstance(target, bool):
+        try:
+            adaptive = not struct.unpack("f", struct.pack("f", float(target)))[0] < 0
+        except (OverflowError, ValueError):
+            adaptive = not target < 0
+    stateful = stateful or adaptive
     if not stateful:
         return False
     temperature = body.get("temperature")
