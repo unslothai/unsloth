@@ -304,7 +304,7 @@ export function WaveformBarGlyphs({
           >
             <span
               className={cn(
-                "w-[4px] max-w-[70%] rounded-full bg-current",
+                "w-[3px] max-w-[75%] rounded-full bg-current",
                 isPlayed(index)
                   ? "text-foreground"
                   : cn(
@@ -312,7 +312,7 @@ export function WaveformBarGlyphs({
                       peaks ? "opacity-50" : "opacity-25",
                     ),
               )}
-              style={{ height: `max(4px, ${height}%)` }}
+              style={{ height: `max(3px, ${height}%)` }}
             />
           </span>
         );
