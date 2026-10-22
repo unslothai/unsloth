@@ -52,8 +52,7 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
   showGeneratedMedia: true,
   showFineTunes: true,
   confirmDelete: true,
-  // Opt-in: the recipe is always embedded in the file's metadata, so the visible bar adds nothing a
-  // reader cannot already recover.
+  // Opt-in: every download already carries the recipe in its metadata.
   imageInfoStamp: false,
 };
 
