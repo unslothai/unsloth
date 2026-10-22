@@ -32,17 +32,20 @@ export function useTauriRepairController(): TauriRepairController | null {
  * Whether a click can turn this Chat only install into a full one. Only a measured `no_torch`
  * verdict qualifies: that install left PyTorch out by request, and the manual repair reruns the
  * installer with it. Off Mac the backend reports `no_torch` only when its PyTorch-free GPU
- * inventory finds a card a GPU build could use; a CPU-only host reports `no_gpu`. Every other
- * chat-only reason keeps its own hint.
+ * inventory finds a card a GPU build could use; a CPU-only host reports `no_gpu`. On a Mac the
+ * MLX wheels skip, the installer adds PyTorch but not MLX, so the backend sends a
+ * `chat_only_hint` saying why and Train stays off. Every other chat-only reason keeps its own hint.
  */
 export function canUpgradeToFullInstall(
   chatOnlyReason: string | null,
+  chatOnlyHint: string | null,
   verdictMeasured: boolean,
   repair: TauriRepairController | null,
 ): boolean {
   return (
     verdictMeasured &&
     chatOnlyReason === "no_torch" &&
+    chatOnlyHint === null &&
     repair !== null &&
     !repair.isExternalServer
   );

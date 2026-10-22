@@ -20,8 +20,9 @@ test("a Desktop Chat only install is pointed at the full install upgrade", () =>
   assert.doesNotMatch(text, /--no-torch/);
 });
 
-test("without a Repair action the backend's --no-torch advice stays", () => {
-  // Web, CLI install.sh --no-torch, or a Desktop attached to a terminal-started backend.
+test("without the Install type row the backend's message stays", () => {
+  // Web, CLI install.sh --no-torch, a Desktop attached to a terminal-started backend, or a Mac
+  // the MLX wheels skip, where the backend's message names the macOS it needs.
   assert.equal(exportUnsupportedText("no_torch", NO_TORCH_MESSAGE, false), NO_TORCH_MESSAGE);
 });
 

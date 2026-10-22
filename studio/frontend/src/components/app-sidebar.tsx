@@ -1335,9 +1335,12 @@ export function AppSidebar() {
       : chatOnlyReason === "no_torch"
         ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
           // on Desktop the Install type row in Settings > General reruns the installer with PyTorch.
-          canRepair
-          ? "Training was left out of this install (Chat only). Use Upgrade to full install in Settings to add it."
-          : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+          // A Mac the MLX wheels skip would get PyTorch but not Train, and the hint says why.
+          chatOnlyHint
+          ? chatOnlyHint
+          : canRepair
+            ? "Training was left out of this install (Chat only). Use Upgrade to full install in Settings to add it."
+            : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
         : chatOnlyReason === "rosetta"
         ? "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
         : chatOnlyReason === "intel_mac"

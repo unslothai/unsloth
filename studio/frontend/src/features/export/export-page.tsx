@@ -49,7 +49,7 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
-import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -271,12 +271,12 @@ export function ExportPage() {
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
-  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
-  const repair = useTauriRepairController();
+  // Names the Install type row only where it renders.
+  const canUpgrade = useFullInstallUpgrade() !== null;
   const exportUnsupportedMessage = exportUnsupportedText(
     hardware.exportUnsupportedReason,
     hardware.exportUnsupportedMessage,
-    repair !== null && !repair.isExternalServer,
+    canUpgrade,
   );
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>

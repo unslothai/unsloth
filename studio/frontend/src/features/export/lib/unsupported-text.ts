@@ -7,9 +7,9 @@
 export function exportUnsupportedText(
   reason: string | null,
   message: string | null,
-  canRepair: boolean,
+  canUpgrade: boolean,
 ): string {
-  if (reason === "no_torch" && canRepair)
+  if (reason === "no_torch" && canUpgrade)
     return "Export was left out of this install (Chat only). Use Upgrade to full install in Settings to add it.";
   return (
     message ??

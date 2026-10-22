@@ -22,13 +22,17 @@ const { en } = await import("../src/i18n/locales/en.ts");
 const managed = { repairInstall: () => Promise.resolve(), isExternalServer: false };
 const external = { repairInstall: () => Promise.resolve(), isExternalServer: true };
 
+const MAC_HINT = "Training on this Mac needs MLX, which requires macOS 14 or later.";
+
 test("only a measured no_torch verdict with a managed repair can be upgraded", () => {
-  assert.equal(canUpgradeToFullInstall("no_torch", true, managed), true);
+  assert.equal(canUpgradeToFullInstall("no_torch", null, true, managed), true);
   // Before /api/health answers the verdict is a guess, and the row spins instead.
-  assert.equal(canUpgradeToFullInstall("no_torch", false, managed), false);
+  assert.equal(canUpgradeToFullInstall("no_torch", null, false, managed), false);
   // Web build, startup screen, or a backend started in a terminal: no repair to run.
-  assert.equal(canUpgradeToFullInstall("no_torch", true, null), false);
-  assert.equal(canUpgradeToFullInstall("no_torch", true, external), false);
+  assert.equal(canUpgradeToFullInstall("no_torch", null, true, null), false);
+  assert.equal(canUpgradeToFullInstall("no_torch", null, true, external), false);
+  // A Mac the MLX wheels skip: the installer would add PyTorch but not Train.
+  assert.equal(canUpgradeToFullInstall("no_torch", MAC_HINT, true, managed), false);
   // None of these is a Chat only install, so they keep their own hints (the PyTorch build
   // mismatches already point at Repair installation).
   for (const reason of [
@@ -41,7 +45,7 @@ test("only a measured no_torch verdict with a managed repair can be upgraded", (
     "detection_failed",
     null,
   ]) {
-    assert.equal(canUpgradeToFullInstall(reason, true, managed), false, String(reason));
+    assert.equal(canUpgradeToFullInstall(reason, null, true, managed), false, String(reason));
   }
 });
 
@@ -81,7 +85,7 @@ test("the greyed Train row points at the Install type row, not at Danger zone", 
   const source = await readSrcAsync("components/app-sidebar.tsx");
   const hint = /const trainDisabledHint: string \| undefined = ([\s\S]*?\n\s*: undefined);/.exec(source);
   assert.ok(hint, "could not find trainDisabledHint");
-  const forNoTorch = (canRepair: boolean) =>
+  const forNoTorch = (canRepair: boolean, chatOnlyHint: string | null = null) =>
     new Function(
       "chatOnlyMeasured",
       "chatOnlyReason",
@@ -89,10 +93,13 @@ test("the greyed Train row points at the Install type row, not at Danger zone", 
       "chatOnlyHint",
       "canRepair",
       `return ${hint[1]};`,
-    )(true, "no_torch", null, null, canRepair) as string;
+    )(true, "no_torch", null, chatOnlyHint, canRepair) as string;
   // Desktop: the row the hint names is the one DesktopInstallTypeControl renders in this case.
   assert.match(forNoTorch(true), /Use Upgrade to full install in Settings/);
   assert.doesNotMatch(forNoTorch(true), /Repair installation/);
   // Web and terminal-started backends have no repair to run, so they keep the CLI advice.
   assert.match(forNoTorch(false), /--no-torch/);
+  // No Install type row renders there, and neither reinstall would enable Train.
+  assert.equal(forNoTorch(true, MAC_HINT), MAC_HINT);
+  assert.equal(forNoTorch(false, MAC_HINT), MAC_HINT);
 });

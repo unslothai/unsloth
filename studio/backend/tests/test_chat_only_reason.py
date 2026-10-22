@@ -150,6 +150,46 @@ def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatc
     assert hw.CHAT_ONLY_DETAIL is None
 
 
+@pytest.mark.parametrize(
+    "release, min_python, blocker",
+    [
+        ("15.1", (3, 10), None),
+        ("13.6.1", (3, 10), "macOS 14 or later"),
+        # install_python_stack reads an unreadable macOS as too old and skips MLX.
+        ("", (3, 10), "macOS 14 or later"),
+        ("14.5", (99, 0), "Python 99.0 or later"),
+    ],
+    ids = ["macos-15", "macos-13", "macos-unreadable", "python-too-old"],
+)
+def test_a_no_torch_mac_the_mlx_wheels_skip_gets_no_full_install_offer(
+    monkeypatch, release, min_python, blocker
+):
+    # The installer adds PyTorch there but skips MLX, so the full install leaves Train off.
+    # The hint is what the Desktop withholds the offer on; the reason stays no_torch.
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = False)
+    monkeypatch.setattr(hw.platform, "mac_ver", lambda: (release, ("", "", ""), ""))
+    monkeypatch.setattr(hw, "_MLX_MIN_PYTHON", min_python)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    hint = hw.chat_only_permission_hint("no_torch", None)
+    message = hw.export_capability()["export_unsupported_message"]
+    if blocker is None:
+        assert hint is None
+        assert "--no-torch" in message
+    else:
+        assert hint == f"Training on this Mac needs MLX, which requires {blocker}."
+        assert message == f"Export on this Mac needs MLX, which requires {blocker}."
+
+
+def test_an_old_macos_hint_is_for_apple_silicon_only(monkeypatch):
+    # Off Mac, platform.mac_ver() is empty, which reads as too old: the hint must not leak there.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "mac_ver", lambda: ("", ("", "", ""), ""))
+    assert hw.chat_only_permission_hint("no_torch", None) is None
+
+
 def test_apple_silicon_no_torch_install_with_mlx_on_disk_waits_for_the_probe(monkeypatch):
     # A hand-installed stack can lose the warm's import race (#9120) and be usable a moment
     # later. no_torch would stop the sidebar polling before the overturn lands, so the verdict

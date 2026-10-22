@@ -8,12 +8,15 @@ import {
   useTauriRepairController,
 } from "./tauri-repair-context";
 
-/** The repair controller when this Desktop install is Chat only by request, else null. */
+/** The repair controller when the full install would enable Train on this Chat only install, else null. */
 export function useFullInstallUpgrade(): TauriRepairController | null {
   const repair = useTauriRepairController();
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const verdictMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
-  return canUpgradeToFullInstall(chatOnlyReason, verdictMeasured, repair) ? repair : null;
+  return canUpgradeToFullInstall(chatOnlyReason, chatOnlyHint, verdictMeasured, repair)
+    ? repair
+    : null;
 }

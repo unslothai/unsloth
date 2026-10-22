@@ -1903,8 +1903,34 @@ def _amd_permission_hint_for_mismatch(
     return node_hint, wheel_targets_amd
 
 
+# install_python_stack.py's _MLX_MIN_PYTHON / _MLX_MIN_MACOS_MAJOR: the pinned MLX wheels need both.
+_MLX_MIN_PYTHON = (3, 10)
+_MLX_MIN_MACOS_MAJOR = 14
+
+
+def _mlx_wheel_blocker() -> Optional[str]:
+    """What this Mac lacks for the pinned MLX wheels, or None. Mirrors install_python_stack._mlx_pins_are_installable, which skips MLX and leaves Train/Export off: an unreadable macOS reads as too old there too."""
+    try:
+        major = int(platform.mac_ver()[0].split(".", 1)[0])
+    except (ValueError, IndexError):
+        major = 0
+    if major < _MLX_MIN_MACOS_MAJOR:
+        return f"macOS {_MLX_MIN_MACOS_MAJOR} or later"
+    if sys.version_info < _MLX_MIN_PYTHON:
+        return f"Python {_MLX_MIN_PYTHON[0]}.{_MLX_MIN_PYTHON[1]} or later"
+    return None
+
+
+def _no_torch_mac_without_mlx_wheels() -> Optional[str]:
+    """The blocker when this is a --no-torch Apple Silicon verdict the full install cannot turn into Train: the installer adds PyTorch but skips MLX here."""
+    return _mlx_wheel_blocker() if is_apple_silicon() else None
+
+
 def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
-    """The closed-node sentence for /api/health, read from the last detection pass that recorded this verdict."""
+    """Why the fix this verdict points at cannot enable Train, for /api/health: the closed-node sentence from the last detection pass that recorded this verdict, or a --no-torch Mac the MLX wheels do not support. The Desktop offers the full install only when this is None."""
+    if reason == "no_torch":
+        blocker = _no_torch_mac_without_mlx_wheels()
+        return f"Training on this Mac needs MLX, which requires {blocker}." if blocker else None
     # Keyed on the reason only: the refreshed verdict can relabel the same wheel.
     stored = _CHAT_ONLY_HINT
     return stored[1] if stored is not None and stored[0] == reason else None
@@ -1987,8 +2013,11 @@ def export_capability() -> dict:
         )
     elif verdict[0] == "no_torch":
         reason = "no_torch"
+        blocker = _no_torch_mac_without_mlx_wheels()
         message = (
-            "This install was set up without the training stack (--no-torch), so export is "
+            f"Export on this Mac needs MLX, which requires {blocker}."
+            if blocker
+            else "This install was set up without the training stack (--no-torch), so export is "
             "disabled. Reinstall Unsloth Studio without --no-torch to enable export."
         )
     elif is_apple_silicon():
