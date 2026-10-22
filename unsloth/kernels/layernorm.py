@@ -314,8 +314,7 @@ class Fast_Layernorm(torch.autograd.Function):
         dW = torch.empty(n_cols, dtype = W.dtype, device = device) if train_w else None
         dB = torch.empty(n_cols, dtype = b.dtype, device = device) if train_b else None
         outs = [t for t in (dW, dB) if t is not None]
-        # With one gradient the second pointer is never written, but it must not alias the first:
-        # torch.compile drops one of two writes into the same buffer.
+        # Unused slot must not alias the used one: torch.compile drops one of two writes to a buffer.
         spare = partials.new_empty(1) if len(outs) == 1 else None
         partial_w = partials[0] if train_w else spare
         partial_b = partials[-1] if train_b else spare
