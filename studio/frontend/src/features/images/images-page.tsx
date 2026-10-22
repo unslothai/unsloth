@@ -20,6 +20,7 @@ import {
   ArrowUpDownIcon,
   Refresh01Icon,
   Delete02Icon,
+  DiceFaces03Icon,
   Download01Icon,
   Edit03Icon,
   FolderAddIcon,
@@ -138,6 +139,7 @@ import {
   restorePinOrder,
   serializeById,
   sortGalleryItems,
+  subscribeArchiveChanged,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
 import {
@@ -173,7 +175,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -212,6 +214,8 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
+import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -227,6 +231,7 @@ import {
   residentDefaultsKey,
   residentRecipeFor,
   resolutionFor,
+  stepsSliderMax,
 } from "./image-generation-defaults";
 import {
   MIN_DIM,
@@ -297,10 +302,31 @@ import {
   stopButtonLabel,
 } from "./lib/generation-stop";
 import { drawInfoStamp, infoStampText } from "./lib/info-stamp";
+import { lastSeedOf, reusableSeed } from "./lib/seed-controls";
+import { PasteParametersDialog } from "./paste-parameters-dialog";
+import {
+  INPAINT_PADDING_DEFAULT,
+  INPAINT_PADDING_MAX,
+  type InpaintMaskRequestFields,
+  inpaintMaskRequestFields,
+  MASK_BLUR_DEFAULT,
+  MASK_BLUR_MAX,
+  inpaintOptionsNotApplied,
+  restoredInpaintMaskOptions,
+} from "./lib/inpaint-options";
 import {
   copyPngTextChunks,
+  type ImportedRecipe,
   importedRecipe,
+  importNotApplied,
+  textualInversionLabel,
+  isGenerationParametersPaste,
+  loraTagNames,
+  matchLoraTagsForImport,
+  MAX_LORAS,
+  lorasOverLimit,
   newerRecipeSchema,
+  pastedParameters,
   pngRecipe,
   readEmbeddedRecipe,
   recipeSettings,
@@ -331,6 +357,17 @@ import {
   withSamplerChoice,
 } from "./lib/sampler-choice";
 import {
+  EMPTY_SHIFT,
+  shiftFromRecipe,
+  shiftNotApplied,
+  shiftRequestFields,
+  splitInstalledEmbeddings,
+  type ShiftValue,
+  withEmbeddingTrigger,
+} from "./lib/shift-choice";
+import { listDiffusionEmbeddings } from "./embeddings-api";
+import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
+import {
   enhancePromptRequestField,
   enhanceRestoreFor,
   enhancementNotice,
@@ -354,6 +391,7 @@ import {
   loadedEngineChoice,
   nativeLoadAdvanced,
   nativeReloadTarget,
+  offersCompiledLoraReload,
   offersNativeLoraReload,
   reapplyChangesEngine,
   reapplyTarget,
@@ -415,6 +453,25 @@ function useImageModels(
 // Own keys only: an imported id like "constructor" must not read Object.prototype.
 const labelOf = (labels: Record<string, string>, id: string) =>
   Object.hasOwn(labels, id) ? labels[id] : id;
+
+// Identifies a loaded model for the once-per-model Only masked notice.
+const onlyMaskedKeyOf = (s: DiffusionStatus): string => `${s.repo_id ?? ""}|${s.family ?? ""}`;
+// The load an import started under: model plus the engine and build, so a reload of the same repo on
+// another engine or quant counts as a change. Status carries no per-load id; an identical reload leaves
+// the same LoRA catalog, so its matches stay valid.
+const loadedModelKey = (s: DiffusionStatus | null): string | null =>
+  s?.loaded
+    ? JSON.stringify([
+        s.repo_id,
+        s.base_repo,
+        s.family,
+        s.engine,
+        s.gguf_filename,
+        s.dtype,
+        s.transformer_quant,
+        s.text_encoder_quant,
+      ])
+    : null;
 
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
@@ -1506,6 +1563,7 @@ type LoadAdvanced = Pick<
   | "text_encoder_file"
   | "vae_file"
   | "engine"
+  | "allow_oversized_load"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1638,6 +1696,11 @@ export function ImagesPage({
     guidance: number;
   } | null>(null);
   const [seed, setSeed] = useState("");
+  const [maskBlur, setMaskBlur] = useState(MASK_BLUR_DEFAULT);
+  const [inpaintOnlyMasked, setInpaintOnlyMasked] = useState(false);
+  const [inpaintPadding, setInpaintPadding] = useState(INPAINT_PADDING_DEFAULT);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
   const [count, setCount] = useState(1);
@@ -1687,6 +1750,8 @@ export function ImagesPage({
   // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
+  // The family availableLoras was fetched for; undefined while none is current (loading, failed, no model).
+  const [loraCatalogFamily, setLoraCatalogFamily] = useState<string | null | undefined>(undefined);
   // Fine-tuned (trained in Unsloth) first, for both the suggestions and the Add LoRA prefill.
   const sortedLoras = useMemo(
     () => [...availableLoras].sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned))),
@@ -1730,6 +1795,12 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
+  // Set only around a confirmed Load anyway retry.
+  const oversizedLoadOnce = useRef(false);
+  const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
+  // Synced after render (handleLoadRef is written during render).
+  const retryLoadRef = useRef<((repoId: string, opts: ImageLoadOptions, pinned?: LoadAdvanced) => Promise<boolean>) | null>(null);
+  const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Queued: "Generate anyway" is clickable before the refused run releases busy.
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
@@ -1807,6 +1878,35 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
+  const [sessionSeed, setSessionSeed] = useState<number | null>(null);
+  // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
+  // archived image may be the newest. Checked again whenever the strip changes (an archive drops a row).
+  const [archivedEmpty, setArchivedEmpty] = useState<boolean | null>(null);
+  // Bumped when the archive changes elsewhere (Settings restore or delete), which the strip may not show.
+  const [archiveChangeKey, setArchiveChangeKey] = useState(0);
+  useEffect(
+    () => subscribeArchiveChanged("images", () => setArchiveChangeKey((k) => k + 1)),
+    [],
+  );
+  useEffect(() => {
+    if (sessionSeed !== null || hasMore) return;
+    let cancelled = false;
+    getGallery(0, 1, true)
+      .then((page) => {
+        if (!cancelled) setArchivedEmpty(page.images.length === 0);
+      })
+      .catch(() => {
+        if (!cancelled) setArchivedEmpty(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionSeed, hasMore, images.length, archiveChangeKey]);
+  const lastSeed = useMemo(
+    () => reusableSeed(sessionSeed, images, hasMore || archivedEmpty !== true),
+    [sessionSeed, images, hasMore, archivedEmpty],
+  );
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),
   );
@@ -2030,6 +2130,7 @@ export function ImagesPage({
   // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
+    setLoraCatalogFamily(undefined);
     if (!loraCapable) {
       // Options are gone with the model, but keep the selection: it may have just been restored.
       setAvailableLoras([]);
@@ -2057,7 +2158,9 @@ export function ImagesPage({
     let cancelled = false;
     listDiffusionLoras(status?.family ?? undefined)
       .then((list) => {
-        if (!cancelled) setAvailableLoras(list);
+        if (cancelled) return;
+        setAvailableLoras(list);
+        setLoraCatalogFamily(fam);
       })
       .catch(() => {
         // Clear only the OPTIONS on a failed catalog refresh: this free-text picker holds selections
@@ -2126,6 +2229,21 @@ export function ImagesPage({
     },
     [samplerChoice, samplerModelKey, samplerOptions],
   );
+  const shiftControl = !external && status?.loaded ? (status.shift_control ?? null) : null;
+  const [shiftState, setShiftState] = useState<{ key: string; value: ShiftValue }>({
+    key: "",
+    value: EMPTY_SHIFT,
+  });
+  const shiftValue = shiftState.key === samplerModelKey ? shiftState.value : EMPTY_SHIFT;
+  const setShiftValue = useCallback(
+    (value: ShiftValue) => setShiftState({ key: samplerModelKey, value }),
+    [samplerModelKey],
+  );
+  const embeddingsEnabled = !external && status?.loaded === true && !!status.textual_inversion;
+  const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
+    if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
+    else setPrompt((p) => withEmbeddingTrigger(p, trigger));
+  }, [setPrompt]);
   // Enhance prompt (FLUX.3's prompt upsampler): stored per family, defaulting to the family's own default. A
   // restore or "Use as prompt" sets a one-off override that the next toggle or family change drops.
   const upsamplerCapability = promptUpsamplerCapability(status, Boolean(external));
@@ -2687,6 +2805,7 @@ export function ImagesPage({
     setHeight(restored.height);
     // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.
     setBatchSize(image.batch_size ?? 1);
+    setShiftValue(shiftFromRecipe(image));
     const m = matchAspect(restored.width, restored.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -2707,6 +2826,10 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
+    const maskOptions = restoredInpaintMaskOptions(image);
+    if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
+    if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
+    if (maskOptions.padding !== undefined) setInpaintPadding(maskOptions.padding);
     // Conditioning images are not persisted, so every upload is cleared. Edit and Reference reopen
     // their own workflow, so Generate stays blocked until the inputs are supplied again instead of
     // replaying as text-to-image; the others return to Create.
@@ -2747,26 +2870,78 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
-  const importSettingsFromFile = useCallback(
-    async (file: File | Uint8Array) => {
-      let recipe = null;
-      try {
-        const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
-        recipe = importedRecipe(readEmbeddedRecipe(bytes));
-      } catch {
-        recipe = null;
+  // Notified once per loaded model while Only masked is on but that model's pipeline cannot crop, so
+  // the hidden switch never drops the setting silently, whatever turned it on or switched the model.
+  const onlyMaskedNotified = useRef<string | null>(null);
+  useEffect(() => {
+    const key =
+      status?.loaded && inpaintOnlyMasked && status.supports_inpaint_only_masked !== true
+        ? onlyMaskedKeyOf(status)
+        : null;
+    if (key === null) {
+      onlyMaskedNotified.current = null;
+      return;
+    }
+    if (onlyMaskedNotified.current === key) return;
+    onlyMaskedNotified.current = key;
+    const missed = inpaintOptionsNotApplied(
+      { inpaint_only_masked: true, inpaint_padding: inpaintPadding },
+      false,
+    );
+    toast.warning("Some settings were not applied", {
+      description: `Not applied: ${missed.join(", ")}. This model or build does not support them.`,
+    });
+  }, [status, inpaintOnlyMasked, inpaintPadding]);
+  // A later import supersedes one still waiting on the LoRA lookup.
+  const importSeq = useRef(0);
+  // The status as of now, for an import resuming after its LoRA lookup.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const applyImportedRecipe = useCallback(
+    async (recipe: ImportedRecipe): Promise<boolean> => {
+      const seq = ++importSeq.current;
+      const modelBefore = loadedModelKey(status);
+      let tagged = await matchLoraTagsForImport(
+        recipe.lora_tags,
+        // Only a finished fetch for the loaded family: right after a load or family switch it is empty or stale.
+        loraCapable && loraCatalogFamily === (status?.family ?? null),
+        availableLoras,
+        // A LoRA is family-specific, so a loaded model narrows the lookup like the picker does.
+        () => listDiffusionLoras(status?.loaded ? (status.family ?? undefined) : undefined),
+      );
+      if (seq !== importSeq.current) return false;
+      // A load or family switch landed during the lookup: its matches are for the old model.
+      if (loadedModelKey(statusRef.current) !== modelBefore) {
+        tagged = {
+          loras: [],
+          unmatched: [],
+          notes: loraTagNames(recipe.lora_tags).map((n) => `LoRA ${n} (model changed during import)`),
+        };
       }
-      if (!recipe) {
-        toast.error("No generation settings found in this image", {
-          description: "Images saved by Unsloth, ComfyUI, or tools that write a parameters block can be loaded.",
-        });
-        return;
+      // TI hashes: the prompt names each embedding, so on a model that takes them an installed one applies.
+      const tiNames = Array.isArray(recipe.textual_inversions)
+        ? recipe.textual_inversions.filter((x): x is string => typeof x === "string")
+        : [];
+      let tiMatch: { installed: string[]; missing: string[] } | null = null;
+      if (tiNames.length > 0 && embeddingsEnabled && status?.family) {
+        const triggers = await listDiffusionEmbeddings(status.family).then(
+          (r) => r.embeddings.map((e) => e.trigger),
+          () => null,
+        );
+        if (seq !== importSeq.current) return false;
+        // A list fetched for a model that is no longer loaded says nothing: the names are reported plainly.
+        if (triggers && loadedModelKey(statusRef.current) === modelBefore)
+          tiMatch = splitInstalledEmbeddings(tiNames, triggers);
       }
-      const settings = recipeSettings(recipe, { width, height, steps, guidance });
+      const merged =
+        tagged.loras.length > 0
+          ? { ...recipe, loras: [...(Array.isArray(recipe.loras) ? recipe.loras : []), ...tagged.loras] }
+          : recipe;
+      const settings = recipeSettings(merged, { width, height, steps, guidance });
       const localized = settings.localized_edit;
       restoreSettings({
         ...settings,
@@ -2801,7 +2976,31 @@ export function ImagesPage({
           );
         }
       }
-      const notApplied = unknownRecipeKeys(recipe);
+      const notApplied = [
+        ...importNotApplied(
+          recipe,
+          status?.loaded ? status.family : null,
+          Boolean(status?.loaded && isNativeEngineStatus(status)),
+        ),
+        ...tagged.unmatched.map((name) => `LoRA ${name} (not installed)`),
+        ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
+        ...tagged.notes,
+        ...shiftNotApplied(recipe, shiftControl),
+        ...unknownRecipeKeys(recipe),
+      ];
+      if (tiMatch) {
+        const { installed, missing } = tiMatch;
+        const resolved = new Map<string, string | null>([
+          ...installed.map((n): [string, null] => [textualInversionLabel(n), null]),
+          ...missing.map((n): [string, string] => [textualInversionLabel(n), `${textualInversionLabel(n)} (not installed)`]),
+        ]);
+        const kept = notApplied.flatMap((item) => {
+          if (!resolved.has(item)) return [item];
+          const label = resolved.get(item);
+          return label ? [label] : [];
+        });
+        notApplied.splice(0, notApplied.length, ...kept);
+      }
       const baked = Array.isArray(recipe.baked_loras)
         ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
         : [];
@@ -2811,6 +3010,12 @@ export function ImagesPage({
       }
       if (status?.loaded && status.supports_lora === false && settings.loras.length > 0) {
         notApplied.unshift("LoRAs");
+      }
+      if (status?.loaded) {
+        const missed = inpaintOptionsNotApplied(settings, status.supports_inpaint_only_masked === true);
+        notApplied.unshift(...missed);
+        // Named in this toast, so the Only masked effect does not repeat it for this model.
+        if (missed.length > 0) onlyMaskedNotified.current = onlyMaskedKeyOf(status);
       }
       if (status?.supports_negative_prompt === false && settings.negative_prompt && settings.guidance > 0) {
         notApplied.unshift("negative prompt");
@@ -2842,8 +3047,41 @@ export function ImagesPage({
               : "This model or build does not support them."),
         });
       }
+      return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, embeddingsEnabled, shiftControl],
+  );
+  const importSettingsFromFile = useCallback(
+    async (file: File | Uint8Array) => {
+      let recipe = null;
+      try {
+        const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
+        recipe = importedRecipe(readEmbeddedRecipe(bytes));
+      } catch {
+        recipe = null;
+      }
+      if (!recipe) {
+        toast.error("No generation settings found in this image", {
+          description: "Images saved by Unsloth, ComfyUI, or tools that write a parameters block can be loaded.",
+        });
+        return;
+      }
+      await applyImportedRecipe(recipe);
+    },
+    [applyImportedRecipe],
+  );
+  const importSettingsFromText = useCallback(
+    async (text: string): Promise<boolean> => {
+      const recipe = pastedParameters(text);
+      if (!recipe) {
+        toast.error("No generation parameters found in that text", {
+          description: "Paste the prompt, the Negative prompt: line and the Steps: ... line as AUTOMATIC1111, Forge or Civitai copy them.",
+        });
+        return false;
+      }
+      return applyImportedRecipe(recipe);
+    },
+    [applyImportedRecipe],
   );
   // Desktop: Tauri delivers OS drops as paths and suppresses the DOM drop event.
   const importNativePath = useCallback(
@@ -3005,6 +3243,16 @@ export function ImagesPage({
     setAspectOpen(false);
   }, [active]);
 
+  const offerLoadAnywayFor = useCallback(
+    (failure: unknown, code?: string | null): boolean => {
+      const attempt = lastLoadAttempt.current;
+      if (!attempt || !shouldOfferLoadAnyway({ code, failure, overrideSent: attempt.overrideSent })) return false;
+      offerLoadAnyway(failureMessage(failure) || "Failed to load model", attempt.retry);
+      return true;
+    },
+    [offerLoadAnyway],
+  );
+
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
@@ -3059,7 +3307,7 @@ export function ImagesPage({
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         dismissLoadToast();
-        reportLoadFailure(p.error, "Failed to load model");
+        if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the
         // optimistic quant label back.
@@ -3112,7 +3360,7 @@ export function ImagesPage({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -3411,6 +3659,8 @@ export function ImagesPage({
       // unload that can reach the backend first, find no load registered, and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      // An older pick's Load anyway prompt would retry a model this load supersedes.
+      dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
@@ -3470,6 +3720,13 @@ export function ImagesPage({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
+      const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+      const retryPick = pickSeq.current;
+      const retryOversized = retryWhileCurrent(
+        () => retryPick === pickSeq.current && startLoad === loadSeq.current,
+        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+      );
+      lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
         if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
@@ -3500,6 +3757,7 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
+          allow_oversized_load: advanced.allow_oversized_load,
           ...componentFiles,
         });
         const answer = await startRequest;
@@ -3514,7 +3772,7 @@ export function ImagesPage({
         // Engine select from the resident build rather than replay the refused pick on the next Reapply.
         setEngineSeed("");
         dismissLoadToast();
-        reportLoadFailure(err, "Failed to start load");
+        if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
@@ -3542,7 +3800,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   // Set or clear the Transform/Inpaint source image; always drop the painted mask, which is
@@ -3638,6 +3896,9 @@ export function ImagesPage({
     toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
+  useEffect(() => {
+    retryLoadRef.current = handleLoad;
+  }, [handleLoad]);
   handleLoadRef.current = handleLoad;
   // Set when a staged download finished while this page was hidden: both diffusion pages stay
   // mounted and a load evicts whatever holds the GPU. The pick fires on return.
@@ -3813,6 +4074,8 @@ export function ImagesPage({
         // The plan route preflights precision and sizes the file set against the card the load will
         // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
+        // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
+        allow_oversized_load: advanced.allow_oversized_load,
         ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       });
     },
@@ -3832,12 +4095,15 @@ export function ImagesPage({
     ): Promise<boolean> => {
       const downloadOnly =
         downloadSnapshot !== undefined || (!forceLoad && modelSelectionAction === "download");
+      // Read before the first await: a confirmed Load anyway retry sets it only around this call.
+      const oversizedRetry = oversizedLoadOnce.current && !downloadOnly;
       // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
       // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
       // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
       // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
       // and return silently, leaving the selected model neither staged nor loaded.
       const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
+      if (!downloadOnly) dismissLoadAnyway();
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       // Only load intents have an owner; a download-only pick holds no token and answers true.
@@ -3871,6 +4137,8 @@ export function ImagesPage({
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
+      // The retry's override rides the same snapshot, so its plan and its load both carry it.
+      if (oversizedRetry) advanced = { ...advanced, allow_oversized_load: true };
       // Resolve the engine into the snapshot, so the plan and the load it fires cannot read different selects.
       if (!advanced.engine && sendsEngine(opts.kind, opts.filename)) {
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
@@ -3887,6 +4155,7 @@ export function ImagesPage({
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
       // load if the refusal itself threw.
       let incompatible: string | null = null;
+      let incompatibleCode: string | null = null;
       try {
         const plan = await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
         // Only load intents are superseded; accepted downloads keep their own plans.
@@ -3898,6 +4167,7 @@ export function ImagesPage({
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
         }
         incompatible = plan.incompatible_reason ?? null;
+        incompatibleCode = plan.incompatible_code ?? null;
         if (!incompatible && plan.entries.length > 0) {
           if (!downloadOnly) {
             pendingStagedLoad.current = {
@@ -3954,7 +4224,20 @@ export function ImagesPage({
       }
       if (incompatible) {
         pickToast.dismiss(pickToastId);
-        toast.error(incompatible);
+        const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+        if (!downloadOnly && shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
+          const retrySource = source;
+          offerLoadAnyway(incompatible, retryWhileCurrent(() => pick === pickSeq.current, () => {
+            oversizedLoadOnce.current = true;
+            try {
+              void loadOrStageRef.current(repoId, opts, retrySource, undefined, familyOverrideRequired, undefined, true);
+            } finally {
+              oversizedLoadOnce.current = false;
+            }
+          }));
+        } else {
+          toast.error(incompatible);
+        }
         return downloadOnly;
       }
       if (downloadOnly) {
@@ -3963,8 +4246,12 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
   );
+  const loadOrStageRef = useRef(loadOrStage);
+  useEffect(() => {
+    loadOrStageRef.current = loadOrStage;
+  }, [loadOrStage]);
 
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
@@ -3993,7 +4280,8 @@ export function ImagesPage({
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
     pickToast.dismissAll();
-  }, [pickToast]);
+    dismissLoadAnyway();
+  }, [pickToast, dismissLoadAnyway]);
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
@@ -4848,6 +5136,7 @@ export function ImagesPage({
     let condStrength: number | undefined;
     let condUpscale: number | undefined;
     let condFields: ReturnType<typeof conditionedRequestFields> | undefined;
+    let condInpaint: InpaintMaskRequestFields = {};
     try {
       if (isTransform) {
         condInit = initImage ?? undefined;
@@ -4856,6 +5145,10 @@ export function ImagesPage({
         condInit = initImage ?? undefined;
         condMask = maskImage ?? undefined;
         condStrength = strength;
+        condInpaint = inpaintMaskRequestFields(
+          { maskBlur, onlyMasked: inpaintOnlyMasked, padding: inpaintPadding },
+          status?.supports_inpaint_only_masked === true,
+        );
       } else if (isExtend) {
         const built = await buildOutpaint(initImage!, extendSides, extendPct);
         condInit = built.image;
@@ -4988,6 +5281,9 @@ export function ImagesPage({
           galleryCache.hasMore,
           knownIds,
         );
+        // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
+        // would regenerate batch-mates.
+        const runBaseSeed = baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -4998,19 +5294,19 @@ export function ImagesPage({
             height: h,
             steps,
             guidance: effectiveGuidance,
-            // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
-            // would regenerate batch-mates.
-            seed: baseSeed + i * batchSize,
+            seed: runBaseSeed,
             batch_size: batchSize,
             // Transform/Inpaint/Extend send the source image (and mask) with a strength; the backend
             // derives output size from the image.
             init_image: condInit,
             mask_image: condMask,
             strength: condStrength,
+            ...condInpaint,
             upscale: condUpscale,
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
+            ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
@@ -5046,6 +5342,8 @@ export function ImagesPage({
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
+          // The run landed without its records, so Reuse last seed takes the seed it was sent.
+          if (!external) setSessionSeed(runBaseSeed);
           setGenDone(i + 1);
           continue;
         }
@@ -5058,6 +5356,8 @@ export function ImagesPage({
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
+        const runSeed = lastSeedOf(res.images);
+        if (runSeed !== null) setSessionSeed(runSeed);
         // Asked for enhancement and did not get it: say so once, without blocking the result.
         if (enhanceOn && upsamplerCapability.supported) {
           const notice = enhancementNotice(res.images[0]?.prompt_enhancement);
@@ -5104,7 +5404,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5396,7 +5696,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -5657,8 +5957,16 @@ export function ImagesPage({
                   onSave={imagePresets.savePreset}
                   onDelete={imagePresets.deletePreset}
                   onImportFromImage={() => importFileRef.current?.click()}
+                  onPasteParameters={() => setPasteOpen(true)}
                 />
               )}
+              <PasteParametersDialog
+                open={pasteOpen}
+                onOpenChange={setPasteOpen}
+                text={pasteText}
+                onTextChange={setPasteText}
+                onApply={importSettingsFromText}
+              />
             </div>
 
             {workflow === "transform" && (
@@ -5759,6 +6067,43 @@ export function ImagesPage({
                       step={0.05}
                       onChange={setStrength}
                     />
+                    <SliderField
+                      label="Mask blur"
+                      hint="Softens the mask edge by this many pixels so the repainted region blends into the source. 0 keeps the hard edge."
+                      value={maskBlur}
+                      min={0}
+                      max={MASK_BLUR_MAX}
+                      step={1}
+                      onChange={setMaskBlur}
+                    />
+                    {status?.supports_inpaint_only_masked && (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                            Only masked
+                            <InfoHint>
+                              Repaint just the masked area plus padding at full resolution, then paste it back. Sharper small edits on big images; the model sees less of the surroundings.
+                            </InfoHint>
+                          </span>
+                          <Switch
+                            checked={inpaintOnlyMasked}
+                            onCheckedChange={setInpaintOnlyMasked}
+                            aria-label="Only masked"
+                          />
+                        </div>
+                        {inpaintOnlyMasked && (
+                          <SliderField
+                            label="Padding"
+                            hint="Pixels of context kept around the mask when repainting only the masked area."
+                            value={inpaintPadding}
+                            min={0}
+                            max={INPAINT_PADDING_MAX}
+                            step={4}
+                            onChange={setInpaintPadding}
+                          />
+                        )}
+                      </>
+                    )}
                   </>
                 )}
               </>
@@ -6097,6 +6442,14 @@ export function ImagesPage({
                   setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
                 }}
                 onChange={(e) => setPrompt(e.target.value)}
+                onPaste={(e) => {
+                  // A whole AUTOMATIC1111 / Forge / Civitai block fills the form instead of the prompt.
+                  const text = e.clipboardData.getData("text/plain");
+                  if (isGenerationParametersPaste(text)) {
+                    e.preventDefault();
+                    void importSettingsFromText(text);
+                  }
+                }}
               />
             </Field>
             {upsamplerCapability.supported && (
@@ -6142,6 +6495,16 @@ export function ImagesPage({
                 <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
                 </Button>
+              </div>
+            )}
+            {!external && !loraCapable && offersCompiledLoraReload(status) && (
+              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                <span>Speed compiled this model after a few images, so LoRAs are off. Reload it to add LoRAs.</span>
+                {(canReapply || residentReloadTarget(status) !== null) && (
+                  <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
+                    Reload model
+                  </Button>
+                )}
               </div>
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
@@ -6309,7 +6672,7 @@ export function ImagesPage({
                     hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                     value={steps}
                     min={1}
-                    max={50}
+                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
                   />
@@ -6392,6 +6755,12 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
+            <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            <EmbeddingsField
+              family={status?.family}
+              enabled={embeddingsEnabled}
+              onInsert={insertEmbedding}
+            />
             {!external && (
               <>
                 <Field
@@ -6399,11 +6768,40 @@ export function ImagesPage({
                   hint="Leave empty for a fresh random seed each run."
                   className="pt-2"
                 >
-                  <Input
-                    placeholder="Random if empty"
-                    value={seed}
-                    onChange={(e) => setSeed(e.target.value)}
-                  />
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      placeholder="Random if empty"
+                      value={seed}
+                      onChange={(e) => setSeed(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0"
+                      aria-label="Random seed"
+                      title="Random seed each run"
+                      disabled={seed === ""}
+                      onClick={() => setSeed("")}
+                    >
+                      <HugeiconsIcon icon={DiceFaces03Icon} className="size-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0"
+                      aria-label="Reuse last seed"
+                      title={lastSeed === null ? "No image generated yet" : `Reuse last seed (${lastSeed})`}
+                      disabled={lastSeed === null}
+                      onClick={() => {
+                        if (lastSeed !== null) setSeed(String(lastSeed));
+                      }}
+                    >
+                      <Recycle className="size-4" strokeWidth={1.5} />
+                    </Button>
+                  </div>
                 </Field>
 
                 <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -6788,6 +7186,7 @@ export function ImagesPage({
 
       </div>
       )}
+      {loadAnywayDialog}
     </div>
   );
 }

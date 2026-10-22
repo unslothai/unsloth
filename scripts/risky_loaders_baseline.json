@@ -27,6 +27,14 @@
       "reason": "Loads the installed torchao package file it is stubbing around, located via find_spec."
     },
     {
+      "file": "studio/backend/core/export/reap.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "9f96fe82c04e1bd3",
+      "count": 1,
+      "reason": "Loads Unsloth's own installed models/mapper.py (plain data), located via find_spec, to read its 16-bit Hub id table without importing unsloth."
+    },
+    {
       "file": "studio/backend/core/export/worker.py",
       "rule": "trust-remote-code",
       "sink": "assignment",
@@ -249,6 +257,14 @@
       "digest": "ad319be07f7da5ad",
       "count": 1,
       "reason": "The metadata reference is accepted only with the sentence_transformers. prefix, so it can import installed package code only; non-package refs are skipped and the real loader performs the same lookup."
+    },
+    {
+      "file": "studio/backend/core/rag/embeddings.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "d78c0ba207ccee5a",
+      "count": 1,
+      "reason": "Written-out names only: the three sentence_transformers.models module paths in a literal tuple, imported to wrap their import_from_string with the trust gate (#14437)."
     },
     {
       "file": "studio/backend/core/systemone/laya_runtime.py",
@@ -647,8 +663,8 @@
       "rule": "dynamic-import",
       "sink": "import_from_string",
       "digest": "180573f5aeefdb98",
-      "count": 2,
-      "reason": "Gated: classes outside sentence_transformers.* need trust_remote_code; inside it the path must be dotted identifiers resolving to a module class (#12436)."
+      "count": 3,
+      "reason": "Gated: classes outside sentence_transformers.* need trust_remote_code; inside it the path must be dotted identifiers resolving to a module class (#12436). The WordEmbeddings tokenizer_class check imports only after the caller refuses anything outside sentence_transformers.* (#14437)."
     },
     {
       "file": "unsloth/models/sentence_transformer.py",

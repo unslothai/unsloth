@@ -8,6 +8,7 @@ import importlib
 import inspect
 import io
 import json
+import threading
 import os
 import re
 import shutil
@@ -362,6 +363,115 @@ class TestUvSafePathHardening:
 
         assert " " not in value
         assert Path(value).read_text() == "transformers>=4.57.6\n"
+
+
+class TestUvSafePathWindowsNo8dot3:
+    """Windows volumes without 8.3 names (#14487: D:\\Program Files) must still get a space-free path."""
+
+    def _spaced_constraints(self, tmp_path):
+        src = tmp_path / "Program Files" / "constraints.txt"
+        src.parent.mkdir(parents = True)
+        src.write_text("idna<4\n")
+        return src
+
+    def test_no_short_name_copies_to_a_space_free_path(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+        assert any(out.startswith(d) for d in uvps._UV_SAFE_PATH_TMPDIRS)
+
+    def test_resolving_short_name_is_used_without_a_copy(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: "C:\\PROGRA~1\\constraints.txt")
+        before = list(uvps._UV_SAFE_PATH_TMPDIRS)
+
+        assert uvps.uv_safe_path(str(src)) == "C:\\PROGRA~1\\constraints.txt"
+        assert uvps._UV_SAFE_PATH_TMPDIRS == before
+
+    def test_spaced_temp_without_short_name_keeps_the_original(self, tmp_path, monkeypatch):
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        spaced_tmp = tmp_path / "First Last" / "Temp"
+        spaced_tmp.mkdir(parents = True)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+        monkeypatch.setattr(uvps.tempfile, "mkdtemp", lambda *a, **k: str(spaced_tmp))
+
+        assert uvps.uv_safe_path(str(src)) == str(src)
+
+    def test_uv_accepts_the_returned_constraint_path(self, tmp_path, monkeypatch):
+        """End to end against the real uv. uv < 0.13 cuts a spaced -c path at the space; 0.13 reads it."""
+        import shutil
+        import subprocess
+        import sys
+
+        from backend.utils import uv_path_safety as uvps
+
+        if shutil.which("uv") is None:
+            pytest.skip("uv not available")
+        src = self._spaced_constraints(tmp_path)
+        monkeypatch.setattr(uvps, "IS_WINDOWS", True)
+        monkeypatch.setattr(uvps, "_windows_short_path", lambda s: None, raising = False)
+
+        def dry_run(constraint):
+            return subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--dry-run",
+                    "--offline",
+                    "--python",
+                    sys.executable,
+                    "-c",
+                    constraint,
+                    "pytest",  # installed wherever this runs, so the offline plan resolves
+                ],
+                capture_output = True,
+                text = True,
+            )
+
+        safe = uvps.uv_safe_path(str(src))
+        spaced = dry_run(str(src))
+        if spaced.returncode != 0:
+            assert "File not found" in spaced.stderr, spaced.stderr
+            assert str(src).split(" ")[0] in spaced.stderr, spaced.stderr
+            if " " in uvps.tempfile.gettempdir():
+                pytest.skip("temp dir has a space and no short name: nothing uv < 0.13 can read")
+            assert " " not in safe
+        accepted = dry_run(safe)
+        assert accepted.returncode == 0, accepted.stderr
+
+    @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
+    def test_real_directory_without_a_short_name(self, tmp_path):
+        """A real spaced directory whose 8.3 alias was stripped, as on a D: with 8.3 creation off."""
+        import subprocess
+
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        if uvps._windows_short_path(str(src)) is not None:
+            # Needs admin (SeRestorePrivilege), which CI runners have.
+            subprocess.run(
+                ["fsutil", "file", "setshortname", str(src.parent), ""], capture_output = True
+            )
+        if uvps._windows_short_path(str(src)) is not None:
+            pytest.skip("could not remove the 8.3 name on this volume")
+
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
 
 
 class TestPinnedIndexClearsUvEnv:
@@ -1106,6 +1216,51 @@ class TestProgressLineNotes:
         assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
         assert any(ln.strip() == msg for ln in out.split("\n")), out
 
+    def _heartbeat(self, *, tty: bool, beats: int) -> str:
+        seen = threading.Event()
+        count = [0]
+        real_draw, real_note = ips._draw_progress, ips._note
+
+        def counted(real):
+            def wrapper(*args, **kwargs):
+                real(*args, **kwargs)
+                if threading.current_thread().name == "flash-attn-heartbeat":
+                    count[0] += 1
+                    if count[0] >= beats:
+                        seen.set()
+
+            return wrapper
+
+        def emit():
+            ips._progress("flash-attn")
+            with ips._install_heartbeat("flash-attn"):
+                assert seen.wait(10), "the heartbeat never fired"
+
+        with (
+            mock.patch.object(ips, "_stdout_is_tty", return_value = tty),
+            mock.patch.object(ips, "_HEARTBEAT_TICK_SECONDS", 0.01),
+            mock.patch.object(ips, "_HEARTBEAT_NOTE_SECONDS", 0.01),
+            mock.patch.object(ips, "_draw_progress", counted(real_draw)),
+            mock.patch.object(ips, "_note", counted(real_note)),
+        ):
+            return self._render(emit)
+
+    def test_captured_install_gets_a_still_installing_note(self):
+        out = self._heartbeat(tty = False, beats = 2)
+        notes = [ln.strip() for ln in out.split("\n") if "still installing" in ln]
+        assert notes[:2] == ["still installing flash-attn (0 min)"] * 2, out
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert all("still installing" not in ln for ln in bar_lines), bar_lines
+
+    def test_terminal_install_redraws_elapsed_time_on_the_bar_line(self):
+        out = self._heartbeat(tty = True, beats = 2)
+        assert "\n" not in out, "the heartbeat must stay on the bar line"
+        frames = out.split("\r")[1:]
+        assert all(" 5/14  flash-attn" in frame for frame in frames), frames
+        assert "flash-attn 0:00" in frames[1]
+        assert frames[-1].rstrip().endswith("flash-attn")
+        assert len(frames[-1]) >= max(len(frame) for frame in frames[1:-1])
+
     def test_note_aligns_under_the_step_value_column(self):
         out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
         note_line = next(ln for ln in out.split("\n") if ln.strip() == "hello")
@@ -1188,7 +1343,7 @@ class TestProgressLineNotes:
         allowed = [
             (n.lineno, n.end_lineno)
             for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+            if isinstance(n, ast.FunctionDef) and n.name in {"_draw_progress", "_end_progress_line"}
         ]
         offenders = [
             n.lineno
@@ -1203,7 +1358,7 @@ class TestProgressLineNotes:
         ]
         assert not offenders, (
             f"install_python_stack.py:{offenders} write to sys.stdout directly; "
-            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+            "only _draw_progress()/_end_progress_line() may, everything else uses _safe_print()"
         )
 
     def test_no_message_starts_with_a_newline(self):

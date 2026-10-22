@@ -108,7 +108,7 @@ def test_multi_digit_releases_are_refused_not_routed_to_ltx2(name, version):
 
     assert unsupported_ltx_version(name) == version
     assert ltx_family_by_name(name) is None
-    with pytest.raises(ValueError, match = f"LTX-{version}, which Studio does not support yet"):
+    with pytest.raises(ValueError, match = f"LTX-{version}, which Unsloth does not support yet"):
         _detect_load_family(name, None, None)
 
 
@@ -150,7 +150,7 @@ def test_later_releases_are_refused_by_name():
     from core.inference.video import _detect_load_family
 
     assert unsupported_ltx_version("ltx-2.6-test") == "2.6"
-    with pytest.raises(ValueError, match = "LTX-2.6, which Studio does not support"):
+    with pytest.raises(ValueError, match = "LTX-2.6, which Unsloth does not support"):
         _detect_load_family("someone/LTX-2.6-GGUF", "model.gguf", None)
     with pytest.raises(ValueError, match = "LTX-2.6"):
         assert_supported_ltx_version("/models/x", "ltx-2.6-22b.safetensors")
