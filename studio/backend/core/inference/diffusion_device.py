@@ -146,9 +146,9 @@ def install_vae_sync(
     *,
     logger: Any = None,
 ) -> bool:
-    """Synchronise Metal after every VAE decoder call, bounding the memory a decode holds.
+    """Synchronise Metal after every VAE decoder and encoder call to bound the memory they hold.
 
-    Tiled and framewise decodes issue one decoder call per tile or latent frame and never force a
+    Tiled and framewise decodes / encodes issue one call per tile or latent frame and never force a
     commit, and Metal cannot reuse a buffer until the work holding it completes, so intermediates
     accumulate (25 GB for a 1024x1024 Qwen-Image decode, 44 GB for 17 Wan frames) until the OS
     swaps or kills the process. ``empty_cache`` cannot return them and torch's watermarks only trip
@@ -157,8 +157,13 @@ def install_vae_sync(
     """
     if target.device != "mps":
         return False
-    decoder = getattr(getattr(pipe, "vae", None), "decoder", None)
-    if not callable(getattr(decoder, "register_forward_hook", None)):
+    vae = getattr(pipe, "vae", None)
+    modules = [
+        module
+        for module in (getattr(vae, "decoder", None), getattr(vae, "encoder", None))
+        if callable(getattr(module, "register_forward_hook", None))
+    ]
+    if not modules:
         return False
     import torch
 
@@ -168,9 +173,10 @@ def install_vae_sync(
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
-    decoder.register_forward_hook(_sync)
+    for module in modules:
+        module.register_forward_hook(_sync)
     if logger is not None:
-        logger.info("diffusion.vae_sync: VAE decode synchronises after every decoder call")
+        logger.info("diffusion.vae_sync: VAE synchronises after every decoder / encoder call")
     return True
 
 

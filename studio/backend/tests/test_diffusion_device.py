@@ -557,8 +557,8 @@ class _FakeDecoder:
         return outputs
 
 
-def _pipe_with(decoder) -> types.SimpleNamespace:
-    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder))
+def _pipe_with(decoder, encoder = None) -> types.SimpleNamespace:
+    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder, encoder = encoder))
 
 
 def _mps_torch() -> types.ModuleType:
@@ -589,6 +589,22 @@ def test_vae_sync_runs_after_every_decoder_call_and_keeps_its_output(monkeypatch
     assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(3) == ["out0", "out1", "out2"]
     assert torch.syncs == 3
+
+
+def test_vae_sync_runs_after_every_encoder_call_too(monkeypatch):
+    # img2img / edit / i2v encodes tile the same way and grow the same way.
+    torch = _mps_torch()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder, encoder = _FakeDecoder(), _FakeDecoder()
+    assert dd.install_vae_sync(_pipe_with(decoder, encoder), _target("mps")) is True
+    assert encoder.decode(2) == ["out0", "out1"]
+    assert torch.syncs == 2
+    decoder.decode(1)
+    assert torch.syncs == 3
+    lone = _FakeDecoder()
+    assert dd.install_vae_sync(_pipe_with(object(), lone), _target("mps")) is True
+    lone.decode(1)
+    assert torch.syncs == 4
 
 
 @pytest.mark.parametrize("pipe", [types.SimpleNamespace(), _pipe_with(None), _pipe_with(object())])
