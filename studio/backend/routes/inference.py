@@ -51456,6 +51456,7 @@ async def diffusion_download_plan(
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -51476,6 +51477,15 @@ async def diffusion_download_plan(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
+        # A Hub repo named for no family (an SDXL fine-tune) says what it is in its own model_index.json or checkpoint
+        # header; fetch that small evidence first so the network-free validation below can read it.
+        await asyncio.to_thread(
+            prefetch_for_pick,
+            request.model_path,
+            request.gguf_filename,
+            request.family_override,
+            request.hf_token,
+        )
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
@@ -51757,6 +51767,7 @@ async def load_diffusion_model_gated(
         selected_card_identity,
     )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -51777,6 +51788,17 @@ async def load_diffusion_model_gated(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
+        # A Hub repo named for no family (an SDXL fine-tune) says what it is in its own model_index.json or checkpoint
+        # header; fetch that small evidence first so the network-free validation below can read it.
+        await asyncio.to_thread(
+            prefetch_for_pick,
+            request.model_path,
+            request.gguf_filename,
+            request.family_override,
+            request.hf_token,
+            # An automatic (API auto-switch) load is cache-only, like the rest of this path.
+            user_initiated,
+        )
         # Validate cheaply BEFORE touching the GPU: an unloadable pick must not evict a working chat model and then 400. The family also drives engine selection.
         fam = await asyncio.to_thread(
             backend.validate_load_request,
