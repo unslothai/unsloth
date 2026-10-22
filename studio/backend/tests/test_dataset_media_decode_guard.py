@@ -83,7 +83,13 @@ def test_managed_image_cell_naming_a_host_file_is_refused(outside_png):
 
 def test_managed_chained_cell_whose_first_hop_reads_a_host_file_is_refused(outside_png):
     # fsspec opens the first hop of `file://x::hf://...`; only archive hops read through.
-    path = f"file://{os.path.relpath(outside_png)}::hf://datasets/a/b@main/c.png"
+    # Windows: tmp_path (C:) and the checkout (D:) can sit on different drives, so relpath
+    # raises; the drive-letter form `file://C:/...::hf://...` exercises the same guard.
+    try:
+        first_hop = os.path.relpath(outside_png)
+    except ValueError:
+        first_hop = outside_png.as_posix()
+    path = f"file://{first_hop}::hf://datasets/a/b@main/c.png"
     name = _upload([{"image": {"bytes": None, "path": path}, "text": "a cat"}])
     with pytest.raises(HTTPException) as exc:
         _check(name)
