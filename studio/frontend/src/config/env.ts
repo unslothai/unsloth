@@ -237,9 +237,14 @@ export async function fetchDeviceType(options?: {
           : keepPlatform
             ? previous.fileManager
             : undefined;
-      // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } =
-        resolveVerdict(data, previous);
+      // A still-provisional reply keeps the stored verdict: see resolveVerdict. A deferred one
+      // settles it, so it must not keep a replaced backend's reason as this one's.
+      const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } = resolveVerdict(
+        data,
+        previous.verdictStale && isDetectionDeferred(data)
+          ? { chatOnly: previous.chatOnly, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null }
+          : previous,
+      );
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.

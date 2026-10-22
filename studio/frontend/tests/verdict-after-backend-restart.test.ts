@@ -85,6 +85,22 @@ test("a replaced backend's verdict is unmeasured until the new one answers", asy
   assert.equal(s.chatOnlyReason, null);
 });
 
+test("a replaced backend under deferred detection does not inherit the old reason", async () => {
+  // UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1: the new process detects nothing until first use, and a
+  // deferred reply counts as settled. Keeping no_torch there re-offered the install just run.
+  reply = CHAT_ONLY;
+  await fetchDeviceType({ force: true });
+  assert.equal(usePlatformStore.getState().chatOnlyReason, "no_torch");
+  forgetMeasuredVerdict();
+  reply = { ...DETECTING, hardware_detection_deferred: true };
+  await fetchDeviceType({ force: true });
+  const s = usePlatformStore.getState();
+  assert.equal(s.capabilitiesUnknown(), false);
+  assert.equal(s.isChatOnly(), true);
+  assert.equal(s.chatOnlyReason, null);
+  assert.equal(s.deviceType, "windows");
+});
+
 test("only a backend that already answered marks the verdict stale", async () => {
   // First launch has nothing stored to distrust; a re-run of the effect while the same backend
   // stays up (auth landing later) must not either.
