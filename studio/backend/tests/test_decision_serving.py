@@ -729,12 +729,41 @@ def test_a_decision_waits_for_a_gpu_load_in_flight_after_the_eviction(
     assert clef.agents[0].closed
     monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: loading == "chat")
     monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: owner == loading)
+    if loading != "chat":
+        monkeypatch.setitem(gpu_arbiter._residents, loading, None)
     response = _post(client)
     assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
     assert len(clef.agents) == 1
     monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
     monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: False)
     assert _post(client).status_code == 200 and len(clef.agents) == 2
+
+
+def test_a_cpu_media_load_or_a_settled_gpu_leaves_a_decision_load_alone(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: True)
+    for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO):
+        monkeypatch.delitem(gpu_arbiter._residents, owner, raising = False)
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
+def test_a_decision_load_waits_while_the_arbiter_is_mid_acquire(home, client, clef, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    with gpu_arbiter._lock:
+        response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert not clef.agents and laya_runtime._loading is None
+    assert _post(client).status_code == 200
 
 
 def test_a_resident_worker_answers_during_a_gpu_load(home, client, clef, monkeypatch):

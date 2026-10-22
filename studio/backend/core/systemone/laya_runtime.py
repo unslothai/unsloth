@@ -586,13 +586,19 @@ def _gpu_load_in_flight() -> bool:
 
     if chat_load_in_flight():
         return True
+    # Held by the acquire that may have just ended the idle worker.
+    if not gpu_arbiter._lock.acquire(blocking = False):
+        return True
     try:
+        # A CPU-only image or video load releases its GPU claim, so it does not count.
         return any(
-            gpu_arbiter._media_loading(owner)
+            owner in gpu_arbiter._residents and gpu_arbiter._media_loading(owner)
             for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO)
         )
     except Exception:
         return False
+    finally:
+        gpu_arbiter._lock.release()
 
 
 def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
@@ -1606,15 +1612,6 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
     _clef_blocked_by_training(checkpoint)
     misplaced = _misplaced()
     with _state_lock:
-        resident = _loaded == checkpoint and _agent is not None and not misplaced
-    if not resident and _torch_gpu(checkpoint) and _gpu_load_in_flight():
-        raise Unavailable(
-            409,
-            "gpu_busy",
-            f"Another model is loading on the GPU; {checkpoint.name} loads once it has.",
-            retry_after = 1,
-        )
-    with _state_lock:
         if _loaded == checkpoint and _agent is not None and not misplaced:
             return None
         if _wants_gpu(checkpoint):
@@ -1640,6 +1637,16 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
             raise Unavailable(503, "model_loading", f"{checkpoint.name} is loading", retry_after = 5)
         # Claimed before the registry probe, so a Hub download admitted from now on sees this load.
         _loading = checkpoint
+    # Checked after the claim, so an eviction that lands before it is still seen.
+    if _torch_gpu(checkpoint) and _gpu_load_in_flight():
+        with _state_lock:
+            _loading = None
+        raise Unavailable(
+            409,
+            "gpu_busy",
+            f"Another model is loading on the GPU; {checkpoint.name} loads once it has.",
+            retry_after = 1,
+        )
     # Outside _state_lock: the registry calls loading_repo_ids() while holding its own lock.
     if _hub_download_active(checkpoint):
         with _state_lock:
