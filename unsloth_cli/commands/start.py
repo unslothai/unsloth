@@ -3628,10 +3628,13 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
                 entries.append(source.name)
             except OSError:
                 if source.is_file():
-                    # Hard link, not copy: Codex rewrites auth.json in place, and a copy strands a rotated refresh token.
-                    try:
-                        os.link(source, target)
-                    except OSError:
+                    # Only auth.json: Codex rewrites it in place, but a SQLite db under a second name keeps its own WAL and corrupts (sqlite.org/howtocorrupt.html 2.6).
+                    linked = False
+                    if source.name == "auth.json":
+                        with contextlib.suppress(OSError):
+                            os.link(source, target)
+                            linked = True
+                    if not linked:
                         shutil.copy2(source, target)
                     entries.append(source.name)
                 elif source.is_dir():
