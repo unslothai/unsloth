@@ -5070,6 +5070,44 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
         "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
     )
+    prompt_weighting: Optional[bool] = Field(
+        None,
+        description = "AUTOMATIC1111 prompt syntax on SDXL: (word:1.2), (word), [word], \\( escapes and "
+        "BREAK. Omitted: on. A prompt without that syntax that fits in 75 CLIP tokens renders exactly "
+        "as before; a longer one is encoded in 75-token chunks instead of truncated. false reads "
+        "brackets literally (long prompts still chunk). "
+        "true is refused for a model without the control.",
+    )
+    clip_skip: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 12,
+        description = "CLIP skip in AUTOMATIC1111 numbering: 1 = the model's own layer. On SDXL 1 and 2 "
+        "both read the penultimate layer the model already uses (as in A1111 and Forge), 3 reads one "
+        "layer earlier. Values above 1 are refused for models without the control.",
+    )
+    cfg_rescale: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "CFG rescale (diffusers guidance_rescale, arXiv 2305.08891): 0 = off. Mostly for "
+        "v-prediction / zero-terminal-SNR checkpoints, where 0.7 is the paper's value. Above 0 is "
+        "refused for models without the control.",
+    )
+    variation_seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**32 - 1,
+        description = "Variation seed (AUTOMATIC1111 subseed): the seed's noise is slerped toward this "
+        "seed's noise by variation_strength. Omitted with a strength: random. Text-to-image only.",
+    )
+    variation_strength: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "How far toward the variation seed's noise: 0 = off, 1 = the variation seed alone. "
+        "With a batch, every image keeps the seed and image i uses variation_seed + i.",
+    )
     shift: Optional[float] = Field(
         None,
         gt = 0.0,
@@ -5213,6 +5251,10 @@ class GalleryImage(BaseModel):
     )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
+    engine: Optional[str] = Field(
+        None,
+        description = "Engine that ran it (diffusers, sd_cpp or mlx); the same seed draws different noise on each",
+    )
     model_kind: Optional[str] = Field(
         None, description = "How the model was loaded: gguf, single_file or pipeline"
     )
@@ -5303,6 +5345,21 @@ class GalleryImage(BaseModel):
     )
     schedule_type: Optional[str] = Field(
         None, description = "Schedule type the sampler ran with (resolved); null = the config's"
+    )
+    prompt_weighting: Optional[bool] = Field(
+        None,
+        description = "True when AUTOMATIC1111 weight syntax was applied; false when the request turned "
+        "it off (literal prompt); null = nothing to weight",
+    )
+    clip_skip: Optional[int] = Field(
+        None, description = "CLIP skip (AUTOMATIC1111 numbering) above 1; null = the model's layer"
+    )
+    cfg_rescale: Optional[float] = Field(None, description = "CFG rescale; null = off")
+    variation_seed: Optional[int] = Field(
+        None, description = "Variation seed THIS image used; null = no variation"
+    )
+    variation_strength: Optional[float] = Field(
+        None, description = "Variation strength; null = no variation"
     )
     shift: Optional[float] = Field(
         None, description = "Requested static flow shift; null = the model's"
@@ -5688,6 +5745,11 @@ class DiffusionStatusResponse(BaseModel):
     transformer_cache: Optional[str] = Field(
         None, description = "Step cache engaged: fbcache | static | null"
     )
+    baked_loras: list[str] = Field(
+        default_factory = list,
+        description = "Adapter ids baked into the transformer at load time, as GalleryImage.baked_loras "
+        "records them; empty when the load baked none",
+    )
     transformer_cache_stats: Optional[dict] = Field(
         None,
         description = "Static step skip only: mode, schedule and the last generation's "
@@ -5795,6 +5857,13 @@ class DiffusionStatusResponse(BaseModel):
         description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
         "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
         "models, the native and MLX engines, or nothing loaded.",
+    )
+    sd_controls: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "SDXL prompt weighting, CLIP skip, CFG rescale and variation seed: "
+        "{prompt_weighting, clip_skip {min, max, default, same_as_default_through}, cfg_rescale "
+        "{min, max, default, recommended}, variation_seed, vary_strength, prediction_type}. Null when "
+        "the loaded model has none of them (every non-SDXL family, the native and MLX engines).",
     )
     shift_control: Optional[Dict[str, Any]] = Field(
         None,

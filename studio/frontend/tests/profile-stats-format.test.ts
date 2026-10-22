@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   type ActivityGridColumn,
   activitySummaryForMode,
+  buildActivityColumns,
   formatCompactNumber,
   formatDayCount,
   formatDuration,
@@ -14,8 +15,11 @@ import {
   formatMilliseconds,
   formatProfileCount,
   heatLevel,
+  heatThresholds,
+  monthLabelColumns,
   parseDayKey,
   seriesForMode,
+  toLocalDayKey,
   weekChartPoints,
   windowBaseline,
 } from "../src/features/profile/utils/stats-format.ts";
@@ -172,14 +176,66 @@ test("profile counts follow the selected locale's plural rules", () => {
   assert.equal(formatProfileCount(1200, "token", "ar", "1.2K"), "1.2K توكن");
 });
 
-test("heat levels are relative to the busiest day", () => {
-  assert.equal(heatLevel(0, 1000), 0);
-  assert.equal(heatLevel(50, 1000), 1);
-  assert.equal(heatLevel(200, 1000), 2);
-  assert.equal(heatLevel(400, 1000), 3);
-  assert.equal(heatLevel(1000, 1000), 4);
-  // A single active day with no other history still shows up.
-  assert.equal(heatLevel(5, 0), 1);
+test("heat levels split the active days into quartiles", () => {
+  const days = [0, 0, 100, 200, 300, 400, 500, 600, 700, 50_000];
+  const thresholds = heatThresholds(days);
+  assert.deepEqual(thresholds, [300, 500, 700]);
+  assert.equal(heatLevel(0, thresholds), 0);
+  assert.equal(heatLevel(100, thresholds), 1);
+  assert.equal(heatLevel(400, thresholds), 2);
+  assert.equal(heatLevel(600, thresholds), 3);
+  // One outlier no longer drops every other day to the faintest shade.
+  assert.equal(heatLevel(50_000, thresholds), 4);
+  assert.notEqual(heatLevel(700, thresholds), 1);
+});
+
+test("a lone active day, or days all alike, take the strongest shade", () => {
+  assert.equal(heatLevel(5, heatThresholds([0, 5, 0])), 4);
+  assert.equal(heatLevel(80, heatThresholds([80, 80, 80])), 4);
+  assert.deepEqual(heatThresholds([0, 0]), [0, 0, 0]);
+  // Coinciding quartiles promote only the days at them, not a smaller day below.
+  const repeated = heatThresholds([10, 100, 100, 100, 100, 100, 100, 100]);
+  assert.equal(heatLevel(100, repeated), 4);
+  assert.equal(heatLevel(10, repeated), 1);
+});
+
+test("the grid ends on today's week and pads only real gaps", () => {
+  // Wed 2026-10-07 .. Wed 2026-10-21: three Monday-started weeks.
+  const daily = Array.from({ length: 15 }, (_, index) => ({
+    date: `2026-10-${String(7 + index).padStart(2, "0")}`,
+    tokens: index,
+  }));
+  const grid = buildActivityColumns(daily, seriesForMode(daily, "daily"), 10, "daily");
+  assert.equal(grid.length, 3);
+  assert.ok(grid.every((column) => column.length === 7));
+  // Monday and Tuesday before the first day, Thursday to Sunday after today.
+  assert.deepEqual(grid[0]?.slice(0, 2).map((cell) => cell.day), [null, null]);
+  assert.equal(grid[2]?.[2]?.day?.date, "2026-10-21");
+  assert.deepEqual(grid[2]?.slice(3).map((cell) => cell.day), [null, null, null, null]);
+  // Narrower than the series: the oldest week falls off, today stays.
+  const narrow = buildActivityColumns(daily, seriesForMode(daily, "daily"), 2, "daily");
+  assert.equal(narrow.length, 2);
+  assert.equal(narrow[0]?.[0]?.day?.date, "2026-10-12");
+});
+
+test("every month whose 1st is shown gets a label, and a leading sliver yields", () => {
+  const days = (from: string, count: number) => {
+    const start = parseDayKey(from);
+    return Array.from({ length: count }, (_, index) => {
+      const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index);
+      return { date: toLocalDayKey(date), tokens: 0 };
+    });
+  };
+  // Starts Mon 2025-12-22: Dec is a sliver two columns before January.
+  const winter = days("2025-12-22", 60);
+  const grid = buildActivityColumns(winter, seriesForMode(winter, "daily"), 20, "daily");
+  const labels = monthLabelColumns(grid).map((label) => label.date.slice(0, 7));
+  assert.deepEqual(labels, ["2026-01", "2026-02"]);
+  // A sliver with room before the next month keeps its label.
+  const autumn = days("2025-09-08", 60);
+  const autumnGrid = buildActivityColumns(autumn, seriesForMode(autumn, "daily"), 20, "daily");
+  assert.equal(monthLabelColumns(autumnGrid)[0]?.date, "2025-09-08");
+  assert.equal(monthLabelColumns(autumnGrid)[1]?.date, "2025-10-01");
 });
 
 test("day keys parse as local dates, not UTC", () => {

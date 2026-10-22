@@ -1090,6 +1090,10 @@ export const fr = {
       alternateSlot: "Raccourci alternatif",
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
+      metaUnsupported: "La touche Windows ne peut pas être utilisée dans les raccourcis.",
+      altGraphUnsupported: "Les combinaisons AltGr ne peuvent pas servir de raccourcis.",
+      desktopOnly: "Application de bureau uniquement",
+      builtInKey: "Intégré : {key}",
       actions: {
         findInPage: {
           label: "Rechercher dans la page",
@@ -1290,6 +1294,10 @@ export const fr = {
         steerMessage: {
           label: "Réorienter la réponse",
           description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
+        stopGeneration: {
+          label: "Arrêter la génération",
+          description: "Arrêter la réponse en cours",
         },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
@@ -2093,9 +2101,9 @@ export const fr = {
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
         activityDescription: {
-          daily: "{total} au cours des {weeks} dernières",
-          weekly: "Semaine record {total} · {weeks} dernières",
-          cumulative: "{total} cumulés sur les {weeks} dernières",
+          daily: "{total} depuis le {since}",
+          weekly: "Semaine la plus active {total} · depuis le {since}",
+          cumulative: "{total} au total depuis le {since}",
         },
         mode: {
           daily: "Quotidienne",
@@ -2104,8 +2112,9 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
-        chartToggle: "Graphique",
-        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
+        emptyDayTooltip: "{date} · Aucune activité",
+        apiRequests: "{count} via l'API",
+        cumulativeTooltip: "Jusqu'à la semaine du {date} · {tokens} au total",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",

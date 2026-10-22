@@ -359,14 +359,22 @@ export const BUDGET = {
   // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
   // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
   // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
+  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at cb2590f39). The GRPO prompt preview reading
+  // budget, which keeps main's margin (re-added on top of main at 356721b31). The GRPO prompt preview reading
   // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
-  transferBytes: 2_081_421,
-  rawBytes: 6_909_755,
+  transferBytes: 2_084_289,
+  rawBytes: 6_915_201,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

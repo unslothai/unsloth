@@ -1083,6 +1083,10 @@ export const zhCN = {
       alternateSlot: "备用快捷键",
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
+      metaUnsupported: "Windows 键不能用于快捷键。",
+      altGraphUnsupported: "AltGr 组合不能用作快捷键。",
+      desktopOnly: "仅限桌面应用",
+      builtInKey: "内置：{key}",
       actions: {
         findInPage: {
           label: "在页面中查找",
@@ -1283,6 +1287,10 @@ export const zhCN = {
         steerMessage: {
           label: "引导回复",
           description: "停止当前回复并接着发送草稿",
+        },
+        stopGeneration: {
+          label: "停止生成",
+          description: "停止正在生成的回复",
         },
         cycleReasoningEffort: {
           label: "循环切换推理强度",
@@ -2041,9 +2049,9 @@ export const zhCN = {
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
         activityDescription: {
-          daily: "过去{weeks}共{total}",
-          weekly: "峰值周 {total} · 最近{weeks}",
-          cumulative: "过去{weeks}累计{total}",
+          daily: "自 {since} 起共 {total}",
+          weekly: "最活跃的一周 {total} · 自 {since} 起",
+          cumulative: "自 {since} 起累计 {total}",
         },
         mode: {
           daily: "按天",
@@ -2052,8 +2060,9 @@ export const zhCN = {
         },
         cellTooltip: "{date} · {tokens}，{messages}",
         weekTooltip: "{date} 当周 · {tokens}",
-        chartToggle: "图表",
-        chartToggleHint: "以带坐标轴标签的图表显示按周和累计",
+        emptyDayTooltip: "{date} · 无活动",
+        apiRequests: "通过 API {count} 次",
+        cumulativeTooltip: "截至 {date} 那一周 · 累计 {tokens}",
         less: "较少",
         more: "较多",
         insightsTitle: "活跃度分析",
