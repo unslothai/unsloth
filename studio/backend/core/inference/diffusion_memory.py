@@ -2576,9 +2576,8 @@ _MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
     "qwen-image": (4248, 40900),
 }
 _MEASURED_DENSE_SPEED_MODES = ("off",)
-# Dense fp16 / fp32 denoisers (pre-Ampere cards: T4, V100, Turing) on the default and max tiers. Without this they had
-# no seed at all and placed from the flat 8 GiB per megapixel estimate, while the dense table above and the per-phase
-# table below already hold the same family's measured peaks. "0" restores the flat estimate.
+# Dense fp16 / fp32 denoisers (pre-Ampere cards: T4, V100, Turing) on the default and max tiers, seeded from the
+# family's measured peaks instead of the flat 8 GiB per megapixel estimate. "0" restores the flat estimate.
 MEASURED_ACTIVATION_DENSE_TIERS_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE_TIERS"
 
 

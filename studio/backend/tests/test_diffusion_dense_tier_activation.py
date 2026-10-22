@@ -150,7 +150,7 @@ def test_larger_dit_bf16_and_kill_switch_keep_the_flat_plan(monkeypatch):
     # an unmeasured family, with or without phase evidence
     assert m("sdxl", "default", dense_transformer_mib = 4900, phase_seeds = True) is None
     plan = _flat_plan(KLEIN_FLAT, "flux.2-klein")
-    # bf16 (every Ampere+ card): no static seed, learned peaks only, exactly as before
+    # bf16 (every Ampere+ card): no static seed, learned peaks only
     assert (
         _refine(_pipe(monkeypatch, KLEIN_LOADED, "bfloat16"), plan, "flux.2-klein", "default")
         is plan
@@ -228,7 +228,7 @@ def test_unpriced_reference_request_sizes_from_the_flat_estimate(monkeypatch):
     assert extra(pipe, width = 1024, height = 1024, unpriced_references = True) == flat - 3072
     # text-to-image keeps the seed
     assert extra(pipe, width = 1024, height = 1024) == 0
-    # the eager dense table is main's behaviour, untouched
+    # the eager dense table is unaffected
     eager = types.SimpleNamespace(
         _unsloth_measured_reserve = (3072, "flux.2-klein", "off", 7393, 2),
         _unsloth_dense_tier_seeds = True,
