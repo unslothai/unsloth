@@ -638,6 +638,7 @@ class BlockGraph:
             return None
         except Exception as exc:  # noqa: BLE001 - a block that cannot record runs its compute for the load's life
             self._poison(exc)
+            _flush_after_failed_capture()
             return None
         entry.slots = (slot, out_slot)
         self.shared.hold(entry.slots)
@@ -1069,6 +1070,7 @@ class SegmentGraph:
             self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1
             return None
         except Exception as exc:  # noqa: BLE001 - this layout stays per block for the load's life
+            _flush_after_failed_capture()
             self.capture_error = {"type": type(exc).__name__, "msg": str(exc)[:4000]}
             self.refused.add(full)
             self.stats["segment_fallbacks"] += 1
@@ -1413,6 +1415,16 @@ class BlockGraphSet:
         return int(sum(st.pool_bytes + st.static_bytes for st in self._all_shared()) + slots)
 
 
+def _flush_after_failed_capture() -> None:
+    """A failed capture retired its pool (retire_failed_capture): what no live graph holds goes back to the device now,
+    not at some later flush."""
+    try:
+        from .diffusion_cuda_graph import flush_retired_pools
+        flush_retired_pools()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _release_cached() -> None:
     try:
         import gc
@@ -1421,8 +1433,6 @@ def _release_cached() -> None:
         torch = _torch()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            from .diffusion_cuda_graph import note_pools_flushed
-            note_pools_flushed()
     except Exception:  # noqa: BLE001
         pass
 

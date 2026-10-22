@@ -165,6 +165,46 @@ def test_release_and_restore_records_again_and_stays_exact():
     assert handles[0].stats["invalidations"] >= 1 and handles[0].stats["captures"] >= 2
 
 
+def test_an_offloaded_re_record_hands_the_dropped_pool_back_first(monkeypatch):
+    """Each new prompt encode moves the resident groups (release, the encoder takes the room, re-pin elsewhere), so
+    the step records again. The encode release no longer flushes the allocator; the re-record itself hands the
+    dropped recording's pool back before it records, so the reserved memory stays flat instead of growing by a pool
+    per prompt, and every output stays exact."""
+    _cuda()
+    seeds = list(range(6))
+    want = _eager_reference(3, seeds)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 3)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    flushes = {"n": 0}
+    real = getattr(cg, "flush_retired_pools", None)
+
+    def counted():
+        flushes["n"] += 1
+        return real() if real is not None else True
+
+    monkeypatch.setattr(cg, "flush_retired_pools", counted, raising = False)
+    got = _run(net, seeds[:2])
+    reserved = []
+    for cycle in range(4):
+        restore = dm.release_resident_groups(pipe, 10_000, None)
+        hold = torch.empty(
+            16 << 20, dtype = torch.uint8, device = "cuda"
+        )  # the encoder takes the freed room
+        restore()
+        del hold
+        got += _run(net, seeds[2 + cycle : 3 + cycle])
+        reserved.append(torch.cuda.memory_reserved())
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    records = handles[0].stats["captures"]
+    assert records >= 2  # the step recorded again after the moves
+    assert flushes["n"] >= records - 1
+    assert reserved[-1] <= reserved[0]
+    cg.uninstall_all(handles)
+
+
 def test_unpinned_host_copies_keep_the_forward_eager_with_the_reason(monkeypatch):
     _cuda()
     monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")

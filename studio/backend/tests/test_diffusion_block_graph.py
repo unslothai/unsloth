@@ -863,6 +863,37 @@ def test_compiled_streamed_blocks_record_below_their_hooks_with_no_graph_break()
     handle.free()
 
 
+def test_a_failed_block_capture_hands_its_pool_back(monkeypatch):
+    """A failed per-block capture retires its pool: what no live graph holds goes back to the device right away
+    (the prompt encode no longer flushes the allocator on every prompt), and the block runs its compute exactly."""
+    _cuda()
+    import core.inference.diffusion_cuda_graph as cg
+
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    flushes = {"n": 0}
+    monkeypatch.setattr(
+        cg,
+        "flush_retired_pools",
+        lambda: flushes.__setitem__("n", flushes["n"] + 1) or True,
+        raising = False,
+    )
+    monkeypatch.setattr(cg, "_FAILED_GRAPHS", [])
+
+    def refuse(self, *args, **kwargs):
+        raise RuntimeError("capture failed")
+
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_begin", refuse)
+    x = torch.randn(7, 16, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(net(x), ref(x))
+    failed = handle.stats["fallbacks"] + handle.stats.get("segment_fallbacks", 0)
+    assert failed >= 1 and flushes["n"] == failed
+    handle.free()
+
+
 def test_alternating_layouts_both_record():
     """True CFG calls each block with two text lengths in turn; each layout must still record and replay."""
     _cuda()

@@ -290,6 +290,24 @@ def hold_off_capture():
         _CAPTURE_LOCK.release()
 
 
+def flush_retired_pools() -> bool:
+    """Hand a retired graph pool's segments back to the device. A capture allocates only from its own pool or fresh
+    device memory, never from another pool's cached segments, and the allocator does not empty its cache while a
+    capture is recording, so a dropped pool must be flushed before the next recording or it pins its memory beside
+    the new one. Skipped (False) while another thread records: that capture prohibits the flush."""
+    with hold_off_capture() as safe:
+        if not safe:
+            return False
+        try:
+            gc.collect()
+            torch = _torch()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 - best effort
+            return False
+    return True
+
+
 # Raised while a whole step warms up or records: per-block graphs then run their compute, not nested replays.
 _STEP_RECORDING = [0]
 
@@ -418,28 +436,6 @@ def _has_float(key: tuple) -> bool:
 
 # Private pools per graph OOM a dual-DiT family; the graphs never replay concurrently, so share.
 _POOL_BOX: list = [None]
-# Bumped whenever a graph pool is retired (the shared step pool dropped, or a failed per-block / segment capture's
-# pool): its segments stay reserved until an empty_cache (or an allocation that finds no room) hands them back.
-# ``_POOL_FLUSHED`` is the count an empty_cache in this layer last covered. diffusion_memory's encode release flushes
-# only while a retirement is pending.
-_POOL_DROPS: list = [0]
-_POOL_FLUSHED: list = [0]
-
-
-def pool_drops() -> int:
-    """How many graph pools were retired in this process (each leaves reserved segments behind until a flush)."""
-    return _POOL_DROPS[0]
-
-
-def pools_pending_flush() -> bool:
-    """Whether a pool was retired since the last empty_cache that covered retired pools."""
-    return _POOL_DROPS[0] != _POOL_FLUSHED[0]
-
-
-def note_pools_flushed() -> None:
-    """An empty_cache ran after every pool retired so far had no graph left: nothing is pending."""
-    _POOL_FLUSHED[0] = _POOL_DROPS[0]
-
 
 # A pool id handed to a capture after the last graph recorded into it died is a dangling pointer.
 _LIVE_WRAPPERS: "weakref.WeakSet" = weakref.WeakSet()
@@ -458,7 +454,6 @@ def _drop_pool_if_unused() -> None:
                 if getattr(entry, "pool_token", pool) == pool:  # handles are fresh tuples per call
                     return
         _POOL_BOX[0] = None
-        _POOL_DROPS[0] += 1
     except Exception:  # noqa: BLE001
         pass
 
@@ -563,11 +558,8 @@ def retire_failed_capture(
     with _FAILED_LOCK:
         # A collision with another recording left nothing behind: kept alive, but not a failure the budget counts.
         (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
-    if pool is not None:
-        # also a per-block / segment pool (diffusion_block_graph's own): its segments stay reserved all the same
-        _POOL_DROPS[0] += 1
-        if _POOL_BOX[0] == pool:
-            _POOL_BOX[0] = None
+    if pool is not None and _POOL_BOX[0] == pool:
+        _POOL_BOX[0] = None
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
@@ -1019,7 +1011,6 @@ class GraphedForward:
                     clear()
             if cuda is not None and hasattr(cuda, "empty_cache"):
                 cuda.empty_cache()
-                note_pools_flushed()
         except Exception:  # noqa: BLE001 - best effort
             pass
 
@@ -1656,6 +1647,10 @@ class GraphedForward:
                 torch.cuda.current_stream().wait_stream(side)
             torch.cuda.synchronize()
 
+            if self.placement is not None and key is not None and key in self._recorded:
+                # The weights moved: this key's previous recording was dropped with its pool. Its segments go back now,
+                # before the new recording allocates beside them (the re-record skips torch.cuda.graph's own flush).
+                flush_retired_pools()
             graph = torch.cuda.CUDAGraph()
             # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
             pool = _POOL_BOX[0]
@@ -2387,20 +2382,15 @@ def reset_all(handles: Any, strict: bool = False) -> None:
     stream, so the thread is left off the default stream too. ``strict``: raise when a handle failed
     to reset or still holds a graph (a caller about to move weights must not leave one that could replay)."""
     failed: list = []
-    flushed = False
     for handle in handles or ():
         try:
             handle.reset()
         except Exception as exc:  # noqa: BLE001 - optimisation only, unless strict
             failed.append(f"{type(handle).__name__}: {type(exc).__name__}: {exc}")
             continue
-        flushed = True
         if strict and _holds_graphs(handle):
             failed.append(f"{type(handle).__name__}: still holds a captured graph")
     _drop_pool_if_unused()
-    if flushed and not failed:
-        # each reset emptied the cache after dropping its graphs: the pool forgotten here is already back
-        note_pools_flushed()
     if strict and failed:
         raise RuntimeError("could not drop every captured CUDA graph: " + "; ".join(failed))
 
