@@ -539,7 +539,11 @@ def _sm_count(device):
 
 def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
-    if not _FP8_BLOCK_SMALL_M or fp8_block_matmul is not w8a8_block_fp8_matmul_triton or torch.compiler.is_compiling():
+    if (
+        not _FP8_BLOCK_SMALL_M
+        or fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        or torch.compiler.is_compiling()
+    ):
         return False
     if not X.is_cuda or X.dtype not in (torch.bfloat16, torch.float16):
         return False
@@ -551,7 +555,9 @@ def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     if not (1 <= M <= _SMALL_M_MAX) or weight.shape[1] != K or K % 128 or N % 16:
         return False
     # Checkpoints store weight_scale_inv in bf16 too; the kernel promotes it exactly as the w8a8 one does.
-    if weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16) or tuple(weight_scale.shape) != (triton.cdiv(N, 128), K // 128):
+    if weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16) or tuple(
+        weight_scale.shape
+    ) != (triton.cdiv(N, 128), K // 128):
         return False
     return not long_indexing(X, weight)
 
@@ -747,7 +753,12 @@ def _fp8_rowwise_gemv_kernel(
 # Batched decode (2..16 rows): each weight tile is read once for every row, no 16-bit weight copy.
 # UNSLOTH_FP8_GEMV_ROWS=0 restores the dequantize path.
 _FP8_GEMV_MAX_ROWS = 16
-_FP8_GEMV_ROWS = os.environ.get("UNSLOTH_FP8_GEMV_ROWS", "1").strip().lower() not in ("0", "false", "no", "off")
+_FP8_GEMV_ROWS = os.environ.get("UNSLOTH_FP8_GEMV_ROWS", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 
 
 @triton.jit(do_not_specialize = ["M"])
@@ -794,14 +805,18 @@ def _fp8_rowwise_gemv_rows_kernel(
     if SPLIT_K == 1:
         s = tl.load(s_ptr + offs_n, mask = offs_n < N, other = 0.0).to(tl.float32)
         y = acc * s[None, :]
-        tl.store(y_ptr + offs_m[:, None] * N + offs_n[None, :], y.to(y_ptr.dtype.element_ty), mask = mask)
+        tl.store(
+            y_ptr + offs_m[:, None] * N + offs_n[None, :], y.to(y_ptr.dtype.element_ty), mask = mask
+        )
     else:
         # fp32 partials, summed in a fixed order by the reduce kernel: deterministic, no atomics.
         tl.store(p_ptr + (pid_k * M + offs_m[:, None]) * N + offs_n[None, :], acc, mask = mask)
 
 
 @triton.jit(do_not_specialize = ["M"])
-def _fp8_rowwise_gemv_rows_reduce(p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr):
+def _fp8_rowwise_gemv_rows_reduce(
+    p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr
+):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N
     acc = tl.zeros((BLOCK,), dtype = tl.float32)
@@ -830,7 +845,9 @@ def _fp8_rowwise_gemv_rows(X, weight, scale, out, rows):
     N, K = weight.shape
     block_n, block_k, split_k, warps, stages = _fp8_rows_config(N, K, X.dtype)
     partials = (
-        torch.empty((split_k, rows, N), device = X.device, dtype = torch.float32) if split_k > 1 else out
+        torch.empty((split_k, rows, N), device = X.device, dtype = torch.float32)
+        if split_k > 1
+        else out
     )
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_rows_kernel[(triton.cdiv(N, block_n), split_k)](
