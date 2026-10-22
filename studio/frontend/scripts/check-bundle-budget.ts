@@ -353,11 +353,17 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  // Apple unified-memory fit hint (#14598): the load budget rides the eager GPU info hook and fit check:
-  // +1,034 B raw / +404 B transfer (6,879,345 -> 6,880,379 B raw, 2,071,823 -> 2,072,227 B transfer against
-  // 2749eeedaa, Node 26, 97 chunks). Raised by that.
-  transferBytes: 2_072_416,
-  rawBytes: 6_880_623,
+  // Chat fork affordances (the sidebar fork mark, the "Forked from" divider and the shared fork toasts) in the
+  // eager chat chunk: +1_460 B raw / +361 B transfer against 77e742c8e2 (6_879_345 -> 6_880_805 raw,
+  // 2_071_823 -> 2_072_184 transfer, 97 chunks). Raised by that growth.
+  // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
+  // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
+  // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
+  // Apple unified-memory fit hint (#14598) in the eager GPU info hook and fit check:
+  // +1,042 B raw / +423 B transfer (6,881,340 -> 6,882,382 B raw,
+  // 2,072,543 -> 2,072,966 B transfer against cb2590f395, Node 26, 97 chunks). Raised by that.
+  transferBytes: 2_073_105,
+  rawBytes: 6_882_596,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
