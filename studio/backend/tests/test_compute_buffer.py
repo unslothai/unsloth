@@ -1043,15 +1043,23 @@ class TestPerDeviceSplitReserve:
         import inspect
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 3
+        # Native-context loop, the reduced-to-4096 fallback below it, the Auto
+        # drafter-drop probe above them, which caps to the same reserve so it cannot
+        # price a drafter at a context the weakest card never holds, and (#14492)
+        # the context ceiling's dGPU-only tier, where pooling can hide a small card.
+        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 4
+        assert "_usable_mib=[_gpu_usable(g,_cap_fraction)forginsubset]" in compact
+        # Gated on the chosen context, and only reachable after the pooled test.
         assert "_usable_mib=[_gpu_usable(g,pin_fraction)forginsubset]" in compact
         assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact
         assert "+_cc_bytes(c,n)//n)" in compact
         assert "+_cc_bytes(effective_ctx,n_gpus)//n_gpus," in compact
+        # The cap runs only on gate failure, and the pooled price is redone after it
+        # (the walk's body is a helper since #14492, so a rejected subset returns None).
         assert (
             compact.count(
                 "capped=self._cap_ctx_to_per_device_reserve("
-                "capped,_usable_mib,_reserve_at)ifcapped<=0:continue"
+                "capped,_usable_mib,_reserve_at)ifcapped<=0:returnNone"
             )
             == 1
         )

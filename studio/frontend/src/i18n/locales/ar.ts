@@ -1085,6 +1085,10 @@ export const ar = {
       alternateSlot: "اختصار بديل",
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
+      metaUnsupported: "لا يمكن استخدام مفتاح Windows في الاختصارات.",
+      altGraphUnsupported: "لا يمكن استخدام تركيبات AltGr كاختصارات.",
+      desktopOnly: "تطبيق سطح المكتب فقط",
+      builtInKey: "مدمج: {key}",
       actions: {
         findInPage: {
           label: "البحث في الصفحة",
@@ -1285,6 +1289,10 @@ export const ar = {
         steerMessage: {
           label: "توجيه الرد",
           description: "إيقاف الرد الحالي وإرسال المسودة بعده",
+        },
+        stopGeneration: {
+          label: "إيقاف التوليد",
+          description: "إيقاف الرد الجاري",
         },
         cycleReasoningEffort: {
           label: "تدوير مستوى التفكير",
@@ -2065,9 +2073,9 @@ export const ar = {
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
         activityDescription: {
-          daily: "{total} خلال آخر {weeks}",
-          weekly: "أسبوع الذروة {total} · آخر {weeks}",
-          cumulative: "{total} متراكمة خلال آخر {weeks}",
+          daily: "{total} منذ {since}",
+          weekly: "أكثر أسبوع نشاطا {total} · منذ {since}",
+          cumulative: "{total} إجمالا منذ {since}",
         },
         mode: {
           daily: "يومي",
@@ -2076,8 +2084,9 @@ export const ar = {
         },
         cellTooltip: "{date} · {tokens}، {messages}",
         weekTooltip: "أسبوع {date} · {tokens}",
-        chartToggle: "مخطط",
-        chartToggleHint: "عرض الأسبوعي والتراكمي كمخطط بمحاور معنونة",
+        emptyDayTooltip: "{date} · لا نشاط",
+        apiRequests: "{count} عبر API",
+        cumulativeTooltip: "حتى أسبوع {date} · {tokens} إجمالا",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",

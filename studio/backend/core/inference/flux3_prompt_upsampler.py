@@ -897,27 +897,34 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
 
 _VULKAN_ROWS_TTL_S = 120.0
 _vulkan_rows_memo: dict = {}
+# One probe at a time: concurrent prefetches read the answer the first one cached.
+_vulkan_rows_lock = threading.Lock()
 
 
-def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
-    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer."""
+def _vulkan_rows(
+    binary: str,
+    retry_empty: bool = False,
+    throttle_retry: bool = False,
+) -> list:
+    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer. With
+    ``throttle_retry`` (a speculative prefetch) an empty answer that already was a retry stands until the window ends."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     try:
         key = (binary, os.path.getmtime(binary))
     except OSError:
         key = (binary, None)
-    hit = _vulkan_rows_memo.get(key)
-    if (
-        hit is not None
-        and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
-        and (hit[0] or not retry_empty)
-    ):
-        return hit[0]
-    rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
-    _vulkan_rows_memo.clear()
-    _vulkan_rows_memo[key] = (rows, time.monotonic())
-    return rows
+    with _vulkan_rows_lock:
+        hit = _vulkan_rows_memo.get(key)
+        live = hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
+        # Only a speculative prefetch is throttled: a real launch always asks again.
+        if live and (hit[0] or not retry_empty or (throttle_retry and len(hit) > 2 and hit[2])):
+            return hit[0]
+        rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
+        _vulkan_rows_memo.clear()
+        # (rows, probed at, this probe retried a live empty answer)
+        _vulkan_rows_memo[key] = (rows, time.monotonic(), live)
+        return rows
 
 
 def _user_device_pick(binary: Optional[str] = None) -> bool:
@@ -966,7 +973,9 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
     def _work() -> None:
         try:
             # An empty answer (cached or fresh) is retried once, as the launch it stands in for did.
-            rows = _vulkan_rows(binary, retry_empty = True) or _vulkan_rows(binary, retry_empty = True)
+            rows = _vulkan_rows(binary, retry_empty = True, throttle_retry = True) or _vulkan_rows(
+                binary, retry_empty = True, throttle_retry = True
+            )
             # One row on one torch card launches unpinned, so it needs no card lookup.
             if rows and (len(rows) > 1 or torch.cuda.device_count() > 1):
                 ordinal = _resident_cuda_ordinal()
@@ -1037,14 +1046,29 @@ def _vulkan_card_name(ordinal: int, torch) -> tuple:
     return name, names[:ordinal].count(name)
 
 
+# Vendor by positive evidence: older NVIDIA drivers name Vulkan devices "Tesla T4" or "GeForce GTX 1080 Ti".
+_VULKAN_VENDOR_RES = (
+    ("nvidia", re.compile(r"\b(?:nvidia|geforce|quadro|tesla|titan|rtx)\b")),
+    ("amd", re.compile(r"\b(?:amd|radeon|radv|instinct|firepro)\b")),
+    ("intel", re.compile(r"\b(?:intel|arc|iris|uhd)\b")),
+    ("software", re.compile(r"\b(?:llvmpipe|lavapipe|swiftshader)\b")),
+)
+
+
+def _vulkan_row_vendor(row_name: str) -> Optional[str]:
+    """``nvidia`` / ``amd`` / ``intel`` / ``software`` when the Vulkan row names one, else None (unknown)."""
+    name = str(row_name or "").lower()
+    return next((vendor for vendor, pattern in _VULKAN_VENDOR_RES if pattern.search(name)), None)
+
+
 def _vulkan_row_is_another_vendor(row_name: str, torch) -> bool:
-    """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row naming neither is another card."""
+    """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row is another card only when it names
+    another vendor. A row naming no vendor at all is not evidence either way."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    name = str(row_name or "").lower()
-    if LlamaCppBackend._torch_is_rocm(torch):
-        return not any(tag in name for tag in ("amd", "radeon", "instinct"))
-    return "nvidia" not in name
+    vendor = _vulkan_row_vendor(row_name)
+    expected = "amd" if LlamaCppBackend._torch_is_rocm(torch) else "nvidia"
+    return vendor is not None and vendor != expected
 
 
 def _vulkan_device_args(
