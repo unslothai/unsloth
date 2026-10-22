@@ -173,8 +173,10 @@ def _create_ca(cluster_id: str):
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical = False)
         .sign(key, hashes.SHA256())
     )
-    write_private(_ca_dir() / "root_key.pem", _key_pem(key))
+    # Certificate first: the key is the marker of an existing root, so an interrupted write never
+    # leaves a key whose certificate is missing (a lone certificate is simply overwritten next time).
     write_private(_ca_dir() / "root.pem", _cert_pem(cert))
+    write_private(_ca_dir() / "root_key.pem", _key_pem(key))
     return key, cert
 
 
@@ -200,7 +202,9 @@ def _create_master_identity() -> LocalIdentity:
     if meta is not None and meta.get("role") == "worker":
         raise RuntimeError("this machine is paired as a worker; run `unsloth cluster leave` first")
     _, _, _, ec, _, name_oid = _x509()
-    if (_ca_dir() / "root_key.pem").is_file():
+    # A key without its certificate: an older first `cluster pair` stopped between the two writes,
+    # before any certificate was issued under it, so a fresh root replaces it.
+    if (_ca_dir() / "root_key.pem").is_file() and (_ca_dir() / "root.pem").is_file():
         ca_key, ca_cert = _load_ca()
         cn = ca_cert.subject.get_attributes_for_oid(name_oid.COMMON_NAME)[0].value
         cluster_id = str(cn).rsplit(" ", 1)[-1]

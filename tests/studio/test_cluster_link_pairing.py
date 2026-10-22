@@ -144,6 +144,36 @@ def test_keys_are_owner_only(master_dir):
     assert stat.S_IMODE((master_dir / "identity").stat().st_mode) == 0o700
 
 
+def test_an_interrupted_first_root_write_is_recovered(master_dir, monkeypatch):
+    # The first `cluster pair` dies between the two cluster-root writes: the next one must still work.
+    real = identity.write_private
+    calls = []
+
+    def dies_after_one(path, data):
+        calls.append(path)
+        real(path, data)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(identity, "write_private", dies_after_one)
+    with pytest.raises(KeyboardInterrupt):
+        identity.master_identity()
+    monkeypatch.setattr(identity, "write_private", real)
+    me = identity.master_identity()
+    assert me is not None and identity.master_identity() == me
+
+
+def test_a_root_key_left_without_its_certificate_is_replaced(master_dir):
+    # State an older interrupted write left behind: a root key, no root certificate, nothing issued.
+    identity.master_identity()
+    (master_dir / "ca" / "root.pem").unlink()
+    (master_dir / "identity" / "identity.json").unlink()
+    me = identity.master_identity()
+    assert me is not None and (master_dir / "ca" / "root.pem").is_file()
+    if os.name != "nt":
+        assert stat.S_IMODE((master_dir / "ca" / "root_key.pem").stat().st_mode) == 0o600
+
+
 def test_master_identity_is_stable(master_dir):
     a = identity.master_identity()
     b = identity.master_identity()
