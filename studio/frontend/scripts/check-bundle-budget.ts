@@ -367,10 +367,12 @@ export const BUDGET = {
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
   // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
-  // Settings API / Remote / LAN strings in the eager English locale (#14596): +283 B raw / +90 B transfer
-  // (6,879,345 -> 6,879,628 raw, 2,071,823 -> 2,071,913 transfer at 77e742c8e2, Node 26). Raised by that.
-  transferBytes: 2_076_240,
-  rawBytes: 6_891_583,
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // Settings API / Remote / LAN strings (#14596) merged with main at c2f75c486c: 6,891,550 B raw / 2,076,208 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_076_400,
+  rawBytes: 6_891_750,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
