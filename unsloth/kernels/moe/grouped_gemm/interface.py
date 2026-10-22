@@ -95,7 +95,9 @@ def _num_sms(device):
     index = _device_index(device)
     count = _DEVICE_SM_COUNTS.get(index)
     if count is None:
-        count = _DEVICE_SM_COUNTS[index] = torch.cuda.get_device_properties(index).multi_processor_count
+        count = _DEVICE_SM_COUNTS[index] = torch.cuda.get_device_properties(
+            index
+        ).multi_processor_count
     return count
 
 
