@@ -10370,13 +10370,21 @@ def widen_target_regex_to_expert_submodules(
         return target_modules, detect_targets, []
     # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
     parents = _remote_expert_parents(model)
-    named_leaves = set()
+    named_leaves, siblings = set(), set()
     if explicit_leaves:
         requested = set()
         if isinstance(detect_targets, (list, tuple, set)):
             requested = {t for t in detect_targets if isinstance(t, str) and "." not in t}
         native, named_leaves = _native_expert_parents(model, target_modules, requested)
         parents = parents | native
+        # Requested expert siblings (Mixtral's router gate), as PEFT suffix matching would.
+        for name, module in model.named_modules():
+            parent, _, leaf = name.rpartition(".")
+            if leaf in requested and any(re.fullmatch(p, parent) for p in native) and (
+                isinstance(module, torch.nn.Linear)
+                or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+            ):
+                siblings.add(r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")))
     if not parents:
         return target_modules, detect_targets, []
     # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
@@ -10384,6 +10392,8 @@ def widen_target_regex_to_expert_submodules(
     if not leaves:
         return target_modules, detect_targets, []
     expert_regex = moe_expert_submodule_regex(leaves, parents)
+    if siblings:
+        expert_regex = f"(?:{expert_regex})|(?:{'|'.join(sorted(siblings))})"
     # Skip only if every expert matches: Zoo may reach down_proj alone, gate_proj / up_proj still need adding.
     eligible = [name for name, _ in model.named_modules() if re.fullmatch(expert_regex, name)]
     if eligible and all(re.fullmatch(target_modules, name) for name in eligible):
