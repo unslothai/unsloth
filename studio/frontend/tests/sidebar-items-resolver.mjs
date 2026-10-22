@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// use-chat-sidebar-items pulls the chat API, Dexie-backed storage and the zustand stores,
-// none of which load in bare node. One stub module answers for all of them so the real
-// archiveAllChatItems body runs.
+// These modules do not load in bare node; one stub answers for all so the real body runs.
 import { resolve as resolveBundler } from "./bundler-resolver.mjs";
 
 const DEPS = "./helpers/store-stubs/sidebar-items-deps.ts";

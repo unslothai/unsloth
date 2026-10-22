@@ -118,6 +118,7 @@ export const es = {
     reload: "Recargar",
     more: "Más",
     addressPlaceholder: "Busca o escribe una URL",
+    local: "Local",
     suggested: "Sugerencias",
     suggestedMenu: {
       open: "Abrir",
@@ -468,6 +469,8 @@ export const es = {
       downloadFailed: "No se pudo descargar {name}",
       notMarked: "{name} se guardó, pero no se pudo marcar como descargado de internet, así que tu sistema no avisará antes de abrirlo.",
       blocked: "Esta dirección no se puede abrir en el panel del navegador. Solo abre sitios web públicos.",
+      blockedLocal: "Esta dirección local no se puede abrir aquí. Escríbela en la barra de direcciones para abrirla.",
+      studioAddress: "Esta es la dirección del propio Unsloth, así que no se puede abrir en el panel del navegador.",
       clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas, las páginas en caché y las cookies y datos de sitios, lo que cierra tu sesión en los sitios.",
       clearDataDescription: "Esto borra el historial de navegación, el historial de descargas, las páginas en caché y las cookies y datos de sitios, lo que cierra tu sesión en los sitios. Los archivos descargados se quedan en tu equipo.",
       clearDataFailed: "No se pudieron borrar los datos de sitios. Inténtalo de nuevo.",
