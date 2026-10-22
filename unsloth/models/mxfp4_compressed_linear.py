@@ -172,13 +172,6 @@ def _free_bytes(device):
     return max(0, free) + max(0, reserved - torch.cuda.memory_allocated(device))
 
 
-def _try_empty(shape, dtype, device):
-    try:
-        return torch.empty(shape, dtype = dtype, device = device)
-    except torch.cuda.OutOfMemoryError:
-        return None
-
-
 def _bounded_dense_matmul_eager(x, packed, scale, out = None, bias = None):
     """``x @ W^T (+ bias)`` without ever holding more of the 16-bit W than fits: the whole W when it allocates
     (one decode + one cuBLAS call), else row chunks of W written to ``y[..., r0:r1]`` (no cross-chunk sums),
@@ -195,35 +188,48 @@ def _bounded_dense_matmul_eager(x, packed, scale, out = None, bias = None):
             _DENSE_BUDGET.pop(key, None)
             state = None
     if state is None or N * row_bytes <= state[0]:
-        weight = _try_empty((N, K), dtype, device)
-        if weight is not None:
+        # The weight, the decode's scratch, the output and the cuBLAS workspace: any of them may be the one
+        # that does not fit, so the whole attempt is guarded and its tensors are dropped before the retry.
+        try:
+            weight = torch.empty((N, K), dtype = dtype, device = device)
             return _linear(x, dequantize_mxfp4_packed(packed, scale, dtype, out = weight), out, bias)
+        except torch.cuda.OutOfMemoryError:
+            weight = None
         state = _DENSE_BUDGET[key] = [_free_bytes(device) // 2, _DENSE_RETRY_CALLS]
     lead = x.shape[:-1]
     x2 = x.reshape(-1, K)
     M = x2.shape[0]
-    if out is not None and out.dtype == dtype and out.is_contiguous() and out.numel() == M * N:
+    # Like _linear: ``out`` is only written when there is no bias, whichever path runs.
+    if (
+        bias is None
+        and out is not None
+        and out.dtype == dtype
+        and out.is_contiguous()
+        and out.numel() == M * N
+    ):
         y = out.view(M, N)
     else:
         y = torch.empty((M, N), dtype = dtype, device = device)
     while True:
         step = min(N, state[0] // row_bytes)
-        buffer = None if step < _DENSE_MIN_CHUNK_ROWS else _try_empty((step, K), dtype, device)
-        if buffer is not None:
-            break
         if step < _DENSE_MIN_CHUNK_ROWS:
             # Not even a small chunk fits: the tile kernel only needs the output.
             return _zoo_mxfp4_matmul(x, packed, scale, trans = False, out = y, bias = bias)
+        try:
+            buffer = torch.empty((step, K), dtype = dtype, device = device)
+            for r0 in range(0, N, step):
+                r1 = min(N, r0 + step)
+                weight = dequantize_mxfp4_packed(
+                    packed[r0:r1], scale[r0:r1], dtype, out = buffer[: r1 - r0]
+                )
+                y[:, r0:r1] = torch.nn.functional.linear(
+                    x2, weight, None if bias is None else bias[r0:r1]
+                )
+            return y.view(*lead, N)
+        except torch.cuda.OutOfMemoryError:
+            # Chunks are rewritten whole, so a retry with half the rows restarts cleanly.
+            buffer = weight = None
         state[0] = step * row_bytes // 2
-    for r0 in range(0, N, step):
-        r1 = min(N, r0 + step)
-        weight = dequantize_mxfp4_packed(
-            packed[r0:r1], scale[r0:r1], dtype, out = buffer[: r1 - r0]
-        )
-        y[:, r0:r1] = torch.nn.functional.linear(
-            x2, weight, None if bias is None else bias[r0:r1]
-        )
-    return y.view(*lead, N)
 
 
 _bounded_dense_matmul_op = None
@@ -252,7 +258,9 @@ def _bounded_dense_matmul(x, packed, scale, out, bias):
         if _bounded_dense_matmul_op is None:
             return _linear(x, dequantize_mxfp4_packed(packed, scale, x.dtype), out, bias)
         y = _bounded_dense_matmul_op(x, packed, scale, bias)
-        return y if out is None or out.shape != y.shape else out.copy_(y)
+        if out is None or bias is not None or out.shape != y.shape:
+            return y  # with a bias _linear never writes ``out`` either
+        return out.copy_(y)
     return _bounded_dense_matmul_eager(x, packed, scale, out, bias)
 
 

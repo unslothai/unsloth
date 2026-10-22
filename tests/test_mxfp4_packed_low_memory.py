@@ -178,3 +178,54 @@ def test_compiled_forward_is_bounded_without_graph_breaks(sm75):
             torch.cuda.synchronize(device)
     torch.testing.assert_close(got, want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
     torch._dynamo.reset()
+
+
+def _fake_oom_dequant(monkeypatch, fail_rows):
+    """``dequantize_mxfp4_packed`` raising an allocator OOM once for each entry of ``fail_rows`` (row counts, in
+    order), as when the decoded weight allocated but its scratch, the output or the cuBLAS workspace did not."""
+    real = mcl.dequantize_mxfp4_packed
+    pending, seen = list(fail_rows), []
+
+    def fake(packed, scale, dtype = torch.bfloat16, out = None):
+        seen.append(packed.shape[0])
+        if pending and packed.shape[0] == pending[0]:
+            pending.pop(0)
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory (fake)")
+        return real(packed, scale, dtype, out = out)
+
+    monkeypatch.setattr(mcl, "dequantize_mxfp4_packed", fake)
+    return seen, pending
+
+
+def test_oom_after_the_weight_allocated_falls_back_to_chunks(sm75, monkeypatch):
+    device = sm75
+    N, K = 1024, 512
+    packed, scale = _weight(N, K, device, seed = 6)
+    x = torch.randn(2, K, dtype = torch.float16, device = device)
+    want = _single_shot(x, packed, scale)
+    # Whole weight attempt fails late, then the first (full-height) chunk fails too: half-height chunks finish.
+    seen, pending = _fake_oom_dequant(monkeypatch, [N, N])
+    got = mcl.mxfp4_packed_matmul(x, packed, scale)
+    assert not pending and seen[:2] == [N, N] and seen[2] == N // 2
+    assert device.index in mcl._DENSE_BUDGET
+    torch.testing.assert_close(got, want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+
+
+@pytest.mark.parametrize("compiling", [False, True])
+def test_bias_never_writes_out_whatever_the_memory(sm75, monkeypatch, compiling):
+    # The full-weight path with a bias returns a new tensor and leaves ``out`` alone: so must the fallbacks.
+    device = sm75
+    N, K = 1000, 384
+    packed, scale = _weight(N, K, device, seed = 7)
+    x = torch.randn(3, K, dtype = torch.float16, device = device)
+    b = torch.randn(N, dtype = torch.float16, device = device)
+    want = _single_shot(x, packed, scale, b)
+    out = torch.full_like(want, 7.0)
+    full = mcl.mxfp4_packed_matmul(x, packed, scale, out = out, bias = b)
+    assert full.data_ptr() != out.data_ptr() and bool((out == 7.0).all())
+    if compiling:
+        monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    mcl._DENSE_BUDGET[device.index] = [300 * K * x.element_size(), 1024]  # 300-row chunks
+    got = mcl.mxfp4_packed_matmul(x, packed, scale, out = out, bias = b)
+    assert got.data_ptr() != out.data_ptr() and bool((out == 7.0).all())
+    torch.testing.assert_close(got, want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
