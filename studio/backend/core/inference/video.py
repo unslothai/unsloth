@@ -2529,7 +2529,7 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
 def _h3_card_memory_bytes(
     device: Optional[str], ordinal: Optional[int]
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
+    """(free, total) VRAM of the H3 render card via nvidia-smi / ROCm sysfs (no CUDA context), or (None, None). No pin =
     ordinal 0."""
     if device != "cuda":
         return None, None

@@ -489,18 +489,116 @@ def test_restart_for_retry_keeps_a_release_that_landed_before_the_stop(monkeypat
     assert slot.end_render() is None and slot.release_pending is None
 
 
-def test_h3_card_probes_read_nothing_on_rocm_without_a_context(monkeypatch):
-    from utils.hardware import hardware
+_ROCM_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL")
 
+
+def _rocm_linux_host(monkeypatch, cards):
+    """Linux ROCm host with no visibility mask; ``cards`` is [(pci, gfx target, (used_gb, total_gb) or None)] in KFD
+    order. Every torch and amd-smi reader is a tripwire: the no-context probe must answer from sysfs alone."""
+    from utils.hardware import amd, hardware
+
+    for name in _ROCM_MASKS:
+        monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
     monkeypatch.setattr(hardware, "IS_ROCM", True)
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hardware, "_rocm_kfd_gpu_pci_ids", lambda: [c[0] for c in cards])
+    monkeypatch.setattr(amd, "amd_kfd_gpu_gfx_targets", lambda *a, **k: [c[1] for c in cards])
     monkeypatch.setattr(
         hardware,
+        "_rocm_linux_sysfs_vram_by_pci_gb",
+        lambda: {c[0]: c[2] for c in cards if c[2] is not None},
+    )
+
+    def _no_torch(*a, **k):
+        pytest.fail("the no-context probe touched torch")
+
+    import torch
+
+    for name in ("mem_get_info", "get_device_properties", "init", "_lazy_init", "device_count"):
+        monkeypatch.setattr(torch.cuda, name, _no_torch)
+    for name in (
+        "_torch_get_device_module",
+        "_torch_get_per_device_info",
+        "_torch_get_device_inventory",
+        "_torch_get_physical_gpu_count",
         "_smi_visible_utilization",
-        lambda spec: pytest.fail("amd-smi rows need a torch context"),
+    ):
+        monkeypatch.setattr(hardware, name, _no_torch)
+
+
+def test_h3_card_probes_read_rocm_sysfs_without_a_context(monkeypatch):
+    # Discrete card: the reading comes back with no torch call (the tripwires above), where #13714 returned nothing.
+    _rocm_linux_host(monkeypatch, [("0000:03:00.0", "gfx1100", (4.0, 24.0))])
+    assert video_mod._h3_card_memory_bytes("cuda", 0) == (20 * GiB, 24 * GiB)
+    assert video_mod._h3_visible_card_count("cuda") == 1
+    assert video_mod._h3_card_free_bytes("cuda", 0, single_card_only = True) == 20 * GiB
+
+
+def test_h3_card_probes_on_masked_rocm_read_nothing(monkeypatch):
+    _rocm_linux_host(monkeypatch, [("0000:03:00.0", "gfx1100", (4.0, 24.0))])
+    assert video_mod._h3_card_memory_bytes("cuda", 0) == (20 * GiB, 24 * GiB)
+    # Under any mask a visible ordinal cannot be tied to a physical card without torch: nothing, not a guess.
+    for name in _ROCM_MASKS:
+        monkeypatch.setenv(name, "0")
+        assert video_mod._h3_card_memory_bytes("cuda", 0) == (None, None), name
+        assert video_mod._h3_visible_card_count("cuda") == 0, name
+        monkeypatch.delenv(name)
+
+
+def test_h3_card_probes_never_report_an_apu_carve_out(monkeypatch):
+    # Strix Halo's sysfs total is the BIOS carve-out, not torch's GTT-backed total, and gfx942 is shared by MI300A:
+    # both read as unknown while the discrete card beside them still reads, and the visible count stays 3.
+    _rocm_linux_host(
+        monkeypatch,
+        [
+            ("0000:03:00.0", "gfx1100", (4.0, 24.0)),
+            ("0000:c5:00.0", "gfx1151", (1.0, 0.5)),
+            ("0000:0b:00.0", "gfx942", (1.0, 192.0)),
+        ],
+    )
+    assert video_mod._h3_card_memory_bytes("cuda", 0) == (20 * GiB, 24 * GiB)
+    assert video_mod._h3_card_memory_bytes("cuda", 1) == (None, None)
+    assert video_mod._h3_card_memory_bytes("cuda", 2) == (None, None)
+    assert video_mod._h3_visible_card_count("cuda") == 3
+    # Two ordinals on one PCI address (a partitioned card) or a KFD disagreement: nothing at all.
+    _rocm_linux_host(
+        monkeypatch,
+        [("0000:03:00.0", "gfx950", (4.0, 24.0)), ("0000:03:00.0", "gfx950", (4.0, 24.0))],
     )
     assert video_mod._h3_card_memory_bytes("cuda", 0) == (None, None)
     assert video_mod._h3_visible_card_count("cuda") == 0
+
+
+def test_h3_card_probes_on_cuda_still_read_nvidia_smi(monkeypatch):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+    monkeypatch.setattr(hardware, "IS_ROCM", False)
+    monkeypatch.setattr(
+        hardware,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": None, "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(hardware, "_reconcile_cuda_integrated_memory", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hardware,
+        "_smi_visible_utilization",
+        lambda spec: {
+            "available": True,
+            "devices": [{"index": 0, "visible_ordinal": 0, "vram_used_gb": 2.0, "vram_total_gb": 16.0}],
+            "index_kind": "relative",
+            "parent_visible_gpu_ids": [],
+        },
+    )
+    monkeypatch.setattr(
+        hardware,
+        "_rocm_context_free_visible_devices",
+        lambda: pytest.fail("ROCm sysfs read on a CUDA host"),
+        raising = False,
+    )
+    assert video_mod._h3_card_memory_bytes("cuda", 0) == (14 * GiB, 16 * GiB)
+    assert video_mod._h3_visible_card_count("cuda") == 1
 
 
 def test_a_slot_start_records_what_it_attempted_even_when_it_fails(monkeypatch):
