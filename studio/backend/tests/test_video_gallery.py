@@ -625,6 +625,190 @@ def test_gif_export_bounds_frames_and_edge(monkeypatch):
     assert frames <= 4, frames
 
 
+def _gif_blocks(data: bytes) -> dict:
+    """Walk a GIF's blocks: loop count, per-frame delays (cs) and whether each frame carries a local palette."""
+    assert data[:6] in (b"GIF87a", b"GIF89a")
+    width, height, packed = (
+        int.from_bytes(data[6:8], "little"),
+        int.from_bytes(data[8:10], "little"),
+        data[10],
+    )
+    pos = 13 + (3 << ((packed & 7) + 1) if packed & 0x80 else 0)
+    info = {
+        "size": (width, height),
+        "global_palette": bool(packed & 0x80),
+        "loop": None,
+        "delays": [],
+        "local": [],
+    }
+
+    def _skip_sub_blocks(i: int) -> int:
+        while data[i]:
+            i += data[i] + 1
+        return i + 1
+
+    while data[pos] != 0x3B:
+        if data[pos] == 0x21:
+            label = data[pos + 1]
+            if label == 0xF9:
+                info["delays"].append(int.from_bytes(data[pos + 4 : pos + 6], "little"))
+            elif label == 0xFF and data[pos + 3 : pos + 14] == b"NETSCAPE2.0":
+                info["loop"] = int.from_bytes(data[pos + 16 : pos + 18], "little")
+            pos = _skip_sub_blocks(pos + 2)
+        elif data[pos] == 0x2C:
+            flags = data[pos + 9]
+            info["local"].append(bool(flags & 0x80))
+            pos += 10 + (3 << ((flags & 7) + 1) if flags & 0x80 else 0)
+            pos = _skip_sub_blocks(pos + 1)
+        else:
+            raise AssertionError(f"bad GIF block 0x{data[pos]:02x} at {pos}")
+    return info
+
+
+def _gradient_mp4_bytes(frames: int, size: tuple[int, int], rate: int) -> bytes:
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    import io
+
+    width, height = size
+    yy, xx = np.mgrid[0:height, 0:width]
+    buf = io.BytesIO()
+    with av.open(buf, "w", format = "mp4") as out:
+        stream = out.add_stream("mpeg4", rate = rate)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        for i in range(frames):
+            rgb = np.stack(
+                [
+                    (xx * 255 // width + i * 7) % 256,
+                    (yy * 255 // height) % 256,
+                    (xx + yy + i * 11) % 256,
+                ],
+                axis = -1,
+            ).astype(np.uint8)
+            for packet in stream.encode(av.VideoFrame.from_ndarray(rgb, format = "rgb24")):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def _count_calls(monkeypatch, module, name: str) -> dict:
+    calls = {"n": 0}
+    real = getattr(module, name)
+
+    def _spy(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, _spy)
+    return calls
+
+
+@pytest.mark.parametrize("hold", [True, False], ids = ["held_frames", "two_decode_passes"])
+def test_gif_export_uses_one_clip_wide_palette(monkeypatch, hold):
+    from core.inference import video_gallery as vg
+
+    pytest.importorskip("PIL.Image")
+    if not vg._gif_palette_supported():
+        pytest.skip("this PyAV build has no palettegen / paletteuse / gif encoder")
+    if not hold:
+        monkeypatch.setattr(vg, "_GIF_HOLD_BYTES", 0)
+    palette_calls = _count_calls(monkeypatch, vg, "_transcode_gif_palette")
+    pillow_calls = _count_calls(monkeypatch, vg, "_transcode_gif_pillow")
+    decodes = _count_calls(monkeypatch, vg, "_gif_scaled_frames")
+
+    record = gallery.save(_gradient_mp4_bytes(frames = 24, size = (96, 64), rate = 24), _meta())
+    gif = vg._transcode_gif(vg.gallery_dir() / f"{record['id']}.mp4")
+
+    assert palette_calls["n"] == 1 and pillow_calls["n"] == 0
+    assert decodes["n"] == (1 if hold else 2)
+    info = _gif_blocks(gif)
+    assert info["size"] == (96, 64)
+    assert info["global_palette"] and not any(info["local"][1:]), info["local"]
+    assert len(info["local"]) == 12
+    assert info["loop"] == 0  # NETSCAPE loop 0 = forever
+    assert all(d in (8, 9) for d in info["delays"]), info["delays"]
+    assert sum(info["delays"]) in (99, 100, 101)
+
+
+def test_gif_export_palette_path_caps_frames_and_edge(monkeypatch):
+    from core.inference import video_gallery as vg
+
+    if not vg._gif_palette_supported():
+        pytest.skip("this PyAV build has no palettegen / paletteuse / gif encoder")
+    monkeypatch.setattr(vg, "_GIF_MAX_EDGE", 48)
+    monkeypatch.setattr(vg, "_GIF_MAX_FRAMES", 5)
+    record = gallery.save(_gradient_mp4_bytes(frames = 30, size = (96, 64), rate = 12), _meta())
+    info = _gif_blocks(vg._transcode_gif(vg.gallery_dir() / f"{record['id']}.mp4"))
+    assert info["size"] == (48, 32)
+    assert 1 <= len(info["local"]) <= 5
+    assert info["loop"] == 0
+
+
+def test_gif_export_falls_back_to_pillow_without_the_palette_filters(monkeypatch):
+    import av.filter
+
+    from core.inference import video_gallery as vg
+
+    pytest.importorskip("PIL.Image")
+    monkeypatch.setattr(
+        av.filter,
+        "filters_available",
+        set(av.filter.filters_available) - {"palettegen", "paletteuse"},
+    )
+    assert vg._gif_palette_supported() is False
+    palette_calls = _count_calls(monkeypatch, vg, "_transcode_gif_palette")
+    pillow_calls = _count_calls(monkeypatch, vg, "_transcode_gif_pillow")
+
+    record = gallery.save(_gradient_mp4_bytes(frames = 24, size = (96, 64), rate = 24), _meta())
+    info = _gif_blocks(vg._transcode_gif(vg.gallery_dir() / f"{record['id']}.mp4"))
+
+    assert palette_calls["n"] == 0 and pillow_calls["n"] == 1
+    assert info["size"] == (96, 64) and len(info["local"]) == 12 and info["loop"] == 0
+    assert all(d == 8 for d in info["delays"]), info["delays"]
+
+
+def test_gif_export_falls_back_to_pillow_without_a_gif_encoder(monkeypatch):
+    import av.codec
+
+    from core.inference import video_gallery as vg
+
+    pytest.importorskip("PIL.Image")
+    real_codec = av.codec.Codec
+
+    def _decoder_only(name, mode = "r"):
+        if name == "gif" and mode == "w":
+            raise av.codec.codec.UnknownCodecError(name)
+        return real_codec(name, mode)
+
+    monkeypatch.setattr(av.codec, "Codec", _decoder_only)
+    assert "gif" in av.codecs_available
+    assert vg._gif_palette_supported() is False
+    pillow_calls = _count_calls(monkeypatch, vg, "_transcode_gif_pillow")
+
+    record = gallery.save(_gradient_mp4_bytes(frames = 24, size = (96, 64), rate = 24), _meta())
+    info = _gif_blocks(vg._transcode_gif(vg.gallery_dir() / f"{record['id']}.mp4"))
+
+    assert pillow_calls["n"] == 1 and info["loop"] == 0
+
+
+def test_gif_export_missing_deps_keeps_the_error_message(monkeypatch):
+    import builtins
+
+    from core.inference import video_gallery as vg
+
+    real_import = builtins.__import__
+
+    def _no_av(name, *args, **kwargs):
+        if name == "av" or name.startswith("av."):
+            raise ImportError("no av")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_av)
+    with pytest.raises(RuntimeError, match = "GIF export needs the 'av' and 'Pillow' packages."):
+        vg._transcode_gif(vg.gallery_dir() / "missing.mp4")
+
+
 # --- pin / archive flags ---------------------------------------------------------------------
 
 

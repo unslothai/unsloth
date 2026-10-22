@@ -1143,6 +1143,10 @@ export const en = {
       alternateSlot: "Alternate shortcut",
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
+      metaUnsupported: "The Windows key can't be used in shortcuts.",
+      altGraphUnsupported: "AltGr chords can't be used as shortcuts.",
+      desktopOnly: "Desktop app only",
+      builtInKey: "Built in: {key}",
       actions: {
         findInPage: {
           label: "Find in page",
@@ -1343,6 +1347,10 @@ export const en = {
         steerMessage: {
           label: "Steer response",
           description: "Stop the current response and send the draft next",
+        },
+        stopGeneration: {
+          label: "Stop generating",
+          description: "Stop the response being written",
         },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",
@@ -2128,9 +2136,9 @@ export const en = {
         longestStreak: "Longest streak",
         activityTitle: "Token activity",
         activityDescription: {
-          daily: "{total} over the last {weeks}",
-          weekly: "Peak week {total} · last {weeks}",
-          cumulative: "{total} accumulated over the last {weeks}",
+          daily: "{total} since {since}",
+          weekly: "Busiest week {total} · since {since}",
+          cumulative: "{total} in total since {since}",
         },
         mode: {
           daily: "Daily",
@@ -2138,9 +2146,10 @@ export const en = {
           cumulative: "Cumulative",
         },
         cellTooltip: "{date} · {tokens}, {messages}",
+        emptyDayTooltip: "{date} · No activity",
+        apiRequests: "{count} via API",
         weekTooltip: "Week of {date} · {tokens}",
-        chartToggle: "Chart",
-        chartToggleHint: "Show Weekly and Cumulative as a chart with labelled axes",
+        cumulativeTooltip: "By the week of {date} · {tokens} in total",
         less: "Less",
         more: "More",
         insightsTitle: "Activity insights",
@@ -4293,7 +4302,7 @@ export const en = {
         compare: "Compare",
       },
       menu: {
-        fork: "Fork",
+        fork: "Fork chat",
         moveTo: "Move to project",
         newChatInProject: "New chat in project",
         edit: "Edit",

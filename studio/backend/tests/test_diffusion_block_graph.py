@@ -1065,3 +1065,30 @@ def test_a_model_offloaded_denoiser_keeps_a_specific_whole_step_refusal(monkeypa
     reason = pipe._unsloth_cuda_graph_reason
     assert handles == () and reason.startswith("forward is not capture-safe")
     assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV not in reason and bg.BLOCK_GRAPHS_ENV in reason
+
+
+def test_a_refused_block_recording_runs_eager_and_records_later(monkeypatch):
+    _cuda()
+    from core.inference import diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    x = torch.randn(4, 16, device = "cuda")
+    cg.capture_hold()  # replica-side work that does not drain
+    try:
+        with torch.inference_mode():
+            for _ in range(3):
+                assert torch.equal(net(x), ref(x))
+        assert handle.stats["captures"] == 0 and handle.stats["fallbacks"] == 0
+        assert not any(g.poisoned for g in handle.graphs)
+        assert cg._CAPTURE_DEPTH == 0
+    finally:
+        cg.capture_release()
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(net(x), ref(x))
+    assert handle.stats["captures"] > 0 and handle.stats["fallbacks"] == 0
+    assert handle.stats["replays"] > 0
+    handle.free()
