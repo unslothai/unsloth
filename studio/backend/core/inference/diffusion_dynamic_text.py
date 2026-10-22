@@ -121,8 +121,11 @@ def prompt_length_varies(transformer: Any) -> bool:
     return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
 
 
-# What the compile arms (FLUX.1 and Z-Image are classified above but not armed here).
+# What the compile arms (Z-Image is classified above but not armed here). FLUX.1 int8 / fp8 (torchao weights compile
+# with automatic dynamic) recompiled both blocks on the first prompt past 256 T5 tokens and again on the first new
+# resolution (31 s and 60 s on a loaded B200); armed, the first compile covers every text length and image size.
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
+    "FluxTransformer2DModel": _FLUX1_SOURCES,
     "Flux3Transformer2DModel": _FLUX3_SOURCES,
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
