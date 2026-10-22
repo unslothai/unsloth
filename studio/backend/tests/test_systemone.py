@@ -688,6 +688,32 @@ def test_a_load_unloaded_while_it_builds_in_process_frees_its_memory(client, mon
     assert freed[-1] is True
 
 
+def test_a_load_unloaded_as_it_publishes_stays_fenced_until_it_has_closed(
+    client, monkeypatch, tmp_path
+):
+    fenced = []
+
+    class Closing(FakeAgent):
+        def close(self):
+            fenced.append(laya_runtime._loading is not None)
+
+    def build(*args, **kwargs):
+        laya_runtime.unload()
+        return Closing(), "mps"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mps")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    _post(client)
+    laya_runtime._loader.join(5)
+    assert fenced == [True]
+    assert laya_runtime._loading is None
+    assert laya_runtime.status()["loaded_model"] is None
+
+
 def test_an_unload_waits_for_a_load_that_is_publishing(client):
     done = threading.Event()
     unloading = threading.Thread(target = lambda: (laya_runtime.unload(), done.set()), daemon = True)

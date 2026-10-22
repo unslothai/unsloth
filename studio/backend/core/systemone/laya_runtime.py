@@ -1484,16 +1484,22 @@ def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
         stale = _unloads != unloads
         if not stale:
             _agent, _loaded, _device_name = agent, checkpoint, str(getattr(agent, "device", device))
-        _failure = _loading = None
+            _loading = None
+        _failure = None
         _gpu_load = False
         _generation += 1
         _last_used = time.monotonic()
         generation = _generation
     if stale:
         logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
-        _close(agent)
-        del agent
-        _release_memory()
+        # _loading stays set until its memory is back, so no other load claims the GPU first.
+        try:
+            _close(agent)
+            del agent
+            _release_memory()
+        finally:
+            with _state_lock:
+                _loading = None
         return
     if _arbitrated(checkpoint):
         _schedule_idle_unload(generation)
