@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deterministic consistency guards for the model-load security gate.
-
-The gate spans many parallel sites (validate/load/status, the inference/training/export
-workers, the preflight route); past regressions were a fix at one site with a sibling
-left behind. These guards enumerate the sites mechanically (AST + source) so a new site
-that drops the token or mis-reports the requirement fails here, not in a later review.
-"""
+"""The guards enumerate every model-load gate site, so a sibling that drops the token fails here."""
 
 import ast
 from pathlib import Path

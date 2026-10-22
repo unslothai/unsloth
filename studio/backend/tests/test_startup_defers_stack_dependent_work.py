@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional GPU consumers must stay cold through normal backend startup.
-
-MLX repair remains deferred until after the coordinated warm, and linked-folder lifecycle
-management remains active. The RAG embedder is different: startup must never warm it. A linked
-folder sync with real queued ingestion may activate embeddings through the ordinary operation.
-"""
+"""Startup must never warm the RAG embedder, and MLX repair waits until after the coordinated warm."""
 
 from __future__ import annotations
 

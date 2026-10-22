@@ -124,7 +124,6 @@ def test_a_managed_database_keeps_its_wal_across_a_connection_close(account_home
             conn.commit()
         finally:
             conn.close()
-    # The owner's keeper is a lifespan concern (main.py); only the managed one opens on demand.
     assert owner_db not in studio_db._wal_keepers
     assert not owner_db.with_name("studio.db-wal").exists()
     assert alice_db in studio_db._wal_keepers
@@ -559,5 +558,4 @@ def test_an_upload_directory_cannot_recreate_a_retired_workspace(account_home, m
         with pytest.raises(roots.RetiredAccountError):
             run_as(ALICE, lambda: roots.ensure_dir(root_fn()))
     assert not root.exists()
-    # The owner's own tree is not account-scoped and keeps creating directories as before.
     assert run_as(OWNER, lambda: roots.ensure_dir(roots.outputs_root())).is_dir()

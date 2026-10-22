@@ -15,7 +15,6 @@ test("every quant list and cached GGUF row marks the quant each loaded model run
     picker,
     /loadedQuants\?\.some\(\(q\) => ggufVariantsMatchForPicker\(q, v\.quant\)\) \? \(\s*<span[^>]*>\s*loaded\s*<\/span>/,
   );
-  // Every loaded model, not just the one chat uses.
   assert.match(picker, /loadedModels\s*\.filter\(\(m\) => m\.quant && modelIdsMatchForPicker\(m\.id, repoId\)\)/);
   assert.match(
     picker,
@@ -30,7 +29,6 @@ test("a loaded row is selected, picked and ejected by its checkpoint, not its la
   assert.match(runtime, /statusRes\.serving_checkpoints,\s*\);/);
   assert.match(runtime, /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/);
   assert.match(picker, /const checkpoint = entry\.checkpoint \?\? entry\.id;\s*const optionKey = makeModelOptionKey\("loaded", checkpoint\);\s*const isSelected = modelIdsMatchForPicker\(value, checkpoint\);/);
-  // Two files sharing a label are two rows, keyed by path.
   assert.match(runtime, /const known = new Map\(current\.map\(\(m\) => \[m\.checkpoint \?\? m\.id, m\]\)\);/);
   assert.match(picker, /onSelect\(checkpoint, \{/);
   assert.match(picker, /onEject\?\.\(checkpoint\);/);
