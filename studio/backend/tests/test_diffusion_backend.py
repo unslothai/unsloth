@@ -7232,6 +7232,28 @@ def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
     assert dmod._transformer_quant_backend(hostile) is None
 
 
+def test_status_reports_the_load_time_baked_loras(fake_runtime, tmp_path):
+    # Vary compares a gallery record's baked_loras with the load's, so status must carry the same ids, and an
+    # unbaked or unloaded state must say none rather than omit the key.
+    from models.inference import DiffusionStatusResponse
+
+    assert DiffusionBackend().status()["baked_loras"] == []
+    backend = DiffusionBackend()
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    _load_into(backend, tmp_path, gguf_filename = "z-image-turbo-Q8_0.gguf", base_repo = None)
+    assert backend.status()["baked_loras"] == []
+    pipe = backend._state.pipe
+    pipe._unsloth_loras = (
+        ("sloth", "/adapters/sloth.safetensors", 0.8),
+        ("ink", "/adapters/ink.safetensors", 0.5),
+    )
+    pipe._unsloth_loras_baked = True
+    status = backend.status()
+    assert status["baked_loras"] == ["sloth", "ink"]
+    assert DiffusionStatusResponse(**status).model_dump()["baked_loras"] == ["sloth", "ink"]
+    assert DiffusionStatusResponse(loaded = True).model_dump()["baked_loras"] == []
+
+
 def test_the_unloaded_status_declares_the_quant_backend_key():
     status = DiffusionBackend().status()
     assert "transformer_quant_backend" in status
