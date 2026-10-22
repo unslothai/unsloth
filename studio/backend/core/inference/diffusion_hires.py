@@ -325,7 +325,10 @@ class SdCppHiresPlan:
     base_width: int
     base_height: int
     target: tuple[int, int]
+    # Steps the Hires pass actually samples (sd.cpp derives them from the sent ``steps`` and the strength).
     refine_steps: int
+    # The ``steps`` sent so sd.cpp samples the requested count (A1111 runs exactly ``Hires steps``); None = requested.
+    request_steps: Optional[int] = None
 
 
 def plan_sd_cpp(
@@ -365,12 +368,14 @@ def plan_sd_cpp(
     from core.inference.diffusion_conditioning import check_output_size
 
     check_output_size(family, *target)
+    request_steps = sd_cpp_hires_request_steps(int(params.steps or steps), float(params.denoise))
     return SdCppHiresPlan(
         params = params,
         base_width = int(width),
         base_height = int(height),
         target = target,
-        refine_steps = int(params.steps or steps),
+        refine_steps = sd_cpp_hires_sampled_steps(request_steps, float(params.denoise)),
+        request_steps = request_steps,
     )
 
 
@@ -444,17 +449,33 @@ def sd_cpp_hires_sampled_steps(steps: int, denoise: float) -> int:
     return max(1, t_enc)
 
 
+def sd_cpp_hires_request_steps(steps: int, denoise: float) -> int:
+    """The ``steps`` to send so sd.cpp samples exactly ``steps`` (A1111 setup_img2img_steps: ``t_enc = requested - 1``,
+    i.e. the requested count). sd.cpp truncates twice, so 20 at 0.35 samples 19; the nearest sent count that samples
+    the request is used, else the request itself (some counts are unreachable, e.g. 20 at 0.35)."""
+    steps = max(1, int(steps))
+    for sent in range(steps, steps + 4):
+        if sd_cpp_hires_sampled_steps(sent, denoise) == steps:
+            return sent
+    return steps
+
+
 def sd_cpp_payload(
-    hires: HiresParams, base_steps: int, target: tuple[int, int], upscaler_name: str
+    hires: HiresParams,
+    base_steps: int,
+    target: tuple[int, int],
+    upscaler_name: str,
+    request_steps: Optional[int] = None,
 ) -> dict:
-    """``steps`` is the exact refine count in sd.cpp too; the size is explicit so both engines match."""
+    """``request_steps`` (plan_sd_cpp) makes sd.cpp sample the requested refine count; the size is explicit so both
+    engines match."""
     return {
         "enabled": True,
         "upscaler": upscaler_name,
         "scale": float(hires.scale),
         "target_width": int(target[0]),
         "target_height": int(target[1]),
-        "steps": int(hires.steps or base_steps),
+        "steps": int(request_steps or hires.steps or base_steps),
         "denoising_strength": float(hires.denoise),
     }
 

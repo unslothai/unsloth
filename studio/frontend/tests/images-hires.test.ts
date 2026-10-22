@@ -12,6 +12,7 @@ import {
   hiresRequest,
   hiresSummary,
   hiresTargetSize,
+  hiresMinDenoiseFor,
   hiresVisible,
   matchHiresUpscaler,
   resolveRestoredHires,
@@ -233,4 +234,29 @@ test("a capped target exported as Hires resize restores to the factor that reach
   assert.equal(choice.scale, 1.33);
   assert.deepEqual(hiresTargetSize(1536, 1024, choice.scale), { width: 2048, height: 1360 });
   assert.deepEqual(hiresBaseSize(settings), { width: 1536, height: 1024 });
+});
+
+test("the latent upscaler never sends upscale-only denoise 0", () => {
+  const zero = { ...HIRES_OFF, enabled: true, denoise: 0 };
+  assert.equal(hiresMinDenoiseFor(zero, SDXL), 0.01); // SDXL's default upscaler is latent
+  assert.equal(hiresRequest(zero, SDXL, "create")?.denoise, 0.01);
+  assert.equal(hiresMinDenoiseFor({ ...zero, upscaler: "lanczos" }, SDXL), 0);
+  assert.equal(hiresRequest({ ...zero, upscaler: "lanczos" }, SDXL, "create")?.denoise, 0);
+  assert.deepEqual(hiresNotApplied(zero, SDXL), [
+    "Hires denoise 0 (the latent upscaler needs a refine pass; using 0.01)",
+  ]);
+});
+
+test("a Hires resize no single factor reproduces stays not applied", () => {
+  for (const line of [
+    "Size: 512x512, Denoising strength: 0.5, Hires resize: 1024x768", // A1111 crops to another aspect
+    "Size: 512x512, Denoising strength: 0.5, Hires resize: 256x256", // below 1x
+    "Size: 512x512, Denoising strength: 0.5, Hires resize: 4096x4096", // above 4x and the size cap
+  ]) {
+    const r = parseA1111Parameters(`x\nSteps: 20, Seed: 2, ${line}`);
+    assert.ok(r);
+    assert.equal(hiresFromRecipe(recipeSettings(r, DEFAULTS)).enabled, false, line);
+    assert.equal(importNotApplied(r).length, 1, line);
+    assert.match(importNotApplied(r)[0], /Hires resize/, line);
+  }
 });

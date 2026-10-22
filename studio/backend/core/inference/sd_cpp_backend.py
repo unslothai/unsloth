@@ -4494,12 +4494,7 @@ class SdCppDiffusionBackend:
                         steps = int(steps),
                     )
                     # sd.cpp samples the base and Hires schedules separately, each reporting its own denominator.
-                    passes = (
-                        int(steps),
-                        diffusion_hires.sd_cpp_hires_sampled_steps(
-                            hires_plan.refine_steps, hires_plan.params.denoise
-                        ),
-                    )
+                    passes = (int(steps), int(hires_plan.refine_steps))
                     self._gen = _SdGen(total_steps = sum(passes), passes = passes)
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
@@ -4734,6 +4729,7 @@ class SdCppDiffusionBackend:
                 int(steps),
                 hires_plan.target,
                 diffusion_hires.sd_cpp_upscaler_name(upscaler_id, staged_name),
+                request_steps = hires_plan.request_steps,
             )
 
         try:

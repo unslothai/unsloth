@@ -990,3 +990,43 @@ def test_mlx_engine_takes_the_hires_keyword_and_refuses_it():
     from core.inference.mlx_diffusion_backend import MlxDiffusionBackend
     with pytest.raises(ValueError, match = "not available on the MLX engine"):
         MlxDiffusionBackend.generate(types.SimpleNamespace(), prompt = "p", hires = hires.HiresParams())
+
+
+def test_native_hires_sends_the_steps_that_sample_the_requested_count(monkeypatch):
+    # sd.cpp samples int(int(n / s) * s) (capped at n / s - 1): 5 at 1.0 needs 6 sent; 20 at 0.35 has no exact
+    # count (20 -> 19, 21 -> 21), so the request is sent and the sampled 19 is what the plan reports.
+    assert hires.sd_cpp_hires_request_steps(5, 1.0) == 6
+    assert hires.sd_cpp_hires_request_steps(14, 0.5) == 14
+    assert hires.sd_cpp_hires_request_steps(20, 0.35) == 20
+    for steps, denoise in ((5, 1.0), (14, 0.5), (8, 0.3), (30, 0.7), (1, 0.5)):
+        sent = hires.sd_cpp_hires_request_steps(steps, denoise)
+        assert hires.sd_cpp_hires_sampled_steps(sent, denoise) == steps, (steps, denoise)
+    monkeypatch.setattr(hires, "sd_cpp_supports_hires", lambda binary: True)
+    plan = hires.plan_sd_cpp(
+        _fam("sdxl"),
+        hires.HiresParams(denoise = 1.0, steps = 5, upscaler = "lanczos"),
+        mode = "server",
+        binary = "new",
+        width = 512,
+        height = 512,
+        steps = 20,
+    )
+    assert (plan.request_steps, plan.refine_steps) == (6, 5)
+    block = hires.sd_cpp_payload(
+        plan.params, 20, plan.target, "Lanczos", request_steps = plan.request_steps
+    )
+    assert block["steps"] == 6
+    assert hires.result_block(plan)["refine_steps"] == 5 and hires.result_block(plan)["steps"] == 5
+
+
+@pytest.mark.parametrize("env", ["TRANSFORMERS_OFFLINE", "HF_HUB_OFFLINE"])
+def test_catalog_download_honours_every_offline_switch(tmp_path, monkeypatch, env):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv(env, "1")
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        ups.urllib.request, "urlopen", lambda *a, **k: pytest.fail("network used while offline")
+    )
+    with pytest.raises(ValueError, match = "offline"):
+        ups.resolve_model_path(ups.CATALOG[0].id)

@@ -27,6 +27,12 @@ export function hiresMinDenoise(cap: HiresCapability): number {
   return finite(cap.min_denoise) ?? 0;
 }
 
+/** The smallest denoise for this choice: the latent upscaler always needs a refine pass (the backend refuses 0). */
+export function hiresMinDenoiseFor(choice: HiresChoice, cap: HiresCapability): number {
+  const latent = cap.upscalers.find((u) => u.id === effectiveUpscaler(choice, cap))?.kind === "latent";
+  return Math.max(hiresMinDenoise(cap), latent ? HIRES_DENOISE_STEP : 0);
+}
+
 export function hiresGuidanceSupported(cap: HiresCapability): boolean {
   return cap.supports_guidance !== false;
 }
@@ -97,7 +103,7 @@ export function hiresRequest(
 ): HiresRequest | undefined {
   if (!choice.enabled || !hiresVisible(cap, workflow)) return undefined;
   // Snap to the 0.01 grid (a typed 0.004 would otherwise be refused), never below the engine's minimum.
-  const denoise = clamp(Math.round(choice.denoise / HIRES_DENOISE_STEP) * HIRES_DENOISE_STEP, hiresMinDenoise(cap), 1);
+  const denoise = clamp(Math.round(choice.denoise / HIRES_DENOISE_STEP) * HIRES_DENOISE_STEP, hiresMinDenoiseFor(choice, cap), 1);
   return {
     scale: choice.scale,
     denoise: Number(denoise.toFixed(2)),
@@ -176,6 +182,8 @@ export function hiresNotApplied(choice: HiresChoice, cap: HiresCapability | null
     notes.push(`Hires CFG Scale ${choice.guidance} (not available on this engine; using the base guidance)`);
   if (choice.denoise < hiresMinDenoise(cap))
     notes.push(`Hires denoise ${choice.denoise} (this engine needs at least ${hiresMinDenoise(cap)})`);
+  else if (choice.denoise < hiresMinDenoiseFor(resolveRestoredHires(choice, cap), cap))
+    notes.push(`Hires denoise ${choice.denoise} (the latent upscaler needs a refine pass; using ${hiresMinDenoiseFor(resolveRestoredHires(choice, cap), cap)})`);
   return notes;
 }
 
@@ -232,9 +240,16 @@ export function parseHiresInfotext(
   // reaches it from Size; the backend's own cap lands on the same size again.
   const wh = resizeKey === undefined ? null : fields[resizeKey].trim().match(/^(\d+)\s*x\s*(\d+)$/i);
   if (scale === undefined && wh && typeof size.width === "number" && typeof size.height === "number" && size.width > 0 && size.height > 0) {
-    const factor = Math.max(Number(wh[1]) / size.width, Number(wh[2]) / size.height);
-    if (Number.isFinite(factor) && factor > 0) {
-      scale = clamp(Math.round(factor * 100) / 100, 1, 4);
+    const rw = Number(wh[1]);
+    const rh = Number(wh[2]);
+    const factor = Math.round(Math.max(rw / size.width, rh / size.height) * 100) / 100;
+    // Only a size one factor reproduces (Studio's own export); A1111 crops another aspect, which Studio cannot.
+    const reaches = (maxSide: number) => {
+      const t = hiresTargetSize(size.width as number, size.height as number, factor, maxSide);
+      return t.width === rw && t.height === rh;
+    };
+    if (factor >= 1 && factor <= 4 && (reaches(2048) || reaches(Math.max(rw, rh)))) {
+      scale = factor;
       delete fields[resizeKey as string];
     }
   }

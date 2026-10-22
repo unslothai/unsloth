@@ -15,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   effectiveUpscaler,
   hiresGuidanceSupported,
-  hiresMinDenoise,
+  hiresMinDenoiseFor,
   hiresTargetSize,
   type HiresCapability,
   type HiresChoice,
@@ -87,7 +87,7 @@ export function HiresControls({
 }) {
   const target = hiresTargetSize(width, height, choice.scale, capability.max_side);
   const upscaler = effectiveUpscaler(choice, capability);
-  const minDenoise = hiresMinDenoise(capability);
+  const minDenoise = hiresMinDenoiseFor(choice, capability);
   return (
     <div className="flex flex-col gap-2 pt-2">
       <div className="flex items-center justify-between">
@@ -161,7 +161,13 @@ export function HiresControls({
               label="Upscaler"
               hint="Latent enlarges the latents (SDXL), Lanczos the pixels, R-ESRGAN runs an upscaling model first (downloaded on first use)."
             />
-            <Select value={upscaler} onValueChange={(id) => onChange({ ...choice, upscaler: id })}>
+            <Select
+              value={upscaler}
+              onValueChange={(id) => {
+                const next = { ...choice, upscaler: id };
+                onChange({ ...next, denoise: Math.max(next.denoise, hiresMinDenoiseFor(next, capability)) });
+              }}
+            >
               <SelectTrigger className="h-8 w-44 text-xs" aria-label="Hires upscaler">
                 <SelectValue />
               </SelectTrigger>

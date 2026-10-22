@@ -164,7 +164,9 @@ def check_upscaler_id(upscaler_id: str) -> None:
 
 
 def _offline() -> bool:
-    return (os.environ.get("HF_HUB_OFFLINE") or "").strip().lower() in ("1", "true", "yes", "on")
+    """Every offline switch the backend honours: HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE and a force_hf_offline window."""
+    from utils.utils import hf_env_offline
+    return hf_env_offline()
 
 
 def _sha256(path: Path) -> str:
