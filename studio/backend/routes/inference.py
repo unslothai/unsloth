@@ -16049,7 +16049,9 @@ def _mlx_estimate_offload(
         kv_bits = kv_bits,
         vision = vision,
     )
-    return ({"offload": offload} if any(offload) else {}), parts
+    *offload, step = offload
+    route = {"offload": tuple(offload)} if any(offload) else {}
+    return ({**route, "prefill_chunk": step} if step else route), parts
 
 
 def _mlx_offload_warning(info: dict) -> Optional[str]:
