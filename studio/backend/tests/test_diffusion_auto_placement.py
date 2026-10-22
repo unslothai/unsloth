@@ -431,6 +431,25 @@ def test_unet_family_moves_its_text_encoders(monkeypatch):
     assert {"text_encoder", "text_encoder_2"} <= set(d.plan.secondary_components)
 
 
+def test_video_umt5_text_encoder_moves_to_a_second_t4(monkeypatch):
+    # Wan 2.1 1.3B: the 10.6 GiB umt5-xxl encoder fits a free 15 GB T4 once that card is priced for an encoder
+    # forward (weights + 1 GiB + ComfyUI's 1.2 GiB floor) instead of a denoising card's overhead and margin.
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    d = decide(monkeypatch, host, _sizes(dit = 2700, te = 10834, vae = 485), headroom = 3500)
+    assert d.one_card.offload_policy != dm.OFFLOAD_NONE
+    assert d.plan.secondary_ordinal == 1 and d.plan.offload_policy == dm.OFFLOAD_NONE
+    assert set(d.plan.secondary_components) == {"text_encoder"}
+    assert _placement(d)["chosen"] == "companion_split"
+
+
+def test_encoder_card_pricing_never_admits_an_encoder_that_does_not_fit_the_free_memory(
+    monkeypatch,
+):
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    d = decide(monkeypatch, host, _sizes(dit = 2700, te = 14000, vae = 485), headroom = 3500)
+    assert d.plan.secondary_ordinal is None
+
+
 # The discrete reserve: a partly used big card.
 @pytest.mark.parametrize(
     "total, expected",
