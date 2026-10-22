@@ -8,7 +8,8 @@ Each token belongs to one adapter (or none, id -1). Tokens are stable-sorted by 
 (``MultiLoraBatch``) and every kernel gathers rows through that order, like Punica's SGMV and vLLM's
 ``lora_shrink`` / ``lora_expand``, which are inference only. Training adds dX and per-adapter dA / dB
 reduced over each adapter's own tokens (``_seg_wgrad_kernel``), so with ``per_adapter_loss``,
-``clip_grad_norm_per_adapter_`` and an elementwise optimizer each adapter trains as it would alone.
+``drop_absent_adapter_grads_``, ``clip_grad_norm_per_adapter_`` and an elementwise optimizer each adapter
+trains as it would alone.
 
 ``UNSLOTH_MULTI_LORA_TRITON=0`` (or no CUDA / XPU) uses a PyTorch loop. LoRA dropout is unsupported.
 """
@@ -49,6 +50,7 @@ __all__ = [
     "per_adapter_loss",
     "per_adapter_grad_norm",
     "clip_grad_norm_per_adapter_",
+    "drop_absent_adapter_grads_",
     "adapter_state_dict",
 ]
 
@@ -483,10 +485,11 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
 
 
 class MultiLoraLinear(nn.Module):
-    """A frozen base linear layer with ``num_adapters`` LoRA adapters stacked as (U, r, in) and (U, out, r).
+    """A frozen base linear layer with ``num_adapters`` LoRA adapters, one (A, B) parameter pair each.
 
-    ``ranks`` / ``alphas`` may differ per adapter: the stack uses the largest rank, padded with zeros that
-    receive zero gradient. Initialisation matches PEFT (kaiming uniform A, zero B).
+    Separate parameters per adapter keep optimizer state per adapter: an adapter absent from a batch gets
+    no gradient (``drop_absent_adapter_grads_``), so AdamW leaves it, its moments and its step count alone.
+    ``r`` / ``lora_alpha`` may differ per adapter. Initialisation matches PEFT (kaiming uniform A, zero B).
     """
 
     def __init__(
@@ -511,14 +514,14 @@ class MultiLoraLinear(nn.Module):
         if len(ranks) != num_adapters or len(alphas) != num_adapters:
             raise ValueError("Need one rank and one alpha per adapter.")
         self.ranks = ranks
-        R = max(ranks)
         out_features, in_features = base.out_features, base.in_features
         device = base.weight.device
-        self.lora_A = nn.Parameter(
-            torch.zeros(num_adapters, R, in_features, dtype = dtype, device = device)
+        kw = dict(dtype = dtype, device = device)
+        self.lora_A = nn.ParameterList(
+            [nn.Parameter(torch.zeros(k, in_features, **kw)) for k in ranks]
         )
-        self.lora_B = nn.Parameter(
-            torch.zeros(num_adapters, out_features, R, dtype = dtype, device = device)
+        self.lora_B = nn.ParameterList(
+            [nn.Parameter(torch.zeros(out_features, k, **kw)) for k in ranks]
         )
         scales = [a / (math.sqrt(k) if use_rslora else k) for a, k in zip(alphas, ranks)]
         self.register_buffer("scales", torch.tensor(scales, dtype = torch.float32, device = device))
@@ -527,23 +530,31 @@ class MultiLoraLinear(nn.Module):
 
     @torch.no_grad()
     def reset_parameters(self):
-        for u, k in enumerate(self.ranks):
-            nn.init.kaiming_uniform_(self.lora_A[u, :k], a = math.sqrt(5))
-        self.lora_B.zero_()
+        for A, B in zip(self.lora_A, self.lora_B):
+            nn.init.kaiming_uniform_(A, a = math.sqrt(5))
+            B.zero_()
 
     @property
     def num_adapters(self) -> int:
-        return self.lora_A.shape[0]
+        return len(self.lora_A)
+
+    def stacked(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(U, R, in) and (U, out, R), zero padded to the largest rank."""
+        R = max(self.ranks)
+        A = torch.stack([F.pad(a, (0, 0, 0, R - a.shape[0])) for a in self.lora_A])
+        B = torch.stack([F.pad(b, (0, R - b.shape[1])) for b in self.lora_B])
+        return A, B
 
     def forward(self, x):
         W = self.base_layer.weight
+        A, B = self.stacked()
         return multi_lora_linear(
             x,
             W,
             _base_quant_state(self.base_layer, W),
             getattr(self.base_layer, "bias", None),
-            self.lora_A,
-            self.lora_B,
+            A,
+            B,
             self.scales,
             self.batch,
         )
@@ -551,14 +562,14 @@ class MultiLoraLinear(nn.Module):
 
 def inject_multi_lora(
     model: nn.Module,
-    target_modules: Iterable[str],
+    target_modules: str | Iterable[str],
     num_adapters: int,
     r: int | Iterable[int] = 16,
     lora_alpha: float | Iterable[float] = 16,
     use_rslora: bool = False,
 ) -> list[str]:
-    """Freeze ``model`` and wrap every linear layer whose name ends in a target with ``MultiLoraLinear``."""
-    targets = tuple(target_modules)
+    """Freeze ``model`` and wrap every linear layer named, or dotted-suffixed by, a target, as PEFT does."""
+    targets = (target_modules,) if isinstance(target_modules, str) else tuple(target_modules)
     for p in model.parameters():
         p.requires_grad_(False)
     replaced = []
@@ -589,12 +600,35 @@ def set_multi_lora_batch(
     layers = _layers(model)
     if not layers:
         raise ValueError("The model has no multi-LoRA layers.")
-    first = layers[0][1]
-    adapter_ids = adapter_ids.to(first.lora_A.device)
-    batch = MultiLoraBatch.from_adapter_ids(adapter_ids, first.num_adapters, seq_len)
+    # One routing table per device: a model split over GPUs keeps each layer's indices local.
+    by_device: dict[torch.device, MultiLoraBatch] = {}
     for _, layer in layers:
-        layer.batch = batch
-    return batch
+        device = layer.lora_A[0].device
+        if device not in by_device:
+            by_device[device] = MultiLoraBatch.from_adapter_ids(
+                adapter_ids.to(device), layer.num_adapters, seq_len
+            )
+        layer.batch = by_device[device]
+    return next(iter(by_device.values()))
+
+
+@torch.no_grad()
+def drop_absent_adapter_grads_(model: nn.Module) -> list[int]:
+    """Clear the gradients of adapters with no tokens in the current batch; call before ``optimizer.step()``.
+
+    PyTorch optimizers skip a parameter whose ``grad`` is None, so an absent adapter keeps its weights,
+    moments and step count, exactly as if it had not trained this step. Returns the absent adapters.
+    """
+    layers = _layers(model)
+    if not layers or layers[0][1].batch is None:
+        return []
+    seg = layers[0][1].batch.seg_start
+    absent = [u for u, n in enumerate((seg[1:] - seg[:-1]).tolist()) if n == 0]
+    for _, layer in layers:
+        for u in absent:
+            layer.lora_A[u].grad = None
+            layer.lora_B[u].grad = None
+    return absent
 
 
 def per_adapter_loss(
@@ -630,18 +664,31 @@ def per_adapter_loss(
     return losses.sum(), losses.detach()
 
 
+def _adapter_grads(model: nn.Module) -> list[list[torch.Tensor]]:
+    layers = _layers(model)
+    grads = [[] for _ in range(layers[0][1].num_adapters)] if layers else []
+    for _, layer in layers:
+        for u in range(layer.num_adapters):
+            for p in (layer.lora_A[u], layer.lora_B[u]):
+                if p.grad is not None:
+                    grads[u].append(p.grad)
+    return grads
+
+
 def per_adapter_grad_norm(model: nn.Module) -> torch.Tensor:
-    """(U,) gradient L2 norm of each adapter over every multi-LoRA layer."""
-    total = None
-    for _, layer in _layers(model):
-        for p in (layer.lora_A, layer.lora_B):
-            if p.grad is None:
-                continue
-            sq = p.grad.float().pow(2).flatten(1).sum(1)
-            total = sq if total is None else total + sq
-    if total is None:
+    """(U,) gradient L2 norm of each adapter over every multi-LoRA layer (0 for an adapter without grads)."""
+    grads = _adapter_grads(model)
+    if not any(grads):
         raise ValueError("No multi-LoRA gradients.")
-    return total.sqrt()
+    device = next(g for gs in grads for g in gs).device
+    return torch.stack(
+        [
+            torch.linalg.vector_norm(torch.stack([g.float().norm().to(device) for g in gs]))
+            if gs
+            else torch.zeros((), device = device)
+            for gs in grads
+        ]
+    )
 
 
 @torch.no_grad()
@@ -653,11 +700,15 @@ def clip_grad_norm_per_adapter_(
     """Clip each adapter's gradient to ``max_norm`` on its own, so one adapter never rescales another."""
     norms = per_adapter_grad_norm(model)
     coef = (max_norm / (norms + eps)).clamp(max = 1.0)
-    for _, layer in _layers(model):
-        for p in (layer.lora_A, layer.lora_B):
-            if p.grad is not None:
-                p.grad.mul_(coef.to(p.grad.dtype).view(-1, *([1] * (p.grad.dim() - 1))))
+    for u, gs in enumerate(_adapter_grads(model)):
+        for g in gs:
+            g.mul_(coef[u].to(device = g.device, dtype = g.dtype))
     return norms
+
+
+def _full(p: torch.Tensor) -> torch.Tensor:
+    # An FSDP2-sharded parameter is a DTensor: export the whole tensor, not this rank's shard.
+    return p.full_tensor() if hasattr(p, "full_tensor") else p
 
 
 def adapter_state_dict(
@@ -668,7 +719,6 @@ def adapter_state_dict(
     """Adapter ``adapter`` as a PEFT LoRA state dict (``<name>.lora_A.weight`` / ``lora_B.weight``)."""
     out = {}
     for name, layer in _layers(model):
-        k = layer.ranks[adapter]
-        out[f"{prefix}{name}.lora_A.weight"] = layer.lora_A[adapter, :k].detach().clone()
-        out[f"{prefix}{name}.lora_B.weight"] = layer.lora_B[adapter, :, :k].detach().clone()
+        out[f"{prefix}{name}.lora_A.weight"] = _full(layer.lora_A[adapter]).detach().clone()
+        out[f"{prefix}{name}.lora_B.weight"] = _full(layer.lora_B[adapter]).detach().clone()
     return out

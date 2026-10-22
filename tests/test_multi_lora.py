@@ -81,10 +81,8 @@ def _tiny_model(U, ranks = 4):
     ml.inject_multi_lora(model, ["0", "2"], U, r = ranks, lora_alpha = 8)
     for _, layer in ml._layers(model):
         layer.double()
-        torch.nn.init.normal_(layer.lora_B)
-        if not isinstance(ranks, int):
-            for u, k in enumerate(layer.ranks):
-                layer.lora_B.data[u, :, k:] = 0
+        for B in layer.lora_B:
+            torch.nn.init.normal_(B)
     return model
 
 
@@ -97,9 +95,9 @@ def test_each_adapter_gets_only_its_own_gradient():
     # Loss on adapter 1's rows only: adapters 0 and 2 must see exactly zero.
     out[ids == 1].pow(2).sum().backward()
     for _, layer in ml._layers(model):
-        for p in (layer.lora_A, layer.lora_B):
-            assert p.grad[0].abs().max() == 0 and p.grad[2].abs().max() == 0
-            assert p.grad[1].abs().max() > 0
+        for params in (layer.lora_A, layer.lora_B):
+            assert params[0].grad.abs().max() == 0 and params[2].grad.abs().max() == 0
+            assert params[1].grad.abs().max() > 0
     assert all(not p.requires_grad for n, p in model.named_parameters() if "lora_" not in n)
 
 
@@ -117,6 +115,7 @@ def test_batched_training_matches_each_adapter_trained_alone():
             err = (model(x[rows]) - target[rows]).pow(2).mean(1)
             loss = sum(err[row_ids == u].mean() for u in range(U) if (row_ids == u).any())
             loss.backward()
+            ml.drop_absent_adapter_grads_(model)
             ml.clip_grad_norm_per_adapter_(model, 0.5)
             opt.step()
         return model
@@ -129,22 +128,40 @@ def test_batched_training_matches_each_adapter_trained_alone():
             torch.testing.assert_close(a.lora_B[u], b.lora_B[u], rtol = 1e-10, atol = 1e-12)
 
 
-def test_padded_ranks_stay_zero_and_export_at_their_own_rank():
+def test_ranks_differ_per_adapter_and_export_at_their_own_rank():
     model = _tiny_model(2, ranks = [2, 4])
-    opt = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr = 1e-2, weight_decay = 0.1
-    )
-    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 0, 1]))
-    for _ in range(3):
-        opt.zero_grad()
-        model(torch.randn(4, 16, dtype = torch.float64)).sum().backward()
-        opt.step()
     layer = ml._layers(model)[0][1]
-    assert layer.lora_A[0, 2:].abs().max() == 0 and layer.lora_B[0, :, 2:].abs().max() == 0
+    A, B = layer.stacked()
+    assert A.shape == (2, 4, 16) and B.shape == (2, 24, 4)
+    assert A[0, 2:].abs().max() == 0 and B[0, :, 2:].abs().max() == 0
     state = ml.adapter_state_dict(model, 0)
     assert state["base_model.model.0.lora_A.weight"].shape == (2, 16)
     assert state["base_model.model.0.lora_B.weight"].shape == (24, 2)
     assert layer.scales.tolist() == [4.0, 2.0]
+
+
+def test_an_adapter_absent_from_the_batch_is_not_stepped():
+    model = _tiny_model(3)
+    params = [p for p in model.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr = 1e-2, weight_decay = 0.1)
+    before = [p.detach().clone() for p in params]
+    ml.set_multi_lora_batch(model, torch.tensor([0, 2, 0, 2]))
+    model(torch.randn(4, 16, dtype = torch.float64)).sum().backward()
+    assert ml.drop_absent_adapter_grads_(model) == [1]
+    ml.clip_grad_norm_per_adapter_(model, 1.0)
+    opt.step()
+    for (name, p), old in zip(
+        [(n, p) for n, p in model.named_parameters() if p.requires_grad], before
+    ):
+        moved = not torch.equal(p, old)
+        assert moved == (".1" not in name.rsplit("lora_", 1)[1]), name
+        assert (p in opt.state and len(opt.state[p]) > 0) == moved, name
+
+
+def test_a_single_string_target_is_one_name():
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    assert ml.inject_multi_lora(model, "1", 2) == ["1"]
 
 
 def test_per_adapter_loss_is_each_adapters_own_mean():
