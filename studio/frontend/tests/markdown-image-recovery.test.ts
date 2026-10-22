@@ -8,7 +8,11 @@ import ts from "@typescript/typescript6";
 
 import { readSrc } from "./helpers/kit.ts";
 
-function renderer(backendPathUrl = (url: string) => url) {
+function renderer(
+  backendPathUrl = (url: string) => url,
+  desktopSignedMediaPath = (_url: string): string | null => null,
+  sandboxState: Record<string, unknown> = { status: "idle" },
+) {
   const source = readSrc("components/assistant-ui/markdown-text.tsx");
   const parsed = ts.createSourceFile(
     "markdown-text.tsx",
@@ -61,7 +65,8 @@ function renderer(backendPathUrl = (url: string) => url) {
     useChatProjectScope: () => null,
     markdownSandboxImageSrc: () => null,
     backendPathUrl,
-    useSandboxImage: () => ({ state: { status: "idle" } }),
+    desktopSignedMediaPath,
+    useSandboxImage: () => ({ state: sandboxState }),
     HugeiconsIcon: "icon",
     Download01Icon: "download",
   };
@@ -110,4 +115,14 @@ test("a backend image keeps its own src, never the loopback URL Desktop's img-sr
   const render = renderer((url) => `http://127.0.0.1:8888${url}`);
   const src = "/api/inference/images/gallery/img-1/file-signed?token=t";
   assert.equal(render({ src }).src, src);
+});
+
+test("on Desktop a signed media image renders from its fetched blob", () => {
+  const src = "/api/inference/images/gallery/img-1/file-signed?token=t";
+  const render = renderer(
+    (url) => url,
+    (url) => url,
+    { status: "loaded", url: "blob:media", blob: {} },
+  );
+  assert.equal(render({ src }).src, "blob:media");
 });
