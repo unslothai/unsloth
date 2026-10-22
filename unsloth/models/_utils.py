@@ -8047,13 +8047,23 @@ def _mx_autocast_forward(self, x):
 
 
 def _nvfp4_any_rank_forward(self, x):
-    # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs; vision layers see rank 4+.
+    # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs (vision layers see rank 4+), and
+    # its quantizer asserts contiguous bfloat16 / float32 activations (nvfp4_quantize).
     from torchao.prototype.qat import NVFP4FakeQuantizedLinear
 
-    if x.dim() == 2:
-        return NVFP4FakeQuantizedLinear.forward(self, x)
-    out = NVFP4FakeQuantizedLinear.forward(self, x.reshape(-1, x.shape[-1]))
-    return out.view(*x.shape[:-1], out.shape[-1])
+    out_dtype = x.dtype
+    # float16 autocast hands over float16 activations (an earlier Linear / SDPA); prepare only
+    # admits bfloat16 / float32 weights, so quantize from the weight dtype and return what an
+    # autocast Linear would.
+    if x.dtype == torch.float16 and torch.is_autocast_enabled(x.device.type):
+        x = x.to(self.weight.dtype)
+    x2 = x if x.dim() == 2 else x.reshape(-1, x.shape[-1])
+    if not x2.is_contiguous():
+        x2 = x2.contiguous()
+    out = NVFP4FakeQuantizedLinear.forward(self, x2)
+    if x.dim() != 2:
+        out = out.view(*x.shape[:-1], out.shape[-1])
+    return out if out.dtype == out_dtype else out.to(out_dtype)
 
 
 def _patch_microscaling_qat_forwards(model) -> None:
