@@ -12,6 +12,7 @@ __all__ = [
     "fsdp2_gathered",
     "fsdp2_gather_active",
     "mesh_writer_rank",
+    "writes_off_rank0",
     "install_dcp_bnb_state_dict",
     "reduce_unsharded_trainable_grads",
 ]
@@ -79,6 +80,15 @@ def _save_timeout():
         return datetime.timedelta(days = 7)
 
 
+def _unit_mesh(unit):
+    """The mesh an FSDP2 unit shards its parameters over, whatever state the parameters are in."""
+    try:
+        group = unit._get_fsdp_state()._fsdp_param_group
+        return group.mesh_info.mesh if group is not None else None
+    except Exception:
+        return None
+
+
 def mesh_writer_rank(model):
     """Global rank that writes a collective save of `model`: the lowest rank of the mesh its FSDP2
     parameters live on. Rank 0 for the default mesh over every rank (and without a process group); a
@@ -95,11 +105,37 @@ def mesh_writer_rank(model):
                 (p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None
             )
         if mesh is None:
+            # An eval forward or set_reshard_after_forward(False) can leave every parameter
+            # unsharded (plain tensors): the FSDP units still hold their mesh.
+            mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
+        if mesh is None:
             mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
     try:
         return int(mesh.mesh.min()) if mesh is not None else 0
     except Exception:
         return 0
+
+
+@contextlib.contextmanager
+def writes_off_rank0(model, writer_rank):
+    """transformers 5 `PreTrainedModel.save_pretrained` writes only on global rank 0 once a process
+    group exists (`should_save_on_this_rank`, transformers/distributed/mixin.py), whatever
+    `is_main_process` says: a sub-mesh writer (`writer_rank` != 0) would silently write nothing.
+    Lets every PreTrainedModel inside `model` write on this rank for the block; a no-op on rank 0 and
+    on transformers without that check."""
+    patched = []
+    if writer_rank != 0 and isinstance(model, torch.nn.Module):
+        for module in model.modules():
+            if callable(getattr(module, "should_save_on_this_rank", None)) and (
+                "should_save_on_this_rank" not in module.__dict__
+            ):
+                module.should_save_on_this_rank = lambda is_main_process: bool(is_main_process)
+                patched.append(module)
+    try:
+        yield
+    finally:
+        for module in patched:
+            module.__dict__.pop("should_save_on_this_rank", None)
 
 
 def _wait_for_writer(dist, writer, writer_rank = 0):
@@ -218,15 +254,16 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    dist = _dist()
-    rank = dist.get_rank() if dist is not None else 0
-    writer_rank = mesh_writer_rank(model)
-    writer = rank == writer_rank
     for unit in units:
         # An eval forward leaves the last block and the lm_head unit gathered; make every
         # parameter a DTensor again so all ranks gather the same list.
         if hasattr(unit, "reshard"):
             unit.reshard()
+    # After the reshard: an unsharded parameter is a plain tensor and carries no mesh.
+    dist = _dist()
+    rank = dist.get_rank() if dist is not None else 0
+    writer_rank = mesh_writer_rank(model)
+    writer = rank == writer_rank
     owners = {}
     for module in model.modules():
         for name, param in module._parameters.items():
@@ -263,7 +300,8 @@ def fsdp2_gathered(
                     module._parameters[name] = new
         _ACTIVE.append(writer)
         pushed = True
-        yield writer
+        with writes_off_rank0(model, writer_rank if writer else 0):
+            yield writer
     finally:
         if pushed:
             _ACTIVE.pop()

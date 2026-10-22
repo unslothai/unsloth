@@ -13,7 +13,9 @@ sharding its own model replica on its own data):
   their own fit layout, and one pair shards while the other never calls shard_model;
 * collective saves (fsdp2_gathered, native_full_state_dict, native_save_optimizer) write from the
   mesh's own first rank: pair [2, 3] never contains rank 0, and both pairs save at the same time
-  without releasing each other's waiting ranks."""
+  without releasing each other's waiting ranks; also with every parameter left unsharded by a
+  forward (no DTensor to read the mesh from), and through the Trainer hooks (save_model for a LoRA
+  and a full model, the optimizer and scheduler save), whose should_save is global rank 0 only."""
 
 import multiprocessing
 import os
@@ -33,7 +35,12 @@ import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
-from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
+from test_fsdp2_native_trainer_ckpt_gloo import (  # noqa: E402
+    _free_port,
+    _model,
+    _stub_unsloth_save,
+    _trainer,
+)
 from test_fsdp2_native_trainer_args_gloo import _lora  # noqa: E402
 from test_fsdp2_native_per_input_gloo import _MoshiLike  # noqa: E402
 
@@ -147,6 +154,18 @@ def _case_save(native, rank):
         res["writer"] = writer
         res["gathered_shape"] = tuple(model[0].weight.shape) if writer else None
     res["full_keys"] = sorted(native.native_full_state_dict(model))
+    # Every parameter unsharded (plain tensors) by a forward that does not reshard afterwards.
+    for unit in save.fsdp2_units(model):
+        unit.set_reshard_after_forward(False)
+    with torch.no_grad():
+        model(torch.randn(2, 8))
+    DTensor = save._dtensor_class()
+    res["unsharded_plain"] = not any(isinstance(p, DTensor) for p in model.parameters())
+    res["unsharded_writer_rank"] = save.mesh_writer_rank(model)
+    with save.fsdp2_gathered(model) as writer:
+        res["unsharded_writer"] = writer
+    for unit in save.fsdp2_units(model):
+        unit.set_reshard_after_forward(True)
     optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
     model(torch.randn(2, 8)).sum().backward()
     optimizer.step()
@@ -159,6 +178,34 @@ def _case_save(native, rank):
     import torch.distributed as dist
 
     dist.barrier()  # rank 0 hosts the store the other pair still waits on
+    return res
+
+
+def _case_trainer_save(native, rank):
+    """Each pair saves its LoRA model, a full model and the optimizer + scheduler through the
+    Trainer hooks at the same time. Pair [2, 3]'s should_save is False on both ranks."""
+    import torch.distributed as dist
+
+    _stub_unsloth_save()
+    mesh = _submesh(rank)
+    root = os.path.join(os.environ["UNSLOTH_TEST_SAVE_DIR"], f"pair{rank // 2}")
+    cfg = native.FSDP2Config(param_dtype = torch.float32, mesh = mesh)
+    res = {}
+    lora = native.shard_model(_lora(1), cfg)
+    trainer = _trainer(lora, root)
+    res["should_save"] = bool(trainer.args.should_save)
+    trainer.save_model(os.path.join(root, "lora"))
+    res["lora_written"] = os.path.isfile(os.path.join(root, "lora", "adapter_model.safetensors"))
+    trainer.create_optimizer_and_scheduler(num_training_steps = 2)
+    os.makedirs(os.path.join(root, "ckpt"), exist_ok = True)  # Trainer._save_checkpoint does this
+    trainer._save_optimizer_and_scheduler(os.path.join(root, "ckpt"))
+    res["optimizer_written"] = os.path.isfile(os.path.join(root, "ckpt", "optimizer.pt"))
+    full = native.shard_model(_model(False, 1, root), cfg)
+    _trainer(full, root).save_model(os.path.join(root, "full"))
+    res["full_written"] = os.path.isfile(os.path.join(root, "full", "model.safetensors"))
+    dist.barrier()  # rank 0 hosts the store the other pair still waits on
+    # The scheduler is written after the optimizer wait, so only after the barrier on every rank.
+    res["scheduler_written"] = os.path.isfile(os.path.join(root, "ckpt", "scheduler.pt"))
     return res
 
 
@@ -192,6 +239,10 @@ def _worker(rank, world, port, out, case):
             os.environ["UNSLOTH_FSDP2_SAVE_TIMEOUT"] = "60"
             importlib.import_module("unsloth.models.fsdp2_save")
             res = _case_save(native, rank)
+        elif case == "trainer_save":
+            os.environ["UNSLOTH_FSDP2_SAVE_TIMEOUT"] = "30"
+            importlib.import_module("unsloth.models.fsdp2_save")
+            res = _case_trainer_save(native, rank)
         else:
             res = _case_grads(native, rank, hsdp = case == "hsdp")
         out.put((rank, res))
@@ -284,5 +335,20 @@ def test_sub_mesh_saves_write_from_the_mesh_first_rank(tmp_path, monkeypatch):
     for rank in (1, 3):
         assert results[rank]["full_keys"] == [], results
     for rank in range(WORLD):
+        assert results[rank]["unsharded_plain"], results
+        assert results[rank]["unsharded_writer_rank"] == (0 if rank < 2 else 2), results
+    assert [results[r]["unsharded_writer"] for r in range(WORLD)] == [True, False, True, False]
+    for rank in range(WORLD):
         assert results[rank]["optimizer_entries"] == 4, results
         assert results[rank]["exp_avg_numel"] == 108, results
+
+
+def test_sub_mesh_trainer_saves_write_from_the_mesh_first_rank(tmp_path, monkeypatch):
+    pytest.importorskip("peft")
+    monkeypatch.setenv("UNSLOTH_TEST_SAVE_DIR", str(tmp_path))
+    results = _run("trainer_save", timeout = 240)
+    assert [results[r]["should_save"] for r in range(WORLD)] == [True, False, False, False]
+    for rank in range(WORLD):
+        # Every rank returns after its pair's writer wrote (the store wait), so all see the files.
+        for key in ("lora_written", "optimizer_written", "scheduler_written", "full_written"):
+            assert results[rank][key], (rank, key, results)
