@@ -17,6 +17,7 @@ import functools
 import os
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
 # rotary only (the block fusion stays): UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0
@@ -53,7 +54,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
         return False
     if dtype is not torch.float16 or not str(device).startswith("cuda"):
         return False
-    if getattr(getattr(torch, "version", None), "hip", None):
+    if is_rocm_torch(torch):
         return False
     return _kernels() is not None
 

@@ -724,7 +724,10 @@ def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> Diffusi
     except Exception:
         DeviceType = None
         studio_device = None
-        is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+        from .rocm_bf16 import is_rocm_torch
+
+        # Tag-aware: AMD SDK / Radeon wheels leave torch.version.hip unset.
+        is_rocm = is_rocm_torch(torch)
 
     if DeviceType is not None and studio_device is not None:
         if _studio_device_is(studio_device, DeviceType, "CUDA"):

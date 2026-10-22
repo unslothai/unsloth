@@ -883,10 +883,7 @@ def _torch_is_rocm(torch) -> bool:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._torch_is_rocm(torch)
     except Exception:  # noqa: BLE001 - the answer still has to be right
-        return (
-            getattr(getattr(torch, "version", None), "hip", None) is not None
-            or "rocm" in getattr(torch, "__version__", "").lower()
-        )
+        return is_rocm_torch(torch)
 
 
 def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int, int]:

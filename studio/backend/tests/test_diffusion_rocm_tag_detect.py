@@ -12,7 +12,6 @@ treated the AMD card as NVIDIA. Every gate now goes through the one tag-aware he
 from __future__ import annotations
 
 import ast
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,6 +102,20 @@ def test_cuda_build_keeps_the_nvidia_answers(monkeypatch):
     assert rt.enabled() is True
 
 
+def _is_version_lookup(node: ast.AST) -> bool:
+    """``torch.version`` or ``getattr(torch, "version", ...)``."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "version"
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "version"
+    )
+
+
 def _raw_hip_reads(path: Path) -> list[int]:
     """Lines of ``torch.version.hip`` / ``getattr(torch.version, "hip", ...)`` reads in code (not comments)."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
@@ -123,8 +136,7 @@ def _raw_hip_reads(path: Path) -> list[int]:
             and len(node.args) >= 2
             and isinstance(node.args[1], ast.Constant)
             and node.args[1].value == "hip"
-            and isinstance(node.args[0], ast.Attribute)
-            and node.args[0].attr == "version"
+            and _is_version_lookup(node.args[0])
         ):
             lines.append(node.lineno)
     return sorted(set(lines))
@@ -142,3 +154,23 @@ def test_no_diffusion_or_video_gate_reads_version_hip_directly():
         "use core.inference.rocm_bf16.is_rocm_torch(torch): AMD SDK / Radeon wheels leave torch.version.hip "
         f"unset. Raw reads: {offenders}"
     )
+
+
+def test_the_detector_sees_every_spelling_of_a_hip_read(tmp_path):
+    src = tmp_path / "gates.py"
+    src.write_text(
+        "def a(torch):\n    return torch.version.hip\n"
+        "def b(torch):\n    return getattr(torch.version, 'hip', None)\n"
+        "def c(torch):\n    return getattr(getattr(torch, 'version', None), 'hip', None)\n"
+        "def d(torch):\n    return f\"hip{getattr(torch.version, 'hip', None)}\"\n",
+        encoding = "utf-8",
+    )
+    assert _raw_hip_reads(src) == [2, 4, 6]
+
+
+def test_fp16_wan_fused_kernels_decline_on_a_tag_only_rocm_wheel(amd_sdk_wheel, monkeypatch):
+    from core.inference import video_wan_fused
+
+    monkeypatch.setattr(video_wan_fused, "_kernels", lambda: {"stub": True})
+    monkeypatch.setattr(video_wan_fused, "disabled", lambda: False)
+    assert video_wan_fused.wanted(torch.float16, "cuda") is False

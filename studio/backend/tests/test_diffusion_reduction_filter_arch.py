@@ -16,9 +16,15 @@ import types
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_compile_config as cc  # noqa: E402
 from core.inference import diffusion_speed as ds  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 _SM120 = (12, 0)
 _MEASURED_ARCHS = ((8, 0), (8, 9), (12, 0))
@@ -125,6 +131,7 @@ def test_no_family_or_plain_object(monkeypatch):
 def test_capability_query_never_raises(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
     def boom(*a, **k):
         raise RuntimeError("no device")

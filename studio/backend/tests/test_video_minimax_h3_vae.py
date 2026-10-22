@@ -10,8 +10,14 @@ import types
 
 import pytest
 import torch
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import video_minimax_h3_vae as H
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 CUDA = torch.cuda.is_available() and not getattr(torch.version, "hip", None)
 needs_cuda = pytest.mark.skipif(
@@ -725,8 +731,8 @@ def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
     class AutoencoderKLMiniMaxH3:
         pass
 
-    if getattr(torch.version, "hip", None):
-        pytest.skip("ROCm build")
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     assert not H.cuda_fast_path_available(AutoencoderKLWan())
     assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3())
 
@@ -749,6 +755,7 @@ def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, 
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(H, "_kernels", lambda: object())
     monkeypatch.setattr(H, "_triton_version_ok", lambda: True)
     monkeypatch.setattr(H.sys, "platform", platform)
@@ -1087,6 +1094,7 @@ def test_the_fast_path_needs_a_verified_triton(monkeypatch, version, ok):
     assert H._triton_version_ok(version) is ok
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(H, "_kernels", lambda: object())
     monkeypatch.setattr(H, "_triton_jit_toolchain_ok", lambda: True)
     monkeypatch.setattr(H, "_triton_version_ok", lambda: ok)
