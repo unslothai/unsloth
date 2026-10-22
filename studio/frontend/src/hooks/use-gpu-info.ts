@@ -97,8 +97,7 @@ export interface GpuInfo {
   /** Apple MLX only: what llama.cpp and MLX admit right now, `min(working set, free) * 0.85`
    *  (`_apple_metal_memory_budget_bytes`). Null on every other host and on older backends. */
   unifiedLoadBudgetGb?: number | null;
-  /** The same budget with free memory ignored, `working set * 0.85`: what the loader sees once it
-   *  has freed a resident model, which the free reading above still counts as used. */
+  /** `working set * 0.85`: the budget once the loader has freed a resident model. */
   unifiedLoadCeilingGb?: number | null;
 }
 

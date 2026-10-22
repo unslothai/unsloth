@@ -3209,9 +3209,8 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
-  // The loader frees the resident chat model before reading free memory, so while one is loaded
-  // the free reading undercounts by that model and only the working-set ceiling still holds. Read
-  // off the status, not chatModelLoaded: that one counts a remote API model, which frees nothing.
+  // The loader frees the resident model before reading free memory, so only the ceiling holds then.
+  // Not chatModelLoaded: it counts a remote API model, which frees nothing.
   const chatModelResident =
     typeof residentCheckpoint === "string" && residentCheckpoint !== "";
   // Loaded GGUF quant of the active model; marks the matching pinned row.

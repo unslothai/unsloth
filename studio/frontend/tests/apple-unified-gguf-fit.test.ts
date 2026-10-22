@@ -131,7 +131,6 @@ test("64 GiB Mac, 51.84 GiB working set, 22 GiB free", () => {
   assert.equal(today(22.2), "fits");
   assert.equal(fitOn(gpu, 22.2), "marginal");
   assert.equal(fitOn(gpu, 15), "fits");
-  // Past today's budget nothing moves.
   assert.equal(fitOn(gpu, 63.5), today(63.5));
   assert.equal(fitOn(gpu, 63.5), "marginal");
   assert.equal(fitOn(gpu, 200), today(200));
