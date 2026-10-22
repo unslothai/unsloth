@@ -26,6 +26,10 @@ ENV_MANAGED = "UNSLOTH_CLUSTER_MANAGED"
 ENV_TOPOLOGY = "UNSLOTH_CLUSTER_TOPOLOGY"
 # auto (default) | 0 / off | a positive group count; layer splits only (llama.cpp PR #187).
 ENV_PIPELINE_GROUPS = "UNSLOTH_CLUSTER_PIPELINE_GROUPS"
+# 0 keeps sampling on this machine even when the output layer is on a worker
+ENV_BACKEND_SAMPLING = "UNSLOTH_CLUSTER_BACKEND_SAMPLING"
+BACKEND_SAMPLING_FLAG = "--backend-sampling"
+_BACKEND_SAMPLING_FLAGS = frozenset({"-bs", BACKEND_SAMPLING_FLAG})
 # Measured on CUDA (2xT4, gemma-4-12B / LFM2-8B-A1B): below about 16 sequences per group the
 # groups lose to one context (8 per group: two groups give half the throughput of one).
 GROUPS_MIN_SEQS = 16
@@ -2308,6 +2312,18 @@ class ClusterServing:
             self.reason += f"; {emit_groups} pipeline groups"
         elif self.pipeline_groups_reason:
             logger.info("cluster serving: no pipeline groups: %s", self.pipeline_groups_reason)
+        # The last device holds the output layer. On a worker, sampling there sends back token ids instead of
+        # vocab x rows logits every step (AMD lab, 2 CPU workers: +56% tok/s); a request whose samplers the
+        # backend cannot run (grammar, reasoning budget) falls back to sampling here per request.
+        if (
+            plan.devices
+            and plan.devices[-1].remote
+            and (os.environ.get(ENV_BACKEND_SAMPLING) or "").strip() != "0"
+            and not any(str(a).split("=", 1)[0] in _BACKEND_SAMPLING_FLAGS for a in flags)
+            and ss.llama_server_supports(BACKEND_SAMPLING_FLAG, binary)
+        ):
+            self.block.append(BACKEND_SAMPLING_FLAG)
+            self.reason += "; sampling on the worker holding the output layer"
         local = plan.sidecar_device
         from core.inference.llama_cpp import _resolved_mmproj_offload
 
