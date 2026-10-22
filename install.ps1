@@ -4568,24 +4568,27 @@ function Install-UnslothStudio {
         param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
         if ($Tool -ne 'pip') {
             if ($Tool -eq 'python') {
-                # UV_ASTRAL_MIRROR_URL also serves Python builds, but UV_PYTHON_INSTALL_MIRROR would win over it.
-                if ("$env:UV_PYTHON_INSTALL_MIRROR$env:UV_ASTRAL_MIRROR_URL") { return $true }
-                $pattern = '^\s*python-install-mirror\s*='
+                # UV_ASTRAL_MIRROR_URL also serves Python builds, but UV_PYTHON_INSTALL_MIRROR would win over it; a
+                # custom downloads manifest names its own URLs, which uv rejects combined with a mirror.
+                if ("$env:UV_PYTHON_INSTALL_MIRROR$env:UV_ASTRAL_MIRROR_URL$env:UV_PYTHON_DOWNLOADS_JSON_URL") { return $true }
+                $pattern = '^\s*(python-install-mirror|python-downloads-json-url)\s*='
             } else {
                 if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
                 $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
             }
             # uv reads UV_CONFIG_FILE in place of every discovered file (even with UV_NO_CONFIG), none with
-            # UV_NO_CONFIG, and no system file with UV_NO_SYSTEM_CONFIG. Discovery starts from --project, else
-            # --directory, each taken relative to where uv was invoked.
+            # UV_NO_CONFIG, and no system file with UV_NO_SYSTEM_CONFIG. It changes to --directory first, then
+            # resolves relative --project / --config-file paths from there and discovers from the project.
             # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
             $uvTrue = @('1', 't', 'true', 'y', 'yes', 'on')
-            $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml")
+            $files = @("$env:APPDATA\uv\uv.toml")
             if ($uvTrue -notcontains "$env:UV_NO_SYSTEM_CONFIG".Trim().ToLowerInvariant()) { $files += "$env:ProgramData\uv\uv.toml" }
             $dir = (Get-Location -PSProvider FileSystem).ProviderPath
-            $start = if ($env:UV_PROJECT) { $env:UV_PROJECT } elseif ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
-            if ($start) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $start)) }
-            if ($env:UV_CONFIG_FILE) { $files = @($env:UV_CONFIG_FILE); $dir = $null }
+            $workDir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
+            if ($workDir) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $workDir)) }
+            $configFile = if ($env:UV_CONFIG_FILE) { [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_CONFIG_FILE)) }
+            if ($env:UV_PROJECT) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_PROJECT)) }
+            if ($configFile) { $files = @($configFile); $dir = $null }
             elseif ($uvTrue -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
             while ($dir) {
                 $pyproject = Join-Path $dir 'pyproject.toml'

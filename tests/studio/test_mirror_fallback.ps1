@@ -58,7 +58,7 @@ try {
 
 $names = '_UNSLOTH_MIRROR_PROBED', 'UNSLOTH_MIRROR_FALLBACK', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL',
     'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'NPM_CONFIG_REGISTRY', 'UV_OFFLINE', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
-    'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_NO_CONFIG', 'UV_ASTRAL_MIRROR_URL', 'UV_NO_SYSTEM_CONFIG', 'UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY'
+    'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_NO_CONFIG', 'UV_ASTRAL_MIRROR_URL', 'UV_NO_SYSTEM_CONFIG', 'UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY', 'UV_PYTHON_DOWNLOADS_JSON_URL'
 $saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData', 'PATH') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
 $home_ = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-mirror-" + [guid]::NewGuid())
 $pipIni = Join-Path $home_ 'AppData/pip/pip.ini'
@@ -217,7 +217,12 @@ try {
     $other = Join-Path $home_ 'other'; New-Item -ItemType Directory -Force -Path $other | Out-Null
     Push-Location $home_
     try {
-        Run @{ astral = 'blocked' } @{ UV_PROJECT = 'proj'; UV_WORKING_DIR = $other }; Check "a relative UV_PROJECT resolves from where uv runs, not from UV_WORKING_DIR" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+        # uv 0.10.7 / 0.12.1 `python install --show-settings`: --directory first, then relative paths from it.
+        Run @{ astral = 'blocked' } @{ UV_PROJECT = 'proj'; UV_WORKING_DIR = $other }; Check "a relative UV_PROJECT resolves from UV_WORKING_DIR, where uv runs" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+        Run @{ astral = 'blocked' } @{ UV_PROJECT = 'proj'; UV_WORKING_DIR = $home_ }; Check "UV_WORKING_DIR then UV_PROJECT reaches that project's Python mirror" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+        Set-Content -Path (Join-Path $other 'custom.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+        Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = 'custom.toml'; UV_WORKING_DIR = $other }; Check "a relative UV_CONFIG_FILE resolves from UV_WORKING_DIR" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+        Run @{ astral = 'blocked' } @{ UV_PYTHON_DOWNLOADS_JSON_URL = 'https://corp.example/downloads.json' }; Check "a custom Python downloads manifest is left alone" (-not $env:UV_PYTHON_INSTALL_MIRROR)
     } finally { Pop-Location }
     Run @{ astral = 'blocked' }; Check "without it, that project's uv.toml is not in scope" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
     Set-Content -Path (Join-Path $env:APPDATA 'uv/uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
