@@ -110,7 +110,6 @@ struct Forward {
     url: Url,
     version: String,
     headers: String,
-    /// A WebSocket handshake, whose connection must stay open as an upgrade.
     upgrade: bool,
 }
 

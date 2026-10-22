@@ -594,7 +594,6 @@ function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
   return useBrowserStore.getState().tabs.find((tab) => tab.chat === chat && localOriginGranted(tab.id, url));
 }
 
-// The run's end lets go of only its current tab, so the one it leaves is let go here.
 function moveRun(context: Run, tabId: string): void {
   const previous = agentChat(context.session.chat).tabId;
   if (previous && previous !== tabId) releaseBackground(previous);

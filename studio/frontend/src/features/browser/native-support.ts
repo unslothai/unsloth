@@ -54,7 +54,6 @@ function watchLocalTabs(): void {
       if (entry?.kind === "web" && localOriginGranted(tabId, entry.url)) continue;
       localOrigins.delete(tabId);
       if (!tab) void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
-      // A public page drops the local grant too.
       else if (entry?.kind !== "web") closeLocalView(tabId);
     }
   });

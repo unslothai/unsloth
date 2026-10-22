@@ -196,7 +196,6 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     if (tabId) useBrowserStore.getState().setZoom(tabId, 1.5);
     await frame();
     assert.ok(calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.5));
-    // a page opened in a local origin's own view keeps the tab's zoom
     if (tabId) {
       const before = calls.length;
       useBrowserStore.getState().navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });

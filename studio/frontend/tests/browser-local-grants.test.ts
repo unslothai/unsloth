@@ -71,7 +71,6 @@ test("a native tab keeps the page it leaves for a local origin, whose view start
     const store = useBrowserStore.getState();
     const tab = store.openTabIn(store.chat, "https://example.com/")!;
     store.navigate(tab, { url: "https://example.org/" });
-    // the page's router moves on before the user types a local address
     store.updateTab(tab, { displayUrl: "https://example.org/docs/intro" });
     store.navigate(tab, { url: "http://localhost:7860/" });
     store.navigate(tab, { url: "http://localhost:7860/app" });
