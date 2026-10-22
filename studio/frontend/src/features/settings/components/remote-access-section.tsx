@@ -389,8 +389,8 @@ export function RemoteAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices through a temporary
-              public Cloudflare HTTPS URL.
+              Use Unsloth and its APIs from other devices through a secure,
+              temporary public Cloudflare URL.
             </p>
           </div>
         </div>
