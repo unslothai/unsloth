@@ -27,6 +27,7 @@ def _clean(monkeypatch):
     g8._DEVICE_CFG.clear()
     g8._DEVICE_TILES.clear()
     g8._DEVICE_PLAN.clear()
+    g8._PLAN_KEY.clear()
     g8._PROBED.clear()
     cq._ROTQ_DEVICE.clear()
     cq._ROTQ_DEVICE_K.clear()
@@ -1263,6 +1264,7 @@ def test_plan_identity_keys_every_card_of_a_layer_split(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     assert g8.plan_identity(model) is None
     g8._DEVICE_PLAN[0] = {(768, 1024, 3): g8._CUBLAS}
+    g8._PLAN_KEY.update({0: "v3|A100", 1: "v3|L4"})  # the keys tune() filled them under
     single = g8.plan_identity(model)
     assert single is not None
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
@@ -1278,8 +1280,40 @@ def test_plan_identity_keys_every_card_of_a_layer_split(monkeypatch):
     g8._DEVICE_PLAN[0] = {}
     assert g8.plan_identity(model) not in (None, both)  # only the second card holds cuBLAS slots
     names[1] = "A100"  # one toolchain: the cards share a file, the same slots key once
+    g8._PLAN_KEY[1] = "v3|A100"
     g8._DEVICE_PLAN[0] = {(768, 1024, 2): g8._CUBLAS}
     assert g8.plan_identity(model) == g8.plan_identity(model, 1)
+
+
+def test_in_memory_plan_counts_only_under_its_own_tiles_mode(monkeypatch, tmp_path):
+    """A long-lived process switching UNSLOTH_DIFFUSION_INT8_GEMM_TILES between loads: the previous mode's in-memory
+    plan must not overwrite the current mode's stored plan (compile key) nor stand in for its timing."""
+    default = g8._ARCH_CONFIG[(8, 0)]
+    alt = g8._ALT_TILES[(8, 0)][0]
+    # the default regressed; with tiles on an alt wins, with tiles off the default goes to cuBLAS
+    ms = lambda tiles: {g8._CUBLAS: 2.0, **{t: (0.5 if t == alt else 3.0) for t in tiles}}
+    calls = _fake_tune_env(monkeypatch, tmp_path, ms)
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        g8, "_eligible", lambda m: ("v2",) if isinstance(m, torch.nn.Linear) else None
+    )
+    model = torch.nn.Sequential(torch.nn.Linear(3072, 18432))
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {alt}  # tiles on: no cuBLAS slot
+    assert g8.plan_identity(model) is None
+    monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
+    del calls[:]
+    # the tiles-on plan (no cuBLAS slot) is neither reused untimed nor read as all fused
+    assert g8.gate_routes_to_cublas(0, {(18432, 3072)}) and calls
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {g8._CUBLAS}
+    tiles_off = g8.plan_identity(model)
+    assert tiles_off is not None
+    monkeypatch.delenv(
+        g8.INT8_GEMM_TILES_ENV
+    )  # back to tiles on: the tiles-off cuBLAS plan in memory is ignored
+    assert g8.plan_identity(model) is None
 
 
 def _plan_cache_env(monkeypatch, tmp_path, mode):
@@ -1676,6 +1710,55 @@ def test_yield_judges_each_group_on_its_own_card(monkeypatch, tmp_path):
     assert g8._yielded(model, 0) == set()
     monkeypatch.setattr(g8, "_weight_card", lambda m: 0)
     assert len(g8._yielded(model, 0)) == 7
+
+
+def test_layer_split_releases_yielded_groups_onto_a_fused_card(monkeypatch, tmp_path):
+    """Groups yielded to the stock-path fusions on an all-cuBLAS card and then placed on a card whose plan keeps a fused
+    bucket get their Linears back, and the per-card swap takes them; groups still all cuBLAS stay with the fusion."""
+    from core.inference import diffusion_int8_fused as i8f
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    model = _q21_model()
+    _fake_stock_fusions(monkeypatch, model)
+    g8._swap(model)
+    assert not g8.is_installed(model.attn.to_q) and qf.is_installed(model.attn)
+    assert qf.release_after_layer_split(model) == 0  # still all cuBLAS: nothing moves
+    # placed on another card (its own toolchain key and tune file) where the fused tile wins every bucket
+    monkeypatch.setattr(g8, "toolchain_key", lambda index: "test-toolchain-second-card")
+    monkeypatch.setattr(
+        g8, "_measure", lambda index, n, k, m, tiles: {g8._CUBLAS: 7.8, **{t: 1.0 for t in tiles}}
+    )
+    assert qf.release_after_layer_split(model) == 2
+    assert not qf.is_installed(model.attn) and i8f._MARK not in model.mlp.__dict__
+    g8._swap(model)
+    for lin in qf._attn_group(model.attn) + qf._ff_group(model.mlp):
+        assert g8.is_installed(lin)
+    g8.uninstall(model)
+
+
+def test_after_layer_split_releases_before_the_per_card_swap(monkeypatch):
+    from core.inference import diffusion_int8_fused as i8f
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    order = []
+    monkeypatch.setattr(g8, "_split_cards", lambda t: (0, 1))
+    monkeypatch.setattr(
+        i8f, "relocate_after_layer_split", lambda t, logger = None: order.append("relocate") or {}
+    )
+    monkeypatch.setattr(qf, "release_after_layer_split", lambda t: order.append("release") or 3)
+    monkeypatch.setattr(g8, "_swap_on", lambda t, logger, index: order.append(f"swap{index}") or 1)
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    model[0].__dict__[g8._MARK] = g8._NO_PREV
+    out = g8.after_layer_split(model)
+    assert out["q21_released"] == 3 and out["gemm"] == 2
+    assert order == ["relocate", "release", "swap0", "swap1"]
+    monkeypatch.setenv(
+        g8.INT8_GEMM_AUTOTUNE_ENV, "0"
+    )  # static table: nothing was yielded, nothing to release
+    del order[:]
+    assert "q21_released" not in g8.after_layer_split(model) and "release" not in order
 
 
 def test_gate_routes_to_cublas_needs_every_bucket(monkeypatch, tmp_path):

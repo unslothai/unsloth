@@ -342,6 +342,45 @@ def uninstall(transformer: Any = None) -> None:
                         module.__dict__.pop("forward", None)
 
 
+def release_after_layer_split(root: Any) -> int:
+    """A layer split moved groups that were taken here (QKV / to_out) or by ``diffusion_int8_fused`` (SwiGLU) while
+    the model sat on a card whose gate sent them all to cuBLAS. A group now on a card where ``arch_ok`` no longer
+    holds (its plan keeps a fused bucket) gets its stock Linears back, so the per-card swap after the split
+    (``diffusion_int8_gemm.after_layer_split``) gives it that card's fused GEMM. Returns how many groups were released.
+    Eager, before the first forward."""
+    if type(root).__name__ != "QwenImage21Transformer2DModel":
+        return 0
+    from .diffusion_int8_fused import _LOCK as _FUSED_LOCK
+    from .diffusion_int8_fused import _MARK as _FUSED_MARK
+    from .diffusion_int8_fused import _restore_module
+
+    released = 0
+    for module in root.modules():
+        attn = _attn_group(module)
+        if attn is not None:
+            out = module.to_out[0]
+            taken = _QKV_ATTR in module.__dict__ or _OUT_MARK in out.__dict__
+            if taken and not arch_ok(attn[0].weight.device, attn):
+                with _LOCK:
+                    module.__dict__.pop(_QKV_ATTR, None)
+                    if out.__dict__.pop(_OUT_MARK, None) is not None:
+                        fwd = out.__dict__.get("forward")
+                        if getattr(fwd, "__func__", None) is _out_forward:
+                            out.__dict__.pop("forward", None)
+                released += 1
+            continue
+        ff = _ff_group(module)
+        if (
+            ff is not None
+            and _FUSED_MARK in module.__dict__
+            and not arch_ok(ff[0].weight.device, ff)
+        ):
+            with _FUSED_LOCK:
+                _restore_module(module)
+            released += 1
+    return released
+
+
 def is_installed(module: Any) -> bool:
     return _QKV_ATTR in getattr(module, "__dict__", {}) or _OUT_MARK in getattr(
         module, "__dict__", {}

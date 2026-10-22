@@ -120,6 +120,8 @@ _TUNE_VERSION = 3
 _CUBLAS = "cublas"
 # device -> {(n, k, bucket): tile or _CUBLAS}
 _DEVICE_PLAN: dict = {}
+# device -> the tune-file key (toolchain + tiles mode) its _DEVICE_PLAN was filled under
+_PLAN_KEY: dict = {}
 _PROBED: dict = {}
 
 
@@ -933,6 +935,7 @@ def _swap_on(
             )
     else:
         _DEVICE_PLAN.pop(index, None)  # a plan from an earlier load must not outlive AUTOTUNE=0
+        _PLAN_KEY.pop(index, None)
     yielded = _yielded(transformer, index) if gemm and not explicit_device else set()
     if yielded:
         recs = [(m, r) for m, r in recs if id(m) not in yielded]
@@ -1019,6 +1022,18 @@ def after_layer_split(transformer: Any, logger: Any = None) -> dict:
             logger.warning(
                 "diffusion.int8_gemm: fused record re-home after the layer split failed (%s)", exc
             )
+    if int8_gemm_mode() != "off" and autotune_enabled():
+        try:
+            # groups yielded to a stock-path fusion on an all-cuBLAS card, now on a card whose plan keeps a fused
+            # bucket: back to their Linears, which the per-card swap below then takes
+            from .diffusion_qwenimage21_fused import release_after_layer_split
+            out["q21_released"] = release_after_layer_split(transformer)
+        except Exception as exc:  # noqa: BLE001 - the stock-path fusions stay correct, only slower there
+            if logger is not None:
+                logger.warning(
+                    "diffusion.int8_gemm: Qwen-Image-2.1 stock-path fusion release after the split failed (%s)",
+                    exc,
+                )
     try:
         from .diffusion_qwenimage21_rope import probe_split_cards
         out["rope_cards"] = probe_split_cards(cards)
@@ -1139,11 +1154,12 @@ def plan_identity(transformer: Any, index: Optional[int] = None) -> Optional[str
             return None
         index = torch.cuda.current_device() if index is None else index
         cards = sorted({int(index), *range(torch.cuda.device_count())})
-        suffix = "" if tiles_enabled() else "|tiles0"
         parts = set()
         for card in cards:
-            key = toolchain_key(card) + suffix
-            plan = {**_load_plan(_tune_path(key), key), **_DEVICE_PLAN.get(card, {})}
+            key = _plan_key(card)
+            # an in-memory plan counts only under the key it was tuned for (TILES can change between loads)
+            live = _DEVICE_PLAN.get(card, {}) if _PLAN_KEY.get(card) == key else {}
+            plan = {**_load_plan(_tune_path(key), key), **live}
             slots = tuple(sorted(s for s, c in plan.items() if c == _CUBLAS and s[:2] in shapes))
             if slots:
                 parts.add(slots if len(cards) == 1 else (key, slots))
@@ -1156,6 +1172,11 @@ def plan_identity(transformer: Any, index: Optional[int] = None) -> Optional[str
         ).hexdigest()[:16]
     except Exception:  # noqa: BLE001 - unreadable: keyed as all fused
         return None
+
+
+def _plan_key(index: int) -> str:
+    """The tune-file key for device ``index``: its toolchain, plus the tiles mode (``|tiles0`` times the default only)."""
+    return toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
 
 
 def _tune_path(key: str) -> Optional[str]:
@@ -1245,7 +1266,7 @@ def gate_routes_to_cublas(index: Any, shapes: Any) -> bool:
         if device_config(index) is None:
             return False
         slots = [(n, k, b) for n, k in shapes for b in range(len(_M_BUCKETS))]
-        plan = _DEVICE_PLAN.get(index) or {}
+        plan = (_DEVICE_PLAN.get(index) or {}) if _PLAN_KEY.get(index) == _plan_key(index) else {}
         if any(slot not in plan for slot in slots):
             plan = tune(index, shapes)
         return all(plan.get(slot) == _CUBLAS for slot in slots)
@@ -1388,8 +1409,13 @@ def tune(index: int, shapes: Any) -> dict:
     cap = tuple(torch.cuda.get_device_capability(index))
     # UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0: default tile vs cuBLAS only, in its own file
     alts = _ALT_TILES.get(cap, ()) if tiles_enabled() else ()
-    key = toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
+    key = _plan_key(index)
     path = _tune_path(key)
+    if _PLAN_KEY.get(index) != key:
+        _DEVICE_PLAN[
+            index
+        ] = {}  # filled under another toolchain / tiles mode: never mixed into this one
+        _PLAN_KEY[index] = key
     plan = _DEVICE_PLAN.setdefault(index, {})
     stored = _load_plan(path, key)
     timings: dict = {}
