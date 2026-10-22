@@ -122,33 +122,22 @@ export function ToolConfirmationControls({
     showControls &&
     pending === null &&
     !(autoAllowed && !failed);
-  // The Chat route stays mounted under a dialog; never answer a tool call the user cannot see.
-  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
-  useShortcut(
-    "approveToolRequest",
-    () => {
-      if (chatCovered()) return;
-      void resolve("allow");
-    },
-    {
-      enabled: keyboardReady,
-      // Enter belongs to the composer while it has focus.
-      skipInTextFields: true,
-    },
-  );
-  useShortcut(
-    "declineToolRequest",
-    () => {
-      if (chatCovered()) return;
-      void resolve("deny");
-    },
-    {
-      enabled: keyboardReady,
-      skipInTextFields: true,
-      // Escape is allowed from the composer (it types nothing there); Enter is not, since it sends.
-      textFieldException: COMPOSER_INPUT_SELECTOR,
-    },
-  );
+  // The Chat route stays mounted under a dialog, so `keyboardReady` still says
+  // yes while the request is hidden behind one. Answering a tool call the user
+  // cannot see must not be reachable by accident, so both chords ask here, before the key is taken.
+  const chatUncovered = () => !isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut("approveToolRequest", () => void resolve("allow"), {
+    enabled: keyboardReady,
+    claims: chatUncovered,
+    skipInTextFields: true,
+  });
+  useShortcut("declineToolRequest", () => void resolve("deny"), {
+    enabled: keyboardReady,
+    claims: chatUncovered,
+    skipInTextFields: true,
+    // Escape passes the gate from the composer (it types nothing there); Enter does not: it sends.
+    textFieldException: COMPOSER_INPUT_SELECTOR,
+  });
 
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.

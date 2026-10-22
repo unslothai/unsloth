@@ -154,8 +154,9 @@ function literalTagPipeline(
 
 export function withLiteralUnknownTags(
   allowedTags: Record<string, string[]> = {},
+  beforeHarden: Pluggable[] = [],
 ): Pluggable[] {
-  return literalTagPipeline(allowedTags, [], [], true);
+  return literalTagPipeline(allowedTags, [], beforeHarden, true);
 }
 
 export function withDataImageSupport(

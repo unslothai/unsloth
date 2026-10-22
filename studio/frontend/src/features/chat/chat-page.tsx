@@ -4113,26 +4113,23 @@ export function ChatPage({
 
   // Compare drops the header pickers, so the chord would toggle state nothing renders.
   const headerPickersShown = active && view.mode !== "compare";
-  // The page stays mounted under dialogs, so check at press time that the header is not covered.
-  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
-  useShortcut(
-    "openModelPicker",
-    () => {
-      if (chatCovered()) return;
-      toggleModelSelector();
-    },
-    { enabled: headerPickersShown },
-  );
+  // This page stays mounted under a dialog, so `enabled` still says yes while the header is inert; without a
+  // press-time check the chord opens a popover on the covered surface. Backgrounded, not "not in the foreground":
+  // an unrendered layout is not a covered one. A claim, so a covered press still reaches the dialog.
+  const chatUncovered = () => !isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut("openModelPicker", toggleModelSelector, {
+    enabled: headerPickersShown,
+    claims: chatUncovered,
+  });
+  // The same condition the switcher renders by, so the chord cannot open a control that is not there.
   const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
-  useShortcut(
-    "openProjectPicker",
-    () => {
-      if (chatCovered()) return;
-      setProjectPickerOpen(true);
-    },
-    { enabled: projectSwitcherShown },
-  );
-  // Close a picker that is no longer shown, or it returns as a ghost; adjusted during render.
+  useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
+    enabled: projectSwitcherShown,
+    claims: chatUncovered,
+  });
+  // A picker left open would come back on the next visit as a ghost. Off-route is one way to leave it (this page
+  // stays mounted), and so is entering Compare or a standalone chat taking the project away. Adjusted during
+  // render, as React prescribes for derived state.
   if (!projectSwitcherShown && projectPickerOpen) {
     setProjectPickerOpen(false);
   }
@@ -4164,29 +4161,18 @@ export function ChatPage({
     },
     [],
   );
-  useShortcut(
-    "cycleReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(1, true);
-    },
-    { enabled: active },
-  );
-  useShortcut(
-    "increaseReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(1, false);
-    },
-    { enabled: active },
-  );
+  useShortcut("cycleReasoningEffort", () => shiftReasoningEffort(1, true), {
+    enabled: active,
+    claims: chatUncovered,
+  });
+  useShortcut("increaseReasoningEffort", () => shiftReasoningEffort(1, false), {
+    enabled: active,
+    claims: chatUncovered,
+  });
   useShortcut(
     "decreaseReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(-1, false);
-    },
-    { enabled: active },
+    () => shiftReasoningEffort(-1, false),
+    { enabled: active, claims: chatUncovered },
   );
 
   const fastModeSupported = providerSupportsFastMode(
@@ -4196,13 +4182,12 @@ export function ChatPage({
   useShortcut(
     "toggleFastMode",
     () => {
-      if (chatCovered()) return;
       const state = useChatRuntimeStore.getState();
       const next = !state.params.fastMode;
       state.setParams({ ...state.params, fastMode: next });
       toast.success(next ? "Fast mode on" : "Fast mode off");
     },
-    { enabled: active && fastModeSupported },
+    { enabled: active && fastModeSupported, claims: chatUncovered },
   );
   const { isMobile, pinned } = useSidebar();
   // The tour hold is never persisted, so a tour cannot rewrite the user's pin.

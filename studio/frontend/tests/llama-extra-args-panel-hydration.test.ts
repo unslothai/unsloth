@@ -152,7 +152,11 @@ test("the panel adopts a shared server config without overwriting a live edit", 
     PANEL,
     /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
-  assert.match(PANEL, /configRef\.current === configAtStart/);
+  // By value: the primed draft is a different object from the first render's fallback.
+  assert.match(
+    PANEL,
+    /perModelConfigsEqual\(configRef\.current, configAtStart\)/,
+  );
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
   assert.match(
     PANEL,

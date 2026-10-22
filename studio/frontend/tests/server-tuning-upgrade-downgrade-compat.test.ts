@@ -599,7 +599,7 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
     "serverConfig &&",
     // An edit the other editor made before this read is already in configAtStart.
     "!isModelConfigDraftEdited\\(draftKey\\) &&",
-    "configRef\\.current === configAtStart &&",
+    "perModelConfigsEqual\\(configRef\\.current, configAtStart\\) &&",
     "rememberRef\\.current === rememberAtStart",
     "\\) \\{",
   ].join("\\s*\\n\\s*");

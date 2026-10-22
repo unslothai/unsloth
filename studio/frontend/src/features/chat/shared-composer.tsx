@@ -2425,6 +2425,10 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  useShortcut("stopGeneration", stop, {
+    enabled: chatActive && busy,
+    claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
+  });
 
   const runPromptList = useCallback(
     (items: string[]) => {

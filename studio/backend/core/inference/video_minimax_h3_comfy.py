@@ -188,6 +188,8 @@ def load_h3_comfy_transformer(
     fp8_backend: Optional[str],
     target: Any = None,
     logger: Any = None,
+    # H3's pin / stream / residency path is built on torchao weights: dequantize what torchao does not take
+    fp8_storage: Optional[bool] = False,
 ) -> Any:
     """The H3 denoiser of a ComfyUI-quantized file, int8 / fp8 codes kept, curve adaLN installed."""
     from .diffusion_comfy_quant import load_comfy_quant_transformer
@@ -210,6 +212,7 @@ def load_h3_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
         family = "minimax-h3",
         target = target,
         logger = logger,

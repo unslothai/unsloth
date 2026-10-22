@@ -1078,6 +1078,10 @@ export const ptBR = {
       alternateSlot: "Atalho alternativo",
       browserReserved:
         "Seu navegador pode reservar essa combinação. No app para desktop ela funciona.",
+      metaUnsupported: "A tecla Windows não pode ser usada em atalhos.",
+      altGraphUnsupported: "Combinações com AltGr não podem ser usadas como atalhos.",
+      desktopOnly: "Somente no app para desktop",
+      builtInKey: "Integrado: {key}",
       actions: {
         findInPage: {
           label: "Localizar na página",
@@ -1278,6 +1282,10 @@ export const ptBR = {
         steerMessage: {
           label: "Direcionar a resposta",
           description: "Parar a resposta atual e enviar o rascunho em seguida",
+        },
+        stopGeneration: {
+          label: "Parar geração",
+          description: "Parar a resposta em andamento",
         },
         cycleReasoningEffort: {
           label: "Alternar esforço de raciocínio",
@@ -2071,9 +2079,9 @@ export const ptBR = {
         longestStreak: "Maior sequência",
         activityTitle: "Atividade de tokens",
         activityDescription: {
-          daily: "Período: {weeks} · {total}",
-          weekly: "Semana de pico {total} · últimas {weeks}",
-          cumulative: "{total} acumulados nas últimas {weeks}",
+          daily: "{total} desde {since}",
+          weekly: "Semana mais ativa {total} · desde {since}",
+          cumulative: "{total} no total desde {since}",
         },
         mode: {
           daily: "Diária",
@@ -2082,8 +2090,9 @@ export const ptBR = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana de {date} · {tokens}",
-        chartToggle: "Gráfico",
-        chartToggleHint: "Mostrar Semanal e Acumulada como gráfico com eixos rotulados",
+        emptyDayTooltip: "{date} · Sem atividade",
+        apiRequests: "{count} via API",
+        cumulativeTooltip: "Até a semana de {date} · {tokens} no total",
         less: "Menos",
         more: "Mais",
         insightsTitle: "Análise de atividade",

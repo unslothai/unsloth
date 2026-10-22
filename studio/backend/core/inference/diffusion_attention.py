@@ -15,8 +15,10 @@ Attention is bandwidth-bound, so a better kernel is a real win orthogonal to wei
           bitwise-identical and near free (compiled 1.599s -> 1.572s, 1.02x; eager 0.93x, the
           per-call sdpa_kernel wrapper cost, which compile folds away) -- but FLASH and EFFICIENT
           at that same shape run 3.9x and 9.0x slower. Pinning is insurance against the heuristic
-          picking one of those on another card, head_dim or torch build. Elsewhere stays
-          ``native``. Only upgrades when a speed profile is active, so ``speed_mode=off`` stays
+          picking one of those on another card, head_dim or torch build. On Blackwell (SM100+) auto
+          leaves native when torch's own dispatch picks cuDNN at every DiT head dim and the run dtype
+          (same kernel, no per-call wrapper; ``UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN=0`` keeps the
+          pin). Elsewhere stays ``native``. Only upgrades when a speed profile is active, so ``speed_mode=off`` stays
           bit-identical.
   native - force the default SDPA (bit-identical reference).
   cudnn  - cuDNN fused attention (exact; NVIDIA).
@@ -473,7 +475,7 @@ def select_attention_backend(
             return None
         return backend
     if speed_active and _is_cuda_nvidia(target) and _cudnn_attention_supported():
-        return "_native_cudnn"
+        return AUTO_CUDNN
     if (speed_active or speed_unset) and _rocm_auto_flash(target, family):
         return ROCM_FLASH_CANDIDATE
     return None
@@ -506,6 +508,22 @@ def _is_cuda_rocm(target: Any) -> bool:
 
 
 ROCM_FLASH_CANDIDATE = "_rocm_flash_candidate"
+
+
+class _AutoCudnn(str):
+    """The ``auto`` cuDNN pick. Equal to ``"_native_cudnn"`` for every caller; ``apply_attention_backend`` alone tells
+    it from an explicit ``cudnn`` request, so it can leave native where torch already dispatches cuDNN (Blackwell)."""
+
+    __slots__ = ()
+
+
+AUTO_CUDNN = _AutoCudnn("_native_cudnn")
+# B200 torch 2.13 bf16: native SDPA already runs cuDNN at head_dim 64/128 (pin = 0.4-22% slower eager wrapper);
+# head_dim 256 picks FLASH, hence the per-head-dim probe.
+BLACKWELL_NATIVE_ATTN_ENV = (
+    "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
+)
+_NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
 # Accuracy is judged on the raw attention output (flash vs native SDPA, same inputs), not the block: the residual and
@@ -3054,6 +3072,60 @@ def _cudnn_runs_head_dim(target: Any, head_dim: int) -> Optional[bool]:
     return _CUDNN_HEAD_DIM_CACHE.setdefault(key, bool(ran))
 
 
+def _native_sdp_choice(device: str, dtype: Any, head_dim: int) -> int:
+    """torch's own SDPA dispatch choice (an ``SDPBackend`` value) at ``head_dim`` / ``dtype`` on ``device``."""
+    import torch
+
+    q = torch.zeros(1, 2, 256, int(head_dim), device = device, dtype = dtype)
+    return int(torch._fused_sdp_choice(q, q, q))
+
+
+def _device_capability(device: str) -> tuple[int, int]:
+    import torch
+    return tuple(torch.cuda.get_device_capability(device))  # type: ignore[return-value]
+
+
+def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
+    """True on a Blackwell (SM100+) NVIDIA card when torch's own SDPA dispatch picks cuDNN for every DiT head dim at the
+    run dtype, so the ``auto`` pin would change no kernel. Unknown head dims, dtype or capability keep the pin."""
+    if (os.environ.get(BLACKWELL_NATIVE_ATTN_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    if not _is_cuda_nvidia(target):
+        return False
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return False
+    dims = _dit_head_dims(pipe)
+    if not dims:
+        return False
+    try:
+        import torch
+        from torch.nn.attention import SDPBackend
+
+        device = _indexed_cuda_device(device)
+        if _device_capability(device) < (10, 0):
+            return False
+        dtype = getattr(target, "dtype", None)
+        if dtype not in (torch.bfloat16, torch.float16):
+            return False
+        for dim in sorted(dims):
+            key = (device, str(dtype), int(dim))
+            hit = _NATIVE_DISPATCH_CACHE.get(key)
+            if hit is None:
+                hit = _native_sdp_choice(device, dtype, dim) == int(SDPBackend.CUDNN_ATTENTION)
+                _NATIVE_DISPATCH_CACHE[key] = hit
+            if not hit:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - unaskable: keep the pin
+        return False
+
+
 def _cudnn_serves_pipe(
     pipe: Any,
     target: Any,
@@ -3182,6 +3254,20 @@ def apply_attention_backend(
             and not _cudnn_serves_pipe(pipe, target, logger)
         ):
             backend = None
+        if (
+            isinstance(backend, _AutoCudnn)
+            and target is not None
+            and _native_dispatches_cudnn(pipe, target)
+        ):
+            if logger is not None:
+                logger.info(
+                    "diffusion.attention: auto keeps native SDPA (it already dispatches cuDNN on this Blackwell card; "
+                    "%s=0 pins cuDNN)",
+                    BLACKWELL_NATIVE_ATTN_ENV,
+                )
+            backend = None
+        if backend is not None:
+            backend = str(backend)
         if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
             if logger is not None:
                 logger.warning(
