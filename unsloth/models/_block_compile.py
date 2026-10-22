@@ -144,6 +144,8 @@ def _mark_seq_dynamic(seq_len, obj):
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
 _GDN_OP = [None]
+# Packed batches (cu_seqlens) through the op: set eagerly with _GDN_OP from the op's self-check.
+_GDN_VARLEN = [False]
 
 
 def _hub_forwarded_params(fn):
@@ -177,20 +179,32 @@ def _gdn_chunk_adapter(original):
         beta = None,
         **kwargs,
     ):
+        cu_seqlens = (
+            kwargs.get("cu_seqlens") if forwarded is None or "cu_seqlens" in forwarded else None
+        )
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
             and kwargs.get("use_qk_l2norm_in_kernel") is True
-            # The op is the self-checked default: no state, varlen, scale, layout or gating flags.
+            # The op is the self-checked default: no state, scale, layout or gating flags; a packed
+            # batch (B = 1 + cu_seqlens) only when that layout passed its own self-check.
+            and (cu_seqlens is None or (_GDN_VARLEN[0] and q.shape[0] == 1))
             and all(
                 value is None or value is False
                 for key, value in kwargs.items()
-                if key != "use_qk_l2norm_in_kernel" and (forwarded is None or key in forwarded)
+                if key not in ("use_qk_l2norm_in_kernel", "cu_seqlens")
+                and (forwarded is None or key in forwarded)
             )
         ):
             # Inductor pins a custom op's input strides; a sliced input fails at the next length.
             q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
-            out = torch.ops.unsloth.qwen3_5_gdn_chunk(q, k, v, g, beta, q.shape[-1] ** -0.5)
+            scale = q.shape[-1] ** -0.5
+            if cu_seqlens is None:
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk(q, k, v, g, beta, scale)
+            else:
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk(
+                    q, k, v, g, beta, scale, cu_seqlens.contiguous()
+                )
             return out[0], None
         return original(q, k, v, g, beta, **kwargs)
 
@@ -392,7 +406,7 @@ def _prepare_gdn(layer, hidden_states):
     except Exception:
         pass
     try:
-        from ._gdn_op import _fla_ops
+        from ._gdn_op import _fla_ops, varlen_ok
 
         heads, dk, dv = gdn.num_v_heads, gdn.head_k_dim, gdn.head_v_dim
         B, T = hidden_states.shape[0], hidden_states.shape[1]
@@ -412,6 +426,7 @@ def _prepare_gdn(layer, hidden_states):
 
         if not _fla_ops(make_inputs):
             return
+        _GDN_VARLEN[0] = varlen_ok()
         _GDN_OP[0] = _route_fla_kernel() > 0
         if _GDN_OP[0]:
             _route_causal_conv(gdn)

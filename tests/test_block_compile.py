@@ -580,6 +580,7 @@ def test_opaque_fla_op_matches_fla_function():
     g = -mk(B, T, H, dt = torch.float32).abs() * 0.1
     beta = mk(B, T, H).sigmoid()
     assert M._fla_ops(lambda: (q, k, v, g, beta))
+    assert M._VARLEN[0], "the packed (cu_seqlens) layout failed its self-check"
     # A wrong fake meta or a numeric mismatch must keep the op out of the block.
     M._FLA = None
     orig = M._chunk_meta
@@ -618,6 +619,38 @@ def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
     ):
         adapter(t, t, t, g = gb, beta = gb, **dict(stock, **extra))
     assert seen == ["op"] + ["fla"] * 6
+
+
+def test_gdn_adapter_routes_packed_batches_once_self_checked(monkeypatch):
+    """Padding-free SFT hands fla cu_seqlens; once the op's packed self-check passed, those calls
+    stay in the block (Qwen3.5-0.8B: 99 graph breaks in 4 packed SFT steps before)."""
+    M = _load()
+    seen = []
+    monkeypatch.setattr(M, "_GDN_OP", [True])
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+
+    def op(*a):
+        seen.append(("op", a[6].tolist() if len(a) > 6 else None))
+        return ("out",)
+
+    monkeypatch.setattr(
+        torch.ops, "unsloth", types.SimpleNamespace(qwen3_5_gdn_chunk = op), raising = False
+    )
+    adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append(("fla", None)) or ("fla", None))
+    stock = dict(use_qk_l2norm_in_kernel = True, initial_state = None, output_final_state = False)
+    cu = torch.tensor([0, 3, 4], dtype = torch.int32)
+    one, two = torch.zeros(1, 4, 2, 8), torch.zeros(2, 4, 2, 8)
+    g1, g2 = torch.zeros(1, 4, 2), torch.zeros(2, 4, 2)
+    for varlen in (False, True):
+        monkeypatch.setattr(M, "_GDN_VARLEN", [varlen])
+        adapter(one, one, one, g = g1, beta = g1, cu_seqlens = cu, **stock)
+        adapter(two, two, two, g = g2, beta = g2, cu_seqlens = cu, **stock)  # fla wants B = 1
+        adapter(one, one, one, g = g1, beta = g1, cu_seqlens = None, **stock)
+    assert seen == [("fla", None), ("fla", None), ("op", None)] + [
+        ("op", [0, 3, 4]),
+        ("fla", None),
+        ("op", None),
+    ]
 
 
 def _hub_wrapper(implementation, applicable_params):
