@@ -728,6 +728,8 @@ export const sv = {
       "Den här chatten visas inte i din historik och sparas inte. Den försvinner när du lämnar den.",
   },
   picker: {
+    unifiedTightFit: "Snäv passform",
+    unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -3356,6 +3358,7 @@ export const sv = {
       relativeNever: "aldrig",
       relativeJustNow: "just nu",
       expired: "har löpt ut",
+      expiredStatus: "Har löpt ut",
       today: "i dag",
       created: "Skapad {value}",
       used: "Senast använd {value}",

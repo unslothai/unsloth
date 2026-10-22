@@ -420,7 +420,7 @@ test("each fit verdict is an info mark that explains itself", () => {
 
 test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   assert.ok(
-    PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu),"),
+    PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu, r.id),"),
   );
   assert.ok(!PICKERS.includes("exceedsSize"));
   assert.match(

@@ -626,6 +626,8 @@ export const ru = {
       "Этот чат не появится в истории и не сохраняется. Он исчезнет, когда вы уйдёте.",
   },
   picker: {
+    unifiedTightFit: "Впритык",
+    unifiedTightFitHint: "На этом Mac может загрузиться с более коротким контекстом или работать медленнее.",
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
     retry: "Повторить",
@@ -3151,6 +3153,7 @@ export const ru = {
       relativeNever: "никогда",
       relativeJustNow: "только что",
       expired: "истёк",
+      expiredStatus: "Истёк",
       today: "сегодня",
       created: "Создан {value}",
       used: "Использование: {value}",

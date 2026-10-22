@@ -679,6 +679,8 @@ export const en = {
       "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
+    unifiedTightFit: "Tight fit",
+    unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -3148,7 +3150,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
@@ -3193,6 +3195,7 @@ export const en = {
       relativeNever: "never",
       relativeJustNow: "just now",
       expired: "expired",
+      expiredStatus: "Expired",
       today: "today",
       created: "Created {value}",
       used: "Used {value}",

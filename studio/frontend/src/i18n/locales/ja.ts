@@ -626,6 +626,8 @@ export const ja = {
     temporaryChatDescription: "このチャットは履歴に表示されず、保存されません。離れると消えます。",
   },
   picker: {
+    unifiedTightFit: "ぎりぎり",
+    unifiedTightFitHint: "この Mac では短いコンテキストで読み込まれるか、動作が遅くなる可能性があります。",
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
     retry: "再試行",
@@ -3108,6 +3110,7 @@ export const ja = {
       relativeNever: "なし",
       relativeJustNow: "たった今",
       expired: "期限切れ",
+      expiredStatus: "期限切れ",
       today: "今日",
       created: "作成日時 {value}",
       used: "使用日時 {value}",

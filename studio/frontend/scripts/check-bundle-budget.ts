@@ -379,10 +379,14 @@ export const BUDGET = {
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
   // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
-  // at 870f37741: 6,749.0 KB raw / 2,032.9 KB transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_081_900,
-  rawBytes: 6_911_200,
+  // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_082_421,
+  rawBytes: 6_912_887,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

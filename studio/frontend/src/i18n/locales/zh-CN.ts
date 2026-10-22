@@ -625,6 +625,8 @@ export const zhCN = {
     temporaryChatDescription: "此聊天不会出现在你的历史记录中，也不会被保存。离开后即消失。",
   },
   picker: {
+    unifiedTightFit: "勉强可用",
+    unifiedTightFitHint: "在这台 Mac 上可能以更短的上下文加载，或运行更慢。",
     onDevice: "本机",
     huggingFace: "Hugging Face",
     retry: "重试",
@@ -3081,6 +3083,7 @@ export const zhCN = {
       relativeNever: "从未",
       relativeJustNow: "刚刚",
       expired: "已过期",
+      expiredStatus: "已过期",
       today: "今天",
       created: "创建于 {value}",
       used: "上次使用：{value}",

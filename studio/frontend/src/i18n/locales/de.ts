@@ -626,6 +626,8 @@ export const de = {
       "Dieser Chat erscheint nicht in deinem Verlauf und wird nicht gespeichert. Er verschwindet, wenn du ihn verlässt.",
   },
   picker: {
+    unifiedTightFit: "Knapp",
+    unifiedTightFitHint: "Lädt auf diesem Mac eventuell nur mit kürzerem Kontext oder läuft langsamer.",
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
     retry: "Erneut versuchen",
@@ -3182,6 +3184,7 @@ export const de = {
       relativeNever: "nie",
       relativeJustNow: "gerade eben",
       expired: "abgelaufen",
+      expiredStatus: "Abgelaufen",
       today: "heute",
       created: "Erstellt {value}",
       used: "Verwendet {value}",
