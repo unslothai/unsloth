@@ -3291,7 +3291,9 @@ def test_a_superseding_load_during_the_respawn_is_not_overwritten(monkeypatch, t
         def is_alive(self):
             return not self.stopped
 
-    b, servers, payloads = _device_loss_backend(monkeypatch, tmp_path, on_start = _supersede_mid_start)
+    b, servers, payloads = _device_loss_backend(
+        monkeypatch, tmp_path, on_start = _supersede_mid_start
+    )
     holder["backend"] = b
     monkeypatch.setattr(b, "status", lambda: {})
     with pytest.raises(SdCppCancelled):

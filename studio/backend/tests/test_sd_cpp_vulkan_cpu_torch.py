@@ -516,7 +516,10 @@ def test_an_old_rule_record_keeps_only_the_proven_cards_known():
         "proven": True,
         "fingerprint": {"bundle": "t"},
         "cards": ["Card A", "Card B"],
-        "per_card": {"Card A": {"strikes": 1, "proven": True}, "Card B": {"strikes": 1, "proven": False}},
+        "per_card": {
+            "Card A": {"strikes": 1, "proven": True},
+            "Card B": {"strikes": 1, "proven": False},
+        },
     }
     kept = sd_cpp_backend._decisive_evidence_only(old)
     assert kept["cards"] == ["Card A"]

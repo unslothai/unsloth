@@ -1463,9 +1463,7 @@ def _decisive_evidence_only(record: Optional[dict]) -> Optional[dict]:
     if record.get("cards"):
         # Without unscoped proof only the proven cards stay known: a card left in ``cards`` without its own
         # entry would fall through to the record-wide proof and divert on another card's failure.
-        kept["cards"] = [
-            c for c in record["cards"] if unscoped["proven"] or c in proven_cards
-        ]
+        kept["cards"] = [c for c in record["cards"] if unscoped["proven"] or c in proven_cards]
     if proven_cards:
         kept["per_card"] = proven_cards
     kept["unscoped"] = {"strikes": 0, "proven": unscoped["proven"]}
