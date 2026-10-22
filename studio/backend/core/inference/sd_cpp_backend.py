@@ -42,6 +42,8 @@ from core.inference.diffusion_device import (
     resolve_selected_cuda_ordinal,
 )
 from core.inference.diffusion_families import (
+    krea2_raw_checkpoint,
+    krea2_sd_cpp_flow_shift,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
@@ -2719,6 +2721,19 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
+    """The ``--flow-shift`` for one request: the family's fixed value, except Krea 2 Raw, whose mu follows the
+    output size (Turbo keeps sd.cpp's fixed Krea2 mu)."""
+    if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
+        state.gguf_filename,
+        getattr(state, "display_repo_id", None),
+        state.repo_id,
+        state.base_repo,
+    ):
+        return krea2_sd_cpp_flow_shift(width, height)
+    return state.flow_shift
+
+
 _EMBEDDED_GUIDANCE_FAMILIES = ("flux.1", "flux.1-kontext", "flux.2-dev")
 # diffusers computes cond + g * (cond - uncond): g is standard CFG minus 1, and any g > 0 enables guidance.
 _CFG_MINUS_ONE_FAMILIES = ("z-image", "krea-2")
@@ -4691,7 +4706,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
-                    flow_shift = state.flow_shift,
+                    flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
                         if state.sample_sigmas
@@ -4842,8 +4857,9 @@ class SdCppDiffusionBackend:
         extra_args: list[str] = []
         if state.vae_format:
             extra_args += ["--vae-format", state.vae_format]
-        if state.flow_shift is not None:
-            extra_args += ["--flow-shift", repr(float(state.flow_shift))]
+        flow_shift = _request_flow_shift(state, int(width), int(height))
+        if flow_shift is not None:
+            extra_args += ["--flow-shift", repr(float(flow_shift))]
         if state.sample_sigmas:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]

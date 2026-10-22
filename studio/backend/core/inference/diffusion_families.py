@@ -2019,6 +2019,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.1-krea", 20, 3.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
+    # The same Raw checkpoint as GGUFs name it (realrebelai/KREA-2_GGUFs BASE/Krea-2-Base-*, krea2_raw-*).
+    ("krea-2-base", 52, 3.5),
+    ("krea2-raw", 52, 3.5),
+    ("krea2-base", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
     ("flux1-krea", 20, 3.5),  # before Krea-2's generic row
     ("krea", 8, 0.0),
@@ -2158,14 +2162,38 @@ def transformer_variant_differs_from_base(
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
-def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
-    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+def _generation_defaults_row(*identifiers: Optional[str]) -> Optional[tuple[str, int, float]]:
     for identifier in identifiers:
         needle = model_identity(identifier).lower()
-        for key, steps, guidance in _GENERATION_DEFAULTS:
-            if name_key_in(key, needle):
-                return steps, guidance
+        for row in _GENERATION_DEFAULTS:
+            if name_key_in(row[0], needle):
+                return row
     return None
+
+
+def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
+    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+    row = _generation_defaults_row(*identifiers)
+    return (row[1], row[2]) if row is not None else None
+
+
+_KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})
+
+
+def krea2_raw_checkpoint(*identifiers: Optional[str]) -> bool:
+    """Whether the first identifier naming a known model names Krea 2 Raw (the undistilled base), in the same
+    precedence the generation defaults use, so a load gets Raw's schedule exactly when it gets Raw's defaults."""
+    row = _generation_defaults_row(*identifiers)
+    return row is not None and row[0] in _KREA2_RAW_KEYS
+
+
+def krea2_sd_cpp_flow_shift(width: int, height: int) -> float:
+    """sd.cpp ``--flow-shift`` matching diffusers' Krea 2 Raw schedule at ``width`` x ``height``. Raw computes mu from
+    the packed latent tokens (calculate_shift: 0.5 at 256 tokens, 1.15 at 6400) where Turbo fixes mu = 1.15, which is
+    sd.cpp's Krea2 default. sd.cpp's FLUX flow denoiser takes the shift as mu itself (e^mu / (e^mu + 1/t - 1))."""
+    tokens = (int(height) // 16) * (int(width) // 16)
+    slope = (1.15 - 0.5) / (6400 - 256)
+    return tokens * slope + (0.5 - slope * 256)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:

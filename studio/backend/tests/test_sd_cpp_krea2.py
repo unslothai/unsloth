@@ -164,3 +164,74 @@ def test_a_gpu_host_keeps_krea2_on_diffusers(_router, monkeypatch, tmp_path):
     assert r.active_engine_name() == ENGINE_DIFFUSERS
     assert r._fallback_reason == "GPU backend 'cuda' uses diffusers"
     assert calls == []
+
+
+_RAW_IDS = (
+    ("BASE/Krea-2-Base-Q4_K_M.gguf", "realrebelai/KREA-2_GGUFs", "krea/Krea-2-Turbo"),
+    ("krea2_raw-Q4_K_M.gguf", "vantagewithai/Krea-2-Raw-GGUF", "krea/Krea-2-Turbo"),
+    ("Krea-2-Raw-Q8_0.gguf", "someone/whatever-GGUF", "krea/Krea-2-Turbo"),
+    (None, "krea/Krea-2-Raw", "krea/Krea-2-Raw"),
+)
+_TURBO_IDS = (
+    ("TURBO/Krea-2-Turbo-Q4_K_M.gguf", "realrebelai/KREA-2_GGUFs", "krea/Krea-2-Turbo"),
+    ("krea2_turbo-Q4_K_M.gguf", "vantagewithai/Krea-2-Turbo-GGUF", "krea/Krea-2-Turbo"),
+    (None, "krea/Krea-2-Turbo", "krea/Krea-2-Turbo"),
+)
+
+
+@pytest.mark.parametrize("ids", _RAW_IDS)
+def test_raw_and_base_named_checkpoints_get_raw_defaults(ids):
+    from core.inference.diffusion_families import default_generation_params
+    assert default_generation_params(*ids) == (52, 3.5)
+
+
+@pytest.mark.parametrize("ids", _TURBO_IDS)
+def test_turbo_checkpoints_keep_turbo_defaults(ids):
+    from core.inference.diffusion_families import default_generation_params
+    assert default_generation_params(*ids) == (8, 0.0)
+    # FLUX.1 Krea dev is not a Krea 2.
+    assert default_generation_params("flux1-krea-dev-Q4_K_M.gguf") == (20, 3.5)
+
+
+def _state(gguf, repo, base):
+    return SimpleNamespace(
+        family = detect_family("krea-2"),
+        gguf_filename = gguf,
+        display_repo_id = None,
+        repo_id = repo,
+        base_repo = base,
+        flow_shift = detect_family("krea-2").sd_cpp_flow_shift,
+    )
+
+
+@pytest.mark.parametrize("ids", _RAW_IDS)
+def test_raw_passes_the_resolution_derived_mu(ids):
+    from core.inference.sd_cpp_backend import _request_flow_shift
+
+    # diffusers calculate_shift over (H/16)*(W/16) tokens: 0.5 at 256, 1.15 at 6400; sd.cpp's FLUX flow shift is mu.
+    assert _request_flow_shift(_state(*ids), 256, 256) == pytest.approx(0.5)
+    assert _request_flow_shift(_state(*ids), 1024, 1024) == pytest.approx(0.90625)
+    assert _request_flow_shift(_state(*ids), 1280, 1280) == pytest.approx(1.15)
+
+
+@pytest.mark.parametrize("ids", _TURBO_IDS)
+def test_turbo_keeps_sd_cpp_fixed_mu(ids):
+    from core.inference.sd_cpp_backend import _request_flow_shift
+
+    # None omits --flow-shift, so sd.cpp applies its Krea2 default mu = 1.15, which is what Turbo uses.
+    assert _request_flow_shift(_state(*ids), 1024, 1024) is None
+
+
+def test_other_families_keep_their_fixed_shift():
+    from core.inference.sd_cpp_backend import _request_flow_shift
+
+    qwen = detect_family("Qwen/Qwen-Image")
+    state = SimpleNamespace(
+        family = qwen,
+        gguf_filename = "Krea-2-Base-Q4_K_M.gguf",
+        display_repo_id = None,
+        repo_id = "unsloth/Qwen-Image-GGUF",
+        base_repo = "Qwen/Qwen-Image",
+        flow_shift = qwen.sd_cpp_flow_shift,
+    )
+    assert _request_flow_shift(state, 1024, 1024) == qwen.sd_cpp_flow_shift

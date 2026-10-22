@@ -14,6 +14,10 @@ const MODEL_DEFAULTS: Array<{
   { match: "z-image-turbo", steps: 8, guidance: 0 },
   // Krea 2 Raw is the undistilled base, so it must precede the distilled Krea key below.
   { match: "krea-2-raw", steps: 52, guidance: 3.5 },
+  // The same Raw checkpoint as GGUFs name it (Krea-2-Base-*, krea2_raw-*).
+  { match: "krea-2-base", steps: 52, guidance: 3.5 },
+  { match: "krea2-raw", steps: 52, guidance: 3.5 },
+  { match: "krea2-base", steps: 52, guidance: 3.5 },
   { match: "krea-2", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   // Kontext and the Krea dev finetune must precede generic FLUX.1.
