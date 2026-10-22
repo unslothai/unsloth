@@ -636,7 +636,7 @@ def drop_absent_adapter_grads_(model: nn.Module, process_group = None) -> list[i
     if not layers:
         return []
     first = layers[0][1]
-    sq = _grad_sq(model)
+    sq = _grad_sq(model, process_group)
     seen = first.seen.to(sq) if first.seen is not None else torch.ones_like(sq)
     stats = torch.stack([seen, sq])
     if _distributed():
@@ -703,22 +703,32 @@ def _adapter_grads(model: nn.Module) -> list[list[torch.Tensor]]:
     return grads
 
 
-def _grad_sq(model: nn.Module) -> torch.Tensor:
+def _local(t: torch.Tensor) -> torch.Tensor:
+    # FSDP2 parameters and grads are DTensors: work on this rank's shard.
+    return t.to_local() if hasattr(t, "to_local") else t
+
+
+def _grad_sq(model: nn.Module, process_group = None) -> torch.Tensor:
     """(U,) squared gradient norm of each adapter, 0 for an adapter without gradients."""
     layers = _layers(model)
     if not layers:
         raise ValueError("The model has no multi-LoRA layers.")
-    device = layers[0][1].lora_A[0].device
+    device = _local(layers[0][1].lora_A[0]).device
     out = torch.zeros(layers[0][1].num_adapters, device = device)
+    sharded = False
     for u, gs in enumerate(_adapter_grads(model)):
         for g in gs:
-            out[u] += g.float().pow(2).sum().to(device)
+            sharded = sharded or hasattr(g, "to_local")
+            out[u] += _local(g).float().pow(2).sum().to(device)
+    if sharded and _distributed():
+        # Each rank holds a shard: the norm is the sum over shards.
+        torch.distributed.all_reduce(out, group = process_group)
     return out
 
 
-def per_adapter_grad_norm(model: nn.Module) -> torch.Tensor:
+def per_adapter_grad_norm(model: nn.Module, process_group = None) -> torch.Tensor:
     """(U,) gradient L2 norm of each adapter over every multi-LoRA layer (0 for an adapter without grads)."""
-    return _grad_sq(model).sqrt()
+    return _grad_sq(model, process_group).sqrt()
 
 
 @torch.no_grad()
@@ -726,13 +736,15 @@ def clip_grad_norm_per_adapter_(
     model: nn.Module,
     max_norm: float,
     eps: float = 1e-6,
+    process_group = None,
 ) -> torch.Tensor:
     """Clip each adapter's gradient to ``max_norm`` on its own, so one adapter never rescales another."""
-    norms = per_adapter_grad_norm(model)
+    norms = per_adapter_grad_norm(model, process_group)
     coef = (max_norm / (norms + eps)).clamp(max = 1.0)
     for u, gs in enumerate(_adapter_grads(model)):
         for g in gs:
-            g.mul_(coef[u].to(device = g.device, dtype = g.dtype))
+            local = _local(g)
+            local.mul_(coef[u].to(device = local.device, dtype = local.dtype))
     return norms
 
 

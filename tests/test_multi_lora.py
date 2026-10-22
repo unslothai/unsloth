@@ -334,3 +334,61 @@ def test_an_adapter_whose_labels_are_all_ignored_is_absent_and_base_only_batches
     opt.zero_grad()
     assert ml.drop_absent_adapter_grads_(model) == [0, 1]
     assert ml.clip_grad_norm_per_adapter_(model, 1.0).tolist() == [0.0, 0.0]
+
+
+def test_fsdp2_sharded_grads_norm_and_clip_on_local_shards(tmp_path):
+    script = tmp_path / "dtensor.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import importlib.util, os, sys, types, torch, torch.distributed as dist
+            from torch.distributed.device_mesh import init_device_mesh
+            from torch.distributed.tensor import Shard, distribute_tensor
+
+            pkg = types.ModuleType("mlk"); pkg.__path__ = []; sys.modules["mlk"] = pkg
+            utils = types.ModuleType("mlk.utils")
+            utils._base_quant_state = lambda layer, W: None
+            utils.fast_dequantize = lambda W, q = None, dtype = None, **k: W
+            utils.matmul_lora = lambda X, W, Wq, A, B, s, out = None: X @ W.t()
+            utils.torch_amp_custom_fwd = utils.torch_amp_custom_bwd = lambda f: f
+            sys.modules["mlk.utils"] = utils
+            path = os.path.join(sys.argv[2], "unsloth/kernels/multi_lora.py")
+            spec = importlib.util.spec_from_file_location("mlk.multi_lora", path)
+            ml = importlib.util.module_from_spec(spec); sys.modules[spec.name] = ml; spec.loader.exec_module(ml)
+
+            os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = sys.argv[1])
+            dist.init_process_group("gloo", rank = 0, world_size = 1)
+            mesh = init_device_mesh("cpu", (1,))
+            torch.manual_seed(0)
+            model = torch.nn.Sequential(torch.nn.Linear(8, 8))
+            ml.inject_multi_lora(model, ["0"], 2, r = 4)
+            layer = model[0]
+            grads = [torch.randn_like(p) for p in layer.parameters() if p.requires_grad]
+            want = []
+            for u in range(2):
+                sq = sum(g.pow(2).sum() for g in (grads[u], grads[2 + u]))
+                want.append(float(sq.sqrt()))
+            for p, g in zip([p for p in layer.parameters() if p.requires_grad], grads):
+                p.data = distribute_tensor(p.data, mesh, [Shard(0)])
+                p.grad = distribute_tensor(g, mesh, [Shard(0)])
+            got = ml.clip_grad_norm_per_adapter_(model, 0.5)
+            after = ml.per_adapter_grad_norm(model)
+            assert torch.allclose(got, torch.tensor(want), rtol = 1e-5), (got, want)
+            assert torch.allclose(after, torch.tensor([0.5, 0.5]), rtol = 1e-4), after
+            dist.destroy_process_group()
+            print("DTENSOR OK")
+            """
+        ),
+        encoding = "utf-8",
+    )
+    port = str(29500 + os.getpid() % 1000)
+    proc = subprocess.run(
+        [sys.executable, str(script), port, str(REPO)],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+        env = os.environ,
+    )
+    assert proc.returncode == 0 and "DTENSOR OK" in proc.stdout, (
+        proc.stdout[-2000:] + proc.stderr[-4000:]
+    )
