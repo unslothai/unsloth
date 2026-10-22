@@ -447,7 +447,8 @@ _ALIAS_RUN: dict[str, tuple[str, Optional[str]]] = {}
 _RUN_ALIAS: dict[str, str] = {}
 # A queued job keeps the creation time it was given, not the later time its run started.
 _ALIAS_CREATED: dict[str, int] = {}
-_aliases_loaded = False
+# Each account has its own database, so its ids load the first time that account asks.
+_aliases_loaded: set[Optional[str]] = set()
 _drainer: Optional[asyncio.Task] = None
 _start_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
     weakref.WeakKeyDictionary()
@@ -477,8 +478,8 @@ def _alias_db():
 
 
 def _load_aliases() -> None:
-    global _aliases_loaded
-    if _aliases_loaded:
+    account_id = current_account_id()
+    if account_id in _aliases_loaded:
         return
     conn = _alias_db()
     try:
@@ -492,7 +493,7 @@ def _load_aliases() -> None:
         _RUN_ALIAS[run_id] = alias
         if created_at:
             _ALIAS_CREATED[alias] = created_at
-    _aliases_loaded = True
+    _aliases_loaded.add(account_id)
 
 
 def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: int) -> None:
@@ -583,8 +584,12 @@ async def _start_queued(entry: _Queued) -> bool:
                 return False
             _finish(entry, "failed", started.message or started.error or "Training did not start")
             return True
-        await asyncio.to_thread(
-            _save_alias, entry.alias, started.job_id, entry.account.account_id, entry.created_at
+        # In the job's own account database: the drainer may carry whichever account started it.
+        await arun_as(
+            entry.account,
+            asyncio.to_thread(
+                _save_alias, entry.alias, started.job_id, entry.account.account_id, entry.created_at
+            ),
         )
         _remember_start(started.job_id, entry.request.model_dump(), entry.created_at)
         _finish(entry, "started")

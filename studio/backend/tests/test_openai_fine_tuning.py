@@ -387,7 +387,7 @@ def queue(studio, monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
-    monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", False)
+    monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", set())
     monkeypatch.setattr(openai_fine_tuning, "_ensure_drainer", lambda: None)
     gpu = {"busy": True}
     monkeypatch.setattr(openai_fine_tuning, "_training_busy", lambda: gpu["busy"])
@@ -496,7 +496,7 @@ def _forget_aliases(monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
-    monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", False)
+    monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", set())
 
 
 def test_a_started_queued_job_keeps_its_id_after_a_restart(queue, monkeypatch):
@@ -685,3 +685,42 @@ def test_a_job_id_store_failure_keeps_the_started_job(queue, monkeypatch):
 
     job, started = _run(flow())
     assert started.id == job.id and started.status == "validating_files"
+
+
+def test_queue_ids_are_stored_and_loaded_per_account(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+    from utils.account_context import AccountContext
+
+    bob = AccountContext("bob", "bob")
+    reads, writes = [], []
+    alias_db = openai_fine_tuning._alias_db
+
+    def spy():
+        reads.append(openai_fine_tuning.current_account_id())
+        return alias_db()
+
+    save = openai_fine_tuning._save_alias
+
+    def save_spy(*args):
+        writes.append(openai_fine_tuning.current_account_id())
+        return save(*args)
+
+    monkeypatch.setattr(openai_fine_tuning, "_alias_db", spy)
+    monkeypatch.setattr(openai_fine_tuning, "_save_alias", save_spy)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        # The drainer runs in whatever account context it was created in, not the job's.
+        openai_fine_tuning._QUEUE[0].account = bob
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        await client.fine_tuning.jobs.list()
+        monkeypatch.setattr(openai_fine_tuning, "current_account_id", lambda: bob.account_id)
+        await client.fine_tuning.jobs.list()
+        return job
+
+    _run(flow())
+    assert writes == [bob.account_id]
+    # Bob's own table is read even though another account loaded its ids first.
+    assert bob.account_id in reads and len(set(reads)) == 2
