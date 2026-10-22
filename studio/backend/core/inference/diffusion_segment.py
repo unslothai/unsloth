@@ -1387,6 +1387,7 @@ class MaskSegmenter:
         host = self._host or _HostWeights(pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1")
         try:
             host.park(model)
+            copied = time.perf_counter() - started
         except Exception as exc:  # noqa: BLE001 -- a module that will not move is simply unloaded
             logger.warning("images.segment: could not park in host RAM (%s); unloading", exc)
             self._host = None
@@ -1409,12 +1410,18 @@ class MaskSegmenter:
         self._path = self._weights_key = self.device = self._dtype = None
         self.precision = self.precision_reason = self.weights_file = None
         del model
-        _free_device_cache(device)
+        # No gc.collect (what _free_device_cache adds): the weight storages were emptied in place, and on a large heap
+        # a full collection can cost more than the park itself.
+        with suppress(Exception):
+            import torch
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
         self._arm_park_timer()
         logger.info(
-            "images.segment: parked in host RAM from %s in %.2fs (%s)",
+            "images.segment: parked in host RAM from %s in %.2fs (copy %.2fs) (%s)",
             device,
             time.perf_counter() - started,
+            copied,
             reason,
         )
         return True
