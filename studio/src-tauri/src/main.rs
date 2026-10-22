@@ -496,6 +496,20 @@ fn windows_autostart_builder(name: &str, exe: &str) -> auto_launch::AutoLaunchBu
     builder
 }
 
+/// Write the per-user Run value. An elevated run under an older build may have left the value in
+/// HKLM, which would start a second copy at login: disable() removes it when allowed and skips it
+/// otherwise.
+#[cfg(windows)]
+fn enable_windows_autostart(name: &str, exe: &str) -> Result<(), String> {
+    windows_autostart_builder(name, exe)
+        .build()
+        .and_then(|launcher| {
+            let _ = launcher.disable();
+            launcher.enable()
+        })
+        .map_err(|error| error.to_string())
+}
+
 /// Write the login entry. The plugin builds its launcher without a Windows mode, so Windows writes
 /// through `windows_autostart_builder` instead; disable still goes through the plugin, which
 /// removes the value from both hives.
@@ -503,15 +517,7 @@ fn enable_autostart_entry(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        windows_autostart_builder(&app.package_info().name, &exe.display().to_string())
-            .build()
-            .and_then(|launcher| {
-                // An elevated run under an older build may have left the value in HKLM, which would
-                // start a second copy at login. disable() removes it when allowed and skips it otherwise.
-                let _ = launcher.disable();
-                launcher.enable()
-            })
-            .map_err(|error| error.to_string())
+        enable_windows_autostart(&app.package_info().name, &exe.display().to_string())
     }
     #[cfg(not(windows))]
     {
@@ -3003,6 +3009,47 @@ media-src 'self' https:"
             quoted_windows_run_command(&format!("{exe} --hidden")).as_deref(),
             Some(format!("\"{exe}\" --hidden").as_str())
         );
+    }
+
+    /// Against the real registry (CI runners are elevated): the dependency default writes HKLM when
+    /// elevated, the per-user path writes HKCU only and clears a value an older build left in HKLM.
+    #[cfg(windows)]
+    #[test]
+    fn windows_enable_writes_hkcu_and_clears_a_legacy_hklm_value() {
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
+        use winreg::RegKey;
+        const RUN: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+        let name = format!("Unsloth Studio autostart test {}", std::process::id());
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let has = |hive, name: &str| {
+            RegKey::predef(hive)
+                .open_subkey_with_flags(RUN, KEY_QUERY_VALUE)
+                .and_then(|key| key.get_value::<String, _>(name))
+                .is_ok()
+        };
+        let elevated = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey_with_flags(RUN, KEY_SET_VALUE)
+            .is_ok();
+        if elevated {
+            // Control: the 0.6 default (`Dynamic`) lands in HKLM, the value this change avoids.
+            let dynamic = auto_launch::AutoLaunchBuilder::new()
+                .set_app_name(&name)
+                .set_app_path(&exe)
+                .set_args(AUTOSTART_ARGS)
+                .build()
+                .unwrap();
+            dynamic.enable().unwrap();
+            assert!(has(HKEY_LOCAL_MACHINE, &name));
+        }
+        for _ in 0..2 {
+            enable_windows_autostart(&name, &exe).unwrap();
+            assert!(has(HKEY_CURRENT_USER, &name));
+            assert!(!has(HKEY_LOCAL_MACHINE, &name));
+        }
+        let launcher = windows_autostart_builder(&name, &exe).build().unwrap();
+        launcher.disable().unwrap();
+        assert!(!has(HKEY_CURRENT_USER, &name));
+        eprintln!("elevated={elevated}");
     }
 
     /// A re-enabled entry is present and on, so it is adopted and never restored over.
