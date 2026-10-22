@@ -9,6 +9,7 @@ import {
   inputImeHandlers,
   newInputImeState,
 } from "../src/features/chat/utils/composer-preferences.ts";
+import { isModEnter } from "../src/features/settings/lib/keyboard-shortcuts.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type Target = "input" | "dialog";
@@ -136,12 +137,15 @@ function fixture(
   file: string,
   action: "commitCreate" | "save",
   target: Target = "input",
+  mac = true,
 ) {
   const effects: string[] = [];
   const nameImeRef = { current: newInputImeState() };
   const ime = compositionHandlers(file, { inputImeHandlers, nameImeRef });
   const onKey = keyHandler(file, target, action, {
     imeOwnsInputKeydown,
+    isModEnter: (event: Parameters<typeof isModEnter>[0]) =>
+      isModEnter(event, mac),
     nameImeRef,
     commitCreate: () => effects.push("submit"),
     save: () => effects.push("submit"),
@@ -278,6 +282,7 @@ for (const modifier of ["metaKey", "ctrlKey"] as const) {
       "features/chat/components/edit-project-dialog.tsx",
       "save",
       "dialog",
+      modifier === "metaKey",
     );
     f.key({ keyCode: 229, [modifier]: true });
     assert.equal(f.effects.filter((effect) => effect === "submit").length, 1);

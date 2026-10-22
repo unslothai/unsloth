@@ -30383,7 +30383,7 @@ async def _proxy_to_external_provider(
     # refused target never sees a credential. A managed upstream is Unsloth's own loopback.
     if managed is None:
         try:
-            base_url = validate_provider_base_url(base_url)
+            base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from None
 
@@ -30936,7 +30936,8 @@ async def _proxy_to_external_provider(
             subject = current_subject,
         )
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = provider_type,
         base_url = base_url,
         api_key = api_key,
@@ -51905,6 +51906,41 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
     return {}
 
 
+def _sd_controls_kwargs(generate: Any, request: Any) -> dict:
+    """``sd_controls`` (prompt weighting, CLIP skip, CFG rescale, variation seed) for an engine whose generate() takes
+    them (diffusers only). A value that changes the render, sent to another engine, is refused (ValueError -> 400)
+    rather than ignored, so a recipe never records a control that did not run."""
+    from core.inference.diffusion_sd_controls import SdControls
+
+    controls = SdControls(
+        prompt_weighting = getattr(request, "prompt_weighting", None),
+        clip_skip = getattr(request, "clip_skip", None),
+        cfg_rescale = getattr(request, "cfg_rescale", None),
+        variation_seed = getattr(request, "variation_seed", None),
+        variation_strength = getattr(request, "variation_strength", None),
+    )
+    try:
+        import inspect
+        if "sd_controls" in inspect.signature(generate).parameters:
+            return {"sd_controls": controls}
+    except (TypeError, ValueError):
+        pass
+    if controls.requested():
+        raise ValueError(
+            "Prompt weighting, CLIP skip, CFG rescale and variation seeds are supported on the "
+            "diffusers engine only."
+        )
+    if controls.prompt_weighting is False and getattr(
+        getattr(generate, "__self__", None), "parses_prompt_attention", False
+    ):
+        # sd.cpp reads (word:1.5) itself, so the prompt would still render weighted.
+        raise ValueError(
+            "Turning prompt weighting off is supported on the diffusers engine only: the native "
+            "sd.cpp engine always reads (word:1.2) attention syntax."
+        )
+    return {}
+
+
 def _shift_kwargs(generate: Any, request: Any) -> dict:
     """``shift`` / ``base_shift`` / ``max_shift`` for an engine whose generate() takes them (diffusers only).
 
@@ -52389,6 +52425,7 @@ async def _generate_diffusion_image_run(
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+                    **_sd_controls_kwargs(backend.generate, request),
                     **_shift_kwargs(backend.generate, request),
                     **_inpaint_mask_kwargs(backend.generate, request),
                 )
@@ -52508,6 +52545,16 @@ async def _generate_diffusion_image_run(
                         "localized_edit": result.get("localized_edit"),
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
+                        "prompt_weighting": result.get("prompt_weighting"),
+                        "clip_skip": result.get("clip_skip"),
+                        "cfg_rescale": result.get("cfg_rescale"),
+                        "variation_seed": (
+                            result["variation_seeds"][index]
+                            if result.get("variation_seeds")
+                            and index < len(result["variation_seeds"])
+                            else None
+                        ),
+                        "variation_strength": result.get("variation_strength"),
                         **{
                             key: result[key]
                             for key in (

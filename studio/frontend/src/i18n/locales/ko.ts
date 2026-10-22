@@ -1085,6 +1085,10 @@ export const ko = {
       alternateSlot: "대체 단축키",
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
+      metaUnsupported: "Windows 키는 단축키에 사용할 수 없습니다.",
+      altGraphUnsupported: "AltGr 조합은 단축키로 사용할 수 없습니다.",
+      desktopOnly: "데스크톱 앱 전용",
+      builtInKey: "기본 제공: {key}",
       actions: {
         findInPage: {
           label: "페이지에서 찾기",
@@ -1285,6 +1289,10 @@ export const ko = {
         steerMessage: {
           label: "응답 조정",
           description: "현재 응답을 중단하고 초안을 다음으로 보냅니다",
+        },
+        stopGeneration: {
+          label: "생성 중지",
+          description: "작성 중인 응답을 중지합니다",
         },
         cycleReasoningEffort: {
           label: "추론 강도 순환",
@@ -2059,9 +2067,9 @@ export const ko = {
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
         activityDescription: {
-          daily: "최근 {weeks} 동안 {total}",
-          weekly: "최고 주 {total} · 최근 {weeks}",
-          cumulative: "최근 {weeks} 동안 누적 {total}",
+          daily: "{since} 이후 {total}",
+          weekly: "가장 많은 주 {total} · {since} 이후",
+          cumulative: "{since} 이후 누적 {total}",
         },
         mode: {
           daily: "일별",
@@ -2070,8 +2078,9 @@ export const ko = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} 주간 · {tokens}",
-        chartToggle: "차트",
-        chartToggleHint: "주별 및 누적을 축 레이블이 있는 차트로 표시",
+        emptyDayTooltip: "{date} · 활동 없음",
+        apiRequests: "API로 {count}건",
+        cumulativeTooltip: "{date} 주까지 · 누적 {tokens}",
         less: "적음",
         more: "많음",
         insightsTitle: "활동 분석",

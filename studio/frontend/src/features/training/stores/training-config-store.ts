@@ -1720,6 +1720,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             return;
           }
           const patch: Partial<TrainingConfigState> = { trainingObjective };
+          // GRPO's KL coefficient may be 0; DPO and ORPO need a positive beta, so fall back to theirs.
+          if (trainingObjective !== "grpo" && state.rlBeta === 0) {
+            patch.rlBeta = null;
+          }
           if (!state.trainingMethodProvenance.learningRateManuallySet) {
             patch.learningRate =
               trainingObjective === "sft"
