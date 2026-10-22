@@ -292,6 +292,32 @@ def compute_precision_name(chip: Optional[str] = None) -> str:
     return "float16" if ("apple m1" in name or "apple m2" in name) else "bfloat16"
 
 
+# Untiled VAE decode working set above the weights (mflux Z-Image VAE, bf16, Apple M1 Metal): 1.99 GiB at 512x512 and
+# 6.64 GiB at 1024x1024, i.e. about 0.44 GiB plus 6.35 KB per output pixel. Tiled (mflux's 512 px tiles) it stays at
+# 2.0 GiB at 1024x1024; a 512x512 image is a single tile, so tiling changes nothing there.
+_VAE_DECODE_FIXED_BYTES = int(0.44 * 1024**3)
+_VAE_DECODE_BYTES_PER_PIXEL = 6350
+VAE_TILING_ENV = "UNSLOTH_DIFFUSION_MLX_VAE_TILING"
+
+
+def untiled_decode_bytes(width: int, height: int) -> int:
+    return _VAE_DECODE_FIXED_BYTES + _VAE_DECODE_BYTES_PER_PIXEL * int(width) * int(height)
+
+
+def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> bool:
+    """Tile the decode only when the untiled one would not fit what the working set has left, as ComfyUI tiles only
+    after an out-of-memory decode; unified memory pages instead of failing, so the check comes first.
+    ``UNSLOTH_DIFFUSION_MLX_VAE_TILING=1`` / ``0`` forces it on / off."""
+    raw = os.environ.get(VAE_TILING_ENV, "").strip().lower()
+    if raw in ("1", "on", "true", "yes"):
+        return True
+    if raw in ("0", "off", "false", "no"):
+        return False
+    if free_bytes is None:
+        return False
+    return untiled_decode_bytes(width, height) > free_bytes
+
+
 class MfluxRuntime:
     """The only code that imports mlx / mflux. Tests replace it with a fake (``backend.runtime_factory``)."""
 
@@ -360,6 +386,7 @@ class MfluxRuntime:
                 except MlxCancelled as exc:
                     raise StopImageGenerationException(str(exc)) from exc
 
+        self._plan_vae_tiling(model, width, height)
         callback = _StepCallback()
         model.callbacks.register(callback)
         cancelled = False
@@ -393,6 +420,31 @@ class MfluxRuntime:
         if cancelled:
             raise MlxCancelled("cancelled")
         return image
+
+    def free_working_set_bytes(self) -> Optional[int]:
+        """Metal's recommended working set minus what MLX holds live now (the resident model), or None."""
+        import mlx.core as mx
+
+        try:
+            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            budget = int(info.get("max_recommended_working_set_size") or 0)
+        except Exception:  # noqa: BLE001 -- no Metal reading: leave the decode untiled
+            return None
+        if budget <= 0:
+            return None
+        return budget - int(mx.get_active_memory())
+
+    def _plan_vae_tiling(self, model: Any, width: int, height: int) -> None:
+        from mflux.models.common.vae.tiling_config import TilingConfig
+
+        tiled = TilingConfig.may_tile_implicitly(model) and vae_tiling_needed(
+            width, height, self.free_working_set_bytes()
+        )
+        model.tiling_config = TilingConfig() if tiled else None
+        self.last_vae_tiled = tiled
+
+    def vae_tiled(self) -> bool:
+        return bool(getattr(self, "last_vae_tiled", False))
 
     def cache_text_encodings(
         self,
@@ -1247,6 +1299,9 @@ class MlxDiffusionBackend:
                     )
                     total = time.perf_counter() - started
                     timing = {"total_s": round(total, 3)}
+                    vae_tiled = getattr(runtime, "vae_tiled", None)
+                    if callable(vae_tiled):
+                        timing["vae_tiled"] = bool(vae_tiled())
                     if len(marks) >= 2:
                         # Exclude the first step: it includes prompt encoding.
                         timing["s_per_step"] = round((marks[-1] - marks[0]) / (len(marks) - 1), 4)
@@ -1451,7 +1506,8 @@ class MlxDiffusionBackend:
             "gguf_variant": extract_quant_token(state.gguf_filename),
             "cpu_offload": False,
             "offload_policy": "none",
-            "vae_tiling": False,
+            # Decided per generation from its size and the free working set; this is the last one's.
+            "vae_tiling": bool(getattr(self._runtime, "last_vae_tiled", False)),
             "memory_mode": None,
             "speed_mode": None,
             "speed_optims": [],
