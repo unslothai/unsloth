@@ -4892,12 +4892,12 @@ def _request_selects_stateful_sampler(
         _apply_sampler_setting(probe, "seq", samplers)
         adaptive = probe[1]
     # adaptive-p is a plain dist draw below target 0 (llama_sampler_adaptive_p_apply). An
-    # omitted target is the launch's (None: unknown, so it counts as on).
+    # omitted or null target is the launch's (None: unknown, so it counts as on).
     target = body.get("adaptive_target")
     if adaptive:
         if isinstance(target, (int, float)) and not isinstance(target, bool):
             adaptive = not _float32_negative(target)
-        elif "adaptive_target" not in body and launch_adaptive_target is not None:
+        elif target is None and launch_adaptive_target is not None:
             adaptive = not _float32_negative(launch_adaptive_target)
     stateful = stateful or adaptive
     if not stateful:

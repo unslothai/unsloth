@@ -821,6 +821,8 @@ def test_a_launch_with_sampled_drafts_sets_the_marker_and_unload_clears_it(tmp_p
     "body, launch, stateful",
     [
         ({"samplers": "kpa"}, -1.0, False),
+        ({"samplers": "kpa", "adaptive_target": None}, -1.0, False),
+        ({"samplers": ["adaptive_p"], "adaptive_target": None}, 0.45, True),
         ({"samplers": ["adaptive_p"]}, 0.45, True),
         ({"samplers": ["adaptive_p"]}, None, True),
         ({"samplers": ["adaptive_p"], "adaptive_target": 0.3}, -1.0, True),
