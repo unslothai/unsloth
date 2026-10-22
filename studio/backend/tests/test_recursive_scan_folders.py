@@ -51,7 +51,6 @@ def test_walker_lists_plain_folders_and_stops_at_models(tmp_path):
         p.relative_to(tmp_path).as_posix() for p in local_inventory.nested_scan_roots(tmp_path)
     }
     assert roots == {"vendor", "vendor/family", "a", "a/b", "a/b/c"}
-    # A folder that is itself a model is listed by its parent's scan, so the walk never enters it.
     assert lib["deep"].parent.relative_to(tmp_path).as_posix() not in roots
 
 
@@ -93,7 +92,6 @@ def test_recursive_folder_lists_nested_models_and_flat_stays_flat(tmp_path):
     assert str(lib["deep"].parent.resolve()) not in flat
     assert {str(lib["flat"].resolve()), str(lib["deep"].parent.resolve())} <= deep
     assert str(lib["deeper"].parent.resolve()) in deep
-    # Turning the flag on only adds rows.
     assert flat <= deep
 
 

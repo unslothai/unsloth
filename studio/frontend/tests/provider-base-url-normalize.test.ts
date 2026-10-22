@@ -27,6 +27,24 @@ test("a host without a scheme is read as http", () => {
   );
 });
 
+test("a public domain without a scheme is read as https", () => {
+  assert.equal(
+    normalizeProviderBaseUrl("api.openai.com/v1"),
+    "https://api.openai.com/v1",
+  );
+  assert.equal(
+    normalizeProviderBaseUrl("openrouter.ai:443/api/v1"),
+    "https://openrouter.ai/api/v1",
+  );
+  assert.equal(
+    normalizeProviderBaseUrl("gpu.example.com:8000/v1"),
+    "http://gpu.example.com:8000/v1",
+  );
+  for (const host of ["box.local", "host.docker.internal", "nas.lan"]) {
+    assert.equal(normalizeProviderBaseUrl(`${host}/v1`), `http://${host}/v1`);
+  }
+});
+
 test("other schemes still fail", () => {
   assert.throws(
     () => normalizeProviderBaseUrl("ftp://host/v1"),

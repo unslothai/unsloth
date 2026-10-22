@@ -144,13 +144,14 @@ from utils.hidden_models import (
     _HF_REPO_ID_RE,
     _existing_resolved_path,
     _safe_resolve,
+    decision_api_repo_ids,
     is_hidden_model as _is_hidden_model,
 )
 
 
 def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
-    """Substring needles, exact repo ids, and exact resolved paths identifying infra models (the RAG embedder
-    and the llama.cpp install validation probe) that pickers hide. A configured HF-repo embedder is
+    """Substring needles, exact repo ids, and exact resolved paths identifying infra models (the RAG embedder,
+    the llama.cpp install validation probe, and Decision API models) that pickers hide. A configured HF-repo embedder is
     published as its exact lowercased repo id and a local-path embedder as its exact resolved path only: a
     generic basename like "model" must not substring-hide unrelated chat models."""
     from core.rag import config as rag_config
@@ -160,7 +161,7 @@ def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
         "ggml-org/models",
         "stories260k.gguf",
     ]
-    exact_ids: list[str] = []
+    exact_ids = sorted(decision_api_repo_ids())
     exact_paths: list[str] = []
     for model in (
         rag_config.effective_embedding_model(),
@@ -1251,6 +1252,7 @@ async def _shared_compat_local_inventory_scan(
     models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
 ) -> List[LocalModelInfo]:
     from storage.studio_db import list_scan_folders
+    from hub.services.models.local_inventory import custom_folder_identities
     from hub.utils import inventory_scan as hf_cache_scan
 
     requested_sources = sources
@@ -1305,13 +1307,16 @@ async def _shared_compat_local_inventory_scan(
         except Exception as e:
             logger.warning("Could not load custom scan folders: %s", e)
             custom_folders = []
+        # Off the loop and under the scan budget: realpath on a hung mount blocks in the kernel.
+        identities = await asyncio.to_thread(
+            custom_folder_identities, custom_folders, _compat_inventory_path_identity
+        )
         key: _CompatLocalInventoryKey = (
             Path(_compat_inventory_path_identity(models_root)),
             scan_sources,
             tuple(
-                _compat_inventory_path_identity(folder.get("path", ""))
-                + ("\x00r" if folder.get("recursive") else "")
-                for folder in custom_folders
+                identity + ("\x00r" if folder.get("recursive") else "")
+                for identity, folder in zip(identities, custom_folders)
             ),
             epoch,
         )

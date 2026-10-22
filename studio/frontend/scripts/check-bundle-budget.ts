@@ -367,11 +367,18 @@ export const BUDGET = {
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
   // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
   // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
+  // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
   // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier, model picker and memory bar:
   // +911 B raw / +466 B transfer against 463e3f348 (97 chunks). Raised by that plus a 400 B raw / 200 B
   // transfer margin (another build of the same tree measured 282 B larger raw).
-  transferBytes: 2_076_250,
-  rawBytes: 6_888_400,
+  transferBytes: 2_077_561,
+  rawBytes: 6_894_527,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
