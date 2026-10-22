@@ -42,7 +42,7 @@ parameter schemas: Notion's catalog alone is about 65,000 tokens. Every tool is
 listed in full while the catalog takes at most a tenth of the loaded local model's
 context window. External providers always get the full listing.
 
-Past that, Studio searches tools the way Claude Code and Codex do. The model gets
+Past that, Unsloth searches tools the way Claude Code and Codex do. The model gets
 `mcp_tool_search`, whose description names every tool with a one-line summary,
 instead of the schemas. A search ranks the catalog with the SQLite FTS5 BM25 index
 and rank fusion the knowledge base uses (tool names and descriptions searched

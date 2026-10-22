@@ -78,6 +78,10 @@ def test_packed_calls_keep_the_unsloth_layer_forward(monkeypatch):
         return compiled
 
     monkeypatch.setattr(torch, "compile", fake_compile)
+    # Other test modules set UNSLOTH_COMPILE_DISABLE=1 at import, which xdist workers collect
+    # before this runs; any of these keeps every call on the stock forward.
+    for name in ("UNSLOTH_COMPILE_DISABLE", "UNSLOTH_BLOCK_COMPILE", "UNSLOTH_FORCE_FLOAT32"):
+        monkeypatch.delenv(name, raising = False)
 
     def forward(
         self,

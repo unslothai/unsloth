@@ -674,11 +674,19 @@ def _free_cached_model(model):
             delete_strategy.execute()
 
 
-def _merge_lora(layer, name):
+def _merge_lora(
+    layer,
+    name,
+    dtype = None,
+):
     bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
-        if quant_state is not None:
+        if quant_state is not None and W.dtype == torch.float8_e4m3fn:
+            # FP8 quant_state is the fp32 scale, not the model dtype: dequant in fp32, save in model dtype.
+            W = fast_dequantize(W, quant_state, dtype = torch.float32)
+            dtype = dtype if isinstance(dtype, torch.dtype) else torch.bfloat16
+        elif quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
             W = fast_dequantize(W, quant_state)
         else:
@@ -1516,7 +1524,7 @@ def unsloth_save_model(
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
-            W, bias = _merge_lora(proj, name)
+            W, bias = _merge_lora(proj, name, torch_dtype)
 
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
@@ -3612,6 +3620,11 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
+        return False
+    # REAP pruned in memory: the loaded folder still holds every expert.
+    if getattr(model, "_unsloth_reap_report", None) and not getattr(
+        model, "_unsloth_reap_saved", None
+    ):
         return False
     # The loaded folder holds the stock MTP head; a trained one needs a fresh checkpoint.
     if _attached_mtp_head(model) is not None:
@@ -6117,6 +6130,48 @@ def unsloth_generic_save(
     # this function's own keywords.
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
+    # Inline, builtins only (no new locals: they are forwarded below), and before the Hub revision
+    # route, which creates the repo / branch first. After an in-memory REAP prune the base
+    # checkpoint on disk still has every expert, and both a merge (which rebuilds from it) and an
+    # adapter save (which records it as the base) would use it. get_peft_model refuses this too;
+    # raw PEFT does not.
+    if (
+        isinstance(model, PeftModel)
+        and getattr(model, "_unsloth_reap_report", None)
+        and not getattr(model, "_unsloth_reap_saved", None)
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory only, but this save would use the base "
+            f"checkpoint `{model.config._name_or_path}`, which still has every expert. Nothing was "
+            'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
+            "model and load it again) before `get_peft_model`."
+        )
+    # The pruned base REAP saved is a local folder: an adapter pushed against it names a path no one
+    # else can load. In this process the marker says so (even if the folder moved since); after a
+    # reload from that folder, the provenance file reap_prune wrote there does.
+    if (
+        push_to_hub
+        and isinstance(model, PeftModel)
+        and _is_adapter_save_method(save_method)
+        and (
+            getattr(model, "_unsloth_reap_saved", None)
+            or any(
+                os.path.isfile(
+                    os.path.join(
+                        str(getattr(c, "base_model_name_or_path", None) or ""), "unsloth_reap.json"
+                    )
+                )
+                for c in (getattr(model, "peft_config", None) or {}).values()
+            )
+        )
+    ):
+        raise RuntimeError(
+            "Unsloth: this adapter's base is a REAP pruned model saved to a local folder, so a "
+            "pushed adapter could not be loaded anywhere else. Nothing was uploaded. Push the pruned base "
+            "to the Hub first and load it from there before finetuning, or push a merged model "
+            '(`save_method = "merged_16bit"`).'
+        )
+
     # A trained MTP head can only be stitched into a local copy, which this route makes first.
     if push_to_hub and (
         create_pr
@@ -6480,6 +6535,19 @@ def unsloth_generic_save_pretrained_merged(
     asks for a pickle.
     """
     _assert_export_target_is_not_base_with_lora_layers(self)
+    # Inline, builtins only, like unsloth_generic_save's REAP guard, but before the compressed /
+    # torchao dispatch below, whose helpers install their runtime and create the Hub repo first.
+    if (
+        isinstance(self, PeftModel)
+        and getattr(self, "_unsloth_reap_report", None)
+        and not getattr(self, "_unsloth_reap_saved", None)
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory only, but this save would use the base "
+            f"checkpoint `{self.config._name_or_path}`, which still has every expert. Nothing was "
+            'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
+            "model and load it again) before `get_peft_model`."
+        )
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
@@ -6627,6 +6695,19 @@ def unsloth_generic_push_to_hub_merged(
     asks for a pickle.
     """
     _assert_export_target_is_not_base_with_lora_layers(self)
+    # Inline, builtins only, like unsloth_generic_save's REAP guard, but before the compressed /
+    # torchao dispatch below, whose helpers install their runtime and create the Hub repo first.
+    if (
+        isinstance(self, PeftModel)
+        and getattr(self, "_unsloth_reap_report", None)
+        and not getattr(self, "_unsloth_reap_saved", None)
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory only, but this save would use the base "
+            f"checkpoint `{self.config._name_or_path}`, which still has every expert. Nothing was "
+            'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
+            "model and load it again) before `get_peft_model`."
+        )
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: You're not saving a tokenizer as well?\n"
@@ -6741,12 +6822,35 @@ def _unsloth_save_torchao_with_attached_config(
     # TorchAO does not support safe_serialization reliably.
     safe_serialization = False
 
-    if push_to_hub:
-        model.push_to_hub(save_directory, safe_serialization = safe_serialization, token = token)
-        tokenizer.push_to_hub(save_directory, token = token)
-    else:
-        model.save_pretrained(save_directory, safe_serialization = safe_serialization)
-        tokenizer.save_pretrained(save_directory)
+    with _torchao_hf_quantizer_attached(model):
+        if push_to_hub:
+            model.push_to_hub(save_directory, safe_serialization = safe_serialization, token = token)
+            tokenizer.push_to_hub(save_directory, token = token)
+        else:
+            model.save_pretrained(save_directory, safe_serialization = safe_serialization)
+            tokenizer.save_pretrained(save_directory)
+
+
+@contextmanager
+def _torchao_hf_quantizer_attached(model):
+    """Attach a torchao HfQuantizer for the save of a model quantized in place.
+
+    transformers 5 otherwise treats the torchao tensor subclasses as plain tensors and fails its tied-weight
+    storage check; 4.x pickles them with safe_serialization = False and needs nothing."""
+    if getattr(model, "hf_quantizer", None) is not None or Version(
+        importlib_version("transformers")
+    ) < Version("5.0.0"):
+        yield
+        return
+    from transformers.quantizers.auto import AutoHfQuantizer
+
+    model.hf_quantizer = AutoHfQuantizer.from_config(
+        model.config.quantization_config, pre_quantized = False
+    )
+    try:
+        yield
+    finally:
+        del model.hf_quantizer
 
 
 def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):

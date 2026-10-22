@@ -8,6 +8,7 @@ import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
 import { useT } from "@/i18n";
 import {
   ArtifactCard,
+  readIncompleteInfo,
   useChatProjectScope,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -52,7 +53,6 @@ import {
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
   type ReactNode,
@@ -94,6 +94,7 @@ import {
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
+import { mermaid } from "./mermaid-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
 import { spellLines } from "./reasoning-code-colour";
 import { useThinkingCodeColour } from "./use-thinking-code-colour";
@@ -129,6 +130,7 @@ import {
   type DiscreteInputTracker,
 } from "./discrete-input";
 import {
+  FINISHED_TEXT_REMEND,
   IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
   hasIncompleteLinkRepair,
@@ -1491,6 +1493,7 @@ type MarkdownTextRendererProps = {
   messageId: string;
   messageTextKey: string;
   precedingText: string;
+  cut?: boolean;
   searchImagesKey: string;
   statusType: string;
   text: string;
@@ -1502,6 +1505,7 @@ function MarkdownTextRenderer({
   messageId,
   messageTextKey,
   precedingText,
+  cut = !isStreaming,
   searchImagesKey,
   statusType,
   text,
@@ -1570,10 +1574,6 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
-  const pendingLinkRepair = useMemo(
-    () => !isStreaming && hasIncompleteLinkRepair(processedText),
-    [isStreaming, processedText],
-  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1588,10 +1588,16 @@ function MarkdownTextRenderer({
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
+            remend={
+              !cut
+                ? FINISHED_TEXT_REMEND
+                : hasIncompleteLinkRepair(processedText)
+                  ? LITERAL_LINK_REMEND
+                  : undefined
+            }
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks
@@ -1648,6 +1654,13 @@ const MarkdownTextImpl = () => {
       ? partsTextKey(message.parts)
       : "[]",
   );
+  // Every streamed yield carries the incomplete stamp and only a normal finish clears it.
+  const cut = useAuiState(
+    ({ message }) =>
+      message.status?.type !== "running" &&
+      !!readIncompleteInfo(message.metadata) &&
+      !message.parts.slice(partIndex + 1).some((part) => part.type === "text"),
+  );
 
   return (
     <MarkdownTextRenderer
@@ -1656,6 +1669,7 @@ const MarkdownTextImpl = () => {
       messageId={messageId}
       messageTextKey={messageTextKey}
       precedingText={precedingText}
+      cut={cut}
       searchImagesKey={searchImagesKey}
       statusType={status.type}
       text={text}

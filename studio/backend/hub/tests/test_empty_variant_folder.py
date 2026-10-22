@@ -143,8 +143,6 @@ def test_mark_empty_dir_cleanables_flips_listed_variant(monkeypatch):
 
 
 def _force_compute_to_raise(monkeypatch):
-    # Drive _compute() down its remote path, fail metadata, and have both cache fallbacks miss so the
-    # original error re-raises.
     def _boom(*a, **k):
         raise RuntimeError("offline")
 
@@ -164,8 +162,6 @@ def _force_compute_to_raise(monkeypatch):
 
 
 def test_get_variants_surfaces_cleanable_when_metadata_fails(monkeypatch):
-    # Offline / model_info fails and only an empty leftover folder is cached: the cleanable must still
-    # be returned instead of the error propagating.
     import asyncio
 
     _force_compute_to_raise(monkeypatch)
@@ -186,7 +182,6 @@ def test_get_variants_surfaces_cleanable_when_metadata_fails(monkeypatch):
 
 
 def test_get_variants_reraises_when_no_cleanable(monkeypatch):
-    # Offline with nothing cleanable: original error must propagate (as HTTP).
     import asyncio
 
     from fastapi import HTTPException

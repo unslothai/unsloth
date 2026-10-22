@@ -170,8 +170,19 @@ def _adapter_base_changed_error(config: dict) -> str | None:
         return None
     from utils.models.model_config import get_base_model_from_lora
 
-    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+    # The folder the loader reads: a cached Hub snapshot, not the repo id it came from.
+    if (
+        get_base_model_from_lora(str(_resolve_cached_model_load_name(config) or "")) or ""
+    ) != pinned:
         return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
+def _escaping_weights_error(config: dict) -> str | None:
+    from utils.security.file_security import escaping_weight_references
+    for key in ("model_name", "model_local_path", "model_snapshot_path", "adapter_base_pin"):
+        if config.get(key) and escaping_weight_references(config[key]):
+            return "This model's weight index names files outside its folder."
     return None
 
 
@@ -1914,6 +1925,12 @@ def _ensure_mamba_ssm(
     )
 
 
+# Integrated-only Radeon names for the other APU targets, as whole tokens (a substring would read "RX 7600M" as "600M"):
+# 820M Krackan Point 2 (gfx1153), 8040S Strix Halo (gfx1151), 780M / 760M / 740M Phoenix / Hawk Point (gfx1103),
+# 680M / 660M Rembrandt (gfx1035), 610M Raphael / Dragon Range / Mendocino (gfx1036 / gfx1037).
+_ROCM_APU_NAME_RE = re.compile(r"(?<![\w-])(?:820m|8040s|780m|760m|740m|680m|660m|610m)(?!\w)")
+
+
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     """Classify a ROCm device as unified-memory (APU) or discrete, returning ``(gcn_arch,
     is_unified)``. ``gcn_arch`` is the canonical arch string (e.g. ``"gfx1151"``) when a known
@@ -1959,6 +1976,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "8050s" in dev_lower
         or "860m" in dev_lower
         or "840m" in dev_lower
+        or _ROCM_APU_NAME_RE.search(dev_lower) is not None
     )
     return gcn_arch, is_unified
 
@@ -2702,20 +2720,24 @@ def _normalize_mlx_studio_scheduler(value):
     return raw
 
 
+def _resolve_mlx_local_dataset_path(dataset_file) -> Path:
+    from utils.paths import resolve_dataset_path
+
+    dataset_path = Path(os.path.expanduser(str(dataset_file)))
+    if dataset_path.is_absolute():
+        return dataset_path
+    if dataset_path.exists():
+        return dataset_path.resolve()
+    return Path(str(resolve_dataset_path(str(dataset_file))))
+
+
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import dataset_files_in_dir, resolve_dataset_path
+    from utils.paths import dataset_files_in_dir
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
-        dataset_path = Path(os.path.expanduser(str(dataset_file)))
-        if dataset_path.is_absolute():
-            file_path = str(dataset_path)
-        elif dataset_path.exists():
-            file_path = str(dataset_path.resolve())
-        else:
-            file_path = str(resolve_dataset_path(str(dataset_file)))
-        file_path_obj = Path(file_path)
+        file_path_obj = _resolve_mlx_local_dataset_path(dataset_file)
 
         if file_path_obj.is_dir():
             all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
@@ -3369,12 +3391,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     def _load_local(file_paths):
-        from datasets import load_from_disk
+        from utils.datasets.saved import load_saved_dataset
 
         if len(file_paths) == 1:
-            p = Path(file_paths[0])
-            if p.is_dir() and ((p / "dataset_info.json").exists() or (p / "state.json").exists()):
-                return load_from_disk(str(p))
+            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
+            if saved is not None:
+                return saved
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
@@ -4086,8 +4108,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     from utils.security.hub_data_files import install as guard_hub_data_files
+    from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
 
     guard_hub_data_files()
+    guard_dataset_media()
+    allow_dataset_repos(config.get("hf_dataset"))
 
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
@@ -4181,6 +4206,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     apply_gpu_ids(gpu_ids, backend = config.get("device_backend"))
 
     if not _validate_training_worker_config(config, event_queue):
+        return
+    # Before any backend dispatch: the MLX, decision and embedding runners load these weights too.
+    weights_error = _escaping_weights_error(config)
+    if weights_error:
+        event_queue.put({"type": "error", "error": weights_error, "stack": "", "ts": time.time()})
         return
 
     model_name = config["model_name"]
@@ -5079,7 +5109,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from utils.hf_xet_fallback import start_watchdog
 
         # Recheck right before the load: the adapter folder may have been edited since start (#13140).
-        base_error = _adapter_base_changed_error(config)
+        base_error = _adapter_base_changed_error(config) or _escaping_weights_error(config)
         if base_error:
             event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
             return

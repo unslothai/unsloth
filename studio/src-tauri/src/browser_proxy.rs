@@ -4,12 +4,13 @@
 //! Loopback proxy for browser-panel pages: resolves hosts itself, refuses private answers and
 //! connects to the checked address, defeating DNS rebinding. Hosts the system proxy covers go to it
 //! by name instead, after the same check, so a poisoned public answer or none at all doesn't matter.
+//! Local tabs use a separate, short-lived proxy; the public proxy never admits local hosts.
 
 use crate::browser_webview::{host_is_private, ip_is_private};
 use hyper_util::client::proxy::matcher::Matcher;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -53,6 +54,46 @@ pub fn address() -> Result<SocketAddr, String> {
         .clone()
 }
 
+/// Dropping a local view closes its listener and every connection, including WebSockets.
+pub(crate) struct LocalProxy {
+    pub address: SocketAddr,
+    _stop: tokio::sync::watch::Sender<()>,
+}
+
+impl LocalProxy {
+    pub fn new(origin: url::Origin) -> Result<Self, String> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let address = listener.local_addr().map_err(|e| e.to_string())?;
+        let (stop, mut stopped) = tokio::sync::watch::channel(());
+        tauri::async_runtime::spawn(async move {
+            let Ok(listener) = TcpListener::from_std(listener) else {
+                return;
+            };
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = stopped.changed() => break,
+                    accepted = listener.accept() => {
+                        let Ok((client, _)) = accepted else { break };
+                        let origin = origin.clone();
+                        connections.spawn(async move {
+                            serve_with_local(client, system_proxies(), Some(&origin)).await;
+                        });
+                    }
+                    _ = connections.join_next(), if !connections.is_empty() => {}
+                }
+            }
+            // JoinSet aborts the open tunnels on drop.
+        });
+        Ok(Self {
+            address,
+            _stop: stop,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq)]
 struct Request {
     host: String,
@@ -69,6 +110,7 @@ struct Forward {
     url: Url,
     version: String,
     headers: String,
+    upgrade: bool,
 }
 
 impl Forward {
@@ -85,7 +127,11 @@ impl Forward {
         if let Some(auth) = auth {
             head.push_str(&format!("Proxy-Authorization: {auth}\r\n"));
         }
-        head.push_str("Connection: close\r\n\r\n");
+        head.push_str(if self.upgrade {
+            "Connection: Upgrade\r\n\r\n"
+        } else {
+            "Connection: close\r\n\r\n"
+        });
         head
     }
 }
@@ -128,11 +174,14 @@ fn parse(head: &str) -> Option<Request> {
             cleartext: false,
         });
     }
-    let url = Url::parse(target).ok()?;
-    if url.scheme() != "http" {
-        return None;
+    let mut url = Url::parse(target).ok()?;
+    match url.scheme() {
+        "http" => {}
+        // WebKitGTK sends a `ws://` socket to an HTTP proxy in absolute form, not as a tunnel.
+        "ws" => url.set_scheme("http").ok()?,
+        _ => return None,
     }
-    let mut headers = String::new();
+    let (mut headers, mut upgrade) = (String::new(), false);
     for line in lines.filter(|line| !line.is_empty()) {
         let name = line
             .split(':')
@@ -140,6 +189,7 @@ fn parse(head: &str) -> Option<Request> {
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
+        upgrade |= name == "upgrade";
         if !matches!(
             name.as_str(),
             "connection" | "keep-alive" | "proxy-connection" | "proxy-authorization"
@@ -156,6 +206,7 @@ fn parse(head: &str) -> Option<Request> {
             url,
             version: version.to_string(),
             headers,
+            upgrade,
         }),
         cleartext: false,
     })
@@ -484,6 +535,27 @@ fn public_host(host: &str) -> Result<Host<String>, Refusal> {
     Ok(parsed)
 }
 
+/// A local origin the user granted, dialled as written: never looked up, never via a system proxy.
+fn granted_addresses(
+    origin: Option<&url::Origin>,
+    host: &str,
+    port: u16,
+) -> Option<Vec<SocketAddr>> {
+    if !matches!(origin, Some(url::Origin::Tuple(_, granted, granted_port))
+        if *granted_port == port && granted.to_string() == host)
+    {
+        return None;
+    }
+    Some(match Host::parse(host).ok()? {
+        Host::Domain(_) => vec![
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port),
+            SocketAddr::new(Ipv6Addr::LOCALHOST.into(), port),
+        ],
+        Host::Ipv4(ip) => vec![SocketAddr::new(ip.into(), port)],
+        Host::Ipv6(ip) => vec![SocketAddr::new(ip.into(), port)],
+    })
+}
+
 /// Connect to a public address of `host`, refusing it if any answer is private. One deadline covers
 /// the lookup and every address, so a host with many dead answers can't hold a task for long.
 async fn connect(host: &str, port: u16) -> Result<TcpStream, Refusal> {
@@ -810,7 +882,11 @@ async fn read_head(client: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     }
 }
 
-async fn serve(mut client: TcpStream, proxies: Proxies) {
+async fn serve(client: TcpStream, proxies: Proxies) {
+    serve_with_local(client, proxies, None).await;
+}
+
+async fn serve_with_local(mut client: TcpStream, proxies: Proxies, local: Option<&url::Origin>) {
     let Ok(Some((head, rest))) = tokio::time::timeout(TIMEOUT, read_head(&mut client)).await else {
         return;
     };
@@ -843,16 +919,20 @@ async fn serve(mut client: TcpStream, proxies: Proxies) {
         rest = read;
     }
     let (mut via, mut opened) = (None, Err(Refusal::Unreachable));
-    for route in routes(&proxies, &request).await {
-        opened = match &route {
-            Some(route) => connect_via(route, &request).await,
-            None => connect(&request.host, request.port)
-                .await
-                .map(|stream| (stream, Vec::new())),
-        };
-        via = route;
-        if !matches!(opened, Err(Refusal::ProxyDown)) {
-            break;
+    if let Some(addresses) = granted_addresses(local, &request.host, request.port) {
+        opened = dial(addresses).await.map(|stream| (stream, Vec::new()));
+    } else {
+        for route in routes(&proxies, &request).await {
+            opened = match &route {
+                Some(route) => connect_via(route, &request).await,
+                None => connect(&request.host, request.port)
+                    .await
+                    .map(|stream| (stream, Vec::new())),
+            };
+            via = route;
+            if !matches!(opened, Err(Refusal::ProxyDown)) {
+                break;
+            }
         }
     }
     let (mut upstream, early) = match opened {
@@ -1708,6 +1788,158 @@ mod tests {
         let (proxies, _) = system_proxy_answering("HTTP/1.1 407 Proxy Auth\r\n\r\n").await;
         let response = exchange(proxies, &tunnel(&format!("{UNRESOLVABLE}:443"))).await;
         assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    }
+
+    async fn dev_server(body: &'static str) -> (u16, JoinHandle<Option<String>>) {
+        let listener = (20_000..32_000)
+            .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = TcpListener::from_std(listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.ok()?;
+            let (head, _) = read_head(&mut stream).await?;
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(answer.as_bytes()).await.ok()?;
+            Some(head)
+        });
+        (port, seen)
+    }
+
+    #[tokio::test]
+    async fn a_granted_local_origin_is_dialled_as_written_and_no_other_local_address_is() {
+        let (port, server) = dev_server("dev app").await;
+        let target = format!("127.0.0.1:{port}");
+        let request = format!("{}GET /data.json HTTP/1.1\r\n\r\n", tunnel(&target));
+        let response = exchange_via(Proxies::default(), &request).await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+
+        let origin = Url::parse(&format!("http://{target}/")).unwrap().origin();
+        let local = LocalProxy::new(origin).unwrap();
+        let response = exchange_via(Proxies::default(), &request).await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        let mut client = TcpStream::connect(local.address).await.unwrap();
+        client.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 200 Connection Established"),
+            "{response}"
+        );
+        assert!(response.ends_with("\r\n\r\ndev app"), "{response}");
+        assert!(server.await.unwrap().unwrap().starts_with("GET /data.json"));
+
+        // Only that host as written and that port: `localhost` resolves to it, and stays refused.
+        for other in [
+            format!("localhost:{port}"),
+            format!("localhost.:{port}"),
+            format!("[::1]:{port}"),
+            format!("127.0.0.2:{port}"),
+            format!("127.0.0.1:{}", port + 1),
+        ] {
+            let mut client = TcpStream::connect(local.address).await.unwrap();
+            client.write_all(tunnel(&other).as_bytes()).await.unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 403"), "{other}: {response}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_granted_origins_websocket_sent_in_absolute_form_is_upgraded() {
+        let listener = (20_000..32_000)
+            .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = TcpListener::from_std(listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let origin = Url::parse(&format!("http://127.0.0.1:{port}/"))
+            .unwrap()
+            .origin();
+        let local = LocalProxy::new(origin).unwrap();
+        let mut client = TcpStream::connect(local.address).await.unwrap();
+        client
+            .write_all(
+                format!(
+                    "GET ws://127.0.0.1:{port}/hmr HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let (mut server, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("the handshake never reached the server")
+            .unwrap();
+        let (head, _) = read_head(&mut server).await.unwrap();
+        assert!(head.starts_with("GET /hmr HTTP/1.1\r\n"), "{head}");
+        assert!(head.contains("Upgrade: websocket\r\n"), "{head}");
+        assert!(head.contains("Connection: Upgrade\r\n"), "{head}");
+        assert!(!head.contains("Connection: close"), "{head}");
+        let switched = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\nfrom server";
+        server.write_all(switched).await.unwrap();
+        let mut answer = vec![0; switched.len()];
+        client.read_exact(&mut answer).await.unwrap();
+        assert_eq!(answer, switched);
+        client.write_all(b"from page").await.unwrap();
+        let mut data = [0; 9];
+        server.read_exact(&mut data).await.unwrap();
+        assert_eq!(&data, b"from page");
+    }
+
+    #[tokio::test]
+    async fn local_proxies_are_isolated_and_closing_one_cancels_live_tunnels() {
+        let listener = (20_000..32_000)
+            .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+            .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = TcpListener::from_std(listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let origin = Url::parse(&format!("http://127.0.0.1:{port}/"))
+            .unwrap()
+            .origin();
+        let owner = LocalProxy::new(origin).unwrap();
+        let other =
+            LocalProxy::new(Url::parse("http://localhost:17871/").unwrap().origin()).unwrap();
+        let target = format!("127.0.0.1:{port}");
+        let mut denied = TcpStream::connect(other.address).await.unwrap();
+        denied.write_all(tunnel(&target).as_bytes()).await.unwrap();
+        let mut response = String::new();
+        denied.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 403"));
+
+        let address = owner.address;
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(tunnel(&target).as_bytes()).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        let mut established = vec![0; ESTABLISHED.len()];
+        client.read_exact(&mut established).await.unwrap();
+        assert_eq!(established, ESTABLISHED);
+        client.write_all(b"before close").await.unwrap();
+        let mut data = [0; 12];
+        server.read_exact(&mut data).await.unwrap();
+        assert_eq!(&data, b"before close");
+        drop(owner);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), server.read(&mut data))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), client.read(&mut data))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(TcpStream::connect(address).await.is_err());
     }
 
     /// A SOCKS5 proxy that wants `u`/`p`, records the CONNECT it gets, answers with a domain-typed
