@@ -693,3 +693,24 @@ test("compare wiring: busy through composition, gated on preset hydration, no ba
   assert.match(page, /if \(busy !== null \|\| !imagePresets\.hydrated\) return;\n\s*compareOnce\.current = run;/);
   assert.match(page, /if \(!compare && baseSeed > Number\.MAX_SAFE_INTEGER - \(runs \* batchSize - 1\)\)/);
 });
+
+test("grid metadata records a ControlNet every cell shares, without its image", () => {
+  const form = { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" };
+  const steps = plan([{ axisId: "steps", text: "10, 20" }]);
+  const controlnet = { id: "xinsir/canny", image: "data:image/png;base64,AAAA", control_type: "canny", strength: 0.7 };
+  const reqs = steps.order.map((cell) => buildCellRequest(steps, cell, base({ controlnet }), sdxl(), { base: 1, keepRandom: false, seedFieldEmpty: false }));
+  const fields = Object.fromEntries(gridRecipeFields(steps, reqs, form));
+  assert.equal(fields["ControlNet 0"], "Module: canny, Model: xinsir/canny, Weight: 0.7");
+  const mixed = Object.fromEntries(gridRecipeFields(steps, [base({ controlnet }), base()], form));
+  assert.equal("ControlNet 0" in mixed, false);
+  const none = Object.fromEntries(gridRecipeFields(steps, [base(), base()], form));
+  assert.equal("ControlNet 0" in none, false);
+});
+
+test("a compare cell refused by the memory estimate offers no Generate anyway retry", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  // The queued retry would run after the grid ended, as a plain form generation.
+  assert.match(page, /if \(offerAnyway && compare\) \{\n\s*toast\.error\(MEMORY_REFUSAL_TITLE, \{\n\s*description: [^\n]*ALLOW_OVERSIZED_LABEL/);
+  const compareBranch = page.slice(page.indexOf("if (offerAnyway && compare)"), page.indexOf("} else if (offerAnyway)"));
+  assert.doesNotMatch(compareBranch, /setOversizedRetryQueued/);
+});

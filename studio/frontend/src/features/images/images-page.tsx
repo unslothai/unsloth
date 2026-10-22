@@ -5401,7 +5401,14 @@ export function ImagesPage({
         message: msg,
         stopRequested: cancelRequested.current && cancelAcked.current,
       });
-      if (report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent })) {
+      const offerAnyway = report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent });
+      // Not for a compare cell: the queued retry would run after the grid has ended, as a plain form generation.
+      if (offerAnyway && compare) {
+        toast.error(MEMORY_REFUSAL_TITLE, {
+          description: `${msg} To run the grid anyway, turn on "${ALLOW_OVERSIZED_LABEL}" and generate it again.`,
+          duration: 20_000,
+        });
+      } else if (offerAnyway) {
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
           duration: 20_000,

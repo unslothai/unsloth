@@ -4,7 +4,7 @@
 /** One compare run as the page's Generate loop sees it: N runs, each with its own request, reporting its records
  *  back. The page keeps owning progress polling, Stop, the gallery merge and error toasts. */
 
-import type { DiffusionGenerateRequest, GalleryImage } from "../api.ts";
+import type { ControlNetSpecInput, DiffusionGenerateRequest, GalleryImage } from "../api.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "../lib/sampler-choice.ts";
 import { gridInfotext } from "./compose-grid.ts";
 import {
@@ -99,11 +99,23 @@ function sharedValue(
   varied: ReadonlySet<string>,
   key: string,
   axisId: string = key,
-): { value: string | number | undefined } | null {
+): { value: unknown } | null {
   if (varied.has(axisId) || sent.length === 0) return null;
   const value = sent[0][key];
-  if (!sent.every((r) => r[key] === value)) return null;
-  return { value: typeof value === "string" || typeof value === "number" ? value : undefined };
+  return sent.every((r) => r[key] === value) ? { value } : null;
+}
+
+const scalar = (value: unknown): string | number | undefined =>
+  typeof value === "string" || typeof value === "number" ? value : undefined;
+
+/** sd-webui-controlnet's `ControlNet 0` unit text, without the control image (supplied again on import). */
+function controlNetUnit(value: unknown): string | undefined {
+  const cn = value as ControlNetSpecInput | undefined;
+  if (!cn?.id) return undefined;
+  const parts = [`Module: ${cn.control_type}`, `Model: ${cn.id}`, `Weight: ${cn.strength}`];
+  if (cn.guidance_start !== undefined) parts.push(`Guidance Start: ${cn.guidance_start}`);
+  if (cn.guidance_end !== undefined) parts.push(`Guidance End: ${cn.guidance_end}`);
+  return parts.join(", ");
 }
 
 /** The grid's shared recipe for its `parameters` chunk, from the requests the cells were sent with: a field is
@@ -117,14 +129,14 @@ export function gridRecipeFields(
   const sent = requests.filter((r): r is DiffusionGenerateRequest => Boolean(r)) as unknown as Array<
     Record<string, unknown>
   >;
-  const shared = (key: string, axisId?: string) => sharedValue(sent, varied, key, axisId)?.value;
+  const shared = (key: string, axisId?: string) => scalar(sharedValue(sent, varied, key, axisId)?.value);
   const sampler = sharedValue(sent, varied, "sampler");
   const schedule = shared("schedule_type", "schedule");
   const width = shared("width");
   const height = shared("height");
   const fields: Array<[string, string | number | null | undefined]> = [
     ["Steps", sent.length ? shared("steps") : form.steps],
-    ["Sampler", sampler ? (SAMPLER_LABELS[String(sampler.value ?? "default")] ?? sampler.value) : undefined],
+    ["Sampler", sampler ? (SAMPLER_LABELS[String(sampler.value ?? "default")] ?? scalar(sampler.value)) : undefined],
     ["Schedule type", schedule ? (SCHEDULE_LABELS[String(schedule)] ?? schedule) : undefined],
     ["Shift", shared("shift")],
     ["Base shift", shared("base_shift")],
@@ -136,6 +148,8 @@ export function gridRecipeFields(
     // The fitted size the cells ran at, not the form's (Generate may shrink it to the model's pixel limit).
     ["Size", sent.length ? (width && height ? `${width}x${height}` : undefined) : `${form.width}x${form.height}`],
     ["Model", form.model],
+    // Every cell is conditioned the same way; the control image itself is not embedded.
+    ["ControlNet 0", controlNetUnit(sharedValue(sent, varied, "controlnet")?.value)],
   ];
   return fields.filter(([, value]) => value !== undefined);
 }
