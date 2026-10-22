@@ -67,6 +67,32 @@ def _multimodal_auto_classes():
     return classes
 
 
+def _audio_lm_class(
+    auto_model,
+    config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The full audio model a causal / seq2seq LM auto class builds for `config`, else None.
+    AudioFlamingo3 and MusicFlamingo register only there, yet need the processor like any audio model."""
+    import transformers
+
+    lm_classes = (
+        getattr(transformers, "AutoModelForCausalLM", None),
+        getattr(transformers, "AutoModelForSeq2SeqLM", None),
+    )
+    if auto_model is None or auto_model not in lm_classes:
+        return None
+    if _config_get(config, "audio_config", None) is None:
+        return None
+    model_class = resolve_model_class(
+        auto_model, config, trust_remote_code = trust_remote_code, **hub_kwargs
+    )
+    if model_class is None or getattr(model_class, "config_class", None) is not type(config):
+        return None
+    return model_class
+
+
 def _is_text_seq2seq_config(config):
     """T5 / BART / Marian: Seq2SeqLM-mapped, no multimodal class or sub-config (Voxtral, T5Gemma2 are Seq2SeqLM too)."""
     import transformers
@@ -3257,6 +3283,18 @@ class FastBaseModel:
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
         # FastModel routes Whisper here without auto_model (#2726); audio features need the processor.
         needs_processor = needs_processor or auto_model is AutoModelForSpeechSeq2Seq
+        needs_processor = needs_processor or (
+            not text_only
+            and _audio_lm_class(
+                auto_model,
+                auto_config,
+                trust_remote_code = trust_remote_code,
+                token = token,
+                revision = _revision,
+                local_files_only = local_files_only,
+            )
+            is not None
+        )
         # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
         is_vlm_config = (
             is_vlm

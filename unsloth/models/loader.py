@@ -762,6 +762,27 @@ def _resolve_speech_seq2seq_auto_model(
     return None
 
 
+def _resolve_audio_lm_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The causal or seq2seq LM auto class that builds this audio config's full model
+    (AudioFlamingo3 registers only as a seq2seq LM on transformers 5.17), else None."""
+    import transformers
+
+    for name in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM"):
+        auto_class = getattr(transformers, name, None)
+        try:
+            if _audio_lm_class(
+                auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            ):
+                return auto_class
+        except Exception:
+            continue
+    return None
+
+
 def _get_user_task_config_attrs(user_config):
     if user_config is None:
         return {}
@@ -2014,7 +2035,7 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseModel, _is_text_seq2seq_config
+from .vision import FastBaseModel, _is_text_seq2seq_config, _audio_lm_class
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from .diffusion_profiles import resolve_diffusion_profile
 from transformers import (
@@ -3127,6 +3148,7 @@ class FastModel(FastBaseModel):
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
                             or _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_audio_lm_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
             else:

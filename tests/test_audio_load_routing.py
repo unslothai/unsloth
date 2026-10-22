@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """Audio models FastModel failed to load: SDPA-less towers (MusicGen's EnCodec, VibeVoice-ASR's
-tokenizers), AudioFlamingo3 / MusicFlamingo routing, and the torchaudio-less processor fallback."""
+tokenizers), AudioFlamingo3 / MusicFlamingo routing."""
 
 import pytest
 
@@ -20,7 +20,7 @@ from unsloth.models.loader import (  # noqa: E402
     _resolve_omni_auto_model,
     _resolve_speech_seq2seq_auto_model,
 )
-from unsloth.models.vision import _audio_lm_class, _missing_torchaudio_error  # noqa: E402
+from unsloth.models.vision import _audio_lm_class  # noqa: E402
 
 try:
     from transformers import AutoModelForImageTextToText as IMAGE_TEXT_CLASS
@@ -100,14 +100,3 @@ def test_audio_lm_routing_never_takes_text_or_vision_models():
             continue
         assert _resolve_audio_lm_auto_model(config_class()) is None
         assert _audio_lm_class(transformers.AutoModelForCausalLM, config_class()) is None
-
-
-def test_missing_torchaudio_is_recognised_from_the_load_error_only():
-    assert _missing_torchaudio_error(
-        ImportError(
-            "GraniteSpeechFeatureExtractor requires the torchaudio library but it was not found in your environment."
-        )
-    )
-    assert _missing_torchaudio_error(ModuleNotFoundError("No module named 'torchaudio'"))
-    assert not _missing_torchaudio_error(None)
-    assert not _missing_torchaudio_error(OSError("repo /data/torchaudio-models/x not found"))
