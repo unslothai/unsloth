@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
+import { subscribeCornerInsets } from "@/lib/toast-offset";
 import { useEffect } from "react";
 
 export function usePublishedCornerFrame(element: HTMLElement | null): void {
@@ -26,6 +27,8 @@ export function usePublishedCornerFrame(element: HTMLElement | null): void {
     };
     measure();
     window.addEventListener("resize", measure);
+    // Run settings and the composer lift move the rail by its padding, which resizes nothing.
+    const unsubscribe = subscribeCornerInsets(measure);
     const observer =
       typeof ResizeObserver === "undefined"
         ? null
@@ -33,6 +36,7 @@ export function usePublishedCornerFrame(element: HTMLElement | null): void {
     observer?.observe(element);
     return () => {
       window.removeEventListener("resize", measure);
+      unsubscribe();
       observer?.disconnect();
       setFrame(null);
     };

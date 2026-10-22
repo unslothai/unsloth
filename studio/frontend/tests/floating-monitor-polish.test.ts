@@ -44,6 +44,11 @@ test("at the default corner the monitor rests just above the card", () => {
   assert.equal(liftAboveObstacle(PANEL, CARD, 8), 764 - 8 - 200);
 });
 
+test("a card the composer lifted still has the monitor resting above it, not below over the composer", () => {
+  const lifted = { left: 1156, top: 460, right: 1424, bottom: 549 };
+  assert.equal(liftAboveObstacle(PANEL, lifted, 8), 460 - 8 - 200);
+});
+
 test("no card, or a card elsewhere, leaves the corner alone", () => {
   assert.equal(liftAboveObstacle(PANEL, null, 8), null);
   const dragged = { left: 40, top: 40, right: 308, bottom: 160 };

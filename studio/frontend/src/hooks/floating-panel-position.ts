@@ -84,9 +84,9 @@ export function liftAboveObstacle(
   if (!obstacle) return null;
   const overlapsX =
     panel.left < obstacle.right && panel.left + panel.width > obstacle.left;
-  const overlapsY =
-    panel.top < obstacle.bottom && panel.top + panel.height > obstacle.top - gap;
-  return overlapsX && overlapsY ? obstacle.top - gap - panel.height : null;
+  // Not only on collision: a card the composer lifted would leave the panel below it, over the composer.
+  const reaches = panel.top + panel.height > obstacle.top - gap;
+  return overlapsX && reaches ? obstacle.top - gap - panel.height : null;
 }
 
 export const ANCHOR_SNAP_PX = 16;
