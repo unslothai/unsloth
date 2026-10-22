@@ -9363,7 +9363,7 @@ async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]
     """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
     # A killed worker keeps its model named, so status, routing and auto-switch would keep picking
     # it. is_alive() is a non-blocking waitpid; only the reap leaves the loop.
-    exited = [slot for slot in (None, *model_slots.visible()) if _worker_exited(slot)]
+    exited = [slot for slot in (None, *model_slots.slots) if _worker_exited(slot)]
     if exited:
         await asyncio.to_thread(_reap_dead_workers, exited)
     return await model_slots.route(requested, _loaded_satisfies)

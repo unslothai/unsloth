@@ -82,12 +82,18 @@ def test_an_api_request_clears_a_model_whose_worker_was_killed(monkeypatch, rele
     assert backend.active_model_name is None and backend._proc is None
 
 
-def test_a_request_is_not_routed_to_a_kept_model_whose_worker_was_killed(monkeypatch, released):
+@pytest.mark.parametrize("owner", ["user", "another-account"])
+def test_a_request_is_not_routed_to_a_kept_model_whose_worker_was_killed(
+    monkeypatch, released, owner
+):
     from core.inference import model_slots
 
+    # A managed installation hides another account's slot from routing, not from the reap.
+    monkeypatch.setattr(model_slots.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(model_slots, "current_account_id", lambda: "user")
     kept = _orchestrator()
     llama = SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None)
-    slot = model_slots.ExtraSlot(llama = llama, orchestrator = kept, account = "user")
+    slot = model_slots.ExtraSlot(llama = llama, orchestrator = kept, account = owner)
     monkeypatch.setattr(model_slots, "slots", [slot])
 
     routed = asyncio.run(inference_route._route_to_extra_slot(MODEL))
