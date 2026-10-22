@@ -171,6 +171,7 @@ from ..device_type import (
     apply_pre_volta_compile_workaround,
     arch_breaks_compile,
     cuda_bf16_capability,
+    distributed_launch,
     gfx101x_triton_workaround_applied,
     xpu_supports_native_bf16,
     zoo_shares_xpu_bf16,
@@ -3991,6 +3992,8 @@ def _cache_device_capability(get_device_capability):
 
 
 SUPPORTS_BFLOAT16 = False
+# {device index: bf16} on a one-process host whose NVIDIA cards differ, else None (SUPPORTS_BFLOAT16 holds).
+_BF16_BY_DEVICE = None
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
@@ -4008,6 +4011,18 @@ elif DEVICE_TYPE == "cuda":
     _bf16_cap = cuda_bf16_capability()
     SUPPORTS_BFLOAT16 = _bf16_cap is not None and _bf16_cap[0] >= 8
     del _bf16_cap
+    # One process on cards that differ: is_bfloat16_supported() answers for the current device at call
+    # time, so torch.cuda.set_device after import is followed. Distributed launches keep the weakest card.
+    if not distributed_launch():
+        try:
+            _bf16_caps = [
+                tuple(torch.cuda.get_device_capability(i)) for i in range(torch.cuda.device_count())
+            ]
+            if len(set(_bf16_caps)) > 1:
+                _BF16_BY_DEVICE = {i: cap[0] >= 8 for i, cap in enumerate(_bf16_caps)}
+            del _bf16_caps
+        except Exception:
+            _BF16_BY_DEVICE = None
 
     if major_version >= 8:
         if _package_available("flash_attn"):
@@ -4913,7 +4928,13 @@ def config_return_dict(config):
 
 
 def is_bfloat16_supported():
-    return SUPPORTS_BFLOAT16
+    # One GPU, identical cards, distributed launches: the import-time answer, no per-call work.
+    if _BF16_BY_DEVICE is None:
+        return SUPPORTS_BFLOAT16
+    try:
+        return _BF16_BY_DEVICE.get(torch.cuda.current_device(), SUPPORTS_BFLOAT16)
+    except Exception:
+        return SUPPORTS_BFLOAT16
 
 
 def _requested_float32(dtype):

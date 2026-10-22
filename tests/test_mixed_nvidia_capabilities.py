@@ -724,3 +724,74 @@ def test_train_start_on_capable_cards_changes_nothing(monkeypatch, capsys):
     )
     assert disabled == []
     assert capsys.readouterr().out == ""
+
+
+def _public_bf16_helper(fake, monkeypatch, world_size = "1"):
+    """The import-time chain of models/_utils.py, then its public is_bfloat16_supported, both from
+    the real source, so the helper reads exactly the state that chain leaves behind."""
+    monkeypatch.setenv("WORLD_SIZE", world_size)
+    namespace = _run_model_utils_chain(fake, monkeypatch)
+    body = _block(MODEL_UTILS, "def is_bfloat16_supported(", "\n\n\ndef ")
+    exec(compile(body, str(MODEL_UTILS), "exec"), namespace)
+    return namespace["is_bfloat16_supported"]
+
+
+@pytest.mark.parametrize("caps,start", [([SM61, SM86], 0), ([SM90, SM75], 0), ([SM75, SM86], 1)])
+def test_public_bf16_helper_follows_set_device_after_import(monkeypatch, caps, start):
+    # import unsloth on one card, then torch.cuda.set_device onto a card of the other kind: the helper
+    # notebooks pass as fp16 = not is_bfloat16_supported() and the loader's auto dtype must agree with
+    # the card the model now runs on, or Trainer rejects bf16 / fp16 rides on a bf16 model.
+    fake = _fake_torch(caps)
+    fake.cuda.set_device(start)
+    helper = _public_bf16_helper(fake, monkeypatch)
+    assert helper() is (caps[start][0] >= 8)
+    other = 1 - start
+    fake.cuda.set_device(other)
+    assert helper() is (caps[other][0] >= 8)
+    assert helper() is bool(fake.cuda.is_bf16_supported(False))
+    fake.cuda.set_device(start)
+    assert helper() is (caps[start][0] >= 8)
+
+
+@pytest.mark.parametrize("current", [0, 1])
+def test_public_bf16_helper_keeps_the_weakest_card_on_a_distributed_launch(monkeypatch, current):
+    # Every rank must pick one dtype: set_device onto the rank's own card changes nothing.
+    fake = _fake_torch([SM90, SM75])
+    helper = _public_bf16_helper(fake, monkeypatch, world_size = "2")
+    fake.cuda.set_device(current)
+    assert helper() is False
+
+
+@pytest.mark.parametrize("caps", [[SM86], [SM90, SM90, SM90]], ids = ["one_gpu", "same_cards"])
+def test_public_bf16_helper_is_the_constant_on_homogeneous_hosts(monkeypatch, caps):
+    # One GPU or identical cards: no per-call work, the import-time answer as before.
+    fake = _fake_torch(caps)
+    helper = _public_bf16_helper(fake, monkeypatch)
+    calls = []
+    fake.cuda.current_device = lambda: calls.append(1) or 0
+    assert helper() is True
+    assert calls == []
+
+
+LOADER_FILES = [
+    REPO_ROOT / "unsloth" / "models" / name
+    for name in ("llama.py", "vision.py", "loader.py", "diffusion.py", "sentence_transformer.py")
+]
+
+
+@pytest.mark.parametrize("path", LOADER_FILES, ids = lambda p: p.name)
+def test_loader_dtype_choices_ask_the_helper_at_call_time(path):
+    # The module-level SUPPORTS_BFLOAT16 is the import-time answer; a loader reading it picks the dtype
+    # for the card that was current at import, not the one the model loads on.
+    import ast
+
+    stale = []
+    for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names = [n for n in ast.walk(node) if isinstance(n, ast.Name) and n.id == "SUPPORTS_BFLOAT16"]
+        if any(isinstance(n.ctx, ast.Load) for n in names) and not any(
+            isinstance(n.ctx, ast.Store) for n in names
+        ):
+            stale.append(f"{node.name}:{node.lineno}")
+    assert stale == []

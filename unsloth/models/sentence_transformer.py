@@ -22,7 +22,7 @@ from .loader_utils import (
 from ..device_type import DEVICE_TYPE, xpu_keeps_explicit_bf16
 from ._utils import (
     config_return_dict,
-    SUPPORTS_BFLOAT16,
+    is_bfloat16_supported,
     resolve_model_class,
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
@@ -129,6 +129,8 @@ def _maybe_upcast_force_float32_inference(st_model):
     if inner is None or not _is_force_float32_config(getattr(inner, "config", None)):
         return False
     params = list(st_model.parameters())
+    # The current device's answer, not the import-time constant: set_device may have moved since.
+    SUPPORTS_BFLOAT16 = is_bfloat16_supported()
     if SUPPORTS_BFLOAT16:
         if any(p.dtype == torch.float16 for p in params):
             print(f"Unsloth: {inner.config.model_type} does not support float16. Using bfloat16.")
@@ -2509,6 +2511,8 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
+        # bf16 for the current device at call time, not the import-time constant.
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         # Remote-class probes must use this load's trust, revision and hub options.
         _remote_class_probe_kwargs = dict(
             trust_remote_code = trust_remote_code,
