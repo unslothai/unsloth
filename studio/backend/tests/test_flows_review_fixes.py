@@ -160,3 +160,37 @@ def test_edit_image_falls_back_when_the_family_has_no_instruction_editing():
     ctx = Ctx()
     out = asyncio.run(image.edit(ctx))
     assert out["image"]["ref"] == "image:2" and ctx.calls == ["edit", "reference"]
+
+
+@run_async
+async def test_a_full_run_leaves_player_entrypoints_idle():
+    async def reply(ctx):
+        raise AssertionError("an entrypoint ran in a full run")
+
+    eng = _engine({**BASE, "world.npc_reply": reply})
+    d = doc([node("a", "input.text", value = "x"), node("r", "world.npc_reply")])
+    rs = await _run(eng, d)
+    assert rs.status == "completed", rs.error
+    assert _status(rs, "r") == "idle"
+
+
+def test_generate_image_with_only_references_uses_the_reference_workflow():
+    from core.flows.nodes import image
+
+    ref = {"kind": "image", "ref": "image:9"}
+
+    class Ctx:
+        params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["image.generate"]["params"]}
+        inputs = {"prompt": "the hero waves", "reference": [ref]}
+        flow_params = {}
+        seed = 5
+        seen = {}
+
+        async def generate_image(self, **kw):
+            self.seen.update(kw)
+            return [{"kind": "image", "ref": "image:10"}]
+
+    ctx = Ctx()
+    asyncio.run(image.generate(ctx))
+    assert ctx.seen["workflow"] == "reference" and ctx.seen["init_image"] == ref
+    assert ctx.seen["references"] is None and ctx.seen["strength"] is None

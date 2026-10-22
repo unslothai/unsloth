@@ -36,6 +36,14 @@ def image_prompt(
 @handler("image.generate")
 async def generate(ctx: NodeContext) -> dict:
     width, height = parse_size(ctx.params.get("size"))
+    init = ctx.inputs.get("init_image")
+    refs = list(ctx.inputs.get("reference") or [])
+    workflow = None
+    if refs:
+        # Studio's reference workflow takes a source image plus extra references.
+        workflow = "reference"
+        if init is None:
+            init, refs = refs[0], refs[1:]
     images = await ctx.generate_image(
         model = ctx.params.get("model"),
         prompt = image_prompt(ctx),
@@ -45,12 +53,10 @@ async def generate(ctx: NodeContext) -> dict:
         steps = ctx.params.get("steps") or None,
         guidance = ctx.params.get("guidance"),
         seed = ctx.seed,
-        init_image = ctx.inputs.get("init_image"),
-        strength = ctx.params.get("strength") if ctx.inputs.get("init_image") else None,
-        references = ctx.inputs.get("reference") or None,
-        workflow = "reference"
-        if ctx.inputs.get("reference") and ctx.inputs.get("init_image")
-        else None,
+        init_image = init,
+        strength = ctx.params.get("strength") if workflow is None and init is not None else None,
+        references = refs or None,
+        workflow = workflow,
         count = int(ctx.params.get("count") or 1),
     )
     return {"image": images[0], "images": images}
@@ -65,7 +71,7 @@ async def edit(ctx: NodeContext) -> dict:
     # Families without instruction editing (FLUX.2 klein) still take the source as a reference, else as img2img.
     attempts = [
         {"init_image": source, "references": extra or None, "workflow": "edit"},
-        {"init_image": None, "references": [source, *extra], "workflow": "reference"},
+        {"init_image": source, "references": extra or None, "workflow": "reference"},
         {"init_image": source, "references": None, "workflow": None, "strength": 0.6},
     ]
     for i, attempt in enumerate(attempts):

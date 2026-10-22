@@ -611,7 +611,12 @@ class FlowEngine:
             flows_db.update_run(rs.id, status = "running", started_at = flows_db.now_ms())
             rs.emit("run.started", data = {"order": rs.plan.order})
             targets = rs.options.get("target_nodes") or []
-            need = rs.plan.ancestors(targets) if targets else set(rs.plan.order)
+            # Entrypoints (Next Scene, Scene Art, NPC Reply) answer the player through /invoke, not a full run.
+            need = (
+                rs.plan.ancestors(targets)
+                if targets
+                else {n for n in rs.plan.order if not rs.plan.specs[n].get("entrypoint")}
+            )
             top = [n for n in rs.plan.order if n in need and rs.plan.owner.get(n) is None]
             for nid in rs.plan.order:
                 if nid not in need:
