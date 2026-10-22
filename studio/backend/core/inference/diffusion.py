@@ -232,6 +232,8 @@ from .diffusion_memory import (
     vae_is_sliced,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from . import diffusion_hires, diffusion_upscalers
+from .diffusion_hires import HiresPass, with_hires
 from .image_orientation import exif_upright
 from .mcp_images import flattened_rgb
 from .media_decode_phase import decode_phase, denoise_phase
@@ -12274,6 +12276,7 @@ class DiffusionBackend:
         )
 
     @_release_render_on_unload
+    @with_hires
     def generate(
         self,
         *,
@@ -12322,16 +12325,23 @@ class DiffusionBackend:
         mask_blur: Optional[int] = None,
         inpaint_only_masked: Optional[bool] = None,
         inpaint_padding: Optional[int] = None,
+        # Upscale workflow: a model upscaler id (diffusion_upscalers) in place of the Lanczos resize. None = Lanczos.
+        upscale_model: Optional[str] = None,
+        # Internal: one pass of a Hires fix request (diffusion_hires.run_hires), which already holds the slot.
+        _hires_pass: Optional[HiresPass] = None,
     ) -> dict[str, Any]:
         import torch
+        from contextlib import nullcontext
+
         from PIL import Image
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
-        cancel = threading.Event()
+        cancel = _hires_pass.cancel if _hires_pass is not None else threading.Event()
         from core.inference.generation_ticket import bind_generation_cancel
 
-        bind_generation_cancel(cancel)
-        with self._generation_slot(cancel):
+        if _hires_pass is None:
+            bind_generation_cancel(cancel)
+        with nullcontext() if _hires_pass is not None else self._generation_slot(cancel):
             # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
             if pending_bg is not None and pending_bg.compiling():
@@ -12490,6 +12500,15 @@ class DiffusionBackend:
                         )
                     workflow = "reference"
                     conditioned = True
+                elif _hires_pass is not None and _hires_pass.refine:
+                    # Hires fix refine pass: the upscaled base image through the Upscale workflow's img2img pipe, at
+                    # exactly the requested step count.
+                    workflow = "upscale"
+                    pipe = self._workflow_pipe(state, fam.img2img_pipeline_class, workflow)
+                    init_pil = _hires_pass.source
+                    steps = diffusion_hires.refine_inference_steps(
+                        steps, float(strength), diffusion_hires.timestep_rule(pipe)
+                    )
                 elif mask_image is not None and init_image is not None:
                     workflow = "inpaint"
                     pipe = self._workflow_pipe(state, fam.inpaint_pipeline_class, workflow)
@@ -12516,12 +12535,28 @@ class DiffusionBackend:
                             f"({max(iw, ih)}px) already meets the {max_side}px output limit. "
                             f"Use a smaller source image."
                         )
-                    init_pil = init_pil.resize((tw, th), Image.LANCZOS)
+                    if upscale_model:
+                        # ESRGAN-family model, then resized to the target (ComfyUI ImageUpscaleWithModel -> ImageScale).
+                        init_pil = diffusion_upscalers.upscale_with_model(
+                            init_pil,
+                            upscale_model,
+                            (tw, th),
+                            device = state.device,
+                            keep_resident = getattr(state, "offload_policy", None)
+                            in (None, OFFLOAD_NONE),
+                            cancel = cancel,
+                        ).image
+                    else:
+                        init_pil = init_pil.resize((tw, th), Image.LANCZOS)
                     upscale = round(
                         max(tw / iw, th / ih), 2
                     )  # the factor after both caps, for the log
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
+                elif upscale_model:
+                    raise ValueError(
+                        "upscale_model applies only to the Upscale workflow (init_image + upscale > 1)."
+                    )
                 elif getattr(fam, "reference", False) and init_image is not None:
                     workflow = "reference"
                     conditioned = True
@@ -12716,6 +12751,11 @@ class DiffusionBackend:
                         kwargs["padding_mask_crop"] = inpaint_padding_applied
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
+                    if _hires_pass is not None and _hires_pass.latent_from is not None:
+                        # Latent upscaler: the SDXL img2img pipe takes 4-channel latents as the image.
+                        kwargs["image"] = diffusion_hires.encode_upscaled_latents(
+                            pipe, _hires_pass.latent_from, init_pil.size
+                        )
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
                 # the latents mismatch, and many drop them, so pass only when accepted.
                 if not source_sized:
@@ -12881,6 +12921,9 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
+                    if _hires_pass is not None and _hires_pass.preflight is not None:
+                        # Refuse a Hires fix whose refine pass cannot fit before the base pass denoises.
+                        _hires_pass.preflight(guard_kwargs)
                     _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
@@ -13233,7 +13276,8 @@ class DiffusionBackend:
                 if bg_eager:
                     # Nothing compiled ran, so nothing to register or save yet.
                     bg.note_eager_generation()
-                    bg.kick()
+                    if _hires_pass is None or not _hires_pass.defer_bg_kick:
+                        bg.kick()
                 else:
                     try:
                         # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
@@ -13278,7 +13322,8 @@ class DiffusionBackend:
                 # Components are offloaded and transfer copies dropped; return the pages now.
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
-                object.__setattr__(state, "generation_count", state.generation_count + 1)
+                if _hires_pass is None or not _hires_pass.refine:
+                    object.__setattr__(state, "generation_count", state.generation_count + 1)
                 result = {
                     "images": list(images),
                     "seed": int(seed),
@@ -13319,6 +13364,8 @@ class DiffusionBackend:
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
                 }
+                if upscale_model and workflow == "upscale":
+                    result["upscale_model"] = upscale_model
                 if applied_shift is not None:
                     result["shift"] = shift
                     result["base_shift"] = base_shift
@@ -13555,6 +13602,8 @@ class DiffusionBackend:
         self._aux_pipes.clear()
         self._cn_pipes.clear()
         self._cn_models.clear()
+        # A model upscaler kept resident for Hires fix / Upscale leaves with the model it served.
+        diffusion_upscalers.release_models()
         self._state = None
         del state
         try:
@@ -13679,6 +13728,8 @@ class DiffusionBackend:
             if pipe_sample_sigmas(state.pipe) is not None
             else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
             "textual_inversion": getattr(state.family, "textual_inversion", None),
+            # Hires fix and model upscalers (Upscale workflow): diffusion_hires / diffusion_upscalers.
+            **_hires_status(state.family),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
@@ -13729,6 +13780,21 @@ def _transformer_quant_backend(state: Any) -> Optional[str]:
         return "torchao"
     except Exception:  # noqa: BLE001 -- see the docstring: a poll must not fail on a probe
         return None
+
+
+def _hires_status(fam: DiffusionFamily) -> dict[str, Any]:
+    """Status keys for Hires fix (hidden without an img2img path) and the Upscale workflow's model upscalers."""
+    try:
+        models = diffusion_upscalers.model_upscalers()
+    except Exception as exc:  # noqa: BLE001 - a broken scan hides model upscalers, never the status
+        logger.debug("diffusion.upscalers: scan failed: %s", exc)
+        models = []
+    return {
+        "hires": diffusion_hires.capability(fam, model_rows = models),
+        # Hidden without a reason, like the sampler picker: the family simply has no image-to-image path.
+        "hires_unavailable_reason": None,
+        "upscale_models": models if getattr(fam, "img2img_pipeline_class", None) else [],
+    }
 
 
 def _family_workflows(fam: DiffusionFamily) -> list[str]:
