@@ -5589,11 +5589,12 @@ export function ImagesPage({
           label: availableLoras.find((a) => a.id === l.id)?.display_name ?? l.id.split(/[\\/]/).pop() ?? l.id,
         })),
       sdControls: compareSdControls,
-      controlnetEngaged: Boolean(controlnetCapable && controlnetId && controlImage),
+      // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
+      controlnetEngaged,
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetCapable, controlnetId, controlImage],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {

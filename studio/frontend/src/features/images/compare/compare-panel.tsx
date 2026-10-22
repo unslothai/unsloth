@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { downloadBlobStreaming } from "@/lib/native-files";
+import { downloadBlobStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { fetchGalleryBlob } from "../api";
 import {
@@ -230,7 +230,12 @@ export default function ComparePanel(props: ComparePanelProps) {
 
   const download = (g: GridResult, i: number) => {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    void downloadBlobStreaming(g.blob, `compare-grid-${stamp}${grids.length > 1 ? `-${i + 1}` : ""}.png`).catch(() => {});
+    void downloadBlobStreaming(g.blob, `compare-grid-${stamp}${grids.length > 1 ? `-${i + 1}` : ""}.png`).catch((err) => {
+      // Cancelling the save dialog is not a failure; a native open / write / finalize error is.
+      if (!isDownloadCancelled(err)) {
+        toast.error(err instanceof Error ? `Could not save the grid: ${err.message}` : "Could not save the grid");
+      }
+    });
   };
 
   const count = preview.ok ? preview.plan.cellCount : preview.cellCount;

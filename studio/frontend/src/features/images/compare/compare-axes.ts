@@ -362,7 +362,8 @@ export function planCompare(
 
 /** Combinations no cell may run: a Prompt S/R term a cell's text lacks once the earlier axes' substitutions ran
  *  (A1111 apply_prompt raises per cell; a negative prompt counts only where that cell's CFG engages it), or a
- *  Schedule type the cell's sampler does not take (the backend would run Automatic under a Karras label). */
+ *  Schedule type, from an axis or the form, the cell's sampler does not take (the backend would run Automatic under a
+ *  Karras label). */
 function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null {
   const srAxes = plan.axes.flatMap((axis, a) => (axis.def.id === "prompt_sr" ? [a] : []));
   for (let i = 0; i < plan.cellCount; i++) {
@@ -377,12 +378,17 @@ function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null 
       prompt = prompt.split(search).join(replace);
       negative = negative.split(search).join(replace);
     }
-    if (cell.schedule !== undefined && cell.schedule !== AUTOMATIC) {
+    // The form's schedule counts too once a Sampler axis picks the sampler: falling back to Automatic for one cell
+    // would vary the schedule along with the labelled sampler.
+    const schedule = cell.schedule ?? (cell.sampler !== undefined ? ctx.samplerChoice.scheduleType : undefined);
+    if (schedule !== undefined && schedule !== AUTOMATIC) {
       const sampler = cell.sampler ?? ctx.samplerChoice.sampler;
       const option = ctx.samplers.find((s) => s.id === sampler);
-      if (!option?.schedule_types.includes(cell.schedule)) {
-        const schedule = SCHEDULE_LABELS[cell.schedule] ?? cell.schedule;
-        return `Schedule type ${schedule} is not available with ${option?.label ?? sampler}. Drop it, or compare only samplers that take it.`;
+      if (!option?.schedule_types.includes(schedule)) {
+        const label = SCHEDULE_LABELS[schedule] ?? schedule;
+        return cell.schedule !== undefined
+          ? `Schedule type ${label} is not available with ${option?.label ?? sampler}. Drop it, or compare only samplers that take it.`
+          : `${option?.label ?? sampler} does not take the form's ${label} schedule. Set Schedule type to Automatic, or compare only samplers that take it.`;
       }
     }
   }

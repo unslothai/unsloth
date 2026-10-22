@@ -888,3 +888,35 @@ test("Prompt S/R table: empty replacements kept, an empty search value refused, 
     ["a red fox", "a  fox"],
   );
 });
+
+test("sampler x schedule table: every cell must take its effective schedule, the form's included", () => {
+  // [form sampler, form schedule, axes, ok or an error pattern]
+  const rows: Array<[string, string, Array<{ axisId: string; text: string }>, true | RegExp]> = [
+    ["euler", "karras", [{ axisId: "sampler", text: "euler, euler_a" }], /Euler a does not take the form's Karras schedule/],
+    ["euler", "karras", [{ axisId: "sampler", text: "euler, dpmpp_2m" }], true],
+    ["euler", "automatic", [{ axisId: "sampler", text: "euler, euler_a" }], true],
+    // No Sampler axis: the form's own pair, already valid in the form.
+    ["euler", "karras", [{ axisId: "steps", text: "10, 20" }], true],
+    ["euler", "karras", [{ axisId: "sampler", text: "euler, euler_a" }, { axisId: "schedule", text: "automatic" }], true],
+    ["euler", "automatic", [{ axisId: "sampler", text: "euler_a" }, { axisId: "schedule", text: "automatic, karras" }], /Schedule type Karras is not available with Euler a/],
+  ];
+  for (const [sampler, scheduleType, axes, expected] of rows) {
+    const r = planCompare(axes, sdxl({ samplerChoice: { sampler, scheduleType } }));
+    const label = `${sampler}/${scheduleType} ${axes.map((a) => `${a.axisId}=${a.text}`).join(" ")}`;
+    if (expected === true) assert.ok(r.ok, `${label}: ${r.ok ? "" : r.error}`);
+    else assert.match(r.ok ? "" : r.error, expected, label);
+  }
+});
+
+test("compare wiring: the request's ControlNet predicate gates CFG rescale; a failed save is reported", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /\n\s+controlnetEngaged,\n\s+\}\),/);
+  assert.doesNotMatch(page, /controlnetEngaged: Boolean\(controlnetCapable && controlnetId && controlImage\)/);
+  // A strength-0 ControlNet is not engaged, so the axis stays (the axes only read the flag).
+  const sdControls = { clip_skip: null, cfg_rescale: { min: 0, max: 1 }, variation_seed: false } as never;
+  assert.ok(availableAxes(sdxl({ sdControls, controlnetEngaged: false })).some((d) => d.id === "cfg_rescale"));
+  assert.ok(!availableAxes(sdxl({ sdControls, controlnetEngaged: true })).some((d) => d.id === "cfg_rescale"));
+  const panel = readSrc("features/images/compare/compare-panel.tsx");
+  assert.match(panel, /if \(!isDownloadCancelled\(err\)\) \{\n\s+toast\.error\(/);
+  assert.doesNotMatch(panel, /\.catch\(\(\) => \{\}\)/);
+});
