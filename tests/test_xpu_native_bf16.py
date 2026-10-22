@@ -188,6 +188,42 @@ def test_launch_answer_matches_zoo(monkeypatch, devices, env, _bf16):
     assert dt.xpu_supports_native_bf16() is zoo_dt._xpu_bf16_supported()
 
 
+@pytest.mark.parametrize(
+    "devices, bf16_after_switch",
+    [
+        pytest.param([NATIVE, EMULATED], False, id = "native-then-emulated"),
+        pytest.param([EMULATED, NATIVE], True, id = "emulated-then-native"),
+    ],
+)
+def test_is_bfloat16_supported_follows_set_device_after_import(monkeypatch, devices, bf16_after_switch):
+    # unsloth#14622 on XPU: import on XPU 0, then torch.xpu.set_device(1) before loading. The loader
+    # asks is_bfloat16_supported(); it must answer for XPU 1, as the trainer's zoo probe does.
+    import unsloth.models._utils as model_utils
+
+    state = {"current": 0}
+    fake = _fake_torch(devices, 0)
+    fake.xpu.current_device = lambda: state["current"]
+    monkeypatch.setattr(dt, "torch", fake)
+    monkeypatch.setattr(model_utils, "DEVICE_TYPE", "xpu")
+    monkeypatch.setattr(model_utils, "zoo_shares_xpu_bf16", lambda: True)
+    monkeypatch.setattr(model_utils, "SUPPORTS_BFLOAT16", not bf16_after_switch)  # cached at import
+    assert model_utils.is_bfloat16_supported() is (not bf16_after_switch)
+    state["current"] = 1
+    assert model_utils.is_bfloat16_supported() is bf16_after_switch
+
+
+def test_is_bfloat16_supported_keeps_the_cached_answer_off_xpu(monkeypatch):
+    import unsloth.models._utils as model_utils
+
+    for answer in (True, False):
+        monkeypatch.setattr(model_utils, "DEVICE_TYPE", "cuda")
+        monkeypatch.setattr(model_utils, "SUPPORTS_BFLOAT16", answer)
+        assert model_utils.is_bfloat16_supported() is answer
+    monkeypatch.setattr(model_utils, "DEVICE_TYPE", "xpu")
+    monkeypatch.setattr(model_utils, "zoo_shares_xpu_bf16", lambda: False)  # older zoo: old answer
+    assert model_utils.is_bfloat16_supported() is False
+
+
 def test_xpu_unreadable_current_device_keeps_true(monkeypatch):
     def boom():
         raise RuntimeError("no context")

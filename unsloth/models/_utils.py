@@ -4822,6 +4822,10 @@ def config_return_dict(config):
 
 
 def is_bfloat16_supported():
+    # XPU: ask again, so a torch.xpu.set_device after import is seen, as the trainer's live
+    # unsloth_zoo probe sees it. Cheap (device properties only).
+    if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
+        return xpu_supports_native_bf16()
     return SUPPORTS_BFLOAT16
 
 
