@@ -19,9 +19,6 @@ import torch._dynamo.utils as dynamo_utils
 from unsloth.kernels import rms_layernorm
 from unsloth.kernels.rms_layernorm import fast_rms_layernorm
 
-if torch.version.hip:
-    pytest.skip("the multi-row kernels are off on ROCm", allow_module_level = True)
-
 BF16_OK = torch.cuda.get_device_capability()[0] >= 8
 DTYPES = [torch.float16, torch.float32] + ([torch.bfloat16] if BF16_OK else [])
 NARROW = [33, 64, 96, 100, 127, 128]
