@@ -57,9 +57,7 @@ def _unique(base: str, taken: set[str]) -> str:
     return out
 
 
-# ---------------------------------------------------------------------------
 # Graph helpers shared with world.py
-# ---------------------------------------------------------------------------
 def node_value(doc: dict, node_outputs: dict, node_id: str, port: str) -> Any:
     """A node's output: baked first (Appendix B), then the latest run."""
     baked = (doc.get("baked") or {}).get(node_id) or {}
@@ -132,9 +130,7 @@ def _entry_points(doc: dict, kinds: dict[str, str]) -> dict[str, str]:
 STORY_ENTRY_TYPES = {"story.next_scene": "next_scene", "story.scene_art": "scene_art"}
 
 
-# ---------------------------------------------------------------------------
 # Lines
-# ---------------------------------------------------------------------------
 _LINE_RE = re.compile(r"^\s*([^:\n]{1,40}?)\s*(?:\(([^)]{1,30})\))?\s*:\s*(.+)$")
 
 
@@ -181,9 +177,7 @@ def parse_lines(
     return lines
 
 
-# ---------------------------------------------------------------------------
 # Authored graph -> manifest
-# ---------------------------------------------------------------------------
 def _flow_successors(doc: dict) -> dict[tuple[str, str], str]:
     succ: dict[tuple[str, str], str] = {}
     for e in doc.get("edges") or []:
@@ -423,9 +417,7 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
     }
 
 
-# ---------------------------------------------------------------------------
 # Validation and repair (authored and generated)
-# ---------------------------------------------------------------------------
 def _reaches_ending(scenes: dict[str, dict]) -> set[str]:
     rev: dict[str, set[str]] = {sid: set() for sid in scenes}
     for sid, s in scenes.items():
@@ -844,9 +836,7 @@ def repair_live_scene(
     return StoryScene.model_validate(scene).model_dump(by_alias = True, exclude_none = True)
 
 
-# ---------------------------------------------------------------------------
 # Entry point used by GET /api/flows/{id}/story
-# ---------------------------------------------------------------------------
 def compile_story_report(doc: dict, node_outputs: Optional[dict] = None) -> tuple[dict, list[str]]:
     node_outputs = node_outputs or {}
     warnings: list[str] = []

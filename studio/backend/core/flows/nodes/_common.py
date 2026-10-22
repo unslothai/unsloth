@@ -32,9 +32,6 @@ GALLERY_FILE = {
 }
 
 
-# ---------------------------------------------------------------- values
-
-
 def as_text(value: Any) -> str:
     if value is None:
         return ""
@@ -153,9 +150,6 @@ def gallery_media(kind: str, row: dict, **extra: Any) -> dict:
     return value
 
 
-# ---------------------------------------------------------------- media bytes
-
-
 async def media_bytes(ctx: Any, media: Any) -> tuple[bytes, str]:
     if not isinstance(media, dict) or not isinstance(media.get("ref"), str):
         raise FlowNodeError("Expected an image, audio clip or video")
@@ -183,9 +177,6 @@ async def media_bytes(ctx: Any, media: Any) -> tuple[bytes, str]:
 async def data_url(ctx: Any, media: dict) -> str:
     data, mime = await media_bytes(ctx, media)
     return f"data:{mime};base64,{base64.b64encode(data).decode()}"
-
-
-# ---------------------------------------------------------------- models
 
 
 def _caller(ctx: Any) -> Any:
@@ -272,9 +263,6 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
     ctx.resident[slot] = repo
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
-
-
-# ---------------------------------------------------------------- LLM
 
 
 async def _images_content(ctx: Any, prompt: str, images: Optional[list[dict]]) -> Any:
@@ -448,9 +436,6 @@ async def llm_json(
     with tools_force_disabled():
         payload = await ctx.call("POST", "/v1/chat/completions", json = body)
     return first_json(_message_text(payload))
-
-
-# ---------------------------------------------------------------- images
 
 
 async def generate_image(
@@ -659,9 +644,6 @@ async def remove_background(
         ),
         await ctx.save_asset(mask_png, "image/png", kind = "image"),
     )
-
-
-# ---------------------------------------------------------------- audio
 
 
 async def audio_ref(ctx: Any, media: dict) -> dict:

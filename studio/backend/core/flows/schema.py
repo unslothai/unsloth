@@ -145,9 +145,7 @@ class FlowDocument(_Strict):
     meta: dict[str, Any] = Field(default_factory = dict)
 
 
-# ---------------------------------------------------------------------------
 # Values that travel along edges
-# ---------------------------------------------------------------------------
 # text -> str, number -> float|int, bool -> bool, json -> any JSON, list -> list
 # image/audio/video -> MediaValue dict, dataset -> DatasetValue, model -> ModelValue,
 # checkpoint -> CheckpointValue, story -> StoryManifest dict, world -> WorldSpec dict.
@@ -188,9 +186,7 @@ class CheckpointValue(_Strict):
     base_model: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
 # Expressions: a JSON tree, evaluated by core/flows/expr.py and src/features/flows/expr.ts
-# ---------------------------------------------------------------------------
 # Expr := null | bool | number | string | {"var": "name"} | {"op": OP, "args": [Expr, ...]} | {"list": [Expr...]}
 EXPR_OPS = (
     "==",
@@ -224,9 +220,7 @@ EXPR_OPS = (
 Expr = Any
 
 
-# ---------------------------------------------------------------------------
 # Story manifest (consumed by the story player)
-# ---------------------------------------------------------------------------
 class StoryCharacter(_Strict):
     id: str
     name: str
@@ -300,9 +294,7 @@ class StoryManifest(_Strict):
     )  # name -> node id of a subgraph output
 
 
-# ---------------------------------------------------------------------------
 # World spec (consumed by the world player)
-# ---------------------------------------------------------------------------
 class WorldNpc(_Strict):
     id: str
     name: str
@@ -365,9 +357,7 @@ class WorldSpec(_Strict):
     entry_points: dict[str, str] = Field(default_factory = dict)  # e.g. {"npc_reply": "<node id>"}
 
 
-# ---------------------------------------------------------------------------
 # Run events (SSE `data:` payloads; `id:` is `seq`)
-# ---------------------------------------------------------------------------
 RunStatus = Literal[
     "queued", "running", "cancelling", "cancelled", "completed", "failed", "interrupted"
 ]

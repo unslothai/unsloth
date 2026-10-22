@@ -195,7 +195,6 @@ export const playerApi: PlayerApi = {
   },
 };
 
-// ---------------------------------------------------------------- media object URLs
 const MAX_URLS = 96;
 const urlCache = new Map<string, Promise<string>>();
 

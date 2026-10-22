@@ -107,9 +107,6 @@ def _save(doc: dict, base: Optional[int]) -> dict:
         )
 
 
-# ---------------------------------------------------------------- catalog, validation, examples
-
-
 @router.get("/nodes")
 def node_catalog() -> dict:
     return catalog()
@@ -169,9 +166,6 @@ def copy_example(example_id: str) -> dict:
     return record
 
 
-# ---------------------------------------------------------------- import, assets
-
-
 async def _read_body(request: Request, limit: int) -> bytes:
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > limit:
@@ -224,9 +218,6 @@ def get_asset(ref: str) -> Response:
         media_type = mime,
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
     )
-
-
-# ---------------------------------------------------------------- runs (static paths before /{flow_id})
 
 
 def _stored_snapshot(run_id: str) -> Optional[dict]:
@@ -349,9 +340,6 @@ async def run_events(request: Request, run_id: str) -> StreamingResponse:
     )
 
 
-# ---------------------------------------------------------------- flows CRUD
-
-
 @router.get("")
 @router.get("/", include_in_schema = False)
 def list_flows() -> dict:
@@ -384,9 +372,6 @@ def put_flow(flow_id: str, body: FlowBody) -> dict:
 def delete_flow(flow_id: str) -> Response:
     flows_db.delete_flow(flow_id)
     return Response(status_code = 204)
-
-
-# ---------------------------------------------------------------- planning and running
 
 
 def _hub_cached(repo: str) -> Optional[bool]:
@@ -593,9 +578,6 @@ def world(flow_id: str) -> dict:
     return found
 
 
-# ---------------------------------------------------------------- sessions
-
-
 @router.get("/{flow_id}/sessions")
 def list_sessions(flow_id: str) -> dict:
     _flow_or_404(flow_id)
@@ -629,9 +611,6 @@ def put_session(flow_id: str, slot: str, body: SessionBody) -> dict:
 def delete_session(flow_id: str, slot: str) -> Response:
     flows_db.delete_session(flow_id, _slot(slot))
     return Response(status_code = 204)
-
-
-# ---------------------------------------------------------------- export
 
 
 @router.get("/{flow_id}/export")

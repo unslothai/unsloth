@@ -75,7 +75,6 @@ function readNumber(key: string, fallback: number): number {
   }
 }
 
-// ---------------------------------------------------------------- typewriter
 interface TypewriterHandle {
   complete: () => void;
   typing: () => boolean;
@@ -131,7 +130,6 @@ const Typewriter = memo(function Typewriter({
   return <span ref={ref} />;
 });
 
-// ---------------------------------------------------------------- portraits
 const Portrait = memo(function Portrait({
   api,
   character,
@@ -189,7 +187,6 @@ const Portrait = memo(function Portrait({
   );
 });
 
-// ---------------------------------------------------------------- overlays
 function Overlay({
   children,
   onClose,
@@ -261,7 +258,6 @@ const ENDING_GLOW: Record<string, string> = {
   neutral: "from-sky-200 via-white to-indigo-200",
 };
 
-// ---------------------------------------------------------------- player
 export function StoryPlayer({
   flowId,
   api,
@@ -321,7 +317,6 @@ export function StoryPlayer({
     window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 2200);
   }, []);
 
-  // ---- live generation: one queue, dropped when the playthrough changes (rev)
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const requested = useRef<Set<string>>(new Set());
   const artEntry = manifest.entry_points?.scene_art;
@@ -526,7 +521,6 @@ export function StoryPlayer({
   }, [voiceUrl, started]);
   const musicUrl = useMediaUrl(api, scene?.music ?? null);
 
-  // ---- input
   const advance = useCallback(() => {
     if (panel) return;
     if (!started) {
@@ -612,7 +606,6 @@ export function StoryPlayer({
     return () => window.removeEventListener("keydown", onKey);
   }, [advance, choices, choose, panel]);
 
-  // ---- save / load
   const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
   useEffect(() => {
     if (panel !== "save" && panel !== "load") return;

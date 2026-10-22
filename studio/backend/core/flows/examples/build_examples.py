@@ -174,7 +174,6 @@ class B:
         self.doc["params"].append({"id": id, "type": type, "default": default, "label": label})
 
 
-# ---------------------------------------------------------------------------
 def sloth_moon() -> B:
     b = B(
         "sloth-moon",

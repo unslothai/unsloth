@@ -48,7 +48,6 @@ class NodeContext(Protocol):
     # Flow-level params supplied for this run (Run dialog, MCP, player).
     flow_params: dict[str, Any]
 
-    # ---- Studio calls (in-process, authenticated) ----
     async def call(
         self,
         method: str,
@@ -70,7 +69,6 @@ class NodeContext(Protocol):
         None = keep whatever is loaded (error if nothing is). Returns the resolved {"repo", "variant"} or None."""
         ...
 
-    # ---- High-level helpers shared by many handlers ----
     async def llm_text(
         self,
         *,
@@ -140,7 +138,6 @@ class NodeContext(Protocol):
         seed: Optional[int] = None,
     ) -> dict: ...
 
-    # ---- Media and assets ----
     async def media_bytes(self, media: dict) -> tuple[bytes, str]:
         """(bytes, mime) of any MediaValue: gallery item, embedded asset or flow asset."""
         ...
@@ -159,7 +156,6 @@ class NodeContext(Protocol):
         """Store bytes as a flow asset and return its MediaValue."""
         ...
 
-    # ---- Progress, logs, cancellation ----
     def progress(
         self,
         fraction: Optional[float] = None,

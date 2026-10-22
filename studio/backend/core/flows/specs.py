@@ -155,7 +155,6 @@ _IMAGE_SIZE = [
 ]
 
 NODE_SPECS: list[dict] = [
-    # ------------------------------------------------------------------ inputs
     spec(
         "input.text",
         "Text",
@@ -251,7 +250,6 @@ NODE_SPECS: list[dict] = [
         params = [P("items", "string_list", [], "Items")],
         icon = "list",
     ),
-    # ------------------------------------------------------------------ text / LLM
     spec(
         "llm.generate",
         "LLM Generate",
@@ -359,7 +357,6 @@ NODE_SPECS: list[dict] = [
         model_kind = "embedding",
         icon = "sort",
     ),
-    # ------------------------------------------------------------------ logic
     spec(
         "logic.random_pick",
         "Random Pick",
@@ -477,7 +474,6 @@ NODE_SPECS: list[dict] = [
         outputs = [out("list", "list")],
         icon = "list",
     ),
-    # ------------------------------------------------------------------ image
     spec(
         "image.generate",
         "Generate Image",
@@ -618,7 +614,6 @@ NODE_SPECS: list[dict] = [
         ],
         icon = "grid",
     ),
-    # ------------------------------------------------------------------ video
     spec(
         "video.generate",
         "Generate Video",
@@ -671,7 +666,6 @@ NODE_SPECS: list[dict] = [
         outputs = [out("videos", "list", item = "video")],
         icon = "playlist",
     ),
-    # ------------------------------------------------------------------ audio
     spec(
         "audio.speak",
         "Speak",
@@ -732,7 +726,6 @@ NODE_SPECS: list[dict] = [
         params = [P("gap_ms", "int", 250, "Gap (ms)", min = 0, max = 10000)],
         icon = "merge",
     ),
-    # ------------------------------------------------------------------ data / training
     spec(
         "data.hf_dataset",
         "Hugging Face Dataset",
@@ -831,7 +824,6 @@ NODE_SPECS: list[dict] = [
         lane = "gpu",
         icon = "chat",
     ),
-    # ------------------------------------------------------------------ output
     spec(
         "output.preview",
         "Preview",
@@ -861,7 +853,6 @@ NODE_SPECS: list[dict] = [
         icon = "logout",
         cacheable = False,
     ),
-    # ------------------------------------------------------------------ story
     spec(
         "story.generator",
         "Story Generator",
@@ -1089,7 +1080,6 @@ NODE_SPECS: list[dict] = [
         entrypoint = True,
         icon = "palette",
     ),
-    # ------------------------------------------------------------------ world
     spec(
         "world.generator",
         "World Generator",

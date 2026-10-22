@@ -106,7 +106,6 @@ export interface FlowDocument {
   meta: Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------- catalog
 export type ParamKind =
   | "text"
   | "textarea"
@@ -180,7 +179,6 @@ export interface NodeCatalog {
   nodes: NodeSpec[];
 }
 
-// ---------------------------------------------------------------- values
 export interface MediaValue {
   kind: "image" | "audio" | "video";
   ref: string; // "image:<id>" | "audio:<id>" | "video:<id>" | "sha256:<hex>" | "flowasset:<id>"
@@ -220,7 +218,6 @@ export interface ModelChoice {
   variant?: string | null;
 }
 
-// ---------------------------------------------------------------- expressions
 export type Expr =
   | null
   | boolean
@@ -239,7 +236,6 @@ export const EXPR_OPS = [
 ] as const;
 export type ExprOp = (typeof EXPR_OPS)[number];
 
-// ---------------------------------------------------------------- story
 export interface StoryCharacter {
   id: string;
   name: string;
@@ -295,7 +291,6 @@ export interface StoryManifest {
   entry_points?: Record<string, string>;
 }
 
-// ---------------------------------------------------------------- world
 export type WorldBiome = "meadow" | "forest" | "desert" | "snow" | "town" | "dungeon" | "beach";
 
 export interface WorldNpc {
@@ -359,7 +354,6 @@ export interface WorldSpec {
   entry_points?: Record<string, string>;
 }
 
-// ---------------------------------------------------------------- runs
 export type RunStatus = "queued" | "running" | "cancelling" | "cancelled" | "completed" | "failed" | "interrupted";
 export type NodeStatus =
   | "idle"

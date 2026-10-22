@@ -137,9 +137,6 @@ def delete_flow(flow_id: str) -> None:
         conn.close()
 
 
-# ---------------------------------------------------------------- runs
-
-
 def _run_from_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -349,9 +346,6 @@ def reconcile_orphaned_runs(
         conn.close()
 
 
-# ---------------------------------------------------------------- cache
-
-
 def cache_get(key: str) -> Optional[dict]:
     conn = get_connection()
     try:
@@ -390,9 +384,6 @@ def cache_clear() -> int:
         return cur.rowcount
     finally:
         conn.close()
-
-
-# ---------------------------------------------------------------- sessions
 
 
 def list_sessions(flow_id: str) -> list[dict]:

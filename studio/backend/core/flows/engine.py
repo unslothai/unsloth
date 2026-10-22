@@ -161,7 +161,6 @@ class RunState:
             state = self.nodes[node_id] = NodeState()
         return state
 
-    # ---------------------------------------------------------------- events
     def emit(
         self,
         type_: str,
@@ -290,7 +289,6 @@ class NodeContextImpl:
         self.doc = rs.doc
         self.outputs_extra: dict[str, Any] = {}
 
-    # ---------------------------------------------------------------- calls
     async def call(
         self,
         method: str,
@@ -353,7 +351,6 @@ class NodeContextImpl:
         from core.flows.nodes import _common
         return await _common.speak(self, **kwargs)
 
-    # ---------------------------------------------------------------- media
     async def media_bytes(self, media: dict) -> tuple[bytes, str]:
         from core.flows.nodes import _common
         return await _common.media_bytes(self, media)
@@ -374,7 +371,6 @@ class NodeContextImpl:
         digest, sniffed = await asyncio.to_thread(asset_store.store, data, mime)
         return asset_store.media_value(digest, sniffed, **(extra or {}))
 
-    # ---------------------------------------------------------------- progress
     def progress(
         self,
         fraction: Optional[float] = None,
@@ -465,7 +461,6 @@ class FlowEngine:
             self.handlers = load_handlers()
         return self.handlers
 
-    # ---------------------------------------------------------------- public
     async def start_run(
         self,
         *,
@@ -586,7 +581,6 @@ class FlowEngine:
         finally:
             await asyncio.to_thread(self.revoke_key, key_id)
 
-    # ---------------------------------------------------------------- run loop
     async def _run(self, rs: RunState) -> None:
         try:
             token, key_id = await asyncio.to_thread(self.mint_key, rs.account)
@@ -754,7 +748,6 @@ class FlowEngine:
         best = max(counts.values())
         return next(n for n in ready if counts[model_of(n)] == best)
 
-    # ---------------------------------------------------------------- one node
     def _gather_inputs(self, rs: RunState, nid: str, env: Env) -> tuple[dict, Optional[str]]:
         """(inputs, why it must be skipped or None)."""
         plan = rs.plan
@@ -1038,7 +1031,6 @@ class FlowEngine:
         )
         # Body nodes keep their own status; the run reports their failures.
 
-    # ---------------------------------------------------------------- bake
     async def _bake(self, rs: RunState) -> None:
         """Copy every finished output into the flow as embedded values, media included, so it plays with no models."""
         baked: dict[str, dict] = {}

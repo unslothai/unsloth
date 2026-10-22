@@ -289,7 +289,6 @@ export function WorldPlayer({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ---- conversation
   const [draft, setDraft] = useState("");
   const [thinking, setThinking] = useState(false);
   const replyEntry = spec.entry_points?.npc_reply;
@@ -348,7 +347,6 @@ export function WorldPlayer({
     }
   };
 
-  // ---- save / load
   const save = async (slot: string) => {
     const state = serialize({
       ...wsRef.current,
