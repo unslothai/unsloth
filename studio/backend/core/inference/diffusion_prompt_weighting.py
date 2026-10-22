@@ -43,8 +43,7 @@ CHUNK_TOKENS = 75
 COMMA_BACKTRACK = 20
 # webui and ComfyUI chunk without a limit; 32 chunks (2400 tokens) bounds what one request can encode.
 MAX_CHUNKS = 32
-# Text read per prompt: 32 characters per token over the whole cap, far past any real prompt, so parsing and
-# tokenizing stay bounded however large the request body is.
+# Text read per prompt (32 chars/token over the cap) bounds parsing however large the body is.
 MAX_PROMPT_CHARS = MAX_CHUNKS * CHUNK_TOKENS * 32
 
 
@@ -71,8 +70,7 @@ def parse_prompt_attention(text: str) -> list[list[Any]]:
             try:
                 value = float(weight)
             except ValueError:
-                # A1111 raises on a malformed number such as "(a:1.2.3)"; keep the text as typed instead,
-                # opening parenthesis included.
+                # A1111 raises on a malformed number such as "(a:1.2.3)"; keep the text as typed instead.
                 start = round_open.pop()
                 res.insert(start, ["(", 1.0])
                 square_open[:] = [pos + 1 if pos >= start else pos for pos in square_open]

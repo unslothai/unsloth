@@ -1232,7 +1232,6 @@ export function recipeSettings(
     model_kind: r.model_kind === "connection" ? "connection" : undefined,
     sampler: str(r.sampler),
     schedule_type: str(r.schedule_type),
-    // The request's bounds: CLIP skip 1-12, CFG rescale and variation strength 0-1, 32-bit variation seed.
     prompt_weighting: r.prompt_weighting === false ? false : undefined,
     clip_skip: clamp(int(r.clip_skip), 1, 12),
     cfg_rescale: clamp(num(r.cfg_rescale), 0, 1),

@@ -5,7 +5,6 @@
 import { authFetch } from "@/features/auth";
 import { type DiffusionControlNetInfo, type GalleryImage, parseJson } from "./api";
 
-/** List diffusion ControlNet models, optionally filtered to a model family. */
 export async function listDiffusionControlNets(
   family?: string,
 ): Promise<DiffusionControlNetInfo[]> {
@@ -27,7 +26,6 @@ export async function moveGalleryImage(id: string, afterId: string | null): Prom
   );
 }
 
-/** Copy one image into a chat project's folder. */
 export async function addGalleryImageToProject(
   id: string,
   projectId: string,

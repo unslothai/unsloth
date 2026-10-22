@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// SDXL controls (status `sd_controls`); every control at its default sends nothing.
 
 export interface SdControlsCapability {
   prompt_weighting?: boolean;
@@ -134,10 +133,8 @@ const VARY_BUILD_KEYS = [
 // Baked adapters are a set (the bake order is not recorded as meaningful); absent reads as none.
 const bakedKey = (b: VaryBuild) => [...new Set(b.baked_loras ?? [])].sort().join("\n");
 
-/** Why `image` did not provably come off the loaded build, else null. The same seed only gives a nearby image on the
- *  same engine, checkpoint file, quants, attention backend, step cache and load-time baked LoRAs; a record without
- *  the engine (or from before the build was stored, no schema_version) cannot be verified, so it is blocked rather
- *  than guessed. */
+/** Why `image` did not provably come off the loaded build, else null; a record that cannot be verified
+ *  (no engine or no schema_version) is blocked rather than guessed. */
 export function varyBuildMismatch(image: VaryBuild & { schema_version?: number | null }, loaded: VaryBuild): string | null {
   if (!image.schema_version || !image.engine)
     return "This image does not record which engine and build made it, so Vary cannot check it matches the current load.";

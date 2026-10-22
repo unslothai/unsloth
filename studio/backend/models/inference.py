@@ -5070,7 +5070,6 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
         "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
     )
-    # SDXL text / noise controls (status `sd_controls`). Every one omitted = the call runs exactly as before.
     prompt_weighting: Optional[bool] = Field(
         None,
         description = "AUTOMATIC1111 prompt syntax on SDXL: (word:1.2), (word), [word], \\( escapes and "

@@ -70,7 +70,6 @@ export interface DiffusionStatus {
   // Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), null = default SDPA.
   attention_backend?: string | null;
   transformer_cache?: string | null;
-  // Adapter ids baked into the transformer at load time (part of the build); absent on an older backend.
   baked_loras?: string[] | null;
   vae_tiling?: boolean;
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or
@@ -106,7 +105,6 @@ export interface DiffusionStatus {
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
-  // SDXL prompt weighting / CLIP skip / CFG rescale / variation seed; null or absent = none of them.
   sd_controls?: SdControlsCapability | null;
   // The Shift override the loaded flow-matching model takes; null/absent = no Shift control.
   shift_control?: ShiftControl | null;
@@ -377,7 +375,6 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
-  // null = off; variation_seed is this image's own.
   prompt_weighting?: boolean | null;
   clip_skip?: number | null;
   cfg_rescale?: number | null;

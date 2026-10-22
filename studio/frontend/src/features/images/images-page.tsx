@@ -1811,7 +1811,6 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
-  // SDXL prompt weighting / CLIP skip / CFG rescale / variation seed, sent only off their defaults.
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -5598,8 +5597,7 @@ export function ImagesPage({
     !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null &&
     canVaryImage(selected, status?.display_repo_id ?? status?.repo_id ?? null);
   const varyBlocked = canVary && selected ? varyBlockedReason(selected, loraCapable, sdCaps, status ?? {}) : null;
-  // Vary runs the SELECTED image's recipe (prompt, size, guidance, LoRAs, ...), not whatever the form holds now:
-  // restore it (the exact caption it ran with), then generate once the restored form has rendered.
+  // Vary runs the SELECTED image's recipe, not the form: restore it, then generate once the form has rendered.
   const [varyQueued, setVaryQueued] = useState(false);
   const handleVary = useCallback(() => {
     if (busy !== null || !selected || !sdCaps?.variation_seed || varyBlocked) return;

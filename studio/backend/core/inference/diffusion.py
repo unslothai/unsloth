@@ -12148,7 +12148,6 @@ class DiffusionBackend:
         live_preview: Optional[bool] = None,
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
-        # Prompt weighting / CLIP skip / CFG rescale / variation seed (SDXL); None = all off, today's call.
         sd_controls: Optional["sd_controls_mod.SdControls"] = None,
         shift: Optional[float] = None,
         base_shift: Optional[float] = None,
@@ -13527,7 +13526,6 @@ class DiffusionBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
-            # Adapters baked in at LOAD time, as the gallery record's baked_loras names them: part of the build.
             "baked_loras": _baked_lora_names(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "cfg_batch": cfg_batch_status(state.pipe),
