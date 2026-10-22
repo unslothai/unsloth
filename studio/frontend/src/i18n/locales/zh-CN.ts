@@ -1963,7 +1963,7 @@ export const zhCN = {
         action: "升级到完整安装",
         confirmTitle: "要升级到完整安装吗？",
         confirmDescription:
-          "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
+          "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
         confirmAction: "升级",
         keywords:
           "full install upgrade 安装类型 完整安装 升级 仅聊天 chat only gguf add training 训练 微调 train fine-tune pytorch torch 导出 视频 图像生成 safetensors",

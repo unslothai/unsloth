@@ -371,8 +371,10 @@ export const BUDGET = {
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
   // Desktop Chat only upgrade (#14593) merged with main at c7e5f2064: 6,731.9 KB raw / 2,028.2 KB transfer
   // (Node 24, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_077_100,
-  rawBytes: 6_893_700,
+  // The greyed Train row opening the full install dialog on top of that: 6,894,621 B raw / 2,077,110 B
+  // transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_077_300,
+  rawBytes: 6_894_800,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

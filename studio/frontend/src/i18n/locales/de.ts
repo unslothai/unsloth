@@ -2015,7 +2015,7 @@ export const de = {
         action: "Auf vollständige Installation upgraden",
         confirmTitle: "Auf die vollständige Installation upgraden?",
         confirmDescription:
-          "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+          "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Upgraden",
         keywords:
           "full install upgrade installationstyp vollständige installation nur chat chat only gguf add training training trainieren train fine-tune pytorch torch export video bildgenerierung safetensors",

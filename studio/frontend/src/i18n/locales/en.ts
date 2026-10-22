@@ -2068,7 +2068,7 @@ export const en = {
         action: "Upgrade to full install",
         confirmTitle: "Upgrade to the full install?",
         confirmDescription:
-          "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+          "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
         confirmAction: "Upgrade",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",

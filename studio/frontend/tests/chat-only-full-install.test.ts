@@ -92,3 +92,19 @@ test("the greyed Train row points at the Install type row, not at Danger zone", 
   assert.equal(forNoTorch(true, MAC_HINT), MAC_HINT);
   assert.equal(forNoTorch(false, MAC_HINT), MAC_HINT);
 });
+
+test("the greyed Train row opens the full install dialog when the upgrade is offered", async () => {
+  const source = await readSrcAsync("components/app-sidebar.tsx");
+  const row = /train: \{[\s\S]*?\n    \},\n/.exec(source);
+  assert.ok(row, "could not find the train nav row");
+  // Clickable (not natively disabled) only while the upgrade is offered, and greyed all the same.
+  assert.match(row[0], /disabled: chatOnlyMeasured && !fullInstall,/);
+  assert.match(row[0], /dimmed: chatOnlyMeasured && fullInstall !== null,/);
+  assert.match(row[0], /setFullInstallOpen\(true\)/);
+  assert.match(row[0], /5 GB/);
+  // Never navigates or preloads Train on a Chat only install.
+  assert.match(row[0], /if \(chatOnlyMeasured\) \{[\s\S]*?return;\n        \}\n        navigateFromRow/);
+  assert.match(row[0], /onIntent: \(\) => \{\n        if \(chatOnlyMeasured\) return;/);
+  assert.match(source, /<FullInstallDialog\s+open=\{fullInstallOpen\}/);
+  assert.match(en.settings.general.fullInstall.confirmDescription, /at least 5 GB of disk space/);
+});

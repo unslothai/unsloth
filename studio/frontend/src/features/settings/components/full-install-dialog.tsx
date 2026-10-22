@@ -15,7 +15,7 @@ import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
-function FullInstallDialog({
+export function FullInstallDialog({
   open,
   onOpenChange,
   onConfirm,

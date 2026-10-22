@@ -93,6 +93,7 @@ import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
@@ -247,6 +248,7 @@ import {
   type ShortcutId,
   useShortcut,
   prefersReducedMotion,
+  FullInstallDialog,
 } from "@/features/settings";
 import type {
   SidebarNavItemId,
@@ -359,6 +361,9 @@ type NavRowDef = {
   pending?: boolean;
   // What that spinning row says on hover; detection can take minutes on a cold host.
   pendingTooltip?: string;
+  // Greyed out like a disabled row but still clickable: Train on a Chat only install opens the
+  // full install dialog instead of doing nothing.
+  dimmed?: boolean;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -947,6 +952,7 @@ function MoreMenuItem({
   label,
   active,
   disabled,
+  dimmed,
   tooltip,
   badge,
   spinner,
@@ -957,6 +963,7 @@ function MoreMenuItem({
   label: string;
   active: boolean;
   disabled?: boolean;
+  dimmed?: boolean;
   tooltip?: string;
   badge?: string;
   spinner?: boolean;
@@ -971,7 +978,7 @@ function MoreMenuItem({
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className={cn(active && "bg-accent/60")}
+      className={cn(active && "bg-accent/60", dimmed && "opacity-50")}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -1317,6 +1324,10 @@ export function AppSidebar() {
   // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
   const repair = useTauriRepairController();
   const canRepair = repair !== null && !repair.isExternalServer;
+  // Non-null only for a measured Chat only install this Desktop can upgrade, on hardware that
+  // trains: the greyed Train row then opens the full install dialog instead of doing nothing.
+  const fullInstall = useFullInstallUpgrade();
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -3406,17 +3417,27 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured,
-      tooltip: trainDisabledHint,
+      disabled: chatOnlyMeasured && !fullInstall,
+      dimmed: chatOnlyMeasured && fullInstall !== null,
+      tooltip: fullInstall
+        ? "Training is not installed. Click to install it (at least 5 GB of disk space)."
+        : trainDisabledHint,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) return;
+        if (chatOnlyMeasured) {
+          if (fullInstall) {
+            setFullInstallOpen(true);
+            closeMobileIfOpen();
+          }
+          return;
+        }
         navigateFromRow({ to: "/studio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
+        if (chatOnlyMeasured) return;
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
@@ -6154,13 +6175,14 @@ export function AppSidebar() {
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
-                    alwaysTooltip={rowState.pending}
+                    alwaysTooltip={rowState.pending || Boolean(row.dimmed)}
                     spinner={rowState.spinner}
                     testId={`nav-row-${id}`}
                     onClick={row.onClick}
                     onIntent={row.onIntent}
                     className={cn(
                       row.className,
+                      row.dimmed && "opacity-50",
                       id === "images" && "group/images-item",
                       id === "audio" && "group/audio-item",
                     )}
@@ -6349,6 +6371,7 @@ export function AppSidebar() {
                             badge={row.badge}
                             active={row.active}
                             disabled={rowState.disabled}
+                            dimmed={row.dimmed}
                             tooltip={rowState.tooltip}
                             spinner={rowState.spinner}
                             onSelect={row.onClick}
@@ -6896,6 +6919,13 @@ export function AppSidebar() {
     </Sidebar>
     </TooltipProvider>
     <ChatSearchDialog />
+    {fullInstall && (
+      <FullInstallDialog
+        open={fullInstallOpen}
+        onOpenChange={setFullInstallOpen}
+        onConfirm={() => void fullInstall.repairInstall()}
+      />
+    )}
     {!isTauri && (
       <ShutdownDialog
         open={shutdownOpen}
