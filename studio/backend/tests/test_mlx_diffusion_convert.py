@@ -331,6 +331,68 @@ def test_conversion_complete_detects_truncation_and_source_change(tmp_path):
     assert not conv.conversion_complete(tmp_path / "out", source_path = src)
 
 
+@pytest.mark.parametrize("bits", [0, 8, 4])
+def test_planned_output_bytes_is_the_converted_size(tmp_path, bits):
+    src = tmp_path / "z-image-turbo-Q4_0.gguf"
+    _write_gguf(src)
+    planned = conv.planned_output_bytes(src)
+    summary = conv.convert_gguf_to_mflux(src, tmp_path / f"out{bits}", dense_bits = bits)
+    assert planned[bits] == summary["bytes"]
+    assert planned[0] > planned[8] > planned[4]
+
+
+def test_planned_output_bytes_refuses_what_conversion_refuses(tmp_path):
+    src = tmp_path / "z-image-turbo-Q3_K_M.gguf"
+
+    def extra(w):
+        raw = _rng(2).integers(0, 255, size = (4, 110), dtype = np.uint8)
+        w.add_tensor("layers.0.feed_forward.w2.weight", raw, raw_dtype = T.Q3_K)
+
+    _write_gguf(src, extra = extra)
+    with pytest.raises(conv.UnsupportedGGUFError, match = "Q3_K"):
+        conv.planned_output_bytes(src)
+
+
+def test_mflux_loads_a_mixed_4_and_8_bit_conversion_at_each_layers_bits(tmp_path):
+    """The 8-bit dense rung beside 4-bit GGUF blocks: mflux must rebuild each layer at its stored bits."""
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    applier = pytest.importorskip("mflux.models.common.weights.loading.weight_applier")
+    src = tmp_path / "z-image-turbo-Q4_0.gguf"
+    _write_gguf(src)
+    conv.convert_gguf_to_mflux(src, tmp_path / "out", dense_bits = 8)
+    loaded = mx.load(str(tmp_path / "out" / "transformer" / "0.safetensors"))
+
+    class Ref(nn.Module):
+        def __init__(self, rows, cols):
+            super().__init__()
+            self.lin = nn.Linear(cols, rows, bias = False)
+
+    layers = {
+        "layers.0.attention.to_out.0": (64, 64, 4),
+        "layers.0.feed_forward.w1": (96, 64, 8),
+        "context_refiner.0.feed_forward.w2": (32, 64, 8),
+    }
+    x = mx.array(_rng(11).standard_normal((3, 64)).astype(np.float32))
+    for path, (rows, cols, bits) in layers.items():
+        module = nn.Linear(cols, rows, bias = False)
+        layer_weights = {k: loaded[f"{path}.{k}"] for k in ("weight", "scales", "biases")}
+        predicate = applier.WeightApplier._stored_layer_predicate({"m": layer_weights}, None)
+        holder = Ref(rows, cols)
+        holder.lin = module
+        nn.quantize(holder, class_predicate = lambda p, m: predicate("m", m), bits = 4, group_size = 64)
+        assert holder.lin.bits == bits and holder.lin.group_size == 32
+        holder.lin.update(layer_weights)
+        got = np.array(holder.lin(x).astype(mx.float32))
+        ref_w = conv.dequantize_affine(
+            np.array(layer_weights["weight"]),
+            np.array(layer_weights["scales"].astype(mx.float32)),
+            np.array(layer_weights["biases"].astype(mx.float32)),
+            bits,
+        )
+        np.testing.assert_allclose(got, np.array(x) @ ref_w.T, rtol = 2e-2, atol = 2e-2)
+
+
 def test_cache_dir_for(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     d = conv.cache_dir_for(
