@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""OpenAI's documented `input_audio` content part must reach the audio path.
-
-`ContentPart` was a closed tagged union, so that shape 400'd with `union_tag_invalid` before any
-model ran -- though llama-server takes the part and `_inject_audio_part` builds one.
-"""
+"""OpenAI input_audio parts must pass ContentPart validation rather than fail as union_tag_invalid."""
 
 from __future__ import annotations
 
@@ -168,11 +164,7 @@ def test_the_duration_cap_covers_all_decoded_clips_together(monkeypatch):
 
 
 def test_an_audio_part_on_a_non_user_role_is_refused():
-    """Only a user turn carries a recording into the model, and the lift strips every role.
-
-    Dropping it in silence let a later question about an assistant-history clip be answered from
-    text alone, where this shape used to fail validation outright.
-    """
+    """An audio part on a non-user role is refused, since dropping it silently answers from text alone."""
     payload = _request(_audio_message(role = "assistant"))
 
     with pytest.raises(HTTPException) as exc:
@@ -223,11 +215,7 @@ def _count_tokens_client():
 
 
 def test_the_count_route_refuses_an_audio_part_the_way_it_refuses_the_field():
-    """/chat/count_tokens already refuses audio, and a part is audio.
-
-    It guards images at the part level but audio only through ``audio_base64``, which was safe
-    only while an ``input_audio`` part could not validate at all.
-    """
+    """/chat/count_tokens guards audio only through audio_base64, so an audio part must be refused too."""
     with _count_tokens_client() as client:
         response = client.post(
             "/chat/count_tokens",
@@ -298,15 +286,8 @@ def test_the_completion_route_refuses_an_unmodelled_part():
     assert "'file'" in response.json()["detail"]["error"]["message"]
 
 
-# ── The four review findings on the first two commits ──────────────────────────
-
-
 def test_a_non_string_part_type_is_a_validation_error_not_a_500():
-    """A list or dict ``type`` is unhashable against the known-tag set.
-
-    Testing membership on it raised TypeError out of the discriminator, which escaped request
-    validation as a 500 where the closed union had answered 422.
-    """
+    """A non-string part type must be a 422 validation error, not a 500 from an unhashable tag lookup."""
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
@@ -320,11 +301,7 @@ def test_a_non_string_part_type_is_a_validation_error_not_a_500():
 
 
 def test_the_external_path_refuses_audio_rather_than_dropping_it():
-    """_build_external_messages has no input_audio case, so the part would be stripped.
-
-    The provider would then answer the text alone -- a plausible reply about a recording it
-    never received. Refused the way video is refused on the same branch.
-    """
+    """External providers have no input_audio case, so audio is refused rather than silently stripped."""
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
@@ -359,12 +336,8 @@ def test_the_external_path_refuses_an_unmodelled_part_rather_than_dropping_it():
 
 
 def test_a_recording_carried_on_an_earlier_turn_is_refused():
-    """``audio_base64`` cannot express which turn a recording came from.
-
-    _inject_audio_part appends it to the last user message, so lifting an earlier turn's audio
-    replays it against a later question -- the model is asked about something the caller did not
-    ask. Refuse instead, until the field can carry a recording with its turn.
-    """
+    """audio_base64 cannot say which turn a recording belongs to, so an earlier-turn clip must be
+    refused."""
     payload = _request(
         _audio_message(text = "transcribe this"),
         {"role": "assistant", "content": "It says hello."},
@@ -392,10 +365,7 @@ def test_a_recording_on_the_latest_user_turn_is_still_lifted():
 
 
 def test_an_empty_audio_payload_is_refused_rather_than_dropped():
-    """``{"data": ""}`` is falsy, so it was never lifted but the part was still removed.
-
-    "transcribe this" then ran as a text-only prompt and answered about a recording nobody sent.
-    """
+    """An empty audio payload is refused; dropping it silently answers about a recording nobody sent."""
     with pytest.raises(ValidationError):
         _request(
             {
@@ -409,10 +379,7 @@ def test_an_empty_audio_payload_is_refused_rather_than_dropped():
 
 
 def test_the_tts_route_refuses_an_unmodelled_part():
-    """/audio/generate shares this request model but reads only text parts.
-
-    Before the catch-all it 422'd on an unknown tag; without this it would voice the text alone.
-    """
+    """/audio/generate reads only text, so an unmodelled part must be refused rather than voiced alone."""
     with _route_client() as client:
         response = client.post(
             "/audio/generate",
@@ -435,11 +402,7 @@ def test_the_tts_route_refuses_an_unmodelled_part():
 
 
 def test_the_tts_route_refuses_an_audio_part():
-    """/audio/generate voices the message text; a recording has nowhere to go there.
-
-    _extract_content_parts keeps only text, so the part was discarded and speech was returned
-    for an incomplete request that used to fail validation outright.
-    """
+    """/audio/generate has nowhere to put a recording, so an audio part must be refused, not discarded."""
     with _route_client() as client:
         response = client.post(
             "/audio/generate",
@@ -462,11 +425,7 @@ def _durable_run(content):
 
 
 def test_a_durable_run_refuses_a_nested_recording():
-    """The durable sanitizer refuses media because the payload persists verbatim.
-
-    It read only the top-level fields, so a recording carried in a content part would have lived
-    in ``request_json`` for the life of the thread.
-    """
+    """The durable sanitizer must scan nested parts, since request_json persists the payload verbatim."""
     from routes.chat_generation_runs import _sanitize_request
 
     with pytest.raises(HTTPException) as exc:
@@ -509,11 +468,7 @@ def test_a_plain_durable_run_is_still_queued():
 
 
 def test_the_tts_route_refuses_a_recording_that_was_already_lifted():
-    """/chat/completions routes a loaded TTS model into generate_audio after normalisation.
-
-    By then the part is gone and only ``audio_base64`` is set, so a parts-only guard would let
-    the route speak the text and drop the recording.
-    """
+    """Normalisation lifts the part away, so the TTS guard must also check audio_base64, not just parts."""
     payload = _request(_audio_message(text = "read this out"))
     _normalise_chat_content_parts(payload)
     assert payload.audio_base64 == AUDIO_B64
@@ -525,10 +480,7 @@ def test_the_tts_route_refuses_a_recording_that_was_already_lifted():
 
 
 def test_the_preview_route_refuses_before_it_loads_a_checkpoint():
-    """_serve_chat holds the preview lock and loads the checkpoint before delegating.
-
-    The delegate refuses the part, but by then an invalid request has evicted the resident model.
-    """
+    """Preview must refuse audio before loading, since an invalid request would evict the resident model."""
     import routes.preview as preview_route
 
     payload = _request(
@@ -554,11 +506,7 @@ def test_the_preview_route_refuses_before_it_loads_a_checkpoint():
 
 
 def test_the_preview_route_refuses_misplaced_audio_before_it_loads():
-    """The placement checks used to live behind routing, so preview reached them after the load.
-
-    A request that was always going to 400 would have taken the preview lock and swapped the
-    resident checkpoint on its way there.
-    """
+    """Audio placement checks must run before preview loads a checkpoint and swaps the resident model."""
     import routes.preview as preview_route
 
     payload = _request(
@@ -580,19 +528,11 @@ def test_the_preview_route_refuses_misplaced_audio_before_it_loads():
 
 
 def test_the_text_only_checkpoint_refusal_precedes_the_branch_that_consumes_audio():
-    """A source-order guard, not an end-to-end one: reaching that branch needs the ML stack.
-
-    The transformers path consumes audio only when the checkpoint declares audio input, and the
-    capability check that would otherwise catch a text-only one runs only when an automatic load
-    could fix it. With auto-switch off the branch is skipped and the turn is answered from its
-    text alone, so the refusal has to sit in front of it. This pins that ordering; whether the
-    refusal fires for a real checkpoint is covered by the GGUF/transformers suites, not here.
-    """
+    """The text-only audio refusal must sit before the audio branch, which auto-switch-off skips."""
     source = Path(inference_route.__file__).read_text(encoding = "utf-8")
     branch = source.index('if payload.audio_base64 and not model_info.get("has_audio_input"):')
     consume = source.index('if payload.audio_base64 and model_info.get("has_audio_input"):')
 
-    # the refusal has to precede the consuming branch, or it never runs
     assert branch < consume
     assert "cannot read audio input" in source[branch:consume]
 
@@ -652,15 +592,13 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
     monkeypatch.setattr(inference_route, "_fit_transcoded_audio_to_wav_cap", _fit)
 
     inference_route._prepare_audio_for_llama("QUFB")
-    assert caps == [1000]  # one clip keeps the whole cap, exactly as before
+    assert caps == [1000]
 
-    # Clips that fit together are neither refit nor resampled.
     caps.clear()
     prepared = inference_route._prepare_audio_clips_for_llama(["QUFB", "QUFB", "QUFB"])
     assert caps == []
     assert [len(base64.b64decode(data)) for data, _ in prepared] == [44 + 100 * 2] * 3
 
-    # Pass-through clips are forwarded at their upload size, so transcodes share what they leave.
     caps.clear()
     monkeypatch.setattr(
         inference_route, "_sniff_audio_container", lambda raw: "wav" if raw == b"WAV!" else None
@@ -671,10 +609,7 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
 
 
 def test_the_wav_budget_does_not_depend_on_clip_order(monkeypatch):
-    """A long clip beside a short one fits by downsampling both to one shared rate.
-
-    An equal split starved the long clip below the minimum rate whenever it came first.
-    """
+    """The WAV budget must not depend on clip order, or an equal split starves a long clip first."""
     import base64
     import io
     import wave
@@ -689,7 +624,6 @@ def test_the_wav_budget_does_not_depend_on_clip_order(monkeypatch):
         "_decode_audio_mono",
         lambda raw: ((long_clip if raw == b"LNG" else short_clip), 16000),
     )
-    # Room for 11 seconds at 9 kHz, well under the 16 kHz the clips arrive at.
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_RAW_BYTES", 2 * 44 + 2 * 11 * 9000)
 
     def rates(prepared):
@@ -716,7 +650,6 @@ def test_clips_below_the_shared_rate_are_left_alone():
     n_low, n_high = 8000 * 1200, 48000 * 300
     budget = 25 * 1024 * 1024
     rate = inference_route._shared_wav_rate([(n_low, 8000), (n_high, 48000)], budget)
-    # The 8 kHz clip keeps its full size; the 48 kHz one still clears the 8 kHz floor.
     assert 8000 <= rate < 48000
     assert 2 * 44 + 2 * n_low + 2 * round(n_high / 48000 * rate) <= budget
 
@@ -827,7 +760,6 @@ def test_extra_clips_join_the_latest_user_turn_in_order():
         {"type": "audio", "audio": "c"},
         {"type": "text", "text": "compare these"},
     ]
-    # No extras: exactly the single-clip render.
     single = messages_with_attached_image(history, structured_content = True, image = 0, audio = "a")
     assert single[-1]["content"][0] == {"type": "audio", "audio": "a"}
     assert len(single[-1]["content"]) == 2

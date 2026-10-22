@@ -2,22 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Two guards on `code-plugin.ts` that nothing else covers.
- *
- * 1. The regex engine. The desktop app's CSP is `default-src 'self'` with no
- *    `wasm-unsafe-eval` (studio/src-tauri/tauri.conf.json), and the packaged
- *    frontend is the same bundle the browser gets. Shiki's default Oniguruma
- *    engine is WebAssembly, so swapping to it would work in every browser and
- *    every test here, and be blocked at runtime in the packaged desktop app.
- *    No CI job builds the desktop bundle and drives its webview, so this is
- *    the only thing standing between that change and a shipped regression.
- *
- * 2. The cache budget. `MAX_CACHED_CHARACTERS` is 512,000 and the largest
- *    fixture in the sibling files is ~36 KB, so the character-budget branch,
- *    its "never evict the only fence" carve-out, and the running character
- *    count were all unreachable. A miscount there degrades silently: either
- *    the cache stops evicting and grows without bound, or it evicts fences it
- *    should have kept and quietly reverts to full re-tokenization.
+ * The desktop CSP forbids WASM, so shiki must use the JS regex engine; also exercises the
+ * character-budget eviction branch, unreachable from other fixtures.
  */
 
 import assert from "node:assert/strict";
@@ -51,30 +37,20 @@ const highlightOnce = (
     if (immediate) resolve(immediate);
   });
 
-// ── 1. the engine the desktop CSP allows ───────────────────────────────
-
 test("the highlighter uses the JavaScript regex engine, not the WASM one", () => {
-  // Assert on a boolean, not on PLUGIN_SOURCE: assert.match prints the whole
-  // subject, so matching the file directly buries the message under ~10 KB.
+  // assert.match prints the whole subject, burying the message, so assert a boolean.
   assert.ok(
     /createJavaScriptRegexEngine/.test(PLUGIN_SOURCE),
     "code-plugin must build its highlighter with shiki's JavaScript regex engine",
   );
   assert.ok(
     !/shiki\/wasm|loadWasm|createOnigurumaEngine/.test(PLUGIN_SOURCE),
-    // This is a source-text assertion, not a behavioural one: it pins the name,
-    // so an alias would trip it and a same-named wrapper would slip past. That
-    // is the accepted cost of covering a constraint no runtime here can check,
-    // since nothing in CI drives the packaged webview.
     "shiki's Oniguruma engine is WebAssembly, which the desktop app's CSP " +
       "(default-src 'self', no wasm-unsafe-eval) blocks; the packaged app ships " +
       "this same bundle and no CI job would catch it",
   );
 });
 
-// ── 2. the character budget ────────────────────────────────────────────
-
-/** Distinct, cheap-to-tokenize source of roughly `chars` characters. */
 const sourceOfSize = (id: number, chars: number): string => {
   const lines: string[] = [];
   let length = 0;
@@ -86,14 +62,6 @@ const sourceOfSize = (id: number, chars: number): string => {
   return `${lines.join("\n")}\n`;
 };
 
-/**
- * Whether the plugin still holds the entry that produced `previous`.
- *
- * Re-requesting is not enough on its own: a miss re-tokenizes and re-caches, so
- * asking twice always agrees with itself. The only signal is whether the entry
- * from before is still the one being served, so compare against the object the
- * cache handed out earlier.
- */
 const stillCached = async (
   plugin: ReturnType<typeof createCodePlugin>,
   previous: HighlightResult,
@@ -103,9 +71,7 @@ const stillCached = async (
   (await highlightOnce(plugin, { code, language, themes: THEMES })) === previous;
 
 test("the character budget evicts even while the fence count is under its limit", async () => {
-  // 100 fences of ~6 KB is 600 KB, past MAX_CACHED_CHARACTERS, while staying
-  // well under MAX_FENCES. Only the character branch can evict here, so this
-  // fails outright if that branch is unreachable or miscounted.
+  // ~600 KB over 100 fences exceeds MAX_CACHED_CHARACTERS but not MAX_FENCES.
   const plugin = createCodePlugin({ themes: THEMES });
   const first = sourceOfSize(0, 6_000);
   const held = await highlightOnce(plugin, {
@@ -135,11 +101,6 @@ test("the character budget evicts even while the fence count is under its limit"
 });
 
 test("a fence larger than the whole budget is kept rather than evicting itself", async () => {
-  // The carve-out at the eviction loop: stop when one fence is left, so a
-  // single oversized fence is retained. Without it the only fence in the cache
-  // would be dropped the moment it exceeded the budget, and every refresh of a
-  // long block would re-tokenize from zero, which is the case this PR exists
-  // to remove.
   const plugin = createCodePlugin({ themes: THEMES });
   const huge = sourceOfSize(1, 600_000);
   assert.ok(huge.length > 512_000, "fixture must exceed MAX_CACHED_CHARACTERS");
@@ -157,22 +118,7 @@ test("a fence larger than the whole budget is kept rather than evicting itself",
 });
 
 test("a fence evicted mid-stream still tokenizes correctly when it resumes", async () => {
-  // Eviction drops the committed lines and the grammar state, so the fence
-  // restarts from offset 0 and rebuilds incremental state as it keeps growing.
-  // That is a performance loss by design; it must not be a correctness one.
-  //
-  // Two things this test needs that are easy to get wrong, both found by
-  // measurement rather than assumed:
-  //
-  //  - It must wait out REFRESH_MS between updates. Past MIN_INCREMENTAL_CHARS,
-  //    two updates inside that window return the throttled approximation, which
-  //    renders the uncommitted tail plain and never reads the grammar state.
-  //    Without the wait, 22 of 23 comparisons took that path and the test could
-  //    not fail however the resume was broken.
-  //  - The fixture must be one whose tokens actually change when the resumed
-  //    state is dropped. A python triple-quoted string is not: dropping the
-  //    state left its tokens byte-identical. HTML with an embedded script is,
-  //    because the grammar is several levels deep at the resume point.
+  // Waits out REFRESH_MS, and uses HTML with embedded script since its resumed state matters.
   const chunk = [
     "  <section>",
     '    <div class="card" data-note="a > b">text</div>',
@@ -202,7 +148,6 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
     highlighter.codeToTokens(code, {
       lang: "html",
       themes: { light: "github-light", dark: "github-dark" },
-      // Same tokenizer limits as the plugin, so neither side can degrade.
       ...TOKENIZE_LIMITS,
     }).tokens;
 
@@ -210,7 +155,6 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
   const plugin = createCodePlugin({ themes: THEMES });
   const half = Math.floor(source.length / 2);
 
-  // Grow past the incremental threshold so committed state exists to lose.
   for (let length = 2_100; length <= half; length += 700) {
     await settle();
     await highlightOnce(plugin, {
@@ -220,7 +164,6 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
     });
   }
 
-  // Evict it.
   for (let id = 0; id < 100; id += 1) {
     await highlightOnce(plugin, {
       code: sourceOfSize(id, 6_000),
@@ -229,7 +172,6 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
     });
   }
 
-  // Keep streaming. Every prefix must still match the whole document.
   for (let length = half; length <= source.length; length += 700) {
     await settle();
     const code = source.slice(0, length);
@@ -254,24 +196,9 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
   assert.deepEqual(final.tokens, oracle(source));
 });
 
-// ── 3. the compact cache key is a hint, not the answer ─────────────────
-
-/**
- * `codeKey` hashes a fence down to `key + length + first 32 + last 32` so an
- * update does not rehash the whole block. That is a lossy digest, so two
- * different fences can share one. `findFence` therefore treats a hit as a
- * candidate and confirms it with `exact.code === code` before serving it.
- *
- * Drop that confirmation and the second fence is served the first one's
- * tokens: the reader sees the wrong code, with no error anywhere. The upstream
- * @streamdown/code cache this file replaces keys on the same shape (length
- * plus the first and last 100 characters) and does not confirm, so the pair
- * below is rendered wrong by it today. Two config or import blocks that share
- * an opening and a closing but differ in the middle are the realistic shape.
- */
+/** codeKey is lossy, so a hit must be confirmed by exact code before serving. */
 test("two fences that share a compact cache key are not served each other's tokens", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
-  // Same length, same first 32 and same last 32 characters, different middle.
   const head = "const cfg = {\n  alpha: 1,\n  beta: 2,\n";
   const tail = "\n  omega: 26,\n};\nexport default cfg;\n";
   const first = `${head}  middle: 'AAAA',\n${tail}`;

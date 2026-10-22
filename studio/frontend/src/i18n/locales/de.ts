@@ -118,6 +118,7 @@ export const de = {
     reload: "Neu laden",
     more: "Mehr",
     addressPlaceholder: "Suchen oder URL eingeben",
+    local: "Lokal",
     suggested: "Vorschläge",
     suggestedMenu: {
       open: "Öffnen",
@@ -468,6 +469,8 @@ export const de = {
       downloadFailed: "{name} konnte nicht heruntergeladen werden",
       notMarked: "{name} wurde gespeichert, konnte aber nicht als aus dem Internet heruntergeladen markiert werden. Dein System warnt deshalb vor dem Öffnen nicht.",
       blocked: "Diese Adresse kann im Browserbereich nicht geöffnet werden. Er öffnet nur öffentliche Websites.",
+      blockedLocal: "Diese lokale Adresse kann hier nicht geöffnet werden. Gib sie in die Adressleiste ein, um sie zu öffnen.",
+      studioAddress: "Das ist die Adresse von Unsloth selbst und kann deshalb nicht im Browserbereich geöffnet werden.",
       clearDataSettingDescription: "Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten löschen. Du wirst dabei von Websites abgemeldet.",
       clearDataDescription: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",
       clearDataFailed: "Websitedaten konnten nicht gelöscht werden. Versuche es erneut.",

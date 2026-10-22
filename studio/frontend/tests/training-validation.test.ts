@@ -290,7 +290,6 @@ test("training validation accepts DoRA on MLX under an adapter method", () => {
         { ...validConfig, trainingMethod, loraVariant: "dora" },
         "mac",
       ),
-      // cpt is refused on MLX for its own reason, not for DoRA.
       trainingMethod === "cpt"
         ? { ok: false, errorKey: "studio.params.notSupportedAppleSilicon" }
         : { ok: true, errorKey: null },
