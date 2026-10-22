@@ -195,6 +195,7 @@ import {
   savedContextPin,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
+  PER_MODEL_CONFIG_UPDATED_EVENT,
   perModelConfigStorageChanged,
   pinSpeculativeMode,
   readAdvancedSettingsOpen,
@@ -1244,6 +1245,44 @@ function AdvancedSettingsToggle({
   );
 }
 
+function useStoredPerModelConfig(
+  configId: string,
+  ggufVariant: string | null | undefined,
+) {
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setVersion((v) => v + 1);
+    window.addEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, bump);
+    window.addEventListener("storage", bump);
+    return () => {
+      window.removeEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, bump);
+      window.removeEventListener("storage", bump);
+    };
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version is the storage write signal
+  return useMemo(
+    () => resolveInitialConfig(configId, ggufVariant),
+    [configId, ggufVariant, version],
+  );
+}
+
+function AdvancedGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} className="space-y-3 pt-2">
+      <h3 className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+        {title}
+      </h3>
+      <div className="space-y-5">{children}</div>
+    </section>
+  );
+}
+
 const GGUF_PARALLEL_HINT =
   "Decode slots (--parallel) for concurrent requests. Leave blank for the server " +
   "default. More slots share the context pool and use more VRAM.";
@@ -1713,6 +1752,7 @@ function GgufAdvancedSettings({
     config.nUbatch != null && config.nUbatch > effectiveBatch;
   return (
     <>
+      <AdvancedGroup title="Memory">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
@@ -1748,6 +1788,40 @@ function GgufAdvancedSettings({
         </Select>
       </div>
 
+      <GpuMemorySettings
+        config={config}
+        update={update}
+        layerCount={layerCount}
+        moeLayerCount={moeLayerCount}
+        isDiffusion={isDiffusion}
+        gpuDevices={gpuDevices}
+        gpuLayersInputRef={gpuLayersInputRef}
+        moeLayersInputRef={moeLayersInputRef}
+      />
+
+      {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
+          and the runner never reads it, so the switch would flip back under the pointer. */}
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Vision</span>
+            <InfoHint>
+              Loads the vision projector so the model can read images. Turning
+              it off frees that VRAM for more layers on the GPU. Text generation
+              is unaffected either way.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            aria-label="Vision"
+            checked={!config.disableVision}
+            onCheckedChange={(checked) => update({ disableVision: !checked })}
+          />
+        </div>
+      )}
+      </AdvancedGroup>
+
+      <AdvancedGroup title="Speed">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
@@ -1980,47 +2054,32 @@ function GgufAdvancedSettings({
           </div>
           <Switch
             className="panel-switch shrink-0"
+            aria-label="Tensor Parallelism"
             checked={config.tensorParallel}
             onCheckedChange={(checked) => update({ tensorParallel: checked })}
           />
         </div>
       )}
+      </AdvancedGroup>
 
-      {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
-          and the runner never reads it, so the switch would flip back under the pointer. */}
-      {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="panel-switch shrink-0"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
-      )}
-
+      <AdvancedGroup title="Output">
       {!isDiffusion && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Reasoning Budget</span>
             <InfoHint>
-              Maximum thinking tokens. -1 is unlimited and 0 turns reasoning
-              off.
+              Maximum thinking tokens. Leave blank for unlimited; 0 turns
+              reasoning off.
             </InfoHint>
           </div>
+          {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
           <input
             type="number"
             min={-1}
             max={2_147_483_647}
             step={1}
-            value={config.reasoningBudget}
+            value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
+            placeholder="unlimited"
             onChange={(event) => {
               const raw = event.target.value;
               if (raw === "") {
@@ -2067,23 +2126,13 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      <GpuMemorySettings
-        config={config}
-        update={update}
-        layerCount={layerCount}
-        moeLayerCount={moeLayerCount}
-        isDiffusion={isDiffusion}
-        gpuDevices={gpuDevices}
-        gpuLayersInputRef={gpuLayersInputRef}
-        moeLayersInputRef={moeLayersInputRef}
-      />
-
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
+      </AdvancedGroup>
 
-      {/* Host-side knobs, after the ones that shape the model itself. All three are llama-server's
-          own, and the diffusion runner launches no llama-server, so they are hidden for it. */}
+      {/* Host-side knobs, after the ones that shape the model itself. All of them are llama-server's
+          own, and the diffusion runner launches no llama-server, so the group is hidden for it. */}
       {!isDiffusion && (
-        <>
+        <AdvancedGroup title="Server">
           <LoadModeRow config={config} update={update} />
 
           <div className={ROW_CLASS}>
@@ -2161,18 +2210,16 @@ function GgufAdvancedSettings({
               className={NUMBER_INPUT_CLASS}
             />
           </div>
-        </>
-      )}
 
-      {/* Last, because it is the escape hatch for everything the rows above do not cover, and
-          llama.cpp's last-wins parsing means these really are appended after them. GGUF only. */}
-      {!isDiffusion && (
-        <ExtraArgsRow
-          config={config}
-          update={update}
-          onLoadableChange={onExtraArgsLoadableChange}
-          draftKey={draftKey}
-        />
+          {/* Last, because it is the escape hatch for everything the rows above do not cover, and
+              llama.cpp's last-wins parsing means these really are appended after them. */}
+          <ExtraArgsRow
+            config={config}
+            update={update}
+            onLoadableChange={onExtraArgsLoadableChange}
+            draftKey={draftKey}
+          />
+        </AdvancedGroup>
       )}
     </>
   );
@@ -2378,6 +2425,7 @@ export function ModelConfigPage({
   focusField,
 }: ModelConfigPageProps) {
   const rememberId = useId();
+  const saveStatusId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Apple Silicon specifically, and used ONLY for wording: "Unified" is what Apple calls its
   // pool, where an AMD APU's is "Shared". NOT the signal for capacity - see hasUnifiedMemory.
@@ -2914,11 +2962,12 @@ export function ModelConfigPage({
         // edit made while the request was in flight.
         // The edited check is load-bearing: an edit the OTHER editor made before this read
         // started is already in configAtStart, so the comparison below reads as untouched.
+        // By value: the primed draft is a new object, so identity refused every row on a fresh editor.
         if (
           resolvedRow &&
           serverConfig &&
           !isModelConfigDraftEdited(draftKey) &&
-          configRef.current === configAtStart &&
+          perModelConfigsEqual(configRef.current, configAtStart) &&
           rememberRef.current === rememberAtStart
         ) {
           const storedConfig = resolveInitialConfig(
@@ -3107,12 +3156,7 @@ export function ModelConfigPage({
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
-  const platform = usePlatformStore();
-  const targetIsMlx = isServedByMlx(
-    target.isGguf,
-    platform.deviceType,
-    platform.chatOnlyReason,
-  );
+  const targetIsMlx = servedByMlx;
   const pinsContextLength = targetIsMlx || targetIsNpu;
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
@@ -3442,6 +3486,26 @@ export function ModelConfigPage({
     });
 
   const rememberChanged = remember !== savedRemember;
+  // Judged on what Save would write, so a just-saved panel never reads as having unsaved edits.
+  const storedRecord = useStoredPerModelConfig(configId, target.ggufVariant);
+  const matchesStored =
+    storedRecord.remembered &&
+    perModelConfigsEqual(
+      normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
+      storedRecord.config,
+    );
+  // Always one line of text, never mounted on demand: the click that saves would move Load.
+  const saveStatus = savedRemember
+    ? remember
+      ? matchesStored
+        ? "Saved for this model"
+        : "Unsaved changes"
+      : "Saved settings will be forgotten"
+    : remember
+      ? "Not saved yet"
+      : atDefault
+        ? "Using default settings"
+        : "Not remembered for this model";
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
     ? remember
@@ -3542,7 +3606,18 @@ export function ModelConfigPage({
     // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
     // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
-    if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
+    // Never forget a row this editor never read (the read failed or timed out): that wiped CLI-set flags.
+    const forgetsUnreadRow =
+      !remember &&
+      !savedRemember &&
+      !resolvedIsDiffusion &&
+      !isExtraArgsHydratedForDraft(draftKey);
+    if (
+      saved &&
+      !forgetsUnreadRow &&
+      (target.apiLoadable ?? target.isGguf) &&
+      !nativePathToken
+    ) {
       syncModelOverride(
         configId,
         target.ggufVariant,
@@ -3905,9 +3980,11 @@ export function ModelConfigPage({
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
       <div className="mt-5 flex flex-col gap-3.5 border-t border-border pt-5">
+        <div className="flex min-w-0 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
+            aria-describedby={saveStatusId}
             checked={remember}
             onCheckedChange={(checked) => {
               // Not in setRemember, which the save path calls again to settle the box. An
@@ -3922,6 +3999,15 @@ export function ModelConfigPage({
           >
             Remember for this model
           </label>
+        </div>
+        <p
+          id={saveStatusId}
+          aria-live="polite"
+          data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
+          className="truncate pl-6 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+        >
+          {saveStatus}
+        </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
