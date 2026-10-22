@@ -317,9 +317,9 @@ def test_clearing_the_note_restores_the_host_accelerator(fake_settings):
 
 @pytest.mark.parametrize(
     "accelerator,expected",
-    [("rocm", "vulkan"), ("vulkan", None), ("cuda", None), ("cpu", None), ("auto", None)],
+    [("rocm", "vulkan"), ("vulkan", "cpu"), ("cuda", None), ("cpu", None), ("auto", None)],
 )
-def test_only_rocm_has_a_rung_below_it(accelerator, expected):
+def test_only_rocm_and_vulkan_have_a_rung_below_them(accelerator, expected):
     from core.inference.sd_cpp_backend import fallback_accelerator_for
     assert fallback_accelerator_for(accelerator) == expected
 
@@ -2309,7 +2309,7 @@ def test_the_route_tells_the_selection_which_card_it_picked(fake_settings):
     body = inspect.getsource(router.select_and_activate_engine)
     assert "_selected_card(gpu_ordinal)" in body
     assert (
-        "preferred_accelerator(\n            _install_accelerator_for(backend), selected_card\n        )"
+        "preferred_accelerator(\n            image_install_accelerator(backend), selected_card\n        )"
         in body
     )
 
@@ -2756,6 +2756,34 @@ class TestSelectedCardIndexSpaces:
         # Composing the stale ROCR mask in would have made this 3 rather than 2.
         assert sd_cpp_backend._physical_index_of(0, env = env) == (2, True)
 
+    def test_an_empty_hip_mask_does_not_shadow_the_cuda_mask(self, monkeypatch):
+        """ROCm ignores an empty HIP_VISIBLE_DEVICES and reads CUDA_VISIBLE_DEVICES."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+        env = {"HIP_VISIBLE_DEVICES": "", "CUDA_VISIBLE_DEVICES": "4,5"}
+        assert sd_cpp_backend._physical_index_of(1, env = env) == (5, True)
+        # Every present mask empty still hides every card.
+        assert sd_cpp_backend._physical_index_of(0, env = {"HIP_VISIBLE_DEVICES": ""}) == (None, True)
+
+    def test_repeated_mask_entries_follow_hip_and_rocr_rules(self, monkeypatch):
+        """clr keeps the first of a repeated HIP entry; ROCr ends the list at a repeat."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+        assert sd_cpp_backend._physical_index_of(1, env = {"HIP_VISIBLE_DEVICES": "0,0,1"}) == (
+            1,
+            True,
+        )
+        assert sd_cpp_backend._physical_index_of(0, env = {"ROCR_VISIBLE_DEVICES": "2,2,3"}) == (
+            2,
+            True,
+        )
+        assert sd_cpp_backend._physical_index_of(1, env = {"ROCR_VISIBLE_DEVICES": "2,2,3"}) == (
+            None,
+            True,
+        )
+
 
 def _recorded_proven(store: dict, klass: str = "rocm") -> bool:
     record = (store.get("sd_cpp_accelerator_runtime_failures") or {}).get(klass) or {}
@@ -3078,3 +3106,36 @@ def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, mo
     chosen = router.select_and_activate_engine(_detect_load_family(H3_REPO, None, "minimax-h3"))
     assert chosen == "sd_cpp", chosen  # the healthy server carries the load
     assert _recorded_strikes(fake_settings) == 0  # and nothing was held against ROCm
+
+
+def test_one_mask_string_for_rocr_and_hip_keeps_rocrs_repeat_rule(monkeypatch):
+    # The same str object in both variables: ROCr still stops at the repeat, HIP still dedupes.
+    from core.inference import sd_cpp_backend
+
+    # ROCr is a Linux layer: Windows HIP ignores ROCR_VISIBLE_DEVICES.
+    monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+
+    mask = "0,0,1"
+    env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": mask}
+    assert env["ROCR_VISIBLE_DEVICES"] is env["HIP_VISIBLE_DEVICES"]
+    assert sd_cpp_backend._physical_index_of(1, env = env) == (None, True)
+    assert sd_cpp_backend._physical_index_of(
+        1, env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": "0,0,1 "}
+    ) == (None, True)
+
+
+def test_trademark_marks_do_not_split_a_card_name():
+    from core.inference import sd_cpp_backend
+
+    listing = "Vulkan0\tAMD Radeon Graphics (RADV RAPHAEL)\n"
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "b", "AMD Radeon(TM) Graphics", position = 0, listing = listing
+        )
+        == "Vulkan0"
+    )
+    assert sd_cpp_backend._normalized_card_name(
+        "Intel(R) Arc(TM) B580"
+    ) == sd_cpp_backend._normalized_card_name("Intel Arc B580")
+    # Only the marks go: a model letter R or TM inside a word stays.
+    assert sd_cpp_backend._normalized_card_name("Radeon R9") == "radeonr9"

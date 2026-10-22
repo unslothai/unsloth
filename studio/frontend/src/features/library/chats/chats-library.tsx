@@ -28,7 +28,6 @@ import {
   type SidebarCustomSection,
   type SidebarItem,
   archiveChatItems,
-  clearNewChatDraft,
   compareModelDisplayName,
   deleteChatItems,
   deleteChatProject,
@@ -42,6 +41,7 @@ import {
   removeCustomSectionWithUndo,
   renameChatItem,
   showForkCreatedToast,
+  showForkFailedToast,
   unarchiveChatItem,
   useChatPreferencesStore,
   useChatProjects,
@@ -613,7 +613,6 @@ export function ChatsLibrary({
   /** Files the new chat on its first send; the sidebar watches for the mark set here. */
   const newChatInSection = (sectionId: string) => {
     const nonce = crypto.randomUUID();
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(null);
@@ -625,7 +624,6 @@ export function ChatsLibrary({
   };
 
   const newChatIn = (id: string | null) => {
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(id);
@@ -778,13 +776,9 @@ export function ChatsLibrary({
     try {
       const result = await forkChatRow(chat);
       notifyChatHistoryUpdated();
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (err) {
-      if ((err as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
-        toast.info(err instanceof Error ? err.message : t("library.chats.toast.forkFailed"));
-      } else {
-        toast.error(t("library.chats.toast.forkFailed"), { description: errorDescription(err) });
-      }
+      showForkFailedToast(err, t("library.chats.toast.forkFailed"));
     } finally {
       inFlight.setForking(false);
     }

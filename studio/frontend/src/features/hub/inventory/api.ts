@@ -273,6 +273,13 @@ export async function listLocalModels(): Promise<LocalModelListResponse> {
   return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
+export async function listUnslothModels(): Promise<LocalModelListResponse> {
+  const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
+    authFetch("/api/hub/unsloth-models", { signal }),
+  );
+  return parseJsonOrThrow<LocalModelListResponse>(response);
+}
+
 export async function fetchCachedGgufInventory(
   hfToken?: string | null,
 ): Promise<CachedInventoryResponse<CachedGgufRepo>> {
@@ -362,17 +369,17 @@ export interface DeleteImpact {
   blocked_by: string[];
 }
 
-/** What a delete would actually reclaim and leave behind. Never throws: the confirm dialog
- * still has to open if this preview is unavailable, it just falls back to the plain wording. */
+/** return the delete preview or `null` so confirmation still opens when unavailable. */
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
   cachePath?: string | null,
+  hfToken?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...hubTokenHeader(hfToken) },
       body: JSON.stringify(
         variant
           ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
@@ -473,8 +480,11 @@ export async function deleteLocalModel(path: string, id?: string): Promise<void>
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   const response = await authFetch("/api/hub/scan-folders");
-  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
-  return data.folders;
+  const data = await parseJsonOrThrow<{ folders?: ScanFolderInfo[] }>(
+    response,
+  );
+  // Every surface iterates this list, so a body without it must not take the page down.
+  return Array.isArray(data?.folders) ? data.folders : [];
 }
 
 export async function addScanFolder(

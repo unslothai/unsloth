@@ -229,7 +229,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 25
+    assert len(_MIRROR_PAIRS) == 32
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -251,8 +251,8 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     exists". Klein base-4B is the one that makes this concrete: a default trainable base, which
     is mirrored, and which the Hub serves anonymously.
     """
-    assert len(_GATED_MIRROR_PAIRS) == 12
-    assert len(_UNGATED_MIRROR_PAIRS) == 13
+    assert len(_GATED_MIRROR_PAIRS) == 14
+    assert len(_UNGATED_MIRROR_PAIRS) == 18
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -275,12 +275,6 @@ def test_no_mirror_is_a_companion_only_repo():
     companions = sd_cpp_companion_only_repo_ids()
     for _upstream, mirror in _MIRROR_PAIRS:
         assert mirror.lower() not in companions, mirror
-
-
-# Vendor bases the catalog offers before their unsloth mirror exists on the Hub. A mirror row for a
-# repo that is not there would 404 every fetch it redirects, so the table cannot lead the upload;
-# this names the gap instead of letting the check below go red on every PR until it closes.
-_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset({"qwen/qwen-image-2.1-turbo"})
 
 
 def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
@@ -311,18 +305,8 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         if not repo.lower().startswith("unsloth/")
         and "hunyuan" not in repo.lower()
         and repo.lower() not in mirrored
-        and repo.lower() not in _MIRRORS_NOT_YET_PUBLISHED
     )
     assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"
-    # Each pending entry has to still be pending and still offered, so the exception cannot
-    # outlive the gap it names.
-    for repo in _MIRRORS_NOT_YET_PUBLISHED:
-        assert (
-            repo not in mirrored
-        ), f"{repo} is in the mirror table now; drop it from _MIRRORS_NOT_YET_PUBLISHED"
-        assert repo in {
-            o.lower() for o in offered
-        }, f"the catalog no longer offers {repo}; drop it from _MIRRORS_NOT_YET_PUBLISHED"
 
 
 def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
@@ -538,13 +522,18 @@ def test_a_repack_split_across_the_two_cache_roots_still_counts(monkeypatch, tmp
     a split pair absent and re-pulls several GB the two roots already have between them (offline,
     it fails outright). Reachable with an interrupted download either side of the change: the file
     fetched before it stays in the old root, the one fetched after lands in the new one.
+
+    Uses a synthetic mirror -> repack row: the mechanism is generic, and no image asset is a
+    repack any more.
     """
     from huggingface_hub import constants
 
+    from core.inference import diffusion_families
     from core.inference.diffusion_families import _upstream_is_cached, prefer_cached_legacy_source
 
-    repack = "Comfy-Org/z_image_turbo"
-    mirror = "unsloth/Z-Image-Turbo-ComfyUI"
+    repack = "some-org/example-repack"
+    mirror = "unsloth/example-repack-mirror"
+    monkeypatch.setitem(diffusion_families._SD_CPP_LEGACY_SOURCES, mirror.lower(), repack)
     first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
     live, other = tmp_path / "live", tmp_path / "other"
 
@@ -928,7 +917,7 @@ def fake_runtime(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.diffusion.load_ideogram4_pipeline",
-        lambda repo_id, dtype, hf_token = None, check_cancelled = None: _FakePipe(),
+        lambda repo_id, dtype, hf_token = None, check_cancelled = None, text_encoder = None: _FakePipe(),
     )
 
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -1257,6 +1246,47 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
         backend.generate(prompt = p)
     assert backend.status()["speed_mode"] == "off"
     backend.unload()
+
+
+def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # #14114: the 3rd-image compile turns LoRA off. Status must say a reload restores it, or the picker just vanishes.
+    from core.inference import diffusion as dmod
+    from models.inference import DiffusionStatusResponse
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {"compiled": k.get("speed_mode") in ("default", "max")},
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    load = dict(gguf_filename = "model.safetensors", family_override = "qwen-image")
+
+    backend = DiffusionBackend()
+    status = _load_into(backend, tmp_path, **load)
+    assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    status = backend.status()
+    assert "compiled" in status["speed_optims"]
+    assert (status["supports_lora"], status["lora_after_reload"]) == (False, True)
+    assert DiffusionStatusResponse(**status).lora_after_reload is True
+
+    # The reload defers again, so LoRA is back.
+    backend.unload()
+    status = _load_into(backend, tmp_path, **load)
+    assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+
+    # An explicit compiled tier compiles at load: a reload would not help, so no hint.
+    backend.unload()
+    status = _load_into(backend, tmp_path, speed_mode = "default", **load)
+    assert "compiled" in status["speed_optims"]
+    assert (status["supports_lora"], status["lora_after_reload"]) == (False, False)
+    backend.unload()
+    assert backend.status()["lora_after_reload"] is False
 
 
 def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
@@ -3956,6 +3986,7 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
         dtype,
         hf_token = None,
         check_cancelled = None,
+        text_encoder = None,
     ):
         seen["ideogram"] = repo_id
         return _FakePipe()
@@ -7201,6 +7232,28 @@ def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
     assert dmod._transformer_quant_backend(hostile) is None
 
 
+def test_status_reports_the_load_time_baked_loras(fake_runtime, tmp_path):
+    # Vary compares a gallery record's baked_loras with the load's, so status must carry the same ids, and an
+    # unbaked or unloaded state must say none rather than omit the key.
+    from models.inference import DiffusionStatusResponse
+
+    assert DiffusionBackend().status()["baked_loras"] == []
+    backend = DiffusionBackend()
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    _load_into(backend, tmp_path, gguf_filename = "z-image-turbo-Q8_0.gguf", base_repo = None)
+    assert backend.status()["baked_loras"] == []
+    pipe = backend._state.pipe
+    pipe._unsloth_loras = (
+        ("sloth", "/adapters/sloth.safetensors", 0.8),
+        ("ink", "/adapters/ink.safetensors", 0.5),
+    )
+    pipe._unsloth_loras_baked = True
+    status = backend.status()
+    assert status["baked_loras"] == ["sloth", "ink"]
+    assert DiffusionStatusResponse(**status).model_dump()["baked_loras"] == ["sloth", "ink"]
+    assert DiffusionStatusResponse(loaded = True).model_dump()["baked_loras"] == []
+
+
 def test_the_unloaded_status_declares_the_quant_backend_key():
     status = DiffusionBackend().status()
     assert "transformer_quant_backend" in status
@@ -8606,7 +8659,10 @@ def _fake_hf_api(
             files_metadata = False,
             token = None,
         ):
-            return _FakeInfo(repos[repo_id], (shas or {}).get(repo_id))
+            # The listing now asks a base's unsloth mirror, which carries the same files: answer it from the
+            # upstream's canned listing unless a test describes the mirror itself.
+            key = repo_id if repo_id in repos else canonical_base(repo_id)
+            return _FakeInfo(repos[key], (shas or {}).get(key))
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     # Download-plan tests describe their cache state explicitly. Never let a developer's real
@@ -13941,21 +13997,31 @@ def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monk
     snap.mkdir(parents = True)
     with open(snap / te_candidate_filenames(source)[0], "wb") as fh:
         fh.truncate(7700 * 1024 * 1024)
+    # text_encoder_3 is FLUX.1's T5-XXL, served from FLUX.1's hosted text_encoder_2 file; cache it too.
+    t5 = te_prequant_sources(
+        fam, te_quant_mode = "fp8", target = target, components = ("text_encoder_3",)
+    )["text_encoder_3"]
+    t5_repo = live / ("models--" + t5.location.replace("/", "--"))
+    (t5_repo / "refs").mkdir(parents = True)
+    (t5_repo / "refs" / "main").write_text(rev)
+    (t5_repo / "snapshots" / rev).mkdir(parents = True)
+    with open(t5_repo / "snapshots" / rev / te_candidate_filenames(t5)[0], "wb") as fh:
+        fh.truncate(5000 * 1024 * 1024)
     assert DiffusionBackend._precast_text_encoder_mib(
         fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
-    ) == (7700, ("text_encoder_4",), True)
+    ) == (12700, ("text_encoder_3", "text_encoder_4"), True)
+    (t5_repo / "snapshots" / rev / te_candidate_filenames(t5)[0]).unlink()
 
     (snap / te_candidate_filenames(source)[0]).unlink()
     from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
     from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
-    assert DiffusionBackend._precast_text_encoder_mib(
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
         fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
-    ) == (
-        int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024),
-        ("text_encoder_4",),
-        False,
     )
+    # Neither file is cached now: both are priced from the tables, the Llama from its own bf16 size.
+    assert (components, exact) == (("text_encoder_3", "text_encoder_4"), False)
+    assert mib > int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024)
 
 
 def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_table(
@@ -14852,7 +14918,9 @@ def test_gguf_offload_swap_on_mps_keeps_the_gguf(fake_runtime, tmp_path, monkeyp
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
     monkeypatch.setattr(dmod, "dense_transformer_supported", dense_transformer_supported)
-    status = _load_gguf(backend, tmp_path)
+    # z-image defaults to its hosted int8 ConvRot encoder, which this offline fixture does not carry; MPS budgets
+    # for that file alone, so the encoder is not what is under test here.
+    status = _load_gguf(backend, tmp_path, text_encoder_quant = "none")
     assert calls == []
     assert status["transformer_quant"] is None
 

@@ -163,7 +163,7 @@ def test_linux_still_takes_the_newest_release_from_the_download_host(monkeypatch
     releases = FakeReleases(monkeypatch, cdn_tag = RELEASE_TAGS[0])
     _tag, plans = resolve(linux_host())
 
-    assert len(list(plans)) == 1  # the CDN surfaces only the newest, as before
+    assert len(list(plans)) == 1
     assert releases.resolved == [RELEASE_TAGS[0]]
     assert releases.api_listing_reads == 0
 
@@ -222,11 +222,7 @@ def test_a_403_on_the_deferred_lookup_reaches_the_installer_as_a_fallback(monkey
 
 
 def test_a_pinned_release_resolves_once_even_when_the_walk_back_is_on(monkeypatch):
-    """macOS sets continue_after_fast_path by host, not by whether a tag is pinned.
-
-    A pin names exactly one release, so the download host's answer is the whole
-    answer; falling through would yield it a second time and spend an API call.
-    """
+    """A pinned tag names one release, so falling through after the fast path repeats the same API call."""
     releases = FakeReleases(monkeypatch, cdn_tag = RELEASE_TAGS[0])
     pinned_lookups = []
     monkeypatch.setattr(
@@ -345,12 +341,10 @@ def test_a_deferred_403_still_reaches_the_source_build_end_to_end(tmp_path, monk
 
     monkeypatch.setattr(ILP, "validate_prebuilt_attempts", _validation_fails)
 
-    # Keep a runnable install when release lookup fails.
     install_dir = build_install(tmp_path, host = MACOS, marker = S12, payload_backend = "metal")
     ILP.install_prebuilt(install_dir, "latest", PUBLISHED_REPO, "")
     assert (install_dir / "llama-server").exists()
 
-    # Otherwise request a source build.
     broken = build_install(
         tmp_path / "broken", host = MACOS, marker = S12, payload_backend = "metal", runnable = False
     )

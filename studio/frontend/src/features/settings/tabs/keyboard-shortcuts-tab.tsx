@@ -8,6 +8,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { composerShortcutLabels } from "@/features/chat/utils/composer-preferences";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
@@ -35,14 +37,17 @@ import {
   type ShortcutId,
   type ShortcutSlot,
   bindingFromEvent,
+  bindingMatchesQuery,
   defaultBindingFor,
   formatBindingLabel,
   formatBindingValue,
   isAcceptableBinding,
   isBrowserReservedBinding,
+  isBrowserUnreachableBinding,
   isMacPlatform,
   keystrokeMatchesBinding,
   parseBinding,
+  unrecordableModifier,
 } from "../lib/keyboard-shortcuts";
 import {
   findConflicts,
@@ -139,6 +144,10 @@ export function KeyboardShortcutsTab() {
   const [recording, setRecording] = useState<RecordingTarget | null>(null);
   // Shown under the row being recorded when the pressed chord is rejected.
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [justRecorded, setJustRecorded] = useState<RecordingTarget | null>(
+    null,
+  );
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   // Search the list by pressing a chord instead of typing its name.
   const [byKeystroke, setByKeystroke] = useState(false);
   const [keystroke, setKeystroke] = useState<ShortcutBinding | null>(null);
@@ -185,13 +194,26 @@ export function KeyboardShortcutsTab() {
         return;
       }
       const binding = bindingFromEvent(event);
-      // Modifier held on its own: the user is still assembling the chord.
-      if (!binding) return;
+      if (!binding) {
+        // A real key with the Windows key or AltGr, which cannot be bound; else still assembling.
+        const refused = unrecordableModifier(event);
+        if (refused) {
+          setRecordingError(
+            t(
+              refused === "meta"
+                ? "settings.keyboardShortcuts.metaUnsupported"
+                : "settings.keyboardShortcuts.altGraphUnsupported",
+            ),
+          );
+        }
+        return;
+      }
       if (!isAcceptableBinding(binding, def?.allowBareKey)) {
         setRecordingError(t("settings.keyboardShortcuts.needsModifier"));
         return;
       }
       setBinding(recording.id, recording.slot, formatBindingValue(binding));
+      setJustRecorded(recording);
       setRecording(null);
       setRecordingError(null);
     };
@@ -265,9 +287,7 @@ export function KeyboardShortcutsTab() {
         if (haystack.toLowerCase().includes(q)) return true;
         return SHORTCUT_SLOTS.some((slot) => {
           const parsed = parseBinding(resolveBinding(overrides, def.id, slot));
-          return parsed
-            ? formatBindingLabel(parsed, mac).toLowerCase().includes(q)
-            : false;
+          return parsed ? bindingMatchesQuery(parsed, q, mac) : false;
         });
       }).map((def) => def.id),
     );
@@ -282,11 +302,39 @@ export function KeyboardShortcutsTab() {
 
   const startRecording = (def: ShortcutDef, slot: ShortcutSlot) => {
     setRecordingError(null);
+    setJustRecorded(null);
     setRecording(
       recording?.id === def.id && recording.slot === slot
         ? null
         : { id: def.id, slot },
     );
+  };
+
+  const builtInKey = (id: ShortcutId): string | null => {
+    if (id === "clearChatSelection") return "Esc";
+    if (id !== "sendMessage") return null;
+    const send = composerShortcutLabels(sendShortcut, mac, "").send;
+    return sendShortcut === "mod-enter-multiline"
+      ? `${send} / ${composerShortcutLabels(sendShortcut, mac, "\n").send}`
+      : send;
+  };
+
+  const conflictingLabels = (id: ShortcutId): string => {
+    const values = new Set(
+      SHORTCUT_SLOTS.map((slot) => resolveBinding(overrides, id, slot)).filter(
+        (value): value is string => value !== null,
+      ),
+    );
+    return SHORTCUT_DEFS.filter(
+      (other) =>
+        other.id !== id &&
+        SHORTCUT_SLOTS.some((slot) => {
+          const value = resolveBinding(overrides, other.id, slot);
+          return value !== null && values.has(value);
+        }),
+    )
+      .map((other) => t(other.labelKey))
+      .join(", ");
   };
 
   /** One chord line: cap and pencil left, trash right. A row with an
@@ -300,9 +348,11 @@ export function KeyboardShortcutsTab() {
         ? "settings.keyboardShortcuts.primarySlot"
         : "settings.keyboardShortcuts.alternateSlot",
     );
-    // The warning rides the cap's tooltip, not a third line of description.
     const reserved =
       !isTauri && !isRecording && isBrowserReservedBinding(value);
+    const desktopOnly =
+      !isTauri && !isRecording && isBrowserUnreachableBinding(value, mac);
+    const builtIn = slot === "primary" ? builtInKey(def.id) : null;
 
     return (
       <div key={slot} className="flex items-center justify-between gap-3">
@@ -313,7 +363,11 @@ export function KeyboardShortcutsTab() {
                 ? t("settings.keyboardShortcuts.recording")
                 : parsed
                   ? formatBindingLabel(parsed, mac)
-                  : t("settings.keyboardShortcuts.unassigned")
+                  : builtIn
+                    ? t("settings.keyboardShortcuts.builtInKey", {
+                        key: builtIn,
+                      })
+                    : t("settings.keyboardShortcuts.unassigned")
             }
             tone={
               isRecording ? "recording" : parsed ? "assigned" : "unassigned"
@@ -324,6 +378,11 @@ export function KeyboardShortcutsTab() {
                 : undefined
             }
           />
+          {desktopOnly ? (
+            <span className="text-xs text-muted-foreground">
+              {t("settings.keyboardShortcuts.desktopOnly")}
+            </span>
+          ) : null}
           <RowIconButton
             icon={PencilEdit02Icon}
             label={`${t("settings.keyboardShortcuts.edit")} (${slotName})`}
@@ -358,6 +417,15 @@ export function KeyboardShortcutsTab() {
         const value = resolveBinding(overrides, def.id, slot);
         return !value || shortcutOwningBinding(overrides, value) !== def.id;
       });
+    const clashesWith = conflicted ? conflictingLabels(def.id) : "";
+    const recordedValue =
+      justRecorded?.id === def.id && !isRecording
+        ? resolveBinding(overrides, def.id, justRecorded.slot)
+        : null;
+    const recordedReserved =
+      !isTauri &&
+      isBrowserReservedBinding(recordedValue, mac) &&
+      !isBrowserUnreachableBinding(recordedValue, mac);
     // Anything this action ships an alternate for keeps its line, cleared or not: hiding a cleared
     // slot would take its restore control with it, and Reset all is not a way back from one edit.
     const hasAlternate =
@@ -391,11 +459,17 @@ export function KeyboardShortcutsTab() {
                 {shadowed
                   ? t("settings.keyboardShortcuts.conflictShadowed")
                   : t("settings.keyboardShortcuts.conflict")}
+                {clashesWith ? `: ${clashesWith}` : null}
               </span>
             ) : (
               t(def.descriptionKey)
             )}
           </span>
+          {recordedReserved ? (
+            <span className="text-xs leading-snug text-amber-500">
+              {t("settings.keyboardShortcuts.browserReserved")}
+            </span>
+          ) : null}
         </div>
         {/* pl-10 nudges the caps off the descriptions: the labels run long
             enough that a bare half-and-half split left them crowding. */}
@@ -506,6 +580,7 @@ export function KeyboardShortcutsTab() {
           onClick={() => {
             setRecording(null);
             setRecordingError(null);
+            setJustRecorded(null);
             resetAll();
           }}
         >

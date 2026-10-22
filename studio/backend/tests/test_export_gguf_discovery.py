@@ -106,6 +106,7 @@ def _hub_doubles(export_mod, monkeypatch, calls: dict):
             repo_type,
             allow_patterns = None,
             ignore_patterns = None,
+            delete_patterns = None,
         ):
             calls["upload"] = folder_path
 

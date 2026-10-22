@@ -85,6 +85,15 @@ import {
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+// The images and video barrels export only their pages; the status calls alone keep those pages out of the chat chunk.
+// eslint-disable-next-line no-restricted-imports
+import { getDiffusionStatus } from "@/features/images/api";
+// eslint-disable-next-line no-restricted-imports
+import { getVideoStatus } from "@/features/video/api";
+import {
+  subscribeModelEjected,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { useDocumentFlag } from "@/lib/document-flag";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
@@ -94,6 +103,7 @@ import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
   BrowserToggleButton,
+  chatKeyOfThread,
   openUrlInBrowser,
   pinBrowserPage,
   setBrowserPanelAvailable,
@@ -120,7 +130,7 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
-import { useAui, useAuiState } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -169,6 +179,7 @@ import {
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
+import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -253,6 +264,7 @@ import {
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
   loadOptionalBool,
+  localMediaReadyFromStatus,
   noteEffortDisplacedByPin,
   pinHoldsLiveEffort,
   readPendingAttachmentTargetClaim,
@@ -260,6 +272,7 @@ import {
   takeEffortDisplacedByPin,
   threadScopedOverride,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -274,7 +287,6 @@ import {
   comparePairReadState,
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
-import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
@@ -290,7 +302,11 @@ import {
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { savedBranchHead } from "./utils/branch-head";
-import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { branchContextUsage, estimateBranch } from "./utils/saved-context-usage";
+import {
+  currentContextUsageReasoningKey,
+  refreshContextUsage,
+} from "./utils/refresh-context-usage";
 import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
@@ -443,31 +459,6 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
 
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
-}
-
-type RuntimeStoreState = ReturnType<typeof useChatRuntimeStore.getState>;
-
-// The newest saved usage if the active checkpoint and window could have produced it, else null.
-function savedUsageFor(
-  messages: MessageRecord[],
-  store: RuntimeStoreState,
-): RuntimeStoreState["contextUsage"] {
-  const msg = [...messages].sort((a, b) => b.createdAt - a.createdAt)[0];
-  const usage = msg?.metadata?.contextUsage as RuntimeStoreState["contextUsage"];
-  if (!usage) return null;
-  const activeCheckpoint = store.params.checkpoint;
-  const usageModelId = (usage as { modelId?: unknown }).modelId;
-  if (typeof usageModelId === "string" && usageModelId) {
-    if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
-      return null;
-    }
-  }
-  // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
-  const limit = store.loadedIsGguf ? store.loadedContextLength : null;
-  if (typeof limit === "number" && limit > 0 && (usage.contextTokens ?? usage.totalTokens ?? 0) > limit) {
-    return null;
-  }
-  return usage;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -764,16 +755,13 @@ const SingleContent = memo(function SingleContent({
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, closeBrowser]);
 
-  // Close the browser on leaving the chat; the runtime thread id survives a new chat's first save.
-  const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const shownThreadIdRef = useRef(shownThreadId);
+  // Leaving Chat closes this chat's browser. Compare keeps this view mounted but hidden, and by
+  // then the panel on screen is the compare chat's: that one stays as it is.
+  const browserChat = useBrowserStore((state) => state.chat);
+  const browserChatRef = useRef<string | null>(null);
+  if (chatActive) browserChatRef.current = browserChat;
   useEffect(() => {
-    if (shownThreadIdRef.current === shownThreadId) return;
-    shownThreadIdRef.current = shownThreadId;
-    closeBrowser();
-  }, [shownThreadId, closeBrowser]);
-  useEffect(() => {
-    if (!chatActive) closeBrowser();
+    if (!chatActive && useBrowserStore.getState().chat === browserChatRef.current) closeBrowser();
   }, [chatActive, closeBrowser]);
 
   // Width on header/notice only: on the root it would restyle the whole thread per resize.
@@ -1516,7 +1504,7 @@ function GeneralCompareHeader({
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         variant="ghost"
-        className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)]"
+        className="pointer-events-auto ml-1.5 max-w-[80%] !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
@@ -2800,7 +2788,13 @@ export function ChatPage({
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
-  const loadedCount = useChatRuntimeStore((state) => state.loadedModels.length);
+  const loadedModels = useChatRuntimeStore((state) => state.loadedModels);
+  const loadedCount = loadedModels.length;
+  const loadedNames = useMemo(
+    () =>
+      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
+    [loadedModels],
+  );
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
@@ -2808,6 +2802,15 @@ export function ChatPage({
     (state) => state.nativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const loadedEngine = useChatRuntimeStore((state) => state.loadedEngine);
+  const usageRows = useMemo(
+    () =>
+      contextUsageRows(
+        contextUsage,
+        isExternalModelId(contextUsage?.modelId) || loadedEngine !== "auto",
+      ),
+    [contextUsage, loadedEngine],
+  );
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
   const loadedContextUnboundedWhenBatched = useChatRuntimeStore(
     (state) => state.loadedContextUnboundedWhenBatched,
@@ -2887,7 +2890,6 @@ export function ChatPage({
   );
 
   const handleDesktopNewChat = useCallback(() => {
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(currentProjectId);
@@ -3197,15 +3199,19 @@ export function ChatPage({
         supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
       }),
       supportsTools: supportsStudioToolsHere,
+      deepResearchEnabled: resolveToolsEnabledOnLoad(supportsStudioToolsHere)
+        .deepResearchEnabled,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
       codeToolsEnabled: canRunCode ? (storedCodeToolsEnabled ?? false) : false,
-      imageToolsEnabled: supportsBuiltinImageGeneration
-        ? (storedImageToolsEnabled ?? false)
-        : false,
+      // Unsloth-tools models can render on the loaded image model; readiness gates the pill, not this.
+      imageToolsEnabled:
+        supportsBuiltinImageGeneration || supportsStudioToolsHere
+          ? (storedImageToolsEnabled ?? false)
+          : false,
       // Default Fetch off (Anthropic bills per fetch); deliberate opt-in.
       webFetchToolsEnabled: supportsBuiltinWebFetch
         ? (storedWebFetchToolsEnabled ?? false)
@@ -3214,6 +3220,47 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
+  // The Images pill can use the image or video model loaded in Unsloth. Re-read on mount,
+  // when any load settles (a chat load can evict them), when either is ejected, and on focus.
+  useEffect(() => {
+    let disposed = false;
+    let controller: AbortController | null = null;
+    const refresh = () => {
+      controller?.abort();
+      const current = new AbortController();
+      controller = current;
+      void Promise.allSettled([
+        getDiffusionStatus(current.signal),
+        getVideoStatus(current.signal),
+      ]).then(([image, video]) => {
+        if (disposed || current.signal.aborted) return;
+        useChatRuntimeStore
+          .getState()
+          .setLocalMediaModelsReady(
+            localMediaReadyFromStatus(
+              image.status === "fulfilled" ? image.value : null,
+              video.status === "fulfilled" ? video.value : null,
+            ),
+          );
+      });
+    };
+    refresh();
+    const unsubscribers = [
+      subscribeModelLifecycle(({ loading }) => {
+        if (!loading) refresh();
+      }),
+      subscribeModelEjected("image", refresh),
+      subscribeModelEjected("video", refresh),
+    ];
+    // An idle unload, another tab or an MCP client changes them with no event in this tab.
+    window.addEventListener("focus", refresh);
+    unsubscribers.push(() => window.removeEventListener("focus", refresh));
+    return () => {
+      disposed = true;
+      controller?.abort();
+      for (const unsubscribe of unsubscribers) unsubscribe();
+    };
+  }, []);
   // Another tab can change the active model's pin (the pin store listens for the storage event),
   // and the normalization above reads the pin through a getState helper without subscribing, so
   // the composer kept the old level until a switch. Only the effort here: the pills and the rest
@@ -3492,6 +3539,26 @@ export function ChatPage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
   useLayoutEffect(() => {
     useBrowserStore.getState().closeChatPages();
+  }, [shownChatKey]);
+  // Each chat keeps its own browser tabs, so a run in another chat keeps its page. A new chat's key
+  // changes on its first save, and its tabs go with it.
+  const unsavedChatKey =
+    view.mode === "single"
+      ? `single:${view.newThreadNonce ?? "new"}`
+      : view.mode === "project"
+        ? `project:${view.projectId}:${projectNewThreadNonce}`
+        : null;
+  const browserChatRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only another chat on screen moves the tabs
+  useLayoutEffect(() => {
+    const previous = browserChatRef.current;
+    browserChatRef.current = shownChatKey;
+    const store = useBrowserStore.getState();
+    if (previous !== null && previous === unsavedChatKey && activeThreadId && shownChatKey === chatKeyOfThread(activeThreadId)) {
+      store.adoptChat(previous, shownChatKey);
+    } else {
+      store.showChat(shownChatKey);
+    }
   }, [shownChatKey]);
 
   const hasActiveModel = Boolean(inferenceCheckpoint);
@@ -3990,9 +4057,10 @@ export function ChatPage({
           codeToolsEnabled: canRunCode
             ? (storedCodeToolsEnabled ?? false)
             : false,
-          imageToolsEnabled: supportsBuiltinImageGeneration
-            ? (storedImageToolsEnabled ?? false)
-            : false,
+          imageToolsEnabled:
+            supportsBuiltinImageGeneration || supportsStudioToolsHere
+              ? (storedImageToolsEnabled ?? false)
+              : false,
           webFetchToolsEnabled: supportsBuiltinWebFetch
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
@@ -4162,26 +4230,18 @@ export function ChatPage({
   const headerPickersShown = active && view.mode !== "compare";
   // This page stays mounted under a dialog, so `enabled` still says yes while the header is inert; without a
   // press-time check the chord opens a popover on the covered surface. Backgrounded, not "not in the foreground":
-  // an unrendered layout is not a covered one.
-  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
-  useShortcut(
-    "openModelPicker",
-    () => {
-      if (chatCovered()) return;
-      toggleModelSelector();
-    },
-    { enabled: headerPickersShown },
-  );
+  // an unrendered layout is not a covered one. A claim, so a covered press still reaches the dialog.
+  const chatUncovered = () => !isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut("openModelPicker", toggleModelSelector, {
+    enabled: headerPickersShown,
+    claims: chatUncovered,
+  });
   // The same condition the switcher renders by, so the chord cannot open a control that is not there.
   const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
-  useShortcut(
-    "openProjectPicker",
-    () => {
-      if (chatCovered()) return;
-      setProjectPickerOpen(true);
-    },
-    { enabled: projectSwitcherShown },
-  );
+  useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
+    enabled: projectSwitcherShown,
+    claims: chatUncovered,
+  });
   // A picker left open would come back on the next visit as a ghost. Off-route is one way to leave it (this page
   // stays mounted), and so is entering Compare or a standalone chat taking the project away. Adjusted during
   // render, as React prescribes for derived state.
@@ -4219,29 +4279,18 @@ export function ChatPage({
     },
     [],
   );
-  useShortcut(
-    "cycleReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(1, true);
-    },
-    { enabled: active },
-  );
-  useShortcut(
-    "increaseReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(1, false);
-    },
-    { enabled: active },
-  );
+  useShortcut("cycleReasoningEffort", () => shiftReasoningEffort(1, true), {
+    enabled: active,
+    claims: chatUncovered,
+  });
+  useShortcut("increaseReasoningEffort", () => shiftReasoningEffort(1, false), {
+    enabled: active,
+    claims: chatUncovered,
+  });
   useShortcut(
     "decreaseReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(-1, false);
-    },
-    { enabled: active },
+    () => shiftReasoningEffort(-1, false),
+    { enabled: active, claims: chatUncovered },
   );
 
   const fastModeSupported = providerSupportsFastMode(
@@ -4251,13 +4300,12 @@ export function ChatPage({
   useShortcut(
     "toggleFastMode",
     () => {
-      if (chatCovered()) return;
       const state = useChatRuntimeStore.getState();
       const next = !state.params.fastMode;
       state.setParams({ ...state.params, fastMode: next });
       toast.success(next ? "Fast mode on" : "Fast mode off");
     },
-    { enabled: active && fastModeSupported },
+    { enabled: active && fastModeSupported, claims: chatUncovered },
   );
   const { isMobile, pinned } = useSidebar();
   // The tour's orientation step spotlights the nav, so hold it open for that step. The hold is
@@ -4298,12 +4346,24 @@ export function ChatPage({
             messages,
             savedBranchHead(threadId, messages),
           );
-          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
+          const checkpoint = store.params.checkpoint;
+          const localWindow =
+            checkpoint && !isExternalModelId(checkpoint) ? store.loadedContextLength : null;
+          const usage =
+            branchContextUsage(
+              branch,
+              checkpoint,
+              localWindow,
+              store.loadedIsGguf ? localWindow : null,
+              currentContextUsageReasoningKey(),
+            ) ??
+            estimateBranch(branch);
           if (!usage) return;
           // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);
+            if (usage.estimated) void refreshContextUsage({ threadId });
           }
         })
         .catch((error) => {
@@ -4723,6 +4783,7 @@ export function ChatPage({
                 onEject={handleEject}
                 onEjectAll={handleEjectAll}
                 loadedCount={loadedCount}
+                loadedNames={loadedNames}
                 onFoldersChange={refreshLocalModels}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
@@ -4734,7 +4795,7 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
+                className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!ml-0 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
               />
             )}
             {view.mode === "single" && (
@@ -4826,15 +4887,11 @@ export function ChatPage({
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
-                cached={contextUsage?.cachedTokens}
-                cacheWrites={contextUsage?.cacheWriteTokens}
-                promptTokens={contextUsage?.promptTokens}
+                cached={usageRows.cached}
+                cacheWrites={usageRows.cacheWrites}
+                promptTokens={usageRows.promptTokens}
                 // A tool turn's completionTokens sums every pass; the context holds only the last one.
-                completionTokens={
-                  contextUsage?.contextTokens !== undefined
-                    ? contextUsage.contextTokens - contextUsage.promptTokens
-                    : contextUsage?.completionTokens
-                }
+                completionTokens={usageRows.completionTokens}
                 compactionCount={compactionCount}
                 isMlx={isServedByMlx(
                   Boolean(loadedIsGguf),

@@ -85,6 +85,11 @@ from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
+from utils.datasets.pretokenized import (
+    PRETOKENIZED_FORMAT,
+    has_custom_labels,
+    prepare_pretokenized_dataset,
+)
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
     dataset_files_in_dir,
@@ -546,6 +551,7 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        self._early_stopping = None
         self.load_in_4bit = True
 
         self.is_cpt = False
@@ -664,6 +670,9 @@ class UnslothTrainer:
                 from transformers import AutoProcessor
                 self.tokenizer = AutoProcessor.from_pretrained(
                     lookup_name,
+                    # Labels are encoded before load_model: match FastModel's English/transcribe prefix.
+                    language = "English",
+                    task = "transcribe",
                     trust_remote_code = trust_remote_code,
                     token = hf_token,
                     local_files_only = local_files_only,
@@ -1045,6 +1054,23 @@ class UnslothTrainer:
 
         return _ProgressCallback()
 
+    def _attach_early_stopping(self, training_args):
+        from core.training.early_stopping import attach_early_stopping
+        self._early_stopping = attach_early_stopping(
+            self.trainer,
+            training_args.get("early_stopping_patience"),
+            user_stopped = lambda: self.should_stop,
+        )
+
+    def _early_stopping_summary(self) -> str:
+        es = self._early_stopping
+        if es is None:
+            return ""
+        summary = f"Stopped early at step {es.stopped_at}. " if es.stopped_at is not None else ""
+        if es.restored:
+            summary += f"Kept the weights from step {es.best_step} (eval loss {es.best_loss:.4f}). "
+        return summary
+
     def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
@@ -1124,7 +1150,9 @@ class UnslothTrainer:
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
                 is_training = False,
-                status_message = f"Training stopped. Model saved to {output_dir}",
+                status_message = (
+                    f"Training stopped. {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
         elif self.should_stop:
             msg = f"{label} training cancelled" if label else "Training cancelled"
@@ -1139,7 +1167,9 @@ class UnslothTrainer:
             self._update_progress(
                 is_training = False,
                 is_completed = True,
-                status_message = f"Training completed! Model saved to {output_dir}",
+                status_message = (
+                    f"Training completed! {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
 
     def _cleanup_audio_artifacts(self):
@@ -1749,6 +1779,7 @@ class UnslothTrainer:
         use_rslora,
         use_loftq,
         use_dora,
+        random_state = 3407,
     ) -> bool:
         """LoRA for a text-diffusion model through its profile. Studio's default target list names
         autoregressive projections (LLaDA has none of o/gate/down_proj, and the MoE families must keep their
@@ -1797,7 +1828,7 @@ class UnslothTrainer:
             lora_dropout = lora_dropout,
             bias = "none",
             use_gradient_checkpointing = bool(use_gradient_checkpointing),
-            random_state = 3407,
+            random_state = random_state,
         )
         if modules_to_save:
             peft_kwargs["modules_to_save"] = modules_to_save
@@ -1827,6 +1858,7 @@ class UnslothTrainer:
         use_loftq: bool = False,
         use_dora: bool = False,
         modules_to_save: list = None,
+        random_state: int = 3407,
     ) -> bool:
         try:
             if self.model is None:
@@ -1894,6 +1926,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_loftq = use_loftq,
                     use_dora = use_dora,
+                    random_state = random_state,
                 )
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
@@ -1955,7 +1988,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -1987,7 +2020,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2007,7 +2040,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2032,7 +2065,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2053,7 +2086,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -3162,19 +3195,27 @@ class UnslothTrainer:
         return (train_data, eval_data)
 
     @staticmethod
+    def _resolve_local_path(dataset_file: str) -> Path:
+        dataset_file = os.path.expanduser(dataset_file)
+        if os.path.isabs(dataset_file):
+            return Path(dataset_file)
+        if os.path.exists(dataset_file):
+            return Path(os.path.abspath(dataset_file))
+        return Path(str(resolve_dataset_path(dataset_file)))
+
+    @staticmethod
+    def _load_saved_dataset(file_paths: list):
+        if len(file_paths) != 1:
+            return None
+        from utils.datasets.saved import load_saved_dataset
+        return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
+
+    @staticmethod
     def _resolve_local_files(file_paths: list) -> list[str]:
         """Resolve a list of local dataset paths to concrete file paths."""
         all_files: list[str] = []
         for dataset_file in file_paths:
-            if os.path.isabs(dataset_file):
-                file_path = dataset_file
-            elif os.path.exists(dataset_file):
-                # A path relative to the current working directory (CLI usage)
-                file_path = os.path.abspath(dataset_file)
-            else:
-                file_path = str(resolve_dataset_path(dataset_file))
-
-            file_path_obj = Path(file_path)
+            file_path_obj = UnslothTrainer._resolve_local_path(dataset_file)
 
             if file_path_obj.is_dir():
                 all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
@@ -3325,7 +3366,11 @@ class UnslothTrainer:
             if local_datasets:
                 # load_dataset() is Arrow-backed; an in-memory Dataset.from_list() has no cache and forces num_proc=1
                 # during tokenization.
-                all_files = self._resolve_local_files(local_datasets)
+                saved = self._load_saved_dataset(local_datasets)
+                all_files = [] if saved is not None else self._resolve_local_files(local_datasets)
+                if saved is not None:
+                    dataset = saved
+                    logger.info(f"Loaded {len(dataset)} samples from a saved dataset folder\n")
 
                 if all_files:
                     loader = self._loader_for_files(all_files)
@@ -3347,7 +3392,18 @@ class UnslothTrainer:
                     logger.info(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
 
                 if local_eval_datasets and eval_enabled:
-                    eval_all_files = self._resolve_local_files(local_eval_datasets)
+                    eval_saved = self._load_saved_dataset(local_eval_datasets)
+                    eval_all_files = (
+                        []
+                        if eval_saved is not None
+                        else self._resolve_local_files(local_eval_datasets)
+                    )
+                    if eval_saved is not None:
+                        eval_dataset = eval_saved
+                        has_separate_eval_source = True
+                        logger.info(
+                            f"Loaded {len(eval_dataset)} eval samples from a saved dataset folder\n"
+                        )
                     if eval_all_files:
                         eval_loader = self._loader_for_files(eval_all_files)
                         eval_dataset = load_dataset(
@@ -4427,6 +4483,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
                 # no terminal; --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
@@ -4473,6 +4530,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4516,7 +4574,12 @@ class UnslothTrainer:
                 trainer_kwargs = {
                     "model": self.model,
                     "train_dataset": dataset,
-                    "data_collator": DataCollatorSpeechSeq2SeqWithPadding(processor = self.tokenizer),
+                    "data_collator": DataCollatorSpeechSeq2SeqWithPadding(
+                        processor = self.tokenizer,
+                        decoder_start_token_id = getattr(
+                            self.model.config, "decoder_start_token_id", None
+                        ),
+                    ),
                     "processing_class": self.tokenizer.feature_extractor,
                     "args": Seq2SeqTrainingArguments(**config),
                 }
@@ -4525,6 +4588,7 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4563,11 +4627,15 @@ class UnslothTrainer:
                 str(dataset.get("final_format", "")).lower() if isinstance(dataset, dict) else ""
             )
             raw_text_mode = dataset_final_format == "raw_text"
+            pretokenized_mode = dataset_final_format == PRETOKENIZED_FORMAT
+            # Without a labels column, "Train on responses only" can still mask prompts from input_ids.
+            user_labels = pretokenized_mode and has_custom_labels(dataset["dataset"])
             self.tokenizer = get_training_chat_template(
                 self.tokenizer, self.model_name, dataset_final_format
             )
 
             data_collator = None
+            audio_response_masker = None
             if is_deepseek_ocr:
                 logger.info("Detected DeepSeek OCR model\n")
                 if not _ensure_deepseek_ocr_installed():
@@ -4626,6 +4694,32 @@ class UnslothTrainer:
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
+                if training_args.get("train_on_completions", False) and not training_args.get(
+                    "is_cpt", False
+                ):
+                    from unsloth.chat_templates import train_on_responses_only
+
+                    def _build_response_masker(holder, **kwargs):
+                        holder.masker = train_on_responses_only(
+                            None, tokenizer = processor, return_function = True, **kwargs
+                        )
+                        return holder
+
+                    def _notify_masking(level, message):
+                        if level == "warning":
+                            logger.warning(message)
+                        else:
+                            logger.info(f"{message}\n")
+
+                    # Same marker policy as the text path: auto-detect, template table, else full sequences.
+                    holder, audio_masking_applied = apply_completion_masking(
+                        types.SimpleNamespace(processing_class = processor, masker = None),
+                        self.model_name,
+                        _build_response_masker,
+                        notify = _notify_masking,
+                    )
+                    if audio_masking_applied:
+                        audio_response_masker = holder.masker
 
                 def audio_vlm_collate_fn(examples):
                     texts = []
@@ -4653,6 +4747,8 @@ class UnslothTrainer:
                         if token_id is not None:
                             labels[labels == token_id] = -100
                     batch["labels"] = labels
+                    if audio_response_masker is not None:
+                        batch["labels"] = audio_response_masker(batch)["labels"]
                     return batch
 
                 data_collator = audio_vlm_collate_fn
@@ -4849,6 +4945,23 @@ class UnslothTrainer:
                 # Packed rows share one bidirectional attention window, so documents would see each other.
                 config_args["packing"] = False
                 logger.info("Text-diffusion model: sequence packing turned off\n")
+            if pretokenized_mode:
+                # Packing on TRL < 1.7 keeps only input_ids, silently replacing the user's labels.
+                if config_args.get("packing"):
+                    logger.info("Pre-tokenized dataset: sequence packing turned off\n")
+                config_args["packing"] = False
+                try:
+                    vocab_size = int(self.model.get_input_embeddings().num_embeddings)
+                except Exception:
+                    vocab_size = None
+                max_seq = training_args.get("max_seq_length", 2048)
+                dataset["dataset"] = prepare_pretokenized_dataset(
+                    dataset["dataset"], max_seq_length = max_seq, vocab_size = vocab_size
+                )
+                if eval_dataset is not None:
+                    eval_dataset = prepare_pretokenized_dataset(
+                        eval_dataset, max_seq_length = max_seq, vocab_size = vocab_size
+                    )
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
             # else stays eager.
@@ -5007,7 +5120,7 @@ class UnslothTrainer:
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
-                if (is_cpt or raw_text_mode)
+                if (is_cpt or raw_text_mode or user_labels)
                 else training_args.get("train_on_completions", False)
             )
 
@@ -5016,6 +5129,10 @@ class UnslothTrainer:
             elif raw_text_mode:
                 logger.info(
                     "Raw-text mode: skipping train_on_responses_only — training on all tokens\n"
+                )
+            elif user_labels:
+                logger.info(
+                    "Pre-tokenized dataset: its labels define the loss, no response masking\n"
                 )
 
             # Markers auto-detected from the chat template first, with the manual table as fallback; gpt-oss stays on
@@ -5101,10 +5218,13 @@ class UnslothTrainer:
             else:
                 if train_on_responses_enabled and is_deepseek_ocr:
                     logger.info("Train on responses handled by DeepSeek OCR collator\n")
+                elif train_on_responses_enabled and audio_response_masker is not None:
+                    logger.info("Train on responses handled by audio VLM collator\n")
                 else:
                     logger.info("Training on full sequences (including prompts)\n")
 
             self.trainer.add_callback(self._create_progress_callback())
+            self._attach_early_stopping(training_args)
             # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has no
             # terminal; --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)

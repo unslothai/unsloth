@@ -11,7 +11,7 @@ from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
 
-from utils.account_context import OWNER, AccountContext, bind_account
+from utils.account_context import OWNER, AccountContext, as_api_caller, bind_account
 
 from .storage import (
     get_account,
@@ -190,8 +190,8 @@ class _BearerOrKeyless(HTTPBearer):
 security = _BearerOrKeyless(scheme_name = "HTTPBearer")
 
 
-def _bind_owner() -> None:
-    bind_account(OWNER)
+def _bind_owner(*, via_api_key: bool = False) -> None:
+    bind_account(as_api_caller(OWNER) if via_api_key else OWNER)
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -266,6 +266,13 @@ def is_desktop_access_token(token: str) -> bool:
     return account is not None and account.is_owner
 
 
+def new_refresh_token_value() -> Tuple[str, str]:
+    """A fresh opaque refresh token and its ISO expiry, not yet stored."""
+    token = secrets.token_urlsafe(48)
+    expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
+    return token, expires_at.isoformat()
+
+
 def create_refresh_token(
     subject: str,
     *,
@@ -276,12 +283,11 @@ def create_refresh_token(
     JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS. ``secret`` stamps the token with the credential version the
     caller verified, so a rotation cannot leave a token minted from the replaced credential valid.
     """
-    token = secrets.token_urlsafe(48)
-    expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
+    token, expires_at = new_refresh_token_value()
     save_refresh_token(
         token,
         subject,
-        expires_at.isoformat(),
+        expires_at,
         is_desktop = desktop,
         secret_gen = credential_generation(secret) if secret is not None else None,
     )
@@ -464,7 +470,7 @@ async def _get_current_credential(
     credentials must bind their write to it, or a reset landing mid-request would bless what it just
     revoked. Credential reads run in the threadpool so stalled SQLite cannot block the event loop."""
     if credentials.scheme == KEYLESS_SCHEME:
-        _bind_owner()
+        _bind_owner(via_api_key = True)
         return await run_in_threadpool(_admin_credential)
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
@@ -475,7 +481,7 @@ async def _get_current_credential(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid authentication credentials",
             )
-        _bind_owner()
+        _bind_owner(via_api_key = True)
         return await run_in_threadpool(_admin_credential)
 
     token = credentials.credentials
@@ -489,7 +495,11 @@ async def _get_current_credential(
             )
         record, secret = verified
         # A second lookup by username would bind whoever owns that name after a delete and re-create.
-        bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
+        bind_account(
+            AccountContext(
+                record["account_id"], record["username"], record["role"], via_api_key = True
+            )
+        )
         return record["username"], credential_generation(secret)
 
     subject = _decode_subject_without_verification(token)

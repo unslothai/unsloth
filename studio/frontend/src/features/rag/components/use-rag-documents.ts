@@ -68,6 +68,18 @@ export function uploadItemFromIntent(intent: NativeIntent): RagUploadItem {
   };
 }
 
+export function sameDocument(a: TrackedDocument, b: TrackedDocument): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (
+      a[key as keyof TrackedDocument] !== b[key as keyof TrackedDocument]
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function itemName(item: RagUploadItem): string {
   return item.kind === "file" ? item.file.name : item.name;
 }
@@ -305,13 +317,17 @@ export function useRagDocuments(
         );
         if (refreshSeq.current !== requestId) return true;
         setDocuments((prev) => {
+          // A synced folder lists thousands of rows per poll: index once, keep unchanged rows by identity.
+          const prevById = new Map(prev.map((p) => [p.id, p]));
           const merged = rows.map((row) => {
-            const tracked = prev.find((p) => p.id === row.id);
-            return tracked &&
+            const tracked = prevById.get(row.id);
+            const next =
+              tracked &&
               tracked.progress != null &&
               row.status !== "completed"
-              ? { ...row, progress: tracked.progress, stage: tracked.stage }
-              : row;
+                ? { ...row, progress: tracked.progress, stage: tracked.stage }
+                : row;
+            return tracked && sameDocument(tracked, next) ? tracked : next;
           });
           // Keep optimistic chips (not yet listed) so a refresh racing an upload
           // can't make them vanish, and failed rows this session can still retry.
@@ -322,7 +338,11 @@ export function useRagDocuments(
               (row.id.startsWith("pending_") ||
                 (row.status === "failed" && retryItems.current.has(row.id))),
           );
-          return [...merged, ...pendingLocal];
+          const next = [...merged, ...pendingLocal];
+          return next.length === prev.length &&
+            next.every((row, i) => row === prev[i])
+            ? prev
+            : next;
         });
         return true;
       } catch (err) {

@@ -400,7 +400,7 @@ _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
 # lands here when its fast step (diffusion_qwenimage21, which plans tensors-only decode calls) is not installed.
 _UNCAPTURABLE: dict[str, str] = {
     "QwenImage21Transformer2DModel": "its pipeline passes the prefix KV cache as a Python object "
-    "on every step; the Studio fast step that replays decode steps from tensors is not installed",
+    "on every step; the Unsloth fast step that replays decode steps from tensors is not installed",
 }
 
 _CACHE: dict = {}

@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 import structlog
 from loggers import get_logger
@@ -32,6 +32,7 @@ from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import safe_error_detail
 
 try:
@@ -55,6 +56,7 @@ from models import (
     ExportDiffusionLoRARequest,
     LlmCompressorExportProbeResponse,
     ExportDecisionInfoResponse,
+    MoeInfoResponse,
 )
 
 router = APIRouter()
@@ -102,6 +104,9 @@ def _resolve_export_hf_token(
             status_code = 400,
             detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
         )
+    # An empty token pushes with the operator's own login (hf auth login), never a managed account's.
+    if push_to_hub and token is None and account_access.managed_account():
+        return False
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
@@ -110,10 +115,14 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     if not account_access.managed_account():
         return None
     from utils.models import get_base_model_from_lora
+    from core.export.decision import adapter_load_bases
 
-    base = get_base_model_from_lora(checkpoint_path)
-    if base:
-        account_access.require_model_access(base)
+    bases = adapter_load_bases(checkpoint_path)
+    base = get_base_model_from_lora(checkpoint_path) or next(iter(bases), None)
+    # The decision loader prefers its own config's base, so every base named is checked.
+    for name in dict.fromkeys([base, *bases]):
+        if name:
+            account_access.require_model_access(name)
     return base or None
 
 
@@ -146,7 +155,9 @@ async def load_checkpoint(
             base_model = base_model,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
-            trust_remote_code = request.trust_remote_code,
+            offload_layers = request.offload_layers,
+            # Downgraded, not refused: the Export tab always sends true for local models.
+            trust_remote_code = request.trust_remote_code and not managed_remote_code_refused(),
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
             # A supplied token cannot say whether it came from a session or an API key.
@@ -372,6 +383,20 @@ def _export_details(
         return {"output_path": output_path}
 
 
+def _with_drafter(
+    details: Optional[Dict[str, Any]], output_path: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Adds the trained drafter an export carries (drafter.json), when there is one."""
+    try:
+        from core.export.drafter_export import export_drafter_details
+        drafter = export_drafter_details(output_path)
+    except Exception:
+        drafter = None
+    if drafter is None or details is None:
+        return details
+    return {**details, "drafter": drafter}
+
+
 def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """A decision GGUF lands in the run folder's gguf/; not registered as a chat model folder."""
     if not output_path:
@@ -418,6 +443,86 @@ async def get_decision_export_info(
     )
 
 
+@router.get("/moe-info", response_model = MoeInfoResponse)
+async def get_moe_info(
+    model: str = Query(
+        ..., max_length = 4096, description = "Local checkpoint / model folder or Hub id"
+    ),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
+):
+    """Routed-expert counts for the REAP option on the export page; null counts for a dense model.
+    The token (gated repos) comes in the X-HF-Token header, as for /api/models/export-size."""
+    from core.export.reap import (
+        MoeProbeError,
+        hub_adapter_has_mtp_head,
+        hub_file_exists,
+        moe_export_info,
+    )
+    from routes.models import _normalize_hf_token, _require_model_access_or_caller_token
+    from utils.paths import is_local_path
+
+    local = is_local_path(model)
+    token = _normalize_hf_token(hf_token)
+    adapter_base = None
+    if local:
+        validate_job_paths({"checkpoint_path": model})
+        # The probe follows a LoRA folder to its base, so that base is authorized as a load is.
+        adapter_base = await asyncio.to_thread(_authorized_adapter_base, model)
+        if adapter_base:
+            validate_job_paths({"base_model": adapter_base, "hf_token": token})
+    else:
+        await _require_model_access_or_caller_token(model, token)
+    probe_token = token or hf_token_arg(None, allow_ambient_token = allow_ambient)
+    # The export loader follows a Hub repo's adapter_config.json even when it also ships a
+    # config.json, so an adapter repo is probed through its base (and its MTP head) like a local one.
+    try:
+        hub_adapter = not local and await asyncio.to_thread(
+            hub_file_exists, model, "adapter_config.json", probe_token
+        )
+        # A local folder never reaches the network; a Hub id reads only its config.json.
+        info = (
+            None
+            if hub_adapter
+            else await asyncio.to_thread(
+                moe_export_info,
+                model,
+                probe_token,
+                local,
+                adapter_base = adapter_base,
+            )
+        )
+        if info is None and not local:
+            # A Hub LoRA repo publishes adapter_config.json, not config.json: probe its base, which is
+            # authorized first like the adapter.
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            if hub_adapter and not base:
+                # A confirmed adapter whose base could not be read (a failed download after its
+                # retries): unknown, not dense.
+                raise MoeProbeError(f"Could not resolve the base model of the adapter '{model}'")
+            if (
+                base
+                and base != model
+                and await asyncio.to_thread(hub_adapter_has_mtp_head, model, probe_token)
+            ):
+                # Unsloth's loader re-attaches this adapter's trained MTP head, which REAP refuses.
+                base = None
+            if base and base != model:
+                base_local = is_local_path(base)
+                if base_local:
+                    validate_job_paths({"base_model": base, "hf_token": token})
+                else:
+                    await _require_model_access_or_caller_token(base, token)
+                info = await asyncio.to_thread(moe_export_info, base, probe_token, base_local)
+    except MoeProbeError as exc:
+        # Unknown is not dense: the page keeps a REAP export blocked and offers a retry.
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
+    return MoeInfoResponse(model = model, **(info or {}))
+
+
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest,
@@ -429,6 +534,8 @@ async def export_merged_model(
     Wraps ExportBackend.export_merged_model.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -448,6 +555,7 @@ async def export_merged_model(
             install_missing_dependencies = request.install_missing_dependencies,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -456,7 +564,10 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -492,6 +603,8 @@ async def export_base_model(
     Wraps ExportBackend.export_base_model.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -509,6 +622,7 @@ async def export_base_model(
             base_model_id = request.base_model_id,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -517,7 +631,10 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -544,6 +661,8 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -565,6 +684,7 @@ async def export_gguf(
             npu_q4nx = request.npu_q4nx,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -573,7 +693,10 @@ async def export_gguf(
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True)
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            )
         return ExportOperationResponse(success = True, message = message, details = details)
     except HTTPException:
         raise
@@ -731,7 +854,10 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise

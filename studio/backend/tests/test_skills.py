@@ -4,6 +4,7 @@
 import codecs
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -127,6 +128,24 @@ def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills
     ]
 
 
+def test_bundled_image_prompting_skill_parses_and_ships_disabled(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+        ("bundled", Path(skills.__file__).with_name("bundled_skills")),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+
+    record = next(r for r in skills.list_skills() if r["name"] == "image-prompting")
+    assert record["source"] == "bundled"
+    assert record["enabled"] is False
+    assert record["allowed_tools"] == "generate_image generate_video"
+    assert "image-prompting" not in [r["name"] for r in skills.enabled_skills()]
+    with pytest.raises(skills.SkillError, match = "disabled"):
+        skills.read_skill_resource("image-prompting")
+
+
 @pytest.mark.parametrize(
     "directory,manifest",
     [
@@ -137,6 +156,28 @@ def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills
             "---\nname: bad-metadata\ndescription: valid\nmetadata:\n  version: 1\n---\n",
         ),
         ("no-description", "---\nname: no-description\n---\n"),
+        ("bad-literal", "---\nname: bad-literal\ndescription: |\n  Use when: a\n b\n---\n"),
+        ("bad-folded", "---\nname: bad-folded\ndescription: > Use when: a\n---\n"),
+        ("bad-anchor", "---\nname: bad-anchor\ndescription: &d |\n  a\n b\n---\n"),
+        ("bad-tag", '---\nname: bad-tag\ndescription: !!str "Use "a": b"\n---\n'),
+        ("wrapped", "---\nname: wrapped\ndescription: Use when: a\n  author: b\n---\n"),
+        ("bad-flow", '---\nname: bad-flow\ndescription: ["a: b",, "c"]\n---\n'),
+        (
+            "bad-flow-map",
+            '---\nname: bad-flow-map\ndescription: d\nmetadata: {\nauthor: *a* b: c, v: "1"\n}\n---\n',
+        ),
+        (
+            "bad-flow-key",
+            "---\nname: bad-flow-key\nmetadata: {\ndescription: *a* b: c, v: d\n}\n"
+            "description: Use when: e\n---\n",
+        ),
+        (
+            "bad-merge",
+            "---\nname: bad-merge\n<<: &d {\ndescription: Use when: a, license: MIT\n}\n"
+            "metadata: *d\n---\n",
+        ),
+        ("bad-entry", "---\nname: bad-entry\ndescription: - Use when: a\n---\n"),
+        ("bad-alias", "---\nname: bad-alias\ndescription: valid\nlicense: *missing\n---\n"),
     ],
 )
 def test_invalid_skill_is_reported_without_hiding_valid_skills(
@@ -659,6 +700,30 @@ def _account_skill(studio: Path, account_id: str, name: str, description: str) -
     )
 
 
+@pytest.mark.parametrize("dockerfile", ["Dockerfile.studio", "Dockerfile.studio-rocm"])
+def test_skills_created_in_the_studio_images_outlive_the_container(
+    dockerfile, tmp_path, monkeypatch
+):
+    text = (Path(__file__).resolve().parents[3] / "docker" / dockerfile).read_text(encoding = "utf-8")
+    block = text[text.index("ENV UNSLOTH_STUDIO_HOME=") :]
+    image_env = dict(re.findall(r"(\w+)=(\S+)", block[: block.index("\n\n")]))
+    volume = tmp_path / "volume"
+    for name, value in image_env.items():
+        monkeypatch.setenv(name, value.replace(image_env["UNSLOTH_STUDIO_HOME"], str(volume)))
+    monkeypatch.setattr(skills, "studio_root", lambda: volume)
+    monkeypatch.setattr(skills, "_owner_home", lambda: tmp_path / "first-container")
+
+    record = skills.create_skill("release-notes", "Draft release notes.", "Summarize the diff.")
+    assert record["path"] == f"{volume / 'skills'}/release-notes/SKILL.md"
+
+    monkeypatch.setattr(skills, "_owner_home", lambda: tmp_path / "second-container")
+    assert [r["name"] for r in skills.list_skills()] == ["release-notes"]
+    skills.update_skill("release-notes", "Edited.", "Summarize the diff again.")
+    assert skills.read_skill_manifest("release-notes")["description"] == "Edited."
+    skills.delete_skill("release-notes")
+    assert skills.list_skills() == []
+
+
 def test_managed_account_never_sees_the_owners_home_skills(managed_accounts):
     from utils.account_context import run_as
 
@@ -668,14 +733,15 @@ def test_managed_account_never_sees_the_owners_home_skills(managed_accounts):
     _account_skill(studio, _ALICE_ID, "alice-skill", "ALICE_PRIVATE")
 
     owner_names = [record["name"] for record in skills.list_skills()]
-    assert owner_names == ["owner-only", "owner-claude", "skill-creator"]
+    assert owner_names == ["owner-only", "owner-claude", "image-prompting", "skill-creator"]
 
     alice_records = run_as(alice, skills.list_skills)
     assert [(r["name"], r["source"]) for r in alice_records] == [
         ("alice-skill", "agents"),
+        ("image-prompting", "bundled"),
         ("skill-creator", "bundled"),
     ]
-    assert run_as(bob, skills.list_skills)[0]["name"] == "skill-creator"
+    assert run_as(bob, skills.list_skills)[0]["name"] == "image-prompting"
     assert "ALICE_PRIVATE" not in str(run_as(bob, skills.list_skills))
 
     with pytest.raises(skills.SkillNotFoundError):
@@ -904,6 +970,52 @@ def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skil
     assert record["valid"] is True
     assert record["description"] == "Use this skill for testing."
     assert skills.read_skill_manifest("marked", home = home)["instructions"] == "Follow the steps."
+
+
+@pytest.mark.parametrize(
+    ("written", "description"),
+    [
+        (
+            'Fill PDF forms. Use when: the user attaches a "PDF" form',
+            'Fill PDF forms. Use when: the user attaches a "PDF" form',
+        ),
+        (
+            "Fill PDF forms. Use when: the user attaches a PDF form # draft",
+            "Fill PDF forms. Use when: the user attaches a PDF form",
+        ),
+        (
+            "*Fast PDF filler*. Use when: a form arrives",
+            "*Fast PDF filler*. Use when: a form arrives",
+        ),
+    ],
+)
+def test_unquoted_description_with_a_colon_is_valid(isolated_skills, written, description):
+    home, _ = isolated_skills
+    _write_skill(home, "claude", "pdf-forms", description = written)
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
+
+    assert record["valid"] is True
+    assert record["description"] == description
+
+
+def test_colon_fallback_keeps_the_other_fields_as_written(isolated_skills):
+    home, _ = isolated_skills
+    _write_skill(
+        home,
+        "claude",
+        "pdf-forms",
+        description = "Fill PDF forms. Use when: the user attaches a PDF form",
+        frontmatter = (
+            "license: &license MIT\nmetadata: {author: *license}\ncompatibility: |\n  Needs Python 3."
+        ),
+    )
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
+
+    assert record["valid"] is True
+    assert record["metadata"] == {"author": "MIT"}
+    assert record["compatibility"] == "Needs Python 3.\n"
 
 
 def test_read_skill_tool_applies_defaults_for_null_arguments(isolated_skills, monkeypatch):

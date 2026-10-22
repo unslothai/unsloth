@@ -619,7 +619,9 @@ class TestRevisionAwareVisionDetection:
             )
             is False
         )
-        assert run.call_args.args[0][-3:] == ["org/model", "hf_x", "commit-a"]
+        # The token rides in the child env only; its argv slot stays, empty.
+        assert run.call_args.args[0][-3:] == ["org/model", "", "commit-a"]
+        assert run.call_args.kwargs["env"]["HF_TOKEN"] == "hf_x"
         assert 'kwargs["revision"] = revision' in run.call_args.args[0][2]
 
 

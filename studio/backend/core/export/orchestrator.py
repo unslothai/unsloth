@@ -18,6 +18,7 @@ import atexit
 import os
 import structlog
 from collections import deque
+from fastapi import HTTPException
 from loggers import get_logger
 import multiprocessing as mp
 import queue
@@ -46,6 +47,16 @@ OP_CANCELLED = "Export cancelled"
 # Teardown is a bounded amount of work, so it is capped outright rather than by silence: the log
 # gate an export opens is never closed, and teardown chatter would otherwise renew this forever.
 _CLEANUP_TIMEOUT = 30.0
+
+
+def _sweep_reap_staging_of(pid: Optional[int]) -> None:
+    """A worker confirmed dead (cancelled, killed at shutdown, crashed) cannot remove its REAP
+    staging copy, a full model, itself."""
+    try:
+        from core.export.reap import sweep_reap_staging
+        sweep_reap_staging(dead_pid = pid)
+    except Exception as exc:  # noqa: BLE001 - cleanup must never block a stop
+        logger.warning("Could not sweep REAP staging after the export worker stopped: %s", exc)
 
 
 class ExportOrchestrator:
@@ -95,6 +106,9 @@ class ExportOrchestrator:
     # ------------------------------------------------------------------
 
     def _clear_account_result(self):
+        # Under _account_job_lock: the worker holds the previous account's model; one that will not stop reports busy.
+        if not self._shutdown_subprocess():
+            raise HTTPException(status_code = 409, detail = {"code": "job_busy", "message": "Busy"})
         self.current_checkpoint = None
         self.is_vision = self.is_peft = False
         self.decision = None
@@ -244,6 +258,8 @@ class ExportOrchestrator:
                 proc.join(timeout = 3)
             except Exception:
                 pass
+        if not proc.is_alive():
+            _sweep_reap_staging_of(proc.pid)
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
@@ -335,6 +351,7 @@ class ExportOrchestrator:
                 except Exception:  # noqa: BLE001 - the reap is best-effort
                     logger.warning("could not reap the orphaned export worker", exc_info = True)
                 if _spawned_proc.exitcode is not None:
+                    _sweep_reap_staging_of(_spawned_proc.pid)
                     forget_pid(_spawned_proc.pid)
                 else:
                     logger.warning(
@@ -353,6 +370,8 @@ class ExportOrchestrator:
         pre-swap liveness guard can still observe the survivor instead of a cleared
         handle and refuse the destructive sidecar swap."""
         if self._proc is None or not self._proc.is_alive():
+            if self._proc is not None:
+                _sweep_reap_staging_of(self._proc.pid)
             self._proc = None
             return True
 
@@ -391,6 +410,7 @@ class ExportOrchestrator:
             )
             return False
 
+        _sweep_reap_staging_of(self._proc.pid)
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
@@ -524,6 +544,7 @@ class ExportOrchestrator:
         subject: Optional[str] = None,
         base_model: Optional[str] = None,
         op_id: Optional[str] = None,
+        offload_layers = "auto",
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -547,6 +568,7 @@ class ExportOrchestrator:
             "base_model": base_model,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
+            "offload_layers": offload_layers,
             "trust_remote_code": trust_remote_code,
             "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
             "subject": subject,
@@ -659,6 +681,7 @@ class ExportOrchestrator:
         install_missing_dependencies: bool = False,
         expected_checkpoint: Optional[str] = None,
         op_id: Optional[str] = None,
+        reap: Optional[dict] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -673,6 +696,7 @@ class ExportOrchestrator:
                 "install_missing_dependencies": install_missing_dependencies,
                 "expected_checkpoint": expected_checkpoint,
                 "op_id": op_id,
+                "reap": reap,
             },
         )
 
@@ -686,6 +710,7 @@ class ExportOrchestrator:
         base_model_id: Optional[str] = None,
         expected_checkpoint: Optional[str] = None,
         op_id: Optional[str] = None,
+        reap: Optional[dict] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "base",
@@ -698,6 +723,7 @@ class ExportOrchestrator:
                 "base_model_id": base_model_id,
                 "expected_checkpoint": expected_checkpoint,
                 "op_id": op_id,
+                "reap": reap,
             },
         )
 
@@ -713,6 +739,7 @@ class ExportOrchestrator:
         npu_q4nx: bool = False,
         expected_checkpoint: Optional[str] = None,
         op_id: Optional[str] = None,
+        reap: Optional[dict] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -728,6 +755,7 @@ class ExportOrchestrator:
                 "npu_q4nx": npu_q4nx,
                 "expected_checkpoint": expected_checkpoint,
                 "op_id": op_id,
+                "reap": reap,
             },
         )
 
@@ -832,6 +860,9 @@ class ExportOrchestrator:
     def cleanup_memory(self) -> bool:
         with self._lock:
             if not self._ensure_subprocess_alive():
+                if self._proc is not None:
+                    # The worker died on its own (CUDA crash, OOM kill) and left its staging.
+                    _sweep_reap_staging_of(self._proc.pid)
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False

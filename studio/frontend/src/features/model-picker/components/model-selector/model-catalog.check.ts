@@ -8,11 +8,9 @@
 
 import assert from "node:assert/strict";
 
+import { umbrellaFolderFindings } from "../../../audio/audio-catalog-rows.ts";
 import {
-  AUDIO_CPP_MODELS,
   AUDIO_CPP_REPO,
-  AUDIO_CPP_UNOFFERED_FOLDERS,
-  audioCppDisplayName,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 
@@ -160,6 +158,35 @@ assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canon
     "Qwen-Image-2.1-Turbo-GGUF (Slow)",
   );
 }
+// FLUX.3 Klein: a dense row on the gated BFL id (fetched from the FP8 repo), so it reads "Fast FP8" like 2.1.
+for (const [base, fp8Repo, name] of [
+  ["black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8", "FLUX.3 Image Klein"],
+  ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8", "FLUX.3 Image Klein Base"],
+] as const) {
+  const group = groupForRepoId(base, IMAGE_CATALOG);
+  assert.ok(group, base);
+  assert.equal(groupForRepoId(fp8Repo, IMAGE_CATALOG), group, fp8Repo);
+  assert.equal(groupForRepoId(`unsloth/${base.split("/")[1]}-GGUF`, IMAGE_CATALOG), group, base);
+  assert.equal(curatedRowLabelFor(base, IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])?.name, `${name} (Fast FP8)`);
+  assert.equal(
+    curatedRowLabelFor(`unsloth/${base.split("/")[1]}-GGUF`, IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    `${base.split("/")[1]}-GGUF (Slow)`,
+  );
+}
+assert.equal(
+  IMAGE_CATALOG.find((g) => g.pinToTop)?.canonicalId,
+  "black-forest-labs/flux-3-image-klein",
+);
+// The pinned Fast FP8 row must survive "Fit on device" on a 24 GB card (6.0 GiB DiT + 8.6 GiB companions, under
+// the 70% rule), else the Slow GGUF row takes the top. A host without the dense quant sizes it in bf16 and drops it.
+for (const id of ["black-forest-labs/flux-3-image-klein", "black-forest-labs/flux-3-image-klein-base"]) {
+  assert.equal(
+    curatedArtifactFitsDevice(id, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] }),
+    true,
+    id,
+  );
+  assert.equal(curatedArtifactFitsDevice(id, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 64 }), false, id);
+}
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
@@ -296,6 +323,8 @@ for (const id of [
   "unsloth/FLUX.1-dev-GGUF",
   "unsloth/FLUX.2-klein-4B-GGUF",
   "unsloth/FLUX.2-klein-9B-GGUF",
+  "unsloth/flux-3-image-klein-GGUF",
+  "unsloth/flux-3-image-klein-base-GGUF",
   "unsloth/Qwen-Image-Edit-2511-GGUF",
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
@@ -1259,6 +1288,8 @@ const PREQUANT_ROWS = [
   ["krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo-FP8"],
   ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"],
   ["Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"],
+  ["black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8"],
+  ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8"],
 ] as const;
 
 for (const [id, repo] of PREQUANT_ROWS) {
@@ -1578,7 +1609,10 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   const artifactsByRepo = new Map<string, ModelArtifact[]>();
   for (const group of groups) {
     for (const artifact of group.artifacts) {
-      const hubRepo = isAudioCppFolderId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId;
+      // A gated vendor id the backend fetches from an open mirror is judged by that mirror.
+      const hubRepo =
+        artifact.fetchedFrom ??
+        (isAudioCppFolderId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId);
       const bucket = artifactsByRepo.get(hubRepo);
       if (bucket) bucket.push(artifact);
       else artifactsByRepo.set(hubRepo, [artifact]);
@@ -1640,22 +1674,10 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
           .filter((parts) => parts.length > 1)
           .map((parts) => parts[0]),
       );
-      const offered = AUDIO_CPP_MODELS.filter((m) => isAudioCppFolderId(m.id)).map((m) =>
-        audioCppDisplayName(m.id),
-      );
-      const unoffered = Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS);
-      for (const folder of folders) {
-        if (!offered.includes(folder) && !unoffered.includes(folder)) {
-          failures.push(
-            `${repoId}: '${folder}/' is in neither AUDIO_CPP_MODELS nor AUDIO_CPP_UNOFFERED_FOLDERS -- classify it`,
-          );
-        }
-      }
-      for (const folder of unoffered) {
-        if (!folders.has(folder)) {
-          failures.push(`${repoId}: AUDIO_CPP_UNOFFERED_FOLDERS lists '${folder}', which the repo no longer has`);
-        }
-      }
+      // A new folder is only a warning: the backend catalog lists it without a seed edit.
+      const findings = umbrellaFolderFindings(folders);
+      for (const warning of findings.warnings) console.warn(`::warning::${warning}`);
+      failures.push(...findings.failures);
     }
 
     const declaredFiles = [

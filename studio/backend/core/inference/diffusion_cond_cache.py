@@ -162,6 +162,9 @@ def install(
             # LoRA may target the text encoders; adapters attached -> always encode.
             if getattr(pipe, "_unsloth_loras", ()):
                 return encode(*args, **kwargs)
+            # Textual-inversion embeddings applied for this generation: the text alone does not key the result.
+            if getattr(pipe, "__dict__", {}).get("_unsloth_embeddings"):
+                return encode(*args, **kwargs)
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
             keyed = {

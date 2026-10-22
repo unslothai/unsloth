@@ -815,6 +815,13 @@ Environment:
             $confRoot = _RootFromConf (Join-Path $env:LOCALAPPDATA "Unsloth Studio\studio.conf")
             if ($confRoot) { & $emit $confRoot }
         }
+        # The folder Unsloth Desktop installed into (studio_home.rs).
+        if ($env:USERPROFILE) {
+            $desktopChoice = Join-Path $env:USERPROFILE ".unsloth\desktop_studio_home"
+            if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {
+                try { & $emit ([System.IO.File]::ReadAllText($desktopChoice).Trim()) } catch {}
+            }
+        }
     }
 
     # Return $true iff the PID's image path lives under one of $KnownRoots, so an unrelated
@@ -1176,7 +1183,7 @@ Environment:
         # Kept rather than pruned, since data left behind is recoverable. Mirrors uninstall.sh.
         $flatMaster = $masterRootToStop
         if ($flatMaster -and ($r.TrimEnd('\', '/') -ieq $flatMaster.TrimEnd('\', '/'))) {
-            _Substep "keeping $r`: UNSLOTH_HOME and the Studio root name the same directory," "Yellow"
+            _Substep "keeping $r`: UNSLOTH_HOME and the Unsloth Studio root name the same directory," "Yellow"
             _Substep "so removing it would take whatever else you keep there. Delete it by hand" "Yellow"
             _Substep "once you have checked what is in it." "Yellow"
             $script:RemoveFailed = $true
@@ -1308,6 +1315,17 @@ Environment:
             foreach ($stale in @(Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue |
                                  Where-Object { $_.Name -match $script:StaleLockPattern })) {
                 _RemoveLockFile $stale.FullName
+            }
+        }
+    }
+    # Desktop's install-location choice goes with the folder it names.
+    if ($defaultUnslothHome) {
+        $desktopChoice = Join-Path $defaultUnslothHome "desktop_studio_home"
+        if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {
+            $chosenRoot = $null
+            try { $chosenRoot = [System.IO.File]::ReadAllText($desktopChoice).Trim() } catch {}
+            if (-not $chosenRoot -or -not (Test-Path -LiteralPath $chosenRoot)) {
+                _RemovePath $desktopChoice
             }
         }
     }

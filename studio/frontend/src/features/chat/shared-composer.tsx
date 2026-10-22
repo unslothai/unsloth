@@ -82,12 +82,20 @@ import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   CHAT_IMAGE_ACCEPT,
+  getChatImageSizeError,
   isChatImageFile,
   normalizeChatImage,
 } from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import {
+  composerDraftKey,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
+  writeComposerDraft,
+} from "./utils/composer-draft";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
 import {
@@ -140,13 +148,12 @@ import {
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
-import { SkillsComposerButton } from "./skills-composer-button";
+import { SkillsComposerButton, useSkillsSwitch } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
-import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
@@ -205,7 +212,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import {
-  PLUS_MENU_ORDER,
+  splitPlusMenuItems,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
@@ -219,10 +226,13 @@ import {
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   codeToolsOn,
+  localImagePillCount,
+  localImageTool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -273,8 +283,6 @@ export interface CompareHandle {
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
-
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
 function isNativeComposing(event: Event) {
@@ -642,7 +650,50 @@ export function SharedComposer({
     }
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
-  const [text, setText] = useState("");
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const [text, setText] = useState(() =>
+    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
+  );
+  const [draftSource] = useState(() => Symbol("compare composer"));
+  // Text that came from the chat composer or another tab, so it isn't published back.
+  const remoteDraftRef = useRef<string | null>(null);
+  const unsavedDraftRef = useRef<string | null>(null);
+  const incognitoBeforeRef = useRef(incognito);
+  useEffect(() => {
+    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
+    if (incognitoBeforeRef.current !== incognito) {
+      incognitoBeforeRef.current = incognito;
+      if (!incognito) {
+        remoteDraftRef.current = latestDraft();
+        setText(remoteDraftRef.current);
+      }
+      return;
+    }
+    if (incognito || text === remoteDraftRef.current) return;
+    remoteDraftRef.current = null;
+    publishDraft(text, draftSource);
+    // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
+    if (text === "") {
+      writeComposerDraft(composerDraftKey(), "");
+      unsavedDraftRef.current = null;
+      return;
+    }
+    unsavedDraftRef.current = text;
+    const timer = setTimeout(() => {
+      writeComposerDraft(composerDraftKey(), text);
+      unsavedDraftRef.current = null;
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [text, incognito, draftSource]);
+  // Leaving Compare inside the debounce still saves what was typed.
+  useEffect(
+    () => () => {
+      if (unsavedDraftRef.current !== null) {
+        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+      }
+    },
+    [],
+  );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -670,6 +721,13 @@ export function SharedComposer({
     },
     [],
   );
+  useEffect(() => {
+    if (incognito) return;
+    return subscribeDraft(draftSource, (next) => {
+      remoteDraftRef.current = next;
+      setCurrentText(next);
+    });
+  }, [incognito, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
@@ -680,7 +738,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -710,6 +768,7 @@ export function SharedComposer({
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const plusOrder = usePlusMenuPrefsStore((s) => s.order);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
   const queueRef = useRef<string[]>([]);
@@ -784,6 +843,7 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const [skillsSwitchOn] = useSkillsSwitch();
 
   const mentionOpenRef = useRef(false);
   const skillMentions = useTextareaSkillMentions({
@@ -791,7 +851,7 @@ export function SharedComposer({
     setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
-    enabled: supportsTools,
+    enabled: supportsTools && skillsSwitchOn,
   });
   mentionOpenRef.current = skillMentions.inputProps["aria-expanded"];
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -953,9 +1013,20 @@ export function SharedComposer({
   // Gemini rejects codeExecution alongside image modalities. Search is blocked on older Gemini image
   // ids but allowed on Gemini 3 image models, so only Code is disabled unconditionally there.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
-  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
+  const localImageToolHere = useChatRuntimeStore((s) =>
+    localImageTool({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const localImagePills = useChatRuntimeStore((s) =>
+    localImagePillCount({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const imageDisabled =
+    !modelLoaded || !(supportsBuiltinImageGeneration || localImageToolHere);
   const imageModeDisablesCode =
-    isExternalGemini && imageToolsEnabled && !imageDisabled;
+    isExternalGemini &&
+    imageToolsEnabled &&
+    modelLoaded &&
+    supportsBuiltinImageGeneration;
   // Image-tier Gemini models always reject codeExecution and reject web_search on older ids, so gate
   // strictly on provider builtin support: local `supportsTools` must not re-enable a pill the
   // Gemini backend silently drops.
@@ -987,9 +1058,10 @@ export function SharedComposer({
   const codeDisabled =
     (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
-  // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
-  // family. No local tool runtime fallback.
-  const showImagePill = supportsBuiltinImageGeneration;
+  // Images pill: the provider's own image generation on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family, else the image or video model loaded in Unsloth when the chat
+  // model calls Unsloth tools.
+  const showImagePill = supportsBuiltinImageGeneration || localImageToolHere;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
@@ -1001,7 +1073,8 @@ export function SharedComposer({
   const isMobile = useIsMobile();
   const pillCount =
     4 +
-    (showImagePill ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
@@ -1245,9 +1318,13 @@ export function SharedComposer({
           continue;
         }
         if (!isChatImageFile(file)) continue;
-        if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
+          continue;
+        }
+        const sizeError = getChatImageSizeError(file);
+        if (sizeError) {
+          toast.error(sizeError);
           continue;
         }
         let image: File;
@@ -1310,11 +1387,9 @@ export function SharedComposer({
             // Classify before the check, so a pasted audio-only 3GP is not read
             // as unsupported on its extension alone.
             const files = await classifiedAttachmentFiles(pasted);
-            // Let addFiles report audio size errors.
+            // Let addFiles report audio and image size errors.
             const supported = files.some(
-              (file) =>
-                isAudioAttachmentFile(file) ||
-                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+              (file) => isAudioAttachmentFile(file) || isChatImageFile(file),
             );
             if (!supported) throw new Error("Unsupported compare attachment");
             await addFilesUntracked(files);
@@ -1761,7 +1836,7 @@ export function SharedComposer({
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
           ...engineLaunchFieldsFromParams(ownConfig),
-          load_in_4bit: paneEngine === "auto",
+          load_in_4bit: paneEngine === "auto" && ownConfig.loadIn4bit !== false,
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
                 gpu_ids:
@@ -2057,6 +2132,9 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
+          deepResearchEnabled: resolveToolsEnabledOnLoad(
+            resp.supports_tools ?? false,
+          ).deepResearchEnabled,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(resp),
@@ -2477,6 +2555,10 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  useShortcut("stopGeneration", stop, {
+    enabled: chatActive && busy,
+    claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
+  });
 
   const runPromptList = useCallback(
     (items: string[]) => {
@@ -2549,13 +2631,24 @@ export function SharedComposer({
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top level; the rest fall into
   // the "More" overflow submenu. Core items and "More" itself live outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    // Compare runs no research, so the item has nothing to offer here.
+    deepResearch: null,
+    browserUse: <BrowserAgentMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // As in the main composer: a hidden files panel comes back rather than RAG turning off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -2578,9 +2671,15 @@ export function SharedComposer({
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2704,8 +2803,8 @@ export function SharedComposer({
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
+    splitPlusMenuItems(plusOrder, plusPins);
 
   return (
     <div
@@ -2715,7 +2814,6 @@ export function SharedComposer({
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       data-writing-expanded={isWritingExpanded ? "true" : undefined}
     >
-      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
       <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
@@ -2944,12 +3042,8 @@ export function SharedComposer({
                 )}
                 <DropdownMenuSeparator />
                 {/* Browser use sits right under Chat with files, or leads this section without it. */}
-                {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
                 {pinnedPlusItems.map((id) => (
-                  <Fragment key={id}>
-                    {plusMenuNodes[id]}
-                    {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
-                  </Fragment>
+                  <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                 ))}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
@@ -3064,7 +3158,7 @@ export function SharedComposer({
                 <span>Images</span>
               </button>
             )}
-            {showRagPill && <KnowledgeBaseComposerButton side="top" />}
+            {showRagPill && <KnowledgeBaseComposerButton side="top" hasFilesPanel={false} />}
             {showWebFetchPill && (
               <button
                 type="button"

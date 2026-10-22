@@ -167,21 +167,121 @@ else:
         ALLOW_PREQUANTIZED_MODELS = False
         ALLOW_BITSANDBYTES = False
     del _bnb_probe
-# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
-# (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
-if DEVICE_TYPE == "hip":
+
+
+def hip_visible_archs():
+    """Guarded per device: one unreadable device must not discard the archs beside it, or a
+    gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
     try:
-        _gcn_arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0].strip().lower()
+        count = torch.cuda.device_count()
     except Exception:
-        _gcn_arch = ""
-    if _gcn_arch == "gfx906":
-        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
-        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
-        os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
-        print(
-            "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
-            "(community-maintained legacy GCN path)."
-        )
+        return []
+    archs = []
+    for i in range(count):
+        try:
+            archs.append(str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")))
+        except Exception:
+            continue
+    return archs
+
+
+def cuda_visible_capabilities(with_index = False):
+    """(major, minor) of every visible CUDA device, guarded per device like hip_visible_archs:
+    process-wide gates (bf16, compile) must hold on the weakest card layers may land on.
+    with_index yields (device_index, (major, minor)), since unreadable cards are skipped."""
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    caps = []
+    for i in range(count):
+        try:
+            cap = tuple(torch.cuda.get_device_capability(i))
+        except Exception:
+            continue
+        caps.append((i, cap) if with_index else cap)
+    return caps
+
+
+def cuda_gate_capabilities():
+    """Capabilities a process-wide gate should judge: every card that could be read, which
+    always includes the current device (the pre-mixed-host rule) when it is readable, so a
+    gate is never less strict than before and still sees a known old card beside it."""
+    caps = cuda_visible_capabilities()
+    if caps:
+        return caps
+    try:
+        return [tuple(torch.cuda.get_device_capability())]
+    except Exception:
+        return []
+
+
+def cuda_order_mismatch_names():
+    """Visible NVIDIA names when they differ and CUDA_DEVICE_ORDER is unset, else []."""
+    if is_hip() or os.environ.get("CUDA_DEVICE_ORDER", "").strip():
+        return []
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    if count <= 1:
+        return []
+    names = []
+    for i in range(count):
+        try:
+            names.append(str(torch.cuda.get_device_name(i)))
+        except Exception:
+            continue
+    names = list(dict.fromkeys(names))
+    return names if len(names) > 1 else []
+
+
+def xpu_supports_native_bf16():
+    """Process-wide like CUDA: any visible XPU proven to lack native bf16 turns it off, since the
+    load target is not known here. Each device is judged by its own aspects: without libocloc
+    (absent in torch-xpu wheels) every aspect reads False, so trust the probe only once some
+    aspect reads True on that device. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
+    aspects = (
+        "has_bfloat16_conversions",
+        "has_subgroup_matrix_multiply_accumulate",
+        "has_subgroup_matrix_multiply_accumulate_tensor_float32",
+        "has_subgroup_2d_block_io",
+    )
+    try:
+        count = torch.xpu.device_count()
+    except Exception:
+        return True
+    for index in range(count):
+        try:
+            props = torch.xpu.get_device_properties(index)
+        except Exception:
+            continue
+        lacks_bf16 = getattr(props, "has_bfloat16_conversions", True) is False
+        if lacks_bf16 and any(getattr(props, name, False) is True for name in aspects):
+            return False
+    return True
+
+
+def xpu_keeps_explicit_bf16():
+    """An explicit bf16 request on XPU stays bf16 (emulated if need be) only beside an unsloth_zoo
+    that does the same for vLLM, so the engine and the HF weights it shares agree on one dtype."""
+    if DEVICE_TYPE != "xpu":
+        return False
+    try:
+        import unsloth_zoo.device_type as zoo_device_type
+    except Exception:
+        return False
+    return bool(getattr(zoo_device_type, "XPU_KEEPS_EXPLICIT_BF16", False))
+
+
+def zoo_shares_xpu_bf16():
+    """True once unsloth_zoo has _xpu_bf16_supported. An older zoo still counts emulated bf16 for
+    trainer AMP, gradient checkpointing and vLLM, so keep the old XPU answer there to load alike."""
+    try:
+        import unsloth_zoo.device_type as zoo_device_type
+    except Exception:
+        return False
+    return hasattr(zoo_device_type, "_xpu_bf16_supported")
 
 
 # Pre-Volta NVIDIA (Maxwell / Pascal, sm < 7.0): Inductor refuses to emit Triton for these
@@ -217,11 +317,25 @@ def apply_pre_volta_compile_workaround(
     return True
 
 
+# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
+# (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
+# Any visible gfx906 counts: compile is process-wide and layers may land on it. Same switch as
+# pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
+if DEVICE_TYPE == "hip":
+    if any(arch.split(":")[0].strip().lower() == "gfx906" for arch in hip_visible_archs()):
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+        os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+        apply_pre_volta_compile_workaround(0)  # the live Dynamo config, unless explicitly enabled
+        print(
+            "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
+            "(community-maintained legacy GCN path)."
+        )
+
+
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
-    try:
-        _cuda_major = torch.cuda.get_device_capability()[0]
-    except Exception:
-        _cuda_major = None
+    # Weakest visible card: compile is process-wide and layers may land on any of them.
+    _cuda_major = min((cap[0] for cap in cuda_gate_capabilities()), default = None)
     if apply_pre_volta_compile_workaround(_cuda_major):
         print(
             "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "
@@ -321,22 +435,6 @@ def _default_inductor_cache_dir():
         user = f"uid_{getuid()}" if callable(getuid) else "unknown_user"
     user = re.sub(r'[\\/:*?"<>|]', "_", user)
     return os.path.join(tempfile.gettempdir(), "torchinductor_" + user)
-
-
-def hip_visible_archs():
-    """Guarded per device: one unreadable device must not discard the archs beside it, or a
-    gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
-    try:
-        count = torch.cuda.device_count()
-    except Exception:
-        return []
-    archs = []
-    for i in range(count):
-        try:
-            archs.append(str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")))
-        except Exception:
-            continue
-    return archs
 
 
 def resolve_hip_gpu_stats_name(gpu_stats):

@@ -2353,9 +2353,12 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
     """One syscall that never returns cannot be interrupted from inside the walk, so the
     route bounds it. Without that the listing waits on it and the picker has nothing to click."""
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
+    # Hung until the test is over, not for a flat 5 s: an abandoned read outlives the test, and
+    # a later test's _drain_context_threads() then sat waiting for this sleep to run out.
+    release = threading.Event()
 
     def hung_read(_path):
-        time.sleep(5)
+        release.wait(5)
         return 8192
 
     monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", hung_read)
@@ -2386,7 +2389,10 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
         )
         return answer, time.monotonic() - began
 
-    result, elapsed = asyncio.run(drive())
+    try:
+        result, elapsed = asyncio.run(drive())
+    finally:
+        release.set()
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
     assert result.context_length is None
     assert elapsed < 3
@@ -2675,6 +2681,34 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
 
     assert result == {"status": "deleted", "repo_id": "org/repo"}
     assert calls == [("org/repo", None, "token", "/data/hf/hub")]
+
+
+def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
+    """krea2-arch GGUFs (molbal/krea2-gguf) are images, not chat RUN (#14474)."""
+    for hints in (
+        (),
+        ("custom/my-mix-Q4_K_M.gguf",),
+        ("molbal/krea2-gguf", "krea2_turbo-Q4_0.gguf"),
+    ):
+        assert models_route._arch_to_task("krea2", hints) == "text-to-image"
+        assert models_route._arch_to_task("KREA2", hints) == "text-to-image"
+
+    # The arch alone names the family, so an unbuildable host hides even an uninformative name.
+    import core.inference.diffusion_engine_router as router
+
+    seen = []
+
+    def buildable(fam, *, model_kind):
+        seen.append((fam.name, model_kind))
+        return fam.name != "krea-2"
+
+    monkeypatch.setattr(router, "family_buildable_here", buildable)
+    assert models_route._arch_to_task("krea2", ("custom/my-mix-Q4_K_M.gguf",)) == (
+        models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+    assert seen == [("krea-2", "gguf")]
+    assert models_route._arch_to_task("flux", ("custom/my-mix-Q4_K_M.gguf",)) == "text-to-image"
+    assert models_route._arch_to_task("qwen_image", ("org/Qwen-Image-GGUF",)) == "text-to-image"
 
 
 def test_arch_to_task_hides_unsupported_diffusion_from_chat():
@@ -3322,26 +3356,32 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
 
 
 def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
-    """The single-file VAE / text-encoder repos hold no denoiser, so none of them is a pick.
+    """The sd-cli text-encoder repos hold no denoiser, so none of them is an Images pick.
 
-    Their unsloth mirrors clear the trust gate the old third-party ids never did, and the ids
-    resolve to a family, so without the companion check each would list an unloadable Images row.
+    They are unsloth repos, so they clear the trust gate, and an id that resolves to a family
+    would list an unloadable Images row without the companion check. Every image VAE / encoder
+    now comes from a vendor base or an unsloth encoder GGUF, so the set is exactly those GGUFs.
     """
     from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
 
+    companions = sd_cpp_companion_only_repo_ids()
     for repo_id in (
-        "unsloth/Z-Image-Turbo-ComfyUI",
-        "unsloth/Qwen-Image-ComfyUI",
-        "unsloth/FLUX.2-dev-ComfyUI",
-        "unsloth/FLUX.2-VAE",
-        "unsloth/FLUX.2-klein-9B-ComfyUI",
-        "unsloth/flux-text-encoders",
+        "unsloth/Qwen3-4B-GGUF",
+        "unsloth/Qwen3-8B-GGUF",
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     ):
-        assert repo_id.lower() in sd_cpp_companion_only_repo_ids(), repo_id
+        assert repo_id.lower() in companions, repo_id
+    for repo_id in companions:
         assert models_route._cached_repo_task(_pipeline_repo(repo_id, tmp_path)) is None, repo_id
 
-    # FLUX.1-schnell also serves a companion VAE, but it is a real base and must stay loadable.
-    assert "black-forest-labs/flux.1-schnell" not in sd_cpp_companion_only_repo_ids()
+    # The vendor bases that now serve the VAEs / encoders are real bases and must stay loadable.
+    for base in (
+        "black-forest-labs/FLUX.1-schnell",
+        "black-forest-labs/FLUX.2-dev",
+        "Qwen/Qwen-Image",
+    ):
+        assert base.lower() not in companions, base
     assert (
         models_route._cached_repo_task(_pipeline_repo("black-forest-labs/FLUX.1-schnell", tmp_path))
         == "text-to-image"
@@ -3352,11 +3392,21 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
     """A task of None does NOT drop the row: it is exactly what an unclassified CHAT repo carries,
     so the chat picker showed the companion as loadable. Deleting the row instead would hide tens
     of GB the user can then never find or remove, so the row stays and carries a flag the pickers
-    filter on."""
+    filter on.
+
+    No image companion repo ships .safetensors any more (the remaining ones are encoder GGUFs, which
+    this listing skips), so a synthetic single-file VAE repo is added to the companion set."""
+    import core.inference.diffusion_families as families
+
+    real = families.sd_cpp_companion_only_repo_ids
+    companion_id = "unsloth/example-vae-companion"
+    monkeypatch.setattr(
+        families, "sd_cpp_companion_only_repo_ids", lambda: real() | {companion_id.lower()}
+    )
     companion = _repo(
-        "unsloth/Z-Image-Turbo-ComfyUI",
-        [_file("split_files/vae/ae.safetensors", 300_000)],
-        tmp_path / "models--unsloth--Z-Image-Turbo-ComfyUI",
+        companion_id,
+        [_file("vae/ae.safetensors", 300_000)],
+        tmp_path / "models--unsloth--example-vae-companion",
     )
     chat = _repo(
         "unsloth/Qwen3-8B",
@@ -3371,10 +3421,10 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
     }
 
     # Listed, so it stays visible and deletable...
-    assert "unsloth/Z-Image-Turbo-ComfyUI" in rows
+    assert companion_id in rows
     # ...and flagged, which is the part a task of None could never express.
-    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["companion"] is True
-    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["task"] is None
+    assert rows[companion_id]["companion"] is True
+    assert rows[companion_id]["task"] is None
     # An ordinary chat repo carries the same task of None and must NOT be flagged.
     assert rows["unsloth/Qwen3-8B"].get("companion") is None
     assert rows["unsloth/Qwen3-8B"]["task"] is None
@@ -4194,6 +4244,9 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
         cache_home[0] = tmp_path / "healthyvol"
         second = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
         done, _ = await asyncio.wait({second}, timeout = 1.5)
+        # Measured; now unwedge the old scan, or asyncio.run's executor shutdown joins its
+        # thread and the test sits out the rest of the 5 s wait.
+        wedged.set()
         for task in (stuck, second):
             task.cancel()
         return bool(done)

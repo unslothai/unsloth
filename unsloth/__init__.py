@@ -18,6 +18,19 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
+# Before anything can create a process group: c10d and NCCL read these at init.
+if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+    from .distributed_debug import apply_debug_distributed_env as _apply_debug_distributed_env
+    _apply_debug_distributed_env()
+    del _apply_debug_distributed_env
+
+# UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
+# accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
+from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
+
+_apply_fsdp2_env()
+del _apply_fsdp2_env
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -174,6 +187,13 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same for torchao 0.17+ on torch 2.6 (`register_constant`).
+        from .import_fixes import fix_torchao_pytree_register_constant as _fix_pytree
+        _fix_pytree()
+        del _fix_pytree
+    except Exception:
+        pass
+    try:
         # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old torchao.dtypes.nf4tensor path.
         from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
         _fix_nf4()
@@ -232,11 +252,13 @@ if _IS_MLX:
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
+            fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
-        del _fix_untrusted_config, _fix_template_names
+        _fix_vocab_paths()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
     except Exception:
         pass
     try:
@@ -352,10 +374,26 @@ if _IS_MLX:
     TextPreprocessor = _raw_text.TextPreprocessor
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
+    def _mlx_from_pretrained(*args, **kwargs):
+        # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
+        # Not for full finetuning: zoo trains any non-bf16 target in float32, doubling weight memory.
+        try:
+            bound = _inspect.signature(FastMLXModel.from_pretrained).bind_partial(*args, **kwargs)
+            full_finetuning = bound.arguments.get("full_finetuning", False)
+        except Exception:
+            full_finetuning = kwargs.get("full_finetuning", False)
+        if not full_finetuning and not is_bfloat16_supported():
+            if len(args) > 2:
+                if args[2] is None:
+                    args = (*args[:2], "float16", *args[3:])
+            elif kwargs.get("dtype") is None:
+                kwargs["dtype"] = "float16"
+        return FastMLXModel.from_pretrained(*args, **kwargs)
+
     class FastLanguageModel:
         @staticmethod
         def from_pretrained(*args, **kwargs):
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def get_peft_model(*args, **kwargs):
@@ -369,7 +407,7 @@ if _IS_MLX:
         @staticmethod
         def from_pretrained(*args, **kwargs):
             kwargs.setdefault("text_only", False)
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def for_training(*args, **kwargs):
@@ -405,8 +443,15 @@ if _IS_MLX:
 
     def is_bfloat16_supported():
         try:
+            import re
             import mlx.core as mx
-            name = mx.device_info().get("device_name", "") or ""
+
+            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            # Family over name (VMs report "Apple Paravirtual device"); matches zoo's _apple_bf16_supported.
+            match = re.fullmatch(r"applegpu_g(\d+)[a-z]", str(info.get("architecture", "") or ""))
+            if match:
+                return int(match.group(1)) >= 15
+            name = info.get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:
             return True
@@ -1632,6 +1677,15 @@ else:
     # GPU path: load everything from _gpu_init
     from ._gpu_init import *
     from ._gpu_init import __version__
+
+    # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
+    # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
+    try:
+        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+        _install_fsdp2_hooks()
+        del _install_fsdp2_hooks
+    except Exception:
+        pass
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""

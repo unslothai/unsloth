@@ -640,10 +640,9 @@ test("a chat's menu has no Open chat, and its folder sits under Export", () => {
   assert.ok(projects.indexOf("<OpenChatFolderItem item={chat} />") > projects.indexOf("Export all chats…"));
 });
 
-test("the Library's New chat is a saved chat with an empty composer, like the sidebar's", () => {
+test("the Library's New chat is a saved chat, like the sidebar's", () => {
   const library = readSrc("features/library/chats/chats-library.tsx");
   const newChatIn = library.slice(library.indexOf("const newChatIn = "), library.indexOf("async function run("));
-  assert.match(newChatIn, /clearNewChatDraft\(\);/);
   assert.match(newChatIn, /runtime\.setIncognito\(false\);/);
 });
 
@@ -658,10 +657,9 @@ test("Reset all local preferences clears the Chats library preferences", () => {
   assert.match(keys, /LIBRARY_CHATS_PREFS_STORAGE_KEY/);
 });
 
-test("a New chat from a project's menu on the Projects page is a saved chat with an empty composer", () => {
+test("a New chat from a project's menu on the Projects page is a saved chat", () => {
   const page = readSrc("features/chat/projects-page.tsx");
   const body = page.slice(page.indexOf("function newChatInProject("), page.indexOf("function newChatInProject(") + 300);
-  assert.match(body, /clearNewChatDraft\(\);/);
   assert.match(body, /setIncognito\(false\)/);
 });
 
