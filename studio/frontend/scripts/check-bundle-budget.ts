@@ -353,8 +353,11 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  transferBytes: 2_072_012,
-  rawBytes: 6_879_589,
+  // Engine versions, Update reminders and the Image and video API card (#14590) put their English strings in the
+  // eager locale and the help-menu entry and API buttons in the eager shell: 6,721.6 KB raw / 2,023.7 KB transfer
+  // at 77e742c8e2 (Node 24, 97 chunks), about +3.3 KB raw / +0.3 KB transfer. Raised to that plus about 200 B.
+  transferBytes: 2_072_500,
+  rawBytes: 6_883_200,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
