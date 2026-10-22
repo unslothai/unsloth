@@ -120,6 +120,15 @@ def is_rdna():
     )
 
 
+@functools.lru_cache(1)
+def max_num_warps():
+    """Most warps one launch can use: 1024 threads per block over the warp size, so 32 on NVIDIA and
+    wave32 RDNA, 16 on wave64 AMD (GCN and every CDNA, not only the archs is_cdna lists)."""
+    if not is_hip():
+        return 32
+    return 1024 // triton.runtime.driver.active.get_current_target().warp_size
+
+
 def calculate_settings(
     n: int,
 ) -> (
