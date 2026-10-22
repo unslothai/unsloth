@@ -150,6 +150,7 @@ def get_or_autotune_moe_kernels(
     force_autotune: bool = False,
     seq_len: int = 8192,
     weight_dtype: Optional[torch.dtype] = None,
+    device: Optional[Any] = None,
 ) -> Tuple[Any, Any, Any]:
     """
     Get cached kernel configurations or run auto-tuning.
@@ -163,10 +164,41 @@ def get_or_autotune_moe_kernels(
         weight_dtype: Data type of the expert weights, if different from dtype
         force_autotune: Force re-running autotuning even if cache exists
         seq_len: Sequence length to use for tuning benchmarks
+        device: Card the experts run on. The cache key, the tuning run and the shared-memory fit
+            follow it, so a device_map layer on another GPU model never takes the current card's
+            tiles. None keeps the current device.
 
     Returns:
         Tuple of (config_fwd, config_bwd_dx, config_bwd_dw)
     """
+    device = _operand_cuda_index(device)
+    if device is not None and device != torch.cuda.current_device():
+        with torch.cuda.device(device):
+            return _get_or_autotune_moe_kernels(
+                num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len,
+                weight_dtype,
+            )  # fmt: skip
+    return _get_or_autotune_moe_kernels(
+        num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
+    )
+
+
+def _operand_cuda_index(device) -> Optional[int]:
+    """CUDA index of ``device`` (a torch.device, str or int), or None when it is not a CUDA card."""
+    if device is None:
+        return None
+    try:
+        device = torch.device("cuda", device) if isinstance(device, int) else torch.device(device)
+    except (TypeError, RuntimeError):
+        return None
+    if device.type != "cuda" or device.index is None:
+        return None
+    return device.index
+
+
+def _get_or_autotune_moe_kernels(
+    num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
+):
     device_capability = torch.cuda.get_device_capability()
     cache_key = _get_cache_key(
         num_experts,
@@ -440,7 +472,7 @@ def _fit_configs_to_dims(
 
 
 def _device_smem_per_block() -> Optional[int]:
-    # Read per current device: the launching card on a mixed host.
+    # Read per current device: get_or_autotune_moe_kernels makes the experts' card current.
     try:
         index = torch.cuda.current_device()
     except Exception:
