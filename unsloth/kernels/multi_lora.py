@@ -344,7 +344,6 @@ def _seg_wgrad(
 
 
 def _device_guard(device: torch.device):
-    # Triton launches on the current device: make it the tensors' one.
     if device.type == "cuda":
         return torch.cuda.device(device)
     if device.type == "xpu":
@@ -613,7 +612,6 @@ def set_multi_lora_batch(
                 adapter_ids.to(device), layer.num_adapters, seq_len
             )
         layer.batch = by_device[device]
-        # Adapters seen since the last optimizer step: gradient accumulation spans several batches.
         seg = layer.batch.seg_start
         present = (seg[1:] - seg[:-1]) > 0
         layer.seen = present if layer.seen is None else layer.seen | present
@@ -719,7 +717,6 @@ def _local(t: torch.Tensor) -> torch.Tensor:
 
 
 def _grad_sq(model: nn.Module, process_group = None) -> torch.Tensor:
-    """(U,) squared gradient norm of each adapter, 0 for an adapter without gradients."""
     layers = _layers(model)
     if not layers:
         raise ValueError("The model has no multi-LoRA layers.")
@@ -731,7 +728,6 @@ def _grad_sq(model: nn.Module, process_group = None) -> torch.Tensor:
             sharded = sharded or hasattr(g, "to_local")
             out[u] += _local(g).float().pow(2).sum().to(device)
     if sharded and _distributed():
-        # Each rank holds a shard: the norm is the sum over shards.
         torch.distributed.all_reduce(out, group = process_group)
     return out
 
@@ -759,7 +755,6 @@ def clip_grad_norm_per_adapter_(
 
 
 def _full(p: torch.Tensor) -> torch.Tensor:
-    # An FSDP2-sharded parameter is a DTensor: export the whole tensor, not this rank's shard.
     return p.full_tensor() if hasattr(p, "full_tensor") else p
 
 
