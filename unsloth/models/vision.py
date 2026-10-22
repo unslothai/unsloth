@@ -88,6 +88,28 @@ def _is_text_seq2seq_config(config):
     return not any(mapped(auto_class) for auto_class in _multimodal_auto_classes())
 
 
+_AUDIO_AUTO_CLASS_NAMES = (
+    "AutoModelForSpeechSeq2Seq",
+    "AutoModelForCTC",
+    "AutoModelForAudioClassification",
+    "AutoModelForAudioFrameClassification",
+    "AutoModelForAudioXVector",
+    "AutoModelForTextToSpectrogram",
+    "AutoModelForTextToWaveform",
+)
+
+
+def _config_maps_audio_auto_class(config):
+    import transformers
+    for name in _AUDIO_AUTO_CLASS_NAMES:
+        try:
+            if type(config) in getattr(transformers, name)._model_mapping:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _is_bare_feature_extractor(processor):
     try:
         from transformers.feature_extraction_utils import FeatureExtractionMixin
@@ -3265,6 +3287,12 @@ class FastBaseModel:
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
         # FastModel routes Whisper here without auto_model (#2726); audio features need the processor.
         needs_processor = needs_processor or auto_model is AutoModelForSpeechSeq2Seq
+        # Speech / CTC / audio-classification models (Moonshine, Parakeet, wav2vec2, AST) read audio
+        # features too; Seq2SeqLM keeps its tokenizer (SeamlessM4T's text-to-text route).
+        needs_processor = needs_processor or (
+            getattr(auto_model, "__name__", "") != "AutoModelForSeq2SeqLM"
+            and _config_maps_audio_auto_class(auto_config)
+        )
         # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
         is_vlm_config = (
             is_vlm

@@ -38,3 +38,27 @@ def test_last_resort_tries_feature_extractor_and_keeps_padding():
         "if not _is_bare_feature_extractor(tokenizer):\n            tokenizer.padding_side = _padding_side"
         in source
     )
+
+
+def _config_maps_audio_auto_class():
+    tree = ast.parse(VISION_PATH.read_text(encoding = "utf-8"))
+    wanted = {"_AUDIO_AUTO_CLASS_NAMES", "_config_maps_audio_auto_class"}
+    nodes = [
+        n
+        for n in tree.body
+        if (isinstance(n, ast.FunctionDef) and n.name in wanted)
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in wanted for t in n.targets))
+    ]
+    ns = {}
+    exec(compile(ast.Module(nodes, []), str(VISION_PATH), "exec"), ns)
+    return ns["_config_maps_audio_auto_class"]
+
+
+def test_audio_configs_get_their_processor():
+    transformers = pytest.importorskip("transformers")
+    maps = _config_maps_audio_auto_class()
+    for cfg in ("Wav2Vec2Config", "HubertConfig", "WhisperConfig", "MoonshineConfig", "ASTConfig"):
+        if hasattr(transformers, cfg):
+            assert maps(getattr(transformers, cfg)()), cfg
+    for cfg in ("LlamaConfig", "Qwen2Config", "T5Config"):
+        assert not maps(getattr(transformers, cfg)()), cfg
