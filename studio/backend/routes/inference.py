@@ -12847,7 +12847,7 @@ def reap_dead_worker(backend) -> None:
 
     if getattr(backend, "_proc", None) is None:
         return
-    if backend.reap_dead_worker() and (release_chat_gpu_claim() or not holds(CHAT)):
+    if backend.reap_dead_worker() and (release_chat_after_kept_models() or not holds(CHAT)):
         account_access.clear_resident("chat")
 
 

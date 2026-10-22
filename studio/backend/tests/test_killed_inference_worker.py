@@ -96,6 +96,33 @@ def test_a_request_is_not_routed_to_a_kept_model_whose_worker_was_killed(monkeyp
     assert kept.active_model_name is None and kept._proc is None
 
 
+def test_reaping_the_last_gpu_kept_model_beside_a_cpu_primary_releases_chat(monkeypatch):
+    from core.inference import gpu_arbiter, model_slots
+
+    for name, value in (
+        ("_owner", gpu_arbiter.CHAT),
+        ("_owner_account", None),
+        ("_prior_account", None),
+        ("_residents", {gpu_arbiter.CHAT: None}),
+        ("_accounts", {}),
+        ("_media_needs", {}),
+    ):
+        monkeypatch.setattr(gpu_arbiter, name, value)
+    cleared = []
+    monkeypatch.setattr(inference_route.account_access, "clear_resident", cleared.append)
+    cpu_primary = SimpleNamespace(is_active = True, is_loaded = True, holds_no_vram = True)
+    monkeypatch.setattr(inference_route, "_llama_cpp_backend", cpu_primary)
+    kept = _orchestrator()
+    idle_llama = SimpleNamespace(is_active = False, is_loaded = False)
+    slot = model_slots.ExtraSlot(llama = idle_llama, orchestrator = kept, account = "user")
+    monkeypatch.setattr(model_slots, "slots", [slot])
+
+    model_slots.in_slot(slot, lambda: inference_route.reap_dead_worker(kept))
+
+    assert not gpu_arbiter.holds(gpu_arbiter.CHAT)
+    assert cleared == ["chat"]
+
+
 @pytest.mark.parametrize("state", ["alive", "loading", "replying"])
 def test_status_keeps_a_model_whose_worker_may_still_answer(monkeypatch, released, state):
     backend = _orchestrator(killed = state != "alive")
