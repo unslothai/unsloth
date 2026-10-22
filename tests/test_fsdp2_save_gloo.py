@@ -569,6 +569,98 @@ def _case_dcp_restore(rank, world_size, m):
     return out
 
 
+def _case_dcp_restore_guard(rank, world_size, m):
+    """Checkpoint quantization metadata that cannot be applied: entries without their packed weight
+    (a partial state dict under strict=False) and a nested checkpoint loaded into a non-nested model."""
+    bnb = pytest.importorskip("bitsandbytes")
+    q = _load("fsdp2_qlora")
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    def model(scale, nested):
+        torch.manual_seed(0)
+        layer = bnb.nn.Linear4bit(
+            128,
+            64,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        layer.weight = bnb.nn.Params4bit(
+            torch.randn(64, 128) * scale,
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            compress_statistics = nested,
+            module = layer,
+        )
+        net = torch.nn.Sequential(layer.to("cpu"), torch.nn.Linear(64, 8))
+        reference = bnb.functional.dequantize_4bit(net[0].weight.data, net[0].weight.quant_state)
+        q.prepare_fsdp2_qlora(net)
+        fully_shard(net, mesh = init_device_mesh("cpu", (world_size,)))
+        return net, reference
+
+    def scales(quant_state):
+        tensors = [quant_state.absmax, quant_state.code]
+        if quant_state.state2 is not None:
+            tensors += [quant_state.state2.absmax, quant_state.state2.code, quant_state.offset]
+        return [t.detach().cpu().clone() for t in tensors]
+
+    def dequant_equal(net, reference):
+        out = None
+        with m.fsdp2_gathered(net) as writer:
+            if writer:
+                weight = net[0].weight
+                actual = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
+                out = torch.equal(actual, reference)
+        return out
+
+    m.install_dcp_bnb_state_dict()
+    out = {}
+    full = StateDictOptions(full_state_dict = True, cpu_offload = True)
+    loose = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True, strict = False)
+    # Metadata without its packed weight: DCP leaves the live bytes, so their scales must stay too.
+    src, _ = model(0.1, False)
+    for mode in ("broadcast", "sharded"):
+        if mode == "broadcast":
+            sd = dcp.get_model_state_dict(src, options = full)
+        else:
+            sd = dcp.get_model_state_dict(src)
+        sd = {k: v for k, v in sd.items() if k != "0.weight"}
+        dst, reference = model(0.05, False)
+        expected = scales(dst[0].weight.quant_state)
+        if mode == "broadcast":
+            dcp.set_model_state_dict(dst, sd if rank == 0 else {}, options = loose)
+        else:
+            dcp.set_model_state_dict(dst, sd, options = StateDictOptions(strict = False))
+        live = scales(dst[0].weight.quant_state)
+        out[f"partial_{mode}"] = dict(
+            scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
+            dequant_equal = dequant_equal(dst, reference),
+        )
+    # A nested checkpoint into a non-nested model: every rank raises the same clear error.
+    src, _ = model(0.1, True)
+    for mode in ("broadcast", "sharded"):
+        dst, _ = model(0.05, False)
+        try:
+            if mode == "broadcast":
+                sd = dcp.get_model_state_dict(src, options = full)
+                dcp.set_model_state_dict(dst, sd if rank == 0 else {}, options = loose)
+            else:
+                sd = dcp.get_model_state_dict(src)
+                dcp.set_model_state_dict(dst, sd, options = StateDictOptions(strict = False))
+            out[f"nested_{mode}"] = "loaded"
+        except ValueError as error:
+            out[f"nested_{mode}"] = str(error)
+        except Exception as error:
+            out[f"nested_{mode}"] = f"{type(error).__name__}: {error}"
+    return out
+
+
 def _case_fp16_reduce(rank, world_size, m):
     """An fp16 trainable parameter FSDP2 does not manage: its gradient mean must not overflow."""
 
@@ -609,7 +701,9 @@ def _worker(rank, world_size, port, case, queue):
 
         import datetime
 
-        timeout = datetime.timedelta(seconds = 4) if case == "slow_writer" else None
+        # dcp_restore_guard: a rank left waiting on a collective fails in 60 s instead of hanging.
+        timeout = {"slow_writer": 4, "dcp_restore_guard": 60}.get(case)
+        timeout = datetime.timedelta(seconds = timeout) if timeout else None
         dist.init_process_group(
             "gloo", rank = rank, world_size = world_size, **({"timeout": timeout} if timeout else {})
         )
@@ -626,6 +720,8 @@ def _worker(rank, world_size, port, case, queue):
             result = _case_gather_4bit(rank, world_size, m)
         elif case == "dcp_restore":
             result = _case_dcp_restore(rank, world_size, m)
+        elif case == "dcp_restore_guard":
+            result = _case_dcp_restore_guard(rank, world_size, m)
         elif case.startswith("replicated"):
             result = _case_replicated(rank, world_size, m, hooked = case.endswith("hooked"))
         else:
@@ -659,11 +755,15 @@ def _run(case, world_size = 2):
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = saved
     results = {}
-    for _ in procs:
-        rank, result = queue.get(timeout = 240)
-        results[rank] = result
-    for p in procs:
-        p.join(timeout = 60)
+    try:
+        for _ in procs:
+            rank, result = queue.get(timeout = 240)
+            results[rank] = result
+    finally:
+        for p in procs:
+            p.join(timeout = 60)
+            if p.is_alive():
+                p.terminate()
     for r in results.values():
         assert "error" not in r, r.get("error")
     return results
@@ -753,6 +853,22 @@ def test_full_dcp_load_restores_the_checkpoint_quant_state():
                 if rank == 0:
                     assert got["dequant_equal"], (mode, nested, r)
         assert r["mismatch"] == "ValueError", (rank, r)
+
+
+def test_full_dcp_load_skips_or_rejects_quant_state_it_cannot_apply():
+    """Metadata whose packed weight is not in a partial (strict=False) state dict leaves the live
+    scales alone, and a nested checkpoint into a non-nested model raises the same error on every rank
+    (it used to load the wrong scales, or leave the other ranks waiting for rank 0)."""
+    pytest.importorskip("bitsandbytes")
+    results = _run("dcp_restore_guard")
+    for rank, r in results.items():
+        for mode in ("broadcast", "sharded"):
+            assert r[f"partial_{mode}"]["scales"], (rank, mode, r)
+            if rank == 0:
+                assert r[f"partial_{mode}"]["dequant_equal"], (mode, r)
+            message = r[f"nested_{mode}"]
+            assert "nested" in message and "does not match" in message, (rank, mode, r)
+        assert r["nested_broadcast"] == results[0]["nested_broadcast"], results
 
 
 def test_a_slow_writer_does_not_time_out_the_other_ranks():
