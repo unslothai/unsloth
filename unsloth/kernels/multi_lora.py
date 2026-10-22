@@ -624,20 +624,24 @@ def _distributed() -> bool:
 
 
 @torch.no_grad()
-def drop_absent_adapter_grads_(model: nn.Module) -> list[int]:
-    """Clear the gradients of adapters with no tokens since the last step; call before ``optimizer.step()``.
+def drop_absent_adapter_grads_(model: nn.Module, process_group = None) -> list[int]:
+    """Clear the gradients of adapters that did not train this step; call before ``optimizer.step()``.
 
-    Presence is the union over every batch routed since the previous call (gradient accumulation) and over
-    data-parallel ranks. PyTorch optimizers skip a parameter whose ``grad`` is None, so an absent adapter
-    keeps its weights, moments and step count, exactly as if it had not trained this step.
+    Absent = no tokens in any batch routed since the previous call (gradient accumulation) on any rank of
+    ``process_group``, or an exactly zero gradient (routed rows whose labels were all ignored). PyTorch
+    optimizers skip a parameter whose ``grad`` is None, so such an adapter keeps its weights, moments and
+    step count, exactly as if it had not trained this step.
     """
     layers = _layers(model)
-    if not layers or layers[0][1].seen is None:
+    if not layers:
         return []
-    seen = layers[0][1].seen.to(torch.int32)
+    first = layers[0][1]
+    sq = _grad_sq(model)
+    seen = first.seen.to(sq) if first.seen is not None else torch.ones_like(sq)
+    stats = torch.stack([seen, sq])
     if _distributed():
-        torch.distributed.all_reduce(seen, op = torch.distributed.ReduceOp.MAX)
-    absent = [u for u, s in enumerate(seen.tolist()) if s == 0]
+        torch.distributed.all_reduce(stats, group = process_group)
+    absent = [u for u, (s, n) in enumerate(zip(*stats.tolist())) if s == 0 or n == 0]
     for _, layer in layers:
         layer.seen = None
         for u in absent:
@@ -652,6 +656,7 @@ def per_adapter_loss(
     row_adapter_ids: torch.Tensor,
     num_adapters: int,
     ignore_index: int = -100,
+    process_group = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal LM loss averaged within each adapter, summed over adapters.
 
@@ -682,8 +687,8 @@ def per_adapter_loss(
     # DDP / FSDP average gradients over ranks: divide by every rank's tokens and undo that average, so each
     # adapter's gradient is its mean over the global batch.
     total = counts.detach().clone()
-    torch.distributed.all_reduce(total)
-    world = torch.distributed.get_world_size()
+    torch.distributed.all_reduce(total, group = process_group)
+    world = torch.distributed.get_world_size(process_group)
     return (sums / total.clamp_min(1)).sum() * world, losses.detach()
 
 
@@ -698,20 +703,22 @@ def _adapter_grads(model: nn.Module) -> list[list[torch.Tensor]]:
     return grads
 
 
+def _grad_sq(model: nn.Module) -> torch.Tensor:
+    """(U,) squared gradient norm of each adapter, 0 for an adapter without gradients."""
+    layers = _layers(model)
+    if not layers:
+        raise ValueError("The model has no multi-LoRA layers.")
+    device = layers[0][1].lora_A[0].device
+    out = torch.zeros(layers[0][1].num_adapters, device = device)
+    for u, gs in enumerate(_adapter_grads(model)):
+        for g in gs:
+            out[u] += g.float().pow(2).sum().to(device)
+    return out
+
+
 def per_adapter_grad_norm(model: nn.Module) -> torch.Tensor:
     """(U,) gradient L2 norm of each adapter over every multi-LoRA layer (0 for an adapter without grads)."""
-    grads = _adapter_grads(model)
-    if not any(grads):
-        raise ValueError("No multi-LoRA gradients.")
-    device = next(g for gs in grads for g in gs).device
-    return torch.stack(
-        [
-            torch.linalg.vector_norm(torch.stack([g.float().norm().to(device) for g in gs]))
-            if gs
-            else torch.zeros((), device = device)
-            for gs in grads
-        ]
-    )
+    return _grad_sq(model).sqrt()
 
 
 @torch.no_grad()

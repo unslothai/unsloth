@@ -289,23 +289,48 @@ def test_presence_spans_gradient_accumulation_and_resets_after_a_step():
 
 
 def test_presence_and_loss_means_are_global_across_ranks(monkeypatch):
-    # A second rank that saw adapter 1 (10 valid tokens) and no adapter 0.
-    other = {"seen": torch.tensor([0, 1], dtype = torch.int32), "counts": torch.tensor([0.0, 10.0])}
+    # A second rank whose batch trained adapter 1 only, with 10 valid tokens.
+    groups = []
 
-    def all_reduce(t, op = None):
-        key = "seen" if t.dtype == torch.int32 else "counts"
-        t.copy_(torch.maximum(t, other[key]) if key == "seen" else t + other[key])
+    def all_reduce(
+        t,
+        op = None,
+        group = None,
+    ):
+        groups.append(group)
+        if t.dim() == 2:  # [seen, grad norm squared] per adapter
+            t.add_(torch.tensor([[0.0, 1.0], [0.0, 3.0]], dtype = t.dtype))
+        else:  # valid tokens per adapter
+            t.add_(torch.tensor([0.0, 10.0], dtype = t.dtype))
 
     monkeypatch.setattr(ml, "_distributed", lambda: True)
     monkeypatch.setattr(torch.distributed, "all_reduce", all_reduce)
-    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda group = None: 2)
     model = _tiny_model(2)
     ml.set_multi_lora_batch(model, torch.tensor([0]))
     model(torch.randn(1, 16, dtype = torch.float64)).sum().backward()
-    assert ml.drop_absent_adapter_grads_(model) == []
+    assert ml.drop_absent_adapter_grads_(model, process_group = "dp") == []
 
     logits = torch.randn(2, 6, 7)
     labels = torch.randint(0, 7, (2, 6))
-    total, local = ml.per_adapter_loss(logits, labels, torch.tensor([0, 1]), 2)
+    total, local = ml.per_adapter_loss(logits, labels, torch.tensor([0, 1]), 2, process_group = "dp")
     # This rank: 5 tokens per adapter. Adapter 1 also has 10 on the other rank, so it weighs 5/15 here.
     torch.testing.assert_close(total, (local[0] * 5 / 5 + local[1] * 5 / 15) * 2)
+    assert groups == ["dp", "dp"]
+
+
+def test_an_adapter_whose_labels_are_all_ignored_is_absent_and_base_only_batches_clip():
+    model = _tiny_model(2)
+    params = [p for p in model.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr = 1e-2, weight_decay = 0.1)
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1]))
+    out = model(torch.randn(2, 16, dtype = torch.float64))
+    out[0].sum().backward()  # adapter 1's row carries no loss
+    assert ml.drop_absent_adapter_grads_(model) == [1]
+    opt.step()
+
+    # A batch of base-only rows: no adapter trains, and clipping still returns per-adapter norms.
+    ml.set_multi_lora_batch(model, torch.tensor([-1, -1]))
+    opt.zero_grad()
+    assert ml.drop_absent_adapter_grads_(model) == [0, 1]
+    assert ml.clip_grad_norm_per_adapter_(model, 1.0).tolist() == [0.0, 0.0]
