@@ -6694,8 +6694,10 @@ _persist_rocm_wsl_dropin() {
         _rw_fix='s#lib:\${LD_LIBRARY_PATH:-}#lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}#'
         if [ "$(id -u)" = "0" ]; then
             sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
-        elif command -v sudo >/dev/null 2>&1; then
-            sudo sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+        # -n: a re-install must never stop at an unexplained password prompt; say how to finish it instead.
+        elif ! { command -v sudo >/dev/null 2>&1 &&
+            sudo -n sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh </dev/null >/dev/null 2>&1; }; then
+            substep "/etc/profile.d/unsloth-rocm-wsl.sh has an old LD_LIBRARY_PATH line; run 'sudo -v' and re-run the installer to fix it." "$C_WARN"
         fi
         return 0
     fi

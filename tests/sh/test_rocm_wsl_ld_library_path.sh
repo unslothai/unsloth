@@ -69,6 +69,36 @@ printf 'export LD_LIBRARY_PATH=/custom\n' > "$_dropin"
 _run_writer
 assert_eq "current drop-in not overwritten" "export LD_LIBRARY_PATH=/custom" "$(cat "$_dropin")"
 
+echo "=== non-root re-run repairs a stale drop-in without a sudo prompt ==="
+# Fake sudo: logs its args; without -n it stands in for a password prompt, with -n it refuses (no
+# cached credentials) unless FAKE_SUDO_OK=1 (a NOPASSWD rule), then runs the command.
+mkdir -p "$_tmp/fakebin"
+cat > "$_tmp/fakebin/sudo" <<'FAKE'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FAKE_SUDO_LOG"
+[ "$1" = "-n" ] || { echo "PROMPTED" >> "$FAKE_SUDO_LOG"; exit 1; }
+shift
+[ "${FAKE_SUDO_OK:-0}" = "1" ] || exit 1
+exec "$@"
+FAKE
+chmod +x "$_tmp/fakebin/sudo"
+_stale_dropin() {
+    printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "$_tmp/rocm" > "$_dropin"
+}
+_run_writer_nonroot() {
+    env -i PATH="$_tmp/fakebin:$PATH" FAKE_SUDO_LOG="$_tmp/sudo.log" FAKE_SUDO_OK="$1" \
+        bash -c 'id() { echo 1000; }; substep() { printf "%s\n" "$1"; }; eval "$1"; _persist_rocm_wsl_dropin' _ "$_fns"
+}
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 0)"
+assert_not_contains "no interactive sudo attempted" "$(cat "$_tmp/sudo.log")" "PROMPTED"
+assert_contains "repair used sudo -n" "$(cat "$_tmp/sudo.log")" "-n sed"
+assert_contains "hint printed when sudo -n is refused" "$_out" "re-run the installer"
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 1)"
+assert_not_contains "passwordless sudo repairs the stale drop-in" "$(cat "$_dropin")" 'lib:${LD_LIBRARY_PATH:-}'
+assert_eq "no hint when the repair ran" "" "$_out"
+
 echo "=== install.sh repairs an old helper's ~/.bashrc block ==="
 mkdir -p "$_tmp/dotfiles" "$_tmp/home2"
 printf '# user line\n# >>> Unsloth ROCm-on-WSL >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n# <<< Unsloth ROCm-on-WSL <<<\n' "$_tmp/rocm" > "$_tmp/dotfiles/bashrc"
