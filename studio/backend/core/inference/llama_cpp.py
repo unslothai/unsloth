@@ -24934,8 +24934,11 @@ class LlamaCppBackend:
             return intent
         if not source_matches and not self.matches_load_source(intent):
             return intent
-        # A reload after a zero-device probe asks again: a GPU made visible since runs on it.
-        if not source_matches and self._cpu_fallback_reason == "vulkan_no_device":
+        # A reload after a zero-device probe or a stall replay asks again: a device that answers now runs on it.
+        if not source_matches and self._cpu_fallback_reason in (
+            "vulkan_no_device",
+            "vulkan_startup_stall",
+        ):
             binary = self._find_llama_server_binary()
             if binary and LlamaCppBackend._run_vulkan_probe(binary):
                 return intent

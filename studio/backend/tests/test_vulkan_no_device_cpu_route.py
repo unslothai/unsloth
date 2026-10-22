@@ -548,9 +548,10 @@ def test_a_child_exiting_at_the_deadline_is_a_crash_not_a_stall(monkeypatch):
     assert backend._health_wait_stalled is False
 
 
+@pytest.mark.parametrize("reason", ["vulkan_no_device", "vulkan_startup_stall"])
 @pytest.mark.parametrize("probe_rows, stays_cpu", [([], True), ([{"name": "Intel Arc"}], False)])
 def test_a_reload_after_a_zero_device_probe_asks_again(
-    monkeypatch, tmp_path, probe_rows, stays_cpu
+    monkeypatch, tmp_path, probe_rows, stays_cpu, reason
 ):
     """A GPU made visible since the zero-device load runs on it; still none keeps CPU."""
     from core.inference.llama_cpp import GgufLoadIntent
@@ -562,7 +563,7 @@ def test_a_reload_after_a_zero_device_probe_asks_again(
     backend._healthy = True
     backend._model_identifier = "owner/model"
     backend._gguf_path = str(gguf)
-    backend._cpu_fallback_reason = "vulkan_no_device"
+    backend._cpu_fallback_reason = reason
     monkeypatch.setattr(LlamaCppBackend, "matches_load_source", lambda self, intent: True)
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/fake/llama-server")
