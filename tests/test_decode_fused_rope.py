@@ -40,7 +40,6 @@ def _table(positions, dim, dtype):
 
 
 def _unfused_norm(norm, X):
-    # fast_rms_layernorm_inference
     XX = X.to(torch.float32)
     var = XX.square().mean(-1, keepdim = True)
     var += norm.variance_epsilon
@@ -168,8 +167,7 @@ def test_decode_kill_switch(monkeypatch):
 
 
 def test_decode_strided_int32_positions():
-    # The decoder slices the last column of [bsz, seq] positions; an int32 slice keeps its row
-    # stride through reshape / to, and the kernels index positions densely.
+    # int32 last-column slices keep their row stride; the kernels index positions densely.
     torch.manual_seed(0)
     dtype, d = torch.bfloat16, 128
     cos, sin = _table(64, d, dtype)
@@ -202,8 +200,7 @@ def test_decode_strided_int32_positions():
 
 
 def test_decode_split_sync_and_mixed_devices(monkeypatch):
-    # Split models move each layer's output to the next GPU: like the other eager RoPE entry
-    # points, both helpers drain the source stream (a no-op on one device).
+    # Split models: both helpers drain the source stream like the other eager RoPE entry points.
     cos, sin = _table(64, 128, torch.bfloat16)
     q = torch.randn(2, 4, 1, 128, device = "cuda", dtype = torch.bfloat16)
     k = torch.randn(2, 2, 1, 128, device = "cuda", dtype = torch.bfloat16)

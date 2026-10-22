@@ -636,9 +636,7 @@ def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
 _fast_rope_embedding_untraced = torch.compiler.disable(_fast_rope_embedding_eager)
 
 
-# Single-token decode: one launch rotates Q and K in place at their positions, instead of the
-# cos / sin gathers, rotate_half copies, neg, mul and addcmul (12 launches per layer per token).
-# UNSLOTH_DECODE_FUSED_ROPE=0 restores the unfused path.
+# Decode RoPE in one launch instead of ~12 per layer per token; UNSLOTH_DECODE_FUSED_ROPE=0 disables it.
 DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().lower() not in (
     "0",
     "false",
@@ -648,9 +646,7 @@ DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().low
 
 
 def decode_rope_inplace(Q, K, cos, sin, position_ids):
-    """Rotate Q [bsz, n_heads_Q, 1, head_dim] and K [bsz, n_heads_K, 1, head_dim] in place at
-    position_ids ([bsz, 1] or [bsz]), with cos / sin the [positions, head_dim] tables. Returns
-    False, having written nothing, where the fused kernel does not apply."""
+    """Rotate decode Q, K in place; False (nothing written) where the kernel does not apply."""
     if not DECODE_FUSED_ROPE or torch.compiler.is_compiling():
         return False
     if Q.device.type != "cuda" or K.device != Q.device or Q.dim() != 4 or K.dim() != 4:

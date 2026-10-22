@@ -459,9 +459,8 @@ def fast_qk_norm_rope(
 
 
 def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
-    """Single-token decode: q_norm / k_norm per head then RoPE at position_ids, one launch for Q
-    [bsz, 1, n_heads_Q, head_dim] and K [bsz, 1, n_heads_K, head_dim] (fresh outputs, returned as
-    [bsz, n_heads, 1, head_dim]). None where it does not apply; UNSLOTH_DECODE_FUSED_ROPE=0 turns it off."""
+    """Decode q/k norm + RoPE in one launch; returns new [bsz, n_heads, 1, head_dim] Q, K or None.
+    UNSLOTH_DECODE_FUSED_ROPE=0 disables it."""
     if not DECODE_FUSED_ROPE or torch.compiler.is_compiling():
         return None
     Wq, Wk = q_norm.weight, k_norm.weight
@@ -491,8 +490,7 @@ def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
         or K.stride(-1) != 1
         or Wq.shape != (head_dim,)
         or Wk.shape != (head_dim,)
-        # The unfused path rounds the norm to Q's dtype, multiplies by the weight and rotates in
-        # Q's dtype: the kernel does the same only when everything shares it.
+        # Matches the unfused rounding only when every operand shares Q's dtype.
         or not (Q.dtype == K.dtype == Wq.dtype == Wk.dtype == cos2.dtype == sin2.dtype)
         or not (Q.device == K.device == Wq.device == Wk.device == cos2.device == sin2.device)
     ):
