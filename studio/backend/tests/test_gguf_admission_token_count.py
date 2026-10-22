@@ -14,7 +14,7 @@ import routes.inference as inference
 
 
 def _llama_httpx():
-    # Patch the module llama_cpp resolves: another test can swap sys.modules["httpx"].
+    # Patch the module llama_cpp resolves; another test may swap sys.modules['httpx'].
     from core.inference import llama_cpp
     return llama_cpp.httpx
 
@@ -294,7 +294,7 @@ def test_media_is_charged_by_allowance_and_not_sent_to_the_count():
     count = inference._count_gguf_admission_prompt(backend, payload, payload.messages)
     assert count == 20 + inference._openai_llama_admission_image_tokens(backend)
     assert backend.count_chat_tokens.call_args.kwargs["prefer_native"] is False
-    # llama-server rejects the "[image]" placeholder, and a failed count reserves the whole pool.
+    # llama-server rejects the '[image]' placeholder, and a failed count reserves the whole pool.
     sent = backend.count_chat_tokens.call_args.args[0]
     assert [part["type"] for part in sent[0]["content"]] == ["text"]
 

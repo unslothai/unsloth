@@ -248,8 +248,141 @@ export const BUDGET = {
   // (6,825,902 -> 6,826,090 B raw, 2,054,124 -> 2,054,190 B transfer against 94464babd6 and 1de12ab309, one machine
   // and build, Node 24, chunk count unchanged at 95): the picker catalog is imported by startup code (chat-adapter.ts).
   // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_054_379,
-  rawBytes: 6_826_250,
+  // Keeping the session when auth.db is busy (#14151) adds 829 B raw / 393 B transfer (6,826,090 -> 6,826,919 B
+  // raw, 2,054,190 -> 2,054,583 B transfer against a33463fb16, one machine and build, Node 24, chunk count
+  // unchanged at 96): the refresh retry and outcome live in features/auth/api.ts, which every authFetch imports.
+  // Raised by that growth, to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Chunked fence lines, hoisted line colour, the progressive highlight queue and pointer state
+  // (#13919) add 11,012 B raw / 3,984 B transfer (6,826,518 ->
+  // 6,837,530 B raw, 2,054,604 -> 2,058,588 B transfer against ffd6c3033, one machine and build, Node 24,
+  // chunk count unchanged at 96), all in the eager chat chunk the fences render from. Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  // Choosing a working folder when creating a project (#13873) adds 1,756 B raw / 719 B transfer (6,837,530 ->
+  // 6,839,286 B raw, 2,058,588 -> 2,059,307 B transfer against 6c3a9e9b3, main's build being its limit less the margin;
+  // one machine and build, Node 24, chunk count unchanged at 96): the picker and the folder reconciliation live in the
+  // create dialog, which the eager sidebar imports. Raised to the measured build plus the same 160 B raw / 189 B
+  // transfer margin.
+  // Keeping the Read aloud speech model loaded beside the chat model (#14191) adds 1,442 B raw / 723 B transfer
+  // (6,826,504 -> 6,827,946 B raw, 2,054,599 -> 2,055,322 B transfer against 9faa995217, one machine and build,
+  // Node 24, chunk count unchanged at 96): the speech slot routing, evicted-model reports and Voice tab rows sit in
+  // the audio hook, chat adapter and settings chunks the startup set already loads. Raised by that growth.
+  // Developer mode opt-in for experimental CPU video generation (#14247) adds 1,777 B raw / 654 B transfer
+  // (6,840,406 -> 6,842,183 B raw, 2,059,667 -> 2,060,321 B transfer against 88afa84b87 and 26e246d407, one machine
+  // and build, Node 24, 96 chunks): its strings join the eager English catalog and the developer-mode
+  // flag is read by the eager shell (__root.tsx, app-sidebar.tsx, env.ts, hardware-verdict.ts). Raised by that
+  // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
+  // A setting to hide the macOS menu bar icon (#11937) adds 349 B raw / 78 B transfer (6,842,183 -> 6,842,532 B raw,
+  // 2,060,321 -> 2,060,399 B transfer against 46e4f50bea and 2b20770c91, one machine and build, Node 24, 96 chunks):
+  // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
+  // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
+  // 160 B raw / 189 B transfer margin.
+  // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
+  // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
+  // Naming a chat export after its model, title and day (#12586) adds 615 B raw / 65 B transfer (6,842,183 ->
+  // 6,842,798 B raw, 2,060,321 -> 2,060,386 B transfer against 46e4f50bea, one machine and build, Node 24,
+  // 96 chunks): the name builder sits beside the chat exporters in the eager chat chunk. Raised by that growth.
+  // Opening Parallel Slots from the API page's Slots readout (#14225) adds 546 B raw / 212 B transfer (6,842,518 ->
+  // 6,843,064 B raw, 2,060,427 -> 2,060,639 B transfer against bff0a25b4, one machine and build, Node 24, 96 chunks):
+  // the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in the eager chat
+  // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
+  // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
+  // FLUX.3 workflows, controls and LoRAs (#14312) add 426 B raw / 138 B transfer (6,844,101 -> 6,844,527 B raw,
+  // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
+  // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
+  // to that build plus the same 160 B raw / 189 B transfer margin.
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Chat safety for diagrams, redirect links and approval cards adds 617 B raw / 238 B transfer (6,862,624 ->
+  // 6,863,241 B raw, 2,066,394 -> 2,066,632 B transfer against 731cb16c2, one machine and build, the diagram
+  // source check itself loaded with the first diagram). Raised to that build plus the same margin.
+  // The sidebar Projects menu's Projects home item and its strings add 240 B raw / no transfer (6,862,692 ->
+  // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
+  // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
+  // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
+  // Main at dcf5c4009 measures 6,870,312 B raw / 2,068,954 B transfer, already over the line above. Browser panel
+  // page downloads add 1,468 B raw / 354 B transfer on top (6,871,780 B raw, 2,069,308 B transfer, one machine and
+  // build, Node 24, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Browser store sync across windows (#14277) adds 545 B raw / 288 B transfer on top (6,872,325 B raw, 2,069,596 B
+  // transfer merged with main at 4962983b0, Node 24, 97 chunks). Raised to that plus the same margin.
+  // The runtime update card's skip and Undo (#14436) add 1,706 B raw / 424 B transfer against 444f63275c.
+  // Finished chat replies render lone markdown markers as written, cut ones keep the repair (#14391): +179 B raw /
+  // +52 B transfer measured against main (6,870,298 -> 6,870,477 B raw, one machine and build). Raised by that.
+  // Picking a preset forgetting a model's remembered sampling (#14128) keeps its preset marks in the eager chat
+  // runtime store, about 1,860 B raw / 440 B transfer: merged with main at acb31d909b the build measures
+  // 6,876,062 B raw / 2,070,545 B transfer (Node 24, 97 chunks). Raised to that plus the same margin.
+  // Sharing a connection with every account adds the shared flags to the eager provider mapping: 180 B raw /
+  // 20 B transfer (6,862,624 -> 6,862,804 B raw, 2,066,394 -> 2,066,414 B transfer against 723a43b02, one
+  // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
+  // The browser panel's page history (#14283) on top measures 6,876,588 B raw / 2,070,700 B transfer (merged with
+  // main at 04d2beec9, Node 24, 97 chunks). Raised to that plus the same margin.
+  // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
+  // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
+  // 96 chunks). Raised by that.
+  // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
+  // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
+  // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
+  // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
+  // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
+  // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
+  // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
+  // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
+  // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
+  // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
+  // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
+  // (already 244 B above the measured 6_879_345).
+  // Chat fork affordances (the sidebar fork mark, the "Forked from" divider and the shared fork toasts) in the
+  // eager chat chunk: +1_460 B raw / +361 B transfer against 77e742c8e2 (6_879_345 -> 6_880_805 raw,
+  // 2_071_823 -> 2_072_184 transfer, 97 chunks). Raised by that growth.
+  // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
+  // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
+  // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
+  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
+  // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_081_018,
+  rawBytes: 6_908_086,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

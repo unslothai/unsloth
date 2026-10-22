@@ -155,6 +155,41 @@ def test_compile_cache_key_changes_only_for_armed_family():
     assert "dynamic_text" not in q21_default
 
 
+class Flux3Transformer2DModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.seen = None
+
+    def forward(self, x):
+        self.seen = _cfg().dynamic_sources
+        return x
+
+
+def test_flux3_block_inputs_are_armed():
+    """Both repeated blocks see the prompt length: the per-mode block's text call and the joint block's text stream."""
+    m = Flux3Transformer2DModel()
+    assert dt.install(m) is True
+    m(torch.zeros(1))
+    seen = m.seen.split(",")
+    for name in (
+        "L['hidden_states']",
+        "L['temb_mod']",
+        "L['encoder_hidden_states']",
+        "L['temb_mod_context']",
+        "L['image_rotary_emb'][0]",
+        "L['image_rotary_emb'][1]",
+    ):
+        assert name in seen
+    # No slice bound among them, so the slice identity patch is not needed for this family.
+    assert not dt._arms_slice_bound(dt.sources_for(m))
+    # Automatic dynamic only: a blanket dynamic=True compile arms nothing, a static one nothing either.
+    assert (
+        dt.fingerprint(m, None)
+        and dt.fingerprint(m, True) is None
+        and dt.fingerprint(m, False) is None
+    )
+
+
 class QwenImageTransformer2DModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -336,7 +371,7 @@ def test_dense_h3_dynamic_true_arms_only_the_unbacked_temb():
     assert installed is dt.unbacked_supported()
     try:
         m(12, 2)
-        assert m.seen == before  # the prompt-length list is left alone under dynamic=True
+        assert m.seen == before
         if dt.unbacked_supported():
             assert "L['temb']" in m.seen_unbacked.split(",")
             assert "L['temb']" not in (_cfg().unbacked_sources or "").split(",")

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useIsAccountOwner } from "@/features/auth";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
@@ -19,22 +19,20 @@ import type {
   KeylessApiAccessExposure,
   KeylessApiAccessScope,
 } from "../api/keyless-api-access";
+import { apiKeyActionMessage } from "../components/api-key-action-message";
 import { ApiKeyRow } from "../components/api-key-row";
 import { AudioApiExamples } from "../components/audio-api-examples";
+import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
 import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
-import { LanAccessSection } from "../components/lan-access-section";
 import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
-import { RemoteAccessSection } from "../components/remote-access-section";
-import {
-  UsageExamples,
-  useApiTunnelPref,
-} from "../components/usage-examples";
+import { RemoteLanSummary } from "../components/remote-lan-summary";
+import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
 
 export function ApiKeysTab() {
   const t = useT();
@@ -42,6 +40,7 @@ export function ApiKeysTab() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
@@ -96,12 +95,16 @@ export function ApiKeysTab() {
   const confirmRevoke = async () => {
     if (!revokeTarget) return;
     setRevoking(true);
+    setActionError(null);
     try {
       await revokeApiKey(revokeTarget.id);
       await load();
       setRevokeTarget(null);
-    } catch {
-      setError(translate("settings.apiKeys.revokeError"));
+    } catch (cause) {
+      setActionError(
+        apiKeyActionMessage(translate("settings.apiKeys.revokeError"), cause),
+      );
+      setRevokeTarget(null);
     } finally {
       setRevoking(false);
     }
@@ -151,7 +154,7 @@ export function ApiKeysTab() {
                 setRevealed(raw);
                 void load();
               }}
-              onError={setError}
+              onError={setActionError}
             />
           </motion.div>
         )}
@@ -161,6 +164,11 @@ export function ApiKeysTab() {
         <h2 className="settings-heading mb-2 text-sm font-semibold">
           {t("settings.apiKeys.accessTokens")}
         </h2>
+        {actionError ? (
+          <div className="mb-2 rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+            {actionError}
+          </div>
+        ) : null}
         {error ? (
           <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
             {error}
@@ -189,24 +197,6 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <MonitorLink />
-
-      {/* Installation-wide controls: owner-only routes. */}
-      {isOwner ? (
-        <>
-          <KeylessApiAccessSection onSettingsChange={setKeyless} />
-
-          {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
-          <RemoteAccessSection />
-
-          <LanAccessSection />
-
-          <ModelAutoSwitchSection />
-
-          <ModelAliasesSection />
-        </>
-      ) : null}
-
       <UsageExamples
         apiKey={revealed}
         useTunnel={useTunnel}
@@ -216,7 +206,29 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
+      <MonitorLink />
+
+      {/* Installation-wide controls: owner-only routes. */}
+      {isOwner ? (
+        <>
+          <KeylessApiAccessSection onSettingsChange={setKeyless} />
+
+          <RemoteLanSummary />
+
+          <ModelAutoSwitchSection />
+
+          <ModelAliasesSection />
+        </>
+      ) : null}
+
       <AudioApiExamples
+        apiKey={revealed}
+        useTunnel={useTunnel}
+        keylessScope={keyless.scope}
+        keylessExposure={keyless.exposure}
+      />
+
+      <MediaApiExamples
         apiKey={revealed}
         useTunnel={useTunnel}
         keylessScope={keyless.scope}

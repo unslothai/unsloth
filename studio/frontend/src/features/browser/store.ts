@@ -3,7 +3,7 @@
 
 import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
-import { unwrapRedirect } from "./address";
+import { localOriginOf, unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
 import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
@@ -89,6 +89,8 @@ export type BrowserTab = {
   nativeError: string | null;
   /** The proxied page failed to load, so an error shows instead of its frame. */
   pageError?: boolean;
+  pageHistory?: { back: boolean; forward: boolean } | null;
+  typedAt?: number;
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
@@ -178,6 +180,24 @@ export function cachePage(entry: BrowserEntry, page: BrowserPage): void {
 
 export function clearPageCache(): void {
   pageCache.clear();
+}
+
+export type ScrollPosition = { x: number; y: number };
+
+const scrollPositions = new WeakMap<BrowserEntry, ScrollPosition & { url: string }>();
+
+const withoutFragment = (url: string) => url.split("#")[0];
+
+/** Remember where a page was scrolled, with the address it showed: a route the page moved to is another view. */
+export function saveScroll(entry: BrowserEntry, position: ScrollPosition, url = entry.kind === "web" ? entry.url : ""): void {
+  scrollPositions.set(entry, { x: position.x, y: position.y, url });
+}
+
+/** `loaded` is where the page ended up after redirects, which is what its scroll was taken on. */
+export function savedScroll(entry: BrowserEntry, loaded = entry.kind === "web" ? entry.url : ""): ScrollPosition | undefined {
+  const saved = scrollPositions.get(entry);
+  if (!saved || entry.kind !== "web" || withoutFragment(saved.url) !== withoutFragment(loaded)) return undefined;
+  return { x: saved.x, y: saved.y };
 }
 
 // Posted entries already sent: loading one again asks rather than resubmitting (tab-view.tsx).
@@ -356,7 +376,16 @@ type BrowserState = {
     patch: Partial<
       Pick<
         BrowserTab,
-        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError" | "pageError"
+        | "title"
+        | "favicon"
+        | "documentType"
+        | "displayUrl"
+        | "loading"
+        | "nativeHistory"
+        | "nativeError"
+        | "pageError"
+        | "pageHistory"
+        | "typedAt"
       >
     >,
   ) => void;
@@ -421,6 +450,8 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     openKey: null,
     nativeError: null,
     pageError: false,
+    pageHistory: null,
+    typedAt: undefined,
     zoom,
   };
 }
@@ -439,6 +470,8 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
     pageError: false,
+    pageHistory: null,
+    typedAt: undefined,
   };
 }
 
@@ -693,9 +726,18 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (!isWeb(request.url)) return;
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
-          const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
+          let current = currentEntry(tab);
+          // A native view is rebuilt, losing its history, when it enters or leaves a local origin.
+          const rebuilt = nativeWebHistory && current.kind === "web" && localOriginOf(current.url) !== localOriginOf(request.url);
+          const replace = options?.replace ?? (nativeWebHistory && current.kind === "web" && !rebuilt);
+          // So the page it leaves is kept as reached (after redirects and router moves), not as requested.
+          if (rebuilt && !replace && current.kind === "web" && current.method !== "POST" && tab.displayUrl && isWeb(tab.displayUrl) && tab.displayUrl !== current.url) {
+            const reached = webEntry(tab.displayUrl, "GET", undefined, undefined, current.temporary);
+            tab = { ...tab, history: tab.history.map((item) => (item === current ? reached : item)) };
+            current = reached;
+          }
           const entry = webEntry(request.url, request.method, request.body, request.from, request.temporary);
-          if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
+          if (request.from && !replace) sentFrom.set(entry, current);
           return pushEntry(tab, entry, replace);
         }),
       }));
@@ -726,8 +768,10 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
           const moved = routerEntry(tab);
-          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1 };
+          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1, pageHistory: null, typedAt: undefined };
           // Swapped in place, as a browser's reload: Forward keeps its pages.
+          const scroll = scrollPositions.get(currentEntry(tab));
+          if (scroll) scrollPositions.set(moved, scroll);
           const next = pushEntry(tab, moved, true);
           return { ...next, history: [...next.history, ...tab.history.slice(tab.index + 1)], reloadKey: tab.reloadKey + 1 };
         }),

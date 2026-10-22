@@ -13,12 +13,17 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
+import { formatSeconds, resamplePeaks } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
+const BAR_GAP_PX = 2;
+const BAR_PITCH_PX = 2 + BAR_GAP_PX;
+// Fraction of the track height above the baseline.
+const BASELINE = 0.7;
 
 export interface WaveformControl {
   seek: (seconds: number, play?: boolean) => void;
@@ -166,10 +171,7 @@ export function Waveform({
       ) : (
         slider
       )}
-      <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
-        {position > 0 ? `${formatSeconds(position)} / ` : ""}
-        {formatSeconds(duration)}
-      </span>
+      <PlaybackTime position={position} duration={duration} />
       {src ? (
         // biome-ignore lint/a11y/useMediaCaption: voice references have no caption track; the clip's text is shown beside it.
         <audio
@@ -220,7 +222,6 @@ export function WaveformBars({
   style?: CSSProperties;
 }) {
   const bars = peaks && peaks.length > 0 ? peaks : null;
-  const count = bars?.length ?? WAVEFORM_BARS;
   return (
     <div
       role="slider"
@@ -246,34 +247,99 @@ export function WaveformBars({
         );
       }}
     >
-      <svg
-        aria-hidden="true"
-        className="size-full"
-        viewBox={`0 0 ${count * 3} 32`}
-        preserveAspectRatio="none"
-      >
-        {Array.from({ length: count }, (_, index) => {
-          const peak = bars ? (bars[index] ?? 0) : 0;
-          const height = Math.max(2, peak * 30);
-          const played = fraction > 0 && (index + 0.5) / count <= fraction;
-          return (
-            <rect
-              // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
-              key={index}
-              x={index * 3 + 0.5}
-              y={(32 - height) / 2}
-              width={2}
-              height={height}
-              rx={1}
-              className={cn(
-                "fill-current",
-                played ? "text-foreground" : "text-muted-foreground",
-                bars ? "opacity-100" : "opacity-40",
-              )}
+      <WaveformBarGlyphs
+        peaks={bars}
+        isPlayed={(at) => fraction > 0 && at <= fraction}
+      />
+    </div>
+  );
+}
+
+/** Holds the width of "duration / duration", so starting playback never narrows the bars beside it. */
+export function PlaybackTime({
+  position,
+  duration,
+}: {
+  position: number;
+  duration: number;
+}) {
+  return (
+    <span className="grid shrink-0 justify-items-end font-mono text-ui-11 tabular-nums text-muted-foreground">
+      <span aria-hidden="true" className="invisible col-start-1 row-start-1">
+        {formatSeconds(duration)}
+        <span className="px-0.5">/</span>
+        {formatSeconds(duration)}
+      </span>
+      <span className="col-start-1 row-start-1">
+        {position > 0 ? (
+          <>
+            {formatSeconds(position)}
+            <span className="px-0.5">/</span>
+          </>
+        ) : null}
+        {formatSeconds(duration)}
+      </span>
+    </span>
+  );
+}
+
+/** HTML pills, not SVG: preserveAspectRatio="none" squashes rx; whole-pixel bars so none renders thinner. */
+export function WaveformBarGlyphs({
+  peaks,
+  isPlayed,
+}: {
+  peaks: readonly number[] | null;
+  /** `at` is the bar's centre as a 0..1 fraction of the track. */
+  isPlayed: (at: number) => boolean;
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    setWidth(box.clientWidth);
+    const observer = new ResizeObserver(() => setWidth(box.clientWidth));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+  const count =
+    width > 0
+      ? Math.max(1, Math.floor((width + BAR_GAP_PX) / BAR_PITCH_PX))
+      : 0;
+  const levels = peaks ? resamplePeaks(peaks, count) : null;
+  return (
+    <div
+      ref={boxRef}
+      aria-hidden="true"
+      className="flex size-full justify-center gap-[2px]"
+    >
+      {Array.from({ length: count }, (_, index) => {
+        const peak = levels ? (levels[index] ?? 0) : 0;
+        const height = 10 + peak ** 0.8 * 90;
+        return (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
+            key={index}
+            className={cn(
+              "relative h-full w-[2px] shrink-0",
+              isPlayed((index + 0.5) / count)
+                ? "text-foreground"
+                : cn(
+                    "text-muted-foreground",
+                    peaks ? "opacity-50" : "opacity-25",
+                  ),
+            )}
+          >
+            <span
+              className="absolute inset-x-0 rounded-full bg-current"
+              style={{
+                top: `${BASELINE * (100 - height)}%`,
+                height: `max(2px, ${height}%)`,
+              }}
             />
-          );
-        })}
-      </svg>
+          </span>
+        );
+      })}
     </div>
   );
 }

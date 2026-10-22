@@ -136,16 +136,41 @@ def h3_comfy_curve_metadata(path: str) -> Optional[dict]:
 def comfy_layout(path: str) -> dict:
     """``diffusion_comfy_quant.original_layout`` hooks for MiniMax-H3: key map, float32 tensors and, for a pruned
     file, the curve adaLN installed on the freshly built model."""
-    from .video_minimax_h3_adaln import apply_h3_adaln_curve
+    from .video_minimax_h3_pdd import h3_pdd_heads_in_file
 
     metadata = h3_comfy_curve_metadata(path)
+    heads = h3_pdd_heads_in_file(path)
     return {
         "key_map": h3_comfy_key_map,
         "keep_dtype": functools.partial(h3_comfy_keep_dtype, pruned = metadata is not None),
-        "prepare_model": (lambda model: apply_h3_adaln_curve(model, metadata))
-        if metadata is not None
-        else None,
+        "prepare_model": _h3_prepare_model(metadata, heads),
     }
+
+
+def _h3_prepare_model(
+    metadata: Optional[dict],
+    heads: int,
+    logger: Any = None,
+) -> Any:
+    """The ``prepare_model`` hook for one H3 file: curve adaLN for a pruned file, the stacked PDD head bank for a
+    ``with_heads`` one, None when the stock model already matches."""
+    if metadata is None and heads <= 1:
+        return None
+
+    def prepare(model: Any) -> None:
+        if metadata is not None:
+            from .video_minimax_h3_adaln import apply_h3_adaln_curve
+            if logger is not None:
+                apply_h3_adaln_curve(model, metadata, logger = logger)
+            else:
+                apply_h3_adaln_curve(model, metadata)
+        if heads > 1:
+            from .video_minimax_h3_pdd import install_h3_pdd_heads
+            install_h3_pdd_heads(model, heads)
+            if logger is not None:
+                logger.info("video.h3_pdd: %d-head PDD output bank per stream installed", heads)
+
+    return prepare
 
 
 def load_h3_comfy_transformer(
@@ -163,12 +188,16 @@ def load_h3_comfy_transformer(
     fp8_backend: Optional[str],
     target: Any = None,
     logger: Any = None,
+    # H3's pin / stream / residency path is built on torchao weights: dequantize what torchao does not take
+    fp8_storage: Optional[bool] = False,
 ) -> Any:
     """The H3 denoiser of a ComfyUI-quantized file, int8 / fp8 codes kept, curve adaLN installed."""
     from .diffusion_comfy_quant import load_comfy_quant_transformer
-    from .video_minimax_h3_adaln import apply_h3_adaln_curve
+    from .video_minimax_h3_pdd import h3_pdd_heads_in_file
 
     metadata = h3_comfy_curve_metadata(path)
+    # Header only, before any tensor is read: a PDD trunk without its head bank is refused here.
+    heads = h3_pdd_heads_in_file(path)
     return load_comfy_quant_transformer(
         transformer_cls,
         path,
@@ -183,14 +212,11 @@ def load_h3_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
         family = "minimax-h3",
         target = target,
         logger = logger,
         key_map = h3_comfy_key_map,
-        prepare_model = (
-            (lambda model: apply_h3_adaln_curve(model, metadata, logger = logger))
-            if metadata is not None
-            else None
-        ),
+        prepare_model = _h3_prepare_model(metadata, heads, logger = logger),
         keep_dtype = functools.partial(h3_comfy_keep_dtype, pruned = metadata is not None),
     )

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Edge-case tests for Anthropic ``citations_delta`` handling.
-
-Complements ``test_anthropic_citations.py``. Covers malformed payloads,
-unusual orderings, mixed citation types, and the ``citations:
-{enabled: true}`` opt-in attached to translated ``input_document``
-blocks. See
-https://platform.claude.com/docs/en/build-with-claude/citations and
-https://platform.claude.com/docs/en/build-with-claude/search-results.
-"""
+"""Edge cases for citations_delta: malformed payloads, odd orderings, mixed types, citations opt-in."""
 
 import asyncio
 import json
@@ -18,9 +10,6 @@ import httpx
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
-
-
-# ── shared SSE harness ───────────────────────────────────────
 
 
 def _drive(coro):
@@ -50,10 +39,7 @@ def _capture(
     messages: list[dict] | None = None,
     captured_body: dict | None = None,
 ) -> list[str]:
-    """Drive ``stream_chat_completion`` against a mocked Anthropic response
-    and return the SSE lines. Pass ``captured_body`` to also capture the
-    outgoing request body for assertions on the translated Anthropic shape.
-    """
+    """Returns the SSE lines from stream_chat_completion; captured_body records the outgoing request."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         if captured_body is not None:
@@ -160,9 +146,6 @@ def _citation_payload(body: str) -> dict:
         if isinstance(tool_event, dict) and tool_event.get("type") == "document_citations":
             return tool_event
     raise AssertionError("document_citations event not parsed out of SSE body")
-
-
-# ── edge cases ───────────────────────────────────────────────
 
 
 def _citation(**overrides):
@@ -359,7 +342,6 @@ def test_unknown_citation_type_falls_back_to_stringified_key(monkeypatch):
         ],
     )
     body = _joined(lines)
-    # cit_a dedupes onto [1], cit_b gets [2].
     assert body.count("[1]") == 2, body
     assert body.count("[2]") == 1, body
     payload = _citation_payload(body)
@@ -606,9 +588,6 @@ def test_input_document_translation_enables_citations(monkeypatch):
     doc_block = next(p for p in user_msg["content"] if p.get("type") == "document")
     assert doc_block["source"]["type"] == "url", doc_block
     assert doc_block.get("citations") == {"enabled": True}, doc_block
-
-
-# ── cited_text truncation + safe-url citation conversion ────────
 
 
 def test_cited_text_truncated_in_synthetic_event(monkeypatch):

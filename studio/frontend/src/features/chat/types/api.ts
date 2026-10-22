@@ -419,6 +419,9 @@ export interface InferenceStatusResponse {
   serving?: string[];
   /** Per `serving` entry, the id to select, load and unload it by: a local model's path. */
   serving_checkpoints?: string[];
+  resident_mib?: number | null;
+  /** Keep multiple models loaded, as saved on the server. Absent from older servers. */
+  multi_model_mode?: "off" | "fit" | "always";
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -736,7 +739,7 @@ export interface OpenAIChatCompletionsRequest {
   sandbox_level?: "high" | "low";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
-  /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
+  /** `kb_id` replaces `thread_id`; `project_id` combines with either. */
   rag_scope?: {
     kb_id?: string;
     project_id?: string;

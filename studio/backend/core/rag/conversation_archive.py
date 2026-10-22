@@ -1351,20 +1351,57 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
         # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
         # the one insertion `_probe_text` makes.
-        if is_call:
-            if not live:
-                return False
-            if live in stored:
-                return True
-            words = live.split(" ")
-            for cut in range(1, len(words)):
-                head = " ".join(words[:cut])
-                tail = " ".join(words[cut:])
-                at = stored.find(head)
-                if at >= 0 and stored.find(tail, at + len(head)) >= 0:
-                    return True
+        # Space offsets keep split(" ") semantics. Head presence only falls and tail presence only rises as the cut
+        # moves right, so both bounds are binary-searched; the ordered match is not monotone, so every cut between
+        # them is still checked against the earliest head and the latest tail.
+        if not is_call:
+            return stored == live
+
+        if not live:
             return False
-        return stored == live
+
+        if live in stored:
+            return True
+
+        # Splitting removes one space; the remaining characters must fit without overlap.
+        if len(stored) < len(live) - 1:
+            return False
+
+        cuts = [index for index, char in enumerate(live) if char == " "]
+        if not cuts:
+            return False
+
+        # Find the exclusive upper bound of splits whose head occurs in stored.
+        left, right = 0, len(cuts)
+        while left < right:
+            mid = (left + right) // 2
+            if live[: cuts[mid]] in stored:
+                left = mid + 1
+            else:
+                right = mid
+
+        prefix_stop = left
+        if prefix_stop == 0:
+            return False
+
+        # Within that range, find the first split whose tail occurs in stored.
+        left, right = 0, prefix_stop
+        while left < right:
+            mid = (left + right) // 2
+            if live[cuts[mid] + 1 :] in stored:
+                right = mid
+            else:
+                left = mid + 1
+
+        for index in range(left, prefix_stop):
+            cut = cuts[index]
+            head_at = stored.find(live[:cut])
+            tail_at = stored.rfind(live[cut + 1 :])
+
+            if tail_at >= head_at + cut:
+                return True
+
+        return False
 
     return [
         index
@@ -2583,10 +2620,16 @@ def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = N
     return len(removed)
 
 
-def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[str, str], bool]:
+def copy_thread_documents(
+    source_thread_id: str,
+    thread_id: str,
+    *,
+    created_before: Optional[str] = None,
+) -> tuple[dict[str, str], bool]:
     """Copy a thread's finished uploads into another thread. Returns the source-to-copy document id
     map and whether an upload still being ingested was left behind. Failed uploads are not copied
-    and not reported: the documents bar never shows them.
+    and not reported: the documents bar never shows them. ``created_before`` (ISO-8601 UTC) leaves
+    out uploads made after a fork point.
 
     Files are copied before the transaction so rag.db's write lock is never held across file I/O.
     """
@@ -2597,8 +2640,9 @@ def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[s
     conn = rag_db.get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE scope=? ORDER BY created_at",
-            (store.thread_scope(source_thread_id),),
+            "SELECT * FROM documents WHERE scope=? AND (? IS NULL OR created_at<?) "
+            "ORDER BY created_at",
+            (store.thread_scope(source_thread_id), created_before, created_before),
         ).fetchall()
         documents = [dict(row) for row in rows if row["status"] == "completed"]
         for document in documents:

@@ -3,7 +3,8 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-export const WAVEFORM_BARS = 72;
+// Source resolution; the player pools it down to as many bars as fit.
+export const WAVEFORM_BARS = 240;
 
 /** Per-bar peak across channels, normalised so the loudest bar is 1; silence stays 0. */
 export function computePeaks(
@@ -34,6 +35,24 @@ export function computePeaks(
   // Below about -60 dBFS everywhere: treat it as silence.
   if (loudest < 0.001) return peaks.map(() => 0);
   return peaks.map((peak) => Math.min(1, peak / loudest));
+}
+
+/** Max-pools (or repeats) peaks to `count` bars, so a short spike survives the narrowing. */
+export function resamplePeaks(
+  peaks: readonly number[],
+  count: number,
+): number[] {
+  const length = peaks.length;
+  if (length === 0 || count <= 0) return [];
+  return Array.from({ length: count }, (_, bar) => {
+    const start = Math.floor((bar * length) / count);
+    const end = Math.max(start + 1, Math.floor(((bar + 1) * length) / count));
+    let peak = 0;
+    for (let index = start; index < end && index < length; index += 1) {
+      if (peaks[index] > peak) peak = peaks[index];
+    }
+    return peak;
+  });
 }
 
 export function formatSeconds(seconds: number | null | undefined): string {

@@ -42,6 +42,94 @@ function runsCode(name: string): boolean {
   return DANGEROUS.has(extension.toLowerCase()) || DANGEROUS.has(extension.toUpperCase().toLowerCase());
 }
 
+const PROGRAM_TYPES: Record<string, string> = {
+  "application/x-msdownload": "exe",
+  "application/x-msdos-program": "exe",
+  "application/x-ms-dos-executable": "exe",
+  "application/vnd.microsoft.portable-executable": "exe",
+  "application/x-dosexec": "exe",
+  "application/x-msi": "msi",
+  "application/x-ms-installer": "msi",
+  "application/x-apple-diskimage": "dmg",
+  "application/x-sh": "sh",
+  "application/x-shellscript": "sh",
+  "text/x-sh": "sh",
+  "application/java-archive": "jar",
+  "application/x-java-archive": "jar",
+  "application/vnd.debian.binary-package": "deb",
+  "application/x-debian-package": "deb",
+  "application/x-rpm": "rpm",
+  "application/x-redhat-package-manager": "rpm",
+  "application/hta": "hta",
+  "text/javascript": "js",
+  "application/javascript": "js",
+  "application/x-javascript": "js",
+};
+
+const COMMON_TYPES: Record<string, string> = {
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/csv": "csv",
+  "text/tab-separated-values": "tsv",
+  "application/json": "json",
+  "text/markdown": "md",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac",
+  "audio/mp4": "m4a",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "application/zip": "zip",
+  "application/gzip": "gz",
+  "image/svg+xml": "svg",
+  "image/bmp": "bmp",
+  "image/tiff": "tiff",
+  "image/x-icon": "ico",
+  "image/vnd.microsoft.icon": "ico",
+  "image/heic": "heic",
+  "application/epub+zip": "epub",
+  "application/xml": "xml",
+  "text/xml": "xml",
+  "application/rtf": "rtf",
+  "text/rtf": "rtf",
+  "text/calendar": "ics",
+  "application/msword": "doc",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.oasis.opendocument.text": "odt",
+  "application/vnd.oasis.opendocument.spreadsheet": "ods",
+  "application/vnd.oasis.opendocument.presentation": "odp",
+  "application/x-7z-compressed": "7z",
+  "application/x-tar": "tar",
+  "application/vnd.rar": "rar",
+  "application/x-rar-compressed": "rar",
+  "application/x-bzip2": "bz2",
+  "application/x-xz": "xz",
+  "application/zstd": "zst",
+  "audio/webm": "webm",
+  "font/woff": "woff",
+  "font/woff2": "woff2",
+  "font/ttf": "ttf",
+  "font/otf": "otf",
+};
+
+export function withTypeExtension(name: string, contentType: string, includeCommonTypes = false): string {
+  const type = contentType.split(";")[0].trim().toLowerCase();
+  const extension = PROGRAM_TYPES[type] ?? (includeCommonTypes ? COMMON_TYPES[type] : undefined);
+  const stem = name.replace(/^\.+/, "").replace(/[. ]+$/, "");
+  return extension && !/\.[^./\\]+$/.test(stem) ? `${stem || "download"}.${extension}` : name;
+}
+
 /** As the desktop app cleans a name before the cut: controls, bidi controls and reserved characters become
  *  one-byte "_", trailing dots and spaces go. */
 function cleaned(name: string): string {

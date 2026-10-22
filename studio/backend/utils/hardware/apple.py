@@ -18,6 +18,7 @@ Public API (never raises; returns None when sensors are unavailable):
 
 import ctypes
 import struct
+import threading
 import time
 from typing import Iterable, Optional
 
@@ -380,6 +381,8 @@ _smc: Optional[_SMCConnection] = None
 _smc_failed = False
 _energy: Optional[_IOReportEnergy] = None
 _energy_failed = False
+# Two polling threads: gpu_power_w releases the previous CF sample, so unlocked it double-frees.
+_sensor_lock = threading.Lock()
 
 
 def read_gpu_temperature_c() -> Optional[float]:
@@ -388,9 +391,10 @@ def read_gpu_temperature_c() -> Optional[float]:
     if _smc_failed:
         return None
     try:
-        if _smc is None:
-            _smc = _SMCConnection()
-        return _smc.gpu_temperature_c()
+        with _sensor_lock:
+            if _smc is None:
+                _smc = _SMCConnection()
+            return _smc.gpu_temperature_c()
     except Exception as e:
         _smc_failed = True
         logger.warning("Apple SMC GPU temperature unavailable: %s", e)
@@ -406,9 +410,10 @@ def read_gpu_power_w() -> Optional[float]:
     if _energy_failed:
         return None
     try:
-        if _energy is None:
-            _energy = _IOReportEnergy()
-        return _energy.gpu_power_w()
+        with _sensor_lock:
+            if _energy is None:
+                _energy = _IOReportEnergy()
+            return _energy.gpu_power_w()
     except Exception as e:
         _energy_failed = True
         logger.warning("Apple IOReport GPU power unavailable: %s", e)

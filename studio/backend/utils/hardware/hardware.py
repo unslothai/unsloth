@@ -48,7 +48,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -152,21 +152,57 @@ def is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
+_ROSETTA: Optional[bool] = None
+
+
+def _running_under_rosetta() -> bool:
+    """True for an x86_64 Python on an Apple Silicon Mac (``hw.optional.arm64``, as install.sh). Cached; never raises."""
+    global _ROSETTA
+    if _ROSETTA is None:
+        answer = False
+        if platform.system() == "Darwin" and platform.machine() == "x86_64":
+            try:
+                out = subprocess.run(
+                    ["sysctl", "-n", "hw.optional.arm64"],
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = 2,
+                )
+                answer = out.returncode == 0 and out.stdout.strip() == "1"
+            except Exception:
+                answer = False
+        _ROSETTA = answer
+    return _ROSETTA
+
+
 # Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
 TORCH_IMPORT_ERROR: Optional[str] = None
+# Detection epoch of the last broken import: retried (and logged) once per epoch, not on every poll.
+_TORCH_IMPORT_FAILED_EPOCH: Optional[int] = None
 
 
 def _has_torch() -> bool:
     """True if PyTorch is importable. Any failure counts as "no torch": ensure_hardware_detected() re-runs while DEVICE is None, so an escaping OSError would make every request retry the import. The error is recorded, or the host is told to install the torch it already has."""
-    global TORCH_IMPORT_ERROR
+    global TORCH_IMPORT_ERROR, _TORCH_IMPORT_FAILED_EPOCH
+    if (
+        TORCH_IMPORT_ERROR is not None
+        and _TORCH_IMPORT_FAILED_EPOCH == DETECTION_EPOCH
+        and "torch" not in sys.modules
+    ):
+        return False
     try:
         import torch
+
         TORCH_IMPORT_ERROR = None
+        _TORCH_IMPORT_FAILED_EPOCH = None
         return True
     except Exception as exc:
         # ImportError does NOT mean "not installed": a wheel with unresolved native libs raises it from torch's own __init__. Only ModuleNotFoundError naming torch itself is absent; a failed submodule is a broken install.
         absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
         TORCH_IMPORT_ERROR = None if absent else repr(exc)
+        _TORCH_IMPORT_FAILED_EPOCH = None if absent else DETECTION_EPOCH
         if TORCH_IMPORT_ERROR is not None:
             logger.error("torch is installed but failed to import: %r", exc)
         # A part-way failure leaves submodules cached under an evicted parent, so the next importer gets a torch missing pieces; purge_partial_import() clears that.
@@ -854,6 +890,13 @@ def _expected_cpu_flavor_was_chosen() -> bool:
         return True
     # A recorded cpu is not by itself a choice: setup.ps1 selects /cpu automatically on a GPU-less host and records it exactly as it records a pinned one.
     recorded, pinned = _recorded_install_flavor()
+    if recorded == "cpu" and not pinned:
+        # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair. A stated GPU index wins.
+        if _stated_torch_index_source():
+            return False
+        from utils.tegra import tegra_before_cuda13
+        return tegra_before_cuda13()
     return recorded == "cpu" and pinned
 
 
@@ -1533,6 +1576,12 @@ def _detect_hardware_locked() -> DeviceType:
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
         force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
+        # cuInit off the GIL first: torch's probe below holds it for the whole driver init.
+        try:
+            from utils.cuda_driver_prime import prime_cuda_driver
+            prime_cuda_driver(torch)
+        except Exception:  # noqa: BLE001 - never fatal (also loaded standalone, without the package)
+            pass
         try:
             cuda_unavailable = not torch.cuda.is_available()
         except Exception:
@@ -1656,6 +1705,9 @@ def _detect_hardware_locked() -> DeviceType:
         _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
         if _build_reason is not None:
             CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        # MLX needs a native arm64 Python; "Intel Mac" would be wrong.
+        CHAT_ONLY_REASON = "rosetta"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
@@ -1674,6 +1726,9 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
+        elif _installed_without_torch():
+            # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            CHAT_ONLY_REASON = "no_torch"
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1939,6 +1994,12 @@ def export_capability() -> dict:
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
             "`unsloth studio update` to restore MLX and enable export."
         )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Unsloth is running under Rosetta (x86_64 Python), so export is disabled. Re-run the installer from a "
+            "native arm64 terminal to enable export."
+        )
     elif _gpu_present_but_unusable_message("export", verdict) is not None:
         # BEFORE _has_torch(), which reports an unimportable wheel as absent while re-running the seconds-long import that already failed.
         reason = verdict[0]
@@ -1964,8 +2025,35 @@ def export_capability() -> dict:
     }
 
 
+def _video_cpu_opt_in() -> bool:
+    """Developer mode's CPU video opt-in (env override, else the owner setting). Never raises: an unreadable setting is off."""
+    try:
+        from utils.video_cpu_settings import video_cpu_enabled
+        return bool(video_cpu_enabled())
+    except Exception as exc:  # noqa: BLE001 -- the gate must answer even when the settings store cannot
+        logger.debug("video_capability: CPU opt-in unreadable (%s); treating it as off", exc)
+        return False
+
+
 def video_capability() -> dict:
-    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch. Returns {video_supported, video_unsupported_reason, video_unsupported_message}."""
+    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch.
+
+    A plain CPU-only host (reason ``no_accelerator``: torch imports, detection worked, no GPU at all) is refused by default; Developer mode (``utils.video_cpu_settings``) admits it as experimental, the diffusers pipelines then resolving to the float32 CPU target. Every other refusal stays one whatever the opt-in says. Returns {video_supported, video_unsupported_reason, video_unsupported_message, video_cpu_experimental, video_cpu_opt_in_applicable}: the last says whether the opt-in would change the answer on this host, so Settings can say when it has no effect."""
+    cap = _video_capability_verdict()
+    applicable = cap["video_unsupported_reason"] == "no_accelerator"
+    if applicable and _video_cpu_opt_in():
+        return {
+            "video_supported": True,
+            "video_unsupported_reason": None,
+            "video_unsupported_message": None,
+            "video_cpu_experimental": True,
+            "video_cpu_opt_in_applicable": True,
+        }
+    return {**cap, "video_cpu_experimental": False, "video_cpu_opt_in_applicable": applicable}
+
+
+def _video_capability_verdict() -> dict:
+    """``video_capability`` without the Developer mode opt-in: {video_supported, video_unsupported_reason, video_unsupported_message}."""
     if get_device() in (DeviceType.CUDA, DeviceType.XPU):
         return {
             "video_supported": True,
@@ -2007,6 +2095,12 @@ def video_capability() -> dict:
                 "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
                 "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
             )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Unsloth is running under Rosetta (x86_64 Python), which has no Metal (MPS) device for the "
+            "video pipelines. Re-run the installer from a native arm64 terminal to enable video generation."
+        )
     elif platform.system() == "Darwin":
         # Ahead of the torch/GPU branches below: neither installing torch nor adding a GPU enables video on an Intel Mac, so it must not be told to try either.
         reason = "macos_unsupported"
@@ -2027,8 +2121,9 @@ def video_capability() -> dict:
         reason = "no_accelerator"
         message = (
             "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator was "
-            "found on this host. (PyTorch is installed, but the video pipelines cannot run on CPU "
-            "only.)"
+            "found on this host. (PyTorch is installed, but the video pipelines are not enabled on "
+            "CPU only. The owner can allow experimental CPU video in Settings > General > "
+            "Developer mode.)"
         )
     return {
         "video_supported": False,
@@ -2723,7 +2818,24 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 
 
 # APU architectures that are unified memory but sit outside the shared classifier's positive set, which names anything else from hipDeviceProp_t::integrated. clr never assigned deviceProps.integrated before rocm-6.2.0 and the legacy R0000 property ABI still does not, while paldevice.cpp inflates globalMemSize_ off settings().apuSystem_ in both cases -- harmless for the cap and the total, wrong for a NUMERATOR. gfx1103 Phoenix / Hawk Point never shipped as a discrete board, so naming it here can only upgrade a part whose props.total_memory really does span host memory.
-_ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
+# The rest of LLVM's AMDGPUUsage processor table rows typed APU are named here on the same footing (none ever shipped as a
+# discrete board): gfx1153 Krackan Point 2 (Windows-supported), gfx1033 Van Gogh, gfx1035 Rembrandt, gfx1036 Raphael /
+# Granite Ridge iGPU, gfx1013 Cyan Skillfish, gfx90c / gfx902 / gfx909 Renoir / Raven, gfx801 / gfx810 Carrizo / Stoney.
+_ROCM_UNNAMED_APU_ARCHES = frozenset(
+    {
+        "gfx801",
+        "gfx810",
+        "gfx902",
+        "gfx909",
+        "gfx90c",
+        "gfx1013",
+        "gfx1033",
+        "gfx1035",
+        "gfx1036",
+        "gfx1103",
+        "gfx1153",
+    }
+)
 
 
 def _rocm_props_unified_status(props: Any) -> Optional[bool]:
@@ -3023,8 +3135,33 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
     return None
 
 
+_APPLE_GPU_STATS_TTL_S = 1.5
+_apple_gpu_stats_lock = threading.Lock()
+_apple_gpu_stats_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
 def _read_apple_gpu_stats() -> Dict[str, Any]:
-    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed."""
+    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed. Display reads reuse one up to 1.5 s old (a refresh asks twice); fit and placement read fresh."""
+    global _apple_gpu_stats_cache
+    try:
+        from utils.hardware import gpu_query
+        serve_cached = gpu_query.display_cache_allowed()
+    except Exception:
+        serve_cached = False
+    with _apple_gpu_stats_lock:
+        cached = _apple_gpu_stats_cache
+        if (
+            serve_cached
+            and cached is not None
+            and time.monotonic() - cached[0] < _APPLE_GPU_STATS_TTL_S
+        ):
+            return dict(cached[1])
+        stats = _read_apple_gpu_stats_uncached()
+        _apple_gpu_stats_cache = (time.monotonic(), dict(stats)) if stats else None
+        return stats
+
+
+def _read_apple_gpu_stats_uncached() -> Dict[str, Any]:
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
@@ -4898,8 +5035,18 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
-def get_visible_gpu_utilization() -> Dict[str, Any]:
+def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
+    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
+    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
     device = get_device()
+    if no_context and IS_ROCM and device == DeviceType.CUDA:
+        return {
+            "available": False,
+            "backend": _backend_label(device),
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+            "index_kind": "relative",
+        }
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -5003,7 +5150,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "index_kind": index_kind,
                 }
 
-        torch_devices = _torch_get_per_device_info(torch_indices)
+        torch_devices = [] if no_context else _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = []
             for td in torch_devices:
@@ -5049,6 +5196,15 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 "devices": [],
                 "index_kind": "relative",
             }
+        gpu_utilization_pct = temperature_c = power_draw_w = None
+        try:
+            from . import apple
+
+            gpu_utilization_pct = _read_apple_gpu_stats().get("utilization_pct")
+            temperature_c = apple.read_gpu_temperature_c()
+            power_draw_w = apple.read_gpu_power_w()
+        except Exception as e:
+            logger.debug("Apple GPU telemetry unavailable: %s", e)
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -5058,14 +5214,14 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "index": 0,
                     "index_kind": "relative",
                     "visible_ordinal": 0,
-                    "gpu_utilization_pct": None,
-                    "temperature_c": None,
+                    "gpu_utilization_pct": gpu_utilization_pct,
+                    "temperature_c": temperature_c,
                     "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
                     "vram_total_gb": round(mem.get("total_gb", 0), 2),
                     # Unified memory: free is not total - used, so publish it rather than let the caller subtract.
                     "vram_free_gb": round(mem.get("free_gb", 0), 2),
                     "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
-                    "power_draw_w": None,
+                    "power_draw_w": power_draw_w,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
                 }

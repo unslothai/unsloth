@@ -11,7 +11,7 @@
 # equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
 # --python, --local).
 #
-# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > UNSLOTH_HOME/studio > $USERPROFILE\.unsloth\studio
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
@@ -2159,6 +2159,8 @@ function Install-UnslothStudio {
         $env:UNSLOTH_STUDIO_HOME.Trim()
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         $env:STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        $env:UNSLOTH_HOME.Trim()
     } else {
         $UnslothRoot
     }
@@ -2179,6 +2181,9 @@ function Install-UnslothStudio {
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         $envOverrideVar = "STUDIO_HOME"
         $envOverride = $env:STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        $envOverrideVar = "UNSLOTH_HOME (studio child)"
+        $envOverride = Join-Path $env:UNSLOTH_HOME.Trim() "studio"
     }
     $defaultProfile = $null
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
@@ -3156,13 +3161,16 @@ function Install-UnslothStudio {
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root,
     # or the one the desktop chose (UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME=1).
+    if ($envOverride) {
+        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
+            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
+        }
+        $envOverride = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($envOverride)
+    }
     $tauriChosenRoot = ($TauriMode -and $envOverrideVar -eq "UNSLOTH_STUDIO_HOME" -and
         $env:UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME -eq "1")
     if ($TauriMode -and $envOverride -and -not $tauriChosenRoot) {
         $_tauriOverride = $envOverride
-        if ($_tauriOverride -eq "~" -or $_tauriOverride -like "~/*" -or $_tauriOverride -like "~\*") {
-            $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
-        }
         try {
             $_tauriOverride = Get-StudioFinalPath -Path $_tauriOverride
         } catch {}
@@ -3218,10 +3226,6 @@ function Install-UnslothStudio {
     $script:StudioEnvRootExisted = $false
 
     if ($envOverride) {
-        # Tilde expansion: env vars aren't subject to it when quoted on assignment.
-        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
-            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
-        }
         try {
             # BEFORE the create: this is the only moment anyone can still tell. The lock runs
             # thousands of lines below and asks whether the root existed, which by then is yes for
@@ -3249,9 +3253,10 @@ function Install-UnslothStudio {
             Restore-StudioTempEnvironment
             throw "$envOverrideVar=$StudioHome is not writable."
         }
-        # A new desktop-chosen root would inherit its drive's ACL (often writable by every
-        # account): give it the profile's access instead. An existing folder keeps its ACL.
-        if ($tauriChosenRoot -and -not $script:StudioEnvRootExisted) {
+        # A new custom root would inherit its drive's ACL (often writable by every account, so
+        # another user could swap the installed executables): give it the profile's access
+        # instead. An existing folder keeps its ACL.
+        if (-not $script:StudioEnvRootExisted) {
             try {
                 $rootAcl = New-Object System.Security.AccessControl.DirectorySecurity
                 $rootAcl.SetAccessRuleProtection($true, $false)
@@ -4435,6 +4440,10 @@ function Install-UnslothStudio {
         }
         return (Get-CanonicalDir -Path $value)
     }
+
+    # Anchor the master root before the System32 escape changes the working directory.
+    $_installMasterRoot = Get-MasterRootOverride
+    if ($_installMasterRoot) { $env:UNSLOTH_HOME = $_installMasterRoot }
 
     # Explicit staging root, the master root, the shared default cache, or the custom Unsloth
     # home's tree.
@@ -7299,6 +7308,8 @@ exit 0
     $script:PrevTorchVer = ""
     $script:PrevTorchPin = $null
     $script:ExistingInstall = $false
+    # The release being replaced, shown next to the new one at the end (#9910).
+    $script:PrevPackageVersion = ""
 
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)
@@ -7778,6 +7789,24 @@ exit 0
         return $null
     }
 
+    # Version of distribution $Name in $VenvRoot from its dist-info METADATA, without running the
+    # interpreter. $null when there is no record or more than one.
+    function Get-PackageVersionFromDisk {
+        param([string]$VenvRoot, [string]$Name)
+        $sitePackages = Join-Path $VenvRoot "Lib\site-packages"
+        $distName = $Name -replace '[-.]', '_'
+        try {
+            $records = @(Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "$distName-*.dist-info" -ErrorAction Stop)
+            if ($records.Count -ne 1) { return $null }
+            $metadata = Join-Path $records[0].FullName "METADATA"
+            if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) { return $null }
+            foreach ($line in [System.IO.File]::ReadAllLines($metadata)) {
+                if ($line -match '^Version:\s*(\S+)') { return $Matches[1] }
+            }
+        } catch {}
+        return $null
+    }
+
     # Before anything below moves an environment aside; a broken legacy .venv still counts.
     $_legacyVenvDir = Join-Path $StudioHome ".venv"
     $_cwdVenvPy = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe" } else { $null }
@@ -7836,6 +7865,8 @@ exit 0
         if ((Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
             $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
         }
+        $script:PrevPackageVersion = Get-PackageVersionFromDisk -VenvRoot $VenvDir -Name $PackageName
+        if ($script:PrevPackageVersion) { substep "found $PackageName $($script:PrevPackageVersion)" }
         # New layout already exists -- replace only after preserving rollback copy, unless the
         # caller asked for no copy at all, in which case this line would be contradicted by the
         # "discarded" one Start-StudioVenvRollback prints a moment later.
@@ -10718,8 +10749,8 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.6" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.6"
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.7" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.7"
 
     # Twin of install.sh's _relax_unsloth_floors_to_index (#14031).
     function Resolve-UnslothFloorsForIndex {
@@ -11211,7 +11242,13 @@ sys.exit(2 if conflict else (0 if installed else 1))
     if ($_installedPackageVersionExit -eq 2) {
         substep "duplicate metadata found for $PackageName; the dependency pass will repair it" "Cyan"
     } elseif ($_installedPackageVersionExit -eq 0 -and $installedPackageVersion) {
-        step $PackageName "$installedPackageVersion installed"
+        $_installedPackageChange = ""
+        if ($script:PrevPackageVersion -eq $installedPackageVersion) {
+            $_installedPackageChange = " (unchanged)"
+        } elseif ($script:PrevPackageVersion) {
+            $_installedPackageChange = " (was $($script:PrevPackageVersion))"
+        }
+        step $PackageName "$installedPackageVersion installed$_installedPackageChange"
     } else {
         substep "[WARN] installed $PackageName version could not be determined" "Yellow"
     }

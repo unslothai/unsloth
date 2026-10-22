@@ -86,7 +86,7 @@ jobs:
             secret_name: KAGGLE_API_TOKEN_2
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
         with:
           egress-policy: audit
 
@@ -174,7 +174,7 @@ jobs:
       - name: Upload evidence
         if: always() && hashFiles('kaggle_collected/**') != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: kaggle-collect-evidence-account-${{ matrix.account_id }}
           path: |

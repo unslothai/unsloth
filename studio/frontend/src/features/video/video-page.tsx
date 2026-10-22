@@ -4,6 +4,7 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Alert02Icon,
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
@@ -27,6 +28,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
+import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
@@ -193,6 +195,8 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
+import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -962,6 +966,7 @@ type VideoLoadAdvanced = Pick<
   | "transformer_quant"
   | "family_override"
   | "gpu_ids"
+  | "allow_oversized_load"
 >;
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
@@ -1018,16 +1023,41 @@ export function VideoPage({
   }
 
   return (
-    <VideoGenerator active={active} onInitialReady={onInitialReady} />
+    <VideoGenerator
+      active={active}
+      onInitialReady={onInitialReady}
+      cpuExperimental={hardware.videoCpuExperimental}
+    />
+  );
+}
+
+/** Kept up for as long as Developer mode is what lets this host render: nothing else on the page
+ *  says the clip is about to run on the CPU. */
+function VideoCpuExperimentalBanner() {
+  return (
+    <div
+      role="status"
+      data-testid="video-cpu-experimental"
+      className="relative z-40 flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs leading-snug text-amber-700 dark:text-amber-300"
+    >
+      <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} className="mt-px size-3.5 shrink-0" />
+      <span>
+        <span className="font-medium">CPU (experimental).</span> No supported GPU was found, so
+        Developer mode runs video on the CPU. A clip may take hours, use large amounts of RAM and
+        freeze the system. Turn it off in Settings, General, Developer mode.
+      </span>
+    </div>
   );
 }
 
 function VideoGenerator({
   active = true,
   onInitialReady,
+  cpuExperimental = false,
 }: {
   active?: boolean;
   onInitialReady?: () => void;
+  cpuExperimental?: boolean;
 }) {
   const t = useT();
   const initialReadySent = useRef(false);
@@ -1228,6 +1258,12 @@ function VideoGenerator({
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails:
   // handleLoad overwrites lastLoad at load start, and a later failure leaves the old model.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
+  // Set only around a confirmed Load anyway retry.
+  const oversizedLoadOnce = useRef(false);
+  const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
+  // Synced after render (handleLoadRef is written during render).
+  const retryLoadRef = useRef<((repoId: string, opts: VideoLoadOptions, pinned?: VideoLoadAdvanced) => Promise<boolean>) | null>(null);
+  const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Which pick owns the page: resolving and staging do not set `busy`, so a pick can land on an
   // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
@@ -2409,6 +2445,16 @@ function VideoGenerator({
     setSelectorOpen(false);
   }, [active]);
 
+  const offerLoadAnywayFor = useCallback(
+    (failure: unknown, code?: string | null): boolean => {
+      const attempt = lastLoadAttempt.current;
+      if (!attempt || !shouldOfferLoadAnyway({ code, failure, overrideSent: attempt.overrideSent })) return false;
+      offerLoadAnyway(failureMessage(failure) || "Failed to load model", attempt.retry);
+      return true;
+    },
+    [offerLoadAnyway],
+  );
+
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
@@ -2439,7 +2485,7 @@ function VideoGenerator({
       if (p.phase === "error") {
         pendingEvicted.current = [];
         dismissLoadToast();
-        reportLoadFailure(p.error, "Failed to load model");
+        if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         if (quantRevert.current) {
           revertPick(quantRevert.current);
@@ -2483,7 +2529,7 @@ function VideoGenerator({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -2659,6 +2705,8 @@ function VideoGenerator({
           controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)
             ? [Number(controls.selectedGpu)]
             : undefined,
+        // Only a confirmed Load anyway retry sets it, around the one loadOrStage call that snapshots this.
+        allow_oversized_load: oversizedLoadOnce.current ? true : undefined,
       };
     },
     [],
@@ -2703,6 +2751,8 @@ function VideoGenerator({
       // unload that can reach the backend first, find no load registered, and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      // An older pick's Load anyway prompt would retry a model this load supersedes.
+      dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
@@ -2729,6 +2779,13 @@ function VideoGenerator({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
+      const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+      const retryPick = pickSeq.current;
+      const retryOversized = retryWhileCurrent(
+        () => retryPick === pickSeq.current && startLoad === loadSeq.current,
+        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+      );
+      lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
         if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
@@ -2753,6 +2810,7 @@ function VideoGenerator({
           // joining the pinned set.
           h3_task: opts.h3Task,
           gpu_ids: advanced.gpu_ids,
+          allow_oversized_load: advanced.allow_oversized_load,
         });
         const answer = await startRequest;
         pendingEvicted.current = evictedSlotsFrom(answer);
@@ -2763,7 +2821,7 @@ function VideoGenerator({
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err, "Failed to start load");
+        if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
@@ -2799,6 +2857,8 @@ function VideoGenerator({
       canReapply,
       currentLoadAdvanced,
       pickToast,
+      offerLoadAnywayFor,
+      dismissLoadAnyway,
     ],
   );
 
@@ -2813,6 +2873,9 @@ function VideoGenerator({
     toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
+  useEffect(() => {
+    retryLoadRef.current = handleLoad;
+  }, [handleLoad]);
   handleLoadRef.current = handleLoad;
   // A download finishing while this page is hidden must not evict the model the visible page
   // loaded. The pick is held, not dropped.
@@ -2889,6 +2952,7 @@ function VideoGenerator({
       // missing its base repo's text encoder or VAE. Staging never sets `busy`, so plans resolve in
       // response order; bumped before the non-hub return too, so a local pick invalidates one in flight.
       const pick = ++pickSeq.current;
+      dismissLoadAnyway();
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       pendingStagedLoad.current = null;
@@ -2906,6 +2970,7 @@ function VideoGenerator({
       const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it, as on the images page.
       let incompatible: string | null = null;
+      let incompatibleCode: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: opts.displayRepoId ?? repoId,
@@ -2923,6 +2988,8 @@ function VideoGenerator({
           h3_task: opts.h3Task,
           // The plan sizes its file set against the card the load will use, so it needs the pick.
           gpu_ids: advanced.gpu_ids,
+          // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
+          allow_oversized_load: advanced.allow_oversized_load,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {
@@ -2934,6 +3001,7 @@ function VideoGenerator({
         // GGUF/base size pairing and the video planner has no diffusers base to pair against, so this is
         // the shared envelope's half of the contract rather than a live path.
         incompatible = plan.incompatible_reason ?? null;
+        incompatibleCode = plan.incompatible_code ?? null;
         if (!incompatible && plan.entries.length > 0) {
           const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
@@ -2959,13 +3027,29 @@ function VideoGenerator({
       }
       if (incompatible) {
         pickToast.dismiss(pickToastId);
-        toast.error(incompatible);
+        const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+        if (shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
+          offerLoadAnyway(incompatible, retryWhileCurrent(() => pick === pickSeq.current, () => {
+            oversizedLoadOnce.current = true;
+            try {
+              void loadOrStageRef.current(repoId, opts, source, undefined, familyOverrideRequired);
+            } finally {
+              oversizedLoadOnce.current = false;
+            }
+          }));
+        } else {
+          toast.error(incompatible);
+        }
         return false;
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, pickGuard, currentLoadAdvanced, pickToast],
+    [stage, pickGuard, currentLoadAdvanced, pickToast, offerLoadAnyway, dismissLoadAnyway],
   );
+  const loadOrStageRef = useRef(loadOrStage);
+  useEffect(() => {
+    loadOrStageRef.current = loadOrStage;
+  }, [loadOrStage]);
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
@@ -3214,7 +3298,8 @@ function VideoGenerator({
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
     pickToast.dismissAll();
-  }, [pickToast]);
+    dismissLoadAnyway();
+  }, [pickToast, dismissLoadAnyway]);
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
@@ -3716,7 +3801,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -3860,6 +3945,7 @@ function VideoGenerator({
           </div>
         </DialogContent>
       </Dialog>
+      {cpuExperimental ? <VideoCpuExperimentalBanner /> : null}
       {/* Header: selector over the rail, Library link over the preview, as on Images and Audio. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
@@ -3931,6 +4017,10 @@ function VideoGenerator({
           )}
           <div className="pointer-events-none col-start-2 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <MediaApiButton
+                kind="video"
+                model={status?.loaded ? (status.repo_id ?? null) : null}
+              />
               <LibraryPageLink
                 tab="videos"
                 labelClassName="hidden @[50rem]:inline"
@@ -4910,6 +5000,7 @@ function VideoGenerator({
         </div>
 
       </div>
+      {loadAnywayDialog}
     </div>
   );
 }

@@ -386,25 +386,28 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
+SSM_RESTART_REQUIRED = "ssm_runtime_restart_required"
+
+
 def _ensure_ssm_kernels(
     targets: list,
     resp_queue: Any,
     hf_token: str | None = None,
+    trust_remote_code: bool | None = None,
 ) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
     non-SSM models, idempotent. *targets* are ``(probe_identifier, config_target)`` pairs: the
-    kernels are decided from the config at ``config_target`` (the resolved base), the name only
-    when there is none. Returns True on success; on a fatal mamba-ssm failure sends a 'loaded'
-    failure response and returns False. Call BEFORE importing transformers, which snapshots its
-    optional-backend gates at import; an in-process reload clears them after installing.
+    kernels are decided from the config at ``config_target`` (the resolved base, or a local
+    adapter's recorded base), the name only when there is none. Call BEFORE importing
+    transformers, which snapshots its optional-backend gates at import.
+
+    Returns True on success. Returns False after sending a 'loaded' failure: on a fatal mamba-ssm
+    failure, or when a kernel was newly installed after this process already imported the model's
+    modeling module, whose captured kernel functions only a fresh worker picks up (the
+    orchestrator respawns once on ``SSM_RESTART_REQUIRED``).
     """
     try:
-        from utils.ssm_runtime import (
-            ensure_ssm_runtime,
-            refresh_transformers_kernel_gates,
-            resolved_model_is_ssm,
-            resolved_model_wants_causal_conv1d,
-        )
+        from utils.ssm_runtime import modeling_modules_needing_restart, provision_ssm_kernels
     except Exception as exc:
         logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
         return True
@@ -412,17 +415,49 @@ def _ensure_ssm_kernels(
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
     try:
         for probe, config_target in dict.fromkeys(t for t in targets if t and t[0]):
-            config_target = config_target or probe
-            ensure_ssm_runtime(
+            # trust_remote_code decides whether an auto_map model loads its remote code, and so
+            # whether a missing mamba-ssm refuses the load (see ssm_runtime.mamba_ssm_is_fatal).
+            kernels, installed = provision_ssm_kernels(
                 probe,
+                config_target or probe,
+                hf_token,
+                trust_remote_code = trust_remote_code,
                 status_cb = _ssm_status,
-                # transformers-free: this runs before the worker's transformers import.
-                wants_causal_conv1d = resolved_model_wants_causal_conv1d(
-                    probe, config_target, hf_token, scan_modeling_source = False
-                ),
-                is_ssm = resolved_model_is_ssm(probe, config_target, hf_token),
             )
-        refresh_transformers_kernel_gates()
+            stale = (
+                modeling_modules_needing_restart(kernels.model_types, kernels.remote_code)
+                if installed
+                else []
+            )
+            if stale:
+                from utils.ssm_runtime import REMOVED_PREFIX
+
+                # "removed mamba_ssm" entries mark an uninstall, which changes the kernels as much
+                # as an install does; say which happened.
+                changes = ", ".join(
+                    f"Removed {name[len(REMOVED_PREFIX):]}"
+                    if name.startswith(REMOVED_PREFIX)
+                    else f"Installed {name}"
+                    for name in installed
+                )
+                logger.info(
+                    "%s after %s was imported; restarting the worker to pick it up",
+                    changes,
+                    ", ".join(stale),
+                )
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "success": False,
+                        "message": (
+                            f"{changes} for this model; restarting the model worker to "
+                            "pick up the change."
+                        ),
+                        "error_kind": SSM_RESTART_REQUIRED,
+                    },
+                )
+                return False
         return True
     except Exception as exc:
         _send_response(
@@ -717,7 +752,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     _ssm_base or config["model_name"],
                 )
             ]
-            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token):
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token, trust_remote_code):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -785,6 +820,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
                 load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
+            from utils.security.file_security import escaping_weight_references
+
+            # Right before the load: the folder may have been edited since the route checked it.
+            lora_base = getattr(mc, "base_model", None) if mc.is_lora else None
+            for folder in (config["model_name"], lora_base):
+                if folder and escaping_weight_references(folder):
+                    raise ValueError("This model's weight index names files outside its folder.")
             success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
@@ -861,6 +903,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
+            # MLX serves a vision config mlx-lm built as text; the parent must stop accepting images.
+            if model_info["is_mlx"] and _entry.get("is_vision") is False:
+                model_info["is_vision"] = False
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
@@ -1170,7 +1215,7 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
             raise RuntimeError("The loaded backend does not read video.")
         gen_kwargs["video"] = cmd["video_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
-    for raw in ("prompt_ids", "penalty_window", "grammar"):
+    for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
             gen_kwargs[raw] = cmd[raw]
 
@@ -1254,6 +1299,7 @@ _COMPLETION_OPTIONS = (
     "stop",
     "penalty_window",
     "grammar",
+    "n_probs",
 )
 
 
@@ -2490,7 +2536,7 @@ def run_inference_process(
     from utils.ssm_runtime import ssm_probe_identifier
 
     _ssm_targets = [(ssm_probe_identifier(model_name, _base), _base or model_name)]
-    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token):
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token, _trust_remote_code):
         return
 
     try:

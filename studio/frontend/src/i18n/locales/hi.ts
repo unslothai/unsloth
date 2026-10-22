@@ -50,6 +50,11 @@ export const hi = {
     removeFromMessage: "मैसेज से हटाएँ",
   },
   browser: {
+    drafts: {
+      title: "दर्ज किए गए टेक्स्ट वाला पेज अनलोड करें?",
+      description: "चैट को तेज़ बनाए रखने के लिए दर्ज किए गए टेक्स्ट वाले केवल तीन छिपे पेज चलते रहते हैं। जारी रखने पर {pages} अनलोड होगा और बिना सहेजा टेक्स्ट खो सकता है। रद्द करने पर पिछले टैब पर लौटेंगे।",
+      confirm: "अनलोड करें और जारी रखें",
+    },
     agentSettings: {
       title: "ब्राउज़र उपयोग",
       enable: "मॉडल को ब्राउज़र इस्तेमाल करने दें",
@@ -113,6 +118,7 @@ export const hi = {
     reload: "फिर से लोड करें",
     more: "और",
     addressPlaceholder: "खोजें या URL डालें",
+    local: "लोकल",
     suggested: "सुझाव",
     suggestedMenu: {
       open: "खोलें",
@@ -210,7 +216,7 @@ export const hi = {
     importBookmarksDoneOne: "{count} बुकमार्क इंपोर्ट किया गया।",
     importBookmarksDoneMany: "{count} बुकमार्क इंपोर्ट किए गए।",
     importBookmarksNone: "उस फ़ाइल में कोई नया बुकमार्क नहीं है।",
-    importBookmarksPartial: "{count} इंपोर्ट किए गए, लेकिन {leftOut} और नहीं समा सके: Studio अधिकतम {max} बुकमार्क रखता है।",
+    importBookmarksPartial: "{count} इंपोर्ट किए गए, लेकिन {leftOut} और नहीं समा सके: Unsloth अधिकतम {max} बुकमार्क रखता है।",
     importBookmarksFailed: "वह फ़ाइल पढ़ी नहीं जा सकी। किसी ब्राउज़र से एक्सपोर्ट की गई बुकमार्क HTML फ़ाइल चुनें।",
     downloadsTitle: "डाउनलोड",
     askWhereToSaveSetting: "हर फ़ाइल के लिए पूछें कि कहाँ सहेजना है",
@@ -261,7 +267,7 @@ export const hi = {
     annotationScreenshotsAlways: "हमेशा शामिल करें",
     annotationScreenshotsNever: "कभी शामिल न करें",
     clearDataSetting: "ब्राउज़िंग डेटा साफ़ करें",
-    clearDataSettingDescription: "ब्राउज़िंग हिस्ट्री, डाउनलोड हिस्ट्री और कैश किए गए पेज साफ़ करें। पेज कुकी और साइट डेटा सिर्फ़ तब तक रखते हैं जब तक Studio फिर से लोड न हो।",
+    clearDataSettingDescription: "ब्राउज़िंग हिस्ट्री, डाउनलोड हिस्ट्री और कैश किए गए पेज साफ़ करें। पेज कुकी और साइट डेटा सिर्फ़ तब तक रखते हैं जब तक Unsloth फिर से लोड न हो।",
     manage: "मैनेज करें",
     fullView: {
       enter: "पूर्ण दृश्य",
@@ -463,6 +469,8 @@ export const hi = {
       downloadFailed: "{name} डाउनलोड नहीं हो सका",
       notMarked: "{name} सहेजा गया, लेकिन इसे इंटरनेट से डाउनलोड की गई फ़ाइल के रूप में चिह्नित नहीं किया जा सका, इसलिए खोलने से पहले आपका सिस्टम चेतावनी नहीं देगा।",
       blocked: "यह पता ब्राउज़र पैनल में नहीं खुल सकता। यह केवल सार्वजनिक वेबसाइटें खोलता है।",
+      blockedLocal: "यह लोकल पता यहाँ नहीं खुल सकता। इसे खोलने के लिए एड्रेस बार में टाइप करें।",
+      studioAddress: "यह Unsloth का अपना पता है, इसलिए यह ब्राउज़र पैनल में नहीं खुल सकता।",
       clearDataSettingDescription: "ब्राउज़िंग इतिहास, डाउनलोड इतिहास, कैश किए गए पेज और साइट कुकीज़ व डेटा साफ़ करें। इससे आप साइटों से साइन आउट हो जाएंगे।",
       clearDataDescription: "इससे आपका ब्राउज़िंग इतिहास, डाउनलोड इतिहास, कैश किए गए पेज और साइट कुकीज़ व डेटा साफ़ हो जाते हैं, और आप साइटों से साइन आउट हो जाते हैं। डाउनलोड की गई फ़ाइलें आपके कंप्यूटर पर रहती हैं।",
       clearDataFailed: "साइट डेटा साफ़ नहीं हो सका। फिर से कोशिश करें।",
@@ -843,6 +851,7 @@ export const hi = {
       byProject: "प्रोजेक्ट के अनुसार",
       inOneList: "एक ही सूची में",
       sortChatsBy: "चैट क्रमबद्ध करें",
+      projectsHome: "प्रोजेक्ट होम",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
       switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
@@ -1083,6 +1092,10 @@ export const hi = {
       alternateSlot: "वैकल्पिक शॉर्टकट",
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
+      metaUnsupported: "Windows कुंजी का उपयोग शॉर्टकट में नहीं किया जा सकता।",
+      altGraphUnsupported: "AltGr संयोजनों को शॉर्टकट के रूप में उपयोग नहीं किया जा सकता।",
+      desktopOnly: "केवल डेस्कटॉप ऐप में",
+      builtInKey: "अंतर्निहित: {key}",
       actions: {
         findInPage: {
           label: "पेज में खोजें",
@@ -1284,6 +1297,10 @@ export const hi = {
           label: "उत्तर बदलें",
           description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
         },
+        stopGeneration: {
+          label: "जनरेशन रोकें",
+          description: "लिखा जा रहा जवाब रोकें",
+        },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
           description: "तर्क प्रयास के स्तरों में क्रमशः बदलें",
@@ -1445,15 +1462,15 @@ export const hi = {
       dictation: {
         audioUploadTitle: "रिकॉर्डिंग से डिक्टेशन करें",
         audioUploadDescription:
-          "आपके ब्राउज़र को Studio में सीधे रिकॉर्ड करने के लिए सुरक्षित कनेक्शन (HTTPS) चाहिए। इस HTTP कनेक्शन पर, इसके बजाय अपने फ़ोन का रिकॉर्डर इस्तेमाल करें या सेव की गई रिकॉर्डिंग चुनें। आपका Studio सर्वर ऑडियो को टेक्स्ट में बदलेगा और उसे आपके संदेश में जोड़ देगा।",
+          "आपके ब्राउज़र को Unsloth में सीधे रिकॉर्ड करने के लिए सुरक्षित कनेक्शन (HTTPS) चाहिए। इस HTTP कनेक्शन पर, इसके बजाय अपने फ़ोन का रिकॉर्डर इस्तेमाल करें या सेव की गई रिकॉर्डिंग चुनें। आपका Unsloth सर्वर ऑडियो को टेक्स्ट में बदलेगा और उसे आपके संदेश में जोड़ देगा।",
         audioUploadChooseFile: "रिकॉर्डिंग चुनें",
         audioUploadRecord: "ऑडियो रिकॉर्ड करें",
         audioUploadIphoneHint:
           "iPhone पर, Voice Memos या किसी अन्य रिकॉर्डर ऐप से रिकॉर्डिंग सेव करें, फिर उसे यहाँ चुनें।",
         audioUploadServerModelNote:
-          "यह रिकॉर्डिंग Studio सर्वर पर ऊपर दिखाए गए स्थानीय मॉडल का उपयोग करती है, भले ही सामान्य डिक्टेशन किसी दूसरे इंजन का उपयोग करता हो।",
+          "यह रिकॉर्डिंग Unsloth सर्वर पर ऊपर दिखाए गए स्थानीय मॉडल का उपयोग करती है, भले ही सामान्य डिक्टेशन किसी दूसरे इंजन का उपयोग करता हो।",
         audioUploadAutomatic: "स्वचालित",
-        audioUploadModelReady: "इस Studio सर्वर पर तैयार",
+        audioUploadModelReady: "इस Unsloth सर्वर पर तैयार",
         audioUploadRetryTitle: "{file} को टेक्स्ट में नहीं बदला जा सका",
         audioUploadRetry: "ट्रांसक्रिप्शन फिर से आज़माएँ",
         audioUploadChooseModel:
@@ -1616,9 +1633,9 @@ export const hi = {
         autoDescription: "हर जवाब पूरा होते ही ज़ोर से पढ़ें",
         engineLabel: "TTS इंजन",
         engineSystemDescription: "डिवाइस की अंतर्निहित आवाज़ें",
-        engineStudioDescription: "ऑडियो में लोड किए गए स्पीच मॉडल का उपयोग करता है",
+        engineStudioDescription: "ऑडियो › टेक्स्ट-टू-स्पीच में लोड किए गए मॉडल से बोलता है",
         engineSystem: "सिस्टम की आवाज़ें",
-        engineStudio: "TTS मॉडल लोड करें",
+        engineStudio: "Unsloth मॉडल",
         engineCustom: "कस्टम एंडपॉइंट",
         engineCustomDescription:
           "आपके कनेक्शनों में से एक OpenAI-संगत TTS सर्वर (जैसे Kokoro)",
@@ -1629,8 +1646,11 @@ export const hi = {
         customVoiceDescription:
           "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम; डिफ़ॉल्ट alloy है",
         modelLabel: "TTS मॉडल",
-        modelDescription:
-          "ऑडियो में एक स्पीच मॉडल लोड करें। यह चैट मॉडल की जगह ले लेता है।",
+        modelDescription: "कोई लोड नहीं है। ऑडियो › टेक्स्ट-टू-स्पीच में एक लोड करें।",
+        modelLoaded: "{model} लोड है",
+        keepBothLabel: "चैट मॉडल लोड रखें",
+        keepBothDescription: "“कई मॉडल लोड रखें” बंद है, इसलिए स्पीच मॉडल लोड करने पर चैट मॉडल अनलोड हो जाता है।",
+        keepBothAction: "दोनों लोड रखें",
         openAudioAction: "ऑडियो खोलें",
         voiceLabel: "आवाज़",
         voiceDescription: "इस डिवाइस पर सबसे अच्छी आवाज़ें",
@@ -1705,6 +1725,23 @@ export const hi = {
           "बैकएंड एनवायरनमेंट में UNSLOTH_HELPER_MODEL_DISABLE द्वारा अक्षम।",
         loadError: "Helper LLM सेटिंग्स लोड करने में विफल।",
         saveError: "Helper LLM सेटिंग्स सहेजने में विफल।",
+      },
+      developerMode: {
+        sectionTitle: "डेवलपर मोड",
+        videoCpu: "CPU पर वीडियो जनरेशन की अनुमति दें (प्रायोगिक)",
+        videoCpuDescription: "समर्थित GPU के बिना होस्ट पर वीडियो पेज चलाने देता है। डिफ़ॉल्ट रूप से बंद; असमर्थित और बहुत धीमा।",
+        notApplicable: "इस मशीन पर इसका कोई प्रभाव नहीं: वीडियो या तो पहले से इसके GPU पर चलता है, या किसी ऐसी चीज़ से अवरुद्ध है जिसे CPU दूर नहीं कर सकता।",
+        forcedOnByEnv: "बैकएंड एनवायरनमेंट में UNSLOTH_VIDEO_ALLOW_CPU द्वारा चालू किया गया।",
+        forcedOffByEnv: "बैकएंड एनवायरनमेंट में UNSLOTH_VIDEO_ALLOW_CPU द्वारा बंद किया गया।",
+        confirmTitle: "CPU पर वीडियो जनरेशन चालू करें?",
+        confirmWarning: "CPU पर वीडियो जनरेशन में घंटों लग सकते हैं, यह बड़ी मात्रा में RAM का उपयोग कर सकता है, और आपका सिस्टम फ़्रीज़ हो सकता है। अपने जोखिम पर जारी रखें।",
+        ramBelowMinimum: "इस मशीन में {host} GB RAM है, जो CPU पर सबसे छोटे वीडियो मॉडल के लिए आवश्यक {min} GB से कम है। लोडिंग विफल हो सकती है या सिस्टम फ़्रीज़ हो सकता है।",
+        ramOk: "इस मशीन में {host} GB RAM है। सबसे छोटे वीडियो मॉडल को CPU पर लगभग {min} GB चाहिए; बड़े मॉडलों को कहीं अधिक चाहिए।",
+        ramUnknown: "सबसे छोटे वीडियो मॉडल को CPU पर लगभग {min} GB RAM चाहिए; बड़े मॉडलों को कहीं अधिक चाहिए।",
+        performanceEstimate: "हर डीनॉइज़िंग स्टेप में कई मिनट लगने की अपेक्षा करें: Wan2.1 1.3B से 3 स्टेप पर 5-फ़्रेम 832x480 क्लिप में 16 CPU थ्रेड पर लगभग 4 मिनट लगे, और डिफ़ॉल्ट सेटिंग्स पर पूरी लंबाई की क्लिप में घंटों लग सकते हैं।",
+        confirmAction: "फिर भी चालू करें",
+        loadError: "डेवलपर मोड सेटिंग्स लोड करने में विफल।",
+        saveError: "डेवलपर मोड सेटिंग्स सहेजने में विफल।",
       },
       modelAutoSwitch: {
         sectionTitle: "मॉडल ऑटो-स्विच (OpenAI API)",
@@ -1786,23 +1823,14 @@ export const hi = {
       },
       notifications: {
         sectionTitle: "सूचनाएं",
-        showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
-        showLlamaUpdatesDescription:
-          "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
-        showLoadedModels: "लोड किए गए मॉडल का संकेतक",
-        showLoadedModelsDescription:
-          "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
-        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
-        showWhisperUpdatesDescription:
-          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
-        showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
-        showAudioCppUpdatesDescription:
-          "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
-        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
-        showUnslothUpdatesDescription:
-          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        showLoadedModels: "लोड किए गए मॉडल कार्ड",
+        showLoadedModelsDescription: "कोने में हर लोड किए गए मॉडल का कार्ड, एक क्लिक में अनलोड करने के लिए।",
+        updateReminders: "अपडेट रिमाइंडर",
+        updateRemindersDescription: "नया संस्करण तैयार होने पर उसे कितनी बार पेश करना है।",
+        llamaHint: "चैट और GGUF मॉडल",
+        audioHint: "स्पीच, संगीत और ट्रांसक्रिप्शन",
         frequency: {
-          always: "हमेशा",
+          always: "उपलब्ध होते ही",
           daily: "दिन में एक बार",
           weekly: "सप्ताह में एक बार",
           biweekly: "हर दो सप्ताह में",
@@ -1820,6 +1848,11 @@ export const hi = {
         closeToTrayDescription:
           "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
         closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
+
+        menuBarIcon: "मेनू बार में दिखाएं",
+        menuBarIconDescription:
+          "macOS मेनू बार में Unsloth आइकन दिखाएं। छिपाने पर, Unsloth इसके बजाय Dock में बना रहता है, यहां तक कि लॉगिन पर शुरू होने पर भी।",
+        menuBarIconSaveError: "मेनू बार आइकन सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
@@ -1938,7 +1971,7 @@ export const hi = {
         menuSubtitle: "फ़ाइल खोज के लिए",
         device: "एम्बेडिंग डिवाइस",
         deviceDescription:
-          "एम्बेडिंग मॉडल कहाँ चलता है, हर मॉडल के लिए। GPU बड़े दस्तावेज़ संग्रह तेज़ी से इंडेक्स करता है, लेकिन Studio के रीस्टार्ट होने तक कुछ VRAM इस्तेमाल में रखता है।",
+          "एम्बेडिंग मॉडल कहाँ चलता है, हर मॉडल के लिए। GPU बड़े दस्तावेज़ संग्रह तेज़ी से इंडेक्स करता है, लेकिन Unsloth के रीस्टार्ट होने तक कुछ VRAM इस्तेमाल में रखता है।",
         deviceAuto: "स्वचालित",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2030,6 +2063,8 @@ export const hi = {
         subtitle:
           "नीचे सब कुछ आपके अपने इतिहास से गिना जाता है। कुछ भी इकट्ठा नहीं किया जाता और न ही Unsloth को भेजा जाता है।",
         retry: "फिर कोशिश करें",
+        exportCsv: "CSV निर्यात करें",
+        exportError: "टोकन उपयोग निर्यात नहीं हो सका",
         privacyNote:
           "आँकड़े आपके Unsloth इंस्टॉल के स्थानीय चैट, API उपयोग और ट्रेनिंग इतिहास से गिने जाते हैं। आँकड़ों के लिए API प्रॉम्प्ट, जवाब या कुंजियाँ कभी संग्रहीत नहीं होतीं। Unsloth या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
         emptyChats:
@@ -2041,9 +2076,9 @@ export const hi = {
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
         activityDescription: {
-          daily: "अवधि: {weeks} · {total}",
-          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
-          cumulative: "पिछले {weeks} में कुल {total}",
+          daily: "{since} से {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · {since} से",
+          cumulative: "{since} से कुल {total}",
         },
         mode: {
           daily: "दैनिक",
@@ -2052,8 +2087,9 @@ export const hi = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} वाला हफ़्ता · {tokens}",
-        chartToggle: "चार्ट",
-        chartToggleHint: "साप्ताहिक और संचयी को लेबल वाले अक्षों के साथ चार्ट के रूप में दिखाएँ",
+        emptyDayTooltip: "{date} · कोई गतिविधि नहीं",
+        apiRequests: "API से {count}",
+        cumulativeTooltip: "{date} के सप्ताह तक · कुल {tokens}",
         less: "कम",
         more: "ज़्यादा",
         insightsTitle: "गतिविधि विश्लेषण",
@@ -2363,12 +2399,15 @@ export const hi = {
         multiModelOff: "बंद",
         multiModelFit: "जब जगह हो",
         multiModelAlways: "हमेशा",
-        multiModelDescription: "चैट, इमेज या वीडियो मॉडल लोड करने पर बाकी मॉडल अनलोड हो जाते हैं।",
+        multiModelDescription: "चैट, स्पीच, इमेज या वीडियो मॉडल लोड करने पर बाकी मॉडल अनलोड हो जाते हैं।",
         multiModelDescriptionFit:
           "मॉडल लोड करने पर, जगह हो तो बाकी मॉडल बने रहते हैं। जगह न हो, तो पहले इस्तेमाल में न रहे मॉडल अनलोड होते हैं, फिर सक्रिय मॉडल।",
         multiModelDescriptionAlways:
           "मॉडल लोड करने पर कोई दूसरा मॉडल कभी अनलोड नहीं होता। जो मॉडल नहीं समाता, वह लोड नहीं होता। निष्क्रियता पर स्वतः अनलोड और ट्रेनिंग अब भी मेमोरी खाली करते हैं।",
-        multiModelHint: "चैट, इमेज और वीडियो मॉडल पर लागू होता है। हर लोड किया गया चैट मॉडल उन अनुरोधों का जवाब देता है जो उसका नाम लेते हैं। कई GPU होने पर, Unsloth नए मॉडल को ऐसे GPU पर रखने की कोशिश करता है जिसे कोई दूसरा मॉडल इस्तेमाल नहीं कर रहा। “जब जगह हो” लगभग 1 GB खाली छोड़ता है। “जब जगह हो” और “हमेशा” किसी दूसरे GPU पर मौजूद मॉडल को कभी अनलोड नहीं करते।",
+        multiModelHint: "चैट, स्पीच, इमेज और वीडियो मॉडल पर लागू होता है। हर लोड किया गया चैट मॉडल उन अनुरोधों का जवाब देता है जो उसका नाम लेते हैं। कई GPU होने पर, Unsloth नए मॉडल को ऐसे GPU पर रखने की कोशिश करता है जिसे कोई दूसरा मॉडल इस्तेमाल नहीं कर रहा। “जब जगह हो” लगभग 1 GB खाली छोड़ता है। “जब जगह हो” और “हमेशा” किसी दूसरे GPU पर मौजूद मॉडल को कभी अनलोड नहीं करते।",
+        allowOversizedLoad: "बहुत बड़े मॉडल लोड करने दें",
+        allowOversizedLoadDescription: "मेमोरी जाँच के अनुसार फिट न होने पर भी इमेज और वीडियो मॉडल लोड करें।",
+        allowOversizedLoadHint: "यह तब लागू होता है जब CPU और GPU एक ही मेमोरी साझा करते हैं (Apple Silicon, इंटीग्रेटेड GPU)। जब मॉडल वेट्स का अनुमान ऑपरेटिंग सिस्टम के लिए जगह छोड़ने के बाद बची मेमोरी से बड़ा होता है, तो Unsloth लोड करने से मना कर देता है। इसे चालू करने पर लोड फिर भी आज़माया जाता है। अनुमान किसी भी दिशा में गलत हो सकता है: बहुत बड़ा लोड विफल हो सकता है, पूरी मेमोरी भर सकता है, कंप्यूटर में भारी स्वैपिंग करा सकता है या उसे रोक सकता है, या Unsloth बंद कर सकता है। डिफ़ॉल्ट रूप से बंद।",
         mediaIdleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद इमेज और वीडियो मॉडल अनलोड करके VRAM खाली करें। 0 पर वे लोड रहते हैं; न्यूनतम 60 सेकंड।",
         mlockVetoed: "--mlock बंद ही रहता है: मॉडल को पिन करने से उसकी पूरी मात्रा के लिए RAM आरक्षित हो जाएगी। निष्क्रिय होने पर स्वतः अनलोड अब भी अक्षम है।",
@@ -2381,7 +2420,7 @@ export const hi = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu मेमोरी रैम स्थायी पिन लॉक बनाए रखें लोड अनलोड निष्क्रिय mmap no-mmap load-mode स्वैप पेजिंग",
         multiModelKeywords:
-          "कई मॉडल एक साथ स्वैप जगह अनलोड हटाना vram gpu इमेज वीडियो चैट हमेशा निष्क्रिय",
+          "कई मॉडल एक साथ स्वैप जगह अनलोड हटाना vram gpu इमेज वीडियो चैट हमेशा निष्क्रिय स्पीच आवाज़ बोलना पढ़कर सुनाना tts",
         mediaIdleUnloadKeywords:
           "इमेज वीडियो डिफ्यूजन निष्क्रिय अनलोड ttl टाइमआउट सेकंड खाली vram gpu मेमोरी",
       },
@@ -2680,6 +2719,10 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      showReplyTimes: "जवाब का समय",
+      showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
+      showReplyTimesKeywords:
+        "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
@@ -2735,6 +2778,22 @@ export const hi = {
         visibility: "थिंकिंग",
         visibilityDescription:
           "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
+      },
+      memory: {
+        title: "मेमोरी",
+        description: "ऐसे नोट्स जिन्हें हर चैट पढ़ती है, हर मॉडल के लिए, लोकल या क्लाउड। किसी प्रोजेक्ट की चैट उस प्रोजेक्ट की AGENTS.md भी पढ़ती हैं।",
+        enable: "चैट में मेमोरी का उपयोग करें",
+        enableDescription: "ये नोट्स हर चैट के साथ भेजें।",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD ने इस इंस्टॉल के लिए इसे बंद कर दिया है।",
+        editor: "मेमोरी नोट्स",
+        placeholder: "उदाहरण:\n- मैं Python लिखता हूँ और uv का उपयोग करता हूँ।\n- जवाब छोटे रखें।",
+        hint: "{path} में सेव होता है। आप इस फ़ाइल को किसी भी टेक्स्ट एडिटर में भी बदल सकते हैं।",
+        size: "{used} / {max} KB",
+        save: "सेव करें",
+        saved: "मेमोरी सेव हो गई",
+        loadError: "मेमोरी लोड नहीं हो सकी।",
+        saveError: "मेमोरी सेव नहीं हो सकी।",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md मेमोरी याद पर्सनलाइज़ेशन प्रोफ़ाइल नोट्स",
       },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",
@@ -2815,7 +2874,7 @@ export const hi = {
       importFailed: "इंपोर्ट विफल रहा।",
       importFromSource: "{source} से इंपोर्ट करें",
       importFromSourceDescription:
-        "अपने {source} वार्तालाप प्रोजेक्ट के अनुसार समूहित करके Studio में कॉपी करें।",
+        "अपने {source} वार्तालाप प्रोजेक्ट के अनुसार समूहित करके Unsloth में कॉपी करें।",
       importingAction: "इंपोर्ट हो रहा है...",
       importedSourceOneChat: "{source} से 1 वार्तालाप इंपोर्ट किया गया।",
       importedSourceChatCount:
@@ -3071,6 +3130,7 @@ export const hi = {
       relativeNever: "कभी नहीं",
       relativeJustNow: "अभी",
       expired: "समाप्त",
+      expiredStatus: "समाप्त",
       today: "आज",
       created: "बनाया गया: {value}",
       used: "उपयोग किया गया: {value}",
@@ -3099,6 +3159,14 @@ export const hi = {
         autoSwitchOff:
           "मॉडल नाम से तभी लोड होता है जब मॉडल ऑटो-स्विच चालू हो। इसे चालू करें, या पहले मॉडल को उसके ऑडियो पेज पर लोड करें।",
         useViaApi: "API से इस्तेमाल करें",
+      },
+      mediaApi: {
+        title: "इमेज और वीडियो API",
+        description: "OpenAI-संगत एंडपॉइंट से अपने कोड से इमेज और वीडियो बनाएं।",
+        images: "इमेज",
+        video: "वीडियो",
+        placeholderModel: "दिखाया गया मॉडल एक उदाहरण है। इमेज या वीडियो पेज पर मॉडल लोड करें और उसे भरने के लिए उसके API बटन से इसे खोलें।",
+        autoSwitchOff: "मीडिया ऑटो-स्विच बंद है, इसलिए अनुरोध उसी मॉडल पर चलते हैं जो पेज ने लोड किया है, चाहे वे कोई भी नाम दें।",
       },
       decisionApi: {
         title: "निर्णय API",
@@ -3179,8 +3247,27 @@ export const hi = {
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
+      whisperCppVersion: "whisper.cpp संस्करण",
+      engines: {
+        title: "इंजन",
+        description: "वे रनटाइम जिनसे Unsloth मॉडल चलाता है। अपडेट बैकग्राउंड में इंस्टॉल होते हैं, रीस्टार्ट की ज़रूरत नहीं।",
+        updatesLabel: "इंजन अपडेट",
+        notInstalled: "इंस्टॉल नहीं है",
+        available: "{version} उपलब्ध",
+        upToDate: "अप टू डेट",
+        updatesAvailable: "अपडेट उपलब्ध हैं",
+        checking: "अपडेट खोजे जा रहे हैं...",
+        checkFailed: "अपडेट नहीं खोजे जा सके। बाद में फिर से कोशिश करें।",
+        unsupported: "इस इंस्टॉल के इंजन Unsloth के बाहर प्रबंधित होते हैं।",
+        checkForUpdates: "अपडेट खोजें",
+        update: "अपडेट करें",
+        updating: "अपडेट हो रहा है...",
+        updated: "इंजन अपडेट हो गए।",
+        updateFailed: "अपडेट विफल: {error}",
+      },
       hardware: "हार्डवेयर",
       gpu: "GPU",
+      gpuIntegrated: "इंटीग्रेटेड",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3240,7 +3327,7 @@ export const hi = {
         desktopAvailableDescription:
           "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
         desktopExternalServer:
-          "ऐप पहले से चल रहे Studio सर्वर से जुड़ा है और उसे अपडेट नहीं कर सकता। उस सर्वर को रोकें, फिर अपडेट करने के लिए डेस्कटॉप ऐप बंद करके दोबारा खोलें।",
+          "ऐप पहले से चल रहे Unsloth सर्वर से जुड़ा है और उसे अपडेट नहीं कर सकता। उस सर्वर को रोकें, फिर अपडेट करने के लिए डेस्कटॉप ऐप बंद करके दोबारा खोलें।",
         desktopManualInstall:
           "नवीनतम Linux पैकेज इंस्टॉल करने के लिए रिलीज़ पेज खोलें।",
         desktopCheckFailed: "अपडेट की जाँच नहीं हो सकी",
@@ -3263,6 +3350,9 @@ export const hi = {
         docsUpdating: "अपडेट करना",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3840,7 +3930,7 @@ export const hi = {
         decisionColumnsMissing:
           "निर्णय मॉडल को state, questions और gold (या answers) कॉलम चाहिए। गायब कॉलम: {columns}।",
         decisionOwnerOnly:
-          "केवल Studio स्वामी ही निर्णय मॉडल को फ़ाइन-ट्यून कर सकते हैं।",
+          "केवल Unsloth स्वामी ही निर्णय मॉडल को फ़ाइन-ट्यून कर सकते हैं।",
         hfDatasetRequired: "पहले Hugging Face डेटासेट चुनें।",
         hfDatasetSplitRequired: "पहले ट्रेनिंग स्प्लिट चुनें या दर्ज करें।",
         localDatasetRequired: "पहले स्थानीय डेटासेट चुनें।",
@@ -4606,5 +4696,42 @@ export const hi = {
     cantRun: "नहीं चल सका",
     failed: "त्रुटि {status}",
     invalidJson: "अनुरोध की बॉडी मान्य JSON नहीं है।",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "लोड किए गए मॉडल",
+      countOne: "{count} मॉडल लोड है",
+      countMany: "{count} मॉडल लोड हैं",
+      pillLabel: "{count}. विवरण दिखाएँ, या हिलाने के लिए खींचें",
+      dragToMove: "हिलाने के लिए खींचें",
+      dragHandleLabel: "लोड किए गए मॉडल हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं।",
+      collapse: "समेटें",
+      collapseLabel: "लोड किए गए मॉडल समेटें",
+      close: "बंद करें",
+      closeLabel: "लोड किए गए मॉडल बंद करें",
+      backOnNextLoad: "अगला मॉडल लोड होने पर फिर दिखेगा",
+      ejectToFree: "मेमोरी खाली करने के लिए इजेक्ट करें",
+      ejectLabel: "{model} इजेक्ट करें",
+      openTarget: "{target} खोलें",
+      rowLabel: "{model}। {target} खोलें",
+      loading: "लोड हो रहा है",
+      ejecting: "इजेक्ट हो रहा है",
+      stillInMemory: "अब भी मेमोरी में",
+      alsoServing: "इसे भी सर्व कर रहा है",
+      noneLoaded: "कोई मॉडल लोड नहीं है",
+      noneLoadedDetail: "आपके लोड किए मॉडल यहाँ दिखेंगे।",
+      otherAccount: "किसी दूसरे खाते द्वारा उपयोग में",
+      otherAccountDetail: "मेमोरी ऐसे मॉडल के पास है जिसे आप नहीं देख सकते",
+      toastStillResident: "इजेक्ट करते समय “{model}” लोड हो गया, इसलिए वह अब भी मेमोरी इस्तेमाल कर रहा है। उसे खाली करने के लिए दोबारा इजेक्ट करें।",
+      toastUnverified: "{model} को अनलोड करने का अनुरोध किया गया था, लेकिन रनटाइम ने पुष्टि नहीं की। कुछ देर बाद कार्ड देखें।",
+      toastAlreadyFree: "{model} अब लोड नहीं था।",
+      toastReplaced: "{model} अब लोड नहीं है। “{resident}” ने उसकी जगह ले ली और उसे छुआ नहीं गया।",
+      toastEjected: "{model} इजेक्ट हो गया",
+      toastFailed: "{model} इजेक्ट नहीं हो सका",
+    },
+    monitor: {
+      dragHandleLabel: "लाइव मॉनिटर हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं, डबल-क्लिक करने पर यह रीसेट हो जाता है।",
+      reconnecting: "फिर से कनेक्ट हो रहा है...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

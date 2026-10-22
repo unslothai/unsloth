@@ -26,14 +26,10 @@ import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
-  type ScanFolderInfo,
-  addScanFolder,
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
-  listScanFolders,
   listLoras,
-  removeScanFolder,
   revealFineTunedModel,
 } from "@/features/chat";
 import {
@@ -87,6 +83,11 @@ import {
   HubFailureHint,
   useHubAvailability,
   useOnlineStatus,
+  type ScanFolderInfo,
+  addScanFolderToStore,
+  folderDisplayName,
+  removeScanFolderFromStore,
+  useScanFolders,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
@@ -120,6 +121,7 @@ import {
   ggufVariantFitSizeBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
+import { formatGiB } from "@/lib/memory/format";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -1240,10 +1242,10 @@ function ModelRow({
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
         ? vramBudget
           ? curatedBudgetText(vramEst, gpuGb, vramBudget)
-          : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
+          : `Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`
         : vramStatus === "tight" || vramStatus === "marginal"
-          ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
-          : `~${vramEst}GB VRAM`
+          ? `~${formatGiB(vramEst)} VRAM (tight fit on ${formatGiB(gpuGb)})`
+          : `~${formatGiB(vramEst)} VRAM`
       : null;
 
   const { owner, name } = splitRepoLabel(label);
@@ -2811,7 +2813,6 @@ let _cachedModelsCache: CachedModelRepo[] = [];
 let _lmStudioCache: LocalModelInfo[] = [];
 let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
-let _scanFoldersCache: ScanFolderInfo[] = [];
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or custom-folder model)
  * is known. Reads the module caches, which persist across popover mounts, so the selector can
@@ -3068,7 +3069,7 @@ export function HubModelPicker({
   onBrowseHub,
   onConfigureConnection,
   onModelsChange,
-  onConfigure,
+  onConfigure: onConfigureProp,
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
@@ -3152,6 +3153,8 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  // Run settings is the chat load form, which the Images and Video pages never read.
+  const onConfigure = diffusionLoad ? undefined : onConfigureProp;
   const audioTaskPicker = taskFilterHasAudio(task);
   // What the backend actually holds, not the dropdown highlight: an image or video load evicts
   // the chat model and leaves the pick untouched, so rows kept a "Loaded" badge with nothing
@@ -3546,8 +3549,7 @@ export function HubModelPicker({
     setUpdateConflictKey(null);
   }, [updateConflictKey]);
 
-  const [scanFolders, setScanFolders] =
-    useState<ScanFolderInfo[]>(_scanFoldersCache);
+  const { folders: scanFolders } = useScanFolders();
   const [folderInput, setFolderInput] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
@@ -3559,15 +3561,8 @@ export function HubModelPicker({
     void pickerInventory.refreshInventory();
   }, [pickerInventory.refreshInventory]);
 
-  const refreshScanFolders = useCallback(() => {
-    listScanFolders()
-      .then((v) => {
-        _scanFoldersCache = v;
-        setScanFolders(v);
-      })
-      .catch(() => {});
-  }, []);
-
+  // The store's mutations bump the inventory version, which refetches every inventory reader
+  // (this picker's included); a forced refresh on top would scan twice.
   const handleAddFolder = useCallback(
     async (overridePath?: string) => {
       // An explicit path lets the folder browser submit in the same tick it calls `setFolderInput`;
@@ -3580,20 +3575,15 @@ export function HubModelPicker({
       // From the folder browser's "Use this folder": the typed-input panel is closed, so surface failures via toast.
       const fromBrowser = overridePath !== undefined;
       try {
-        const created = await addScanFolder(trimmed);
-        // Backend returns the existing row for duplicates, so dedupe.
-        const next = _scanFoldersCache.some(
-          (f) => f.id === created.id || f.path === created.path,
-        )
-          ? _scanFoldersCache
-          : [..._scanFoldersCache, created];
-        _scanFoldersCache = next;
-        setScanFolders(next);
+        const { folder, alreadyAdded } = await addScanFolderToStore(trimmed);
         setFolderInput("");
         setShowFolderInput(false);
-        refreshLocalModelsList();
+        if (alreadyAdded) {
+          toast.info("Already in your folders", {
+            description: folderDisplayName(folder.path),
+          });
+        }
         onFoldersChange?.();
-        void refreshScanFolders();
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to add folder";
         setFolderError(message);
@@ -3604,13 +3594,7 @@ export function HubModelPicker({
         setFolderLoading(false);
       }
     },
-    [
-      folderInput,
-      folderLoading,
-      refreshScanFolders,
-      refreshLocalModelsList,
-      onFoldersChange,
-    ],
+    [folderInput, folderLoading, onFoldersChange],
   );
 
   const isOwner = useIsAccountOwner();
@@ -3626,22 +3610,30 @@ export function HubModelPicker({
   }, [handleAddFolder, isOwner]);
 
   const handleRemoveFolder = useCallback(
-    async (id: number) => {
+    async (folder: ScanFolderInfo) => {
       try {
-        await removeScanFolder(id);
-        // Optimistic: drop it immediately.
-        const next = _scanFoldersCache.filter((f) => f.id !== id);
-        _scanFoldersCache = next;
-        setScanFolders(next);
-        refreshScanFolders();
-        refreshLocalModelsList();
+        await removeScanFolderFromStore(folder.id);
         onFoldersChange?.();
+        toast.success("Folder removed", {
+          description: folderDisplayName(folder.path),
+          action: {
+            label: "Undo",
+            onClick: () => {
+              addScanFolderToStore(folder.path, Boolean(folder.recursive))
+                .then(() => onFoldersChange?.())
+                .catch((e) =>
+                  toast.error("Couldn't restore folder", {
+                    description: e instanceof Error ? e.message : undefined,
+                  }),
+                );
+            },
+          },
+        });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Failed to remove folder");
-        refreshScanFolders();
       }
     },
-    [refreshScanFolders, refreshLocalModelsList, onFoldersChange],
+    [onFoldersChange],
   );
 
   const refreshCachedLists = useCallback(() => {
@@ -3683,11 +3675,10 @@ export function HubModelPicker({
   );
 
   useEffect(() => {
-    refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
-  }, [refreshScanFolders]);
+  }, []);
 
   useEffect(() => {
     if (!shouldRefreshPickerInventoryOnMount(cachedReadyAtMount.current)) {
@@ -7817,7 +7808,7 @@ export function HubModelPicker({
                           icon={Folder02Icon}
                           className="size-3.5"
                         />
-                        Custom Folders
+                        Custom folders
                       </button>
                       <div className="flex items-center gap-0.5">
                         <button
@@ -7911,7 +7902,7 @@ export function HubModelPicker({
                             </div>
                             <button
                               type="button"
-                              onClick={() => handleRemoveFolder(f.id)}
+                              onClick={() => void handleRemoveFolder(f)}
                               aria-label={`Remove folder ${f.path}`}
                               className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                             >

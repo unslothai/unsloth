@@ -488,7 +488,8 @@ def _fused_ok(
         and packed.dtype == torch.uint8
         and packed.dim() == 2
         and packed.shape[0] > 0
-        and (mode in _FUSED_FORCE or (inner % 64 == 0 and packed.shape[0] % 64 == 0))
+        # N and K both 64 aligned (inner is N for dX); unaligned dX is up to 2.8x slower.
+        and (mode in _FUSED_FORCE or (packed.shape[0] % 64 == 0 and packed.shape[1] % 32 == 0))
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
         and scale.dim() == 2
@@ -527,7 +528,8 @@ def _fused_config(
 ):
     """(BLOCK_M, BLOCK_OUT, BLOCK_RED, num_warps, num_stages, split) for an [M, k_red] @ [k_red, n_out] product."""
     index = device.index or 0
-    stages = 2 if _device_capability(index) < (8, 0) else 3
+    capability = _device_capability(index)
+    stages = 2 if capability < (8, 0) else 3
     if M <= 16:
         bm, bo, br, warps = (16, 128, 64, 4) if dx else (16, 64, 128, 4)
     elif M <= 64:
@@ -537,6 +539,9 @@ def _fused_config(
     else:
         bm, bo, br, warps = 128, 64, 64, 4
     tiles = triton.cdiv(M, bm) * triton.cdiv(n_out, bo)
+    # sm89 dX up to 32 rows: an output that fills every SM by itself is 11-17% faster unsplit (L4; A100 is not).
+    if dx and M <= 32 and capability == (8, 9) and tiles >= _sm_count(index):
+        return bm, bo, br, warps, stages, 1
     # Split under four waves; fp32 partials capped at 1/8 of the 16 bit weight.
     split = 1
     while (
@@ -683,6 +688,18 @@ def _nvfp4_matmul_bwd(
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
 
 
+_AUTOCAST_CASTS = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _autocast_operand(X):
+    # Cast outside the opaque op so fused, dense and fake impl all return the autocast dtype.
+    if X.is_cuda and X.dtype in _AUTOCAST_CASTS and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+        if dtype != X.dtype:
+            return X.to(dtype)
+    return X
+
+
 class NVFP4Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -693,7 +710,7 @@ class NVFP4Linear_matmul(torch.autograd.Function):
         global_scale,
         bias = None,
     ):
-        output = _nvfp4_matmul_fwd(X, packed, scale, global_scale)
+        output = _nvfp4_matmul_fwd(_autocast_operand(X), packed, scale, global_scale)
         if bias is not None:
             output = output + bias
             # A float32 bias promotes; cast back only then (a no-op .to() aliases, zeroing dX under torch 2.11 compile).

@@ -28,6 +28,7 @@ from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any, Callable
 
+from utils.cpu_threads import fit_threads_to_affinity, runtime_capped_openblas_loaded
 from utils.hardware.hardware import DeviceType, get_device
 from utils.transformers_dtype import dtype_kwargs
 from utils.utils import hf_env_offline
@@ -437,16 +438,21 @@ _ST_PACKAGE_PREFIX = "sentence_transformers."
 _ST_GATE_MARKER = "_unsloth_custom_module_gate"
 
 
-def _refuse_custom_module(class_ref, model_name_or_path, trust_remote_code) -> None:
+def _refuse_custom_module(
+    class_ref,
+    model_name_or_path,
+    trust_remote_code,
+    prefix = _ST_PACKAGE_PREFIX,
+) -> None:
     if (
         isinstance(class_ref, str)
-        and not class_ref.startswith(_ST_PACKAGE_PREFIX)
+        and not class_ref.startswith(prefix)
         and model_name_or_path is not None
         and not trust_remote_code
     ):
         raise ValueError(
             f"The model {model_name_or_path} references the module class {class_ref!r}, which is not "
-            "part of Sentence Transformers. Importing it executes third-party code, so Studio refuses "
+            "part of Sentence Transformers. Importing it executes third-party code, so Unsloth refuses "
             "to load it as an embedding model."
         )
 
@@ -486,25 +492,44 @@ def _gate_st_custom_modules() -> None:
             setattr(_load_module_class_from_ref, _ST_GATE_MARKER, True)
             _load_module_class_from_ref.__wrapped__ = original
             setattr(owner, "_load_module_class_from_ref", _load_module_class_from_ref)
-    # 5.0-5.4 Router imports via import_from_string, past both resolvers.
-    try:
-        import importlib
+    # Below 6.0 these module loaders import a dotted path out of their own config via
+    # import_from_string, past both resolvers: Router its types, Dense its
+    # activation_function (and calls it), WordEmbeddings its tokenizer_class.
+    for module_path, prefix, where in (
+        ("sentence_transformers.models.Router", _ST_PACKAGE_PREFIX, "behind this Router"),
+        ("sentence_transformers.models.Dense", "torch.", "in a Dense module"),
+        (
+            "sentence_transformers.models.WordEmbeddings",
+            _ST_PACKAGE_PREFIX,
+            "in a WordEmbeddings module",
+        ),
+    ):
+        try:
+            import importlib
 
-        router = importlib.import_module("sentence_transformers.models.Router")
-        original_from_string = getattr(router, "import_from_string", None)
-        if original_from_string is not None and not getattr(
-            original_from_string, _ST_GATE_MARKER, False
-        ):
+            module = importlib.import_module(module_path)
+            original_from_string = getattr(module, "import_from_string", None)
+            if original_from_string is None or getattr(
+                original_from_string, _ST_GATE_MARKER, False
+            ):
+                continue
 
-            def import_from_string(dotted_path, *args, **kwargs):
-                _refuse_custom_module(dotted_path, "behind this Router", False)
-                return original_from_string(dotted_path, *args, **kwargs)
+            def import_from_string(
+                dotted_path,
+                *args,
+                _original = original_from_string,
+                _prefix = prefix,
+                _where = where,
+                **kwargs,
+            ):
+                _refuse_custom_module(dotted_path, _where, False, prefix = _prefix)
+                return _original(dotted_path, *args, **kwargs)
 
             setattr(import_from_string, _ST_GATE_MARKER, True)
             import_from_string.__wrapped__ = original_from_string
-            router.import_from_string = import_from_string
-    except Exception:
-        pass
+            module.import_from_string = import_from_string
+        except Exception:
+            pass
     try:
         import sys
         from sentence_transformers.util import misc
@@ -532,6 +557,52 @@ def _gate_st_custom_modules() -> None:
             and getattr(module, "import_module_class", None) is original_import
         ):
             setattr(module, "import_module_class", import_module_class)
+
+
+def _route_linears_through_onednn(model) -> int:
+    """Run a CPU model's fp32 Linear layers in oneDNN when torch's BLAS is Windows ROCm's OpenBLAS.
+
+    That DLL does ~4 GFLOPS per core against MKL's ~130, so bge-small indexed ~7x slower on all cores
+    (#14313). oneDNN ships in the same wheel; the vectors match to ~2e-7, so the index stays valid.
+    Probed on the model's own first layer; any doubt keeps the stock path. Returns layers rerouted.
+    """
+    if not runtime_capped_openblas_loaded():
+        return 0
+    try:
+        import torch
+
+        if not getattr(torch.version, "hip", None) or not torch.backends.mkldnn.is_available():
+            return 0
+        linears = [
+            m
+            for m in model.modules()
+            if type(m) is torch.nn.Linear
+            and m.weight.device.type == "cpu"
+            and m.weight.dtype == torch.float32
+        ]
+        if not linears:
+            return 0
+
+        class OneDnnLinear(torch.nn.Linear):
+            def forward(self, x):
+                return torch.ops.mkldnn._linear_pointwise(x, self.weight, self.bias, "none", [], "")
+
+        probe = linears[0]
+        with torch.inference_mode():
+            x = torch.randn(2, 5, probe.in_features)
+            expected = torch.nn.functional.linear(x, probe.weight, probe.bias)
+            got = OneDnnLinear.forward(probe, x)
+        if got.shape != expected.shape or not torch.allclose(got, expected, rtol = 1e-4, atol = 1e-5):
+            return 0
+    except Exception:  # noqa: BLE001 -- the stock path is always correct
+        return 0
+    for module in linears:
+        module.__class__ = OneDnnLinear
+    logger.info(
+        "embedding model: %d Linear layers run in oneDNN (ROCm OpenBLAS is slow on CPU)",
+        len(linears),
+    )
+    return len(linears)
 
 
 def _get(model_name: str | None = None):
@@ -628,6 +699,7 @@ def _get(model_name: str | None = None):
                         _model = SentenceTransformer(load_target, **st_kwargs)
                 finally:
                     _emit_load_reports(report)
+            _route_linears_through_onednn(_model)
             _name = name
             if download_pending:
                 # Retire only once the model is constructed: retiring earlier let a failed construction fall through
@@ -668,6 +740,8 @@ def _st_encode(
         # Admission and model lookup are one lease: lookup first would let unload clear the globals while
         # this call still held a strong reference.
         model = _get(model_name)
+        # Affinity narrowed in Task Manager mid-index must reach this thread's pool (#14313).
+        fit_threads_to_affinity()
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
         try:
             with _inference_ctx():
@@ -734,6 +808,14 @@ def _release_st_model() -> bool:
             released = _model is not None
             _model = None
             _name = None
+    if released:
+        # Dropping the reference leaves its blocks reserved; gated, since before detection clear_gpu_cache() runs it.
+        try:
+            from utils import hardware
+            if hardware.hardware.DEVICE is not None:
+                hardware.clear_gpu_cache()
+        except Exception as e:  # noqa: BLE001 - freeing is best effort
+            logger.debug("GPU cache clear after embedder release failed: %s", e)
     return released
 
 
@@ -1502,6 +1584,20 @@ def dim(model_name: str | None = None) -> int:
 
 def max_tokens(model_name: str | None = None) -> int | None:
     return _get_backend(model_name).max_tokens(model_name = model_name)
+
+
+def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
+    """The longest prefix of ``text`` within ``limit`` tokens by ``count``, and whether it was cut."""
+    if not limit or count(text) <= limit:
+        return text, False
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if count(text[:mid]) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo], True
 
 
 def chunk_tokens(model_name: str | None = None) -> int:

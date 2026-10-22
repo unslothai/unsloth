@@ -49,7 +49,6 @@ def shared_cache(monkeypatch, tmp_path):
         "repo_is_public",
         lambda repo_id, repo_type = "model": not repo_id.startswith("private/"),
     )
-    # The shared cache-read gate answers for the credential; the account gate is under test.
     from hub.utils import hf_tokens
 
     monkeypatch.setattr(

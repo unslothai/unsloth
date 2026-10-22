@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The sibling invariants file asserts on source TEXT, which pins which calls are present and
-// in what order but not how they COMBINE -- and here the combinator is the invariant. Turning
-// the inner `Promise.all` into `Promise.race` is one token, leaves every call present and
-// every index unmoved, and reinstates the race the gate closed: the GET then fires as soon as
-// EITHER prerequisite settles, so a first send can still overtake the row write, find no row,
-// and release the chat's held edits into the installation defaults. Measured on the parent
-// commit, that edit passes the whole suite, 4045 of 4045.
-//
-// So these walk the syntax tree. Kept out of the text-based file like tsx-ast.ts and
-// module-stubs.ts: only tests that need the TypeScript compiler should pay to load it.
+// Walks the AST: a text check cannot tell Promise.all from Promise.race, and race reopens
+// the row-write race. Kept separate so only tests needing the TS compiler load it.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -27,7 +19,6 @@ const source = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
-/** Every node under `root` satisfying `match`, outermost first. */
 function collect(root: ts.Node, match: (node: ts.Node) => boolean): ts.Node[] {
   const found: ts.Node[] = [];
   const walk = (node: ts.Node): void => {
@@ -38,7 +29,6 @@ function collect(root: ts.Node, match: (node: ts.Node) => boolean): ts.Node[] {
   return found;
 }
 
-/** `Promise.<name>(...)` as a call. */
 function isCombinator(node: ts.Node, name: string): node is ts.CallExpression {
   if (!ts.isCallExpression(node)) return false;
   const callee = node.expression;
@@ -50,7 +40,6 @@ function isCombinator(node: ts.Node, name: string): node is ts.CallExpression {
   );
 }
 
-/** Calls to the free function `name` anywhere under `root`. */
 function calls(root: ts.Node, name: string): ts.Node[] {
   return collect(
     root,
@@ -61,7 +50,6 @@ function calls(root: ts.Node, name: string): ts.Node[] {
   );
 }
 
-/** The `sync` closure inside ThreadScopedSettingsSync, which is the whole subject here. */
 function syncBody(): ts.Node {
   const declarations = collect(
     source,
@@ -80,7 +68,6 @@ function syncBody(): ts.Node {
   return declarations[0].initializer as ts.ArrowFunction;
 }
 
-/** The Promise.all whose settling is what lets the read start. */
 function prerequisites(): ts.CallExpression {
   const gates = collect(syncBody(), (node) => isCombinator(node, "all"));
   assert.equal(
@@ -92,9 +79,7 @@ function prerequisites(): ts.CallExpression {
 }
 
 test("the read waits for ALL of its prerequisites, not whichever answers first", () => {
-  // Promise.race here would let the GET start while the row POST is still in flight. Both
-  // waits would still be present, and still textually ahead of the read, so nothing that
-  // reads this file as a string can tell the difference.
+  // Promise.race here would let the GET start while the row POST is still in flight.
   const gate = prerequisites();
   assert.equal(gate.arguments.length, 1, "Promise.all takes one array");
   const [waits] = gate.arguments;
@@ -112,7 +97,6 @@ test("the read waits for ALL of its prerequisites, not whichever answers first",
 });
 
 test("the read hangs off the prerequisites rather than running beside them", () => {
-  // Two independent promises would issue the GET immediately, however the waits combine.
   const gate = prerequisites();
   const parent = gate.parent;
   assert.ok(
@@ -133,9 +117,7 @@ test("the read hangs off the prerequisites rather than running beside them", () 
 });
 
 test("the whole attempt, waits included, sits inside one deadline", () => {
-  // The structural form of the sibling file's index check: the deadline must CONTAIN the
-  // prerequisites, not just precede them in the text. Neither wait is bounded on its own, so
-  // outside it a stalled write ends in a refused send.
+  // The deadline must CONTAIN the prerequisites; neither wait is bounded on its own.
   const gate = prerequisites();
   const races = collect(syncBody(), (node) => isCombinator(node, "race"));
   assert.ok(races.length >= 1, "the per-attempt deadline is gone");

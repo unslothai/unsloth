@@ -50,6 +50,11 @@ export const ko = {
     removeFromMessage: "메시지에서 제거",
   },
   browser: {
+    drafts: {
+      title: "입력한 텍스트가 있는 페이지를 종료할까요?",
+      description: "채팅의 응답성을 유지하기 위해 입력한 텍스트가 있는 숨겨진 페이지는 세 개까지만 계속 실행됩니다. 계속하면 {pages} 페이지가 종료되며 저장하지 않은 텍스트가 사라질 수 있습니다. 취소하면 이전 탭으로 돌아갑니다.",
+      confirm: "종료하고 계속",
+    },
     agentSettings: {
       title: "브라우저 사용",
       enable: "모델이 브라우저를 사용하도록 허용",
@@ -113,6 +118,7 @@ export const ko = {
     reload: "새로고침",
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
+    local: "로컬",
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -210,7 +216,7 @@ export const ko = {
     importBookmarksDoneOne: "북마크 {count}개를 가져왔습니다.",
     importBookmarksDoneMany: "북마크 {count}개를 가져왔습니다.",
     importBookmarksNone: "이 파일에 새 북마크가 없습니다.",
-    importBookmarksPartial: "{count}개를 가져왔지만 {leftOut}개는 더 넣을 수 없었습니다. Studio는 북마크를 최대 {max}개까지 보관합니다.",
+    importBookmarksPartial: "{count}개를 가져왔지만 {leftOut}개는 더 넣을 수 없었습니다. Unsloth는 북마크를 최대 {max}개까지 보관합니다.",
     importBookmarksFailed: "파일을 읽을 수 없습니다. 브라우저에서 내보낸 북마크 HTML 파일을 선택하세요.",
     downloadsTitle: "다운로드",
     askWhereToSaveSetting: "파일마다 저장 위치 묻기",
@@ -261,7 +267,7 @@ export const ko = {
     annotationScreenshotsAlways: "항상 포함",
     annotationScreenshotsNever: "포함하지 않음",
     clearDataSetting: "인터넷 사용 기록 삭제",
-    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Studio를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
+    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Unsloth를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
     manage: "관리",
     fullView: {
       enter: "전체 보기",
@@ -463,6 +469,8 @@ export const ko = {
       downloadFailed: "{name}을(를) 다운로드할 수 없습니다",
       notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
       blocked: "이 주소는 브라우저 패널에서 열 수 없습니다. 공개 웹사이트만 열 수 있습니다.",
+      blockedLocal: "이 로컬 주소는 여기에서 열 수 없습니다. 열려면 주소 표시줄에 입력하세요.",
+      studioAddress: "Unsloth 자체의 주소이므로 브라우저 패널에서 열 수 없습니다.",
       clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제합니다. 사이트에서 로그아웃됩니다.",
       clearDataDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
@@ -839,6 +847,7 @@ export const ko = {
       byProject: "프로젝트별",
       inOneList: "하나의 목록으로",
       sortChatsBy: "채팅 정렬 기준",
+      projectsHome: "프로젝트 홈",
       lastUpdated: "최근 업데이트",
       manualOrder: "수동 정렬",
       switchedToManual: "수동 정렬로 전환됨: 행을 끌어 순서를 바꾸세요",
@@ -1079,6 +1088,10 @@ export const ko = {
       alternateSlot: "대체 단축키",
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
+      metaUnsupported: "Windows 키는 단축키에 사용할 수 없습니다.",
+      altGraphUnsupported: "AltGr 조합은 단축키로 사용할 수 없습니다.",
+      desktopOnly: "데스크톱 앱 전용",
+      builtInKey: "기본 제공: {key}",
       actions: {
         findInPage: {
           label: "페이지에서 찾기",
@@ -1280,6 +1293,10 @@ export const ko = {
           label: "응답 조정",
           description: "현재 응답을 중단하고 초안을 다음으로 보냅니다",
         },
+        stopGeneration: {
+          label: "생성 중지",
+          description: "작성 중인 응답을 중지합니다",
+        },
         cycleReasoningEffort: {
           label: "추론 강도 순환",
           description: "추론 강도 단계를 차례로 바꿉니다",
@@ -1441,15 +1458,15 @@ export const ko = {
       dictation: {
         audioUploadTitle: "녹음으로 받아쓰기",
         audioUploadDescription:
-          "Studio에서 직접 녹음하려면 브라우저에 보안 연결(HTTPS)이 필요합니다. 이 HTTP 연결에서는 휴대폰 녹음기를 사용하거나 저장된 녹음을 선택하세요. Studio 서버가 오디오를 텍스트로 변환하여 메시지에 추가합니다.",
+          "Unsloth에서 직접 녹음하려면 브라우저에 보안 연결(HTTPS)이 필요합니다. 이 HTTP 연결에서는 휴대폰 녹음기를 사용하거나 저장된 녹음을 선택하세요. Unsloth 서버가 오디오를 텍스트로 변환하여 메시지에 추가합니다.",
         audioUploadChooseFile: "녹음 선택",
         audioUploadRecord: "오디오 녹음",
         audioUploadIphoneHint:
           "iPhone에서는 Voice Memos 또는 다른 녹음 앱에서 녹음을 저장한 다음 여기에서 선택하세요.",
         audioUploadServerModelNote:
-          "일반 받아쓰기가 다른 엔진을 사용하더라도 이 녹음에는 Studio 서버에서 위에 표시된 로컬 모델이 사용됩니다.",
+          "일반 받아쓰기가 다른 엔진을 사용하더라도 이 녹음에는 Unsloth 서버에서 위에 표시된 로컬 모델이 사용됩니다.",
         audioUploadAutomatic: "자동",
-        audioUploadModelReady: "이 Studio 서버에서 준비됨",
+        audioUploadModelReady: "이 Unsloth 서버에서 준비됨",
         audioUploadRetryTitle: "{file}을(를) 전사하지 못했습니다",
         audioUploadRetry: "전사 다시 시도",
         audioUploadChooseModel:
@@ -1611,9 +1628,9 @@ export const ko = {
         autoDescription: "답변이 끝나면 바로 소리 내어 읽습니다",
         engineLabel: "TTS 엔진",
         engineSystemDescription: "기기 내장 음성",
-        engineStudioDescription: "오디오에서 로드된 음성 모델을 사용합니다",
+        engineStudioDescription: "오디오 › 텍스트 음성 변환에서 로드한 모델로 읽어 줍니다",
         engineSystem: "시스템 음성",
-        engineStudio: "TTS 모델 로드",
+        engineStudio: "Unsloth 모델",
         engineCustom: "사용자 지정 엔드포인트",
         engineCustomDescription:
           "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
@@ -1624,8 +1641,11 @@ export const ko = {
         customModelLabel: "모델",
         customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
-        modelDescription:
-          "오디오에서 음성 모델을 로드하세요. 채팅 모델을 대체합니다.",
+        modelDescription: "로드된 모델이 없습니다. 오디오 › 텍스트 음성 변환에서 로드하세요.",
+        modelLoaded: "{model} 로드됨",
+        keepBothLabel: "채팅 모델 로드 상태 유지",
+        keepBothDescription: "'여러 모델을 로드된 상태로 유지'가 '끄기'로 설정되어 있어, 음성 모델을 로드하면 채팅 모델이 언로드됩니다.",
+        keepBothAction: "둘 다 로드 상태 유지",
         openAudioAction: "오디오 열기",
         voiceLabel: "음성",
         voiceDescription: "기기에서 사용 가능한 최적의 음성",
@@ -1698,6 +1718,23 @@ export const ko = {
           "백엔드 환경의 UNSLOTH_HELPER_MODEL_DISABLE에 의해 비활성화되었습니다.",
         loadError: "Helper LLM 설정을 불러오지 못했습니다.",
         saveError: "Helper LLM 설정을 저장하지 못했습니다.",
+      },
+      developerMode: {
+        sectionTitle: "개발자 모드",
+        videoCpu: "CPU에서 동영상 생성 허용 (실험적)",
+        videoCpuDescription: "지원되는 GPU가 없는 호스트에서 동영상 페이지를 실행할 수 있게 합니다. 기본값은 꺼짐이며, 지원되지 않고 매우 느립니다.",
+        notApplicable: "이 컴퓨터에서는 효과가 없습니다. 동영상이 이미 GPU에서 실행되고 있거나, CPU로 우회할 수 없는 문제로 차단되어 있습니다.",
+        forcedOnByEnv: "백엔드 환경의 UNSLOTH_VIDEO_ALLOW_CPU에 의해 켜졌습니다.",
+        forcedOffByEnv: "백엔드 환경의 UNSLOTH_VIDEO_ALLOW_CPU에 의해 꺼졌습니다.",
+        confirmTitle: "CPU 동영상 생성을 활성화할까요?",
+        confirmWarning: "CPU 동영상 생성은 몇 시간이 걸릴 수 있고, 많은 RAM을 사용하며, 시스템이 멈출 수 있습니다. 위험을 감수하고 계속하세요.",
+        ramBelowMinimum: "이 컴퓨터의 RAM은 {host} GB로, 가장 작은 동영상 모델이 CPU에서 필요로 하는 {min} GB보다 적습니다. 로드가 실패하거나 시스템이 멈출 가능성이 높습니다.",
+        ramOk: "이 컴퓨터의 RAM은 {host} GB입니다. 가장 작은 동영상 모델은 CPU에서 약 {min} GB가 필요하며, 더 큰 모델은 훨씬 더 많이 필요합니다.",
+        ramUnknown: "가장 작은 동영상 모델은 CPU에서 약 {min} GB의 RAM이 필요하며, 더 큰 모델은 훨씬 더 많이 필요합니다.",
+        performanceEstimate: "노이즈 제거 단계마다 몇 분씩 걸립니다. Wan2.1 1.3B로 3단계, 5프레임 832x480 클립을 만드는 데 16개 CPU 스레드에서 약 4분이 걸렸으며, 기본 설정의 전체 길이 클립은 몇 시간이 걸릴 수 있습니다.",
+        confirmAction: "그래도 활성화",
+        loadError: "개발자 모드 설정을 불러오지 못했습니다.",
+        saveError: "개발자 모드 설정을 저장하지 못했습니다.",
       },
       modelAutoSwitch: {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
@@ -1779,23 +1816,14 @@ export const ko = {
       },
       notifications: {
         sectionTitle: "알림",
-        showLlamaUpdates: "llama.cpp 업데이트 알림",
-        showLlamaUpdatesDescription:
-          "새 모델 실행을 위한 최신 llama.cpp 업데이트가 있으면 알려드립니다. 학습 기능만 사용하는 경우 꺼두세요.",
-        showLoadedModels: "로드된 모델 표시기",
-        showLoadedModelsDescription:
-          "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
-        showWhisperUpdates: "whisper.cpp 업데이트 알림",
-        showWhisperUpdatesDescription:
-          "음성 인식 모델을 위한 최신 whisper.cpp 빌드가 있으면 알립니다. 오디오를 전사하지 않는다면 끄세요.",
-        showAudioCppUpdates: "audio.cpp 업데이트 알림",
-        showAudioCppUpdatesDescription:
-          "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
-        showUnslothUpdates: "Unsloth 업데이트 알림",
-        showUnslothUpdatesDescription:
-          "설치할 수 있는 새 Unsloth 버전이 있으면 알립니다.",
+        showLoadedModels: "로드된 모델 카드",
+        showLoadedModelsDescription: "로드된 모든 모델을 보여 주는 모서리 카드로, 클릭 한 번에 내릴 수 있습니다.",
+        updateReminders: "업데이트 알림",
+        updateRemindersDescription: "새 버전이 준비되면 얼마나 자주 안내할지 정합니다.",
+        llamaHint: "채팅 및 GGUF 모델",
+        audioHint: "음성, 음악, 받아쓰기",
         frequency: {
-          always: "항상",
+          always: "나올 때마다",
           daily: "하루에 한 번",
           weekly: "일주일에 한 번",
           biweekly: "2주에 한 번",
@@ -1813,6 +1841,11 @@ export const ko = {
         closeToTrayDescription:
           "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
         closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
+
+        menuBarIcon: "메뉴 막대에 표시",
+        menuBarIconDescription:
+          "macOS 메뉴 막대에 Unsloth 아이콘을 표시합니다. 숨기면 로그인 시 시작된 경우를 포함해 Unsloth는 Dock에 남아 있습니다.",
+        menuBarIconSaveError: "메뉴 막대 아이콘 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
@@ -1926,7 +1959,7 @@ export const ko = {
         menuSubtitle: "파일 검색에 사용",
         device: "임베딩 장치",
         deviceDescription:
-          "모든 모델에서 임베딩 모델이 실행되는 위치입니다. GPU는 대량의 문서를 더 빠르게 색인하지만 Studio를 다시 시작할 때까지 일부 VRAM을 계속 사용합니다.",
+          "모든 모델에서 임베딩 모델이 실행되는 위치입니다. GPU는 대량의 문서를 더 빠르게 색인하지만 Unsloth를 다시 시작할 때까지 일부 VRAM을 계속 사용합니다.",
         deviceAuto: "자동",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2018,6 +2051,8 @@ export const ko = {
         subtitle:
           "아래 내용은 모두 본인의 기록을 바탕으로 계산됩니다. 아무것도 수집하거나 Unsloth로 전송하지 않습니다.",
         retry: "다시 시도",
+        exportCsv: "CSV 내보내기",
+        exportError: "토큰 사용량을 내보낼 수 없습니다",
         privacyNote:
           "통계는 Unsloth 설치에 저장된 로컬 채팅, API 사용 및 학습 기록을 바탕으로 계산됩니다. 통계를 위해 API 프롬프트, 응답 또는 키를 저장하지 않습니다. Unsloth나 제3자에게 아무것도 전송하지 않습니다.",
         emptyChats:
@@ -2029,9 +2064,9 @@ export const ko = {
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
         activityDescription: {
-          daily: "최근 {weeks} 동안 {total}",
-          weekly: "최고 주 {total} · 최근 {weeks}",
-          cumulative: "최근 {weeks} 동안 누적 {total}",
+          daily: "{since} 이후 {total}",
+          weekly: "가장 많은 주 {total} · {since} 이후",
+          cumulative: "{since} 이후 누적 {total}",
         },
         mode: {
           daily: "일별",
@@ -2040,8 +2075,9 @@ export const ko = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} 주간 · {tokens}",
-        chartToggle: "차트",
-        chartToggleHint: "주별 및 누적을 축 레이블이 있는 차트로 표시",
+        emptyDayTooltip: "{date} · 활동 없음",
+        apiRequests: "API로 {count}건",
+        cumulativeTooltip: "{date} 주까지 · 누적 {tokens}",
         less: "적음",
         more: "많음",
         insightsTitle: "활동 분석",
@@ -2351,12 +2387,15 @@ export const ko = {
         multiModelOff: "끄기",
         multiModelFit: "공간이 있을 때",
         multiModelAlways: "항상",
-        multiModelDescription: "채팅, 이미지, 동영상 모델을 로드하면 다른 모델은 언로드됩니다.",
+        multiModelDescription: "채팅, 음성, 이미지, 동영상 모델을 로드하면 다른 모델은 언로드됩니다.",
         multiModelDescriptionFit:
           "모델을 로드할 때 공간이 있으면 다른 모델을 유지합니다. 공간이 없으면 사용하지 않는 모델을 먼저 언로드하고, 그다음 활성 모델을 언로드합니다.",
         multiModelDescriptionAlways:
           "모델을 로드해도 다른 모델을 언로드하지 않습니다. 공간이 부족한 모델은 로드되지 않습니다. 유휴 시 자동 언로드와 학습은 여전히 메모리를 확보합니다.",
-        multiModelHint: "채팅, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
+        multiModelHint: "채팅, 음성, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
+        allowOversizedLoad: "너무 큰 모델 로드 허용",
+        allowOversizedLoadDescription: "메모리 검사에서 맞지 않는다고 판단해도 이미지 및 비디오 모델을 로드합니다.",
+        allowOversizedLoadHint: "CPU와 GPU가 하나의 메모리를 공유하는 경우(Apple Silicon, 내장 GPU)에 적용됩니다. 모델 가중치 추정치가 운영 체제용 공간을 확보한 후 남은 메모리보다 크면 Unsloth는 로드를 거부합니다. 이 옵션을 켜면 그래도 로드를 시도합니다. 추정치는 어느 방향으로든 틀릴 수 있으며, 너무 큰 로드는 실패하거나, 메모리를 모두 사용하거나, 심한 스와핑 또는 응답 없음을 일으키거나, Unsloth를 중지시킬 수 있습니다. 기본값은 꺼짐입니다.",
         mediaIdleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
@@ -2369,7 +2408,7 @@ export const ko = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 메모리 ram 상주 고정 잠금 유지 로드됨 언로드 유휴 mmap no-mmap load-mode 스왑 페이징",
         multiModelKeywords:
-          "여러 모델 동시 함께 전환 공간 언로드 해제 vram gpu 이미지 동영상 채팅 항상 유휴",
+          "여러 모델 동시 함께 전환 공간 언로드 해제 vram gpu 이미지 동영상 채팅 항상 유휴 음성 읽어주기 소리 내어 읽기 tts",
         mediaIdleUnloadKeywords:
           "이미지 동영상 디퓨전 유휴 해제 언로드 ttl 시간 초과 초 확보 vram gpu 메모리",
       },
@@ -2662,6 +2701,10 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      showReplyTimes: "응답 시간",
+      showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
+      showReplyTimesKeywords:
+        "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
@@ -2717,6 +2760,22 @@ export const ko = {
         visibility: "사고 과정",
         visibilityDescription:
           "사고 과정이 열리는 방식. 각 블록은 직접 펼치거나 접을 수 있습니다.",
+      },
+      memory: {
+        title: "메모리",
+        description: "모든 채팅이 읽는 메모로, 로컬이든 클라우드든 모든 모델에 적용됩니다. 프로젝트의 채팅은 해당 프로젝트의 AGENTS.md도 읽습니다.",
+        enable: "채팅에서 메모리 사용",
+        enableDescription: "이 메모를 모든 채팅과 함께 보냅니다.",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD로 이 설치에서 꺼져 있습니다.",
+        editor: "메모리 메모",
+        placeholder: "예:\n- Python을 쓰고 uv를 사용합니다.\n- 답변은 짧게 해 주세요.",
+        hint: "{path}에 저장됩니다. 이 파일은 어떤 텍스트 편집기에서도 편집할 수 있습니다.",
+        size: "{used} / {max} KB",
+        save: "저장",
+        saved: "메모리를 저장했습니다",
+        loadError: "메모리를 불러오지 못했습니다.",
+        saveError: "메모리를 저장하지 못했습니다.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md 메모리 기억 개인화 프로필 메모",
       },
       currentDate: {
         label: "모델에 오늘 날짜 알려주기",
@@ -2797,7 +2856,7 @@ export const ko = {
       importFailed: "가져오기에 실패했습니다.",
       importFromSource: "{source}에서 가져오기",
       importFromSourceDescription:
-        "{source}의 대화를 프로젝트별로 묶어 Studio로 복사합니다.",
+        "{source}의 대화를 프로젝트별로 묶어 Unsloth로 복사합니다.",
       importingAction: "가져오는 중...",
       importedSourceOneChat: "{source}에서 대화 1개를 가져왔습니다.",
       importedSourceChatCount: "{source}에서 대화 {count}개를 가져왔습니다.",
@@ -3050,6 +3109,7 @@ export const ko = {
       relativeNever: "없음",
       relativeJustNow: "방금",
       expired: "만료됨",
+      expiredStatus: "만료됨",
       today: "오늘",
       created: "생성: {value}",
       used: "마지막 사용: {value}",
@@ -3078,6 +3138,14 @@ export const ko = {
         autoSwitchOff:
           "모델 자동 전환이 켜져 있을 때만 이름으로 모델을 불러옵니다. 자동 전환을 켜거나 먼저 오디오 페이지에서 모델을 불러오세요.",
         useViaApi: "API로 사용",
+      },
+      mediaApi: {
+        title: "이미지 및 동영상 API",
+        description: "OpenAI 호환 엔드포인트로 직접 작성한 코드에서 이미지와 동영상을 생성하세요.",
+        images: "이미지",
+        video: "동영상",
+        placeholderModel: "표시된 모델은 예시입니다. 이미지 또는 동영상 페이지에서 모델을 로드한 뒤 그 페이지의 API 버튼으로 여기를 열면 채워집니다.",
+        autoSwitchOff: "미디어 자동 전환이 꺼져 있어 요청은 이름과 관계없이 페이지에 로드된 모델에서 실행됩니다.",
       },
       decisionApi: {
         title: "판단 API",
@@ -3158,8 +3226,27 @@ export const ko = {
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
+      whisperCppVersion: "whisper.cpp 버전",
+      engines: {
+        title: "엔진",
+        description: "Unsloth가 모델을 실행하는 데 사용하는 런타임입니다. 업데이트는 재시작 없이 백그라운드에서 설치됩니다.",
+        updatesLabel: "엔진 업데이트",
+        notInstalled: "설치되지 않음",
+        available: "{version} 사용 가능",
+        upToDate: "최신 상태",
+        updatesAvailable: "업데이트 있음",
+        checking: "업데이트 확인 중...",
+        checkFailed: "업데이트를 확인할 수 없습니다. 나중에 다시 시도하세요.",
+        unsupported: "이 설치의 엔진은 Unsloth 외부에서 관리됩니다.",
+        checkForUpdates: "업데이트 확인",
+        update: "업데이트",
+        updating: "업데이트 중...",
+        updated: "엔진이 업데이트되었습니다.",
+        updateFailed: "업데이트 실패: {error}",
+      },
       hardware: "하드웨어",
       gpu: "GPU",
+      gpuIntegrated: "내장",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3218,7 +3305,7 @@ export const ko = {
         desktopAvailableDescription:
           "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
-          "앱이 이미 실행 중인 Studio 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
+          "앱이 이미 실행 중인 Unsloth 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
         desktopManualInstall:
           "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
         desktopCheckFailed: "업데이트를 확인하지 못했습니다",
@@ -3241,6 +3328,9 @@ export const ko = {
         docsUpdating: "업데이트",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3829,7 +3919,7 @@ export const ko = {
         decisionColumnsMissing:
           "판단 모델에는 state, questions, gold(또는 answers) 열이 필요합니다. 누락된 열: {columns}",
         decisionOwnerOnly:
-          "판단 모델은 Studio 소유자만 파인튜닝할 수 있습니다.",
+          "판단 모델은 Unsloth 소유자만 파인튜닝할 수 있습니다.",
         hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
         hfDatasetSplitRequired: "먼저 학습 분할을 선택하거나 입력하세요.",
         localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
@@ -4584,5 +4674,42 @@ export const ko = {
     cantRun: "실행할 수 없습니다",
     failed: "오류 {status}",
     invalidJson: "요청 본문이 올바른 JSON이 아닙니다.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "로드된 모델",
+      countOne: "모델 {count}개 로드됨",
+      countMany: "모델 {count}개 로드됨",
+      pillLabel: "{count}. 세부 정보를 보거나 드래그하여 이동",
+      dragToMove: "드래그하여 이동",
+      dragHandleLabel: "로드된 모델 패널을 이동합니다. 방향키로 조금씩 움직일 수 있습니다.",
+      collapse: "접기",
+      collapseLabel: "로드된 모델 접기",
+      close: "닫기",
+      closeLabel: "로드된 모델 닫기",
+      backOnNextLoad: "다음 모델을 로드할 때 다시 표시됩니다",
+      ejectToFree: "꺼내서 메모리 확보",
+      ejectLabel: "{model} 꺼내기",
+      openTarget: "{target} 열기",
+      rowLabel: "{model}. {target} 열기",
+      loading: "로딩 중",
+      ejecting: "꺼내는 중",
+      stillInMemory: "아직 메모리에 있음",
+      alsoServing: "함께 서비스 중",
+      noneLoaded: "로드된 모델 없음",
+      noneLoadedDetail: "로드한 모델이 여기에 표시됩니다.",
+      otherAccount: "다른 계정에서 사용 중",
+      otherAccountDetail: "볼 수 없는 모델이 메모리를 점유하고 있습니다",
+      toastStillResident: "꺼내는 중에 \"{model}\"이(가) 로드되어 아직 메모리를 사용하고 있습니다. 다시 꺼내면 메모리가 해제됩니다.",
+      toastUnverified: "{model}의 언로드를 요청했지만 런타임이 확인하지 않았습니다. 잠시 후 카드를 확인하세요.",
+      toastAlreadyFree: "{model}은(는) 더 이상 로드되어 있지 않았습니다.",
+      toastReplaced: "{model}은(는) 더 이상 로드되어 있지 않습니다. \"{resident}\"이(가) 그 자리를 차지했으며 그대로 두었습니다.",
+      toastEjected: "{model} 꺼냄",
+      toastFailed: "{model}을(를) 꺼내지 못했습니다",
+    },
+    monitor: {
+      dragHandleLabel: "실시간 모니터를 이동합니다. 방향키로 조금씩 움직이고, 더블클릭하면 위치가 초기화됩니다.",
+      reconnecting: "다시 연결하는 중...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

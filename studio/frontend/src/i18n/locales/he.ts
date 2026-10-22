@@ -51,6 +51,11 @@ export const he = {
     removeFromMessage: "הסר מההודעה",
   },
   browser: {
+    drafts: {
+      title: "לפרוק דף עם טקסט שהוזן?",
+      description: "כדי לשמור על תגובתיות הצ׳אט, רק שלושה דפים מוסתרים עם טקסט שהוזן ממשיכים לפעול. המשך יפרוק את {pages}, וטקסט שלא נשמר עלול ללכת לאיבוד. ביטול מחזיר לכרטיסייה הקודמת.",
+      confirm: "פריקה והמשך",
+    },
     agentSettings: {
       title: "שימוש בדפדפן",
       enable: "לאפשר למודלים להשתמש בדפדפן",
@@ -114,6 +119,7 @@ export const he = {
     reload: "טען מחדש",
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
+    local: "מקומי",
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -219,7 +225,7 @@ export const he = {
     importBookmarksDoneOne: "יובאה {count} סימנייה.",
     importBookmarksDoneMany: "יובאו {count} סימניות.",
     importBookmarksNone: "אין סימניות חדשות בקובץ הזה.",
-    importBookmarksPartial: "יובאו {count}, אבל עוד {leftOut} לא נכנסו: Studio שומר עד {max} סימניות.",
+    importBookmarksPartial: "יובאו {count}, אבל עוד {leftOut} לא נכנסו: Unsloth שומר עד {max} סימניות.",
     importBookmarksFailed: "לא ניתן לקרוא את הקובץ. בחרו קובץ HTML של סימניות שיוצא מדפדפן.",
     downloadsTitle: "הורדות",
     askWhereToSaveSetting: "לשאול היכן לשמור כל קובץ",
@@ -271,7 +277,7 @@ export const he = {
     annotationScreenshotsNever: "לעולם לא לכלול",
     clearDataSetting: "ניקוי נתוני גלישה",
     clearDataSettingDescription:
-      "נקה את היסטוריית הגלישה, היסטוריית ההורדות והדפים השמורים במטמון. הדפים שומרים קובצי Cookie ונתוני אתרים רק עד לטעינה מחדש של Studio.",
+      "נקה את היסטוריית הגלישה, היסטוריית ההורדות והדפים השמורים במטמון. הדפים שומרים קובצי Cookie ונתוני אתרים רק עד לטעינה מחדש של Unsloth.",
     manage: "ניהול",
     fullView: {
       enter: "עבור לתצוגה מלאה",
@@ -481,6 +487,8 @@ export const he = {
       notMarked: "{name} נשמר, אך לא ניתן היה לסמן אותו כקובץ שהורד מהאינטרנט, ולכן המערכת לא תזהיר לפני שתפתח אותו.",
       blocked:
         "לא ניתן לפתוח כתובת זו בחלונית הדפדפן. היא פותחת רק אתרים ציבוריים.",
+      blockedLocal: "לא ניתן לפתוח כאן את הכתובת המקומית הזו. הקלד אותה בשורת הכתובת כדי לפתוח אותה.",
+      studioAddress: "זו הכתובת של Unsloth עצמו, ולכן לא ניתן לפתוח אותה בחלונית הדפדפן.",
       clearDataSettingDescription:
         "נקה את היסטוריית הגלישה, היסטוריית ההורדות, הדפים השמורים במטמון וקובצי ה-Cookie ונתוני האתרים שהדפים שומרים, מה שינתק אותך מאתרים.",
       clearDataDescription:
@@ -521,7 +529,7 @@ export const he = {
     seedHelp: "קובע את הזרע האקראי של המנוע. צ'אטים במקביל עדיין יכולים לשנות תשובות שנדגמו.",
     default: "ברירת מחדל",
     installRequired: "נדרשת התקנה",
-    ownerRequired: "בקש מבעל ה-Studio להתקין מנוע זה.",
+    ownerRequired: "בקש מבעל Unsloth להתקין מנוע זה.",
     cancelInstall: "בטל התקנה",
     installed: "מותקנת גרסה {version}",
     repair: "תיקון",
@@ -535,8 +543,8 @@ export const he = {
     confirm: "להתקין את {engine} {version}? ההורדה עשויה להגיע לכמה גיגה-בייט.",
     confirmSized: "להתקין את {engine} {version}? הורדה של כ-{size}.",
     wslSetup:
-      "ב-Windows, {engine} פועל בסביבת WSL2 פרטית ש-Studio מגדיר. תופיע בקשת מנהל אחת, וייתכן שיידרש אתחול.",
-    wslReady: "ב-Windows, {engine} פועל בתוך סביבת WSL2 הפרטית של Studio.",
+      "ב-Windows, {engine} פועל בסביבת WSL2 פרטית ש-Unsloth מגדיר. תופיע בקשת מנהל אחת, וייתכן שיידרש אתחול.",
+    wslReady: "ב-Windows, {engine} פועל בתוך סביבת WSL2 הפרטית של Unsloth.",
     wslRestart:
       "הפעל מחדש את Windows כדי לסיים את הפעלת WSL2, ולאחר מכן לחץ שוב על התקנה.",
     background: "ההתקנה פועלת ברקע.",
@@ -920,6 +928,7 @@ export const he = {
       byProject: "לפי פרויקט",
       inOneList: "ברשימה אחת",
       sortChatsBy: "מיין צ'אטים לפי",
+      projectsHome: "דף הפרויקטים",
       lastUpdated: "עודכן לאחרונה",
       manualOrder: "סדר ידני",
       switchedToManual: "מיון ידני: גרור שורות כדי לשנות סדר",
@@ -1032,7 +1041,7 @@ export const he = {
     title: "הגדרות",
     dialog: {
       title: "הגדרות",
-      description: "נהל את העדפות ה-Unsloth שלך.",
+      description: "נהל את העדפות Unsloth שלך.",
       closeAriaLabel: "סגור הגדרות",
       searchPlaceholder: "חיפוש בהגדרות…",
       searchNoResults: "לא נמצאו הגדרות.",
@@ -1168,6 +1177,10 @@ export const he = {
       alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
+      metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
+      altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
+      desktopOnly: "באפליקציית שולחן העבודה בלבד",
+      builtInKey: "מובנה: {key}",
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1370,6 +1383,10 @@ export const he = {
           label: "הכוונת התשובה",
           description: "עצור את התשובה הנוכחית ושלח את הטיוטה מיד אחריה",
         },
+        stopGeneration: {
+          label: "עצירת היצירה",
+          description: "עצירת התשובה שנכתבת",
+        },
         cycleReasoningEffort: {
           label: "החלף רמת מאמץ חשיבה",
           description: "עבור בין רמות מאמץ החשיבה השונות",
@@ -1552,15 +1569,15 @@ export const he = {
       dictation: {
         audioUploadTitle: "הכתבה מהקלטה",
         audioUploadDescription:
-          "הדפדפן שלך דורש חיבור מאובטח (HTTPS) כדי להקליט ישירות ב-Studio. בחיבור HTTP זה, השתמש במקליט של הטלפון או בחר הקלטה שמורה במקום. שרת ה-Studio שלך יתמלל את האודיו ויוסיף את הטקסט להודעה שלך.",
+          "הדפדפן שלך דורש חיבור מאובטח (HTTPS) כדי להקליט ישירות ב-Unsloth. בחיבור HTTP זה, השתמש במקליט של הטלפון או בחר הקלטה שמורה במקום. שרת Unsloth שלך יתמלל את האודיו ויוסיף את הטקסט להודעה שלך.",
         audioUploadChooseFile: "בחר הקלטה",
         audioUploadRecord: "הקלט אודיו",
         audioUploadIphoneHint:
           "ב-iPhone, שמור הקלטה מ-Voice Memos או מאפליקציית הקלטה אחרת, ולאחר מכן בחר אותה כאן.",
         audioUploadServerModelNote:
-          "הקלטה זו משתמשת במודל המקומי שמוצג למעלה בשרת ה-Studio, גם אם ההכתבה הרגילה משתמשת במנוע אחר.",
+          "הקלטה זו משתמשת במודל המקומי שמוצג למעלה בשרת Unsloth, גם אם ההכתבה הרגילה משתמשת במנוע אחר.",
         audioUploadAutomatic: "אוטומטי",
-        audioUploadModelReady: "מוכן בשרת Studio זה",
+        audioUploadModelReady: "מוכן בשרת Unsloth זה",
         audioUploadRetryTitle: "לא ניתן לתמלל את {file}",
         audioUploadRetry: "נסה לתמלל שוב",
         audioUploadChooseModel: "בחר מודל מקומי לזיהוי דיבור בהגדרות הקול.",
@@ -1715,9 +1732,9 @@ export const he = {
         autoDescription: "הקראת כל תשובה ברגע שהיא מסתיימת",
         engineLabel: "מנוע TTS",
         engineSystemDescription: "קולות מובנים במכשיר",
-        engineStudioDescription: "משתמש במודל הדיבור שנטען באודיו",
+        engineStudioDescription: "מדבר באמצעות מודל שנטען באודיו › טקסט לדיבור",
         engineSystem: "קולות מערכת",
-        engineStudio: "טען מודל TTS",
+        engineStudio: "מודל Unsloth",
         engineCustom: "נקודת קצה מותאמת אישית",
         engineCustomDescription:
           "שרת TTS תואם OpenAI מהחיבורים שלך (למשל Kokoro)",
@@ -1728,7 +1745,11 @@ export const he = {
         customVoiceDescription:
           "שם הקול שנקודת הקצה מצפה לו; ברירת מחדל היא alloy",
         modelLabel: "מודל TTS",
-        modelDescription: "טען מודל דיבור באודיו. הוא מחליף את מודל הצ'אט.",
+        modelDescription: "לא נטען מודל. טען מודל באודיו › טקסט לדיבור.",
+        modelLoaded: "{model} נטען",
+        keepBothLabel: "השאר את מודל הצ'אט טעון",
+        keepBothDescription: "ההגדרה ”השאר מספר מודלים טעונים” במצב ”כבוי”, ולכן טעינת מודל דיבור פורקת את מודל הצ'אט.",
+        keepBothAction: "השאר את שניהם טעונים",
         openAudioAction: "פתח אודיו",
         voiceLabel: "קול",
         voiceDescription: "הקולות הטובים ביותר במכשיר זה",
@@ -1797,6 +1818,23 @@ export const he = {
         disabledByEnv: "מושבת על ידי UNSLOTH_HELPER_MODEL_DISABLE בסביבת השרת.",
         loadError: "טעינת הגדרות מודל העזר נכשלה.",
         saveError: "שמירת הגדרות מודל העזר נכשלה.",
+      },
+      developerMode: {
+        sectionTitle: "מצב מפתחים",
+        videoCpu: "אפשר יצירת וידאו על CPU (ניסיוני)",
+        videoCpuDescription: "מאפשר להפעיל את דף הווידאו במחשב ללא GPU נתמך. כבוי כברירת מחדל; לא נתמך ואיטי מאוד.",
+        notApplicable: "אין לכך השפעה במחשב זה: הווידאו כבר רץ על ה-GPU שלו, או שהוא חסום בגלל משהו שה-CPU לא יכול לעקוף.",
+        forcedOnByEnv: "הופעל על ידי UNSLOTH_VIDEO_ALLOW_CPU בסביבת ה-backend.",
+        forcedOffByEnv: "כובה על ידי UNSLOTH_VIDEO_ALLOW_CPU בסביבת ה-backend.",
+        confirmTitle: "להפעיל יצירת וידאו על CPU?",
+        confirmWarning: "יצירת וידאו על CPU עלולה להימשך שעות, לצרוך כמויות גדולות של RAM ולגרום להקפאת המערכת. המשך על אחריותך בלבד.",
+        ramBelowMinimum: "במחשב זה יש {host} GB של RAM, פחות מ-{min} GB שדגם הווידאו הקטן ביותר צריך על CPU. סביר שהטעינה תיכשל או תקפיא את המערכת.",
+        ramOk: "במחשב זה יש {host} GB של RAM. דגם הווידאו הקטן ביותר צריך כ-{min} GB על CPU; דגמים גדולים יותר צריכים הרבה יותר.",
+        ramUnknown: "דגם הווידאו הקטן ביותר צריך כ-{min} GB של RAM על CPU; דגמים גדולים יותר צריכים הרבה יותר.",
+        performanceEstimate: "צפה לדקות לכל שלב הסרת רעש: קליפ של 5 פריימים ב-832x480 מ-Wan2.1 1.3B עם 3 שלבים נמשך כ-4 דקות על 16 תהליכוני CPU, וקליפ באורך מלא בהגדרות ברירת המחדל עלול להימשך שעות.",
+        confirmAction: "הפעל בכל זאת",
+        loadError: "טעינת הגדרות מצב המפתחים נכשלה.",
+        saveError: "שמירת הגדרות מצב המפתחים נכשלה.",
       },
       modelAutoSwitch: {
         sectionTitle: "החלפת מודל אוטומטית (OpenAI API)",
@@ -1892,23 +1930,14 @@ export const he = {
       },
       notifications: {
         sectionTitle: "התראות",
-        showLlamaUpdates: "התראות עדכון llama.cpp",
-        showLlamaUpdatesDescription:
-          "הודע כאשר גרסה חדשה יותר של llama.cpp זמינה להרצת מודלים חדשים. כבה אם אתה רק מאמן מודלים.",
-        showLoadedModels: "חיווי מודלים טעונים",
-        showLoadedModelsDescription:
-          "הצג כרטיס קטן בפינה הימנית התחתונה המפרט כל מודל שנמצא כרגע בזיכרון (צ'אט, דיבור, תמונה, וידאו), עם כפתור לפריקת כל אחד מהם.",
-        showWhisperUpdates: "התראות עדכון של whisper.cpp",
-        showWhisperUpdatesDescription:
-          "הודע כאשר גרסת build חדשה יותר של whisper.cpp זמינה עבור מודלים של המרת דיבור לטקסט. כבה אם אינך מתמלל אודיו אף פעם.",
-        showAudioCppUpdates: "התראות עדכון של audio.cpp",
-        showAudioCppUpdatesDescription:
-          "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
-        showUnslothUpdates: "התראות עדכון של Unsloth",
-        showUnslothUpdatesDescription:
-          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        showLoadedModels: "כרטיס מודלים טעונים",
+        showLoadedModelsDescription: "כרטיס בפינה עם כל מודל טעון, לפריקה בלחיצה.",
+        updateReminders: "תזכורות עדכון",
+        updateRemindersDescription: "באיזו תדירות להציע גרסה חדשה כשהיא מוכנה.",
+        llamaHint: "מודלי צ'אט ו-GGUF",
+        audioHint: "דיבור, מוזיקה ותמלול",
         frequency: {
-          always: "תמיד",
+          always: "כשזמין",
           daily: "פעם ביום",
           weekly: "פעם בשבוע",
           biweekly: "כל שבועיים",
@@ -1925,6 +1954,11 @@ export const he = {
         closeToTrayDescription:
           "השאר את Unsloth והשרת שלו פועלים ברקע בעת סגירת החלון הראשי.",
         closeToTraySaveError: "עדכון הגדרת הסגירה למגש המערכת נכשל.",
+
+        menuBarIcon: "הצג בשורת התפריטים",
+        menuBarIconDescription:
+          "הצג את סמל Unsloth בשורת התפריטים של macOS. כשהוא מוסתר, Unsloth נשאר ב-Dock במקום זאת, גם כשהוא מופעל בכניסה למערכת.",
+        menuBarIconSaveError: "עדכון הגדרת סמל שורת התפריטים נכשל.",
         loadError: "טעינת הגדרת ההפעלה בכניסה למערכת נכשלה.",
         saveError: "עדכון הגדרת ההפעלה בכניסה למערכת נכשל.",
       },
@@ -2046,7 +2080,7 @@ export const he = {
         menuSubtitle: "מפעיל את חיפוש הקבצים",
         device: "התקן הטמעה",
         deviceDescription:
-          "היכן רץ מודל ההטמעה, לכל המודלים. GPU מאנדקס אוספי מסמכים גדולים מהר יותר, אבל משאיר חלק מה-VRAM בשימוש עד ש-Studio מופעל מחדש.",
+          "היכן רץ מודל ההטמעה, לכל המודלים. GPU מאנדקס אוספי מסמכים גדולים מהר יותר, אבל משאיר חלק מה-VRAM בשימוש עד ש-Unsloth מופעל מחדש.",
         deviceAuto: "אוטומטי",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2119,6 +2153,8 @@ export const he = {
         subtitle:
           "כל המידע למטה מחושב מההיסטוריה המקומית שלך. שום מידע אינו נאסף או נשלח ל-Unsloth.",
         retry: "נסה שוב",
+        exportCsv: "ייצוא ל-CSV",
+        exportError: "לא ניתן לייצא את השימוש בטוקנים",
         privacyNote:
           "הסטטיסטיקות מחושבות מצ'אטים מקומיים, שימוש ב-API והיסטוריית אימונים המאוחסנת בהתקנת Unsloth שלך. פרומפטים, תשובות ומפתחות API אינם נשמרים לעולם לצורך סטטיסטיקות. שום דבר אינו נשלח ל-Unsloth או לצד שלישי כלשהו.",
         emptyChats:
@@ -2130,9 +2166,9 @@ export const he = {
         longestStreak: "רצף שיא",
         activityTitle: "פעילות טוקנים",
         activityDescription: {
-          daily: "{total} במהלך {weeks} האחרונים",
-          weekly: "שבוע שיא: {total} · {weeks} אחרונים",
-          cumulative: "{total} נצברו במהלך {weeks} האחרונים",
+          daily: "{total} מאז {since}",
+          weekly: "השבוע העמוס ביותר {total} · מאז {since}",
+          cumulative: "{total} בסך הכול מאז {since}",
         },
         mode: {
           daily: "יומי",
@@ -2141,8 +2177,9 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
-        chartToggle: "תרשים",
-        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
+        emptyDayTooltip: "{date} · אין פעילות",
+        apiRequests: "{count} דרך API",
+        cumulativeTooltip: "עד שבוע {date} · {tokens} בסך הכול",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
@@ -2462,13 +2499,16 @@ export const he = {
         multiModelOff: "כבוי",
         multiModelFit: "כשהם נכנסים",
         multiModelAlways: "תמיד",
-        multiModelDescription: "טעינת מודל צ'אט, תמונה או וידאו פורקת את האחרים.",
+        multiModelDescription: "טעינת מודל צ'אט, דיבור, תמונה או וידאו פורקת את האחרים.",
         multiModelDescriptionFit:
           "טעינת מודל משאירה את האחרים כשהם נכנסים. כשלא, היא פורקת תחילה את אלה שאינם בשימוש, ואז את הפעיל.",
         multiModelDescriptionAlways:
           "טעינת מודל לעולם אינה פורקת מודל אחר. מודל שאינו נכנס לא נטען. פריקה בחוסר פעילות ואימון עדיין מפנים זיכרון.",
         multiModelHint:
-          "חל על מודלי צ'אט, תמונה ווידאו. כל מודל צ'אט טעון עונה לבקשות שמציינות אותו. כשיש כמה מעבדי GPU, Unsloth מנסה למקם מודל חדש ב-GPU שאף מודל אחר אינו משתמש בו. ”כשהם נכנסים” משאיר כ-1 GB פנוי. ”כשהם נכנסים” ו”תמיד” לעולם אינם פורקים מודל ב-GPU אחר.",
+          "חל על מודלי צ'אט, דיבור, תמונה ווידאו. כל מודל צ'אט טעון עונה לבקשות שמציינות אותו. כשיש כמה מעבדי GPU, Unsloth מנסה למקם מודל חדש ב-GPU שאף מודל אחר אינו משתמש בו. ”כשהם נכנסים” משאיר כ-1 GB פנוי. ”כשהם נכנסים” ו”תמיד” לעולם אינם פורקים מודל ב-GPU אחר.",
+        allowOversizedLoad: "לאפשר טעינת מודלים גדולים מדי",
+        allowOversizedLoadDescription: "לטעון מודלי תמונה ווידאו גם כשבדיקת הזיכרון קובעת שהם לא ייכנסו.",
+        allowOversizedLoadHint: "חל כאשר המעבד וה-GPU חולקים מאגר זיכרון אחד (Apple Silicon, מעבדים גרפיים משולבים). Unsloth מסרב לטעינה כאשר ההערכה שלו למשקלי המודל גדולה מהזיכרון שנותר אחרי שמירת מקום למערכת ההפעלה. כשאפשרות זו מופעלת, הטעינה תנוסה בכל זאת. ההערכה יכולה לטעות לשני הכיוונים: טעינה גדולה מדי עלולה להיכשל, לנצל את כל הזיכרון, לגרום להחלפה כבדה לדיסק או לתקיעת המחשב, או לעצור את Unsloth. כבוי כברירת מחדל.",
         mediaIdleUnloadDescription:
           "פנה VRAM על ידי פריקת מודלי תמונה ווידאו לאחר מספר שניות ללא פעילות. 0 שומר אותם טעונים, מינימום 60.",
         mlockVetoed:
@@ -2483,7 +2523,7 @@ export const he = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging זיכרון קיבוע נעילה תושב השאר טעון פריקה סרק החלפה דפדוף",
         multiModelKeywords:
-          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle מספר מודלים יחד במקביל החלפה נכנס פריקה פינוי תמונה וידאו צ'אט תמיד סרק",
+          "multiple several models together alongside swap fit unload evict vram gpu image video chat always idle מספר מודלים יחד במקביל החלפה נכנס פריקה פינוי תמונה וידאו צ'אט תמיד סרק speech tts voice read aloud דיבור קול הקראה",
         mediaIdleUnloadKeywords:
           "image video diffusion idle unload ttl timeout seconds free vram gpu memory תמונה וידאו דיפוזיה סרק פריקה זמן קצוב שניות פינוי זיכרון",
       },
@@ -2786,6 +2826,10 @@ export const he = {
         "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
+      showReplyTimes: "זמני תשובות",
+      showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
+      showReplyTimesKeywords:
+        "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
@@ -2842,6 +2886,22 @@ export const he = {
         visibility: "חשיבה",
         visibilityDescription:
           "כיצד תהליך החשיבה נפתח. עדיין תוכל להרחיב או לכווץ כל מקטע בעצמך.",
+      },
+      memory: {
+        title: "זיכרון",
+        description: "הערות שכל צ'אט קורא, בכל מודל, מקומי או בענן. צ'אטים בפרויקט קוראים גם את קובץ AGENTS.md של הפרויקט.",
+        enable: "שימוש בזיכרון בצ'אטים",
+        enableDescription: "שליחת ההערות האלה עם כל צ'אט.",
+        locked: "כבוי בהתקנה זו על ידי UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "הערות זיכרון",
+        placeholder: "לדוגמה:\n- אני כותב ב-Python ומשתמש ב-uv.\n- תשובות קצרות.",
+        hint: "נשמר ב-{path}. אפשר גם לערוך את הקובץ בכל עורך טקסט.",
+        size: "{used} / {max} KB",
+        save: "שמירה",
+        saved: "הזיכרון נשמר",
+        loadError: "טעינת הזיכרון נכשלה.",
+        saveError: "שמירת הזיכרון נכשלה.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md זיכרון לזכור התאמה אישית פרופיל הערות",
       },
       currentDate: {
         label: "ספק למודל את התאריך של היום",
@@ -2925,7 +2985,7 @@ export const he = {
       importFailed: "הייבוא נכשל.",
       importFromSource: "ייבוא מ-{source}",
       importFromSourceDescription:
-        "העתק את השיחות שלך מ-{source} אל Studio, מקובצות לפי הפרויקט שאליו הן שייכות.",
+        "העתק את השיחות שלך מ-{source} אל Unsloth, מקובצות לפי הפרויקט שאליו הן שייכות.",
       importingAction: "מייבא...",
       importedSourceOneChat: "שיחה אחת יובאה מ-{source}.",
       importedSourceChatCount: "{count} שיחות יובאו מ-{source}.",
@@ -3181,6 +3241,7 @@ export const he = {
       relativeNever: "אף פעם",
       relativeJustNow: "זה עתה",
       expired: "פג תוקף",
+      expiredStatus: "פג תוקף",
       today: "היום",
       created: "נוצר {value}",
       used: "שימוש אחרון {value}",
@@ -3210,6 +3271,14 @@ export const he = {
         autoSwitchOff:
           "המודל נטען לפי שם רק כשהחלפת מודל אוטומטית פועלת. הפעל אותה, או טען קודם את המודל בדף השמע שלו.",
         useViaApi: "שימוש דרך API",
+      },
+      mediaApi: {
+        title: "API לתמונות ולווידאו",
+        description: "צרו תמונות וסרטונים מהקוד שלכם דרך נקודות הקצה התואמות ל-OpenAI.",
+        images: "תמונות",
+        video: "וידאו",
+        placeholderModel: "המודל המוצג הוא דוגמה. טענו מודל בדף התמונות או הווידאו ופתחו את זה מכפתור ה-API שלו כדי למלא אותו.",
+        autoSwitchOff: "המעבר האוטומטי למדיה כבוי, ולכן הבקשות רצות על המודל שהדף טען, לא משנה איזה שם הן נותנות.",
       },
       decisionApi: {
         title: "ממשק API להחלטות",
@@ -3292,8 +3361,27 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      whisperCppVersion: "גרסת whisper.cpp",
+      engines: {
+        title: "מנועים",
+        description: "סביבות ההרצה ש-Unsloth משתמש בהן כדי להריץ מודלים. העדכונים מותקנים ברקע, ללא הפעלה מחדש.",
+        updatesLabel: "עדכוני מנועים",
+        notInstalled: "לא מותקן",
+        available: "{version} זמין",
+        upToDate: "מעודכן",
+        updatesAvailable: "יש עדכונים",
+        checking: "מחפש עדכונים...",
+        checkFailed: "לא ניתן היה לחפש עדכונים. נסה שוב מאוחר יותר.",
+        unsupported: "המנועים של התקנה זו מנוהלים מחוץ ל-Unsloth.",
+        checkForUpdates: "חיפוש עדכונים",
+        update: "עדכון",
+        updating: "מעדכן...",
+        updated: "המנועים עודכנו.",
+        updateFailed: "העדכון נכשל: {error}",
+      },
       hardware: "חומרה",
       gpu: "GPU",
+      gpuIntegrated: "משולב",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3351,7 +3439,7 @@ export const he = {
         desktopAvailableDescription:
           "עדכן כעת ואפליקציית שולחן העבודה תופעל מחדש בסיום.",
         desktopExternalServer:
-          "האפליקציה התחברה לשרת Studio שכבר פועל ואינה יכולה לעדכן אותו. עצור את השרת, ואז צא מאפליקציית שולחן העבודה ופתח אותה מחדש כדי לעדכן.",
+          "האפליקציה התחברה לשרת Unsloth שכבר פועל ואינה יכולה לעדכן אותו. עצור את השרת, ואז צא מאפליקציית שולחן העבודה ופתח אותה מחדש כדי לעדכן.",
         desktopManualInstall:
           "פתח את דף השחרור כדי להתקין את חבילת ה-Linux העדכנית ביותר.",
         desktopCheckFailed: "לא ניתן לבדוק עדכונים",
@@ -3373,6 +3461,9 @@ export const he = {
         docsUpdating: "עדכון",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3922,7 +4013,7 @@ export const he = {
         decisionColumnsMissing:
           "מודלי החלטה צריכים את העמודות state, questions ו-gold (או answers). חסרות: {columns}.",
         decisionOwnerOnly:
-          "רק הבעלים של Studio יכול לבצע כוונון עדין למודלי החלטה.",
+          "רק הבעלים של Unsloth יכול לבצע כוונון עדין למודלי החלטה.",
         hfDatasetRequired: "בחר תחילה מערך נתונים מ-Hugging Face.",
         hfDatasetSplitRequired: "בחר או הזן תחילה פיצול אימון.",
         localDatasetRequired: "בחר תחילה מערך נתונים מקומי.",
@@ -4729,5 +4820,42 @@ export const he = {
     cantRun: "לא ניתן היה להריץ",
     failed: "שגיאה {status}",
     invalidJson: "גוף הבקשה אינו JSON תקין.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "מודלים טעונים",
+      countOne: "{count} מודל טעון",
+      countMany: "{count} מודלים טעונים",
+      pillLabel: "{count}. הצג פרטים, או גרור כדי להזיז",
+      dragToMove: "גרור כדי להזיז",
+      dragHandleLabel: "הזז את המודלים הטעונים. מקשי החיצים מזיזים אותו מעט.",
+      collapse: "כווץ",
+      collapseLabel: "כווץ את המודלים הטעונים",
+      close: "סגירה",
+      closeLabel: "סגור את המודלים הטעונים",
+      backOnNextLoad: "יחזור בטעינת המודל הבאה",
+      ejectToFree: "הוצא כדי לפנות זיכרון",
+      ejectLabel: "הוצא את {model}",
+      openTarget: "פתח את {target}",
+      rowLabel: "{model}. פתח את {target}",
+      loading: "טוען",
+      ejecting: "מוציא",
+      stillInMemory: "עדיין בזיכרון",
+      alsoServing: "מספק שירות גם ל־",
+      noneLoaded: "אין מודלים טעונים",
+      noneLoadedDetail: "מודלים שתטען יוצגו כאן.",
+      otherAccount: "בשימוש בחשבון אחר",
+      otherAccountDetail: "הזיכרון תפוס על ידי מודל שאינך יכול לראות",
+      toastStillResident: "„{model}” נטען בזמן ההוצאה, ולכן עדיין משתמש בזיכרון. הוצא אותו שוב כדי לפנות אותו.",
+      toastUnverified: "התבקשה הוצאה של {model}, אך סביבת ההרצה לא אישרה זאת. בדוק את הכרטיס בעוד רגע.",
+      toastAlreadyFree: "{model} כבר לא היה טעון.",
+      toastReplaced: "{model} אינו טעון עוד. „{resident}” תפס את מקומו ולא נגעו בו.",
+      toastEjected: "{model} הוצא",
+      toastFailed: "הוצאת {model} נכשלה",
+    },
+    monitor: {
+      dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
+      reconnecting: "מתחבר מחדש...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -16,7 +16,7 @@ from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from ..utils.packing import get_packed_info_from_kwargs
 from ..kernels import qk_norm_rope as _qk_norm_rope
-from ..kernels.qk_norm_rope import fast_qk_norm_rope
+from ..kernels.qk_norm_rope import fast_qk_norm_rope, decode_qk_norm_rope
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -254,35 +254,45 @@ def Qwen3Attention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    Qn = fast_rms_layernorm_inference(self.q_norm, Qn)
-    Kn = fast_rms_layernorm_inference(self.k_norm, Kn)
-
-    Qn = Qn.transpose(1, 2)
-    Kn = Kn.transpose(1, 2)
-
     # Must be done 2 steps before hitting full on a short KV cache, or it errors.
-    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (from the model-level decode loop, no extra sync) covers explicit positions
+    # past the KV length, since the cache only builds the rows asked for.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    rope_len = kv_seq_len if rotary_seq_len is None else max(kv_seq_len, rotary_seq_len)
+    self.rotary_emb.extend_rope_embedding(Vn, max(seq_len + 2, rope_len + 1))
+    cos, sin = self.rotary_emb.get_cached(rope_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
-    cos = cos[position_ids].unsqueeze(1)
-    sin = sin[position_ids].unsqueeze(1)
-    h = self.half_head_dim
 
-    RH_Q = self.RH_Q
-    RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
-    RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    RH_Q[:, :, :, :h].neg_()
-    Qn *= cos
-    Qn.addcmul_(RH_Q, sin)
+    # One launch for both norms and both rotations; None where it does not apply.
+    fused = decode_qk_norm_rope(self.q_norm, self.k_norm, Qn, Kn, cos, sin, position_ids)
+    if fused is not None:
+        Qn, Kn = fused
+    else:
+        Qn = fast_rms_layernorm_inference(self.q_norm, Qn)
+        Kn = fast_rms_layernorm_inference(self.k_norm, Kn)
 
-    RH_K = RH_Q[:, :n_kv_heads, :, :]
-    RH_K[:, :, :, :h] = Kn[:, :, :, h:]
-    RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    RH_K[:, :, :, :h].neg_()
-    Kn *= cos
-    Kn.addcmul_(RH_K, sin)
+        Qn = Qn.transpose(1, 2)
+        Kn = Kn.transpose(1, 2)
+
+        cos = cos[position_ids].unsqueeze(1)
+        sin = sin[position_ids].unsqueeze(1)
+        h = self.half_head_dim
+
+        RH_Q = self.RH_Q
+        RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
+        RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
+        RH_Q[:, :, :, :h].neg_()
+        Qn *= cos
+        Qn.addcmul_(RH_Q, sin)
+
+        RH_K = RH_Q[:, :n_kv_heads, :, :]
+        RH_K[:, :, :, :h] = Kn[:, :, :, h:]
+        RH_K[:, :, :, h:] = Kn[:, :, :, :h]
+        RH_K[:, :, :, :h].neg_()
+        Kn *= cos
+        Kn.addcmul_(RH_K, sin)
 
     self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
     self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
