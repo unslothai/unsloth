@@ -863,59 +863,79 @@ def test_compiled_streamed_blocks_record_below_their_hooks_with_no_graph_break()
     handle.free()
 
 
-def test_a_failed_block_capture_hands_its_pool_back(monkeypatch):
-    """A failed per-block capture retires its pool: what no live graph holds goes back to the device right away
-    (the prompt encode no longer flushes the allocator on every prompt), and the block runs its compute exactly."""
-    _cuda()
-    import core.inference.diffusion_cuda_graph as cg
+def _reset_retired(monkeypatch):
+    if hasattr(cg, "_RETIRED_POOLS"):
+        monkeypatch.setattr(cg, "_RETIRED_POOLS", [0, 0])
+    else:
+        monkeypatch.setattr(cg, "_RETIRED_POOL_DUE", [False], raising = False)
 
+
+def test_a_block_capture_after_a_failed_one_flushes_the_retired_pool_first(monkeypatch):
+    """A failed per-block capture retires its pool. When it cannot be flushed then (another thread started recording,
+    which prohibits the flush), the pool stays due: the next capture hands it back before it records, so it never
+    records beside the retired segments. Every block still runs its compute exactly."""
+    _cuda()
+    _reset_retired(monkeypatch)
     net = _net(blocks = 2).cuda()
     ref = copy.deepcopy(net)
     handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
-    flushes = {"n": 0}
-    monkeypatch.setattr(
-        cg,
-        "flush_retired_pools",
-        lambda: flushes.__setitem__("n", flushes["n"] + 1) or True,
-        raising = False,
-    )
     monkeypatch.setattr(cg, "_FAILED_GRAPHS", [])
+    events = []
+    real_flush = torch.cuda.empty_cache
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("flush") or real_flush())
+    real_begin = torch.cuda.CUDAGraph.capture_begin
+    other = {"recording": False}
 
-    def refuse(self, *args, **kwargs):
-        raise RuntimeError("capture failed")
+    def begin(self, *args, **kwargs):
+        if "fail" not in events:
+            events.append("fail")
+            cg._CAPTURE_DEPTH += 1  # another render thread starts recording as this capture fails
+            other["recording"] = True
+            raise RuntimeError("capture failed")
+        events.append("begin")
+        return real_begin(self, *args, **kwargs)
 
-    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_begin", refuse)
+    real_refuse = cg.refuse_if_exhausted
+
+    def refuse(*args, **kwargs):
+        if other["recording"]:  # ... and is done before the next block records
+            other["recording"] = False
+            cg._CAPTURE_DEPTH -= 1
+        return real_refuse(*args, **kwargs)
+
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_begin", begin)
+    monkeypatch.setattr(cg, "refuse_if_exhausted", refuse)
     x = torch.randn(7, 16, device = "cuda")
-    with torch.inference_mode():
-        for _ in range(3):
-            assert torch.equal(net(x), ref(x))
-    failed = handle.stats["fallbacks"] + handle.stats.get("segment_fallbacks", 0)
-    assert failed >= 1 and flushes["n"] == failed
+    try:
+        with torch.inference_mode():
+            for _ in range(4):
+                assert torch.equal(net(x), ref(x))
+    finally:
+        if other["recording"]:
+            cg._CAPTURE_DEPTH -= 1
+    start = events.index("fail")
+    assert "begin" in events[start:]
+    assert "flush" in events[start : events.index("begin", start)]
+    if hasattr(cg, "retired_pool_due"):
+        assert not cg.retired_pool_due()
     handle.free()
 
 
 def test_a_block_capture_refused_before_recording_flushes_nothing(monkeypatch):
     """Past the failure budget every block fails before capture_begin: no pool was retired, so no allocator flush."""
     _cuda()
-    import core.inference.diffusion_cuda_graph as cg
-
+    _reset_retired(monkeypatch)
     net = _net(blocks = 2).cuda()
     ref = copy.deepcopy(net)
     handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
-    flushes = {"n": 0}
-    monkeypatch.setattr(
-        cg,
-        "flush_retired_pools",
-        lambda: flushes.__setitem__("n", flushes["n"] + 1) or True,
-        raising = False,
-    )
+    flushes = cg._POOL_FLUSHES[0]
     monkeypatch.setattr(cg, "captures_exhausted", lambda: True)
     x = torch.randn(7, 16, device = "cuda")
     with torch.inference_mode():
         for _ in range(3):
             assert torch.equal(net(x), ref(x))
     assert handle.stats["fallbacks"] + handle.stats.get("segment_fallbacks", 0) >= 1
-    assert flushes["n"] == 0
+    assert cg._POOL_FLUSHES[0] == flushes and not cg.retired_pool_due()
     handle.free()
 
 

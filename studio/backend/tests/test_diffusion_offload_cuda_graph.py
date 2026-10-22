@@ -165,27 +165,42 @@ def test_release_and_restore_records_again_and_stays_exact():
     assert handles[0].stats["invalidations"] >= 1 and handles[0].stats["captures"] >= 2
 
 
+def _reset_retired(monkeypatch):
+    if hasattr(cg, "_RETIRED_POOLS"):
+        monkeypatch.setattr(cg, "_RETIRED_POOLS", [0, 0])
+    else:
+        monkeypatch.setattr(cg, "_RETIRED_POOL_DUE", [False], raising = False)
+
+
+def _retire():
+    """Another wrapper's invalidation retired a pool."""
+    if hasattr(cg, "note_pool_retired"):
+        cg.note_pool_retired()
+    else:
+        cg._RETIRED_POOL_DUE[0] = True
+
+
+def _due():
+    if hasattr(cg, "retired_pool_due"):
+        return cg.retired_pool_due()
+    return cg._RETIRED_POOL_DUE[0]
+
+
 def test_an_offloaded_re_record_hands_the_dropped_pool_back_first(monkeypatch):
     """Each new prompt encode moves the resident groups (release, the encoder takes the room, re-pin elsewhere), so
     the step records again. The encode release no longer flushes the allocator; the re-record itself hands the
     dropped recording's pool back before it records, so the reserved memory stays flat instead of growing by a pool
     per prompt, and every output stays exact."""
     _cuda()
+    _reset_retired(monkeypatch)
     seeds = list(range(6))
     want = _eager_reference(3, seeds)
     torch.manual_seed(0)
     net = _streamed(_Net(), 3)
     pipe = _pipe(net)
     handles, _ = cg.arm_after_placement(pipe)
-    flushes = {"n": 0}
-    real = getattr(cg, "flush_retired_pools", None)
-
-    def counted():
-        flushes["n"] += 1
-        return real() if real is not None else True
-
-    monkeypatch.setattr(cg, "flush_retired_pools", counted, raising = False)
     got = _run(net, seeds[:2])
+    flushes = cg._POOL_FLUSHES[0]
     reserved = []
     for cycle in range(4):
         restore = dm.release_resident_groups(pipe, 10_000, None)
@@ -200,7 +215,7 @@ def test_an_offloaded_re_record_hands_the_dropped_pool_back_first(monkeypatch):
         assert torch.equal(a, b)
     records = handles[0].stats["captures"]
     assert records >= 2  # the step recorded again after the moves
-    assert flushes["n"] >= records - 1
+    assert cg._POOL_FLUSHES[0] - flushes >= records - 1
     assert reserved[-1] <= reserved[0]
     cg.uninstall_all(handles)
 
@@ -221,6 +236,7 @@ def test_one_invalidation_flushes_the_retired_pool_once_for_every_re_recorded_ke
     """Two keys re-recorded under one new placement share one retired pool: the first re-record flushes it, the second
     does not flush the allocator again."""
     _cuda()
+    _reset_retired(monkeypatch)
     torch.manual_seed(0)
     net = _streamed(_Net(), 3)
     pipe = _pipe(net)
@@ -228,14 +244,7 @@ def test_one_invalidation_flushes_the_retired_pool_once_for_every_re_recorded_ke
     _two_shapes(net)
     _two_shapes(net)
     assert handles[0].stats["captures"] == 2
-    flushes = {"n": 0}
-    real = cg.flush_retired_pools
-
-    def counted():
-        flushes["n"] += 1
-        return real()
-
-    monkeypatch.setattr(cg, "flush_retired_pools", counted)
+    flushes = cg._POOL_FLUSHES[0]
     for cycle in range(2):
         restore = dm.release_resident_groups(pipe, 10_000, None)
         hold = torch.empty(16 << 20, dtype = torch.uint8, device = "cuda")
@@ -243,15 +252,17 @@ def test_one_invalidation_flushes_the_retired_pool_once_for_every_re_recorded_ke
         del hold
         _two_shapes(net)
         _two_shapes(net)
-        assert flushes["n"] == cycle + 1
+        assert cg._POOL_FLUSHES[0] - flushes == cycle + 1
     assert handles[0].stats["captures"] == 6
     cg.uninstall_all(handles)
 
 
 def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
-    """While the flush is refused (another thread records), the re-record is deferred and the step runs eager; it
-    records once the flush goes through."""
+    """While the flush is prohibited (another thread records), the re-record is deferred and the step runs eager; it
+    records once that recording ended and the flush went through."""
     _cuda()
+    _reset_retired(monkeypatch)
+    monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 0.01)
     seeds = list(range(5))
     want = _eager_reference(3, seeds)
     torch.manual_seed(0)
@@ -260,18 +271,17 @@ def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
     handles, _ = cg.arm_after_placement(pipe)
     got = _run(net, seeds[:2])
     assert handles[0].stats["captures"] == 1
-    real = cg.flush_retired_pools
-    monkeypatch.setattr(cg, "flush_retired_pools", lambda: False)
     restore = dm.release_resident_groups(pipe, 10_000, None)
     hold = torch.empty(16 << 20, dtype = torch.uint8, device = "cuda")
     restore()
     del hold
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)  # another thread is recording
     got += _run(net, seeds[2:3])
     assert handles[0].stats["captures"] == 1
-    assert handles[0].stats.get("capture_refusals", 0) >= 1
-    monkeypatch.setattr(cg, "flush_retired_pools", real)
+    assert handles[0].stats.get("capture_refusals", 0) >= 1 and cg.retired_pool_due()
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 0)
     got += _run(net, seeds[3:])
-    assert handles[0].stats["captures"] == 2
+    assert handles[0].stats["captures"] == 2 and not cg.retired_pool_due()
     for a, b in zip(got, want):
         assert torch.equal(a, b)
     cg.uninstall_all(handles)
@@ -279,25 +289,88 @@ def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
 
 def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeypatch):
     """Another wrapper retired a pool; this wrapper's first capture is refused in _capturing (replica-side work still
-    held) before torch.cuda.graph flushes: the flush stays due for the next re-record."""
+    held) before anything flushes: the flush stays due for the next capture."""
     _cuda()
+    _reset_retired(monkeypatch)
     torch.manual_seed(0)
     net = _streamed(_Net(), 3)
     handles, _ = cg.arm_after_placement(_pipe(net))
-    monkeypatch.setattr(cg, "_RETIRED_POOL_DUE", [True])
+    _retire()
     monkeypatch.setattr(cg, "capture_refused_now", lambda: False)
 
-    @__import__("contextlib").contextmanager
-    def refused():
+    def refused(own):
         raise cg.CaptureRefused("replica-side CUDA work still running; capture refused")
-        yield
 
-    monkeypatch.setattr(cg, "_capturing", refused)
+    monkeypatch.setattr(cg, "_wait_outside_drained", refused)
+    monkeypatch.setattr(cg, "await_outside_drained", lambda: None)
+    monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 0.01)
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)  # the flush cannot run either
     _run(net, [0, 1])
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 0)
     assert handles[0].stats["captures"] == 0
     assert handles[0].stats.get("capture_refusals", 0) >= 1
-    assert cg._RETIRED_POOL_DUE[0]
+    assert _due()
     cg.uninstall_all(handles)
+
+
+def test_a_pool_retired_while_the_capture_flushes_stays_due(monkeypatch):
+    """Retirement is not serialized with captures: another thread's invalidation can retire a pool while this
+    capture's entry flush runs. The flush acknowledges only what was retired before it began, so the newly retired
+    pool is still flushed before the next recording instead of being taken as already handed back."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    _retire()
+    real = torch.cuda.empty_cache
+    raced = []
+
+    def flush():
+        real()
+        if not raced:
+            raced.append(1)
+            _retire()  # lands after this flush freed what it could, before the capture records
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", flush)
+    _run(net, [0, 1])
+    assert raced and handles[0].stats["captures"] >= 1
+    assert _due()
+    monkeypatch.setattr(torch.cuda, "empty_cache", real)
+    if hasattr(cg, "flush_retired_pools"):
+        assert cg.flush_retired_pools() and not _due()
+    cg.uninstall_all(handles)
+
+
+def test_a_resident_planned_re_record_flushes_a_pool_another_wrapper_retired(monkeypatch):
+    """The retired-pool rule is process-wide, not per offload placement: a resident wrapper with a capture-safe plan
+    re-records later keys without torch.cuda.graph's flush, so a pool an offloaded wrapper retired must be handed back
+    before that re-record too, or it records a new prompt shape beside the reserved segments."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    torch.manual_seed(0)
+    net = torch.nn.Linear(64, 64).cuda()
+    handle = cg.GraphedForward(net)
+    handle.plan = (
+        lambda *a: None
+    )  # a planned step: keys after the first re-record with no flush of their own
+    real = torch.cuda.empty_cache
+    flushes = []
+    with torch.no_grad():
+        first = handle._capture((torch.randn(16, 64, device = "cuda"),), {}, key = "a")
+        _retire()
+        monkeypatch.setattr(torch.cuda, "empty_cache", lambda: flushes.append(1) or real())
+        x = torch.randn(8, 64, device = "cuda")
+        second = handle._capture((x,), {}, key = "b")
+        second.static[0].copy_(x)
+        second.graph.replay()
+        torch.cuda.synchronize()
+        out = second.out_tensors[0].clone()
+    assert handle.stats["captures"] == 2
+    assert flushes and not _due()
+    assert torch.equal(out, net(x))
+    del first, second
+    cg._POOL_BOX[0] = None
 
 
 def test_unpinned_host_copies_keep_the_forward_eager_with_the_reason(monkeypatch):

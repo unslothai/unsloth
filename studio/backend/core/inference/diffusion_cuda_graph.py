@@ -15,7 +15,6 @@ import gc
 import inspect
 import os
 import threading
-import time
 import traceback
 import weakref
 import types
@@ -215,10 +214,16 @@ def _capturing():
     The depth MUST be raised before ``torch.cuda.graph`` is entered, which is what makes the
     ordering above hold; keep this the outermost of the two context managers. Raises
     ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
+
+    Every capture (whole step, planned or offloaded re-record, per block, per segment) enters here, so this is also
+    where a retired graph pool is handed back before anything records (``_settle_retired_pools``).
     """
     global _CAPTURE_DEPTH
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
+    seen = _retired_pools_seen()
     with _CAPTURE_IDLE:
+        if seen is not None:
+            _settle_retired_pools(seen)
         _wait_outside_drained(own)
         _CAPTURE_DEPTH += 1
     try:
@@ -291,32 +296,101 @@ def hold_off_capture():
         _CAPTURE_LOCK.release()
 
 
-# An offloaded step's recordings were dropped under a new placement (``GraphedForward.__call__``): their pool is
-# retired, and the next re-record must flush it first. Cleared by the flush, so one invalidation flushes once.
-_RETIRED_POOL_DUE = [False]
+# Graph pools retired and not yet flushed. A pool retires when its last graph is gone (an invalidation, an eviction, a
+# speed drop, a poison, a failed capture): its segments stay cached until an ``empty_cache``, and a capture can neither
+# allocate from them nor flush them (the allocator releases nothing while one records), so a capture that starts
+# beside them can OOM a tight card. The one rule: no capture records until every pool retired before it entered was
+# flushed on a synchronized device with no capture recording (``_capturing`` -> ``_settle_retired_pools``). Counted, not
+# flagged: a flush acknowledges only the retirements counted before it began, so one that lands mid-flush stays due.
+_RETIRE_LOCK = threading.Lock()
+_RETIRED_POOLS = [0, 0]  # [retirements counted, retirements flushed]
+_POOL_FLUSHES = [0]  # retired-pool flushes performed (diagnostics, tests)
+# How long a capture waits for another thread's recording to end before its retired-pool flush is given up: the
+# capture is then refused (the step or block runs eager) and the next one retries. Woken as soon as that recording ends.
+RETIRED_FLUSH_WAIT_S = 0.25
 
-# Tries a re-record makes at the retired-pool flush before it defers to a later step (a 10 Hz progress poll holds
-# the capture lock only for an instant; another thread's recording holds it for the whole capture).
-_FLUSH_TRIES = 3
+
+def note_pool_retired() -> None:
+    """Count a retired graph pool. Call once the graphs that held it are dropped, never before."""
+    with _RETIRE_LOCK:
+        _RETIRED_POOLS[0] += 1
+
+
+def retired_pool_due() -> bool:
+    with _RETIRE_LOCK:
+        return _RETIRED_POOLS[0] != _RETIRED_POOLS[1]
+
+
+def _retired_pools_seen() -> Optional[int]:
+    """The retirement count a flush starting now covers, None when nothing is due. Read BEFORE ``gc.collect``, so
+    every graph counted is already unreferenced (or in a cycle that collect frees) when the flush runs."""
+    with _RETIRE_LOCK:
+        seen = _RETIRED_POOLS[0]
+        if seen == _RETIRED_POOLS[1]:
+            return None
+    gc.collect()  # outside _CAPTURE_LOCK: a finalizer may take it
+    return seen
+
+
+def _flush_retired_locked(seen: int) -> bool:
+    """Under ``_CAPTURE_LOCK`` with no capture recording: synchronize, flush, acknowledge up to ``seen``."""
+    try:
+        cuda = getattr(_torch(), "cuda", None)
+        if cuda is not None and cuda.is_available():
+            for step in ("synchronize", "empty_cache"):
+                call = getattr(cuda, step, None)
+                if callable(call):
+                    call()
+    except Exception:  # noqa: BLE001 - not flushed: stays due
+        return False
+    with _RETIRE_LOCK:
+        _RETIRED_POOLS[1] = max(_RETIRED_POOLS[1], seen)
+    _POOL_FLUSHES[0] += 1
+    return True
+
+
+def _settle_retired_pools(seen: int) -> None:
+    """Under ``_CAPTURE_IDLE``, from ``_capturing``: flush the pools retired up to ``seen`` before this capture records.
+    Waits (lock released) for another thread's recording to end, since that one prohibits the flush; raises
+    ``CaptureRefused`` (depth untouched, nothing recorded) when it does not end in time or the flush failed."""
+    if not _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = RETIRED_FLUSH_WAIT_S):
+        raise CaptureRefused(
+            "a retired graph pool could not be flushed (another capture is recording); capture deferred"
+        )
+    with _RETIRE_LOCK:
+        if _RETIRED_POOLS[1] >= seen:
+            return  # another capture flushed them while this one waited
+    if not _flush_retired_locked(seen):
+        raise CaptureRefused("a retired graph pool could not be flushed; capture deferred")
 
 
 def flush_retired_pools() -> bool:
-    """Hand a retired graph pool's segments back to the device. A capture allocates only from its own pool or fresh
-    device memory, never from another pool's cached segments, and the allocator does not empty its cache while a
-    capture is recording, so a dropped pool must be flushed before the next recording or it pins its memory beside
-    the new one. Skipped (False) while another thread records: that capture prohibits the flush."""
+    """Best effort, outside any capture: hand retired pools back now rather than at the next capture's entry. False
+    (still due) while another thread records."""
+    seen = _retired_pools_seen()
+    if seen is None:
+        return True
     with hold_off_capture() as safe:
         if not safe:
             return False
-        try:
-            gc.collect()
-            torch = _torch()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001 - best effort
-            return False
-    _RETIRED_POOL_DUE[0] = False
-    return True
+        return _flush_retired_locked(seen)
+
+
+def _note_dropped_pools(tokens: list) -> None:
+    """Graph entries just left a step cache: count a retirement when one of their pools no live graph records into
+    (a pool still shared with a live graph keeps its freed blocks for that pool's next capture)."""
+    try:
+        if not tokens:
+            return
+        live = [
+            getattr(entry, "pool_token", None)
+            for wrapper in tuple(_LIVE_WRAPPERS)
+            for entry in tuple(wrapper.cache.values())
+        ]
+        if any(token is None or token not in live for token in tokens):
+            note_pool_retired()
+    except Exception:  # noqa: BLE001 - unsure: count it, the cost is one flush
+        note_pool_retired()
 
 
 # Raised while a whole step warms up or records: per-block graphs then run their compute, not nested replays.
@@ -571,6 +645,8 @@ def retire_failed_capture(
         (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
     if pool is not None and _POOL_BOX[0] == pool:
         _POOL_BOX[0] = None
+    if not begun_elsewhere:
+        note_pool_retired()  # whatever the failed recording took stays cached until the next capture's entry flush
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
@@ -1053,7 +1129,9 @@ class GraphedForward:
         # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
         # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
         # capture's own frames are gone, so both go back in one pass.
+        dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
         self.cache.clear()
+        _note_dropped_pools(dropped)
         _drop_pool_if_unused()
         return self
 
@@ -1156,11 +1234,15 @@ class GraphedForward:
                         type(self.module).__name__,
                         reason,
                     )
-                if self.cache.pop(key, None) is not None:
+                dropped_entry = self.cache.pop(key, None)
+                if dropped_entry is not None:
                     try:
                         _torch().cuda.current_stream().synchronize()  # no replay still running on what is freed
                     except Exception:  # noqa: BLE001
                         pass
+                    gone = getattr(dropped_entry, "pool_token", None)
+                    del dropped_entry  # counted once the graph is gone, never before
+                    _note_dropped_pools([gone])
                     _drop_pool_if_unused()
                 if not self.cache:
                     self.capture_error = {"type": "Refused", "msg": reason}
@@ -1294,9 +1376,10 @@ class GraphedForward:
                     self.stats["invalidations"] += 1
                     # Not reset(): its empty_cache on every model-offload onload makes the next onload pay the
                     # cudaMallocs again. The dropped pool's blocks stay with the allocator.
+                    dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
                     self.cache.clear()
+                    _note_dropped_pools(dropped)  # the next capture flushes it before it records
                     _drop_pool_if_unused()  # the next capture must not record into a pool no graph holds
-                    _RETIRED_POOL_DUE[0] = True
                 self._warmed.clear()
                 self.valid_token = token
             refusal = self.placement.refusal(self.stats)
@@ -1415,8 +1498,9 @@ class GraphedForward:
                 return call(*warm_args, **warm_kwargs)
             if len(self.cache) >= self.max_graphs and self.plan is not None:
                 # A planned call keys on the prompt length, so evict the least recently replayed graph.
-                self.cache.pop(next(iter(self.cache)))
+                gone = getattr(self.cache.pop(next(iter(self.cache))), "pool_token", None)
                 self.stats["evictions"] += 1
+                _note_dropped_pools([gone])
                 # The last graph on the shared pool takes the pool with it; never hand its id to the next capture.
                 _drop_pool_if_unused()
             if len(self.cache) >= self.max_graphs:
@@ -1659,22 +1743,6 @@ class GraphedForward:
                 torch.cuda.current_stream().wait_stream(side)
             torch.cuda.synchronize()
 
-            if self.placement is not None and recapture and _RETIRED_POOL_DUE[0]:
-                # The weights moved: the previous recordings were dropped with their pool. Its segments go back now,
-                # before the new recording allocates beside them (the re-record skips torch.cuda.graph's own flush).
-                # No recording without it: a capture cannot reclaim cached segments, so this step runs eager instead.
-                for attempt in range(_FLUSH_TRIES):
-                    if flush_retired_pools():
-                        break
-                    if attempt + 1 < _FLUSH_TRIES:
-                        time.sleep(0.01)
-                else:
-                    if skip_stats is not None:
-                        skip.stats = skip_stats
-                    raise CaptureRefused(
-                        "the retired graph pool could not be flushed (another capture is recording); "
-                        "re-record deferred"
-                    )
             graph = torch.cuda.CUDAGraph()
             # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
             pool = _POOL_BOX[0]
@@ -1682,10 +1750,8 @@ class GraphedForward:
                 pool = torch.cuda.graph_pool_handle()
             recorder = _graph_without_flush if recapture else torch.cuda.graph
             try:
+                # _capturing hands back any retired pool first, so the no-flush re-record never records beside one.
                 with _capturing(), recorder(graph, pool = pool):
-                    if not recapture:
-                        # Entered: torch.cuda.graph flushed. A refusal in _capturing never gets here and keeps the flag.
-                        _RETIRED_POOL_DUE[0] = False
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
                 # A refusal is raised before the recording begins: the graph and the pool were never touched.
