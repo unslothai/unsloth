@@ -3170,7 +3170,7 @@ def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
     assert backend._prompt_cache_history is None
 
 
-def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
+def test_mlx_prompt_cache_keeps_entries_over_budget_out_of_the_lru(monkeypatch):
     from core.inference.mlx_inference import _MLXPromptCacheHistory
 
     _install_fake_prompt_cache_api(monkeypatch)
@@ -3191,8 +3191,8 @@ def test_mlx_prompt_cache_keeps_reusing_a_conversation_over_budget(monkeypatch):
     _install_fake_prompt_cache_api(monkeypatch)
 
     history = _MLXPromptCacheHistory(6, 1000)
-    history.insert("key", [7, 8, 9], [_FakeCacheEntry(offset = 3, nbytes = 400)])
     turn = list(range(50))
+    history.insert("key", turn[:3], [_FakeCacheEntry(offset = 3, nbytes = 400)])
     long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
     history.insert("key", turn, long_cache)
     assert tuple(turn) not in history._lru.entries["key"]
@@ -3209,12 +3209,47 @@ def test_mlx_prompt_cache_keeps_reusing_a_conversation_over_budget(monkeypatch):
     assert rest == [99]
 
     history.insert("key", turn[:45], cache)
-    cache, rest = history.fetch(object(), "key", [7, 8, 9, 10])
+    cache, rest = history.fetch(object(), "key", turn[:5] + [99])
     assert cache is not long_cache
-    assert rest == [10]
+    assert rest == turn[3:5] + [99]
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+    assert rest == turn[3:45] + [99]
+
+    history.insert("key", turn[:45], long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45])
+    assert cache is long_cache
+    assert (cache[0].offset, rest) == (44, turn[44:45])
+
+    history.insert("key", turn[:44], cache)
+    cache, rest = history.fetch(object(), "other-adapter", turn[:44] + [99])
+    assert cache is not long_cache
+    assert rest == turn[:44] + [99]
+
+
+def test_mlx_prompt_cache_never_serves_an_over_budget_cache_it_cannot_rewind(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch, trimmable = False)
+    history = _MLXPromptCacheHistory(6, 1000)
+    turn = list(range(50))
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn + [50])
+    assert (cache, rest) == (long_cache, [50])
+
+    history.insert("key", turn, long_cache)
     cache, rest = history.fetch(object(), "key", turn[:45] + [99])
     assert cache is not long_cache
     assert rest == turn[:45] + [99]
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    history = _MLXPromptCacheHistory(6, 1000)
+    history._trim = lambda cache, num: num - 1
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
 
 
 def test_mlx_batch_releases_an_over_budget_cache_while_another_row_decodes(monkeypatch):
