@@ -118,7 +118,6 @@ def test_row_order_dispatch_is_a_compile_time_backend_switch():
     assert ast.unparse(branch.test) == "_HIP_ROW_ORDER"
     assert "_row_dot_in_hip_row_order" in ast.unparse(branch.body[0])
     assert "_row_dot_in_cuda_row_order" in ast.unparse(branch.orelse[0])
-    # Both kernels reach the reduction only through the dispatcher.
     for name in ("_rms_layernorm_forward_rows", "_rms_backward_rows_block"):
         text = ast.unparse(FUNCS[name])
         assert "_row_dot_in_row_kernel_order(" in text
