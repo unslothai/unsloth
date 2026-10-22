@@ -5273,16 +5273,6 @@ _LLAMA_COMMON_LIB_NAMES = (
     "libllama-common.dylib",
     "llama-common.dll",
 )
-_LLAMA_LIB_NAMES = (
-    "libllama.so.0",
-    "libllama.so",
-    "libllama.0.dylib",
-    "libllama.dylib",
-    "llama.dll",
-)
-# Added with the DFlash tied-head fallback (output = token_embd when a draft ships no head),
-# in the same loader; no flag or build number says so.
-_DFLASH_TIED_HEAD_MARKER = b"unsupported DFlash hidden activation"
 
 
 _CUDA_LIKE_DEVICE_RE = re.compile(r"(?i)(cuda|rocm|hip)\d+$")
@@ -5316,39 +5306,47 @@ def _spawn_draft_on_target(
     return int(re.sub(r"\D", "", pin)) == (LlamaCppBackend._effective_main_gpu(run_cmd, env) or 0)
 
 
-def _sidecar_borrows_target_tensors(path: Optional[str], bin_path: Optional[str] = None) -> bool:
+def _sidecar_borrows_output(path: Optional[str]) -> bool:
+    """Whether a DFlash / DSpark draft runs its logits over the target's output head: it
+    does unless every shard is present and one carries its own output.weight
+    (src/models/dflash.cpp selects the draft's head first). Unknown counts as borrowed."""
+    if not path:
+        return True
+    try:
+        from utils.models.gguf_metadata import _gguf_shard_has_named_tensor
+        from utils.models.model_config import colocated_split_shards
+
+        shards, complete = colocated_split_shards(Path(path))
+        return not (
+            complete
+            and any(
+                _gguf_shard_has_named_tensor(str(shard), "output.weight") is True
+                for shard in shards
+            )
+        )
+    except Exception:
+        return True
+
+
+def _sidecar_borrows_target_tensors(path: Optional[str]) -> bool:
     """Whether a DFlash / DSpark draft borrows the target's token_embd or output.
 
     llama_context requires ctx_other only when either is missing (src/llama-context.cpp), and
     the fitter cannot measure a context it has not built; a draft carrying both is measured
-    like any model. A DFlash draft with its own token_embd but no output ties its head to
-    those embeddings on a build that does so (_dflash_ties_head_to_embeddings), so it borrows
-    nothing there. Unknown or incomplete files count as borrowing."""
+    like any model. Unknown or incomplete files count as borrowing."""
     if not path:
         return True
     try:
-        from utils.models.gguf_metadata import (
-            _gguf_shard_has_named_tensor,
-            read_gguf_architecture,
-        )
+        from utils.models.gguf_metadata import _gguf_shard_has_named_tensor
         from utils.models.model_config import colocated_split_shards
 
         shards, complete = colocated_split_shards(Path(path))
         if not complete or not shards:
             return True
-        present = {
-            name: any(_gguf_shard_has_named_tensor(str(shard), name) is True for shard in shards)
+        return any(
+            not any(_gguf_shard_has_named_tensor(str(shard), name) is True for shard in shards)
             for name in ("token_embd.weight", "output.weight")
-        }
-        if all(present.values()):
-            return False
-        if (
-            present["token_embd.weight"]
-            and read_gguf_architecture(str(shards[0])) == "dflash"
-            and _dflash_ties_head_to_embeddings(bin_path)
-        ):
-            return False
-        return True
+        )
     except Exception:
         return True
 
@@ -5386,29 +5384,16 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     common/fit.cpp is linked into the server in a static build and into
     libllama-common beside it in a shared one (the prebuilt default), so both are
     scanned. Fails closed: no marker keeps Studio's own sidecar reserve."""
-    return _llama_build_has_marker(
-        bin_path, _FIT_MEASURES_BORROWED_DRAFT_MARKER, _LLAMA_COMMON_LIB_NAMES
-    )
-
-
-def _dflash_ties_head_to_embeddings(bin_path: Optional[str]) -> bool:
-    """Whether ``bin_path``'s DFlash loader builds a missing output head from the draft's
-    own token_embd (src/models/dflash.cpp). Fails closed: an older build borrows the
-    target's output through ctx_other instead."""
-    return _llama_build_has_marker(bin_path, _DFLASH_TIED_HEAD_MARKER, _LLAMA_LIB_NAMES)
-
-
-def _llama_build_has_marker(bin_path: Optional[str], marker: bytes, lib_names) -> bool:
-    """Whether the server at ``bin_path``, or the first of ``lib_names`` beside it, holds
-    ``marker``: a static build links the code into the server, a shared one into the lib."""
     if not bin_path:
         return False
     candidates = [Path(bin_path)]
     try:
-        # A wrapper script execs the real server, which holds the code in a static build.
+        # A wrapper script execs the real server, which holds fit.cpp in a static build.
         candidates.append(Path(_resolve_llama_binary(bin_path)))
         lib_dir = _llama_lib_dir(bin_path)
-        linked = next((lib_dir / n for n in lib_names if (lib_dir / n).exists()), None)
+        linked = next(
+            (lib_dir / n for n in _LLAMA_COMMON_LIB_NAMES if (lib_dir / n).exists()), None
+        )
         if linked is not None:
             candidates.append(linked)
     except Exception:  # noqa: BLE001 -- an unreadable lib dir is "not known"
@@ -5424,7 +5409,9 @@ def _llama_build_has_marker(bin_path: Optional[str], marker: bytes, lib_names) -
             st = candidate.stat()
         except OSError:
             continue
-        if _binary_has_marker(str(candidate), st.st_mtime_ns, st.st_size, marker):
+        if _binary_has_marker(
+            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKER
+        ):
             return True
     return False
 
@@ -27691,6 +27678,9 @@ class LlamaCppBackend:
                 _sidecar_reserve_graph_mib = [0]
                 # The drafter's block count, for rounding a multi-device share to whole layers.
                 _sidecar_draft_layers: Optional[int] = None
+                # Whether the drafter ships its own output head (its logits then follow its
+                # own split, not the target's output layer).
+                _sidecar_owns_output = False
                 # The trailing --fit-target that re-adds the reserve over a user margin.
                 _sidecar_override_flags: List[str] = []
                 # Every such pair any launch appended (a retry can re-price it upward),
@@ -30861,9 +30851,7 @@ class LlamaCppBackend:
                         # A fitter that measures borrowed-tensor drafts needs no reserve,
                         # and every fitter measures a draft that carries its own tensors.
                         and not server_caps.get("fit_measures_borrowed_drafts")
-                        and _sidecar_borrows_target_tensors(
-                            _mtp_draft_for_budget or mtp_draft_path, binary
-                        )
+                        and _sidecar_borrows_target_tensors(_mtp_draft_for_budget or mtp_draft_path)
                     ):
                         # Priced even under --fit off: a startup-OOM retry turns the
                         # fitter on with the drafter still loaded. With -c omitted the
@@ -30890,6 +30878,7 @@ class LlamaCppBackend:
                             )
                         except Exception:  # noqa: BLE001 - an unread drafter shares by memory alone
                             _sidecar_draft_layers = None
+                        _sidecar_owns_output = not _sidecar_borrows_output(_sidecar_reserve_path)
                         # The fitter measures the target's rollback copies; only the
                         # drafter's share is unsized.
                         _sidecar_only_bytes = _mtp_bytes(
@@ -34588,10 +34577,15 @@ class LlamaCppBackend:
                                         # cards by the weights, so no whole-layer rounding.
                                         _spawn_shares = [w / sum(_weights) for w in _weights]
                                     # The graph's logits run over the TARGET's output tensor
-                                    # (DSpark / DFlash borrow it): the card the target's split
+                                    # when the draft borrows it: the card the target's split
                                     # puts its layer n_layer on, the main card under a row split.
-                                    # Unread target: the drafter's own count, same split.
-                                    _t_layers = int(getattr(self, "_n_layers", 0) or 0) or _layers
+                                    # A draft with its own head (or an unread target): the
+                                    # drafter's own count, same split.
+                                    _t_layers = (
+                                        _layers
+                                        if _sidecar_owns_output
+                                        else int(getattr(self, "_n_layers", 0) or 0) or _layers
+                                    )
                                     if _row_split:
                                         _spawn_output_dev = min(
                                             max(0, self._effective_main_gpu(run_cmd, env) or 0),

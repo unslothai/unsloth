@@ -4,8 +4,8 @@
 """Ninth-round cells for the DSpark/DFlash sidecar reserve.
 
 A draft pinned to any card of a Studio-chosen Vulkan list is colocated with the target (only
---split-mode none narrows it to the main card), and a DFlash draft with its own embeddings but
-no head borrows nothing on a build whose loader ties the head to them.
+--split-mode none narrows it to the main card), a draft missing either tensor borrows it, and a
+draft with its own head keeps its logits graph on the card its own split gives that head.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ if _TESTS_DIR not in sys.path:
 
 import test_spec_sidecar_fit_reserve_r2 as _r2  # noqa: E402
 import test_spec_sidecar_fit_reserve_r4 as _r4  # noqa: E402
+import test_spec_sidecar_fit_reserve_r7 as _r7  # noqa: E402
 from core.inference import llama_cpp as _lc  # noqa: E402
 
 _FLOOR = 1024 + 8 * 1024
@@ -55,13 +56,7 @@ def test_a_pin_on_any_studio_chosen_vulkan_card_is_on_the_target(tmp_path, extra
     assert (_r4._margin(cmd) >= _FLOOR) is reserved
 
 
-def _draft(
-    monkeypatch,
-    tmp_path,
-    *,
-    tensors,
-    arch = "dflash",
-):
+def _draft(monkeypatch, tmp_path, *, tensors):
     path = tmp_path / "draft.gguf"
     path.write_bytes(b"draft")
     import utils.models.gguf_metadata as gm
@@ -69,41 +64,44 @@ def _draft(
 
     monkeypatch.setattr(mc, "colocated_split_shards", lambda p: ([p], True))
     monkeypatch.setattr(gm, "_gguf_shard_has_named_tensor", lambda shard, name: name in tensors)
-    monkeypatch.setattr(gm, "read_gguf_architecture", lambda shard: arch)
     return str(path)
 
 
 @pytest.mark.parametrize(
-    "tensors, arch, ties, borrows",
+    "tensors, borrows, borrows_output",
     [
-        # Own embeddings, no head: tied on a build that ties it, borrowed on an older one.
-        ({"token_embd.weight"}, "dflash", True, False),
-        ({"token_embd.weight"}, "dflash", False, True),
-        # Only DFlash's loader ties the head.
-        ({"token_embd.weight"}, "eagle3", True, True),
-        # Neither tensor: the target's are borrowed either way.
-        (set(), "dflash", True, True),
-        ({"token_embd.weight", "output.weight"}, "dflash", False, False),
+        # Upstream DFlash borrows the target's head when a draft ships none, and no marker
+        # tells a build that ties it to the draft's embeddings apart, so it stays borrowed.
+        ({"token_embd.weight"}, True, True),
+        ({"output.weight"}, True, False),
+        (set(), True, True),
+        ({"token_embd.weight", "output.weight"}, False, False),
     ],
 )
-def test_a_tied_head_draft_borrows_only_on_a_build_without_the_fallback(
-    monkeypatch, tmp_path, tensors, arch, ties, borrows
+def test_a_draft_missing_a_tensor_borrows_it(
+    monkeypatch, tmp_path, tensors, borrows, borrows_output
 ):
-    path = _draft(monkeypatch, tmp_path, tensors = tensors, arch = arch)
-    monkeypatch.setattr(_lc, "_dflash_ties_head_to_embeddings", lambda bin_path: ties)
-    assert _lc._sidecar_borrows_target_tensors(path, "/fake/llama-server") is borrows
+    path = _draft(monkeypatch, tmp_path, tensors = tensors)
+    assert _lc._sidecar_borrows_target_tensors(path) is borrows
+    assert _lc._sidecar_borrows_output(path) is borrows_output
 
 
-@pytest.mark.parametrize("lib_holds_marker, ties", [(True, True), (False, False)])
-def test_the_tied_head_fallback_is_read_off_libllama(tmp_path, lib_holds_marker, ties):
-    server = tmp_path / "llama-server"
-    server.write_bytes(b"\x7fELF server")
-    lib = tmp_path / "libllama.so.0"
-    body = b"\x00 unsupported DFlash hidden activation: \x00" if lib_holds_marker else b"\x00"
-    lib.write_bytes(b"\x7fELF " + body)
-    assert _lc._dflash_ties_head_to_embeddings(str(server)) is ties
+def test_an_unread_draft_borrows_the_output():
+    assert _lc._sidecar_borrows_output(None) is True
 
 
-def test_an_unknown_binary_keeps_the_tied_head_draft_borrowing(monkeypatch, tmp_path):
-    path = _draft(monkeypatch, tmp_path, tensors = {"token_embd.weight"})
-    assert _lc._sidecar_borrows_target_tensors(path, None) is True
+def test_a_draft_with_its_own_head_keeps_its_graph_on_its_own_output_card(tmp_path, monkeypatch):
+    """A 3:2 split puts all three draft blocks on card 0 and the draft's own output layer
+    (3 / 4 = 0.75) on card 1. Borrowing the one-block target's head would put the graph on
+    card 0 (r7); owning it moves the graph to card 1."""
+    monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(_lc, "_sidecar_borrows_output", lambda path: False)
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    backend._mtp_draft_compute_bytes = lambda *a, **k: 3 * 1024**3
+    _r7._three_block_drafter(backend)
+    backend._n_layers = 1
+    used, out = _r7._margins(
+        _r7._dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"])
+    )
+    assert out >= 1024 + 3 * 1024
