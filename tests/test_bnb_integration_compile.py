@@ -477,7 +477,7 @@ def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
     _assert_compiled_matches(compiled, eager, backend = "aot_eager")
 
 
-# No eager warmup: the bitsandbytes GEMM gate's first call must not set itself up while tracing.
+# No eager warmup: the GEMM gate's first call must not run its lazy setup while tracing.
 @pytest.mark.parametrize("bsz", [8, 16])
 def test_fast_linear_forward_cold_compile_fullgraph(nf4_kernels, monkeypatch, bsz):
     monkeypatch.setattr(U, "_BNB_GEMM_4BIT", None)

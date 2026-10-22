@@ -1521,7 +1521,7 @@ def _bnb_gemm_4bit_device_ok(device):
 
 def _bnb_gemm_4bit_ok(X, W, quant_state):
     global _BNB_GEMM_4BIT, _BNB_GEMM_4BIT_DTYPES
-    # Before the lazy setup: dynamo cannot trace torch.cuda.device_count() on a cold compiled call.
+    # Before the lazy setup: dynamo cannot trace torch.cuda.device_count().
     if _is_compiling() or torch.is_grad_enabled():
         return False
     if _BNB_GEMM_4BIT is None:
