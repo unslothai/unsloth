@@ -4,8 +4,14 @@
 import { authFetch } from "@/features/auth";
 import { getInventoryVersion } from "../stores/inventory-events";
 
-// Infra models hidden from browse lists. Mirrors backend `utils.hidden_models`. Server-confirmed
-// rows are trusted; optimistic rows use these needles. Per-repo views are not filtered.
+// Infra models hidden from browse/preview lists (Hub Discover, the chat model selector, and local
+// on-device rows). Mirrors the backend `utils.hidden_models`: the RAG embedding model, STT
+// dictation models, and the llama.cpp validation probe are not usable chat models. Server-confirmed
+// cache rows are trusted because the backend applies variant-aware filtering. Optimistic cache rows
+// still use these needles until the server confirms them. The dynamic matchers fetched from
+// `/api/hub/hidden-models` add the user's configured embedder and the Decision API models as exact
+// repo ids and exact resolved paths, never substring needles. Per-repo views are not filtered, so reinstall flows still show
+// downloaded files.
 const HIDDEN_NEEDLES = [
   "bge-small-en-v1.5", // RAG embedder: unsloth/bge-small-en-v1.5[-GGUF]
   "ggml-org/models", // llama.cpp validation probe repo

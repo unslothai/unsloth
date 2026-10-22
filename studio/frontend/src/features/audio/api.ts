@@ -532,6 +532,34 @@ export async function runAudio(
   return parseAudioJson<AudioRunResponse>(response);
 }
 
+export async function runSpeechOnConnection(
+  request: {
+    text: string;
+    providerId: string;
+    model: string;
+    voice: string;
+    instructions: string | null;
+    speed: number;
+  },
+  signal?: AbortSignal,
+): Promise<AudioRunResponse> {
+  const response = await authFetch("/api/inference/audio/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      workflow: "speak",
+      text: request.text,
+      provider_id: request.providerId,
+      model: request.model,
+      voice: request.voice,
+      speed: request.speed,
+      ...(request.instructions ? { instructions: request.instructions } : {}),
+    }),
+    signal,
+  });
+  return parseAudioJson<AudioRunResponse>(response);
+}
+
 export interface AudioVoice {
   id: string;
   name: string;

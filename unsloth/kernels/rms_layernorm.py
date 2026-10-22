@@ -258,8 +258,35 @@ def _fold_lanes(x, ROWS: tl.constexpr, WARPS: tl.constexpr, HALF: tl.constexpr):
     return tl.sum(tl.reshape(x, (ROWS, WARPS, 2, HALF)), axis = 2)
 
 
+# ROCm: Triton's tl.sum reduces each 16-lane row of a wavefront with DPP row_shr 8, 4, 2, 1,
+# then joins the rows (permlanex16 on RDNA, row_bcast 15 / 31 on CDNA), not CUDA's xor 16 .. 1.
+_HIP_ROW_ORDER = tl.constexpr(bool(torch.version.hip))
+
+
 @triton.jit
-def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+def _row_dot_in_hip_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+    # Bit-exact replay of the one-row kernels' tl.sum on AMD (WARPS = BLOCK_SIZE // wavefront):
+    # fma(a_l, b_l, a_(l-8) * b_(l-8)), row_shr 4, 2, 1, 16-lane rows by lane bit 4 then 5, warps.
+    LANES: tl.constexpr = a.shape[1] // WARPS
+    ROWS16: tl.constexpr = LANES // 16
+    a = tl.permute(tl.reshape(a, (ROWS, WARPS, ROWS16, 2, 8)), (0, 1, 2, 4, 3))
+    b = tl.permute(tl.reshape(b, (ROWS, WARPS, ROWS16, 2, 8)), (0, 1, 2, 4, 3))
+    a_lo, a_hi = tl.split(a)
+    b_lo, b_hi = tl.split(b)
+    acc = tl.fma(a_hi, b_hi, a_lo * b_lo)
+    acc = tl.sum(tl.reshape(acc, (ROWS, WARPS, ROWS16, 2, 4)), axis = 3)
+    acc = tl.sum(tl.reshape(acc, (ROWS, WARPS, ROWS16, 2, 2)), axis = 3)
+    acc = tl.sum(acc, axis = 3)
+    if ROWS16 == 4:
+        acc = tl.sum(tl.reshape(acc, (ROWS, WARPS, 2, 2)), axis = 3)
+    acc = tl.sum(acc, axis = 2)
+    if WARPS == 4:
+        acc = tl.sum(tl.reshape(acc, (ROWS, 2, 2)), axis = 1)
+    return tl.sum(acc, axis = 1)
+
+
+@triton.jit
+def _row_dot_in_cuda_row_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
     # Bit-exact replay of the one-row kernels' tl.sum (4 warps, 64 <= BLOCK_SIZE <= 128):
     # fma(a_l, b_l, a_(l+16) * b_(l+16)), lane xor 8, 4, 2, 1, warp xor 2, 1; explicit steps only.
     a = tl.permute(tl.reshape(a, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
@@ -275,6 +302,15 @@ def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
     if WARPS == 4:
         acc = tl.sum(tl.reshape(acc, (ROWS, 2, 2)), axis = 1)
     return tl.sum(acc, axis = 1)
+
+
+@triton.jit
+def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+    if _HIP_ROW_ORDER:
+        total = _row_dot_in_hip_row_order(a, b, ROWS, WARPS)
+    else:
+        total = _row_dot_in_cuda_row_order(a, b, ROWS, WARPS)
+    return total
 
 
 @triton.jit
@@ -502,7 +538,7 @@ def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
     wrap(kernel)[grid](*args, **constexprs, **options)
 
 
-# Off on ROCm (64-lane wavefronts reduce in another order) and before Triton 3.6 (slower backward).
+# Off before Triton 3.6 (slower backward). ROCm replays the DPP order; the self-check gates it per arch.
 def _triton_at_least(major, minor):
     try:
         return tuple(int(v) for v in triton.__version__.split(".")[:2]) >= (major, minor)
@@ -510,22 +546,43 @@ def _triton_at_least(major, minor):
         return False
 
 
-_MULTIROW = (
-    os.environ.get("UNSLOTH_RMSNORM_MULTIROW", "1") != "0"
-    and not torch.version.hip
-    and _triton_at_least(3, 6)
-)
+_MULTIROW = os.environ.get("UNSLOTH_RMSNORM_MULTIROW", "1") != "0" and _triton_at_least(3, 6)
 _MULTIROW_ELEMENTS = 4096
 _MULTIROW_NUM_WARPS = 4
 
 
-def _multirow_settings(n_cols):
+@functools.lru_cache(maxsize = None)
+def _hip_wavefront(index):
+    # Lanes per wavefront the one-row kernels reduce over: 32 on RDNA, 64 on CDNA; None if unknown.
+    try:
+        with torch_gpu_device(torch.device("cuda", index)):
+            lanes = int(triton.runtime.driver.active.get_current_target().warp_size)
+    except Exception:
+        try:
+            lanes = int(torch.cuda.get_device_properties(index).warp_size)
+        except Exception:
+            return None
+    return lanes if lanes in (32, 64) else None
+
+
+def _multirow_settings(n_cols, device = None):
     # Only widths 33..128 (one element per lane) can replay the one-row order; others stay one-row.
     if not _MULTIROW:
         return None
     BLOCK_SIZE, num_warps = _settings(n_cols)
     if num_warps != 4 or not (64 <= BLOCK_SIZE <= 128):
         return None
+    if torch.version.hip:
+        index = device.index if device is not None and device.index is not None else None
+        lanes = _hip_wavefront(torch.cuda.current_device() if index is None else index)
+        if lanes is None:
+            return None
+        return (
+            BLOCK_SIZE,
+            _MULTIROW_ELEMENTS // BLOCK_SIZE,
+            BLOCK_SIZE // lanes,
+            _MULTIROW_NUM_WARPS,
+        )
     return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // 32, _MULTIROW_NUM_WARPS
 
 
@@ -577,7 +634,7 @@ def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
 
 def _multirow_checked(X, W, eps, gemma):
     n_cols = X.shape[1]
-    multirow = _multirow_settings(n_cols)
+    multirow = _multirow_settings(n_cols, X.device)
     if multirow is None:
         return None
     key = (X.device, X.dtype, W.dtype, int(n_cols), float(eps), gemma)

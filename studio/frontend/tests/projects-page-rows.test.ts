@@ -23,10 +23,10 @@ test("a project row opens its chats in place", () => {
     PAGE,
     /listStoredChatThreads\(\{ projectId, includeArchived: false \}\)/,
   );
-  assert.match(PAGE, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, refresh\);/);
+  assert.match(PAGE, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, debounce\.onEvent\);/);
   // Debounced, since streaming fires the event per chunk, and open rows reload in place.
-  // A chunk save waits for a longer lull than a structural change.
-  assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, isCoalescedHistoryEvent\(event\)\n\s*\? PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS\n\s*: PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
+  // A chunk save waits for a longer lull than a structural change (history-refresh-debounce.test.ts).
+  assert.match(PAGE, /createHistoryRefreshDebounce\([\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\},\n\s*PROJECT_CHATS_REFRESH_DEBOUNCE_MS,\n\s*PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS,\n\s*\);/);
   assert.match(PAGE, /if \(!silent\) \{\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "loading" \}\)\);/);
   assert.match(PAGE, /for \(const \[id, seq\] of loadSeqRef\.current\) \{\n\s*if \(!open\.has\(id\)\) loadSeqRef\.current\.set\(id, seq \+ 1\);/);
   assert.match(PAGE, /if \(loadSeqRef\.current\.get\(projectId\) !== seq\) return;\n\s*setStale\(projectId, false\);\n\s*setProjectChats/);

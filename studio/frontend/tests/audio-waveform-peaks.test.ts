@@ -54,3 +54,12 @@ test("the waveform is neutral, keyboard-playable and static", () => {
   assert.match(source, /aria-valuetext/);
   assert.doesNotMatch(source, /animate-|transition-/);
 });
+
+test("resamplePeaks max-pools down and repeats up", async () => {
+  const { resamplePeaks } = await import(
+    "../src/features/audio/components/waveform-peaks.ts"
+  );
+  assert.deepEqual(resamplePeaks([0.1, 0.9, 0.2, 0.3], 2), [0.9, 0.3]);
+  assert.deepEqual(resamplePeaks([0.4, 0.8], 4), [0.4, 0.4, 0.8, 0.8]);
+  assert.deepEqual(resamplePeaks([], 3), []);
+});

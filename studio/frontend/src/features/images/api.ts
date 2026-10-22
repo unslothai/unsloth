@@ -12,6 +12,7 @@ import {
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
+import type { SdControlsCapability } from "./lib/sd-controls";
 import type { ShiftControl } from "./lib/shift-choice";
 
 export interface DiffusionResolvedControl {
@@ -53,6 +54,7 @@ export interface DiffusionStatus {
   speed_optims?: string[];
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  baked_loras?: string[] | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -84,6 +86,7 @@ export interface DiffusionStatus {
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
+  sd_controls?: SdControlsCapability | null;
   // The Shift override the loaded flow-matching model takes; null/absent = no Shift control.
   shift_control?: ShiftControl | null;
   // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
@@ -233,6 +236,12 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
+  // Sent only off their defaults (lib/sd-controls); refused (400) for a model without them.
+  prompt_weighting?: boolean;
+  clip_skip?: number;
+  cfg_rescale?: number;
+  variation_seed?: number;
+  variation_strength?: number;
   // `shift` for "sd3", `base_shift` / `max_shift` for "flux"; omitted = the model's own schedule.
   shift?: number;
   base_shift?: number;
@@ -290,6 +299,10 @@ export interface GalleryImage {
   batch_index: number;
   batch_size: number;
   model: string | null;
+  // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
+  // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
+  // Engine that ran it ("diffusers" | "sd_cpp" | "mlx"); the same seed draws different noise on each.
+  engine?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
   transformer_quant?: string | null;
@@ -315,6 +328,11 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
+  prompt_weighting?: boolean | null;
+  clip_skip?: number | null;
+  cfg_rescale?: number | null;
+  variation_seed?: number | null;
+  variation_strength?: number | null;
   shift?: number | null;
   base_shift?: number | null;
   max_shift?: number | null;
@@ -502,16 +520,6 @@ export async function listDiffusionLoras(family?: string): Promise<DiffusionLora
   return data.loras ?? [];
 }
 
-export async function listDiffusionControlNets(
-  family?: string,
-): Promise<DiffusionControlNetInfo[]> {
-  const qs = family ? `?family=${encodeURIComponent(family)}` : "";
-  const data = await parseJson<{ controlnets: DiffusionControlNetInfo[] }>(
-    await authFetch(`/api/models/diffusion-controlnets${qs}`),
-  );
-  return data.controlnets ?? [];
-}
-
 export interface GalleryPage {
   images: GalleryImage[];
   has_more: boolean;
@@ -525,29 +533,7 @@ export async function getGallery(offset = 0, limit = 50, archived = false): Prom
   );
 }
 
-export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/move`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ after_id: afterId }),
-    }),
-  );
-}
-
-export async function addGalleryImageToProject(
-  id: string,
-  projectId: string,
-): Promise<{ path: string; already: boolean }> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/project`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: projectId }),
-    }),
-  );
-}
-
+/** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
 export async function setGalleryImageFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },

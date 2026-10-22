@@ -119,6 +119,7 @@ export const he = {
     reload: "טען מחדש",
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
+    local: "מקומי",
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -486,6 +487,8 @@ export const he = {
       notMarked: "{name} נשמר, אך לא ניתן היה לסמן אותו כקובץ שהורד מהאינטרנט, ולכן המערכת לא תזהיר לפני שתפתח אותו.",
       blocked:
         "לא ניתן לפתוח כתובת זו בחלונית הדפדפן. היא פותחת רק אתרים ציבוריים.",
+      blockedLocal: "לא ניתן לפתוח כאן את הכתובת המקומית הזו. הקלד אותה בשורת הכתובת כדי לפתוח אותה.",
+      studioAddress: "זו הכתובת של Unsloth עצמו, ולכן לא ניתן לפתוח אותה בחלונית הדפדפן.",
       clearDataSettingDescription:
         "נקה את היסטוריית הגלישה, היסטוריית ההורדות, הדפים השמורים במטמון וקובצי ה-Cookie ונתוני האתרים שהדפים שומרים, מה שינתק אותך מאתרים.",
       clearDataDescription:
@@ -1927,20 +1930,14 @@ export const he = {
       },
       notifications: {
         sectionTitle: "התראות",
-        showLlamaUpdates: "התראות עדכון llama.cpp",
-        showLlamaUpdatesDescription:
-          "הודע כאשר גרסה חדשה יותר של llama.cpp זמינה להרצת מודלים חדשים. כבה אם אתה רק מאמן מודלים.",
-        showLoadedModels: "חיווי מודלים טעונים",
-        showLoadedModelsDescription:
-          "הצג כרטיס קטן בפינה הימנית התחתונה המפרט כל מודל שנמצא כרגע בזיכרון (צ'אט, דיבור, תמונה, וידאו), עם כפתור לפריקת כל אחד מהם.",
-        showAudioCppUpdates: "התראות עדכון של audio.cpp",
-        showAudioCppUpdatesDescription:
-          "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
-        showUnslothUpdates: "התראות עדכון של Unsloth",
-        showUnslothUpdatesDescription:
-          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        showLoadedModels: "כרטיס מודלים טעונים",
+        showLoadedModelsDescription: "כרטיס בפינה עם כל מודל טעון, לפריקה בלחיצה.",
+        updateReminders: "תזכורות עדכון",
+        updateRemindersDescription: "באיזו תדירות להציע גרסה חדשה כשהיא מוכנה.",
+        llamaHint: "מודלי צ'אט ו-GGUF",
+        audioHint: "דיבור, מוזיקה ותמלול",
         frequency: {
-          always: "תמיד",
+          always: "כשזמין",
           daily: "פעם ביום",
           weekly: "פעם בשבוע",
           biweekly: "כל שבועיים",
@@ -3270,6 +3267,14 @@ export const he = {
           "המודל נטען לפי שם רק כשהחלפת מודל אוטומטית פועלת. הפעל אותה, או טען קודם את המודל בדף השמע שלו.",
         useViaApi: "שימוש דרך API",
       },
+      mediaApi: {
+        title: "API לתמונות ולווידאו",
+        description: "צרו תמונות וסרטונים מהקוד שלכם דרך נקודות הקצה התואמות ל-OpenAI.",
+        images: "תמונות",
+        video: "וידאו",
+        placeholderModel: "המודל המוצג הוא דוגמה. טענו מודל בדף התמונות או הווידאו ופתחו את זה מכפתור ה-API שלו כדי למלא אותו.",
+        autoSwitchOff: "המעבר האוטומטי למדיה כבוי, ולכן הבקשות רצות על המודל שהדף טען, לא משנה איזה שם הן נותנות.",
+      },
       decisionApi: {
         title: "ממשק API להחלטות",
         docs: "תיעוד",
@@ -3351,6 +3356,24 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      whisperCppVersion: "גרסת whisper.cpp",
+      engines: {
+        title: "מנועים",
+        description: "סביבות ההרצה ש-Unsloth משתמש בהן כדי להריץ מודלים. העדכונים מותקנים ברקע, ללא הפעלה מחדש.",
+        updatesLabel: "עדכוני מנועים",
+        notInstalled: "לא מותקן",
+        available: "{version} זמין",
+        upToDate: "מעודכן",
+        updatesAvailable: "יש עדכונים",
+        checking: "מחפש עדכונים...",
+        checkFailed: "לא ניתן היה לחפש עדכונים. נסה שוב מאוחר יותר.",
+        unsupported: "המנועים של התקנה זו מנוהלים מחוץ ל-Unsloth.",
+        checkForUpdates: "חיפוש עדכונים",
+        update: "עדכון",
+        updating: "מעדכן...",
+        updated: "המנועים עודכנו.",
+        updateFailed: "העדכון נכשל: {error}",
+      },
       hardware: "חומרה",
       gpu: "GPU",
       gpuIntegrated: "משולב",
@@ -3433,6 +3456,9 @@ export const he = {
         docsUpdating: "עדכון",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

@@ -42,7 +42,6 @@ def test_project_document_persists_under_its_scope(rag_home, stub_embeddings, tm
     try:
         docs = store.list_documents(conn, store.project_scope("P1"))
         assert [d["filename"] for d in docs] == ["notes.txt"]
-        # Scoped: a sibling project cannot see it.
         assert store.list_documents(conn, store.project_scope("P2")) == []
         assert store.search_lexical(conn, store.project_scope("P1"), "bravo", 5)
     finally:
@@ -92,8 +91,7 @@ def test_sanitizer_degrades_safely(raw):
         "résumé.docx",
         "My Report.pdf",
         "Q3: Revenue.pdf",
-        # macOS keeps a Finder "/" on disk as ":", so this is how a dropped
-        # "P/L statement.pdf" reaches the sanitizer. Its first component is the name.
+        # macOS stores a Finder '/' as ':' on disk.
         "P:L statement.pdf",
         "C:notes.txt",
     ],
@@ -111,7 +109,6 @@ def test_sanitizer_keeps_the_name_the_user_gave(raw):
         ("\ufeff报告.pdf", "报告.pdf"),
         ("a\nb.pdf", "a b.pdf"),
         ("a\u2028b.pdf", "a b.pdf"),
-        # What a browser actually sends for a file picked on Windows.
         ("C:\\fakepath\\notes.txt", "notes.txt"),
     ],
 )

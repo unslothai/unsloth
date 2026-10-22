@@ -47,7 +47,7 @@ export function ClipSendToMenu({ handlers }: { handlers: ClipSendHandlers }) {
   );
 }
 
-const CARD_CLASS = "w-full max-w-xl gap-3 px-5 py-4";
+const CARD_CLASS = "w-full max-w-xl gap-3 rounded-xl px-5 py-4";
 
 /** never autoplays; a new clip focuses its play button once. */
 export function ClipCard({

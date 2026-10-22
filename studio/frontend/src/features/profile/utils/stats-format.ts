@@ -273,23 +273,23 @@ export function formatMilliseconds(ms: number): string {
 
 export type HeatLevel = 0 | 1 | 2 | 3 | 4;
 
-/** Quartiles of the active days, not ratios to the peak: one outlier washed out every other day. */
-export function heatThresholds(values: readonly number[]): [number, number, number] {
+/** Quartiles of the active days, then the busiest. Not ratios to the peak: one outlier washed out every other day. */
+export function heatThresholds(values: readonly number[]): [number, number, number, number] {
   const active = values.filter((value) => value > 0).sort((a, b) => a - b);
-  if (active.length === 0) return [0, 0, 0];
+  if (active.length === 0) return [0, 0, 0, 0];
   const at = (fraction: number) =>
     active[Math.min(active.length - 1, Math.floor(fraction * active.length))] ?? 0;
-  return [at(0.25), at(0.5), at(0.75)];
+  return [at(0.25), at(0.5), at(0.75), active.at(-1) ?? 0];
 }
 
-/** A day's shade, 0 for none. Days at a shared quartile (a lone day, days all alike) take the strongest. */
+/** A day's shade, 0 for none. The busiest always takes the strongest: with 2 to 4 active days it is the top quartile itself. */
 export function heatLevel(
   tokens: number,
-  thresholds: readonly [number, number, number],
+  thresholds: readonly [number, number, number, number],
 ): HeatLevel {
   if (tokens <= 0) return 0;
-  const [q1, q2, q3] = thresholds;
-  if (tokens > q3 || (q1 === q3 && tokens >= q3)) return 4;
+  const [q1, q2, q3, peak] = thresholds;
+  if (tokens > q3 || tokens >= peak) return 4;
   if (tokens > q2) return 3;
   if (tokens > q1) return 2;
   return 1;

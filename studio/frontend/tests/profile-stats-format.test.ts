@@ -162,7 +162,7 @@ test("profile counts follow the selected locale's plural rules", () => {
 test("heat levels split the active days into quartiles", () => {
   const days = [0, 0, 100, 200, 300, 400, 500, 600, 700, 50_000];
   const thresholds = heatThresholds(days);
-  assert.deepEqual(thresholds, [300, 500, 700]);
+  assert.deepEqual(thresholds, [300, 500, 700, 50_000]);
   assert.equal(heatLevel(0, thresholds), 0);
   assert.equal(heatLevel(100, thresholds), 1);
   assert.equal(heatLevel(400, thresholds), 2);
@@ -175,11 +175,23 @@ test("heat levels split the active days into quartiles", () => {
 test("a lone active day, or days all alike, take the strongest shade", () => {
   assert.equal(heatLevel(5, heatThresholds([0, 5, 0])), 4);
   assert.equal(heatLevel(80, heatThresholds([80, 80, 80])), 4);
-  assert.deepEqual(heatThresholds([0, 0]), [0, 0, 0]);
+  assert.deepEqual(heatThresholds([0, 0]), [0, 0, 0, 0]);
   // Coinciding quartiles promote only the days at them, not a smaller day below.
   const repeated = heatThresholds([10, 100, 100, 100, 100, 100, 100, 100]);
   assert.equal(heatLevel(100, repeated), 4);
   assert.equal(heatLevel(10, repeated), 1);
+});
+
+test("the busiest day takes the strongest shade with only a few active days", () => {
+  for (const days of [
+    [1_000, 50_000],
+    [1_000, 20_000, 50_000],
+    [1_000, 8_000, 20_000, 50_000],
+  ]) {
+    const thresholds = heatThresholds(days);
+    assert.equal(heatLevel(50_000, thresholds), 4, String(days));
+    assert.equal(heatLevel(1_000, thresholds), 1, String(days));
+  }
 });
 
 test("the grid ends on today's week and pads only real gaps", () => {

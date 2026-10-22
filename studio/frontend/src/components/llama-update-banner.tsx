@@ -31,7 +31,7 @@ import {
 } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Download } from "lucide-react";
+import { Download, X } from "lucide-react";
 import {
   type CSSProperties,
   type MouseEvent,
@@ -353,8 +353,8 @@ export function LlamaUpdateBanner({
       // detail is 0 for Enter or Space, so only keyboard users get focus moved to Undo.
       fromKeyboard: event.detail === 0,
       message: skippedTag
-        ? `Skipped ${label} ${skippedTag}`
-        : `Skipped the ${label} ${bundled ? "updates" : "update"}`,
+        ? `Skipped ${label} ${skippedTag} for now`
+        : `Skipped the ${label} ${bundled ? "updates" : "update"} for now`,
     });
   }
   // show the backend pair when a migration has no version change.
@@ -483,7 +483,19 @@ export function LlamaUpdateBanner({
     >
       {/* fill the height floor even when the changelog content is short. */}
       <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
-        <div className="flex min-w-0 shrink-0 items-start gap-4">
+        {/* Hides the card until the app is reopened, the same skip What's new offers. */}
+        {applying ? null : (
+          <button
+            type="button"
+            onClick={handleSkip}
+            aria-label={`Hide the ${label} ${bundled ? "updates" : "update"} until Unsloth is reopened`}
+            className="absolute right-3 top-3 flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="llama-update-close-button"
+          >
+            <X aria-hidden="true" className="size-4" strokeWidth={2} />
+          </button>
+        )}
+        <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
           <Download
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"

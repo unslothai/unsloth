@@ -252,6 +252,7 @@ import {
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
   useShortcut,
+  useShortcutAvailable,
   useSettingsDialogStore,
   isMacPlatform,
   resolveBindings,
@@ -3756,11 +3757,9 @@ const Composer: FC<{
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
   // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
-  // Only when decline would take that Escape: not for an image disclosure (no keyboard), nor once rebound.
-  const soleToolRequest = useChatRuntimeStore((s) => {
-    const pending = Object.values(s.toolConfirmations);
-    return pending.length === 1 && !pending[0].imageDisclosure;
-  });
+  // Only when decline would take that Escape: its card is keyboard-ready on this screen (not parked in a
+  // background chat, where Escape would then stop nothing), and not once rebound.
+  const declineMounted = useShortcutAvailable("declineToolRequest", true);
   const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
     const bindings = resolveBindings(s.overrides, "declineToolRequest");
     return bindings.primary === "Escape" || bindings.alternate === "Escape";
@@ -5632,7 +5631,7 @@ const Composer: FC<{
                 aria-label={overlay ? "Image edit instructions" : "Message input"}
                 dir="auto"
                 {...inputProps}
-                cancelOnEscape={!(soleToolRequest && declineOwnsEscape)}
+                cancelOnEscape={!(declineMounted && declineOwnsEscape)}
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}

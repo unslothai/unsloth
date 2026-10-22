@@ -82,6 +82,7 @@ import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   CHAT_IMAGE_ACCEPT,
+  getChatImageSizeError,
   isChatImageFile,
   normalizeChatImage,
 } from "./image-normalize";
@@ -280,9 +281,7 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
-
-// Kept in sync with the main composer.
+// Inlined to avoid a new icon dep. Kept in sync with the main composer.
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -1278,9 +1277,13 @@ export function SharedComposer({
           continue;
         }
         if (!isChatImageFile(file)) continue;
-        if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
+          continue;
+        }
+        const sizeError = getChatImageSizeError(file);
+        if (sizeError) {
+          toast.error(sizeError);
           continue;
         }
         let image: File;
@@ -1341,10 +1344,9 @@ export function SharedComposer({
           trackAttaching(async () => {
             // Classify first so a pasted audio-only 3GP is not rejected by extension.
             const files = await classifiedAttachmentFiles(pasted);
+            // Let addFiles report audio and image size errors.
             const supported = files.some(
-              (file) =>
-                isAudioAttachmentFile(file) ||
-                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+              (file) => isAudioAttachmentFile(file) || isChatImageFile(file),
             );
             if (!supported) throw new Error("Unsupported compare attachment");
             await addFilesUntracked(files);

@@ -2227,6 +2227,7 @@ fn main() {
             browser_webview::browser_view_show,
             browser_webview::browser_view_open_background,
             browser_webview::browser_view_navigate,
+            browser_webview::browser_view_grant,
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,
             browser_webview::browser_view_find,

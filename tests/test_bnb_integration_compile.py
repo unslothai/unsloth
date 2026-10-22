@@ -477,6 +477,23 @@ def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
     _assert_compiled_matches(compiled, eager, backend = "aot_eager")
 
 
+# No eager warmup: the GEMM gate's first call must not run its lazy setup while tracing.
+@pytest.mark.parametrize("bsz", [8, 16])
+def test_fast_linear_forward_cold_compile_fullgraph(nf4_kernels, monkeypatch, bsz):
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT", None)
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_ARCHS", {torch.cuda.get_device_capability()})
+    _, block = _lora_block(dtype = torch.float16)
+    fn = lambda x: U.fast_linear_forward(block.o_proj, x)
+    X = torch.randn(bsz, 1, 256, dtype = torch.float16, device = DEVICE)
+    torch._dynamo.reset()
+    with torch.no_grad():
+        compiled = torch.compile(fn, fullgraph = _dynamo_traces_params4bit(), backend = "aot_eager")(X)
+        eager = fn(X)
+    torch._dynamo.reset()
+    _assert_compiled_matches(compiled, eager, backend = "aot_eager")
+
+
 def test_eager_gemv_gate_off_takes_bitsandbytes(monkeypatch):
     """Where the Triton GEMV is not the eager choice (HIP before Triton 3.6, or
     UNSLOTH_TRITON_GEMV_EAGER=0), eager decode takes bitsandbytes' GEMV, on the live stream.

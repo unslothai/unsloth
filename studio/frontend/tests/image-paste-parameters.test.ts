@@ -288,7 +288,7 @@ test("the Images page wires paste into the same restore path as a drop", () => {
   );
   assert.match(
     page,
-    /\.\.\.importNotApplied\(\n\s+recipe,\n\s+status\?\.loaded \? status\.family : null,\n\s+Boolean\(status\?\.loaded && isNativeEngineStatus\(status\)\),\n\s+\),/,
+    /\.\.\.importNotApplied\(\n\s+recipe,\n\s+status\?\.loaded \? status\.family : null,\n\s+Boolean\(status\?\.loaded && isNativeEngineStatus\(status\)\),\n\s+sdCaps,\n\s+\),/,
   );
   assert.match(
     page,
