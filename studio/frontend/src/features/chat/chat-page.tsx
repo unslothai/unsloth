@@ -3843,6 +3843,9 @@ export function ChatPage({
     onAttachVideo: handleNativeVideoDrop,
   });
 
+  // Counts the user's own picks, staged and no-op ones included: an automatic switch dispatched
+  // before one of them must not land after it.
+  const userPickCountRef = useRef(0);
   const handleCheckpointChange = useCallback(
     (
       value: string,
@@ -3855,6 +3858,7 @@ export function ChatPage({
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
+      if (!meta?.adoptOnly) userPickCountRef.current += 1;
       if (!value) return;
       // NPU picks have no adopt path: loadNpuModel always reaches /load.
       if (meta?.adoptOnly && (isNpuModelId(value) || isExternalModelId(value))) {
@@ -4523,11 +4527,12 @@ export function ChatPage({
   // Opening a chat may only take a slot that already serves its model as is: a reload stays a click.
   const handleAutoSwitchToChatModel = useCallback(
     (target: ChatModelSwitchTarget, stillWanted: () => boolean) => {
+      const picks = userPickCountRef.current;
       handleCheckpointChange(target.modelId, {
         ...chatModelSwitchMeta(target, loraModels),
         isDownloaded: true,
         adoptOnly: true,
-        stillWanted,
+        stillWanted: () => stillWanted() && userPickCountRef.current === picks,
       });
     },
     [handleCheckpointChange, loraModels],

@@ -241,6 +241,9 @@ test("the automatic switch runs once per chat open", () => {
 test("the automatic switch only adopts a slot, it never reaches /load", () => {
   const auto = slice(page, "const handleAutoSwitchToChatModel", "\n  );\n");
   assert.match(auto, /isDownloaded: true,\s*adoptOnly: true,/);
+  // Any pick of the user's after dispatch, staged or no-op, cancels the pending adoption.
+  assert.match(auto, /stillWanted: \(\) => stillWanted\(\) && userPickCountRef\.current === picks,/);
+  assert.match(page, /if \(!meta\?\.adoptOnly\) userPickCountRef\.current \+= 1;\s*if \(!value\) return;/);
   assert.match(page, /adoptOnly: meta\?\.adoptOnly,\s*stillWanted: meta\?\.stillWanted,\s*\};\s*await stageOrLoad\(selection\);/);
   // Bails after the adopt check and before the lease that every /load holds.
   const select = slice(runtimeHook, "const selectModel = useCallback", "let lifecycleLease");
