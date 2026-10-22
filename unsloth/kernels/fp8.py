@@ -624,6 +624,197 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     return out
 
 
+# Block-FP8 decode (1-16 tokens, one per sequence): act_quant + the block GEMM launch N / 128 programs
+# that each walk all of K (a flat 0.22 ms per 4096 x 4096 projection on L4). This reads the fp8 weight
+# once and applies the block scale on the fly to unquantized activations. UNSLOTH_FP8_BLOCK_GEMV=0 disables it.
+_FP8_BLOCK_GEMV = os.environ.get("UNSLOTH_FP8_BLOCK_GEMV", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+_FP8_BLOCK_GEMV_MAX_ROWS = 16
+
+
+@triton.jit
+def _fp8_block_gemv_kernel(
+    x_ptr,
+    w_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    K,
+    K_PER_SPLIT,
+    stride_xm,
+    stride_wn,
+    stride_sn,
+    stride_sk,
+    stride_ys,
+    stride_ym,
+    GROUP_N: tl.constexpr,
+    GROUP_K: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
+):
+    pid_n = tl.program_id(0)
+    pid_k = tl.program_id(1)
+    if LONG_INDEXING:
+        pid_n = pid_n.to(tl.int64)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_m = tl.arange(0, BLOCK_M)
+    mask_n = offs_n < N
+    mask_m = offs_m < M
+    s_rows = s_ptr + (offs_n // GROUP_N) * stride_sn
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.float32)
+    k_begin = pid_k * K_PER_SPLIT
+    k_end = tl.minimum(k_begin + K_PER_SPLIT, K)
+    for k0 in range(k_begin, k_end, BLOCK_K):
+        offs_k = k0 + tl.arange(0, BLOCK_K)
+        mask_k = offs_k < k_end
+        x = tl.load(
+            x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :],
+            mask = mask_m[:, None] & mask_k[None, :],
+            other = 0.0,
+        )
+        # e4m3 values are exact in bf16 and fp16, so the dot sees the stored weight.
+        w = tl.load(
+            w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :],
+            mask = mask_n[:, None] & mask_k[None, :],
+            other = 0.0,
+        ).to(x.dtype)
+        # BLOCK_K divides GROUP_K and K splits start on a block, so one scale per row per step.
+        s = tl.load(s_rows + (k0 // GROUP_K) * stride_sk, mask = mask_n, other = 0.0).to(tl.float32)
+        acc += tl.dot(x, tl.trans(w)) * s[None, :]
+    y = y_ptr + pid_k * stride_ys + offs_m[:, None] * stride_ym + offs_n[None, :]
+    tl.store(y, acc.to(y_ptr.dtype.element_ty), mask = mask_m[:, None] & mask_n[None, :])
+
+
+def _fp8_block_size(weight, weight_scale):
+    return list(
+        getattr(weight, "block_size", None)
+        or getattr(weight_scale, "block_size", None)
+        or [128, 128]
+    )
+
+
+def can_use_fp8_block_gemv(X, weight, weight_scale):
+    # Not validated on ROCm yet: keep the block GEMM there.
+    if not _FP8_BLOCK_GEMV or torch.version.hip is not None:
+        return False
+    if not (X.is_cuda and weight.is_cuda and X.dtype in (torch.bfloat16, torch.float16)):
+        return False
+    if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
+        return False
+    N, K = weight.shape
+    if X.shape[-1] != K or X.device != weight.device:
+        return False
+    rows = X.numel() // K
+    # Decode only: one token per sequence, prefill keeps the block GEMM.
+    if not 1 <= rows <= _FP8_BLOCK_GEMV_MAX_ROWS or (X.dim() >= 3 and X.shape[-2] != 1):
+        return False
+    if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
+        return False
+    if (
+        weight_scale.ndim != 2
+        or weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16)
+        or weight_scale.device != weight.device
+    ):
+        return False
+    block_size = _fp8_block_size(weight, weight_scale)
+    if len(block_size) != 2:
+        return False
+    group_n, group_k = int(block_size[0]), int(block_size[1])
+    # Only the stored (N blocks, K blocks) layout; a transposed or mismatched grid keeps the GEMM.
+    if tuple(weight_scale.shape) != (triton.cdiv(N, group_n), triton.cdiv(K, group_k)):
+        return False
+    if group_n < 1 or group_k < 16 or group_k & (group_k - 1):
+        return False
+    if _fp8_kernel_unsupported(weight):
+        return False
+    # Triton 3.3 miscompiles fp8 GEMVs on Blackwell; keep the GEMM there.
+    return not _fp8_gemv_miscompiles(weight.device)
+
+
+@functools.lru_cache(maxsize = None)
+def _sm_count(device):
+    return torch.cuda.get_device_properties(device).multi_processor_count
+
+
+@_opaque_under_compile(
+    "fp8_block_gemv",
+    lambda X, weight, weight_scale, group_n, group_k: X.new_empty(X.shape[:-1] + (weight.shape[0],)),
+)
+def _fp8_block_gemv(
+    X: torch.Tensor, weight: torch.Tensor, weight_scale: torch.Tensor, group_n: int, group_k: int
+) -> torch.Tensor:
+    N, K = weight.shape
+    x2 = X.reshape(-1, K)
+    if not x2.is_contiguous():
+        x2 = x2.contiguous()
+    M = x2.shape[0]
+    sms = _sm_count(weight.device)
+    # Swept on L4 (58 SMs) and RTX PRO 6000 (188): narrow tiles on small parts, within 2-5% of the per-shape best.
+    block_n, num_warps = (16, 2) if sms < 100 else (64, 4)
+    block_k = min(128, group_k)
+    n_tiles = triton.cdiv(N, block_n)
+    # Split K (in whole scale blocks) until about one program per SM.
+    k_blocks = triton.cdiv(K, group_k)
+    split = max(1, min(k_blocks, (sms + n_tiles - 1) // n_tiles, 16))
+    k_per_split = triton.cdiv(k_blocks, split) * group_k
+    split = triton.cdiv(K, k_per_split)
+    if split == 1:
+        y = torch.empty((1, M, N), device = X.device, dtype = X.dtype)
+    else:
+        y = torch.empty((split, M, N), device = X.device, dtype = torch.float32)
+    scale = weight_scale if weight_scale.stride(-1) == 1 else weight_scale.contiguous()
+    with _fp8_triton_device_context(X, static_device_count = True):
+        _fp8_block_gemv_kernel[(n_tiles, split)](
+            x2,
+            weight,
+            scale,
+            y,
+            M,
+            N,
+            K,
+            k_per_split,
+            x2.stride(0),
+            weight.stride(0),
+            scale.stride(0),
+            scale.stride(1),
+            y.stride(0),
+            y.stride(1),
+            GROUP_N = group_n,
+            GROUP_K = group_k,
+            BLOCK_M = 16,
+            BLOCK_N = block_n,
+            BLOCK_K = block_k,
+            LONG_INDEXING = long_indexing(weight),
+            num_warps = num_warps,
+            num_stages = 4,
+        )
+    out = y[0] if split == 1 else y.sum(0).to(X.dtype)
+    return out.reshape(*X.shape[:-1], N)
+
+
+def fp8_block_gemv(X, weight, weight_scale):
+    """X @ dequant(weight, weight_scale).T for 1-16 decode tokens, activations unquantized."""
+    group_n, group_k = (int(b) for b in _fp8_block_size(weight, weight_scale))
+    return _fp8_block_gemv(X, weight, weight_scale, group_n, group_k)
+
+
+def _with_fp8_block_gemv(block_forward):
+    @functools.wraps(block_forward)
+    def forward(X, weight, weight_scale):
+        if can_use_fp8_block_gemv(X, weight, weight_scale):
+            return fp8_block_gemv(X, weight, weight_scale)
+        return block_forward(X, weight, weight_scale)
+
+    return forward
+
+
 # Expanding the scale over the whole weight needs two m*n float32 temporaries, ~6x the triton
 # kernel's peak; chunk by block-rows so the scratch stays bounded. Values are identical.
 _DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
@@ -1188,6 +1379,8 @@ try:
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
 except:
     pass
+# Decode-sized calls take the block GEMV whichever block GEMM was selected above.
+fp8_block_quant_linear = _with_fp8_block_gemv(fp8_block_quant_linear)
 
 
 # Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
