@@ -15,6 +15,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
@@ -304,6 +305,7 @@ export function SettingsDialog() {
   const isOwner = useIsAccountOwner();
   const stacked = useStackedLayout();
   const hubSource = useHubSource();
+  const canUpgradeToFullInstall = useFullInstallUpgrade() !== null;
   const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
@@ -343,7 +345,13 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource, isOwner)
+      const entries = renderedSearchEntries(
+        SETTINGS_SEARCH_INDEX,
+        tab.id,
+        hubSource,
+        isOwner,
+        canUpgradeToFullInstall,
+      )
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -360,7 +368,7 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs, hubSource, isOwner]);
+  }, [query, t, visibleTabs, hubSource, isOwner, canUpgradeToFullInstall]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;

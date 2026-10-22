@@ -267,9 +267,36 @@ def test_speed_off_keeps_bf16_under_offload(fake_runtime, monkeypatch):
     assert not spy.quant
 
 
+def test_explicit_nvfp4_is_refused_on_the_wan_5b_that_failed_the_gate(fake_runtime, monkeypatch):
+    """Wan2.2-TI2V-5B's hosted NVFP4 build measured above the accuracy-gate bar, so an explicit pick is refused."""
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    spy = _spoof(monkeypatch, tier_gib = 32)
+    with pytest.raises(RuntimeError, match = "measured deny list"):
+        VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "nvfp4")
+    assert not spy.seeded
+
+
+def _lift_wan5b_nvfp4_deny(monkeypatch):
+    """The placement tests below exercise a hosted NVFP4 seed, which only Wan2.2-5B's size class shows; lift its
+    measured nvfp4 deny (both the selection table and the profile the hosted-scheme list filters on)."""
+    import core.inference.diffusion_transformer_quant as tq
+    from core.inference import video_families as vf
+
+    deny = {k: v for k, v in tq._FAMILY_SCHEME_DENY.items() if k != "wan2.2-ti2v-5b"}
+    monkeypatch.setattr(tq, "_FAMILY_SCHEME_DENY", deny)
+    families = tuple(
+        dataclasses.replace(fam, profile = dataclasses.replace(fam.profile, scheme_deny = frozenset()))
+        if fam.name == "wan2.2-ti2v-5b"
+        else fam
+        for fam in vf._FAMILIES
+    )
+    monkeypatch.setattr(vf, "_FAMILIES", families)
+
+
 def test_hosted_nvfp4_seeds_beside_streamed_text_encoder(fake_runtime, monkeypatch):
     """Wan2.2-5B NVFP4 on 32 GiB: the split keeps the DiT resident and streams the 11.4 GB encoder."""
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    _lift_wan5b_nvfp4_deny(monkeypatch)
     spy = _spoof(monkeypatch, tier_gib = 32)
     status = VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "nvfp4")
     assert spy.seeded == ["nvfp4"]
@@ -279,6 +306,7 @@ def test_hosted_nvfp4_seeds_beside_streamed_text_encoder(fake_runtime, monkeypat
 
 def test_hosted_nvfp4_refused_where_the_dit_must_stream(fake_runtime, monkeypatch):
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    _lift_wan5b_nvfp4_deny(monkeypatch)
     spy = _spoof(monkeypatch, tier_gib = 16)
     with pytest.raises(RuntimeError, match = "moves the DiT"):
         VideoBackend().load_pipeline(FAMILIES["wan2.2-ti2v-5b"], transformer_quant = "nvfp4")

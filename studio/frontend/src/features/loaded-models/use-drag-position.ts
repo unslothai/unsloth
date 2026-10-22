@@ -5,7 +5,10 @@
 // user moves it, then kept where they left it. Absolute viewport coordinates rather than a
 // transform, so the position survives a reload and can be clamped when the window changes size.
 
-import { isDegenerateBox } from "../../hooks/floating-panel-position.ts";
+import {
+  isDegenerateBox,
+  nudgeDelta,
+} from "../../hooks/floating-panel-position.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type DragPosition = { left: number; top: number };
@@ -49,6 +52,11 @@ export function passedDragThreshold(dx: number, dy: number): boolean {
   return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
 }
 
+/** Non-button handles get no click, so they must clear the sentinel here or the pill's next click is swallowed. */
+export function sentinelAfterSettle(moved: boolean, clickFollows: boolean): boolean {
+  return moved && clickFollows;
+}
+
 function viewport(): Viewport {
   return { width: window.innerWidth, height: window.innerHeight };
 }
@@ -90,6 +98,8 @@ export type UseDragPosition = {
    *  button. Reading it clears the flag, so a later keyboard activation on the
    *  same button is not swallowed too. */
   justDragged: () => boolean;
+  element: HTMLDivElement | null;
+  nudge: (event: React.KeyboardEvent<HTMLElement>) => boolean;
 };
 
 
@@ -136,6 +146,7 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     /** Where the last painted frame put it, committed to state on release. */
     lastLeft: number;
     lastTop: number;
+    clickFollows: boolean;
   } | null>(null);
   // The drag paints through the DOM rather than through state, so a frame costs no render at all.
   // Held here so pointermove only ever records the latest offset and the frame reads it.
@@ -204,6 +215,7 @@ export function useDragPosition(storageKey: string): UseDragPosition {
         height: box.height,
         lastLeft: box.left,
         lastTop: box.top,
+        clickFollows: event.currentTarget instanceof HTMLButtonElement,
       };
       movedRef.current = false;
       setPressing(true);
@@ -270,6 +282,10 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       // window permanently overwrite a position saved on a large one; the read path clamps anyway.
       store(storageKey, landed);
     }
+    movedRef.current = sentinelAfterSettle(
+      movedRef.current,
+      session?.clickFollows ?? false,
+    );
     sessionRef.current = null;
     setPressing(false);
     setDragging(false);
@@ -341,5 +357,33 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     return moved;
   }, []);
 
-  return { position, panelRef: attachPanel, startDrag, dragging, justDragged };
+  const nudge = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      const delta = nudgeDelta(event.key, event.shiftKey);
+      const panel = panelRef.current;
+      if (!(delta && panel)) return false;
+      event.preventDefault();
+      const box = panel.getBoundingClientRect();
+      const next = clampToViewport(
+        { left: box.left + delta.dx, top: box.top + delta.dy },
+        box.width,
+        box.height,
+        viewport(),
+      );
+      setPosition(next);
+      store(storageKey, next);
+      return true;
+    },
+    [storageKey],
+  );
+
+  return {
+    position,
+    panelRef: attachPanel,
+    element: panelEl,
+    startDrag,
+    dragging,
+    justDragged,
+    nudge,
+  };
 }
