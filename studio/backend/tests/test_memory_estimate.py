@@ -1891,6 +1891,51 @@ class TestDrafterAccounting:
         assert on_cpu.weights_bytes == on_gpu.weights_bytes
         assert on_cpu.gpu_bytes < on_gpu.gpu_bytes
 
+    @pytest.mark.parametrize(
+        "override",
+        [
+            ["-otd", ".*=CUDA0"],
+            ["--spec-draft-override-tensor", "blk\\..*=CUDA0"],
+            ["--override-tensor-draft=.*=CUDA0"],
+            ["-otd", "ffn=CPU,.*=CUDA0"],
+        ],
+    )
+    def test_a_gpu_draft_tensor_override_keeps_the_drafter_charge(
+        self, config, gqa_gguf, monkeypatch, override
+    ):
+        # The CPU counterfactual must be a CPU placement: a GPU -otd left in it reads as
+        # on the card (_extra_args_draft_offloaded_to_cpu), both probes charge the
+        # drafter, and the difference -- the whole drafter charge -- came out 0.
+        drafter_bytes = os.path.getsize(config.gguf_mtp_file)
+
+        def _files(
+            cfg,
+            *,
+            llama_extra_args = None,
+            **kw,
+        ):
+            pinned = _draft_on_cpu(list(llama_extra_args or ()))
+            return 1.0 + (0.0 if pinned else drafter_bytes / 1024**3)
+
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", _files)
+        default = ri._gguf_memory_breakdown(config, gqa_gguf, n_ctx = 32768)
+        overridden = ri._gguf_memory_breakdown(
+            config, gqa_gguf, n_ctx = 32768, llama_extra_args = list(override)
+        )
+        assert default.drafter_runtime_bytes > 0
+        assert overridden.drafter_runtime_bytes == default.drafter_runtime_bytes
+        assert overridden.total_bytes == default.total_bytes
+        assert overridden.drafter_kv_unsized is default.drafter_kv_unsized
+        # The CPU counterfactual itself still prices zero layers as off the card.
+        zero = ri._gguf_memory_breakdown(
+            config,
+            gqa_gguf,
+            n_ctx = 32768,
+            llama_extra_args = ["--spec-draft-ngl", "0", "-otd", ".*=CPU"],
+        )
+        assert zero.total_bytes == default.total_bytes
+        assert zero.gpu_bytes < default.gpu_bytes
+
     def test_the_drafter_runtime_reports_its_own_gpu_share(self, config, gqa_gguf, monkeypatch):
         # The panel used to label this line from kv_on_gpu, the TARGET cache's
         # placement, which is set by a different flag. Wrong in both directions: silent
@@ -2674,6 +2719,16 @@ class TestInheritedEnvironment:
             )
             == 5
         )
+
+    @pytest.mark.parametrize("depth", ["7.0", "7 tokens", "7abc"])
+    def test_an_inherited_draft_depth_reads_like_std_stoi(self, bare, gqa_gguf, monkeypatch, depth):
+        # _is_positive_int admits std::stoi's leading digits; int() on the same value
+        # raised, so the estimate must read the 7 the child drafts at.
+        monkeypatch.delenv("LLAMA_ARG_DRAFT_MAX", raising = False)
+        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", depth)
+        owned = ["--spec-type", "draft-mtp"]
+        assert ri._build_default_spec_draft_n_max(owned) == 7
+        assert ri._estimate_draft_n_max(bare, gqa_gguf, requested = None, extras = owned) == 7
 
     def test_an_inherited_projector_is_charged_like_a_configured_one(
         self, bare, gqa_gguf, tmp_path, monkeypatch

@@ -2140,3 +2140,159 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
     fake = str(tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B-Q4_K_M.gguf")
     with pytest.raises(HTTPException):
         routes._resolve_inherited_extra_args(LoadRequest(model_path = fake), config, fake, None)
+
+
+# --- every device value arg.cpp parses must resolve in the child's mask -------------------
+
+
+def _drop_inherited_gpu_masks(monkeypatch):
+    # A runner that already hides its GPUs (CUDA_VISIBLE_DEVICES=-1) would otherwise
+    # pass "-1" through and read as the launcher's own mask.
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--mmproj-device", "none", "--device", "CUDA0", "--device", "none"],
+        ["--mmproj-device", "none", "--spec-draft-device", "CUDA0", "--spec-draft-device", "none"],
+    ],
+    ids = ["main", "draft"],
+)
+def test_a_zero_offload_load_keeps_an_overridden_gpu_device_visible(tmp_path, monkeypatch, extras):
+    """parse_device_list (common/arg.cpp) resolves each --device / -devd value as it reads
+    it, so CUDA_VISIBLE_DEVICES=-1 fails the earlier CUDA0 with "invalid device" though
+    the final none places nothing on the card."""
+    _drop_inherited_gpu_masks(monkeypatch)
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend, gguf, n_ctx = 4096, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = extras
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") != "-1", env.get("CUDA_VISIBLE_DEVICES")
+
+
+def test_a_zero_offload_load_with_only_none_devices_still_hides_the_gpus(tmp_path, monkeypatch):
+    # Control: nothing named a GPU, so the deliberate CPU-only mask stands.
+    _drop_inherited_gpu_masks(monkeypatch)
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend,
+        gguf,
+        n_ctx = 4096,
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        extra_args = ["--mmproj-device", "none", "--device", "none", "-devd", "none"],
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+
+@pytest.mark.parametrize(
+    "extras, inherited",
+    [
+        (["-ot", r"blk\.0\..*=CUDA0", "--mmproj-device", "none"], {}),
+        (["-otd", ".*=CUDA0", "--mmproj-device", "none"], {}),
+        (["--override-tensor=exps=CPU,blk.0=CUDA0", "-mmdev=none"], {}),
+        (["-ot", ".*=CUDA0"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "0"}),
+        (["--mmproj-device", "none"], {"LLAMA_ARG_OVERRIDE_TENSOR": ".*=CUDA0"}),
+    ],
+    ids = ["ot", "otd", "ot-mixed-inline", "ot-env-offload-off", "env-ot"],
+)
+def test_a_zero_offload_load_keeps_a_gpu_tensor_override_visible(
+    tmp_path, monkeypatch, extras, inherited
+):
+    """parse_tensor_buffer_overrides (common/arg.cpp) looks every buffer name up among the
+    devices the child enumerates and throws "unknown buffer type" on a miss, so a CPU
+    projector must not hide the GPUs an -ot / -otd value (or LLAMA_ARG_OVERRIDE_TENSOR)
+    names, the same way a device-list name keeps them visible."""
+    _drop_inherited_gpu_masks(monkeypatch)
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend, gguf, n_ctx = 4096, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = extras
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") != "-1", env.get("CUDA_VISIBLE_DEVICES")
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["-ot", "exps=CPU", "--mmproj-device", "none"],
+        ["-otd", ".*=CPU", "-ot", "a=CPU,b=CPU", "--mmproj-device", "none"],
+    ],
+    ids = ["ot", "ot-otd"],
+)
+def test_a_zero_offload_load_with_cpu_tensor_overrides_still_hides_the_gpus(
+    tmp_path, monkeypatch, extras
+):
+    # Control: every override names the CPU buffer, which the child always enumerates.
+    _drop_inherited_gpu_masks(monkeypatch)
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    env = _launch(
+        backend, gguf, n_ctx = 4096, gpu_memory_mode = "manual", gpu_layers = 0, extra_args = extras
+    )["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--mmproj-offload", "--mmproj-device", "CUDA1", "--mmproj-device", "none"],
+        ["--mmproj-offload", "-mmdev=CUDA1", "-mmdev", "none"],
+    ],
+    ids = ["separate", "inline"],
+)
+def test_a_pinned_mask_ignores_an_overridden_projector_device(tmp_path, extras):
+    """The final none puts the projector on the host, so the planner fits the model on
+    GPU 0 alone; arg.cpp still resolves the earlier CUDA1, which a mask of 0 hides
+    ("invalid device"). That value places nothing, so it is cleared, not widened onto."""
+    backend, gguf = _backend(
+        tmp_path,
+        memory = [(0, 12_000, 24_000), (1, 12_000, 24_000)],
+        model_bytes = 8 * GIB,
+        mmproj_bytes = 6 * GIB,
+    )
+    backend._resolve_visible_physical_ids = lambda *_a, **_kw: [0, 1]
+    got = _launch(backend, gguf, n_ctx = 4096, extra_args = extras)
+    cmd, env = got["cmd"], got["env"]
+    assert env.get("CUDA_VISIBLE_DEVICES") == "0", env.get("CUDA_VISIBLE_DEVICES")
+    # The projector stays on the host and no parsed name needs the hidden card.
+    flags = [a.partition("=") for a in cmd]
+    values = [
+        tail if eq else cmd[i + 1]
+        for i, (head, eq, tail) in enumerate(flags)
+        if head in ("--mmproj-device", "-mmdev")
+    ]
+    assert values == ["none", "none"], cmd
+
+
+@pytest.mark.parametrize(
+    ("extras", "env_twin"),
+    [
+        (["--mmproj-offload", "--mmproj-device", "none", "-ot", ".*=CUDA1"], None),
+        (["--mmproj-offload", "--mmproj-device", "none", "--override-tensor=.*=CUDA1"], None),
+        (["--mmproj-offload", "--mmproj-device", "none"], ".*=CUDA1"),
+    ],
+    ids = ["ot", "ot_inline", "env"],
+)
+def test_a_pinned_mask_keeps_a_tensor_override_buffer_resolvable(
+    tmp_path, monkeypatch, extras, env_twin
+):
+    """The host projector lets the planner fit the model on GPU 0 alone, but a tensor
+    override still names CUDA1, which a mask of 0 fails with "unknown buffer type"."""
+    if env_twin is not None:
+        monkeypatch.setenv("LLAMA_ARG_OVERRIDE_TENSOR", env_twin)
+    backend, gguf = _backend(
+        tmp_path,
+        memory = [(0, 12_000, 24_000), (1, 12_000, 24_000)],
+        model_bytes = 8 * GIB,
+        mmproj_bytes = 6 * GIB,
+    )
+    backend._resolve_visible_physical_ids = lambda *_a, **_kw: [0, 1]
+    got = _launch(backend, gguf, n_ctx = 4096, extra_args = extras)
+    cmd, env = got["cmd"], got["env"]
+    visible = env.get("CUDA_VISIBLE_DEVICES")
+    assert visible in (None, "0,1"), visible
+    names = [env.get("LLAMA_ARG_OVERRIDE_TENSOR") or ""] + [str(a) for a in cmd]
+    assert any(n.endswith("=CUDA1") for n in names), cmd
