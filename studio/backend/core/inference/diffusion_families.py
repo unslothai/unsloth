@@ -1295,9 +1295,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         cudnn_benchmark = False,
         native_transformer_files_only = True,
         # MOSS's own small-decoder FLUX.2 VAE, not FLUX.2-dev's.
-        sd_cpp_vae = ("OpenMOSS-Team/MOSS-Image-SFT", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_vae = ("unsloth/MOSS-Image-SFT-FP8", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = (("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf", "llm"),),
-        sd_cpp_tokenizer = ("OpenMOSS-Team/MOSS-Image-SFT", "tokenizer/tokenizer.json"),
+        sd_cpp_tokenizer = ("unsloth/MOSS-Image-SFT-FP8", "tokenizer/tokenizer.json"),
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
     ),
@@ -1621,6 +1621,10 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),
     ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
     ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
+    # MOSS-Image, as FLUX.3: the upstream diffusers folders (model_index.json, transformer/, text_encoder/, tokenizer/,
+    # scheduler/, vae/, byte-identical at the pinned commit) sit in each variant's -FP8 repo beside its prequant files.
+    ("OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8"),
+    ("OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
     # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B is what
     # `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are offered directly as bf16
@@ -1680,6 +1684,8 @@ _ARTIFACT_MIRRORS: frozenset[str] = frozenset(
         "unsloth/qwen-image-edit-gguf",
         "unsloth/qwen-image-edit-2509-gguf",
         "unsloth/qwen-image-layered-gguf",
+        "unsloth/moss-image-sft-fp8",
+        "unsloth/moss-image-base-fp8",
     }
 )
 _ALL_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _MIRROR_PAIRS + _VIDEO_MIRROR_PAIRS
