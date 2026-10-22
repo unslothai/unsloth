@@ -10,6 +10,7 @@ import warnings
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("torchao") is None, reason = "require torchao"
@@ -105,7 +106,7 @@ def test_nvfp4_needs_in_features_divisible_by_32(monkeypatch, lora):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (10, 0),
+    not has_real_cuda() or torch.cuda.get_device_capability() < (10, 0),
     reason = "needs an FP4 tensor core GPU",
 )
 def test_nvfp4_admitted_widths_run_on_gpu():
@@ -176,7 +177,7 @@ def test_mx_qat_linear_takes_float32_activations_under_autocast(weight_dtype):
     # Autocast feeds float32 activations into bfloat16 (or float32) linears.
     # torchao's CPU fake-quant backward cannot mix a float32 weight with bfloat16 activations.
     device = "cpu" if weight_dtype == torch.bfloat16 else "cuda"
-    if device == "cuda" and not torch.cuda.is_available():
+    if device == "cuda" and not has_real_cuda():
         pytest.skip("float32 weights under autocast need the CUDA MX path")
     model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(device, weight_dtype)
     model = _prepare_model_for_qat(model, _mx_torchao_config())
