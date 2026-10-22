@@ -640,7 +640,6 @@ def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
 def _hardware_inventory_generation() -> Optional[int]:
     try:
         from utils.hardware.hardware import physical_gpu_inventory_generation
-
         return physical_gpu_inventory_generation()
     except Exception:  # noqa: BLE001 -- an identity read must never fail the probe
         return None
@@ -4788,6 +4787,7 @@ class SdCppDiffusionBackend:
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
         seeds: list[int] = []
+
         # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request's adapters cannot
         # leak in); removed after.
         def _stage_loras(server) -> tuple[Optional[Path], Optional[list[dict]]]:

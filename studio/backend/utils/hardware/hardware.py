@@ -660,7 +660,6 @@ def physical_gpu_inventory_generation() -> int:
     """Changes whenever the GPUs this host has may have changed: a refresh that found a different device set, or an
     explicit re-detection (``gpu_query.invalidate_static``). Never probes."""
     from . import gpu_query
-
     return _physical_gpu_inventory_generation + gpu_query.static_generation()
 
 

@@ -3111,7 +3111,12 @@ def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, 
     assert not bk._accelerator_runtime_failures
 
 
-def _device_loss_backend(monkeypatch, tmp_path, *, on_start = None):
+def _device_loss_backend(
+    monkeypatch,
+    tmp_path,
+    *,
+    on_start = None,
+):
     """A loaded backend whose first job loses its Vulkan device; each server gets its own lora dir."""
     servers: list = []
     payloads: list = []
@@ -3251,7 +3256,9 @@ def test_a_status_poll_during_the_cpu_backend_restart_keeps_the_load(monkeypatch
     monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
     state = b._state
     server = b._restart_server_on_cpu_backend(
-        state, "ggml_metal_op_encode_impl: unsupported op 'MUL_MAT' -> ggml_abort", threading.Event()
+        state,
+        "ggml_metal_op_encode_impl: unsupported op 'MUL_MAT' -> ggml_abort",
+        threading.Event(),
     )
     assert server is not None and polls == [True] and b._state is state
     b._hand_over_replacement(dataclasses.replace(state, server = server), server)
@@ -3265,7 +3272,9 @@ def test_an_unload_before_the_respawn_starts_skips_it(monkeypatch, tmp_path):
     monkeypatch.setattr(b, "status", lambda: {})
     b.unload()
     assert (
-        b._respawn_server_after_device_loss(state, "vk::Queue::submit: ErrorDeviceLost", threading.Event())
+        b._respawn_server_after_device_loss(
+            state, "vk::Queue::submit: ErrorDeviceLost", threading.Event()
+        )
         is None
     )
     assert len(servers) == 1 and b._replacing_server is None
