@@ -68,9 +68,13 @@ def test_refused_bf16_becomes_fp16_only_for_a_vllm_load_on_xpu(name):
 def test_a_forced_float32_model_refuses_to_load_in_fp16(name):
     # Gemma 3/4, Qwen3.5: float16 gives NaN gradients, so a refused bf16 fails early instead.
     with pytest.raises(RuntimeError, match = "fast_inference = False"):
-        _resolve(name, "xpu", torch.bfloat16, True, refuses = True, env = {"UNSLOTH_FORCE_FLOAT32": "1"})
+        _resolve(
+            name, "xpu", torch.bfloat16, True, refuses = True, env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+        )
     assert (
-        _resolve(name, "xpu", torch.bfloat16, True, refuses = False, env = {"UNSLOTH_FORCE_FLOAT32": "1"})
+        _resolve(
+            name, "xpu", torch.bfloat16, True, refuses = False, env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+        )
         is torch.bfloat16
     )
 
