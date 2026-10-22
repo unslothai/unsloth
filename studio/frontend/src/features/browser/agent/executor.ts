@@ -573,7 +573,7 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
-  if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : answer.links ?? []);
+  if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : linkedPages(answer.links ?? []));
   return {
     ok: true,
     url: tabUrl(fresh),
@@ -637,6 +637,20 @@ function redirectChain(url: string): string[] {
   // Each hop's target is a strictly shorter part of the link, so this ends.
   for (let next = unwrapRedirect(url); next !== chain[chain.length - 1]; next = unwrapRedirect(next)) chain.push(next);
   return chain;
+}
+
+/** A page's links, with each search-result redirect's landing page too: the tab opens that page,
+ *  and the link to it is on the page, so following it is as linked as any other link there. */
+function linkedPages(links: string[]): string[] {
+  return links.flatMap((link) =>
+    redirectChain(link).flatMap((url) => {
+      try {
+        return [new URL(url).href];
+      } catch {
+        return [];
+      }
+    }),
+  );
 }
 
 function redirectEnd(url: string): string {
