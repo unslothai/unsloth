@@ -529,7 +529,7 @@ def test_compare_load_uses_each_models_gpu_config():
     # An unclassified GGUF is pinned: /load may still find a diffusion header after download.
     assert "return isDiffusion === true || diffusionUnknown" in placement
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
-    assert "if (ownConfig.selectedGpuIds != null)" in src
+    assert "ownConfig.selectedGpuIds !== undefined" in src
     assert "ownConfig.selectedGpuIndexKind," in src
     assert "compareLoadKnobs.selectedGpuIndexKind," in src
     assert src.count("resolvedIsDiffusion === true") >= 2
