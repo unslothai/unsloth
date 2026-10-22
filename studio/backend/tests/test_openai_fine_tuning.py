@@ -385,6 +385,8 @@ def queue(studio, monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_QUEUE", [])
     monkeypatch.setattr(openai_fine_tuning, "_ALIASES", {})
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
+    monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", False)
     monkeypatch.setattr(openai_fine_tuning, "_ensure_drainer", lambda: None)
     gpu = {"busy": True}
     monkeypatch.setattr(openai_fine_tuning, "_training_busy", lambda: gpu["busy"])
@@ -486,3 +488,139 @@ def test_another_account_cannot_see_or_cancel_a_queued_job(queue, monkeypatch):
 
     statuses, listed = _run(flow())
     assert statuses == [404, 404] and listed == []
+
+
+def _forget_aliases(monkeypatch):
+    # What a Studio restart leaves: nothing in memory, the database as it was.
+    monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
+    monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", False)
+
+
+def test_a_started_queued_job_keeps_its_id_after_a_restart(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        _forget_aliases(monkeypatch)
+        retrieved = await client.fine_tuning.jobs.retrieve(job.id)
+        listed = await client.fine_tuning.jobs.list()
+        # The started job as a cursor pages past it rather than ending the list.
+        paged = await client.fine_tuning.jobs.list(after = job.id)
+        return job, retrieved, listed, paged
+
+    job, retrieved, listed, paged = _run(flow())
+    assert retrieved.id == job.id and retrieved.status == "validating_files"
+    assert [j.id for j in listed.data] == [job.id]
+    assert paged.data == [] and not paged.has_more
+
+
+def test_cancelling_a_job_whose_start_is_in_flight_stops_it(queue, monkeypatch):
+    client, calls, live, gpu = queue
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    start = training_routes.start_training
+
+    async def slow_start(request, current_subject, via_api_key):
+        entered.set()
+        await release.wait()
+        return await start(request, current_subject = current_subject, via_api_key = via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", slow_start)
+        gpu["busy"] = False
+        drain = asyncio.ensure_future(openai_fine_tuning._drain_once())
+        await entered.wait()
+        cancelled = await client.fine_tuning.jobs.cancel(job.id)
+        release.set()
+        await drain
+        return cancelled, await client.fine_tuning.jobs.retrieve(job.id)
+
+    cancelled, retrieved = _run(flow())
+    assert cancelled.status == retrieved.status == "cancelled"
+    assert [b.expected_job_id for b in calls["stop"]] == [live["status"].job_id]
+
+
+def test_a_queued_failure_hides_host_paths_from_an_api_key(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def refuse(request, current_subject, via_api_key):
+        message = "Dataset not found: /home/alice/.unsloth/studio/datasets/chats.jsonl"
+        return TrainingJobResponse(job_id = "", status = "error", message = message, error = message)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", refuse)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return await client.fine_tuning.jobs.list_events(job.id)
+
+    events = _run(flow())
+    assert events.data[0].level == "error" and "/home/alice" not in events.data[0].message
+
+
+def test_a_diffusion_run_winning_the_gpu_keeps_the_job_queued(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def diffusion_first(request, current_subject, via_api_key):
+        return TrainingJobResponse(
+            job_id = "",
+            status = "error",
+            message = "Diffusion training already active",
+            error = "Diffusion training already active",
+        )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", diffusion_first)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return await client.fine_tuning.jobs.retrieve(job.id)
+
+    assert _run(flow()).status == "queued"
+
+
+def test_two_creates_at_once_start_one_and_queue_the_other(queue, monkeypatch):
+    client, calls, _live, gpu = queue
+    gpu["busy"] = False
+    start = training_routes.start_training
+
+    async def start_and_take_the_gpu(request, current_subject, via_api_key):
+        await asyncio.sleep(0.01)
+        gpu["busy"] = True
+        return await start(request, current_subject = current_subject, via_api_key = via_api_key)
+
+    monkeypatch.setattr(training_routes, "start_training", start_and_take_the_gpu)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        return await asyncio.gather(_create(client, uploaded.id), _create(client, uploaded.id))
+
+    jobs = _run(flow())
+    assert sorted(j.status for j in jobs) == ["queued", "validating_files"]
+    assert len(calls["start"]) == 1
+
+
+def test_a_job_cancelled_before_it_started_does_not_hide_newer_jobs(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+        old = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.cancel(old.id)
+        gpu["busy"] = False
+        newer = await _create(client, uploaded.id)
+        listed = await client.fine_tuning.jobs.list()
+        return old, newer, listed, await client.fine_tuning.jobs.retrieve(old.id)
+
+    old, newer, listed, retrieved = _run(flow())
+    assert listed.data[0].id == newer.id
+    assert retrieved.status == "cancelled"
