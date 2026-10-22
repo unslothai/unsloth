@@ -1165,7 +1165,7 @@ def _mlx_offload_request(knobs, plan):
 
         def decide(model_dir):
             *fractions, step = plan(model_dir, tuple(wanted.values()))
-            # A fallback load decides again on the fractions already taken, which plan no step.
+            # A repeat call sees fractions, not "auto", and plans no step: keep the first one.
             if not offload["decided"]:
                 offload["prefill_step"] = step
             wanted.update(zip(wanted, fractions))
