@@ -480,11 +480,8 @@ fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
     autostart_enabled(&app)
 }
 
-/// The login entry as auto-launch should write it on Windows.
-///
-/// auto-launch 0.6 defaults to `Dynamic`, which writes the Run value to HKLM whenever the app runs
-/// elevated: every account then starts it, and the HKCU-only readers and quoting here never see
-/// it. 0.5 always wrote HKCU, and `CurrentUser` keeps it that way.
+/// auto-launch 0.6 defaults to `Dynamic`, which writes HKLM when elevated (every account starts
+/// it, and the HKCU-only readers here miss it); `CurrentUser` keeps 0.5's HKCU behaviour.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_autostart_builder(name: &str, exe: &str) -> auto_launch::AutoLaunchBuilder {
     let mut builder = auto_launch::AutoLaunchBuilder::new();
@@ -496,9 +493,7 @@ fn windows_autostart_builder(name: &str, exe: &str) -> auto_launch::AutoLaunchBu
     builder
 }
 
-/// Write the per-user Run value. An elevated run under an older build may have left the value in
-/// HKLM, which would start a second copy at login: disable() removes it when allowed and skips it
-/// otherwise.
+/// disable() first clears a value an older elevated build left in HKLM (a second copy at login).
 #[cfg(windows)]
 fn enable_windows_autostart(name: &str, exe: &str) -> Result<(), String> {
     windows_autostart_builder(name, exe)
@@ -510,9 +505,8 @@ fn enable_windows_autostart(name: &str, exe: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Write the login entry. The plugin builds its launcher without a Windows mode, so Windows writes
-/// through `windows_autostart_builder` instead; disable still goes through the plugin, which
-/// removes the value from both hives.
+/// The plugin sets no Windows mode, so Windows enables via `windows_autostart_builder`; disable
+/// stays on the plugin, which clears both hives.
 fn enable_autostart_entry(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -2992,7 +2986,6 @@ media-src 'self' https:"
         assert!(!startup_approved_disabled(&[]));
     }
 
-    /// An elevated launch must still write the per-user Run value the readers above check.
     #[test]
     fn windows_autostart_entry_is_written_for_the_current_user() {
         let exe = r"C:\Users\A B\AppData\Local\Unsloth\unsloth.exe";
@@ -3001,7 +2994,6 @@ media-src 'self' https:"
             builder.windows_enable_mode,
             auto_launch::WindowsEnableMode::CurrentUser
         );
-        // Same entry the plugin writes, so the Run value is still quoted and launched hidden.
         assert_eq!(builder.app_name.as_deref(), Some("Unsloth"));
         assert_eq!(builder.app_path.as_deref(), Some(exe));
         assert_eq!(builder.args, Some(vec!["--hidden".to_string()]));
@@ -3011,8 +3003,7 @@ media-src 'self' https:"
         );
     }
 
-    /// Against the real registry (CI runners are elevated): the dependency default writes HKLM when
-    /// elevated, the per-user path writes HKCU only and clears a value an older build left in HKLM.
+    /// Real registry: `Dynamic` writes HKLM when elevated; ours writes HKCU only and clears HKLM.
     #[cfg(windows)]
     #[test]
     fn windows_enable_writes_hkcu_and_clears_a_legacy_hklm_value() {
@@ -3035,7 +3026,6 @@ media-src 'self' https:"
             assert!(elevated, "CI runner is not elevated");
         }
         if elevated {
-            // Control: the 0.6 default (`Dynamic`) lands in HKLM, the value this change avoids.
             let dynamic = auto_launch::AutoLaunchBuilder::new()
                 .set_app_name(&name)
                 .set_app_path(&exe)
