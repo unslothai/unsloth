@@ -2553,7 +2553,11 @@ def test_windows_arm64_adreno_stays_on_cpu_unless_vulkan_is_requested(monkeypatc
 
 @pytest.mark.parametrize(
     "env, flag",
-    [({"UNSLOTH_LLAMA_CPP_BACKEND": "vulkan"}, None), ({"UNSLOTH_FORCE_VULKAN": "1"}, None), ({}, "vulkan")],
+    [
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "vulkan"}, None),
+        ({"UNSLOTH_FORCE_VULKAN": "1"}, None),
+        ({}, "vulkan"),
+    ],
 )
 def test_windows_arm64_adreno_takes_vulkan_when_requested(monkeypatch, env, flag):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)

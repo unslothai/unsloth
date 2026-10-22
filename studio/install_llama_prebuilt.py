@@ -10543,7 +10543,12 @@ class _VulkanGpuName(str):
     vendor = None
     driver = None
 
-    def __new__(cls, name, vendor = None, driver = None):
+    def __new__(
+        cls,
+        name,
+        vendor = None,
+        driver = None,
+    ):
         self = super().__new__(cls, name)
         self.vendor = vendor
         self.driver = driver
@@ -10586,7 +10591,9 @@ def _vulkan_gpu_devices() -> tuple[str, ...]:
                 and device["driver"] not in _VULKAN_SKIPPED_DRIVER_IDS
                 and device["vendor"] not in hidden_vendors
             ):
-                names.append(_VulkanGpuName(str(device["name"]), device["vendor"], device["driver"]))
+                names.append(
+                    _VulkanGpuName(str(device["name"]), device["vendor"], device["driver"])
+                )
         except (KeyError, TypeError):
             continue
     return tuple(names)
@@ -10595,7 +10602,9 @@ def _vulkan_gpu_devices() -> tuple[str, ...]:
 def _vulkan_auto_gpu_devices() -> tuple[str, ...]:
     """The GPUs the automatic route may pick: every accepted one except opt-in-only drivers."""
     devices = _vulkan_gpu_devices()
-    auto = tuple(d for d in devices if getattr(d, "driver", None) not in _VULKAN_AUTO_OPT_IN_DRIVER_IDS)
+    auto = tuple(
+        d for d in devices if getattr(d, "driver", None) not in _VULKAN_AUTO_OPT_IN_DRIVER_IDS
+    )
     if devices and not auto:
         log(
             f"Vulkan GPU found ({', '.join(dict.fromkeys(devices))}) but llama.cpp's Vulkan backend "
