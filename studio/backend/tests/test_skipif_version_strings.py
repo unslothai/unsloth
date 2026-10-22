@@ -10,6 +10,7 @@ Wrap them in ``bool()`` or compare with ``is not None``."""
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -18,6 +19,11 @@ import pytest
 
 _TESTS = Path(__file__).resolve().parent
 _VERSION_ATTRS = ("hip", "cuda")
+# Only the spellings the scanner resolves: <x>.version.hip / .cuda, ``from torch import version`` (parenthesised or
+# aliased too) and ``from torch.version import ...``. Checked before parsing so ~1,800 modules stay cheap.
+_CANDIDATE = re.compile(
+    r"version\.(?:hip|cuda)\b|from\s+torch\s+import\s*\(?[\w\s,]*\bversion\b|from\s+torch\.version\s+import"
+)
 
 
 def _imported_names(tree: ast.AST, module: str, name: str) -> set[str]:
@@ -170,11 +176,23 @@ def test_ternaries_from_imports_and_marker_semantics(tmp_path, monkeypatch):
     assert "test_more.py:13: hv" in str(offenders)  # from torch.version import hip
 
 
+def test_prefilter_keeps_every_resolved_spelling():
+    for text in (
+        "torch.version.hip",
+        "t.version.cuda",
+        "from torch import version as v",
+        "from torch import (\n    cuda,\n    version,\n)",
+        "from torch.version import hip",
+    ):
+        assert _CANDIDATE.search(text), text
+    assert not _CANDIDATE.search("from packaging import version\nversion.parse('1')")
+
+
 def test_no_skip_condition_can_evaluate_to_a_version_string():
     offenders = []
     for path in sorted(_TESTS.rglob("*.py")):
         source = path.read_text(encoding = "utf-8", errors = "replace")
-        if "version" not in source:
+        if not ("skipif" in source or "xfail" in source) or not _CANDIDATE.search(source):
             continue
         try:
             with warnings.catch_warnings():
