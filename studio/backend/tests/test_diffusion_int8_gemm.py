@@ -993,11 +993,17 @@ def test_every_shipped_rotq_k_tile_is_bit_exact(forced):
 
 
 def test_m_buckets_and_plan_lookup():
-    assert g8.m_bucket(17) == 0 and g8.m_bucket(g8._SHAPE_MIN_M - 1) == 0
-    assert g8.m_bucket(g8._SHAPE_MIN_M) == 1 and g8.m_bucket(2047) == 1
-    assert g8.m_bucket(2048) == 2 and g8.m_bucket(1 << 20) == 2
+    assert g8.m_bucket(17) == 0 and g8.m_bucket(383) == 0  # text streams
+    assert g8.m_bucket(384) == 1 and g8.m_bucket(g8._SHAPE_MIN_M - 1) == 1
+    assert g8.m_bucket(g8._SHAPE_MIN_M) == 2 and g8.m_bucket(2047) == 2
+    assert g8.m_bucket(2048) == 3 and g8.m_bucket(1 << 20) == 3
+    # every bucket is timed at rows inside it
+    assert all(g8.m_bucket(rep) == b for b, (_hi, rep) in enumerate(g8._M_BUCKETS))
     tile = (64, 128, 128, 8, 4, 4)
-    g8._DEVICE_PLAN[0] = {(1024, 512, 0): g8._CUBLAS, (1024, 512, 2): tile}
+    g8._DEVICE_PLAN[0] = {
+        (1024, 512, g8.m_bucket(512)): g8._CUBLAS,
+        (1024, 512, g8.m_bucket(4096)): tile,
+    }
     assert not g8.fused_for(0, 512, 1024, 512)
     assert g8.fused_for(0, 4096, 1024, 512) and g8.planned(0, 4096, 1024, 512) == tile
     assert (
@@ -1015,16 +1021,18 @@ def test_latency_gate_op_body_honours_the_plan(monkeypatch):
     a = torch.zeros(4096, 1024, dtype = torch.int8)
     w = torch.zeros(2048, 1024, dtype = torch.int8)
     xs, ws = torch.ones(4096), torch.ones(2048)
-    g8._DEVICE_PLAN[None] = {(2048, 1024, 2): alt}
+    big = g8.m_bucket(4096)
+    g8._DEVICE_PLAN[None] = {(2048, 1024, big): alt}
     assert g8._run(a, w, xs, ws, None) == "fused" and used == [alt]
-    g8._DEVICE_PLAN[None] = {(2048, 1024, 2): g8._CUBLAS}
+    g8._DEVICE_PLAN[None] = {(2048, 1024, big): g8._CUBLAS}
     assert g8._run(a, w, xs, ws, None) == "stock" and used == [alt]
 
 
 def test_latency_gate_alt_tile_launch_failure_falls_back_to_the_default(monkeypatch):
     default, alt = (128, 128, 64, 8, 4, 4), (64, 128, 128, 8, 4, 4)
     g8._DEVICE_CFG[None] = default
-    g8._DEVICE_PLAN[None] = {(2048, 1024, 2): alt, (2048, 1024, 0): g8._CUBLAS}
+    big = g8.m_bucket(4096)
+    g8._DEVICE_PLAN[None] = {(2048, 1024, big): alt, (2048, 1024, 0): g8._CUBLAS}
     used = []
 
     def launch(a, w, xs, ws, bias, cfg):
@@ -1038,7 +1046,7 @@ def test_latency_gate_alt_tile_launch_failure_falls_back_to_the_default(monkeypa
     w = torch.zeros(2048, 1024, dtype = torch.int8)
     assert g8._run(a, w, torch.ones(4096), torch.ones(2048), None) == "fused"
     assert used == [alt, default] and g8._DEVICE_CFG[None] == default
-    assert g8._DEVICE_PLAN[None] == {(2048, 1024, 2): default, (2048, 1024, 0): g8._CUBLAS}
+    assert g8._DEVICE_PLAN[None] == {(2048, 1024, big): default, (2048, 1024, 0): g8._CUBLAS}
 
 
 def _fake_tune_env(monkeypatch, tmp_path, ms):
@@ -1062,11 +1070,14 @@ def test_latency_gate_picks_cublas_where_the_tile_regressed_and_persists(monkeyp
     calls = _fake_tune_env(monkeypatch, tmp_path, ms)
     plan = g8.tune(0, {(18432, 3072)})
     assert plan == {(18432, 3072, b): g8._CUBLAS for b in range(len(g8._M_BUCKETS))}
-    assert len(calls) == 3 and set(calls[0][3]) >= {default, *g8._ALT_TILES[(8, 0)]}
+    # per bucket: the static tile against cuBLAS, then (it regressed) the replacements
+    nb = len(g8._M_BUCKETS)
+    assert len(calls) == 2 * nb and calls[0][3] == (default,)
+    assert set(calls[1][3]) == set(g8._ALT_TILES[(8, 0)])
     files = list(tmp_path.glob("tune_*.json"))
     assert len(files) == 1
     g8._DEVICE_PLAN.clear()
-    assert g8.tune(0, {(18432, 3072)}) == plan and len(calls) == 3
+    assert g8.tune(0, {(18432, 3072)}) == plan and len(calls) == 2 * nb
 
 
 def test_latency_gate_prefers_the_fused_kernel_unless_cublas_wins(monkeypatch, tmp_path):
@@ -1124,16 +1135,17 @@ def test_latency_gate_retimes_on_a_new_toolchain_and_ignores_corrupt_files(monke
     calls = _fake_tune_env(
         monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}}
     )
+    nb = len(g8._M_BUCKETS)  # one timing per bucket: the static tile is healthy
     g8.tune(0, {(4096, 4096)})
-    assert len(calls) == 3
+    assert len(calls) == nb
     g8._DEVICE_PLAN.clear()
     monkeypatch.setattr(g8, "toolchain_key", lambda index: "test-toolchain-triton-next")
     g8.tune(0, {(4096, 4096)})
-    assert len(calls) == 6
+    assert len(calls) == 2 * nb
     for f in tmp_path.glob("tune_*.json"):
         f.write_text("{not json")
     g8._DEVICE_PLAN.clear()
-    assert set(g8.tune(0, {(4096, 4096)}).values()) == {default} and len(calls) == 9
+    assert set(g8.tune(0, {(4096, 4096)}).values()) == {default} and len(calls) == 3 * nb
 
 
 def test_latency_gate_alt_tile_needs_the_full_margin_over_the_static_tile(monkeypatch, tmp_path):
@@ -1147,15 +1159,16 @@ def test_latency_gate_alt_tile_needs_the_full_margin_over_the_static_tile(monkey
 def test_latency_gate_tiles_kill_switch_times_only_the_default(monkeypatch, tmp_path):
     default = g8._ARCH_CONFIG[(8, 0)]
     alt = g8._ALT_TILES[(8, 0)][0]
-    ms = lambda tiles: {g8._CUBLAS: 2.0, **{t: (0.5 if t == alt else 1.0) for t in tiles}}
+    # the default regressed (3.0 vs cuBLAS 2.0), so with tiles on the alt replaces it
+    ms = lambda tiles: {g8._CUBLAS: 2.0, **{t: (0.5 if t == alt else 3.0) for t in tiles}}
     calls = _fake_tune_env(monkeypatch, tmp_path, ms)
     assert set(g8.tune(0, {(18432, 3072)}).values()) == {alt}
     g8._DEVICE_PLAN.clear()
     monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
     del calls[:]
     assert set(g8.tune(0, {(18432, 3072)}).values()) == {
-        default
-    }  # not the alt cached with tiles on
+        g8._CUBLAS
+    }  # not the alt cached with tiles on: the default against cuBLAS only
     assert calls and all(c[3] == (default,) for c in calls)
 
 
@@ -1358,6 +1371,34 @@ def test_latency_gate_timing_leaves_the_cuda_rng_alone():
     assert torch.equal(torch.cuda.get_rng_state(), before)
 
 
+@needs_cuda
+def test_latency_gate_times_gpu_time_not_launch_overhead(monkeypatch):
+    """Timed bare, a few small GEMMs are host-bound and favour cuBLAS's cheaper launch; each round is queued behind a
+    GPU spin so the host stays ahead. A host-heavy launch of a tiny kernel must time near its GPU cost."""
+    import time
+
+    x = torch.zeros(64, device = "cuda")
+    spins = []
+    real_sleep = torch.cuda._sleep
+    monkeypatch.setattr(torch.cuda, "_sleep", lambda c: spins.append(c) or real_sleep(c))
+
+    def host_heavy():
+        time.sleep(1e-4)  # 100 us of host work per launch, far above the kernel's GPU time
+        return x.add_(1)
+
+    ms = g8._time_ms(host_heavy, iters = 10, rounds = 5)
+    assert len(spins) == 5 and all(c == g8._TIME_SPIN_CYCLES for c in spins)
+    assert ms < 0.08  # bare it would read >= 0.1 ms per call
+
+
+@needs_cuda
+def test_latency_gate_measure_times_every_arm():
+    index = torch.cuda.current_device()
+    tile = g8._FALLBACK_CONFIG
+    ms = g8._measure(index, 256, 256, 512, (tile,))
+    assert set(ms) == {g8._CUBLAS, tile} and all(v > 0 for v in ms.values())
+
+
 def test_latency_gate_kill_switch_skips_timing(monkeypatch):
     monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "0")
     assert not g8.autotune_enabled()
@@ -1427,7 +1468,18 @@ def test_latency_gate_linear_is_bit_identical_eager_and_compiled(
             1.30,
             "new",
         ),  # L4 / Triton 3.8: static regressed, the 8-warp tile clearly beats cuBLAS
-        (1.00, 0.90, 1.30, "new"),  # a fused tile clearly faster than the static one and cuBLAS
+        (
+            1.00,
+            0.80,
+            1.30,
+            "static",
+        ),  # a healthy static tile stays even when another times faster (L4 / Triton 3.7: cost 3-12% s/step)
+        (
+            2.00,
+            0.80,
+            1.30,
+            "new",
+        ),  # a regressed static tile: a fused tile clearly faster than cuBLAS replaces it
     ],
 )
 def test_decide_keeps_the_status_quo_unless_beaten_clearly(static_ms, new_ms, cublas_ms, want):
@@ -1624,12 +1676,15 @@ def test_latency_gate_never_times_a_bucket_at_rows_from_another_bucket(monkeypat
     calls = _fake_tune_env(
         monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 7.8, **{t: 1.0 for t in tiles}}
     )
-    big, huge = 65536, 131072  # cap 1536 rows (bucket 1), 768 rows (bucket 0)
+    big, huge = 65536, 131072  # timed rows capped at 1536 and 768
     plan = g8.tune(0, {(big, 1024), (huge, 1024)})
-    assert plan[(big, 1024, 0)] == default and plan[(big, 1024, 1)] == default
-    assert plan[(big, 1024, 2)] == g8._CUBLAS
-    assert plan[(huge, 1024, 0)] == default
-    assert plan[(huge, 1024, 1)] == g8._CUBLAS and plan[(huge, 1024, 2)] == g8._CUBLAS
     cap = lambda n, m: max(g8._MIN_ROWS, min(m, g8._TUNE_MAX_BYTES // (4 * n)))
+    timed = 0
+    for n in (big, huge):
+        kept = [g8.m_bucket(cap(n, rep)) == b for b, (_hi, rep) in enumerate(g8._M_BUCKETS)]
+        assert any(kept) and not all(kept)  # both cases occur for each shape
+        for b, ok in enumerate(kept):
+            assert plan[(n, 1024, b)] == (default if ok else g8._CUBLAS)
+        timed += sum(kept)
     assert all(g8.m_bucket(cap(n, m)) == g8.m_bucket(m) for n, _k, m, _t in calls)
-    assert len(calls) == 3
+    assert len(calls) == timed

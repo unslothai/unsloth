@@ -110,12 +110,13 @@ _ALT_TILES: dict = {
     (8, 9): ((128, 128, 128, 8, 8, 3), (128, 128, 64, 8, 8, 4), (128, 128, 64, 8, 4, 4)),
     (12, 0): ((128, 128, 64, 8, 4, 3), (128, 128, 64, 8, 8, 4)),
 }
-# (upper bound exclusive, M timed); the first bound is _SHAPE_MIN_M so tile_for's switch never falls inside a bucket
-_M_BUCKETS = ((1024, 512), (2048, 1024), (None, 4096))
+# (upper bound exclusive, M timed); a bound at _SHAPE_MIN_M so tile_for's switch never falls inside a bucket. Text
+# streams (77-512 tokens) get their own: cuBLAS wins M = 256 where M = 512 is a tie (Qwen-Image text, 2-3% s/step).
+_M_BUCKETS = ((384, 256), (_SHAPE_MIN_M, 512), (2048, 1024), (None, 4096))
 # Replacing the status quo needs a clear win: near-tie new tiles ran 1.7-3% slower end to end than cuBLAS (A100).
 _CUBLAS_MARGIN = 1.1
 _TUNE_MAX_BYTES = 384 << 20
-_TUNE_VERSION = 2
+_TUNE_VERSION = 3
 _CUBLAS = "cublas"
 # device -> {(n, k, bucket): tile or _CUBLAS}
 _DEVICE_PLAN: dict = {}
@@ -1264,24 +1265,37 @@ def _yielded(transformer: Any, index: Any) -> set:
         return set()
 
 
+# GPU cycles to spin before each timed round (~2-5 ms): long enough for the host to queue the round's launches.
+_TIME_SPIN_CYCLES = 5_000_000
+
+
 def _time_ms(
     fn: Any,
-    iters: int = 3,
-    rounds: int = 3,
+    iters: int = 10,
+    rounds: int = 5,
+    give_up_ms: Optional[float] = None,
 ) -> float:
+    """Median GPU ms per call of ``fn``. Each round is queued behind a short GPU spin, so the launches run back to
+    back as the default CUDA-graph forward runs them: timed bare, a few small GEMMs are host-bound (a Python Triton
+    launch costs more than ``_int_mm``'s), which handed small-M buckets to cuBLAS where the tile was 2x faster."""
     import torch
 
     fn()
     torch.cuda.synchronize()
+    spin = getattr(torch.cuda, "_sleep", None)
     best = []
     for _ in range(rounds):
         start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+        if spin is not None:
+            spin(_TIME_SPIN_CYCLES)
         start.record()
         for _ in range(iters):
             fn()
         end.record()
         end.synchronize()
         best.append(start.elapsed_time(end) / iters)
+        if give_up_ms is not None and best[0] > give_up_ms:
+            return best[0]  # clearly slower than an arm already timed: no need for its median
     best.sort()
     return best[len(best) // 2]
 
@@ -1310,12 +1324,22 @@ def _measure(index: int, n: int, k: int, m: int, tiles: tuple) -> dict:
         def cublas():
             return torch._int_mm(a, w.t()).to(torch.bfloat16)
 
-        out[_CUBLAS] = _time_ms(cublas)
+        arms = {_CUBLAS: cublas}
         for tile in tiles:
-            try:
-                out[tile] = _time_ms(lambda tile = tile: _launch(a, w, xs, ws, None, tile))
-            except Exception:  # noqa: BLE001 - out of shared memory on this part, ...
-                continue
+            arms[tile] = lambda tile = tile: _launch(a, w, xs, ws, None, tile)
+        # two interleaved passes, the faster kept: the first timings of a load can run before the clocks settle
+        for _ in range(2):
+            for arm, fn in list(arms.items()):
+                done = [v for v in out.values()]
+                try:
+                    ms = _time_ms(fn, give_up_ms = 2 * min(done) if done else None)
+                except Exception:  # noqa: BLE001 - out of shared memory on this part, ...
+                    if arm == _CUBLAS:
+                        raise  # no reference arm: tune() keeps the static tile for this shape
+                    del arms[arm]
+                    out.pop(arm, None)
+                    continue
+                out[arm] = min(out.get(arm, ms), ms)
         del a, w, xs, ws
     return out
 
@@ -1328,14 +1352,17 @@ def _probed(index: int, tile: tuple) -> bool:
 
 
 def decide(static: Any, fused_ms: dict, cublas_ms: float) -> Any:
-    """The tile or ``_CUBLAS`` for one bucket from its timings (ms per arm); ``static`` is the status quo."""
+    """The tile or ``_CUBLAS`` for one bucket from its timings (ms per arm); ``static`` is the status quo.
+
+    A static tile cuBLAS does not clearly beat is kept: another tile winning a short timing is not a win end to end
+    (L4 on Triton 3.7: alternative tiles that timed faster cost 3-12% s/step, the per-shape-tile note above). Only a
+    regressed static tile (Triton 3.8 on sm80 / sm89) is replaced, by cuBLAS or a tile clearly faster than cuBLAS."""
+    if static in fused_ms and cublas_ms * _CUBLAS_MARGIN >= fused_ms[static]:
+        return static
     fastest = min(fused_ms, key = fused_ms.get)
-    stays = static in fused_ms and cublas_ms * _CUBLAS_MARGIN >= fused_ms[static]
-    if static in fused_ms and fused_ms[fastest] * _CUBLAS_MARGIN > fused_ms[static]:
-        return static if stays else _CUBLAS
     if fused_ms[fastest] * _CUBLAS_MARGIN <= cublas_ms:
-        return fastest  # a new tile, clearly faster than both the static tile and cuBLAS
-    return static if stays else _CUBLAS
+        return fastest
+    return _CUBLAS
 
 
 def tune(index: int, shapes: Any) -> dict:
@@ -1369,7 +1396,16 @@ def tune(index: int, shapes: Any) -> dict:
             if choice is None:
                 static = tile_for(index, rep_m, n, k) if tiles_enabled() else default
                 tiles = tuple(dict.fromkeys((static, default, *alts)))
-                ms = _measure(index, n, k, rep_m, tiles)
+                ms = _measure(index, n, k, rep_m, (static,))
+                rest = tuple(t for t in tiles if t != static)
+                if (
+                    rest
+                    and decide(static, {t: v for t, v in ms.items() if t != _CUBLAS}, ms[_CUBLAS])
+                    != static
+                ):
+                    # static regressed: time the replacements too (cuBLAS again, the faster reading kept)
+                    more = _measure(index, n, k, rep_m, rest)
+                    ms = {**more, **ms, _CUBLAS: min(ms[_CUBLAS], more[_CUBLAS])}
                 timings[f"{n},{k},{b}"] = {str(t): round(v, 4) for t, v in ms.items()}
                 fused_ms = {t: v for t, v in ms.items() if t != _CUBLAS}
                 if not fused_ms:
