@@ -625,6 +625,8 @@ export const ar = {
     temporaryChatDescription: "لن تظهر هذه الدردشة في سجلك ولن تُحفظ. ستختفي عند مغادرتك.",
   },
   picker: {
+    unifiedTightFit: "ملاءمة محدودة",
+    unifiedTightFitHint: "قد يُحمَّل بسياق أقصر أو يعمل بشكل أبطأ على جهاز Mac هذا.",
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
     retry: "إعادة المحاولة",

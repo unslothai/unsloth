@@ -626,6 +626,8 @@ export const fr = {
       "Ce chat n’apparaîtra pas dans votre historique et n’est pas enregistré. Il disparaît quand vous le quittez.",
   },
   picker: {
+    unifiedTightFit: "Juste",
+    unifiedTightFitHint: "Peut se charger avec un contexte plus court ou être plus lent sur ce Mac.",
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
     retry: "Réessayer",

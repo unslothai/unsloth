@@ -679,6 +679,8 @@ export const en = {
       "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
+    unifiedTightFit: "Tight fit",
+    unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",

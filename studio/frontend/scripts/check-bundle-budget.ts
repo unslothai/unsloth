@@ -381,8 +381,10 @@ export const BUDGET = {
   // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
   // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_081_018,
-  rawBytes: 6_908_086,
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_081_484,
+  rawBytes: 6_909_520,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
