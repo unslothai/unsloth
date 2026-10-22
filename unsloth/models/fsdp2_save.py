@@ -255,9 +255,12 @@ def offload_all_but_4bit_merge_operands(model):
     """`offload_to_cpu` for a merged 4-bit save: PEFT merges a LoRA layer where its packed 4-bit base
     weight stays (its GPU), so only the adapter weights of those layers stay there too. Everything
     else (embeddings, unquantized towers, LoRA on unquantized layers with their base) goes to the CPU.
+    With `lora_bias = True` the merge also adds lora_B's bias into the base layer's bias, so that bias
+    stays with them (a CPU base bias plus a GPU lora_B bias raises a device mismatch).
     Selected by parameter name, not identity: `fsdp2_gathered` reshards first, and a parameter an eval
     forward left unsharded is a different object from the DTensor the gather then sees."""
     prefixes = []
+    exact = set()
     modules = model.named_modules() if isinstance(model, torch.nn.Module) else ()
     for module_name, module in modules:
         base_layer = getattr(module, "base_layer", None)
@@ -273,8 +276,13 @@ def offload_all_but_4bit_merge_operands(model):
         ):
             if isinstance(getattr(module, attr, None), torch.nn.Module):
                 prefixes.append(f"{prefix}{attr}.")
+        lora_B = getattr(module, "lora_B", None)
+        if isinstance(lora_B, torch.nn.Module) and any(
+            getattr(adapter, "bias", None) is not None for adapter in lora_B.children()
+        ):
+            exact.add(f"{prefix}base_layer.bias")
     prefixes = tuple(prefixes)
-    return lambda name, param: not name.startswith(prefixes)
+    return lambda name, param: not (name in exact or name.startswith(prefixes))
 
 
 def fsdp2_gather_active():
