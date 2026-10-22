@@ -400,12 +400,16 @@ test("each fit verdict is an info mark that explains itself", () => {
     ),
   );
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
-  assert.ok(PICKERS.includes("`Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`"));
   assert.ok(
-    !PICKERS.includes("GB VRAM (GPU:"),
+    PICKERS.includes(
+      "`Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`",
+    ),
+  );
+  assert.ok(
+    !PICKERS.includes("VRAM (GPU:"),
     "no VRAM wording on an overage",
   );
-  assert.ok(PICKERS.includes("GB VRAM (tight fit on"));
+  assert.ok(PICKERS.includes("} VRAM (tight fit on ${formatGiB(gpuGb)})"));
   assert.ok(
     PICKERS.includes(
       'return status === "partial" || status === "ram" || status === "oom" || status === "exceeds";',

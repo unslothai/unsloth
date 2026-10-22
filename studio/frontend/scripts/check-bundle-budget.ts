@@ -377,10 +377,12 @@ export const BUDGET = {
   // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
   // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
-  // at b172be42d: 6,898,264 B raw / 2,078,277 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_078_477,
-  rawBytes: 6_898_464,
+  // at 870f37741: 6,749.0 KB raw / 2,032.9 KB transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_081_900,
+  rawBytes: 6_911_200,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
