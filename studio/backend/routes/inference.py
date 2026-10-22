@@ -9359,13 +9359,17 @@ def _reap_dead_workers(slots: list) -> None:
         model_slots.in_slot(slot, lambda: reap_dead_worker(_peek_inference_backend()))
 
 
-async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
-    """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
+async def _reap_exited_workers() -> None:
     # A killed worker keeps its model named, so status, routing and auto-switch would keep picking
     # it. is_alive() is a non-blocking waitpid; only the reap leaves the loop.
     exited = [slot for slot in (None, *model_slots.slots) if _worker_exited(slot)]
     if exited:
         await asyncio.to_thread(_reap_dead_workers, exited)
+
+
+async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
+    """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
+    await _reap_exited_workers()
     return await model_slots.route(requested, _loaded_satisfies)
 
 
@@ -12924,6 +12928,8 @@ async def load_model_for_preview(
                         detail = "A transformers installation is in progress. Retry when it completes.",
                         headers = {"Retry-After": "10"},
                     )
+                # A dead worker's name would refuse this preview as Studio-owned on every retry.
+                await _reap_exited_workers()
                 loaded = _loaded_slot_ident()
                 # Borrow the resident model when it already serves this checkpoint, matching
                 # an equivalent spelling (relative vs the resolved absolute path) via realpath
@@ -19415,6 +19421,8 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
 
+    # Before the NPU / managed-engine return: their replacement guards read the primary's name.
+    await _reap_exited_workers()
     # The NPU backend is one per process and replaces the primary, so it never takes a slot. vLLM
     # and SGLang reserve a fixed share of the GPU up front, so neither shares it with a kept model.
     if is_npu_model_path(request.model_path) or request.engine != "auto":

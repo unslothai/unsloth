@@ -194,3 +194,46 @@ def test_loading_the_same_model_again_restarts_a_killed_worker(monkeypatch, rele
         )
 
     assert calls[:1] == ["load"]
+
+
+@pytest.mark.parametrize("engine", ["vllm", "npu"])
+def test_a_managed_or_npu_load_reaps_a_killed_primary_first(monkeypatch, released, engine):
+    from core.inference import npu_backend
+    from models.inference import LoadRequest
+
+    backend = _orchestrator()
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(npu_backend, "is_npu_model_path", lambda _path: engine == "npu")
+    request = LoadRequest(model_path = "org/other", engine = "auto" if engine == "npu" else engine)
+
+    assert asyncio.run(inference_route._select_load_slot(request)) is None
+    assert backend.active_model_name is None and backend._proc is None
+
+
+def test_a_preview_of_another_checkpoint_is_not_refused_by_a_killed_worker(monkeypatch, released):
+    from fastapi import HTTPException
+
+    from core.inference import llama_keepwarm
+    from models.inference import LoadRequest
+
+    backend = _orchestrator()
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(inference_route, "_resident_npu_model", lambda: None)
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(inference_route.account_access, "require_idle_other_accounts", lambda: None)
+    # Stop at the busy check right after the ownership one: reaching it means the dead model did not refuse.
+    monkeypatch.setattr(llama_keepwarm, "other_admitted_inference_count", lambda: 1)
+    request = SimpleNamespace(scope = {"type": "http"})
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(
+            inference_route.load_model_for_preview(
+                LoadRequest(model_path = "org/other"), request, current_subject = "user"
+            )
+        )
+
+    assert "busy" in refused.value.detail
+    assert backend.active_model_name is None and backend._proc is None
