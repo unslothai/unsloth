@@ -91,21 +91,27 @@ export function completedCells(run: CompareRunState): number {
   return run.results.filter(Boolean).length;
 }
 
-/** The grid's shared recipe for its `parameters` chunk. Sampler and schedule are written whenever an axis does not
- *  vary them, so the PNG still names the scheduler its cells ran. */
+/** The grid's shared recipe for its `parameters` chunk, from the cells' requests. Sampler and schedule are written
+ *  whenever an axis does not vary them, so the PNG still names the scheduler its cells ran; a schedule a sampler
+ *  could not take (fallen back to Automatic for some cells) is not shared, so it is left out. */
 export function gridRecipeFields(
   plan: CompareGridPlan,
-  first: DiffusionGenerateRequest | null | undefined,
+  requests: ReadonlyArray<DiffusionGenerateRequest | null | undefined>,
   form: { steps: number; guidance: number; width: number; height: number; model: string | null },
 ): Array<[string, string | number | null | undefined]> {
   const varied = new Set(plan.axes.map((a) => a.def.id));
+  const sent = requests.filter((r): r is DiffusionGenerateRequest => Boolean(r));
+  const first = sent[0];
+  const shared = <K extends keyof DiffusionGenerateRequest>(key: K) =>
+    first !== undefined && sent.every((r) => r[key] === first[key]) ? first[key] : undefined;
   const fields: Array<[string, string | number | null | undefined]> = [
     ["Steps", first?.steps ?? form.steps],
   ];
   if (!varied.has("sampler")) fields.push(["Sampler", SAMPLER_LABELS[first?.sampler ?? "default"] ?? first?.sampler]);
-  if (!varied.has("schedule") && first?.schedule_type) {
-    fields.push(["Schedule type", SCHEDULE_LABELS[first.schedule_type] ?? first.schedule_type]);
-  }
+  const schedule = varied.has("schedule") ? undefined : shared("schedule_type");
+  if (schedule) fields.push(["Schedule type", SCHEDULE_LABELS[schedule] ?? schedule]);
+  const shift = varied.has("shift") ? undefined : shared("shift");
+  if (typeof shift === "number") fields.push(["Shift", shift]);
   fields.push(
     ["CFG scale", first?.guidance ?? form.guidance],
     ["Seed", first?.seed],
@@ -141,10 +147,11 @@ const AXIS_NAMES = ["X", "Y", "Z"] as const;
 export function gridParameters(
   plan: CompareGridPlan,
   ctx: CompareContext,
-  first: DiffusionGenerateRequest | null | undefined,
+  requests: ReadonlyArray<DiffusionGenerateRequest | null | undefined>,
   form: { steps: number; guidance: number; width: number; height: number; model: string | null; keepRandomSeeds: boolean },
 ): string {
-  const fields = gridRecipeFields(plan, first, form);
+  const fields = gridRecipeFields(plan, requests, form);
+  const first = requests.find(Boolean);
   const loras = gridLoraTags(ctx, first);
   if (loras.field) fields.push(["LoRAs", loras.field]);
   const axes = plan.axes

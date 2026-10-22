@@ -39,9 +39,10 @@ export interface GridLayout {
   title: TextBlock | null;
 }
 
-// Chromium / Safari canvas ceilings: either side above 16384 px, or the area above 2^28, fails to allocate.
+// Chromium / Safari refuse a canvas side above 16384 px. The area is held to a memory budget well under their 2^28
+// ceiling: 32 Mpx is 128 MiB of RGBA backing store, before the PNG encode, which mobile browsers can still allocate.
 export const MAX_CANVAS_SIDE = 16384;
-export const MAX_CANVAS_AREA = 268_435_456;
+export const MAX_CANVAS_PIXELS = 32 * 1024 * 1024;
 
 export function wrapText(text: string, maxWidth: number, fontSize: number, measure: MeasureText): string[] {
   if (!text) return [];
@@ -101,14 +102,14 @@ function layoutAt(input: GridLayoutInput, cellWidth: number, cellHeight: number,
   return { width, height, scale, fontSize, lineHeight, cellWidth, cellHeight, cells, colText, rowText, title };
 }
 
-/** Cells shrink (never grow) until the whole grid fits a browser canvas. */
+/** Cells shrink (never grow) until the whole grid fits a browser canvas and the pixel budget. */
 export function gridLayout(input: GridLayoutInput, measure: MeasureText): GridLayout {
   const full = layoutAt(input, input.cellWidth, input.cellHeight, measure, 1);
   const scale = Math.min(
     1,
     MAX_CANVAS_SIDE / full.width,
     MAX_CANVAS_SIDE / full.height,
-    Math.sqrt(MAX_CANVAS_AREA / (full.width * full.height)),
+    Math.sqrt(MAX_CANVAS_PIXELS / (full.width * full.height)),
   );
   if (scale >= 1) return full;
   // A little under, so the re-derived label bands cannot push it back over.

@@ -5231,8 +5231,9 @@ export function ImagesPage({
     const runTotal = compare ? compare.cellCount : runs;
 
     // An explicit seed near the 2**53-1 backend cap can overflow once the per-run and in-batch
-    // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work.
-    if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
+    // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work. A compare grid adds
+    // no offset (every cell runs at batch size 1 on the base seed or its Seed axis value, both already in range).
+    if (!compare && baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
       toast.error("Seed too large for this run count and batch size; use a smaller seed");
       return;
     }
@@ -5469,7 +5470,8 @@ export function ImagesPage({
   const [compareRun, setCompareRun] = useState<CompareRun | null>(null);
   const runCompare = useCallback(
     async (run: CompareRun) => {
-      if (busy !== null) return;
+      // Like Generate: the stored preset must replace the default steps / size before any request is sent.
+      if (busy !== null || !imagePresets.hydrated) return;
       compareOnce.current = run;
       setCompareRun(run);
       try {
@@ -5479,7 +5481,7 @@ export function ImagesPage({
         setCompareRun(null);
       }
     },
-    [busy, handleGenerate],
+    [busy, handleGenerate, imagePresets.hydrated],
   );
   const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
   const compareSdControls = (status as { sd_controls?: CompareSdControls | null } | null)?.sd_controls ?? null;
@@ -6878,7 +6880,7 @@ export function ImagesPage({
                 {compareAvailable && (
                   <ComparePanel
                     context={compareContext}
-                    busy={busy !== null || compareRun !== null}
+                    busy={busy !== null || compareRun !== null || !imagePresets.hydrated}
                     seedFieldEmpty={!seed.trim()}
                     modelName={status?.repo_id ?? null}
                     width={width}

@@ -142,6 +142,7 @@ export default function ComparePanel(props: ComparePanelProps) {
   const [grids, setGrids] = useState<GridResult[]>([]);
   const [open, setOpen] = useState(false);
   const mounted = useRef(true);
+  const active = useRef(false);
 
   const defs = useMemo(() => availableAxes(context), [context]);
   const effective = axes.map((a) => (defs.some((d) => d.id === a.axisId) ? a : { axisId: NOTHING, text: "" }));
@@ -167,6 +168,7 @@ export default function ComparePanel(props: ComparePanelProps) {
     });
 
   const run = async () => {
+    if (active.current) return;
     const result = planCompare(effective, context, { keepRandomSeeds: keepRandom });
     if (!result.ok) {
       toast.error(result.error);
@@ -180,39 +182,43 @@ export default function ComparePanel(props: ComparePanelProps) {
         setProgress((n) => n + 1);
       },
     };
+    active.current = true;
     setProgress(0);
     setRunning(tracked);
+    // Busy until the grid is composed too: a second run composing alongside would multiply canvas memory and race
+    // this one's result.
     try {
       await props.onRun(tracked);
-    } finally {
-      if (mounted.current) setRunning(null);
-    }
-    if (!mounted.current) return;
-    const done = state.results.filter(Boolean).length;
-    if (done === 0) return;
-    const plan = result.plan;
-    const infotext = gridParameters(plan, context, state.requests.find(Boolean), {
-      steps: props.steps,
-      guidance: props.guidance,
-      width: props.width,
-      height: props.height,
-      model: props.modelName,
-      keepRandomSeeds: keepRandom,
-    });
-    try {
-      // One Z slice at a time, for the same memory reason as the cells.
-      const made: GridResult[] = [];
-      const titles = gridTitles(plan);
-      for (let iz = 0; iz < titles.length; iz++) {
-        const grid = await composeGrid(state, iz, titles[iz], { legend, margin }, infotext);
-        if (grid) made.push(grid);
-      }
       if (!mounted.current) return;
-      setGrids(made);
-      if (made.length) setOpen(true);
-      if (done < plan.cellCount) toast.info(`Grid made from ${done} of ${plan.cellCount} cells`);
-    } catch (err) {
-      toast.error(err instanceof Error ? `Could not build the grid: ${err.message}` : "Could not build the grid");
+      const done = state.results.filter(Boolean).length;
+      if (done === 0) return;
+      const plan = result.plan;
+      const infotext = gridParameters(plan, context, state.requests, {
+        steps: props.steps,
+        guidance: props.guidance,
+        width: props.width,
+        height: props.height,
+        model: props.modelName,
+        keepRandomSeeds: keepRandom,
+      });
+      try {
+        // One Z slice at a time, for the same memory reason as the cells.
+        const made: GridResult[] = [];
+        const titles = gridTitles(plan);
+        for (let iz = 0; iz < titles.length; iz++) {
+          const grid = await composeGrid(state, iz, titles[iz], { legend, margin }, infotext);
+          if (grid) made.push(grid);
+        }
+        if (!mounted.current) return;
+        setGrids(made);
+        if (made.length) setOpen(true);
+        if (done < plan.cellCount) toast.info(`Grid made from ${done} of ${plan.cellCount} cells`);
+      } catch (err) {
+        toast.error(err instanceof Error ? `Could not build the grid: ${err.message}` : "Could not build the grid");
+      }
+    } finally {
+      active.current = false;
+      if (mounted.current) setRunning(null);
     }
   };
 
@@ -324,7 +330,7 @@ export default function ComparePanel(props: ComparePanelProps) {
                   ? `${shape} = ${count} cell${count === 1 ? "" : "s"} (limit ${MAX_COMPARE_CELLS})`
                   : preview.error}
             </p>
-            <Button type="button" size="sm" disabled={busy || !preview.ok} onClick={() => void run()}>
+            <Button type="button" size="sm" disabled={busy || running !== null || !preview.ok} onClick={() => void run()}>
               {preview.ok ? `Generate grid (${count})` : "Generate grid"}
             </Button>
           </div>

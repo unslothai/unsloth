@@ -17,7 +17,7 @@ import {
 } from "../src/features/images/compare/compare-axes.ts";
 import { createCompareRun, gridParameters, gridRecipeFields, gridTitles, sliceCells } from "../src/features/images/compare/compare-run.ts";
 import { joinAxisList, parseAxisValues, splitAxisList } from "../src/features/images/compare/compare-values.ts";
-import { drawCellsInTurn, gridInfotext, gridLayout, MAX_CANVAS_SIDE, withPngText, wrapText } from "../src/features/images/compare/compose-grid.ts";
+import { drawCellsInTurn, gridInfotext, gridLayout, MAX_CANVAS_PIXELS, MAX_CANVAS_SIDE, withPngText, wrapText } from "../src/features/images/compare/compose-grid.ts";
 import { pngTextChunks } from "../src/features/images/lib/image-metadata.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -396,7 +396,14 @@ test("grid layout shrinks cells to fit a browser canvas", () => {
   );
   assert.ok(big.scale < 1);
   assert.ok(big.width <= MAX_CANVAS_SIDE && big.height <= MAX_CANVAS_SIDE);
+  // Bounded by memory, not just the browser's 2^28 ceiling: an 8x8 grid of 2752 px cells stays under 128 MiB RGBA.
+  assert.ok(big.width * big.height <= MAX_CANVAS_PIXELS);
   assert.equal(big.cells.length, 64);
+  const labelled = gridLayout(
+    { cols: 8, rows: 8, cellWidth: 2752, cellHeight: 2752, colLabels: Array(8).fill("Steps: 20"), rowLabels: Array(8).fill("CFG: 7"), title: "Seed: 1", legend: true, margin: 16 },
+    measure,
+  );
+  assert.ok(labelled.width * labelled.height <= MAX_CANVAS_PIXELS);
 });
 
 test("the grid PNG carries an A1111-style parameters chunk the metadata reader parses", () => {
@@ -524,16 +531,36 @@ test("a lost-response recovery hands the cell its own record, matched by seed", 
 test("grid metadata names the sampler and schedule whenever no axis varies them", () => {
   const steps = plan([{ axisId: "steps", text: "10, 20" }]);
   const first = base({ sampler: "dpmpp_2m", schedule_type: "karras" });
-  const fields = Object.fromEntries(gridRecipeFields(steps, first, { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
+  const fields = Object.fromEntries(gridRecipeFields(steps, [first], { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
   assert.equal(fields.Sampler, "DPM++ 2M");
   assert.equal(fields["Schedule type"], "Karras");
   const samplers = plan([{ axisId: "sampler", text: "euler, dpmpp_2m" }]);
-  const varied = Object.fromEntries(gridRecipeFields(samplers, first, { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
+  const varied = Object.fromEntries(gridRecipeFields(samplers, [first], { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
   assert.equal("Sampler" in varied, false);
   assert.equal(varied["Schedule type"], "Karras");
-  const plain = Object.fromEntries(gridRecipeFields(steps, base(), { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
+  const plain = Object.fromEntries(gridRecipeFields(steps, [base()], { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
   assert.equal(plain.Sampler, "Model default");
   assert.equal("Schedule type" in plain, false);
+});
+
+test("grid metadata writes a schedule or shift only when every cell ran it", () => {
+  const form = { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" };
+  // Euler a takes no Karras: its cell fell back to Automatic, so Karras is not the grid's schedule.
+  const samplers = plan([{ axisId: "sampler", text: "euler, euler_a" }]);
+  const mixed = Object.fromEntries(
+    gridRecipeFields(samplers, [base({ sampler: "euler", schedule_type: "karras" }), base({ sampler: "euler_a" })], form),
+  );
+  assert.equal("Schedule type" in mixed, false);
+  const same = Object.fromEntries(
+    gridRecipeFields(samplers, [base({ sampler: "euler", schedule_type: "karras" }), null, base({ sampler: "euler_a", schedule_type: "karras" })], form),
+  );
+  assert.equal(same["Schedule type"], "Karras");
+  // A custom static shift every cell shares survives; a Shift axis keeps it out of the shared fields.
+  const steps = plan([{ axisId: "steps", text: "10, 20" }]);
+  const shifted = Object.fromEntries(gridRecipeFields(steps, [base({ shift: 3 }), base({ shift: 3, steps: 20 })], form));
+  assert.equal(shifted.Shift, 3);
+  const none = Object.fromEntries(gridRecipeFields(steps, [base(), base({ steps: 20 })], form));
+  assert.equal("Shift" in none, false);
 });
 
 test("grid cells are decoded and drawn one at a time; missing and failed cells keep the placeholder", async () => {
@@ -599,14 +626,14 @@ test("grid parameters: LoRA tags at the first cell's weights, negative prompt wh
   const p = plan([{ axisId: "guidance", text: "1, 7" }, { axisId: "steps", text: "4, 8" }], ctx);
   const first = buildCellRequest(p, p.order[0], base({ prompt: "a fox", negative_prompt: undefined, guidance: 1, loras: [{ id: "krea/Krea-2-LoRA-retro", weight: 0.8 }, { id: "hub:odd/id", weight: 1 }] }), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false });
   assert.equal(first.negative_prompt, undefined, "the first cell runs at CFG 1 without the negative prompt");
-  const info = gridParameters(p, ctx, first, { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false });
+  const info = gridParameters(p, ctx, [first], { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false });
   const lines = info.split("\n");
   assert.equal(lines[0], "a fox <lora:krea/Krea-2-LoRA-retro:0.8>");
   assert.equal(lines[1], "Negative prompt: blurry");
   assert.match(lines[2], /LoRAs: "hub:odd\/id: 1"/);
   // No cell engages it: not recorded.
   const flat = plan([{ axisId: "steps", text: "4, 8" }], ctx);
-  assert.doesNotMatch(gridParameters(flat, ctx, first, { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false }), /Negative prompt/);
+  assert.doesNotMatch(gridParameters(flat, ctx, [first], { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false }), /Negative prompt/);
 });
 
 test("a lost response keeps the seed the compare cell was sent for Reuse last seed", () => {
@@ -617,4 +644,16 @@ test("a lost response keeps the seed the compare cell was sent for Reuse last se
   assert.equal(run.sentSeed(0), undefined);
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /setSessionSeed\(compare\?\.sentSeed\(i\) \?\? runBaseSeed\)/);
+});
+
+test("compare wiring: busy through composition, gated on preset hydration, no batch offset seed guard", () => {
+  const panel = readSrc("features/images/compare/compare-panel.tsx");
+  // `running` clears only in the finally that also wraps composition, and the button honours it.
+  const body = panel.slice(panel.indexOf("const run = async"), panel.indexOf("const download ="));
+  assert.ok(body.indexOf("composeGrid(") < body.indexOf("setRunning(null)"));
+  assert.match(panel, /disabled=\{busy \|\| running !== null \|\| !preview\.ok\}/);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /busy=\{busy !== null \|\| compareRun !== null \|\| !imagePresets\.hydrated\}/);
+  assert.match(page, /if \(busy !== null \|\| !imagePresets\.hydrated\) return;\n\s*compareOnce\.current = run;/);
+  assert.match(page, /if \(!compare && baseSeed > Number\.MAX_SAFE_INTEGER - \(runs \* batchSize - 1\)\)/);
 });
