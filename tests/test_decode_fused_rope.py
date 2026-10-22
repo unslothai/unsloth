@@ -20,7 +20,12 @@ SHAPES = [(1, 16, 8, 128), (4, 16, 8, 128), (8, 32, 8, 64), (3, 14, 2, 64), (5, 
 
 
 class _Norm(torch.nn.Module):
-    def __init__(self, dim, dtype, eps = 1e-6):
+    def __init__(
+        self,
+        dim,
+        dtype,
+        eps = 1e-6,
+    ):
         super().__init__()
         w = 1 + 0.1 * torch.randn(dim, device = "cuda", dtype = dtype)
         self.weight = torch.nn.Parameter(w, requires_grad = False)
@@ -68,7 +73,11 @@ def _oracle_rope(X, cos, sin, pos):
 
 def _oracle_norm(norm, X):
     X = X.double()
-    return X * torch.rsqrt(X.square().mean(-1, keepdim = True) + norm.variance_epsilon) * norm.weight.double()
+    return (
+        X
+        * torch.rsqrt(X.square().mean(-1, keepdim = True) + norm.variance_epsilon)
+        * norm.weight.double()
+    )
 
 
 def _err(a, b):
@@ -85,7 +94,10 @@ def test_decode_rope_inplace_matches_unfused(dtype, shape):
     qbuf = 3 * torch.randn(bsz, 1, nq * d, device = "cuda", dtype = dtype)
     kbuf = 3 * torch.randn(bsz, 1, nkv * d, device = "cuda", dtype = dtype)
     view = lambda b, n: b.view(bsz, 1, n, d).transpose(1, 2)  # noqa: E731
-    Qo, Ko = _oracle_rope(view(qbuf, nq).double(), cos, sin, pos), _oracle_rope(view(kbuf, nkv).double(), cos, sin, pos)
+    Qo, Ko = (
+        _oracle_rope(view(qbuf, nq).double(), cos, sin, pos),
+        _oracle_rope(view(kbuf, nkv).double(), cos, sin, pos),
+    )
     Qu, Ku = _unfused_rope(view(qbuf, nq).clone(), view(kbuf, nkv).clone(), cos, sin, pos)
     qf, kf = qbuf.clone(), kbuf.clone()
     assert RE.decode_rope_inplace(view(qf, nq), view(kf, nkv), cos, sin, pos)
@@ -109,7 +121,11 @@ def test_decode_qk_norm_rope_matches_unfused(dtype, shape):
     Qo = _oracle_rope(_oracle_norm(qn, Q).transpose(1, 2), cos, sin, pos)
     Ko = _oracle_rope(_oracle_norm(kn, K).transpose(1, 2), cos, sin, pos)
     Qu, Ku = _unfused_rope(
-        _unfused_norm(qn, Q.clone()).transpose(1, 2), _unfused_norm(kn, K.clone()).transpose(1, 2), cos, sin, pos
+        _unfused_norm(qn, Q.clone()).transpose(1, 2),
+        _unfused_norm(kn, K.clone()).transpose(1, 2),
+        cos,
+        sin,
+        pos,
     )
     out = QK.decode_qk_norm_rope(qn, kn, Q, K, cos, sin, pos)
     assert out is not None
@@ -129,10 +145,14 @@ def test_decode_fallbacks():
     # a float32 table: the unfused path multiplies in Q's dtype, so it keeps that path
     assert not RE.decode_rope_inplace(q, k, cos.float(), sin.float(), p)
     assert torch.equal(q, before)
-    assert not RE.decode_rope_inplace(torch.randn(2, 4, 3, 128, device = "cuda", dtype = torch.bfloat16), k, cos, sin, p)
+    assert not RE.decode_rope_inplace(
+        torch.randn(2, 4, 3, 128, device = "cuda", dtype = torch.bfloat16), k, cos, sin, p
+    )
     assert not RE.decode_rope_inplace(q.cpu(), k.cpu(), cos.cpu(), sin.cpu(), p.cpu())
     n32 = _Norm(128, torch.float32)
-    assert QK.decode_qk_norm_rope(n32, n32, q.transpose(1, 2), k.transpose(1, 2), cos, sin, p) is None
+    assert (
+        QK.decode_qk_norm_rope(n32, n32, q.transpose(1, 2), k.transpose(1, 2), cos, sin, p) is None
+    )
 
 
 def test_decode_kill_switch(monkeypatch):

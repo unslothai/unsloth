@@ -472,7 +472,9 @@ def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
         return None
     if position_ids is None or position_ids.numel() != batch:
         return None
-    if torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or Wq.requires_grad or Wk.requires_grad):
+    if torch.is_grad_enabled() and (
+        Q.requires_grad or K.requires_grad or Wq.requires_grad or Wk.requires_grad
+    ):
         return None
     cos2, sin2 = cos.squeeze(), sin.squeeze()
     if (

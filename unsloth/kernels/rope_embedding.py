@@ -639,7 +639,12 @@ _fast_rope_embedding_untraced = torch.compiler.disable(_fast_rope_embedding_eage
 # Single-token decode: one launch rotates Q and K in place at their positions, instead of the
 # cos / sin gathers, rotate_half copies, neg, mul and addcmul (12 launches per layer per token).
 # UNSLOTH_DECODE_FUSED_ROPE=0 restores the unfused path.
-DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().lower() not in ("0", "false", "no", "off")
+DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 
 
 def decode_rope_inplace(Q, K, cos, sin, position_ids):
@@ -651,7 +656,13 @@ def decode_rope_inplace(Q, K, cos, sin, position_ids):
     if Q.device.type != "cuda" or K.device != Q.device or Q.dim() != 4 or K.dim() != 4:
         return False
     batch, _, seq_len, head_dim = Q.shape
-    if seq_len != 1 or K.shape[0] != batch or K.shape[2] != 1 or K.shape[3] != head_dim or head_dim % 2:
+    if (
+        seq_len != 1
+        or K.shape[0] != batch
+        or K.shape[2] != 1
+        or K.shape[3] != head_dim
+        or head_dim % 2
+    ):
         return False
     if position_ids is None or position_ids.numel() != batch:
         return False
