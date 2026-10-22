@@ -152,14 +152,39 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
     ``all_shards`` reads every sibling shard; all of them must be present.
     """
     try:
-        from gguf import GGUFReader
-        readers = [GGUFReader(path)]
+        import struct
+
+        import numpy as np
+        from gguf import GGUFEndian, GGUFReader, GGUFValueType
+
+        class _LayoutReader(GGUFReader):
+            # GGUFReader makes a numpy view per array element, seconds for a vocabulary; no string array is read here.
+            def _get_field_parts(self, orig_offs, raw_type):
+                if raw_type != GGUFValueType.ARRAY:
+                    return super()._get_field_parts(orig_offs, raw_type)
+                raw_itype = self._get(orig_offs, np.uint32)
+                alen = self._get(orig_offs + 4, np.uint64)
+                itype = GGUFValueType(raw_itype[0])
+                types = [GGUFValueType.ARRAY, itype]
+                nptype = self.gguf_scalar_to_np.get(itype)
+                if nptype is not None:
+                    items = self._get(orig_offs + 12, nptype, alen[0])
+                    return 12 + int(items.nbytes), [raw_itype, alen, items], [2], types
+                if itype != GGUFValueType.STRING:
+                    return super()._get_field_parts(orig_offs, raw_type)
+                length = struct.Struct("<Q" if self.endianess == GGUFEndian.LITTLE else ">Q")
+                offs = orig_offs + 12
+                for _ in range(int(alen[0])):
+                    offs += 8 + length.unpack_from(self.data, offs)[0]
+                return offs - orig_offs, [raw_itype, alen], [], types
+
+        readers = [_LayoutReader(path)]
         if all_shards and int(_field(readers[0], "split.count") or 0) > 1:
             shards = split_shard_paths(path)
             if not shards or not all(os.path.isfile(p) for p in shards):
                 logger.debug("offload layout: split %s is missing a shard", path)
                 return ModelLayout()
-            readers = [GGUFReader(p) for p in shards]
+            readers = [_LayoutReader(p) for p in shards]
     except Exception as exc:
         logger.debug("offload layout: cannot read %s (%s)", path, exc)
         return ModelLayout()

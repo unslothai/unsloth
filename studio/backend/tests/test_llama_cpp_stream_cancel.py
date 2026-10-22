@@ -149,7 +149,6 @@ class _StallUpstream:
             )
             chunk = b"data: hello\n\n"
             conn.sendall(b"%x\r\n%s\r\n" % (len(chunk), chunk))
-            # Stall: stay open and silent until the client shuts its side down.
             while not self._stop.wait(timeout = 0.05):
                 try:
                     conn.settimeout(0.05)
@@ -197,9 +196,7 @@ def test_route_upstream_clients_reuse_ssl_setup(monkeypatch):
 
 
 def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall(monkeypatch):
-    # Mid-stream stall: the reader is parked in recv() on a long bound read timeout,
-    # so response.close() alone can't wake it; the watcher must shut the socket down.
-    # Assert cancel lands in seconds, not at the far-off deadline (pre-fix: hung ~30s).
+    # The reader is parked in recv(); the watcher must shut the socket down to wake it.
     monkeypatch.setattr(llama_cpp, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", 30)
     with _StallUpstream() as server:
         backend = LlamaCppBackend(manages_processes = False)
@@ -216,7 +213,7 @@ def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall(monkeypatch):
                 assert next(chunks) == "data: hello\n\n"
                 threading.Thread(target = _cancel_soon, daemon = True).start()
                 for _chunk in chunks:
-                    pass  # the next read blocks silently until cancellation
+                    pass
         elapsed = time.monotonic() - started
 
     assert elapsed < 10, f"cancel took {elapsed:.1f}s; the blocked read was not interrupted"

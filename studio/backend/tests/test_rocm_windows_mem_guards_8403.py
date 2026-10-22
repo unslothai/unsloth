@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for issue #8403 -- the ``mem_get_info`` free over-report is
-uncorrected in the memory guards, so the host-RAM spill refusal never fires.
-
-On Windows ROCm the driver's FREE figure does not track residency: it is returned
-at or near ``total`` on a card that is nearly full (ROCm/librocdxg#57, where the
-reporter observes it does not move as VRAM is consumed on Windows native;
-ROCm/TheRock#3724, where torch OOMs on Windows while reporting 52.71 GiB of a
-53.92 GiB card free; ggml-org/llama.cpp#24836 on the reading being OS-dependent).
-``utils/hardware/hardware.py`` has always known this for the System tab. The
-guards did not, and they only ever over-report, so they go blind rather than
-noisy.
-
-The sharpest case is ``image_activation_shortfall_message``, shipped in #8224.
-Its own docstring says it exists because on Windows WDDM the overrun does not
-raise -- the driver satisfies it from host RAM and the process grows past the
-card -- so on that platform it is the only protection there is. It budgets from
-``_cuda_memory``, which had no platform branch, so on Windows ROCm it was told
-the whole card was free.
-
-Reporter hardware for the family: AMD RDNA3/RDNA4 on Windows (the #7072/#7452
-reporter runs a Radeon PRO W7900 + W7500 on Windows 10 with ROCm 7.13). The
-16-24 GiB single-card shapes below are the class #8188 was reported from. torch,
-the platform and ROCm detection are all mocked: this repository has no AMD GPU
-and no Windows or ROCm CI, so none of this is a hardware validation.
-"""
+"""On Windows ROCm, mem_get_info's free does not track residency, so the memory guards go blind."""
 
 from __future__ import annotations
 
@@ -57,11 +33,7 @@ def _fake_torch(
     reserved_bytes = 0,
     allocated_bytes = None,
 ):
-    """A torch whose driver free reading and allocator accounting can disagree.
-
-    ``mem_get_info`` takes no argument here because ``_cuda_memory`` calls it that
-    way; the optional ordinal matches the real signature.
-    """
+    """A fake torch whose driver free reading can disagree with allocator accounting."""
 
     class _Props:
         def __init__(self):
@@ -101,18 +73,12 @@ class _Target:
     backend = "diffusers"
 
 
-# ----------------------------------------------------------------------------- #
-# The #8224 guard, which is the one #8403 is about
-# ----------------------------------------------------------------------------- #
 def test_activation_guard_fires_on_a_full_card_that_reports_itself_empty(win_rocm, monkeypatch):
-    """A 24 GiB card with 20 GiB of pipeline resident, driver reporting the whole
-    card free. 1536x1536 does not fit the 4 GiB that is actually left, and on
-    Windows nothing else will refuse it: WDDM spills to host RAM instead of
-    raising. Before the fix the guard saw 24 GiB free and said nothing."""
+    """On Windows WDDM spills to host RAM rather than raising, so the guard must fire on a full card."""
     _shared_setup_1(monkeypatch)
 
     memory = dm.snapshot_device_memory(_Target())
-    assert memory.free_mib == 4 * 1024  # not the driver's 24576
+    assert memory.free_mib == 4 * 1024
 
     message = dm.image_activation_shortfall_message(
         device_memory = memory, width = 1536, height = 1536, family = "sdxl"
@@ -163,14 +129,8 @@ def test_windows_nvidia_reading_is_untouched(monkeypatch):
     assert dm.snapshot_device_memory(_Target()).free_mib == 9 * 1024
 
 
-# ----------------------------------------------------------------------------- #
-# The #8224 memory PLAN reads the same feeder
-# ----------------------------------------------------------------------------- #
 def test_memory_plan_budget_sees_the_corrected_free(win_rocm, monkeypatch):
-    """_plan_memory budgets from settled_snapshot_device_memory, so the offload
-    tier was picked against a card that claimed to be empty. The settling loop's
-    early exit (free >= total - headroom) also trips instantly on the sentinel,
-    which is why the plan never even retried."""
+    """Planning budgets from the corrected free value, not the sentinel that reports the card empty."""
     _shared_setup_1(monkeypatch)
     memory = dm.settled_snapshot_device_memory(_Target(), attempts = 1)
     assert memory.free_mib == 4 * 1024
@@ -194,9 +154,6 @@ def test_reclaimable_snapshot_credits_the_cache_back(win_rocm, monkeypatch):
     assert dm.reclaimable_snapshot_device_memory(_Target()).free_mib == 10 * 1024
 
 
-# ----------------------------------------------------------------------------- #
-# The shared helper (pure unit)
-# ----------------------------------------------------------------------------- #
 def test_trusted_mem_get_info_caps_free_at_unreserved_bytes(win_rocm, monkeypatch):
     monkeypatch.setitem(
         sys.modules,
@@ -204,15 +161,12 @@ def test_trusted_mem_get_info_caps_free_at_unreserved_bytes(win_rocm, monkeypatc
         _fake_torch(16 * GiB, free_bytes = 16 * GiB, reserved_bytes = 11 * GiB),
     )
     assert hw.trusted_mem_get_info() == (5 * GiB, 16 * GiB)
-    # A near-sentinel reading (TheRock#3724: 52.71 GiB "free" of 53.92 GiB while
-    # OOMing) is capped too: the cap does not depend on exact equality.
     monkeypatch.setitem(
         sys.modules,
         "torch",
         _fake_torch(16 * GiB, free_bytes = 15 * GiB, reserved_bytes = 11 * GiB),
     )
     assert hw.trusted_mem_get_info() == (5 * GiB, 16 * GiB)
-    # Never optimistic: a driver figure already below the cap is kept.
     monkeypatch.setitem(
         sys.modules,
         "torch",

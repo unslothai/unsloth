@@ -195,6 +195,7 @@ function generalTab(initialToken: string) {
     "../components/language-select": componentStub,
     "../components/download-transport-row": componentStub,
     "../components/developer-mode-section": componentStub,
+    "../components/engine-versions-section": componentStub,
     "../components/hub-settings-section": componentStub,
     "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,
