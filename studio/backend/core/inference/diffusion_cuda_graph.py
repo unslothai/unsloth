@@ -1130,6 +1130,13 @@ class GraphedForward:
                         if other != key:
                             self.cache.pop(other, None)
                             self._dropped.add(other)
+                    if (
+                        getattr(self, "fallback", None) is None
+                        and getattr(self, "fallback_handle", None) is None
+                    ):
+                        _retire_stable_placement(
+                            placement
+                        )  # no per-block graphs either: nothing records again
                 self._slower = reason
                 self._dropped.add(key)
                 if self.logger is not None:
@@ -1232,6 +1239,10 @@ class GraphedForward:
         args, kwargs = _rebuild(spec, live)
         return self._eager(args, kwargs)
 
+    def _placement_declined(self) -> bool:
+        # A declined placement refuses every later recording for the load (a merely dropped key does not).
+        return getattr(getattr(self, "placement", None), "_declined", None) is not None
+
     def _engage_fallback(self) -> None:
         """Arm the per-block graphs once this whole-step graph dropped a key or failed: the calls it now leaves eager
         run through them. Between forwards' blocks (the step has not started), so the slot ring can change."""
@@ -1241,7 +1252,7 @@ class GraphedForward:
         except Exception as exc:  # noqa: BLE001
             _warn(self.logger, "per-block fallback", exc)
             self.fallback_handle = None
-        if self.fallback_handle is None and self.poisoned:
+        if self.fallback_handle is None and (self.poisoned or self._placement_declined()):
             _retire_stable_placement(self.placement)  # nothing left that records over the placement
         if self.fallback_handle is not None and self.logger is not None:
             self.logger.info(

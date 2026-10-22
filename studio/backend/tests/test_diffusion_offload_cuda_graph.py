@@ -631,6 +631,25 @@ def test_a_poisoned_block_offload_step_keeps_the_stable_repin_for_its_block_fall
     cg.uninstall_all(handles)
 
 
+def test_a_declined_block_offload_step_retires_the_stable_repin_once_no_fallback_records():
+    """A speed-declined placement refuses every later recording; a per-block fallback that then fails to arm (or none
+    at all) leaves nothing recording, so the re-pin stops paying for stable addresses. A dropped key alone keeps it."""
+    _cuda()
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    step = handles[0]
+    assert sa.stable_repin_wanted(net)
+    step.fallback = lambda: None
+    step._dropped.add("k")
+    step._engage_fallback()  # a dropped key, placement still recording
+    assert sa.stable_repin_wanted(net)
+    step.placement.decline("slower than eager")
+    step.fallback = lambda: None
+    step._engage_fallback()
+    assert not sa.stable_repin_wanted(net)
+    cg.uninstall_all(handles)
+
+
 def test_model_offload_stable_range_is_rebuilt_when_a_weight_changes_on_the_host():
     """A weight added or reshaped on the host after the range was laid out (a new adapter) lands in a rebuilt range,
     not beside a fully mapped stale one at a new address every onload."""
