@@ -3123,6 +3123,22 @@ def test_an_unread_hub_projector_listing_keeps_the_load_local(monkeypatch):
     assert "cannot be sized" in ss.status()["reason"]
 
 
+def test_removing_the_last_paired_worker_does_not_reuse_the_split(monkeypatch):
+    """Regression: the served split ran over paired-worker relays. Removing its worker closes that
+    relay; with the other paired worker unreachable no node is left, and a same-model, same-settings
+    reload must not relaunch with --rpc at the closed relay."""
+    _serve(monkeypatch)
+    block = list(cs.state().block)
+    assert block and cs.state().topology == "layer_split"
+    monkeypatch.delenv(cs.ENV_NODES)  # paired-only: one worker still paired, none usable
+    monkeypatch.setattr(cs, "_paired_workers", lambda: [SimpleNamespace(node_id = "offline")])
+    monkeypatch.setattr(cs, "_link_nodes", lambda verify = True: [])
+    out = run(ss.before_load(_request(llama_extra_args = ["--seed", "1"], force_reload = True), 4))
+    assert out.llama_extra_args == ["--seed", "1"]
+    state = cs.state()
+    assert state.topology == "single" and "no paired worker" in state.reason
+
+
 def test_a_config_error_reload_with_new_load_settings_does_not_reuse_the_split(monkeypatch):
     """Regression: the served block was planned for 4 slots; a config-error reload at 2 must not reuse it."""
     _serve(monkeypatch)

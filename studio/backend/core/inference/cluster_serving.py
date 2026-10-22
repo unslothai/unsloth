@@ -1955,7 +1955,9 @@ class ClusterServing:
         self.plan, self.block = None, []
         self._down = set()
         if not await asyncio.to_thread(self.refresh_nodes) or self.config_error:
-            if self.config_error and self._pre_load[3]:
+            # Paired-only, a config error means no worker is left: refreshing closed every relay the
+            # served block points at, so it cannot be reused; replan on this machine instead.
+            if self.config_error and self._pre_load[3] and not _paired_only():
                 self.topology, _reason, self.plan, self.block = self._pre_load
                 self.reason = f"cluster config: {self.config_error}; still serving the last split"
                 if self._requested_model != self._served_model:
@@ -1986,6 +1988,8 @@ class ClusterServing:
                     effective += self.block
                 return ss.SparkServing._request_with(request, {"llama_extra_args": effective})
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
+            if self._pre_load[3] and _paired_only():
+                self.reason = "no paired worker is left for the last split; serving on this machine"
             return request
         explicit = getattr(request, "llama_extra_args", None)
         effective = list(explicit if explicit is not None else (inherited_extra_args or []))
