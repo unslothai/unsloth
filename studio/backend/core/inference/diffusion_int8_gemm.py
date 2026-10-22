@@ -1118,9 +1118,11 @@ def _driver_version() -> str:
 
 
 def plan_identity(transformer: Any, index: Optional[int] = None) -> Optional[str]:
-    """The cuBLAS slots the latency gate holds for this transformer's shapes on the current device, or None (all
-    fused / gate off). Those slots trace the stock graph instead of the op, so the compile cache keys on them. No
-    timing: the in-memory plan, else the stored file."""
+    """The cuBLAS slots the latency gate holds for this transformer's shapes, or None (all fused / gate off). Those
+    slots trace the stock graph instead of the op, so the compile cache keys on them. Every visible card counts, not
+    only ``index``: a layer split is placed after the compile cache keys the load, then each card swaps against its
+    own plan (``after_layer_split``), so a second card's cuBLAS slots must be in the key too. Cards on one toolchain
+    share a tune file and key once. No timing: the in-memory plan, else the stored file."""
     try:
         import hashlib
 
@@ -1136,12 +1138,22 @@ def plan_identity(transformer: Any, index: Optional[int] = None) -> Optional[str
         if not shapes:
             return None
         index = torch.cuda.current_device() if index is None else index
-        key = toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
-        plan = {**_load_plan(_tune_path(key), key), **_DEVICE_PLAN.get(index, {})}
-        slots = sorted(s for s, c in plan.items() if c == _CUBLAS and s[:2] in shapes)
-        if not slots:
+        cards = sorted({int(index), *range(torch.cuda.device_count())})
+        suffix = "" if tiles_enabled() else "|tiles0"
+        parts = set()
+        for card in cards:
+            key = toolchain_key(card) + suffix
+            plan = {**_load_plan(_tune_path(key), key), **_DEVICE_PLAN.get(card, {})}
+            slots = tuple(sorted(s for s, c in plan.items() if c == _CUBLAS and s[:2] in shapes))
+            if slots:
+                parts.add(slots if len(cards) == 1 else (key, slots))
+        if not parts:
             return None
-        return hashlib.sha1(repr(slots).encode("utf-8")).hexdigest()[:16]
+        # one card: the slots alone, so a single-GPU key is the same as before
+        ident = list(parts)[0] if len(cards) == 1 else sorted(parts)
+        return hashlib.sha1(
+            repr(list(ident) if len(cards) == 1 else ident).encode("utf-8")
+        ).hexdigest()[:16]
     except Exception:  # noqa: BLE001 - unreadable: keyed as all fused
         return None
 

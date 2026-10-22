@@ -1247,6 +1247,41 @@ def test_latency_gate_concurrent_saves_keep_both_slots(monkeypatch, tmp_path):
     assert load(path, "k") == {(64, 64, 0): g8._CUBLAS, (128, 64, 0): g8._CUBLAS}
 
 
+def test_plan_identity_keys_every_card_of_a_layer_split(monkeypatch):
+    """A layer split is placed after the compile cache keys the load, and each card then swaps against its own plan:
+    a second card's cuBLAS slots must change the key even when the first card's plan is all fused."""
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        g8, "_eligible", lambda m: ("v2",) if isinstance(m, torch.nn.Linear) else None
+    )
+    monkeypatch.setattr(g8, "_tune_path", lambda key: None)  # in-memory plans only
+    names = {0: "A100", 1: "L4"}
+    monkeypatch.setattr(g8, "toolchain_key", lambda card: f"v3|{names[card]}")
+    model = torch.nn.Sequential(torch.nn.Linear(1024, 768))
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    assert g8.plan_identity(model) is None
+    g8._DEVICE_PLAN[0] = {(768, 1024, 3): g8._CUBLAS}
+    single = g8.plan_identity(model)
+    assert single is not None
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    first_only = g8.plan_identity(model)
+    assert first_only is not None and first_only == g8.plan_identity(
+        model, 1
+    )  # same key whichever card begins
+    g8._DEVICE_PLAN[1] = {
+        (768, 1024, 2): g8._CUBLAS
+    }  # the second card tuned after begin(): the key moves
+    both = g8.plan_identity(model)
+    assert both not in (None, first_only)
+    g8._DEVICE_PLAN[0] = {}
+    assert g8.plan_identity(model) not in (None, both)  # only the second card holds cuBLAS slots
+    names[1] = "A100"  # one toolchain: the cards share a file, the same slots key once
+    g8._DEVICE_PLAN[0] = {(768, 1024, 2): g8._CUBLAS}
+    assert g8.plan_identity(model) == g8.plan_identity(model, 1)
+
+
 def _plan_cache_env(monkeypatch, tmp_path, mode):
     from core.inference import diffusion_compile_cache as cc
 
