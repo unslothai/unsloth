@@ -889,9 +889,7 @@ def test_gate_up_shorthand_with_down_proj_peft_injects_real_hf_split_experts():
             widened, _, _ = U.widen_target_regex_to_expert_submodules(
                 model, regex, leaves, auto_regex = True, explicit_leaves = True
             )
-            peft_model = peft.get_peft_model(
-                model, peft.LoraConfig(r = 2, target_modules = widened)
-            )
+            peft_model = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = widened))
             lora = [n for n, m in peft_model.named_modules() if hasattr(m, "lora_A")]
             assert _expert_counts(lora, r".*") == {"gate_proj": 2, "up_proj": 2, "down_proj": 2}
             assert not any("vision_tower" in n for n in lora)
