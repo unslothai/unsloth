@@ -161,6 +161,9 @@ def get_per_device_per_stream_alloc_fn(device):
 def log_kernel_info(
     compiled_kernel: triton.compiler.CompiledKernel, best_config: triton.Config = None
 ):
+    # Runs after every launch: formatting the metadata costs ~12 us per call even when nothing logs.
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     kernel_name = compiled_kernel.name
     nregs = compiled_kernel.n_regs
     nspills = compiled_kernel.n_spills
