@@ -33004,12 +33004,20 @@ class LlamaCppBackend:
                     timeout = self._HEALTH_STALL_TIMEOUT_S
                     if not _cpu_fallback_eligible or intent.cpu_fallback or label == "-cpu":
                         return timeout, {}
+                    per_gib = self._AUTO_VULKAN_START_S_PER_GIB
+                    floor = timeout
                     if _vulkan_suspect and not label:
                         timeout = min(timeout, self._SUSPECT_VULKAN_STALL_TIMEOUT_S)
-                    ceiling = (model_size or 0) / (1 << 30) * self._AUTO_VULKAN_START_S_PER_GIB
+                        floor = timeout
+                    elif not _vulkan_suspect:
+                        # A probe that listed a device only ever fails with advice, never moves
+                        # to CPU: give a slow disk or a first shader compile far more room.
+                        per_gib *= self._LISTED_VULKAN_CEILING_FACTOR
+                        floor = timeout * self._LISTED_VULKAN_CEILING_FACTOR
+                    ceiling = (model_size or 0) / (1 << 30) * per_gib
                     return timeout, {
                         "cpu_counts_as_progress": False,
-                        "max_total_s": max(timeout, ceiling),
+                        "max_total_s": max(floor, ceiling),
                     }
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
@@ -38296,6 +38304,8 @@ class LlamaCppBackend:
     _SUSPECT_VULKAN_STALL_TIMEOUT_S = 300.0
     # Unrenewable auto-Vulkan ceiling per GiB of model (never below the stall window).
     _AUTO_VULKAN_START_S_PER_GIB = 60.0
+    # The ceiling's multiple when the probe listed a device (that stall ends with advice only).
+    _LISTED_VULKAN_CEILING_FACTOR = 3.0
     _STARTUP_PROGRESS_SAMPLE_S = 5.0
     # Ignore activity from the health probes themselves.
     _STARTUP_PROGRESS_MIN_BYTES = 1 << 20

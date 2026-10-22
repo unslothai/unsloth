@@ -144,6 +144,11 @@ def test_a_listed_device_or_unproven_probe_keeps_vulkan(monkeypatch, tmp_path, o
     assert sink["health_timeouts"][0] == expected
     # Every Vulkan launch of an eligible load is capped, renewals included.
     assert sink["health_kwargs"][0]["max_total_s"] >= expected
+    if outcome not in ("timeout", "crashed"):
+        # That stall only ever fails with advice: a slow disk gets three times the room.
+        assert sink["health_kwargs"][0]["max_total_s"] >= (
+            expected * LlamaCppBackend._LISTED_VULKAN_CEILING_FACTOR
+        )
 
 
 def test_a_lowered_stall_window_still_governs_a_suspect_launch(monkeypatch, tmp_path):
