@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import base64
 import errno
+import functools
 import json
 import os
 import re
+import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -43,17 +45,27 @@ def gallery_dir() -> Path:
     return ensure_account_dir(account_path("images"))
 
 
+_IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
+
+
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
-    lines = [str(meta.get("prompt", ""))]
+    # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The
+    # typed prompt stays in the Unsloth chunk.
+    lines = [str(meta.get("enhanced_prompt") or meta.get("prompt", ""))]
     negative = meta.get("negative_prompt")
     if negative:
         lines.append(f"Negative prompt: {negative}")
     from core.inference.diffusion_sampler import sampler_label, schedule_label
 
+    if meta.get("model_kind") == "connection":
+        lines.append(
+            f"Size: {meta.get('width')}x{meta.get('height')}, Model: {meta.get('model', '')}"
+        )
+        return "\n".join(lines)
     sampler = sampler_label(meta.get("sampler"))
     schedule = schedule_label(meta.get("schedule_type"))
-    lines.append(
+    fields = (
         f"Steps: {meta.get('steps')}, "
         + (f"Sampler: {sampler}, " if sampler else "")
         + (f"Schedule type: {schedule}, " if schedule else "")
@@ -61,6 +73,34 @@ def _params_text(meta: dict[str, Any]) -> str:
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )
+    # webui infotext names (processing.create_infotext).
+    if meta.get("variation_strength"):
+        fields += (
+            f", Variation seed: {meta.get('variation_seed')}, "
+            f"Variation seed strength: {meta['variation_strength']}"
+        )
+    if meta.get("clip_skip"):
+        fields += f", Clip skip: {meta['clip_skip']}"
+    if meta.get("cfg_rescale"):
+        fields += f", CFG rescale: {meta['cfg_rescale']}"
+    # webui opts.emphasis infotext: a prompt run with weighting off replays literally there too.
+    if meta.get("prompt_weighting") is False:
+        fields += ", Emphasis: None"
+    if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
+        fields += f", Denoising strength: {meta['strength']}"
+    # A1111 inpaint keys (modules/processing.py), only when this inpaint applied them.
+    if meta.get("mask_blur"):
+        fields += f", Mask blur: {meta['mask_blur']}"
+    if meta.get("inpaint_only_masked"):
+        fields += ", Inpaint area: Only masked"
+        if meta.get("inpaint_padding") is not None:
+            fields += f", Masked area padding: {meta['inpaint_padding']}"
+    # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
+    if meta.get("shift") is not None:
+        fields += f", Shift: {meta['shift']}"
+    if meta.get("generator"):
+        fields += f", Version: {meta['generator']}"
+    lines.append(fields)
     return "\n".join(lines)
 
 
@@ -91,10 +131,35 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
+@functools.lru_cache(maxsize = 1)
+def _generator() -> str:
+    try:
+        from utils.studio_version import get_studio_version
+        return f"Unsloth {get_studio_version()}"
+    except Exception:
+        return "Unsloth"
+
+
+def _engine() -> Optional[str]:
+    # Read only when a generation already loaded the router: diffusers and the native engine draw
+    # different pixels from the same seed, so a replay needs to know which one ran.
+    router = sys.modules.get("core.inference.diffusion_engine_router")
+    try:
+        return router.active_engine_name() if router is not None else None
+    except Exception:
+        return None
+
+
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
-    meta = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
+    meta = {
+        # A Connection run never touched the local engine.
+        "engine": None if meta.get("model_kind") == "connection" else _engine(),
+        "generator": _generator(),
+        **meta,
+        "schema_version": RECIPE_SCHEMA_VERSION,
+    }
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
     data = _png_bytes(image, meta)

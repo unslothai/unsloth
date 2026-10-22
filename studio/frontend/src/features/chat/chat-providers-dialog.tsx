@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -12,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -39,6 +50,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useIsAccountOwner, useLoginMode } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
@@ -62,6 +74,7 @@ import {
   type CustomReasoningConfig,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
+import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
@@ -108,6 +121,25 @@ const PROVIDER_FORM_DURATION = 0.2;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
+
+// Ends the open provider menu just above this item so the rows from it on need a scroll.
+function capProviderMenuAtItem(item: HTMLElement | null) {
+  const content = item?.closest<HTMLElement>("[data-slot=select-content]");
+  if (!item || !content) return;
+  // offsetTop chain, not getBoundingClientRect: the open animation scales the menu.
+  let top = 0;
+  for (
+    let node: HTMLElement | null = item;
+    node && node !== content;
+    node = node.offsetParent as HTMLElement | null
+  ) {
+    top += node.offsetTop;
+  }
+  const viewport = item.closest<HTMLElement>("[data-radix-select-viewport]");
+  top -= viewport?.scrollTop ?? 0;
+  top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
+  content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
+}
 
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
@@ -292,6 +324,11 @@ export function ChatProvidersSettings({
   // Only the newest Codex catalog request may write to the form.
   const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
+  const [testingProviderIds, setTestingProviderIds] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const [pendingDeleteProvider, setPendingDeleteProvider] =
+    useState<ExternalProviderConfig | null>(null);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [customProviderName, setCustomProviderName] = useState(
@@ -300,6 +337,9 @@ export function ChatProvidersSettings({
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const [reasoningConfig, setReasoningConfig] = useState<CustomReasoningConfig | null>(null);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
+  const [sharedDraft, setSharedDraft] = useState(false);
+  const isAccountOwner = useIsAccountOwner();
+  const loginMode = useLoginMode();
   const modelFieldsAtOpenRef = useRef<string | null>(null);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
@@ -341,6 +381,21 @@ export function ChatProvidersSettings({
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
+  // Decision-only connections (TypeSafe, Liquid AI) sit last, below the menu's fold.
+  const menuRegistry = useMemo(() => {
+    const visible = registry.filter(
+      (entry) => !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
+    );
+    const isDecision = (entry: ProviderRegistryEntry) =>
+      isDecisionConnection({ providerType: entry.provider_type });
+    return [
+      ...visible.filter((entry) => !isDecision(entry)),
+      ...visible.filter(isDecision),
+    ];
+  }, [registry]);
+  const firstBelowFoldProviderType = menuRegistry.find((entry) =>
+    isDecisionConnection({ providerType: entry.provider_type }),
+  )?.provider_type;
   const selectedProviderContract = registryByType.get(
     toExternalBackendProviderType(providerType),
   );
@@ -381,10 +436,23 @@ export function ChatProvidersSettings({
     availableModels.length > 0;
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
-  const editingProviderHasSavedKey = Boolean(
-    editingProviderId &&
-      providers.find((provider) => provider.id === editingProviderId)?.hasApiKey,
-  );
+  const editingProvider = editingProviderId
+    ? providers.find((provider) => provider.id === editingProviderId)
+    : undefined;
+  const editingProviderHasSavedKey = Boolean(editingProvider?.hasApiKey);
+  const showShareToggle =
+    isAccountOwner &&
+    !usesOAuth &&
+    (loginMode === "multi" || editingProvider?.shared === true);
+  const selectedProviderLabel = isCustomProviderType(providerType)
+    ? customProviderDisplayName(providerType)
+    : selectedProviderContract?.display_name;
+  // A saved connection reads as its name; only an unsaved draft is "New".
+  const formTitle = editingProviderId
+    ? editingProvider?.name || selectedProviderLabel || "Edit"
+    : selectedProviderLabel
+      ? `New ${selectedProviderLabel}`
+      : "New";
   const missingModelCatalogApiKey =
     !isCustomProvider &&
     !isCuratedModelList &&
@@ -422,6 +490,13 @@ export function ChatProvidersSettings({
     : `${availableModels.length} models`;
   const modelSearchInputClassName =
     "h-8 w-full bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0";
+  // Full-bleed rows of the Models card (-mx-4 undoes the body padding). The list grows with its rows
+  // and only scrolls past 10 (rows are min-h-9, plus 1px dividers).
+  const modelListClassName = cn(
+    "-mx-4 divide-y divide-border/60 border-border/60 border-y last:-mb-4 last:border-b-0",
+    filteredAvailableModels.length > 10 &&
+      "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
+  );
 
   useEffect(() => {
     providersRef.current = providers;
@@ -568,6 +643,7 @@ export function ChatProvidersSettings({
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
     setAutoReloadModels(false);
+    setSharedDraft(false);
     modelFieldsAtOpenRef.current = null;
   }
 
@@ -609,30 +685,6 @@ export function ChatProvidersSettings({
     setSelectedModelIds((prev) => prev.filter((id) => !visible.has(id)));
   }
 
-  function parseOptionalBaseUrl(
-    input: string,
-    options: { appendOpenAiVersionPath?: boolean } = {},
-  ): string | null {
-    const trimmed = input.trim();
-    if (!trimmed) return null;
-    let parsed: URL;
-    try {
-      parsed = new URL(trimmed);
-    } catch {
-      throw new Error("Base URL must be a valid URL.");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("Base URL must use http or https.");
-    }
-    if (options.appendOpenAiVersionPath) {
-      const pathname = parsed.pathname.replace(/\/+$/, "");
-      if (!pathname) {
-        parsed.pathname = "/v1";
-      }
-    }
-    return parsed.toString().replace(/\/+$/, "");
-  }
-
   function parseBaseUrlForProvider(
     input: string,
     required: boolean,
@@ -645,7 +697,7 @@ export function ChatProvidersSettings({
       }
       return null;
     }
-    const baseUrl = parseOptionalBaseUrl(trimmed, {
+    const baseUrl = normalizeProviderBaseUrl(trimmed, {
       appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
     });
     return apiType === "systemone"
@@ -718,6 +770,15 @@ export function ChatProvidersSettings({
     }
     if (!isCustomProvider && !apiKey.trim() && !editingProviderHasSavedKey) {
       toast.error("Add an API key first.");
+      return;
+    }
+    if (
+      editingProvider?.hasApiKey &&
+      !apiKey.trim() &&
+      baseUrlDraft.trim() !== editingProvider.baseUrl
+    ) {
+      // The saved key only goes to the saved server, so the backend would list that server's models.
+      toast.info("Save the new Base URL first, then load its models.");
       return;
     }
     setModelsLoading(true);
@@ -925,6 +986,7 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        ...(showShareToggle && sharedDraft ? { shared: true } : {}),
         apiKey: apiKey.trim(),
 
       });
@@ -955,6 +1017,7 @@ export function ChatProvidersSettings({
           : undefined,
 
         hasApiKey: created.has_api_key,
+        shared: created.shared === true,
 
         authKind: created.auth_kind,
         authStatus: created.auth_status,
@@ -1103,6 +1166,9 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        ...(showShareToggle && sharedDraft !== (existing.shared === true)
+          ? { shared: sharedDraft }
+          : {}),
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
@@ -1137,6 +1203,7 @@ export function ChatProvidersSettings({
           : undefined,
 
         hasApiKey: updated.has_api_key,
+        shared: updated.shared === true,
         autoReloadModels:
           existing.providerType === "llama_cpp" ? autoReloadModels : undefined,
         isReasoningModel: supportsProviderReasoningToggle(
@@ -1225,6 +1292,10 @@ export function ChatProvidersSettings({
   }
 
   async function editProvider(provider: ExternalProviderConfig) {
+    if (provider.sharedByOwner) {
+      toast.info("This connection is shared by the owner. Only they can change it.");
+      return;
+    }
     // Switching connections retires an in-flight catalog request, including on the branches
     // below that never reach applyCodexSubscriptionModels.
     codexCatalogRequestRef.current += 1;
@@ -1244,6 +1315,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
+    setSharedDraft(provider.shared === true);
     modelFieldsAtOpenRef.current = null;
     setApiType(
       provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
@@ -1378,7 +1450,20 @@ export function ChatProvidersSettings({
   }
 
   async function testProvider(provider: ExternalProviderConfig) {
+    if (testingProviderIds.has(provider.id)) return;
+    setTestingProviderIds((prev) => new Set(prev).add(provider.id));
+    try {
+      await runProviderTest(provider);
+    } finally {
+      setTestingProviderIds((prev) => {
+        const next = new Set(prev);
+        next.delete(provider.id);
+        return next;
+      });
+    }
+  }
 
+  async function runProviderTest(provider: ExternalProviderConfig) {
     if (provider.authKind === "chatgpt_oauth") {
       if (provider.authStatus === "connected") {
         toast.success("ChatGPT subscription is connected.");
@@ -1425,31 +1510,17 @@ export function ChatProvidersSettings({
       if (result.success) {
         toast.success(result.message);
       } else {
-        if (
-          isCustomProviderType(provider.providerType) &&
-          result.message.includes("Illegal header value b'Bearer '")
-        ) {
-          toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
-          return;
-        }
         toast.error(result.message);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      if (
-        isCustomProviderType(provider.providerType) &&
-        message.includes("Illegal header value b'Bearer '")
-      ) {
-        toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
-        return;
-      }
       toast.error(`Test failed: ${message}`);
     }
   }
 
   if (page === "form") {
     return (
-      <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
+      <div className="@container -mt-3 flex shrink-0 flex-col gap-2">
         <header className="flex items-center gap-2 pr-8">
           <Button
             type="button"
@@ -1467,8 +1538,11 @@ export function ChatProvidersSettings({
               Connections
             </span>
             <span className="size-1 rounded-full bg-muted-foreground/35" />
-            <span className="truncate text-xs font-medium text-muted-foreground">
-              {editingProviderId ? "Edit" : "New"}
+            <span
+              className="truncate text-xs font-medium text-muted-foreground"
+              title={formTitle}
+            >
+              {formTitle}
             </span>
           </div>
         </header>
@@ -1510,8 +1584,19 @@ export function ChatProvidersSettings({
                   >
                     <SelectValue placeholder="Choose a connection" />
                   </SelectTrigger>
-                  <SelectContent>
+                  {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
+                  <SelectContent className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden">
                     <SelectGroup>
+                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <ApiProviderLogo
+                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
+                            className="size-4"
+                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
+                          />
+                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
+                        </span>
+                      </SelectItem>
                       {CUSTOM_PROVIDER_PRESETS.map((preset) => (
                         <SelectItem
                           key={preset.providerType}
@@ -1527,28 +1612,18 @@ export function ChatProvidersSettings({
                           </span>
                         </SelectItem>
                       ))}
-                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex min-w-0 items-center gap-2">
-                          <ApiProviderLogo
-                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
-                            className="size-4"
-                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
-                          />
-                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
-                        </span>
-                      </SelectItem>
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>
-                      {registry
-                        .filter(
-                          (entry) =>
-                            !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
-                        )
-                        .map((entry) => (
+                      {menuRegistry.map((entry) => (
                           <SelectItem
                             key={entry.provider_type}
                             value={entry.provider_type}
+                            ref={
+                              entry.provider_type === firstBelowFoldProviderType
+                                ? capProviderMenuAtItem
+                                : undefined
+                            }
                           >
                             <span className="flex min-w-0 items-center gap-2">
                               <ApiProviderLogo
@@ -1695,7 +1770,7 @@ export function ChatProvidersSettings({
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
                       {decisionsOnly
-                        ? "Up to the version, such as /v1. Studio adds /systemone."
+                        ? "Up to the version, such as /v1. Unsloth adds /systemone."
                         : "OpenAI-compatible endpoint."}
                     </p>
                   </div>
@@ -1778,7 +1853,7 @@ export function ChatProvidersSettings({
                       id="provider-auto-reload-models-help"
                       className="text-xs text-muted-foreground"
                     >
-                      Refresh once on connect and after a disconnect while Studio is open.
+                      Refresh once on connect and after a disconnect while Unsloth is open.
                       New model IDs are enabled automatically. Saved in this browser.
                     </p>
                   </div>
@@ -1787,6 +1862,33 @@ export function ChatProvidersSettings({
                     checked={autoReloadModels}
                     onCheckedChange={setAutoReloadModels}
                     aria-describedby="provider-auto-reload-models-help"
+                  />
+                </div>
+              ) : null}
+              {showShareToggle ? (
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-shared"
+                      className="text-sm font-medium"
+                    >
+                      Share with all accounts
+                    </Label>
+                    <p
+                      id="provider-shared-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Other accounts can chat with its models using your saved
+                      key, but cannot see the key or change the connection. Model
+                      access in Settings &gt; Accounts limits which models each
+                      account sees.
+                    </p>
+                  </div>
+                  <Switch
+                    id="provider-shared"
+                    checked={sharedDraft}
+                    onCheckedChange={setSharedDraft}
+                    aria-describedby="provider-shared-help"
                   />
                 </div>
               ) : null}
@@ -2023,7 +2125,7 @@ export function ChatProvidersSettings({
                       Select from suggestions below or enter exact model IDs.
                     </p>
                     {availableModels.length > 0 ? (
-                      <div className="space-y-3 rounded-md border border-border/70 bg-background/50 p-3">
+                      <>
                         <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
@@ -2063,16 +2165,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
+                        <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2090,7 +2192,7 @@ export function ChatProvidersSettings({
                             ))
                           )}
                         </ul>
-                      </div>
+                      </>
                     ) : null}
                     {modelIdsEditable ? (
                       <div className="space-y-2">
@@ -2152,16 +2254,16 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
+                        <ul className={modelListClassName}>
                           {filteredAvailableModels.length === 0 ? (
-                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
                               No matching models
                             </li>
                           ) : (
                             filteredAvailableModels.map((model, index) => (
                               <li
                                 key={model}
-                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
                                 onClick={() => toggleModel(model)}
                               >
                                 <Checkbox
@@ -2212,7 +2314,8 @@ export function ChatProvidersSettings({
             </AnimatePresence>
           </section>
 
-          <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+          {/* -mb-3 trims the settings pane's p-6 so the gap below the buttons matches the gap-3 above. */}
+          <div className="-mb-3 flex flex-wrap items-center justify-end gap-3">
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -2345,6 +2448,11 @@ export function ChatProvidersSettings({
                               {t("settings.apiKeys.decisionApi.title")}
                             </span>
                           ) : null}
+                          {provider.shared ? (
+                            <span className="shrink-0 rounded-full border border-border/70 px-1.5 py-0.5 text-ui-10 leading-none text-muted-foreground">
+                              {provider.sharedByOwner ? "Shared by owner" : "Shared"}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-0.5 truncate text-xs text-muted-foreground">
                           <span>{providerLabel}</span>
@@ -2364,6 +2472,7 @@ export function ChatProvidersSettings({
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-0.5 text-muted-foreground">
+                      {provider.sharedByOwner ? null : (
                       <Button
                         type="button"
                         size="icon-sm"
@@ -2376,30 +2485,41 @@ export function ChatProvidersSettings({
                       >
                         <HugeiconsIcon icon={Edit03Icon} className="size-4" />
                       </Button>
+                      )}
                       <Button
                         type="button"
                         size="icon-sm"
                         variant="ghost"
                         className="size-7 hover:text-foreground"
-                        disabled={mutatingProvider}
+                        disabled={
+                          mutatingProvider ||
+                          testingProviderIds.has(provider.id)
+                        }
+                        aria-busy={testingProviderIds.has(provider.id)}
                         onClick={() => void testProvider(provider)}
                         title="Check connection"
                         aria-label={`Check ${provider.name}`}
                       >
-                        <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
+                        {testingProviderIds.has(provider.id) ? (
+                          <Spinner className="size-4" />
+                        ) : (
+                          <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
+                        )}
                       </Button>
+                      {provider.sharedByOwner ? null : (
                       <Button
                         type="button"
                         size="icon-sm"
                         variant="ghost"
                         className="size-7 hover:text-destructive"
                         disabled={mutatingProvider}
-                        onClick={() => void deleteProvider(provider.id)}
+                        onClick={() => setPendingDeleteProvider(provider)}
                         title="Delete connection"
                         aria-label={`Delete ${provider.name}`}
                       >
                         <HugeiconsIcon icon={Delete02Icon} className="size-4" />
                       </Button>
+                      )}
                     </div>
                   </div>
                 );
@@ -2408,6 +2528,36 @@ export function ChatProvidersSettings({
           )}
         </div>
       </section>
+      <AlertDialog
+        open={pendingDeleteProvider !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteProvider(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {pendingDeleteProvider?.name ?? "connection"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the connection and its saved API key.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const provider = pendingDeleteProvider;
+                setPendingDeleteProvider(null);
+                if (provider) void deleteProvider(provider.id);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

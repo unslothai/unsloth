@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
 import {
+  useDrafterCapability,
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
@@ -26,6 +27,7 @@ import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { DrafterSection } from "./drafter-section";
 import { FieldHint } from "./field-hint";
 import { LoraParamsSection } from "./lora-params-section";
 import { TrainingHyperparametersSection } from "./training-hyperparameters-section";
@@ -47,6 +49,9 @@ export function ParamsSection({
   mode?: "simple" | "advanced";
 }): ReactElement {
   const t = useT();
+  // Simple mode hides the section, but a drafter turned on earlier still needs its capability.
+  const drafterEnabled = useTrainingConfigStore((state) => state.drafterEnabled);
+  useDrafterCapability(drafterEnabled);
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       projectName: state.projectName,
@@ -487,6 +492,7 @@ export function ParamsSection({
             epochsSliderMax={epochsSliderMax}
           />
         )}
+        {showAdvanced && <DrafterSection />}
       </div>
     </div>
   );

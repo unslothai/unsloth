@@ -16,6 +16,7 @@ on the body. The module is loaded standalone with a double for routes.inference.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import time
@@ -82,6 +83,7 @@ def _inference_double(
     backend,
     catalog,
     orchestrator = None,
+    mlx = None,
 ):
     """Stand-in for routes.inference. Deliberately not a sys.modules entry: stubbing it
     globally broke two unrelated route tests when the suite ran in one process."""
@@ -90,12 +92,27 @@ def _inference_double(
     inference._llama_public_model_id = lambda b, fallback = None: b._openai_advertised_id
     inference._peek_inference_backend = lambda: orchestrator
     inference._orchestrator_public_model_id = lambda b: b.active_model_name
+    inference._active_mlx_backend = lambda: mlx
 
     async def _objects(quant_pins = False):
         return catalog
 
     inference._openai_catalog_objects = _objects
     inference.model_slots = types.SimpleNamespace(visible_loading = lambda: None)
+
+    # Inert: is_disconnected() never returns under TestClient; one test supplies its own watcher.
+    async def _await_disconnect_then_cancel(request, cancel_event):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return
+
+    async def _stop_watcher(watcher, timeout_s = 1.0):
+        watcher.cancel()
+        await asyncio.wait({watcher}, timeout = timeout_s)
+
+    inference._await_disconnect_then_cancel = _await_disconnect_then_cancel
+    inference._stop_local_disconnect_cancel_watcher = _stop_watcher
     return inference
 
 
@@ -106,6 +123,7 @@ def _load(
     backend = None,
     catalog = None,
     orchestrator = None,
+    mlx = None,
 ):
     """The real routes/llama_compat.py, with routes.inference replaced by a double."""
     global _MOD
@@ -120,6 +138,7 @@ def _load(
         backend if backend is not None else _Backend(),
         CATALOG if catalog is None else catalog,
         orchestrator,
+        mlx,
     )
     _MOD._inference = lambda: double
     return _MOD
@@ -735,6 +754,45 @@ def test_nothing_loaded_is_503_in_llama_servers_error_shape(monkeypatch):
     assert upstream.calls == []
 
 
+class _MLXTokenizer:
+    """resolve_completion_prompt's rules: only a leading string gets BOS (1), empty raises."""
+
+    def resolve_completion_prompt(
+        self,
+        prompt,
+        cancel_event = None,
+    ):
+        pieces = [prompt] if isinstance(prompt, str) else prompt
+        ids = []
+        for index, piece in enumerate(pieces):
+            if isinstance(piece, int):
+                ids.append(piece)
+            elif isinstance(piece, str):
+                if piece:
+                    ids += ([1] if index == 0 else []) + [40 + i for i in range(len(piece))]
+            else:
+                raise ValueError("Invalid prompt.")
+        if not ids:
+            raise ValueError("The prompt is empty.")
+        return {"ids": ids, "text": ""}
+
+
+def test_tokenize_answers_from_a_resident_mlx_model(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        special = c.post("/tokenize", json = {"content": "ab", "add_special": True})
+        plain = c.post("/tokenize", json = {"content": "ab"})
+        empty = c.post("/tokenize", json = {"content": ""})
+        bad = c.post("/tokenize", json = {"content": 3})
+        pieces = c.post("/tokenize", json = {"content": "ab", "with_pieces": True})
+    assert special.json() == {"tokens": [1, 40, 41]} and plain.json() == {"tokens": [40, 41]}
+    assert empty.json() == {"tokens": []}
+    assert bad.status_code == 400 and pieces.status_code == 400
+    assert upstream.calls == []
+
+
 def test_an_unload_racing_the_request_is_503_not_500(monkeypatch):
     """unload_model flips is_loaded before it clears _port."""
     backend = _Backend()
@@ -1134,6 +1192,7 @@ def _no_local_gguf(monkeypatch):
 
     monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", lambda *a, **k: None)
     monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: (None, {}))
     monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
     return resolver
@@ -1380,6 +1439,118 @@ def test_management_unload_keeps_a_resident_of_another_quant(monkeypatch, _no_lo
     assert calls == [("unload", "/media/models/qwen/model.gguf")]
 
 
+def test_management_unload_keeps_a_resident_of_another_named_build(monkeypatch, _no_local_gguf):
+    build = QWEN + ":beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: (
+            "/media/models/qwen/model.gguf",
+            "beta-Q4_K_M",
+            QWEN,
+        ),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
+
+
+def test_management_unload_keeps_a_resident_of_another_quant_directory_build(
+    monkeypatch, _no_local_gguf
+):
+    build = "custom-model:Q4_K_M/beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/custom", "Q4_K_M/beta-Q4_K_M", "custom-model"),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M/beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    backend.model_identifier = "/media/models/custom"
+    backend._openai_advertised_id = "custom-model"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
+
+
+def test_management_unload_releases_a_build_loaded_by_its_rekeyed_stem(monkeypatch, _no_local_gguf):
+    build = QWEN + ":Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/qwen/model.gguf", "Q4_K_M", QWEN),
+    )
+
+    def _pinned(requested, **kwargs):
+        return {build: "Q4_K_M", QWEN + ":beta-q4_k_m": "Q4_K_M"}.get(requested)
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    backend = _Backend()
+    backend.hf_variant = "beta-Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls != []
+
+
+def test_an_indexed_build_key_matches_its_listed_base_row(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M" if requested == QWEN + ":beta-Q4_K_M" else None,
+    )
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    assert mod._catalog_match(catalog, QWEN + ":beta-Q4_K_M") is not None
+    assert mod._catalog_match(catalog, QWEN + ":gamma-Q4_K_M") is None
+
+
+def test_a_build_key_is_matched_after_a_cold_index_scan(monkeypatch, _no_local_gguf):
+    import asyncio
+
+    warm = []
+
+    def _pinned(requested, allow_scan = True):
+        if allow_scan:
+            warm.append(requested)
+        return "beta-Q4_K_M" if warm and requested == QWEN + ":beta-Q4_K_M" else None
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    async def _catalog():
+        return catalog
+
+    monkeypatch.setattr(mod, "_chat_catalog", _catalog)
+
+    assert asyncio.run(mod._catalog_row(QWEN + ":beta-Q4_K_M"))[0] == QWEN + ":beta-Q4_K_M"
+
+
 def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
     """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
     monkeypatch.setattr(
@@ -1479,3 +1650,87 @@ def test_management_unload_routes_a_kept_slot_quant_past_the_primary(monkeypatch
     with _client(mod) as c:
         assert c.post("/models/unload", json = {"model": pin["id"]}).status_code == 200
     assert calls == [("unload", pin["id"])]
+
+
+def test_tokenize_takes_llama_server_mixed_content_on_mlx(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        mixed = c.post("/tokenize", json = {"content": ["ab", 7, "c"]})
+        leading_special = c.post("/tokenize", json = {"content": ["ab", 7], "add_special": True})
+        bad = c.post("/tokenize", json = {"content": [{}]})
+    assert mixed.json() == {"tokens": [40, 41, 7, 40]}
+    assert leading_special.json() == {"tokens": [1, 40, 41, 7]}
+    assert bad.status_code == 400
+    assert upstream.calls == []
+
+
+def test_tokenize_refuses_parse_special_false_on_mlx(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        refused = c.post("/tokenize", json = {"content": "ab", "parse_special": False})
+        allowed = c.post("/tokenize", json = {"content": "ab", "parse_special": True})
+    assert refused.status_code == 400 and "parse_special" in refused.text
+    assert allowed.json() == {"tokens": [40, 41]}
+    assert upstream.calls == []
+
+
+def test_tokenize_reports_an_mlx_unload_race_as_an_unavailable_engine(monkeypatch):
+    class _Racing:
+        def resolve_completion_prompt(
+            self,
+            prompt,
+            cancel_event = None,
+        ):
+            raise RuntimeError("No active model")
+
+    mod = _load(backend = _Backend(loaded = False), mlx = _Racing())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        raced = c.post("/tokenize", json = {"content": "ab"})
+    assert raced.status_code == 503
+    assert upstream.calls == []
+
+
+def test_tokenize_rejections_are_invalid_request_errors(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    _with_upstream(monkeypatch, mod, _Upstream())
+    with _client(mod) as c:
+        bad = c.post("/tokenize", json = {"content": 3})
+        unavailable = c.post("/tokenize", json = {"content": "ab", "parse_special": False})
+    assert bad.status_code == 400 and bad.json()["error"]["type"] == "invalid_request_error"
+    assert unavailable.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_tokenize_stops_waiting_for_the_generation_lock_when_the_client_goes(monkeypatch):
+    import threading
+
+    started = threading.Event()
+
+    class _Blocked:
+        def resolve_completion_prompt(
+            self,
+            prompt,
+            cancel_event = None,
+        ):
+            started.set()
+            # Event.wait, not a spin: a busy loop here starves the loop thread of the GIL.
+            assert cancel_event.wait(10), "the disconnect never reached the waiting resolve"
+            raise InterruptedError("Request cancelled.")
+
+    mod = _load(backend = _Backend(loaded = False), mlx = _Blocked())
+    _with_upstream(monkeypatch, mod, _Upstream())
+
+    async def disconnected(request, cancel_event):
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        cancel_event.set()
+
+    monkeypatch.setattr(mod._inference(), "_await_disconnect_then_cancel", disconnected)
+    with _client(mod) as c:
+        gone = c.post("/tokenize", json = {"content": "ab"})
+    assert gone.status_code == 499

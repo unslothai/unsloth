@@ -68,6 +68,7 @@ _MAX_TASK_CLASSIFY_GGUFS = _catalog_classification._MAX_TASK_CLASSIFY_GGUFS
 _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = _catalog_classification._PLACEHOLDER_DIFFUSION_GGUF_ARCHS
 _TASK_CLASSIFY_READ_SECONDS = _catalog_classification._TASK_CLASSIFY_READ_SECONDS
 _gguf_family_buildable = _catalog_classification._gguf_family_buildable
+_diffusion_gguf_family_hints = _catalog_classification._diffusion_gguf_family_hints
 _is_h3_bundle_gguf_hint = _catalog_classification._is_h3_bundle_gguf_hint
 SPEECH_GGUF_ARCHS = _gguf_archs.SPEECH_GGUF_ARCHS
 is_speech_gguf_architecture = _gguf_archs.is_speech_gguf_architecture
@@ -964,6 +965,7 @@ def collect_local_models(
     thing the two do not share; see :func:`_scan_ollama_dir`.
     """
     from storage.studio_db import list_scan_folders
+    from hub.services.models.local_inventory import run_custom_folder_bounded_sync
     from hub.utils import gguf as gguf_utils
     from hub.utils import inventory_scan as hf_cache_scan
     from utils.models.model_config import detect_gguf_model
@@ -1004,11 +1006,14 @@ def collect_local_models(
 
     state_repositories = []
     state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
-    state_cache_dirs.extend(
-        cache_dir
-        for folder in custom_folders
-        for cache_dir in hf_cache_scan.scan_folder_hf_caches(Path(folder["path"]))
-    )
+    for folder in custom_folders:
+        state_cache_dirs.extend(
+            run_custom_folder_bounded_sync(
+                str(folder["path"]),
+                lambda path = Path(folder["path"]): hf_cache_scan.scan_folder_hf_caches(path),
+            )
+            or ()
+        )
     for cache_dir in dict.fromkeys(state_cache_dirs):
         try:
             for repo_dir in cache_dir.glob("models--*"):
@@ -1061,81 +1066,92 @@ def collect_local_models(
     from hub.services.models.local_inventory import _local_model_path_is_symlink
 
     custom_identities: set[str] = set()
-    for folder in custom_folders:
-        folder_path = Path(folder["path"])
-        try:
-            # Filter Ollama .studio_links/ from generic scanners: duplicates and internal paths.
-            _generic = [
-                m
-                for m in (
-                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + [
-                        row
-                        for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
-                        for row in _scan_hf_cache(
-                            cache_dir,
-                            active_cache = False,
-                            variant_states = variant_states,
-                        )
-                    ]
-                    + _scan_lmstudio_dir(folder_path)
-                )
-                if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
-            ]
-            if folder.get("recursive"):
-                _generic += _scan_nested_compat_rows(
-                    folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
-                )
-            _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
-            custom_models = []
-            for model in _generic:
-                path = Path(model.path)
-                is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
-                if not is_gguf_row or model.partial:
-                    custom_models.append(model)
-                    continue
-                if path.is_dir():
-                    patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
-                    if any(
-                        detect_gguf_model(str(file), model_root = str(folder_path)) is not None
-                        for pattern in patterns
-                        for file in path.glob(pattern)
-                        if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
-                    ):
-                        custom_models.append(model)
-                elif (
-                    detect_gguf_model(
-                        model.path,
-                        model_root = str(folder_path),
+
+    def _scan_custom_folder(folder_path: Path, recursive: bool) -> list:
+        # Filter Ollama .studio_links/ from generic scanners: duplicates and internal paths.
+        _generic = [
+            m
+            for m in (
+                _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                + [
+                    row
+                    for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
+                    for row in _scan_hf_cache(
+                        cache_dir,
+                        active_cache = False,
+                        variant_states = variant_states,
                     )
-                    is not None
+                ]
+                + _scan_lmstudio_dir(folder_path)
+            )
+            if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
+        ]
+        if recursive:
+            _generic += _scan_nested_compat_rows(
+                folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
+            )
+        _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
+        custom_models = []
+        for model in _generic:
+            path = Path(model.path)
+            is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
+            if not is_gguf_row or model.partial:
+                custom_models.append(model)
+                continue
+            if path.is_dir():
+                patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
+                if any(
+                    detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                    for pattern in patterns
+                    for file in path.glob(pattern)
+                    if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
                 ):
                     custom_models.append(model)
-            custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
-            if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
-                # Registering ~/.hermes/models was how Hermes downloads were listed before this
-                # scan; the walk lists every download a second time under the same id. Anything
-                # else kept in that folder is still the user's custom row.
-                staged = {
-                    _compat_inventory_path_identity(m.path) for m in _scan_hermes_dir(folder_path)
-                }
-                custom_models = [
-                    m
-                    for m in custom_models
-                    if _compat_inventory_path_identity(m.path) not in staged
-                ]
-            if len(custom_models) < _MAX_MODELS_PER_FOLDER:
-                custom_models += _scan_ollama_dir(
-                    folder_path,
-                    limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
-                    materialize_links = materialize_ollama_links,
+            elif (
+                detect_gguf_model(
+                    model.path,
+                    model_root = str(folder_path),
                 )
+                is not None
+            ):
+                custom_models.append(model)
+        custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
+        if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
+            # Registering ~/.hermes/models was how Hermes downloads were listed before this
+            # scan; the walk lists every download a second time under the same id. Anything
+            # else kept in that folder is still the user's custom row.
+            staged = {
+                _compat_inventory_path_identity(m.path) for m in _scan_hermes_dir(folder_path)
+            }
+            custom_models = [
+                m for m in custom_models if _compat_inventory_path_identity(m.path) not in staged
+            ]
+        if len(custom_models) < _MAX_MODELS_PER_FOLDER:
+            custom_models += _scan_ollama_dir(
+                folder_path,
+                limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                materialize_links = materialize_ollama_links,
+            )
+        return custom_models
+
+    for folder in custom_folders:
+        folder_path = Path(folder["path"])
+        row_path = str(folder.get("path", folder_path))
+        try:
+            custom_models = run_custom_folder_bounded_sync(
+                row_path,
+                lambda path = folder_path, recursive = bool(folder.get("recursive")): (
+                    _scan_custom_folder(path, recursive)
+                ),
+            )
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             # Keep the reason so the folder list can show it instead of nothing.
-            record_scan_failure(str(folder.get("path", folder_path)), e)
+            record_scan_failure(row_path, e)
             continue
-        note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
+        if custom_models is None:
+            continue
+        note_scan_folder_scanned(row_path, found = bool(custom_models))
         # Links below the scan root are distinct aliases (as in the Hub inventory), not twins.
         for m in custom_models:
             try:
@@ -1340,8 +1356,8 @@ async def list_local_models(
     Redacted as ``/api/hub/local`` is: this router mirrors it over the same scan roots, so
     leaving it alone recovers the layout that route hides.
     """
-    # Resolve all scan directories up front.
-    sources = _compat_local_inventory_sources()
+    # Off the loop: the probes stat every source root.
+    sources = await asyncio.to_thread(_compat_local_inventory_sources)
     hf_cache_dir = sources.hf_cache_dir
     legacy_hf = sources.legacy_hf
     hf_default = sources.hf_default
@@ -1405,7 +1421,7 @@ async def get_scan_folders(
     """List all registered custom model scan folders. Redacted like ``/api/hub/scan-folders``."""
     from storage.studio_db import list_scan_folders
 
-    folders = list_scan_folders()
+    folders = await asyncio.to_thread(list_scan_folders)
     # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
     await asyncio.to_thread(refresh_failed_scan_folders, folders)
     return redact_inventory_host_paths(
@@ -3215,6 +3231,50 @@ async def scan_diffusion_loras(
     }
 
 
+@router.get("/diffusion-embeddings")
+async def scan_diffusion_embeddings(
+    family: Optional[str] = Query(
+        default = None, description = "Filter to embeddings this diffusion family can use"
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """List textual-inversion embeddings in ``<studio_home>/embeddings/diffusion`` for the Images page.
+
+    The filename stem is the trigger word: naming it in a prompt or negative prompt uses the embedding.
+    ``family`` keeps only files of that family's format (an unknown family, or one without embeddings,
+    lists none). One directory scan reading safetensors headers only; no network.
+    """
+    from core.inference import diffusion_embeddings
+
+    kind = None
+    if family:
+        fam = next((f for f in _diffusion_families() if f.name == family.strip().lower()), None)
+        kind = getattr(fam, "textual_inversion", None) if fam is not None else None
+    entries = (
+        await asyncio.to_thread(diffusion_embeddings.list_embeddings, kind)
+        if kind is not None or not family
+        else []
+    )
+    return {
+        "embeddings": [
+            {
+                "id": e.id,
+                "trigger": e.id,
+                "kind": e.kind,
+                "vectors": e.vectors,
+                "size_bytes": e.size_bytes,
+            }
+            for e in entries
+        ],
+        "embeddings_dir": str(diffusion_embeddings.embeddings_dir()),
+    }
+
+
+def _diffusion_families():
+    from core.inference.diffusion_families import _FAMILIES
+    return _FAMILIES
+
+
 @router.get("/diffusion-controlnets")
 async def scan_diffusion_controlnets(
     family: Optional[str] = Query(
@@ -4757,13 +4817,17 @@ async def get_gguf_variants(
     # it is the only name an API-key caller has for a local GGUF (see the /hub twin).
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
+    from hub.services.models import gguf_variants as hub_gguf_variants
+
     if account_access.managed_account():
-        await asyncio.to_thread(
-            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        await hub_gguf_variants.listing_thread(
+            offline,
+            account_access.require_model_access,
+            repo_id,
+            **({"offline": True} if offline else {}),
         )
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
-        from hub.services.models import gguf_variants as hub_gguf_variants
 
         answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
@@ -5046,23 +5110,19 @@ def _one_shard_family_of(entries: list) -> list:
 
 
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
-    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy quant-label spelling, None
-    for neither.
-
-    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because doing it once
-    up front strips a qualified key's own path punctuation and folds ``exp-a/`` into ``expa/``.
-    Directory-qualified keys keep their legacy bare spelling, since stored pins predate them. Root-level H3
-    stems do not: a bare quant names both FL2VA and Ref2VA, and picking the first file would load a
-    different task.
-    """
-    from hub.utils.gguf import is_qualified_gguf_variant_key
+    """rank an exact variant as 0, its legacy quant alias as 1, or no match as None without normalizing paths."""
+    from hub.utils.gguf import gguf_variant_family, is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
     key = _gguf_variant_key(rel_path)
-    if _variant_keys_match(key, want):
+    # a second same-quant build in a custom folder is keyed by its family (#13926)
+    want_family = gguf_variant_family(want) if want.lower().endswith(".gguf") else want
+    if _variant_keys_match(key, want) or (
+        gguf_variant_family(rel_path).casefold() == want_family.strip().casefold()
+    ):
         return 0
     if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
         return None
@@ -5070,10 +5130,7 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
 
 def _variant_keys_match(key: str, want: str) -> bool:
-    """Whether *want* is *key*, for the exact-key test. ``_normalized_quant_label`` strips hyphens and
-    underscores, which is right for a bare quant (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong
-    for a path: it folds ``exp-a/`` and ``expa/`` into one, so two advertised checkpoints both answered to
-    the other's key."""
+    """match exact variant keys without folding punctuation in qualified paths."""
     from hub.utils.gguf import is_qualified_gguf_variant_key
 
     if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
@@ -5501,6 +5558,15 @@ def _repo_model_can_chat(repo_info, selected: Optional[Path] = None) -> Optional
     return None
 
 
+def _repo_hosts_artifacts(repo_id: str) -> bool:
+    """``mirror_hosts_artifacts``, False when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import mirror_hosts_artifacts
+        return mirror_hosts_artifacts(repo_id)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        return False
+
+
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
@@ -5511,6 +5577,14 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
         active_root = None
 
     seen_lower: dict[str, dict] = {}
+    cache_scans = list(cache_scans)
+    # Across EVERY root, as the cached-model scan decides it: an artifact mirror whose GGUF sits in one root and
+    # whose diffusers folders sit in the other is a GGUF repo, so its folders-only copy is no row of this listing.
+    try:
+        from hub.services.models.cache_inventory import _artifact_gguf_repo_ids
+        artifact_gguf_keys = _artifact_gguf_repo_ids(cache_scans)
+    except Exception:  # noqa: BLE001 -- no table means no artifact mirrors
+        artifact_gguf_keys = set()
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -5522,6 +5596,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     continue
                 if _repo_has_gguf_files(repo_info):
                     continue
+                # Its GGUF in another root: listed (its delete is scoped to this root and frees what it shows) but as
+                # a companion of that GGUF, never a single-file or pipeline pick.
+                cross_root_folders = repo_id.lower() in artifact_gguf_keys
                 selected, model_load_id = _repo_model_selection(repo_info, active_root)
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):
                     # That guard withheld these because this schema could describe neither a partial nor a path; it now
@@ -5549,9 +5626,12 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
-                is_partial = _cached_repo_partial(
-                    repo_id, Path(repo_info.repo_path), selected
-                ) or _repo_pipeline_missing_denoiser(repo_info, selected)
+                # The FP8 artifact mirror lists as its root checkpoint, as released builds did: its diffusers folders
+                # belong to the BASE pick, and a pipeline pick of the repo itself is refused.
+                artifact_checkpoint = _repo_hosts_artifacts(repo_id) and not cross_root_folders
+                is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path), selected) or (
+                    not artifact_checkpoint and _repo_pipeline_missing_denoiser(repo_info, selected)
+                )
                 # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
                 if existing is None or (not is_partial, total_size) > (
                     not bool(existing.get("partial")),
@@ -5559,13 +5639,17 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 ):
                     row_task = _cached_repo_task(repo_info, selected)
                     is_diffusers = _repo_is_diffusers(repo_info, selected)
-                    has_pipeline_index = _repo_has_pipeline_index(repo_info, selected)
+                    has_pipeline_index = not artifact_checkpoint and _repo_has_pipeline_index(
+                        repo_info, selected
+                    )
                     row = {
                         "repo_id": repo_id,
                         "size_bytes": total_size,
                         "task": row_task,
                     }
-                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    pipeline_artifact_kind = (
+                        None if artifact_checkpoint else _diffusers_pipeline_artifact_kind(selected)
+                    )
                     if pipeline_artifact_kind is not None:
                         row["artifact_kind"] = pipeline_artifact_kind
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
@@ -5587,7 +5671,7 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         row["partial"] = True
                     # Listed, so tens of GB of companion weights stay visible and deletable,
                     # but flagged, so no picker offers a denoiser-less repo as a load.
-                    if _is_sd_cpp_companion_repo(repo_id):
+                    if _is_sd_cpp_companion_repo(repo_id) or cross_root_folders:
                         row["companion"] = True
                     # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
                     if row["task"] is not None and not has_pipeline_index:

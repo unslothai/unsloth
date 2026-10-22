@@ -15,7 +15,7 @@ from core.inference.audio_workflows import inventory_audio_workflows
 ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 LocalArtifactKind = Literal[
     "diffusers_pipeline",
@@ -402,7 +402,7 @@ class ScanFolderInfo(BaseModel):
     recursive: bool = Field(False, description = "Sub-folders are scanned too")
     status: str = Field(
         default = "ok",
-        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+        description = "Last scan result: ok, permission_denied, missing, unreadable, partial, or slow",
     )
 
 

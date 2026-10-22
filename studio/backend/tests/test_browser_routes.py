@@ -35,6 +35,20 @@ def test_the_shell_is_isolated():
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
+def test_the_shells_page_may_go_fullscreen_without_leaving_its_sandbox():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("sandbox", "allow-scripts allow-forms");' in shell
+    assert 'page.setAttribute("allowfullscreen", "");' in shell
+    assert "allow-same-origin" not in shell
+
+
+def test_the_shells_page_may_copy_to_the_clipboard_but_not_read_it():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("allow", "clipboard-write");' in shell
+    assert shell.count('setAttribute("allow",') == 1 and "page.allow" not in shell
+    assert "clipboard-read" not in shell
+
+
 def test_the_print_shell_runs_only_its_own_script():
     import base64
     import hashlib
@@ -87,6 +101,39 @@ def test_the_shell_guards():
     assert "requestSubmit = " not in shell
 
 
+def test_trusted_input_uses_a_private_channel():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "if (event.isTrusted && (!scriptedEdit || editingKey)) edited(true);" in boot
+    assert "inputChannel.port1.postMessage.bind(inputChannel.port1)" in boot
+    assert "if (!samePage(next)) edited(false);" in boot
+    assert 'removeEventListener("input"' not in boot
+
+
+def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
+    # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert boot.count('post({ type: "needsBrowser" });') == 1
+    for guard in (
+        "if (refused) return;",
+        'for (const name of ["open", "deleteDatabase", "databases"])',
+        "IDBFactory.prototype[name] = function (...args) {",
+        'if (error?.name !== "SecurityError") return false;',
+        "refusals.add(error);",
+        'return name === "databases" ? result.catch(',
+        "if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused();",
+        "if (refusals.has(event.reason)) tellRefused();",
+        'for (const type of ["fullscreenerror", "webkitfullscreenerror"])',
+        "if (!document.fullscreenEnabled) tellRefused();",
+    ):
+        assert guard in boot, guard
+    assert boot.index("IDBFactory.prototype[name] = ") < boot.index("const shellPathname")
+    assert "securityError(" not in boot
+    # The page may replace DOMException or Promise before it touches IndexedDB.
+    assert "instanceof DOMException" not in boot and "instanceof Promise" not in boot
+
+
 def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
     shell = browser_mod._FRAME_HTML
     # Inside boot, where cfg and post exist, before any page script can capture fetch.
@@ -97,6 +144,9 @@ def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
     for guard in (
         "return nativeFetch(input, init).finally(done);",
         "/^(?:about:)?srcdoc(?=[?#]|$)/",
+        "/^\\/?cdoc(?=[?#]|$)/",
+        # Back to Next.js's first route would otherwise route to /cdoc and crash the page.
+        "if (state?.__N && state.as === raw) state = { ...state, as: path };",
     ):
         assert guard in shell, guard
 
@@ -111,6 +161,146 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
     assert shell.index("pageUrl = next;") < shell.index(
         'routedBase?.setAttribute("href", pageUrl);'
     )
+
+
+def test_the_pages_history_stays_out_of_studios():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "history.pushState" not in boot and "originalPush" not in boot
+    for guard in (
+        'if (method === "pushState") pushRoute(state, title, next);',
+        "history.back = () => history.go(-1);",
+        "history.forward = () => history.go(1);",
+        'post({ type: step < 0 ? "back" : "forward" });',
+        'dispatchEvent(new PopStateEvent("popstate", { state: history.state }));',
+    ):
+        assert guard in boot, guard
+
+
+def test_an_anchor_jump_is_a_back_step_that_returns_to_the_same_spot():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    follow = boot[boot.index("const followHash = ") : boot.index("const navigate = ")]
+    assert 'if (next.href !== pageUrl) pushRoute(null, "", next.href);' in follow
+    assert follow.index("pushRoute(") < follow.index("scrollToHash(hash);")
+    for guard in (
+        "routes[route].scroll = { x: scrollX, y: scrollY };",
+        'if (target.scroll && history.scrollRestoration !== "manual") scrollTo(target.scroll.x, target.scroll.y);',
+        'post({ type: "history", back: Boolean(routes[stepFrom(-1)]), forward: Boolean(routes[stepFrom(1)]) });',
+        "routes[route].skip = navigator.userActivation?.hasBeenActive === false;",
+        "const to = stepFrom(data.delta === -1 ? -1 : 1);",
+        'post({ type: to < route ? "back" : "forward" });',
+    ):
+        assert guard in boot, guard
+
+
+def test_a_fresh_page_reports_its_history_and_skips_entries_only_until_the_reader_acts():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    report = boot[
+        boot.index("const report = () => {") : boot.index('if (document.readyState === "loading")')
+    ]
+    # A remounted frame starts with one route: the panel must not keep the old frame's Back and Forward.
+    assert (
+        report.index('type: "loaded"')
+        < report.index("tellHistory();")
+        < report.index("if (cfg.scroll && ")
+    )
+    # As Chromium's intervention: a gesture at any time makes the page's entries reachable again.
+    assert (
+        "while (routes[to]?.skip && navigator.userActivation?.hasBeenActive === false) to += step;"
+        in boot
+    )
+    assert (
+        "isActive === false"
+        not in boot[boot.index("const routes = ") : boot.index("const moveRoute = ")]
+    )
+
+
+def test_moving_between_fragments_fires_hashchange_for_hash_routers():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert (
+        'dispatchEvent(new HashChangeEvent("hashchange", { oldURL: from, newURL: pageUrl }));'
+        in boot
+    )
+    assert 'location.href.split("#")[0] + new URL(next).hash' in boot
+    move = boot[boot.index("const moveRoute = ") : boot.index("for (const method of")]
+    assert move.index('new PopStateEvent("popstate"') < move.index("tellHashChange(from);")
+    follow = boot[boot.index("const followHash = ") : boot.index("const navigate = ")]
+    assert follow.index("scrollToHash(hash);") < follow.index("tellHashChange(from);")
+
+
+def test_a_scripts_fragment_change_is_a_back_step_of_the_page():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    # location.hash = "..." (AngularJS, hand-rolled hash routers) is a native push: history.back() must undo it.
+    start = boot.index("let nativeLength = history.length;")
+    hashes = boot[start : boot.index("// Catch navigations the click")]
+    for guard in (
+        "if (!event.isTrusted) return;",
+        "const pushed = history.length > nativeLength;",
+        'if (pushed) pushRoute(history.state, "", next.href);',
+        # A location.replace redirect stays one step, so Back cannot land on it and redirect again.
+        'setRoute(history.state, "", next.href);',
+    ):
+        assert guard in hashes, guard
+
+
+def test_a_page_that_manages_its_own_scroll_is_left_where_it_puts_itself():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (cfg.scroll && history.scrollRestoration !== "manual") {' in shell
+
+
+def test_the_shell_reports_and_restores_where_the_page_was_scrolled():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    for guard in (
+        'post({ type: "scroll", x: scrollX, y: scrollY });',
+        'if (scrollTimer && message.type === "navigate") reportScroll();',
+        "scrollTimer ||= setTimeout(reportScroll, 200);",
+        "const restore = () => scrollTo(cfg.scroll.x, cfg.scroll.y);",
+        'addEventListener("load", () => { if (scrollY === settled) restore(); }, { once: true });',
+    ):
+        assert guard in boot, guard
+    assert boot.index("if (cfg.scroll && ") < boot.index(
+        "} else if (new URL(pageUrl).hash) scrollToHash("
+    )
+    assert "scroll: data.scroll || null" in shell
+
+
+def test_paths_resolved_against_the_shells_location_land_on_the_page():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "window.URL = new Proxy(NativeURL, {" in boot
+    assert 'if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];' in boot
+    assert "else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];" in boot
+    assert "return Reflect.construct(target, args, newTarget);" in boot
+    assert boot.index("window.URL = ") < boot.index("const nativeFetch")
+
+
+def test_a_clicked_link_the_page_loads_in_full_is_followed():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (!raw.startsWith("#")) post({ type: "linkClick", url: resolve(raw) });' in shell
+    assert (
+        'if (event.data.type === "linkClick") clicked = { url: event.data.url, at: Date.now() };'
+        in shell
+    )
+    assert "const FOLLOW_CLICK_MS = 3000;" in shell
+    assert (
+        "Date.now() - clicked.at < FOLLOW_CLICK_MS && sameOrigin(clicked.url, event.blockedURI)"
+        in shell
+    )
+    assert shell.index('type: "navigate", url: clicked.url') < shell.index(
+        'type: "scriptNavigation"'
+    )
+
+
+def test_a_clicked_link_is_followed_after_an_unfollowed_script_navigation():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (event.effectiveDirective !== "frame-src") return;' in shell
+    assert "if (blocked || " not in shell
+    assert shell.index('type: "navigate", url: clicked.url') < shell.index("if (blocked) return;")
 
 
 def test_annotate_code_is_sent_only_when_annotating():
@@ -386,6 +576,39 @@ def test_a_download_keeps_the_servers_file_name(monkeypatch):
     assert browser_mod.NAME_HEADER in browser_mod.EXPOSED_HEADERS
 
 
+@pytest.mark.parametrize(
+    "disposition, attachment",
+    [
+        ("attachment; filename=x.csv", True),
+        ('Attachment ; filename="x.csv"', True),
+        ("inline; filename=x.csv", False),
+        (None, False),
+    ],
+)
+def test_an_attachment_is_marked_so_the_panel_saves_it(monkeypatch, disposition, attachment):
+    headers = [("Content-Type", "text/csv")] + (
+        [("Content-Disposition", disposition)] if disposition else []
+    )
+    meta = {"url": "https://example.com/export", "headers": headers}
+    _fetch(monkeypatch, (None, b"a,b\n1,2\n", "text/csv"), meta)
+    response = _call()
+    assert response.headers["x-unsloth-browser-kind"] == "raw"
+    assert (response.headers.get("x-unsloth-browser-attachment") == "1") is attachment
+    assert browser_mod.ATTACHMENT_HEADER in browser_mod.EXPOSED_HEADERS
+
+
+def test_an_html_attachment_is_saved_not_shown(monkeypatch):
+    page = b"<!doctype html><html><head><base href=/x/></head><body>report</body></html>"
+    headers = [("Content-Disposition", 'attachment; filename="report.html"')]
+    meta = {"url": "https://example.com/export", "headers": headers, "filename": "report.html"}
+    _fetch(monkeypatch, (None, page, "text/html"), meta)
+    response = _call()
+    assert response.headers["x-unsloth-browser-kind"] == "raw"
+    assert response.headers["x-unsloth-browser-attachment"] == "1"
+    assert response.headers["x-unsloth-browser-filename"] == "report.html"
+    assert response.body == page
+
+
 def test_fetch_arguments(monkeypatch):
     calls = _fetch(monkeypatch, (None, b"<html></html>", "text/html"))
     _call(method = "POST", body = "q=a+b", max_bytes = 4096)
@@ -486,6 +709,7 @@ def test_bot_checks_are_told_apart_from_plain_refusals():
     assert not _is_bot_check(503, headers(Server = "cloudflare"))
     assert not _is_bot_check(404, headers(Server = "cloudflare"))
     assert not _is_bot_check(403, headers(Server = "nginx"))
+    assert not _is_bot_check(403, headers(Server = "cloudflare", cf_cache_status = "DYNAMIC"))
 
 
 def test_a_byte_order_mark_decides_the_encoding():
@@ -852,6 +1076,7 @@ def _serve(
     monkeypatch.setattr(
         tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["127.0.0.1"])
     )
+    monkeypatch.setattr(tools, "_explicit_proxy_applies", lambda scheme, host: False)
     return f"http://example.com:{server.getsockname()[1]}/missing"
 
 

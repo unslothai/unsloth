@@ -6,6 +6,8 @@ need NVIDIA CUDA, Triton and torchao (they force the lever on, so an arch outsid
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from core.inference import diffusion_convrot_quant as cq
@@ -1493,7 +1495,9 @@ def _fake_stock_fusions(
         calls.append(root)
         if qkv:
             a = root.attn
-            a.__dict__[qf._QKV_ATTR] = (object(), a.to_q, a.to_k, a.to_v)
+            # the fused stand-in sits on the parts' card, as _qkv_intact checks since the layer split
+            fused = types.SimpleNamespace(weight = a.to_q.weight)
+            a.__dict__[qf._QKV_ATTR] = (fused, a.to_q, a.to_k, a.to_v)
             a.to_out[0].__dict__[qf._OUT_MARK] = True
         return {}
 
@@ -1564,6 +1568,27 @@ def test_all_cublas_yield_respects_the_q21_kill_switch_and_other_models(monkeypa
     other = torch.nn.Sequential(*_q21_model().children())  # same Linears, not a Qwen-Image-2.1 root
     assert g8._swap(other) == 8
     g8.uninstall(other)
+
+
+def test_all_cublas_gate_keeps_the_swap_for_an_explicit_device(monkeypatch, tmp_path):
+    """An offload path names the card: the resident-only stock-path fusions do not run there, so nothing is yielded."""
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    model = _q21_model()
+    calls = _fake_stock_fusions(monkeypatch, model)
+    assert g8._swap(model, device = "cuda:0") == 8
+    assert calls == []
+    g8.uninstall(model)
+
+
+def test_yield_judges_each_group_on_its_own_card(monkeypatch, tmp_path):
+    """A layer split swaps card by card: a group whose weights sit on another card is left to that card's pass."""
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    model = _q21_model()
+    _fake_stock_fusions(monkeypatch, model)
+    monkeypatch.setattr(g8, "_weight_card", lambda m: 1)
+    assert g8._yielded(model, 0) == set()
+    monkeypatch.setattr(g8, "_weight_card", lambda m: 0)
+    assert len(g8._yielded(model, 0)) == 7
 
 
 def test_gate_routes_to_cublas_needs_every_bucket(monkeypatch, tmp_path):

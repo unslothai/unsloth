@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       torch_versions:
-        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0 and 2.11.0 build on win_amd64 only)'
+        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0, 2.11.0 and 2.12.0: every package on win_amd64, causal-conv1d and mamba-ssm on Linux)'
         type: string
         default: '2.13.0,2.14.0'
       python_versions:
@@ -37,7 +37,7 @@ on:
         type: string
         default: '3.13'
       packages:
-        description: 'packages, comma separated (flash-attn, causal-conv1d, mamba-ssm)'
+        description: 'packages, comma separated (flash-attn, causal-conv1d, mamba-ssm; mamba-ssm also builds its extension-free py3-none-any wheel)'
         type: string
         default: 'flash-attn,causal-conv1d,mamba-ssm'
       platforms:
@@ -83,9 +83,11 @@ jobs:
       warm_count: ${{ steps.plan.outputs.warm_count }}
       gpu_matrix: ${{ steps.plan.outputs.gpu_matrix }}
       gpu_count: ${{ steps.plan.outputs.gpu_count }}
+      pure_matrix: ${{ steps.plan.outputs.pure_matrix }}
+      pure_count: ${{ steps.plan.outputs.pure_count }}
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           disable-sudo: true
@@ -143,11 +145,15 @@ jobs:
       CCACHE_MAXSIZE: 20G
       # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
       PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
+      # Compress every fatbin image; see NVCC_APPEND_FLAGS in prebuilt_wheels.py. The compile
+      # steps append it to NVCC_APPEND_FLAGS, which Windows already sets for _USE_MATH_DEFINES.
+      # Warm and build must agree or the merged ccache would mix both.
+      FATBIN_FLAGS: ${{ matrix.nvcc_append_flags }}
     steps:
       - name: Harden runner (audit)
         # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -282,7 +288,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
             'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
@@ -451,13 +457,23 @@ jobs:
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
 
+      # Drop causal-conv1d's and mamba-ssm's -lineinfo (same SASS, half the size), their SASS for
+      # the integrated Arm GPUs on x86 wheels (sm_87 / 110 / 121), and flash-attn's PTX copy of its
+      # newest arch. Asserts on the text it edits, like the mamba patches above.
+      - name: Trim the CUDA targets
+        env:
+          PACKAGE: ${{ matrix.package }}
+          CUDA_ARCHS: ${{ matrix.cuda_archs }}
+        run: python unsloth/.github/scripts/patch_cuda_targets.py --package "$PACKAGE" --archs "$CUDA_ARCHS" src/setup.py
+
       - name: Restore this slice's ccache from earlier runs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ccache
-          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
+          # ccache_tag names the nvcc flags ccache cannot see, so an older cache is never restored.
+          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
           restore-keys: |
-            prebuilt-ccache-${{ matrix.platform }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
+            prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
 
       - name: Compile slice ${{ matrix.shard }} of ${{ matrix.shards }}
         working-directory: src
@@ -474,6 +490,9 @@ jobs:
             export "${pair?}"
             echo "export $pair"
           done
+          export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"
+          echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
+          if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           ccache -z
           # Windows ends the whole process tree at the deadline; see prebuilt_wheels_timeout.py.
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -491,7 +510,7 @@ jobs:
 
       - name: Hand the slice to the build job
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}
           path: ccache
@@ -508,7 +527,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ccache
-          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   build:
     name: ${{ matrix.label }}
@@ -535,12 +554,16 @@ jobs:
       CCACHE_MAXSIZE: 20G
       # torch writes this into build.ninja unquoted, so the Windows value has no spaces.
       PYTORCH_NVCC: ${{ matrix.pytorch_nvcc }}
+      # Compress every fatbin image; see NVCC_APPEND_FLAGS in prebuilt_wheels.py. The compile
+      # steps append it to NVCC_APPEND_FLAGS, which Windows already sets for _USE_MATH_DEFINES.
+      # Warm and build must agree or the merged ccache would mix both.
+      FATBIN_FLAGS: ${{ matrix.nvcc_append_flags }}
     steps:
       # Keep setup through the mamba patch in sync with warm.
       - name: Harden runner (audit)
         # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -666,7 +689,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
             'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            '291178934b2139727407c76f697bb0dfbac4014753a8094d7c290b0f4124a302' `
+            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
@@ -826,9 +849,18 @@ jobs:
         if: runner.os == 'Windows' && matrix.package == 'mamba-ssm'
         run: python unsloth/.github/scripts/patch_mamba_msvc.py src
 
+      # Drop causal-conv1d's and mamba-ssm's -lineinfo (same SASS, half the size), their SASS for
+      # the integrated Arm GPUs on x86 wheels (sm_87 / 110 / 121), and flash-attn's PTX copy of its
+      # newest arch. Asserts on the text it edits, like the mamba patches above.
+      - name: Trim the CUDA targets
+        env:
+          PACKAGE: ${{ matrix.package }}
+          CUDA_ARCHS: ${{ matrix.cuda_archs }}
+        run: python unsloth/.github/scripts/patch_cuda_targets.py --package "$PACKAGE" --archs "$CUDA_ARCHS" src/setup.py
+
       - name: Download the warm slices
         if: matrix.shards > 0
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard*
           path: ccache-slices
@@ -867,6 +899,9 @@ jobs:
             echo "export $pair"
           done
           echo "MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS timeout=$BUILD_TIMEOUT"
+          export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"
+          echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
+          if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Git Bash puts /usr/bin first, and its coreutils `link.exe` (hard links) shadows MSVC's
             # linker: setuptools found it on PATH and every object compiled, then the final link
@@ -913,6 +948,25 @@ jobs:
           fi
           mv "$built" "dist/${WHEEL_NAME}"
           ls -l dist/
+
+      # An uncompressed fatbin still imports, so only its size gives it away (1.49 GB for
+      # flash-attn instead of ~280 MB). Gate it before anything is signed or published.
+      - name: Check the extension size
+        working-directory: src
+        env:
+          PACKAGE: ${{ matrix.package }}
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+        run: python ../unsloth/.github/scripts/prebuilt_wheels.py size-gate --package "$PACKAGE" "dist/${WHEEL_NAME}"
+
+      # The trim above only edits text; this proves the binary. Every target sm_XX has SASS, none
+      # other does, and there is no PTX: a missing cubin would fail at the first kernel launch on
+      # that GPU, which neither a CPU runner nor the single-GPU gpu-smoke job would notice.
+      - name: Check the device code targets
+        working-directory: src
+        env:
+          CUDA_ARCHS: ${{ matrix.cuda_archs }}
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+        run: python ../unsloth/.github/scripts/prebuilt_wheels.py targets-gate --archs "$CUDA_ARCHS" "dist/${WHEEL_NAME}"
 
       # The whole reason this release exists, so it is a gate and not a report. A fresh venv with
       # the matching torch, the wheel installed from the file, and the compiled extension
@@ -1003,7 +1057,7 @@ jobs:
           done
           "$py" -m pip list | grep -Ei 'torch|flash|mamba|causal|triton'
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: wheel-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
           path: src/dist/${{ matrix.wheel_name }}
@@ -1016,6 +1070,140 @@ jobs:
   # the ABI failure this release exists to avoid; this catches the rarer one where the wheel
   # imports but carries no cubin the card can run. It is a separate job because the build runners
   # have no GPU and the self-hosted one is shared with the Docker smoke tests.
+  # mamba-ssm without its CUDA extension: one py3-none-any wheel for every torch, Python and OS,
+  # for the Mamba-2 hybrids, whose causal conv unsloth-zoo runs in Triton (see pure_matrix in
+  # prebuilt_wheels.py). No toolkit, no GPU: the build is setuptools copying Python files, and the
+  # gates prove that is all it did. Built whenever the run builds mamba-ssm.
+  pure:
+    name: ${{ matrix.package }} without its CUDA extension
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.pure_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.pure_matrix) }}
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout Unsloth (build scripts only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: unsloth
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout ${{ matrix.repo }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: src
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.13'
+
+      # setup.py imports torch at the top, so the build environment needs one; the CPU build is
+      # enough because nothing is compiled. MAMBA_KEEP_CUDA_BUILD unset is what keeps the
+      # extension out (FORCE_BUILD off too, so it never fetches upstream's CUDA wheel instead).
+      # SOURCE_DATE_EPOCH = the pinned commit's time, so a rebuild gives the same bytes.
+      - name: Build the wheel
+        env:
+          TORCH_SPEC: torch==${{ matrix.smoke_torch }}
+          MAMBA_SKIP_CUDA_BUILD: 'TRUE'
+          MAMBA_FORCE_BUILD: 'FALSE'
+          MAMBA_KEEP_CUDA_BUILD: 'FALSE'
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --quiet setuptools wheel packaging ninja
+          export SOURCE_DATE_EPOCH="$(git -C src log -1 --format=%ct)"
+          python -m pip wheel ./src --no-deps --no-build-isolation -w dist
+          ls -l dist
+
+      - name: Check the wheel is pure
+        env:
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+        run: python unsloth/.github/scripts/prebuilt_wheels.py pure-gate "dist/${WHEEL_NAME}"
+
+      # The Triton ops Mamba-2 uses, imported from the installed wheel in a fresh venv with
+      # --no-deps (tilelang / quack-kernels are Mamba-3 only). Import only: no GPU here.
+      - name: Import it (Linux)
+        env:
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+          TORCH_SPEC: torch==${{ matrix.smoke_torch }}
+          TRITON_SPEC: ${{ matrix.smoke_triton_linux }}
+          SMOKE_DEPS: ${{ matrix.smoke_deps }}
+          SMOKE_IMPORTS: ${{ matrix.smoke_imports }}
+        run: |
+          set -euo pipefail
+          python -m venv smoke
+          ./smoke/bin/python -m pip install --quiet --upgrade pip
+          ./smoke/bin/python -m pip install --quiet "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
+          # shellcheck disable=SC2086
+          ./smoke/bin/python -m pip install --quiet "$TRITON_SPEC" $SMOKE_DEPS
+          ./smoke/bin/python -m pip install --quiet --no-deps "dist/${WHEEL_NAME}"
+          cd /tmp && "$GITHUB_WORKSPACE/smoke/bin/python" -c "$SMOKE_IMPORTS; print(mamba_ssm.__file__, mamba_ssm.__version__)"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          # wheel-* so the sign job's download picks it up with the CUDA wheels; no platform in
+          # the name because the wheel has none.
+          name: wheel-py3-none-any-mamba_ssm
+          path: dist/${{ matrix.wheel_name }}
+          if-no-files-found: error
+          retention-days: 7
+
+  pure-windows:
+    name: ${{ matrix.package }} without its CUDA extension / import on Windows
+    needs: [plan, pure]
+    if: ${{ !cancelled() && needs.pure.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.pure_matrix) }}
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: wheel-py3-none-any-mamba_ssm
+          path: dist
+
+      - name: Import it (Windows, triton-windows)
+        env:
+          WHEEL_NAME: ${{ matrix.wheel_name }}
+          TORCH_SPEC: torch==${{ matrix.smoke_torch }}
+          TRITON_SPEC: ${{ matrix.smoke_triton_windows }}
+          SMOKE_DEPS: ${{ matrix.smoke_deps }}
+          SMOKE_IMPORTS: ${{ matrix.smoke_imports }}
+        run: |
+          set -euo pipefail
+          python -m venv smoke
+          ./smoke/Scripts/python.exe -m pip install --quiet --upgrade pip
+          ./smoke/Scripts/python.exe -m pip install --quiet "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
+          # shellcheck disable=SC2086
+          ./smoke/Scripts/python.exe -m pip install --quiet "$TRITON_SPEC" $SMOKE_DEPS
+          ./smoke/Scripts/python.exe -m pip install --quiet --no-deps "dist/${WHEEL_NAME}"
+          py="$(pwd)/smoke/Scripts/python.exe"
+          cd "$RUNNER_TEMP" && "$py" -c "$SMOKE_IMPORTS; print(mamba_ssm.__file__, mamba_ssm.__version__)"
+
   gpu-smoke:
     name: GPU forward pass
     needs: [plan, build]
@@ -1037,7 +1225,7 @@ jobs:
             .github/scripts
           sparse-checkout-cone-mode: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: wheel-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
           path: dist
@@ -1060,8 +1248,13 @@ jobs:
 
   sign:
     name: Sign and attest
-    needs: [plan, build]
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    needs: [plan, build, pure, pure-windows]
+    # The extension-free wheel is skipped when the run does not build mamba-ssm; when it is
+    # built, both of its jobs must pass, like any other planned wheel.
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success'
+      && (needs.plan.outputs.pure_count == '0'
+      || (needs.pure.result == 'success' && needs.pure-windows.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Named for the same reason release-desktop.yml and woa-wheelhouse.yml name it: it is what
@@ -1078,7 +1271,7 @@ jobs:
       contents: read
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -1090,7 +1283,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: wheel-*
           merge-multiple: true
@@ -1101,9 +1294,11 @@ jobs:
       # plan job already counted the cells; this asserts the same number arrived.
       - name: Every planned wheel arrived
         env:
-          EXPECTED: ${{ needs.plan.outputs.count }}
+          CUDA_COUNT: ${{ needs.plan.outputs.count }}
+          PURE_COUNT: ${{ needs.plan.outputs.pure_count }}
         run: |
           set -euo pipefail
+          EXPECTED=$(( CUDA_COUNT + ${PURE_COUNT:-0} ))
           ls -l wheels/
           actual="$(find wheels -name '*.whl' -type f | wc -l)"
           if [ "$actual" -ne "$EXPECTED" ]; then
@@ -1160,7 +1355,7 @@ jobs:
           done
           [ "$missing" -eq 0 ]
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: prebuilt-cuda-wheels-signed
           path: |
@@ -1182,7 +1377,7 @@ jobs:
       contents: write
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -1194,7 +1389,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: prebuilt-cuda-wheels-signed
           path: wheels

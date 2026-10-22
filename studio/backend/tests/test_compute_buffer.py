@@ -525,6 +525,43 @@ class TestContextBufferDSV4:
         assert per_tok == pytest.approx(512 * 2, rel = 1e-6)
 
 
+class TestContextBufferDSV41:
+    """DeepSeek-V4.1 (deepseek41) has its own sparse-attention graph: ~2 GiB flat, then
+    growing faster than linearly, but far below DSV4's rate. Measured CUDA0 compute
+    buffer with the pinned llama.cpp (UD-IQ1_S, experts + Engram on CPU, f16 cache)."""
+
+    MIB = 1024**2
+    # (n_ctx, n_ubatch): measured MiB
+    _MEASURED = {
+        (16384, 512): 2102.26,
+        (65536, 512): 2198.26,
+        (262144, 512): 3094.26,
+        (1048576, 512): 11197.26,
+        (262144, 2048): 9751.02,
+        (1048576, 2048): 37143.02,
+    }
+
+    @pytest.mark.parametrize("ctx_ub", list(_MEASURED))
+    def test_covers_every_measurement(self, ctx_ub):
+        n_ctx, ub = ctx_ub
+        b = _backend(embd = 5120, arch = "deepseek41")
+        mib = b._compute_buffer_ctx_bytes(n_ctx, ub, "f16") / self.MIB
+        assert mib >= self._MEASURED[ctx_ub], f"under-reserved {mib:.0f} < {self._MEASURED[ctx_ub]}"
+
+    def test_not_the_dsv4_rate(self):
+        # Reusing deepseek4's 72000 B/tok would reserve ~6.6x the measured 1M buffer and
+        # cut the context the fit grants for nothing; stay within 1.2x of measured.
+        b = _backend(embd = 5120, arch = "deepseek41")
+        mib = b._compute_buffer_ctx_bytes(1048576, 512, "f16") / self.MIB
+        assert mib <= self._MEASURED[(1048576, 512)] * 1.2
+
+    def test_layer_split_adds_mask_copies(self):
+        b = _backend(embd = 5120, arch = "deepseek41")
+        one = b._compute_buffer_ctx_bytes(262144, 512, "f16")
+        split = b._compute_buffer_ctx_bytes(262144, 512, "f16", layer_split = True)
+        assert split - one == (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2 * 262144
+
+
 class TestContextBufferLayerSplit:
     """The per-device f16 (KQ-mask) rate steps 4x once the model spans >1 device under
     ``-sm layer``: a step on "is split", not a ramp in device count. ``_MEASURED`` is
@@ -1129,20 +1166,23 @@ class TestPerDeviceSplitReserve:
         import inspect
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Native-context loop, the reduced-to-4096 fallback below it, and the
-        # Auto drafter-drop probe above them, which caps to the same reserve so
-        # it cannot price a drafter at a context the weakest card never holds.
-        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 3
+        # Native-context loop, the reduced-to-4096 fallback below it, the Auto
+        # drafter-drop probe above them, which caps to the same reserve so it cannot
+        # price a drafter at a context the weakest card never holds, and (#14492)
+        # the context ceiling's dGPU-only tier, where pooling can hide a small card.
+        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 4
+        assert "_usable_mib=[_gpu_usable(g,_cap_fraction)forginsubset]" in compact
         # Gated on the chosen context, and only reachable after the pooled test.
         assert "_usable_mib=[_gpu_usable(g,pin_fraction)forginsubset]" in compact
         assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact
         assert "+_cc_bytes(c,n)//n)" in compact
         assert "+_cc_bytes(effective_ctx,n_gpus)//n_gpus," in compact
-        # The cap runs only on gate failure, and the pooled price is redone after it.
+        # The cap runs only on gate failure, and the pooled price is redone after it
+        # (the walk's body is a helper since #14492, so a rejected subset returns None).
         assert (
             compact.count(
                 "capped=self._cap_ctx_to_per_device_reserve("
-                "capped,_usable_mib,_reserve_at)ifcapped<=0:continue"
+                "capped,_usable_mib,_reserve_at)ifcapped<=0:returnNone"
             )
             == 1
         )

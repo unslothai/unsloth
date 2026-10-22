@@ -15,8 +15,8 @@ import { fileNameFromUrl, hostOf } from "./address";
 import { agentDownloadRule, stricterDownloadRule } from "./agent/agent-store";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
-import { saveBrowserDownload } from "./downloads";
-import { canShowFile } from "./file-kind";
+import { saveBrowserDownload, saveBrowserDownloadOnClick, saveLinkedFile } from "./downloads";
+import { savesFile } from "./file-kind";
 import { FileView } from "./file-view";
 import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
 import { useBrowserHistoryStore } from "./history-store";
@@ -25,6 +25,7 @@ import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { fitZoomToPage, zoomTab } from "./zoom";
+import { frameNotice } from "./frame-message";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
 import {
@@ -35,6 +36,8 @@ import {
   cachedPage,
   currentEntry,
   entryKey,
+  saveScroll,
+  savedScroll,
   sentPosts,
   setPageDownload,
   useBrowserStore,
@@ -79,7 +82,7 @@ function loadTemporary(tabId: string, entry: BrowserEntry): boolean {
   return (entry.kind === "web" && entry.temporary === true) || temporaryLoads.get(tabId) === true;
 }
 
-function useFrameMessages(tabId: string, origin: string | null) {
+function useFrameMessages(tabId: string, origin: string | null, entry: BrowserEntry) {
   const t = useT();
   return useCallback(
     (message: FrameMessage) => {
@@ -103,6 +106,33 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "external":
           openExternalLink(message.url);
           break;
+        case "download": {
+          const tab = store.tabs.find((candidate) => candidate.id === tabId);
+          const entry = tab ? currentEntry(tab) : null;
+          const site = pageAddress(tab);
+          if (!site || !entry) break;
+          const temporary = loadTemporary(tabId, entry) || undefined;
+          if ("url" in message) {
+            // Pages can post any address: only one on the page's own site saves, as in a browser.
+            if (!origin || !sameOrigin(message.url, origin)) break;
+            const atClick = agentDownloadRule(tabId, site, message.url);
+            const agentRule = (fileUrl: string) => stricterDownloadRule(atClick, agentDownloadRule(tabId, site, fileUrl));
+            saveLinkedFile(message.url, message.name, { site, temporary, agentRule }, message.askFirst);
+            break;
+          }
+          const download = {
+            blob: message.blob,
+            name: message.name,
+            contentType: message.blob.type,
+            url: site,
+            site,
+            temporary,
+            agentRule: agentDownloadRule(tabId, site, site),
+          };
+          if (message.askFirst) saveBrowserDownloadOnClick(download);
+          else void saveBrowserDownload(download);
+          break;
+        }
         case "loaded": {
           store.updateTab(tabId, { title: message.title, favicon: null, loading: false });
           pageLoadedForFind(tabId);
@@ -138,24 +168,56 @@ function useFrameMessages(tabId: string, origin: string | null) {
         case "reload":
           store.reload(tabId);
           break;
-        case "upload":
-        case "scriptNavigation": {
+        case "back":
+          store.goBack(tabId);
+          break;
+        case "forward":
+          store.goForward(tabId);
+          break;
+        case "scroll": {
           const tab = store.tabs.find((candidate) => candidate.id === tabId);
-          const entry = tab ? currentEntry(tab) : null;
-          const url = tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
-          toast(t(message.type === "upload" ? "browser.error.upload" : "browser.error.scriptNavigation"), {
-            action: url ? { label: t("browser.openExternal"), onClick: () => openExternalLink(url) } : undefined,
+          saveScroll(entry, { x: message.x, y: message.y }, pageAddress(tab) ?? (entry.kind === "web" ? entry.url : ""));
+          break;
+        }
+        case "history":
+          store.updateTab(tabId, { pageHistory: { back: message.back, forward: message.forward } });
+          break;
+        case "typed":
+          store.updateTab(tabId, { typedAt: message.reset ? undefined : Date.now() });
+          break;
+        case "upload":
+        case "scriptNavigation":
+        case "needsBrowser": {
+          // Read at click time: the notice can outlive a pushState to another route.
+          const pageUrl = () => {
+            const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+            const entry = tab ? currentEntry(tab) : null;
+            return tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
+          };
+          const shown = pageUrl();
+          toast(t(`browser.error.${message.type}`), {
+            ...frameNotice(message.type, tabId),
+            action: shown
+              ? { label: t("browser.openExternal"), onClick: () => openExternalLink(pageUrl() ?? shown) }
+              : undefined,
           });
           break;
         }
-        case "shortcut":
-          if (message.key === "l") store.focusAddress();
-          else if (message.key === "f") requestFind(BROWSER_FIND_TARGET);
-          else if (message.key === "t") store.newTab();
-          else if (message.key === "w") store.closeTab(tabId);
-          else if (message.key === "r") store.reload(tabId);
-          else if (message.key === "d") store.bookmarkPage();
+        case "shortcut": {
+          const { key } = message;
+          const run = () => {
+            if (key === "l") store.focusAddress();
+            else if (key === "f") requestFind(BROWSER_FIND_TARGET);
+            else if (key === "t") store.newTab();
+            else if (key === "w") store.closeTab(tabId);
+            else if (key === "r") store.reload(tabId);
+            else if (key === "d") store.bookmarkPage();
+          };
+          // A full screen page covers the panel; leave it first so the shortcut's result shows.
+          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined).then(run);
+          else run();
           break;
+        }
         case "zoom":
           // A key goes through the scope, so the View menu repeating it doesn't zoom twice.
           if (message.wheel) zoomTab(tabId, message.direction);
@@ -163,13 +225,13 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
       }
     },
-    [tabId, origin, t],
+    [tabId, origin, entry, t],
   );
 }
 
 // Stands in for the app name while translating, so it can be a link.
 const APP_MARK = "\u0000";
-const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth";
+const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth#-get-started";
 
 function PageError({
   url,
@@ -251,7 +313,16 @@ function WebPage({
   });
   const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
-  const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
+  const onFrameMessage = useFrameMessages(tab.id, pageOrigin, entry);
+  // A notice's action opens the tab's current address, so it goes with the page it is about.
+  useEffect(
+    () => () => {
+      for (const type of ["upload", "scriptNavigation", "needsBrowser"] as const) {
+        toast.dismiss(frameNotice(type, tab.id).id);
+      }
+    },
+    [tab.id],
+  );
   const updateTab = useBrowserStore((store) => store.updateTab);
   const reload = useBrowserStore((store) => store.reload);
 
@@ -304,7 +375,7 @@ function WebPage({
         // unsupported files download only on fresh loads, so revisiting the tab does not prompt again.
         if (page.kind === "raw") {
           const name = page.fileName ?? fileNameFromUrl(page.url);
-          if (!canShowFile(name, page.contentType)) {
+          if (savesFile(name, page.contentType, page.attachment)) {
             // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
             void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: loadTemporary(tab.id, entry) || undefined, agentRule: stricterDownloadRule(agentRuleAtStart, agentDownloadRule(tab.id, entry.from ?? url, page.url)) });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
@@ -344,7 +415,13 @@ function WebPage({
   const { page } = state;
   if (page.kind === "raw") {
     return (
-      <FileView blob={page.blob} name={page.fileName ?? fileNameFromUrl(page.url)} contentType={page.contentType} scale={tab.zoom} />
+      <FileView
+        blob={page.blob}
+        name={page.fileName ?? fileNameFromUrl(page.url)}
+        contentType={page.contentType}
+        scale={tab.zoom}
+        saved={page.attachment}
+      />
     );
   }
   return (
@@ -359,6 +436,7 @@ function WebPage({
       tabId={tab.id}
       zoom={tab.zoom}
       muted={tab.muted}
+      scroll={savedScroll(entry, page.url)}
       onMessage={onFrameMessage}
     />
   );

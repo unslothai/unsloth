@@ -165,6 +165,8 @@ def _qkv_intact(attn: Any) -> Any:
     lin, q, k, v = rec
     if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
         return None
+    if lin.weight.device != q.weight.device:
+        return None  # a layer split moved the parts after the fusion; the stale fused copy is on another card
     return lin
 
 
@@ -184,9 +186,11 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
         # stock body below the projections, op for op (fingerprinted at install)
         query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
 
-        query = query.unflatten(-1, (attn.heads, -1))
-        key = key.unflatten(-1, (attn.heads, -1))
-        value = value.unflatten(-1, (attn.heads, -1))
+        # main's split (by head_dim); equal to 0.41.0's ``(attn.heads, -1)`` when every head is local
+        head_dim = attn.inner_dim // attn.heads
+        query = query.unflatten(-1, (-1, head_dim))
+        key = key.unflatten(-1, (-1, head_dim))
+        value = value.unflatten(-1, (-1, head_dim))
 
         query = attn.norm_q(query).to(value.dtype)
         key = attn.norm_k(key).to(value.dtype)
@@ -263,9 +267,9 @@ def install(
         return result
     if offload_active or type(transformer).__name__ != "QwenImage21Transformer2DModel":
         return result
-    from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
+    from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
-    if resident_cuda_device(transformer) is not None:
+    if resident_cuda_cards(transformer):
         return install_modules(transformer, logger)
     run_on_first_call(transformer, "q21_convrot_fused", lambda t: install_modules(t, logger))
     return {"fused_qkv": None, "out": None}
@@ -275,19 +279,22 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     result = {"fused_qkv": 0, "out": 0}
     if q21_convrot_fused_disabled():
         return result
-    from .diffusion_int8_fused import resident_cuda_device
+    from .diffusion_int8_fused import resident_cuda_cards
 
-    dev = resident_cuda_device(root)
-    if dev is None:
+    if not resident_cuda_cards(root):  # one card, or each card of a layer split
         return result
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
     todo = []
     for _name, module in root.named_modules():
         group = _attn_group(module)
-        if group is None or not arch_ok(dev, group):
+        # per group, on the card holding it: a layer split can put attention modules on different archs
+        if group is None or not arch_ok(group[0].weight.device, group):
             continue
-        todo.append((module, group[:3]))
+        parts = group[:3]
+        if len({p.weight.device for p in parts}) != 1:
+            continue
+        todo.append((module, parts))
     if not todo or not _patch_prepare(logger):
         return result
     with _LOCK:

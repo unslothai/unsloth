@@ -32,7 +32,8 @@ test("a project row opens its chats in place", () => {
   );
   assert.match(PAGE, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, refresh\);/);
   // Debounced, since streaming fires the event per chunk, and open rows reload in place.
-  assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
+  // A chunk save waits for a longer lull than a structural change.
+  assert.match(PAGE, /timer = setTimeout\(\(\) => \{[\s\S]*?for \(const id of open\) loadProjectChats\(id, true\);\n\s*\}, isCoalescedHistoryEvent\(event\)\n\s*\? PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS\n\s*: PROJECT_CHATS_REFRESH_DEBOUNCE_MS\);/);
   assert.match(PAGE, /if \(!silent\) \{\n\s*setProjectChats\(\(prev\) => \(\{ \.\.\.prev, \[projectId\]: "loading" \}\)\);/);
   // A closed project's pending load is invalidated with its cache entry.
   assert.match(PAGE, /for \(const \[id, seq\] of loadSeqRef\.current\) \{\n\s*if \(!open\.has\(id\)\) loadSeqRef\.current\.set\(id, seq \+ 1\);/);
@@ -146,7 +147,7 @@ test("the Updated column names the list's order and turns it around", () => {
   assert.match(PAGE, /sortDir === "asc" && "rotate-180",/);
   assert.match(
     PAGE,
-    /sortDir === "asc" \? a\.updatedAt - b\.updatedAt : b\.updatedAt - a\.updatedAt,/,
+    /sortDir === "asc"\n\s*\? projectActivityAt\(a\) - projectActivityAt\(b\)\n\s*: projectActivityAt\(b\) - projectActivityAt\(a\),/,
   );
   // The Sort by control it replaces is gone, with the mode it carried.
   assert.ok(!PAGE.includes("Sort by"), "the sort control is still in the header");

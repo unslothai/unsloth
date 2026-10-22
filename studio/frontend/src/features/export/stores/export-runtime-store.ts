@@ -11,12 +11,26 @@ import {
   getExportStatus,
   isRecoverableTransportError,
   loadCheckpoint,
+  type ExportDrafterInfo,
   type ExportLogEntry,
   type ExportLogPollEntry,
   type ExportOperationResponse,
   type ExportStatus,
+  type ReapOptions,
 } from "../api/export-api";
 import type { ExportMethod } from "../constants";
+
+// Here, not in export-api: tests swap that module for a stub of its request functions.
+function exportDrafterFrom(
+  details: ExportOperationResponse["details"] | undefined,
+): ExportDrafterInfo | null {
+  const drafter = details?.drafter;
+  if (typeof drafter !== "object" || drafter === null) return null;
+  const strategy = (drafter as Record<string, unknown>).strategy;
+  return strategy === "mtp" || strategy === "eagle3"
+    ? (drafter as ExportDrafterInfo)
+    : null;
+}
 
 /** Thrown by status recovery when the backend reports the op was cancelled. */
 class ExportCanceledError extends Error {
@@ -132,6 +146,8 @@ export interface ExportRunSummary {
   /** Merged: the selected format values (for the summary "Formats" row and to reseed the picker). */
   mergedFormats: string[];
   destination: ExportDestination;
+  /** REAP expert pruning applied before the export, e.g. "25% of experts removed", else null. */
+  reapLabel?: string | null;
 }
 
 /** Everything `runExport` needs to drive the load -> export -> cleanup sequence. */
@@ -173,6 +189,8 @@ export interface RunExportParams {
   privateRepo: boolean;
   baseModelId?: string | null;
   installMissingDependencies?: boolean;
+  /** Prune MoE experts with REAP before exporting; loads the model in 16-bit. Off when null. */
+  reap?: ReapOptions | null;
   /** Decision model (Clef / Laya): labels the run folder's gguf/ output with the quants it holds. */
   decisionOutputLabel?: (quantizations: string[]) => string;
   summary: ExportRunSummary;
@@ -205,6 +223,8 @@ interface ExportRuntimeState {
     outputPath: string | null;
     outputPaths: { label: string; path: string }[];
     destination: ExportDestination;
+    /** Set when the export carried a trained drafter (MTP head or EAGLE-3). */
+    drafter?: ExportDrafterInfo | null;
   } | null;
   error: string | null;
   cancelRequested: boolean;
@@ -458,6 +478,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           loadCheckpoint({
             checkpoint_path: checkpointPath,
             hf_token: params.loadToken ?? null,
+            // REAP scores and slices 16-bit expert weights.
+            ...(params.reap ? { load_in_4bit: false } : {}),
           }),
         );
       } else {
@@ -479,6 +501,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       // banner can list each sibling directory a multi-format run created.
       set({ phase: "exporting" });
       const outputs: { label: string; path: string }[] = [];
+      let drafter: ExportDrafterInfo | null = null;
 
       if (params.exportMethod === "merged") {
         // Each selected format writes its own sibling directory (PEFT or non-PEFT base alike).
@@ -490,7 +513,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           if (!isCurrent()) return;
           set({ quantIndex: i });
           const sel = selections[i];
-          const { outputPath } = await runRecoverableOp(() =>
+          const { outputPath, details: mergedDetails } = await runRecoverableOp(() =>
             exportMerged({
               save_directory: params.saveDirectory,
               format_type: sel.formatType,
@@ -502,9 +525,11 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               install_missing_dependencies: Boolean(
                 params.installMissingDependencies,
               ),
+              reap: params.reap ?? null,
             }),
           );
           if (outputPath) outputs.push({ label: sel.label, path: outputPath });
+          drafter = exportDrafterFrom(mergedDetails) ?? drafter;
           if (!isCurrent()) return;
           set({ quantIndex: i + 1 });
         }
@@ -526,6 +551,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               : null,
             private: params.privateRepo,
             npu_q4nx: params.npuQ4nx,
+            reap: params.reap ?? null,
           }),
         );
         if (outputPath) {
@@ -538,6 +564,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             path: outputPath,
           });
         }
+        drafter = exportDrafterFrom(details);
         if (outputPath && params.npuQ4nx) {
           const sep = outputPath.includes("\\") ? "\\" : "/";
           outputs.push({ label: "AMD NPU (Q4NX)", path: `${outputPath}${sep}npu-q4nx` });
@@ -545,7 +572,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
-        const { outputPath } = await runRecoverableOp(() =>
+        const { outputPath, details: loraDetails } = await runRecoverableOp(() =>
           exportLoRA({
             save_directory: params.saveDirectory,
             push_to_hub: pushToHub,
@@ -565,6 +592,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             path: outputPath,
           });
         }
+        drafter = exportDrafterFrom(loraDetails);
       }
       if (!isCurrent()) return;
 
@@ -576,6 +604,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           outputPath: outputs[0]?.path ?? null,
           outputPaths: outputs,
           destination: params.destination,
+          drafter,
         },
       });
     } catch (err) {

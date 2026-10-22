@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth studio update` must tell setup.ps1 which interpreter launched it.
-
-The CLI runs from the managed venv's own python.exe, and setup.ps1's stale-venv branch
-used to Remove-Item that venv: Windows will not delete a running image, so the delete
-emptied Lib\\ and failed on Scripts\\python.exe, leaving an environment with no unsloth_cli
-and no rollback copy. setup.ps1 now repairs in place when it sees it runs from inside the
-venv, and UNSLOTH_SETUP_HOST_PYTHON is how it sees that without a process walk.
-"""
+"""setup.ps1 must not delete the venv it runs from; UNSLOTH_SETUP_HOST_PYTHON tells it."""
 
 from __future__ import annotations
 

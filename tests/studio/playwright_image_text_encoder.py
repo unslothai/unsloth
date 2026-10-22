@@ -13,7 +13,7 @@ from playwright.sync_api import expect, sync_playwright
 
 from playwright_image_model_footprint import BASE_URL, REPO_ID, _api_payload, _json, klein_row
 
-# A refusal: value "off", status "fell_back". The only shape the echoing stub cannot produce.
+# A refusal (value "off", status "fell_back"): the only shape the echoing stub cannot produce.
 DECLINE = os.environ.get("PW_DECLINE", "0") == "1"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_text_encoder"))
 ART.mkdir(parents = True, exist_ok = True)
@@ -56,6 +56,10 @@ def main():
                 base_repo = "black-forest-labs/FLUX.2-klein-4B",
                 family = "flux.2-klein",
                 model_kind = "gguf",
+                # The real status echoes the loaded checkpoint file. Reapply reloads the page's last pick
+                # only while it still matches what status reports (engine-choice.ts reapplyTarget, #14232),
+                # so without it nothing reloads.
+                gguf_filename = loads[-1].get("gguf_filename"),
                 dtype = "bfloat16",
                 text_encoder_quant = value,
                 resolved = {
@@ -157,6 +161,9 @@ def main():
                     },
                 )
             elif path == "/api/inference/images/load":
+                # A GGUF pick always names its file, and the status stub echoes it as the backend's does.
+                if not payload.get("gguf_filename"):
+                    errors.append(f"a GGUF load without gguf_filename: {payload}")
                 loads.append(payload)
                 state["loaded"] = True
                 _json(route, status())
@@ -176,9 +183,7 @@ def main():
                     },
                 )
             elif path == "/api/system":
-                # NVFP4 options only render on a host that reports NVFP4 diffusion (the options go
-                # through withNvfp4Option since 8ecfd3092), and the loop below picks NVFP4, so this
-                # host is a Blackwell one.
+                # NVFP4 options only render on a host that reports NVFP4 diffusion.
                 system = _api_payload(path, query, full_footprint = True)
                 system["nvfp4_diffusion"] = True
                 _json(route, system)
@@ -211,10 +216,7 @@ def main():
         state["complete"] = True
         expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled(timeout = 20_000)
         if DECLINE:
-            # The select must show what RAN, or the page advertises a precision nothing is using.
-            # A declined scheme runs the dense encoder ("off"), and since #11539 a family default
-            # can pick a scheme on its own, so Default no longer means dense: the select shows the
-            # opt-out that did run (images-page.tsx maps an engaged "off" to "none", not "auto").
+            # The select must show what ran: an engaged "off" maps to "none" (images-page.tsx), not "auto".
             expect(encoder).to_have_text("Dense (bf16)")
             assert loads[-1]["text_encoder_quant"] == "fp8", loads
             assert not errors, errors
@@ -244,7 +246,6 @@ def main():
             assert loads[-1].get("text_encoder_quant") == requested, loads[-1]
             if requested is None:
                 assert "text_encoder_quant" not in loads[-1]
-        # A completed reload can have the same precision record as its predecessor.
         state.update(cached = False, complete = False, started = False)
         page.get_by_role("button", name = "Reapply", exact = True).scroll_into_view_if_needed()
         page.locator(".unsloth-model-selector-trigger:visible").click()
@@ -266,7 +267,6 @@ def main():
             page.wait_for_timeout(50)
         assert len(held_status) == 1
         page.get_by_test_id("nav-row-hub").click()
-        # Path only: the Hub appends its own ?tab= on mount and an exact-URL assertion loses that race.
         expect(page).to_have_url(re.compile(r"/hub(\?|$)"))
         page.get_by_test_id("nav-row-images").click()
         expect(page).to_have_url(re.compile(r"/images(\?|$)"))
@@ -282,10 +282,9 @@ def main():
         for response in replies:
             _json(response, status())
         held_status.clear()
-        # The staged load carries the precision pinned when it was queued, so this one is Default.
+        # The staged load carries the precision pinned when it was queued.
         assert "text_encoder_quant" not in loads[-1], loads[-1]
-        # Either order ends the same, and the edit made while the load staged survives: the reseed
-        # follows a change of BUILD, not every completed load, and Reapply is how the user applies it.
+        # The reseed follows a change of build, not every completed load.
         expect(encoder).to_have_text("FP8 (storage)")
         expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled()
         assert not errors, errors

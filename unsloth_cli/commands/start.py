@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import click
 import typer
@@ -43,6 +43,7 @@ from unsloth_cli._inference import (
     is_loopback_url,
     raise_for_deferred_error,
     require_completed_padded_body,
+    urlopen_local,
     urlopen_no_redirect,
     verify_studio_identity,
 )
@@ -58,7 +59,9 @@ _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 # Codex treats an SSE stream with no bytes for this long as lost, cancels it and reconnects. Its default is 300000 (5 minutes), measured against the WHOLE quiet period, and llama-server sends nothing at all while it processes the prompt. A local CPU host chews through a prompt at low tens of tokens a second and Codex's own preamble is several thousand tokens before the user has typed anything: 16.1 tok/s measured on a 2-core box means ~460s of silence for a ~7300-token first turn, so the default trips before the first token exists. The reconnect is worse than the wait, because llama-server hands the retry a different parallel slot whose KV cache shares no prefix, so each attempt restarts prompt processing from zero and the five retries can never converge. Observed as a request completing in exactly 300056ms with `Reconnecting... 1/5` and no turn ever finishing. 20 minutes here, sized to be longer than a slow local first turn rather than to any server-side budget: nothing here bounds generation, and a genuinely dead stream is still caught, just later.
 _CODEX_STREAM_IDLE_TIMEOUT_MS = 1_200_000
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
-_HERMES_PROVIDER = "unsloth"
+# Not "unsloth": Hermes strips a `<provider>/` prefix, so unsloth/<repo> stops matching model.default.
+_HERMES_PROVIDER = "unsloth-studio"
+_HERMES_LEGACY_PROVIDER = "unsloth"
 # Skip the installer's interactive setup wizard: `unsloth start hermes` runs this hint unattended and then writes its own session-scoped Hermes config, so the wizard's global API-key/model prompts would block the launch and point the user at a different provider than the one Unsloth just configured. Both installers expose a skip flag: `-SkipSetup` (PowerShell) and `--skip-setup` (POSIX, passed to the piped script via `bash -s --`). Pin both the fetched script and the repository checkout it performs to the same full commit so a later change to either upstream branch cannot silently replace code that Unsloth executes with the user's privileges.
 _HERMES_INSTALL_COMMIT = "f1af945f6c576eccb126fa955edc9be258b33020"
 _HERMES_INSTALL_BASE = (
@@ -82,6 +85,8 @@ _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"
+# dsh's pi-ai provider sends max_tokens = contextWindow - its prompt estimate - 4,096 (pi-ai CONTEXT_SAFETY_TOKENS), floored at 1, and dsh's own instructions and tools are about 6,500 tokens: at 8,192 every reply is cut after one token (#14315).
+_DSH_MIN_CONTEXT = 16384
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -707,7 +712,12 @@ _DSH_NO_PROFILE_ARGS = frozenset("-V --version plugin".split())
 
 def _dsh_command(args: list[str], patch: Optional[str] = None) -> list[str]:
     head = args[0] if args else ""
-    if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
+    # The web app takes no positionals, so a leading bare word is a profile name (`dsh headless "task"`).
+    if (
+        head in _DSH_LAUNCHER_ARGS
+        or head.startswith(("--profile=", "--patch="))
+        or (head and not head.startswith("-"))
+    ):
         command = ["dsh", *args]
     else:
         command = ["dsh", "web", *args]
@@ -1374,7 +1384,7 @@ def _load_model_with_progress(
 def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
     request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout = timeout) as response:
+        with urlopen_local(request, timeout = timeout) as response:
             return json.loads(response.read(65536).decode() or "{}").get("status") == "healthy"
     except Exception:
         return False
@@ -1716,10 +1726,15 @@ def _require_studio(
             )
         # Leave a bare GGUF repo's variant unset: the server's own quant preference already picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back when that exact quant is missing, which forcing a fixed variant here would break.
         return _start_studio_server(expected, model, load, server_options)
-    model_hint = "" if model else " Pass --model to have it start one for you, or"
+    if not model:
+        hint = " Pass --model to have it start one for you, or start one with"
+    elif serve and not launch:
+        hint = " --no-launch never starts a server; drop it, or start one with"
+    else:
+        hint = " Start one with"
     _fail(
-        f"No running Unsloth server found at {expected}.{model_hint} start one with "
-        "`unsloth studio`, or point UNSLOTH_STUDIO_URL at a remote server."
+        f"No running Unsloth server found at {expected}.{hint} `unsloth studio`, or point "
+        "UNSLOTH_STUDIO_URL at a remote server."
     )
 
 
@@ -1878,6 +1893,7 @@ def _agent_api_key(
     explicit: Optional[str],
     *,
     auto_started: bool = False,
+    minted_only: bool = False,
 ) -> str:
     cache = _key_cache_path()
     if explicit:
@@ -1887,7 +1903,7 @@ def _agent_api_key(
         # The server was auto-started for this run, so an exported UNSLOTH_API_KEY meant for some other server must not fail the launch: the loopback mint path below is guaranteed to work. An explicit key the fresh server accepts is still honored above.
 
     # Replay a key the user saved for THIS EXACT server first (scoped per base, so it only goes back there, including a remote or SSH-tunnelled Unsloth whose secret the local handshake cannot match). Skip ones the server rejects.
-    for key in _cached_keys(cache, base, "saved"):
+    for key in [] if minted_only else _cached_keys(cache, base, "saved"):
         if _key_accepted(base, key):
             _remember_key(cache, base, key, "saved")
             return key
@@ -2478,8 +2494,16 @@ def _resolve_model(
             f"Unsloth didn't report '{requested}' as loaded. Double-check the model "
             "id, or load it from the model dropdown in the UI."
         )
-    resident = next((m for m in models if m.get("loaded") is not False), None)
+    loaded = [m for m in models if m.get("loaded") is not False]
+    # A speech or separation model is listed like any resident but carries a task: it cannot chat.
+    resident = next((m for m in loaded if m.get("task") is None), None)
     if resident is None:
+        if loaded:
+            _fail(
+                f"Unsloth is serving only {loaded[0].get('id')}, a {loaded[0].get('task')} model "
+                "that cannot serve chat. Load a chat model from the model dropdown in the UI, or "
+                "pass --model <hf-id-or-path> to load one from here."
+            )
         if _inference_status(base, key).get("yours") is False:
             _fail(_OTHER_ACCOUNT_RESIDENT)
         # An empty listing and one holding only unloaded entries are the same situation
@@ -2774,6 +2798,18 @@ def _fail_gguf_variant_missing(model_id: str, variant: str, variants: list) -> N
     _fail(message)
 
 
+def _refuse_npu_model(model: Optional[str]) -> None:
+    from unsloth_cli._npu import npu_model_path
+    npu_path = npu_model_path(model)
+    if npu_path:
+        model_id = npu_path.split(":", 1)[1]
+        # Unchecked, `lemonade:<id>` was split into a GGUF lookup for a repo named "lemonade".
+        _fail(
+            f"{model_id} is an AMD NPU model. `unsloth start` runs coding agents on GGUF models; "
+            f"chat with {model_id} in Unsloth Studio or with `unsloth chat {model_id}`."
+        )
+
+
 def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
     message = (
         f"{agent.label} needs a GGUF model served by llama-server, " f"but {model_id} is not one."
@@ -2796,6 +2832,7 @@ def _preflight_agent_gguf(
     # Only a complete listing with no .gguf files rejects; unknown defers to the
     # post-connect check. Mirrors _require_studio's auto-start condition, so with no start
     # possible its "no running server" error comes first, without a hub probe.
+    _refuse_npu_model(model)
     if not (serve and launch and model):
         return
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
@@ -3063,7 +3100,11 @@ def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: st
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 
-def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) -> str:
+def _claude_settings_overlay(
+    model_id: str,
+    local_env: Optional[dict] = None,
+    user: Optional[dict] = None,
+) -> str:
     # Command-tier pins beat user/project settings, which Claude applies after the process env.
     settings_env = {name: "" for name in _CLAUDE_ENV_UNSET}
     settings_env.update(local_env or {})
@@ -3075,14 +3116,51 @@ def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) ->
     )
     return json.dumps(
         {
-            "env": settings_env,
+            **(user or {}),
+            "env": {**(user or {}).get("env", {}), **settings_env},
             "availableModels": [model_id],
+            # A user's apiKeyHelper would still run and send its cloud key to Unsloth as x-api-key.
+            "apiKeyHelper": "",
         }
     )
 
 
-def _write_claude_settings(path: Path, model_id: str, local_env: dict) -> Path:
-    overlay = _claude_settings_overlay(model_id, local_env)
+def _forwarded_claude_settings(args: list) -> tuple:
+    """(the forwarded --settings merged, args without them), or (None, args) when one is unreadable."""
+    separator = args.index("--") if "--" in args else len(args)
+    merged, remaining, index = {}, [], 0
+    while index < separator:
+        arg = args[index]
+        if arg == "--settings" and index + 1 < separator:
+            value, index = args[index + 1], index + 2
+        elif arg.startswith("--settings="):
+            value, index = arg.split("=", 1)[1], index + 1
+        else:
+            remaining.append(arg)
+            index += 1
+            continue
+        try:
+            text = (
+                value
+                if value.lstrip().startswith("{")
+                else Path(value).expanduser().read_text(encoding = "utf-8")
+            )
+            loaded = json.loads(text)
+        except (OSError, ValueError):
+            return None, args
+        if not isinstance(loaded, dict) or not isinstance(loaded.get("env", {}), dict):
+            return None, args
+        merged = {**merged, **loaded, "env": {**merged.get("env", {}), **loaded.get("env", {})}}
+    return merged, remaining + args[separator:]
+
+
+def _write_claude_settings(
+    path: Path,
+    model_id: str,
+    local_env: dict,
+    user: Optional[dict] = None,
+) -> Path:
+    overlay = _claude_settings_overlay(model_id, local_env, user)
     digest = hashlib.sha256(overlay.encode("utf-8")).hexdigest()[:16]
     settings = path / f"settings-{digest}.json"
     _write_private_text(settings, overlay)
@@ -3550,7 +3628,11 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
                 entries.append(source.name)
             except OSError:
                 if source.is_file():
-                    shutil.copy2(source, target)
+                    # Hard link, not copy: Codex rewrites auth.json in place, and a copy strands a rotated refresh token.
+                    try:
+                        os.link(source, target)
+                    except OSError:
+                        shutil.copy2(source, target)
                     entries.append(source.name)
                 elif source.is_dir():
                     if _create_directory_junction(source, target):
@@ -3558,6 +3640,14 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
                     elif source.name in fallback_dirs:
                         shutil.copytree(source, target)
                         entries.append(source.name)
+    # Not signed in yet: a dangling link lands the first login in the user's home, not the overlay.
+    auth = source_home / "auth.json"
+    if not os.path.lexists(auth):
+        with contextlib.suppress(OSError):
+            source_home.mkdir(parents = True, exist_ok = True, mode = 0o700)
+            _remove_overlay_entry(overlay / auth.name)
+            (overlay / auth.name).symlink_to(auth)
+            entries.append(auth.name)
 
     _write_private_json(
         manifest_path,
@@ -3809,7 +3899,18 @@ sys.exit(0)
 _CLAUDE_ROUTE_GATE_MATCHER = "Read|Grep|Glob|Bash|PowerShell|Monitor|NotebookRead|Agent|Task"
 
 
-def _claude_hook(gate: Path) -> dict:
+_CLAUDE_HOOK_ARGS_MIN_VERSION = (2, 1, 139)
+
+
+def _claude_hook(gate: Path, exec_form: bool = True) -> dict:
+    if exec_form:
+        # Exec form: without Git Bash, Windows runs shell-form hooks in PowerShell, which cannot parse them.
+        return {
+            "type": "command",
+            "command": sys.executable,
+            "args": ["-c", "import runpy,sys; runpy.run_path(sys.argv[1])", str(gate)],
+            "timeout": 10,
+        }
     return {
         "type": "command",
         # Run through runpy rather than handing the path to the interpreter: a missing gate is then an ordinary traceback (exit 1, fails open) instead of exit 2, which Claude treats as a blocking error and would deny the tool in every mode. The path is base64'd because this string goes through a shell: a temp root holding $(..) or a backtick expands under sh, %VAR% under cmd, and the gate then silently fails open. base64's alphabet has no metacharacter in either.
@@ -3899,11 +4000,16 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             stale.unlink(missing_ok = True)
     else:
         _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
-        entries = [{"matcher": _CLAUDE_SUBAGENT_TOOL, "hooks": [_claude_hook(gate)]}]
+        version = _claude_version()
+        exec_form = version is None or version >= _CLAUDE_HOOK_ARGS_MIN_VERSION
+        entries = [{"matcher": _CLAUDE_SUBAGENT_TOOL, "hooks": [_claude_hook(gate, exec_form)]}]
         if auto_route:
             _write_private_text(route_gate, _CLAUDE_ROUTE_GATE_SCRIPT)
             entries.append(
-                {"matcher": _CLAUDE_ROUTE_GATE_MATCHER, "hooks": [_claude_hook(route_gate)]}
+                {
+                    "matcher": _CLAUDE_ROUTE_GATE_MATCHER,
+                    "hooks": [_claude_hook(route_gate, exec_form)],
+                }
             )
         _write_private_json(plugin / "hooks" / "hooks.json", {"hooks": {"PreToolUse": entries}})
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
@@ -4239,6 +4345,40 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
         flags = re.IGNORECASE,
     )
     return match.group(1).lower() if match else None
+
+
+# Pi needs node >=22.19.0; npm only warns, so it installs on Node 20.19 and then dies on load.
+_PI_MIN_NODE = (22, 19, 0)
+
+
+def _node_version() -> Optional[tuple]:
+    """Version of the `node` a launched npm shim resolves (`#!/usr/bin/env node`), or None."""
+    node = _which_with_install_dirs("node")
+    if node is None:
+        return None
+    try:
+        found = subprocess.run(
+            [node, "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 10,
+            env = _probe_env(),
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.match(r"\s*v?(\d+)\.(\d+)\.(\d+)", found or "")
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _warn_if_node_older(agent: str, minimum: tuple, legacy_package: str) -> None:
+    found = _node_version()
+    if found is not None and found < minimum:
+        typer.echo(
+            f"Warning: {agent} needs Node.js {'.'.join(map(str, minimum))} or newer, but `node` "
+            f"here is {'.'.join(map(str, found))}. If it fails to start, upgrade Node.js, or "
+            f"install the older line with `npm install -g {legacy_package}`.",
+            err = True,
+        )
 
 
 def _npm_executable() -> Optional[str]:
@@ -4613,6 +4753,52 @@ def _launch(
     return code if code >= 0 else 128 - code
 
 
+_CONNECTION_MODEL_PREFIX = "external::"
+
+
+def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dict]:
+    # Studio names a Connection model external::<connection id>::<url-encoded model>; a bare name counts when one enabled Connection lists it and no loaded model has it.
+    if not model:
+        return None
+    explicit = model.startswith(_CONNECTION_MODEL_PREFIX)
+    if not explicit and any(
+        _model_id_matches(entry.get("id"), name, allow_casefold = is_loopback_url(base))
+        for entry in _loaded_models(base, key)
+        if entry.get("loaded") is not False
+        for name in (model, _split_repo_variant(model)[0])
+    ):
+        return None
+    try:
+        providers = _http_json("GET", f"{base}/api/providers/", key)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        # A 4xx is an older server or a key without Connections; anything else must not fall
+        # through to a load that could evict the resident model.
+        if explicit or not (isinstance(exc, urllib.error.HTTPError) and exc.code < 500):
+            _fail_request(exc, "Couldn't list Connections")
+        return None
+    enabled = [p for p in providers or [] if isinstance(p, dict) and p.get("is_enabled")]
+    if explicit:
+        provider_id = model[len(_CONNECTION_MODEL_PREFIX) :].partition("::")[0]
+        matches = [p for p in enabled if p.get("id") == provider_id]
+        if not matches:
+            _fail(f"No enabled Connection {provider_id!r} on {base}. Check Settings → Connections.")
+    else:
+        matches = [p for p in enabled if model in (p.get("models") or [])]
+        if not matches:
+            return None
+    usable = [p for p in matches if p.get("auth_kind") != "chatgpt_oauth"]
+    if not usable:
+        _fail(
+            f"{model} is on a ChatGPT subscription Connection, which only the Unsloth chat can use."
+        )
+    if explicit:
+        return {"id": model, "connection": usable[0].get("display_name") or usable[0]["id"]}
+    ids = [f"{_CONNECTION_MODEL_PREFIX}{p['id']}::{quote(model, safe = '')}" for p in usable]
+    if len(ids) > 1:
+        _fail(f"{model} is offered by more than one Connection. Pass one of: {', '.join(ids)}")
+    return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
+
+
 def _connect(
     api_key: Optional[str],
     model: Optional[str],
@@ -4622,19 +4808,70 @@ def _connect(
     launch: bool = True,
     server_options: ServerOptions = ServerOptions(),
     preload_check = None,
+    connections: bool = False,
 ) -> tuple:
+    _refuse_npu_model(model)
+    requested = model
+    explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
-    if model:
+    if model and not explicit_connection:
         repo, variant = _split_repo_variant(model)
         if variant:
             model = repo
             if not load.gguf_variant:
                 load = load._replace(gguf_variant = variant)
+            elif load.gguf_variant.lower() != variant.lower():
+                typer.echo(
+                    f"Warning: using --gguf-variant {load.gguf_variant} instead of the "
+                    f":{variant} in --model.",
+                    err = True,
+                )
     base, server = _require_studio(
-        model, load, serve = serve, launch = launch, server_options = server_options
+        model,
+        load,
+        serve = serve and not explicit_connection,
+        launch = launch,
+        server_options = server_options,
     )
+    # The server resolves relative paths against its own cwd; only a local Studio shares our filesystem.
+    if model and server is None and is_loopback_url(base) and _is_model_path(model):
+        if os.path.exists(os.path.expanduser(model)) and verify_studio_identity(base):
+            model = os.path.abspath(os.path.expanduser(model))
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
+        connection = None if server is not None else _connection_entry(base, key, requested)
+        if connection is not None:
+            if not connections:
+                _fail(
+                    f"{requested} is a Connection model, and this agent can only use models "
+                    "loaded in Unsloth. Connection models work with `unsloth start claude`, "
+                    "`unsloth start codex` and `unsloth start opencode`."
+                )
+            typer.echo(f"Using {requested} from the Connection {connection['connection']}.")
+            # A Connection reports no context window; an explicit one lets agents size compaction.
+            if load.max_seq_length > 0:
+                connection["context_length"] = load.max_seq_length
+            else:
+                typer.echo(
+                    "Pass --max-seq-length with the model's context window so the agent can "
+                    "compact before the provider runs out of context.",
+                    err = True,
+                )
+            if (
+                key not in _cached_keys(_key_cache_path(), base, "minted")
+                and not api_key
+                and is_loopback_url(base)
+                and verify_studio_identity(base)
+            ):
+                key = _agent_api_key(base, None, minted_only = True)
+            if key not in _cached_keys(_key_cache_path(), base, "minted"):
+                typer.echo(
+                    "Warning: Unsloth Studio only sends a Connection's saved API key for the key "
+                    "`unsloth start` issues, so drop --api-key / UNSLOTH_API_KEY unless this "
+                    "Connection needs no key.",
+                    err = True,
+                )
+            return base, key, connection
         # A server we just started has exactly the requested model loaded, so resolve to whatever it is serving instead of re-matching the raw --model string. Only an attach can still trigger an evicting load, so _resolve_model gets the pre-load check and runs it only when that load is imminent.
         entry = _resolve_model(
             base,
@@ -5035,18 +5272,11 @@ def write_openclaw_config(
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
     if yolo:
-        # OpenClaw has no --yolo flag, and it gates tool execution on BOTH the tools.exec config AND a host-local approvals file (the stricter wins), so setting only the config still lets the agent prompt or deny. Set both, mirroring `openclaw exec-policy preset yolo`.
+        # OpenClaw has no --yolo flag. Its host approvals document (SQLite since 2026.8.1) falls back to tools.exec for omitted fields, so the config side is enough.
         exec_policy = _subdict(_subdict(config, "tools"), "exec")
         exec_policy["host"] = "gateway"
         exec_policy["security"] = "full"
         exec_policy["ask"] = "off"
-        # Approvals file in OPENCLAW_STATE_DIR (the same as this config's dir). ask=off means nothing is ever prompted, so the runtime socket block is unnecessary here.
-        approvals = path.parent / "exec-approvals.json"
-        _write_private_json(
-            approvals,
-            {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
-        )
-        typer.echo(f"Updated {approvals}")
     else:
         # The no-launch config dir is reused across runs, so a previous --yolo run may have left auto-approval state behind. OpenClaw treats an omitted exec policy as security=full, ask=off on the gateway host, so deleting the keys would keep auto-approval on: a non-yolo run must WRITE a prompting policy. Only a permissive/yolo policy is replaced; a stricter one set by hand survives.
         tools = config.get("tools")
@@ -5064,30 +5294,39 @@ def write_openclaw_config(
             exec_policy.pop("host", None)  # routing only; defaults to the gateway host
             exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
             exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
-        # Drop the yolo defaults from the host approvals file (a stricter default set by the user or OpenClaw is kept). With a prompting tools.exec the stricter of the two layers wins, so an omitted approvals default still prompts.
-        approvals = path.parent / "exec-approvals.json"
-        if approvals.exists():
-            state = _read_json_object(approvals)
-            if state is not None:
-                defaults = state.get("defaults")
-                # Strip the defaults only when they are exactly the yolo fingerprint; a user-managed mixed policy that merely shares a field (askFallback=full, whose omitted default is deny) must be kept intact.
-                yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
-                is_yolo = isinstance(defaults, dict) and all(
-                    defaults.get(k) == v for k, v in yolo_defaults
-                )
-                if is_yolo:
-                    for k, _ in yolo_defaults:
-                        del defaults[k]
-                    if not defaults:
-                        del state["defaults"]
-                    if set(state) <= {"version"}:
-                        # Nothing left but our own yolo payload: remove it.
-                        approvals.unlink()
-                        typer.echo(f"Removed {approvals}")
-                    else:
-                        # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
-                        _write_private_json(approvals, state)
-                        typer.echo(f"Updated {approvals}")
+    # Older Unsloth wrote --yolo defaults here; OpenClaw 2026.8.1+ refuses every run while this legacy file exists, so drop ours in both modes and keep any other policy.
+    approvals = path.parent / "exec-approvals.json"
+    if approvals.exists():
+        state = _read_json_object(approvals)
+        if state is not None:
+            defaults = state.get("defaults")
+            # Exact yolo fingerprint only: a user policy merely sharing askFallback=full must survive.
+            yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
+            is_yolo = isinstance(defaults, dict) and all(
+                defaults.get(k) == v for k, v in yolo_defaults
+            )
+            if is_yolo:
+                for k, _ in yolo_defaults:
+                    del defaults[k]
+                if not defaults:
+                    del state["defaults"]
+                # Socket metadata and an empty agents map carry no policy (doctor retires such a stub too).
+                if all(
+                    k in ("version", "socket") or (k == "agents" and not v)
+                    for k, v in state.items()
+                ):
+                    approvals.unlink()
+                    typer.echo(f"Removed {approvals}")
+                else:
+                    _write_private_json(approvals, state)
+                    typer.echo(f"Updated {approvals}")
+    if approvals.exists():
+        # The rest is user policy; importing it is OpenClaw's migration, not ours.
+        typer.echo(
+            f"Note: {approvals} is a legacy exec approvals file, which OpenClaw 2026.8.1+ refuses to run with. "
+            f"Import it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
+        )
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -5121,7 +5360,7 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
         return {}
     if not window:
         typer.echo(
-            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            "Warning: Unsloth Studio did not report the model's context length, so --max-tokens is ignored.",
             err = True,
         )
         return {}
@@ -5266,6 +5505,12 @@ def _set_hermes_provider(
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
+        # A --persist home keeps what an earlier run pinned for another window.
+        _subdict(config, "compression").pop("threshold_tokens", None)
+        stale = config.get("auxiliary")
+        stale = stale.get("compression") if isinstance(stale, dict) else None
+        if isinstance(stale, dict) and stale.get("context_length") == _HERMES_MIN_CONTEXT:
+            del stale["context_length"]
         # Hermes auto-detects context from GET /v1/models, but OpenAI's schema has no context field, so it can fall back to a 256k default that overflows a small local model. Pin the real window (top-level model.context_length is the highest-priority override) and compact at 90% of it (Hermes defaults to 50%).
         if window >= _HERMES_MIN_CONTEXT:
             _subdict(config, "model")["context_length"] = window
@@ -5278,10 +5523,17 @@ def _set_hermes_provider(
             # Current Hermes refuses a local server below its floor unless ollama_num_ctx claims it; context_length alone no longer passes.
             _subdict(config, "model")["ollama_num_ctx"] = _HERMES_MIN_CONTEXT
             threshold = round(0.9 * window / _HERMES_MIN_CONTEXT, 4)
-            _subdict(config, "compression").update(enabled = True, threshold = threshold)
+            # Hermes raises thresholds under 0.75 below 512K; threshold_tokens is the cap it still honors.
+            _subdict(config, "compression").update(
+                enabled = True, threshold = threshold, threshold_tokens = int(0.9 * window)
+            )
             auxiliary = _subdict(_subdict(config, "auxiliary"), "compression")
             auxiliary["context_length"] = _HERMES_MIN_CONTEXT
-    _subdict(config, "providers")[_HERMES_PROVIDER] = {
+    providers = _subdict(config, "providers")
+    legacy = providers.get(_HERMES_LEGACY_PROVIDER)
+    if isinstance(legacy, dict) and legacy.get("key_env") == _HERMES_ENV_KEY:
+        del providers[_HERMES_LEGACY_PROVIDER]
+    providers[_HERMES_PROVIDER] = {
         "base_url": f"{base}/v1",
         "api_mode": "openai",
         "key_env": _HERMES_ENV_KEY,
@@ -5832,10 +6084,69 @@ def _parse_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
         _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
 
 
+_APP_DELETE = object()
+
+
+def _jsonc_members(clean: str, start: int) -> tuple:
+    """({key: (value_start, value_end)}, closing brace) for the object opening at clean[start]."""
+    decoder, space = json.JSONDecoder(), re.compile(r"\s*")
+    members, index = {}, space.match(clean, start + 1).end()
+    while clean[index] != "}":
+        key, index = decoder.raw_decode(clean, index)
+        value_start = space.match(clean, space.match(clean, index).end() + 1).end()
+        _, value_end = decoder.raw_decode(clean, value_start)
+        members[key] = (value_start, value_end)
+        index = space.match(clean, value_end).end()
+        if clean[index] == ",":
+            index = space.match(clean, index + 1).end()
+    return members, index
+
+
+def _splice_jsonc(text: str, keys: tuple, value) -> str:
+    """Set keys to value in JSONC text, touching only that member so comments elsewhere survive."""
+
+    def blank(match):
+        # Same-length blanking keeps every offset into the original text valid.
+        return match.group(1) or re.sub(r"[^\n]", " ", match.group(0))
+
+    clean = _JSONC_TRAILING_COMMA.sub(blank, _JSONC_COMMENT.sub(blank, text))
+    start, depth = re.compile(r"\s*").match(clean).end(), 0
+    for depth, key in enumerate(keys):
+        members, close = _jsonc_members(clean, start)
+        if key not in members:
+            break
+        value_start, value_end = members[key]
+        if depth == len(keys) - 1 or clean[value_start] != "{":
+            rendered = json.dumps(value, indent = 2, ensure_ascii = False)
+            rendered = rendered.replace("\n", "\n" + "  " * (depth + 1))
+            return text[:value_start] + rendered + text[value_end:]
+        start = value_start
+    for key in reversed(keys[depth + 1 :]):
+        value = {key: value}
+    indent = "  " * (depth + 1)
+    rendered = json.dumps(value, indent = 2, ensure_ascii = False).replace("\n", "\n" + indent)
+    member = f"{json.dumps(keys[depth])}: {rendered}"
+    last = len(clean[:close].rstrip())
+    if last != start + 1:
+        return text[:last] + f",\n{indent}{member}" + text[last:]
+    if text[last:close].strip():
+        return text[:last] + f"\n{indent}{member}" + text[last:]
+    return text[:last] + f"\n{indent}{member}\n" + "  " * depth + text[close:]
+
+
 def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[str]:
     config = _parse_app_config(path, text)
     before = json.dumps(config, sort_keys = True)
     for keys, value in updates:
+        if value is _APP_DELETE:
+            parent = functools.reduce(
+                lambda node, key: node.get(key) if isinstance(node, dict) else None,
+                keys[:-1],
+                config,
+            )
+            if isinstance(parent, dict):
+                parent.pop(keys[-1], None)
+            continue
         parent = config
         for depth, key in enumerate(keys[:-1]):
             if parent.get(key) is None:
@@ -5849,6 +6160,13 @@ def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[
     if json.dumps(config, sort_keys = True) == before:
         return text
     if path.suffix != ".yaml":
+        candidate = text
+        with contextlib.suppress(Exception):
+            if candidate and candidate.strip():
+                for keys, value in updates:
+                    candidate = _splice_jsonc(candidate, keys, value)
+                if _load_app_config(path, candidate) == config:
+                    return candidate
         return json.dumps(config, indent = 2, ensure_ascii = False) + "\n"
     import yaml
 
@@ -6214,7 +6532,8 @@ def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> N
         typer.echo(
             f"The Codex app is on {entry['id']} from Unsloth at {base} until this command exits "
             "(Ctrl+C). If the app was already open, quit and reopen it: it reads the model list "
-            "only at startup."
+            "only at startup. If this command is killed instead, the next `unsloth start codex` "
+            "switches the app back."
         )
         _hold_codex_app(base)
     finally:
@@ -6331,7 +6650,25 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
             # model.context_length only covers the default model, so a picked one reads its window here.
             context = max(int(window), _HERMES_MIN_CONTEXT)
             provider["models"] = {entry["id"]: {"context_length": context}}
-        return [(("providers", _HERMES_PROVIDER), provider)]
+        changes = [(("providers", _HERMES_PROVIDER), provider)]
+        config = _parse_app_config(path, text) or {}
+        providers = config.get("providers")
+        legacy = providers.get(_HERMES_LEGACY_PROVIDER) if isinstance(providers, dict) else None
+        # Only the entry an earlier --app wrote: it points here and carries nothing of the user's.
+        if (
+            isinstance(legacy, dict)
+            and legacy.get("base_url") == provider["base_url"]
+            and set(legacy) <= {"base_url", "api_mode", "api_key", "models", "extra_body"}
+        ):
+            changes.append((("providers", _HERMES_LEGACY_PROVIDER), _APP_DELETE))
+            # A default the user picked in the app still names the old entry; move it along.
+            model = config.get("model")
+            if (
+                isinstance(model, dict)
+                and model.get("provider") == f"custom:{_HERMES_LEGACY_PROVIDER}"
+            ):
+                changes.append((("model", "provider"), f"custom:{_HERMES_PROVIDER}"))
+        return changes
 
     return _AppTarget("hermes", "Hermes app", path, updates)
 
@@ -6456,11 +6793,33 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     )
 
 
-def _vscode_over_ssh(path: Path) -> bool:
-    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+def _container_engine() -> Optional[str]:
+    # `docker run unsloth/unsloth` sets none of the env vars below, only these markers.
+    if os.path.exists("/.dockerenv"):
+        return "docker"
+    if os.path.exists("/run/.containerenv"):
+        return "podman"
+    return None
+
+
+_VSCODE_REMOTE_ENV = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+
+
+def _vscode_over_ssh(path: Path, unconfirmed: bool = False) -> bool:
+    if sys.platform in ("win32", "darwin"):
         return False
-    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
-    return any(os.environ.get(name) for name in remote)
+    if path.parent.is_dir():
+        # In a container, a dir holding only what an earlier release of this command wrote there
+        # (state without "written") is not VS Code's.
+        return (
+            unconfirmed
+            and _container_engine() is not None
+            and path.is_file()
+            and all(p.name.lstrip(".").startswith(path.name) for p in path.parent.iterdir())
+        )
+    return (
+        any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV) or _container_engine() is not None
+    )
 
 
 def _add_vscode_provider(
@@ -6478,7 +6837,7 @@ def _add_vscode_provider(
         state_path, state, text, key, key_id = _open_app_config(
             target, base, explicit_key, _vscode_groups
         )
-        remote = _vscode_over_ssh(target.path)
+        remote = _vscode_over_ssh(target.path, bool(state) and not state.get("written"))
         new_text = _vscode_models_text(
             None if remote else text,
             target.path,
@@ -6497,6 +6856,7 @@ def _add_vscode_provider(
             "key": key,
             "key_id": key_id,
             "models": [entry["id"]],
+            "written": not remote,
         }
         if remote:
             # Keep the key in state so a re-run reuses it; a file here would never be read.
@@ -6510,12 +6870,20 @@ def _add_vscode_provider(
     if remote:
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
-        reach = (
-            f"forward port {port} to the same port on your machine (for example: "
-            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
-            if is_loopback_url(base)
-            else f"make sure your machine can reach {base}"
-        )
+        managed = any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV)
+        engine = _container_engine()
+        if not is_loopback_url(base):
+            reach = f"make sure your machine can reach {base}"
+        elif engine and not managed:
+            reach = (
+                f"publish port {port} to the same port on your machine (for example: "
+                f"{engine} run -p {port}:{port} ...)"
+            )
+        else:
+            reach = (
+                f"forward port {port} to the same port on your machine (for example: "
+                f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            )
         typer.echo(
             "This is a remote session (SSH or a container) with no VS Code user dir here, so "
             "nothing was written. VS Code does not list these models in remote windows yet "
@@ -6626,16 +6994,22 @@ def claude(
         launch = launch,
         preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
         server_options = server_options,
+        connections = True,
     )
     # Before the launch owns the server, so a rejection tears it down, not atexit.
     try:
-        _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
+        if not entry.get("connection"):
+            _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
     except BaseException:
         _shutdown_auto_served()
         raise
     model_id = entry["id"]
     if as_subagent:
-        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_id = (
+            model_id
+            if entry.get("connection")
+            else _subagent_model_id(base, key, entry, model, gguf_variant)
+        )
         subagent_model = {**entry, "id": subagent_id}
         window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
         server_env = {
@@ -6681,13 +7055,15 @@ def claude(
 
     env = _claude_local_env(base, key, entry, server_options.request_body())
     # Claude Code auto-compacts against its native context window; the local env above supplies the loaded model's real window and a 90% threshold instead. --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions. IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a sandbox is detected, and we do not want to falsely claim one on the user's host. claude keeps its history in ~/.claude/projects, which --settings/env never relocate, so a session already survives exit; resume it with `claude --continue` or `--resume <id>` passed through.
+    # Claude keeps only the last --settings, so a forwarded one is merged into ours instead of dropped.
+    user_settings, args = _forwarded_claude_settings(ctx.args)
     with _session_config("claude", launch, persist = persist) as config:
-        settings = _write_claude_settings(config, model_id, env)
+        settings = _write_claude_settings(config, model_id, env, user_settings)
         command = _claude_local_command(
             model_id,
             _agent_config_path(settings, ["claude"]),
             yolo,
-            ctx.args,
+            args,
         )
         _run(
             base,
@@ -6772,17 +7148,25 @@ def codex(
         launch = launch,
         preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
         server_options = server_options,
+        connections = True,
     )
     # This preflight runs after _connect may have auto-started a server but before _run takes over its lifecycle, so tear the server down here if it rejects the model (a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
-        _require_gguf_for_agent(_CODEX_GGUF_AGENT, base, key, entry["id"])
+        if not entry.get("connection"):
+            _require_gguf_for_agent(_CODEX_GGUF_AGENT, base, key, entry["id"])
     except BaseException:
         _shutdown_auto_served()
         raise
+    if app and entry.get("connection"):
+        _fail("The Codex app can't use a Connection model yet. Drop --app to run it in Codex.")
     if app:
         return _codex_app_session(base, api_key, entry)
     if as_subagent:
-        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_id = (
+            entry["id"]
+            if entry.get("connection")
+            else _subagent_model_id(base, key, entry, model, gguf_variant)
+        )
         subagent_model = {**entry, "id": subagent_id}
         with _session_config("codex-subagent", launch, persist = persist) as home:
             bridge_config = write_codex_subagent_bridge(
@@ -6980,7 +7364,7 @@ def opencode(
     as_subagent = as_subagent or auto_route
     _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
-    install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
+    install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
     _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
@@ -7005,7 +7389,12 @@ def opencode(
         serve = serve,
         launch = launch,
         server_options = server_options,
+        connections = True,
     )
+    if app and entry.get("connection"):
+        _fail(
+            "The OpenCode app can't use a Connection model yet. Drop --app to run it in OpenCode."
+        )
     if app:
         target = _opencode_app_target(max_tokens, server_options.request_body())
         return _add_app_provider(target, base, api_key, entry)
@@ -7015,7 +7404,11 @@ def opencode(
             err = True,
         )
     if as_subagent:
-        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_id = (
+            entry["id"]
+            if entry.get("connection")
+            else _subagent_model_id(base, key, entry, model, gguf_variant)
+        )
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = (
@@ -7087,7 +7480,7 @@ def opencode(
             )
         return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
-    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag. Only add --model for an interactive bare launch, as a convenience so the TUI opens on our model: it is omitted for passthrough, where inserting it before a subcommand can be misparsed, and for --no-launch, where the printed command is consumed by drivers that append a subcommand such as `run <prompt>` and a leading --model would land before it. Those paths rely on the inline pin instead.
+    # The inline OPENCODE_CONFIG_CONTENT pin below selects the model, so no path passes --model: it misparses before a passthrough subcommand, lands before the `run <prompt>` drivers append to a --no-launch recipe, and OpenCode 2 rejects it on the root command, which a V2 build whose --version probe fails would get (#13747).
     native_auto = False
     route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
@@ -7099,9 +7492,7 @@ def opencode(
         )
         command = [command_name, *opencode_args]
     elif launch:
-        opencode_args = [] if opencode_v2 else ["--model", opencode_model]
-        if opencode_v2:
-            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
         opencode_args, native_auto = _opencode_native_auto_args(
             opencode_args,
             route_native_auto,
@@ -7262,6 +7653,8 @@ def pi(
     if as_subagent and not _PI_SUBAGENT_EXTENSION.is_file():
         _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
     _require_agent_for_launch("pi", install_hint, launch)
+    if launch:
+        _warn_if_node_older("Pi", _PI_MIN_NODE, "@earendil-works/pi-coding-agent@legacy-node20")
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -7423,6 +7816,16 @@ def dsh(
         launch = launch,
         server_options = server_options,
     )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window and int(window) < _DSH_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for DeepSeek Harness: its instructions and tools take about 6,500 and it keeps "
+            "4,096 in reserve, so replies are cut short (at 8,192, after a single token). "
+            f"Load it with --max-seq-length {_DSH_MIN_CONTEXT} or more (a smaller quant if "
+            "that does not fit in memory) and re-run unsloth start dsh.",
+            err = True,
+        )
     with _session_config("dsh", launch, persist = persist) as home:
         patch = home / _DSH_PATCH_FILE
         write_dsh_patch(base, entry, patch, server_options.request_body())

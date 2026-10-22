@@ -7,7 +7,9 @@ import { test } from "node:test";
 
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
-const { answerQuestion, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
+const { agentChat, answerQuestion, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
+// Actions without a scope act for the chat on screen.
+const CHAT = "new";
 
 const globals = globalThis as Record<string, unknown>;
 const policy = { allowedDomains: [], blockedDomains: [] };
@@ -28,10 +30,10 @@ test("a script approved after Run scripts was set to Never does not run", async 
   await runBrowserAction({ id: "e0", sessionId: "s", op: "navigate", url: "https://example.com/", direction: "down", policy }, run);
   useBrowserAgentStore.setState({ scriptAccess: "ask" });
   const pending = runBrowserAction({ id: "e1", sessionId: "s", op: "evaluate", script: "return 1;", direction: "down", policy }, run);
-  let question = useBrowserAgentStore.getState().question;
+  let question = agentChat(CHAT).question;
   for (let i = 0; !question && i < 200; i++) {
     await new Promise((resolve) => setTimeout(resolve, 10));
-    question = useBrowserAgentStore.getState().question;
+    question = agentChat(CHAT).question;
   }
   assert.equal(question?.ask, "script");
   useBrowserAgentStore.setState({ scriptAccess: "never" });

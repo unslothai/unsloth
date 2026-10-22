@@ -4,7 +4,6 @@
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
-  addScanFolder,
   browseFolders,
   ChatThreadDeletedError,
   deleteChatAttachment,
@@ -21,12 +20,10 @@ export {
   listLoras,
   listModels,
   listRecommendedFolders,
-  listScanFolders,
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
   notifyChatProjectsUpdated,
-  removeScanFolder,
   subscribeChatHistoryUpdated,
   revealCachedModel,
   revealFineTunedModel,
@@ -38,7 +35,6 @@ export {
   type ChatAttachmentRecord,
   type KvCacheEstimate,
   type LocalModelInfo,
-  type ScanFolderInfo,
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
 } from "./api/chat-api";
@@ -61,9 +57,14 @@ export {
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
-export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  syncKeepModelsLoaded,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
+export { forgetAgentsMd } from "./utils/agents-md";
+export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
@@ -256,6 +257,7 @@ export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   requestLocalPromptQueueStop,
+  requestScopedLocalPromptQueueStop,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
@@ -315,6 +317,7 @@ export {
 export {
   PLUS_MENU_ORDER,
   normalizePlusMenuOrder,
+  keepSavedSlot,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
@@ -328,6 +331,7 @@ export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
+  buildExternalModelId,
   customProviderDisplayName,
   isCustomProviderType,
   isDecisionConnection,
@@ -402,9 +406,10 @@ export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
-export { showForkCreatedToast } from "./utils/fork-toast";
+export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
+export { readIncompleteInfo } from "./utils/continuation";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -463,6 +468,7 @@ export {
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
+  onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
@@ -566,7 +572,9 @@ export {
   createChatProject,
   deleteChatProject,
   moveChatItemToProject,
+  projectActivityAt,
   renameChatProject,
+  sortProjectsByActivity,
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";

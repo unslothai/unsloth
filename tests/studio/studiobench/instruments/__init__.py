@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The instrument registry. See INTERFACES.md section 3.
-
-An instrument registers a zero-argument FACTORY, not an instance, so a level-2 tracing instrument
-whose module needs a heavy import costs nothing on a level-0 run. Dropping a .py file into this
-directory is the whole registration step: `load_all()` imports every sibling module and a module
-that cannot be imported becomes a recorded gate row rather than a crash, so a partially installed
-tree still produces Layer 1's numbers.
-"""
+"""Instruments register a zero-argument factory; an import failure becomes a gate row, not a crash."""
 
 from __future__ import annotations
 
@@ -70,11 +63,7 @@ def import_errors() -> dict[str, str]:
 
 
 def build(level: int, only: Optional[list[str]] = None) -> list:
-    """Instantiate every instrument whose declared level is <= `level`, sorted by name.
-
-    A factory that raises is skipped and recorded in `import_errors()` under its instrument name,
-    for the same reason a failed import is: one broken instrument must not cost the run.
-    """
+    """A raising factory is skipped and recorded in import_errors() so it cannot sink the whole run."""
     load_all()
     out = []
     for entry in sorted(_REGISTRY.values(), key = lambda e: e.name):

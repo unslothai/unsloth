@@ -40,6 +40,7 @@ import {
 } from "@/components/assistant-ui/grammar-prewarm";
 import { streamActive } from "@/components/assistant-ui/use-reasoning-highlight";
 import { scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
+import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
 import {
   MessageResponseDetailsSheet,
@@ -54,6 +55,7 @@ import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
   composerColumnInset,
+  composerInsetFromColumn,
   readViewportBox,
 } from "@/components/assistant-ui/composer-column-inset";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
@@ -76,7 +78,10 @@ import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmatio
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
-import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import {
+  ImageGenerationToolUI,
+  VideoGenerationToolUI,
+} from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
@@ -173,7 +178,10 @@ import {
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
-import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import {
+  sortProjectsByActivity,
+  useChatProjects,
+} from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { ResearchMessage } from "@/features/chat/components/research-message";
 import {
@@ -239,12 +247,14 @@ import {
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
+  isModEnter,
   isSurfaceInForeground,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
   useShortcut,
   useSettingsDialogStore,
   isMacPlatform,
+  resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
@@ -261,6 +271,8 @@ import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-me
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import {
   codeToolsOn,
+  imageToolAvailable,
+  localImagePillCount,
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -326,6 +338,7 @@ import {
   subscribeForkCounts,
   useForkInFlight,
   showForkCreatedToast,
+  showForkFailedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -464,6 +477,7 @@ import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/up
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { watchComposerClearance } from "@/lib/toast-offset";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -501,8 +515,6 @@ type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
   /** project captured when a new chat has no persisted row to read. */
   getQueueProjectId: () => string | null;
-  /** a knowledge base replaces every other scope, project sources included. */
-  usesKnowledgeBase: boolean;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
   append: (prompt: QueuedPrompt) => void | Promise<void>;
@@ -716,11 +728,6 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       if (documents.some(indexingDocument)) {
         return true;
       }
-    }
-    // Unless a knowledge base is active: the adapter sends kb_id alone, so the
-    // project's sources cannot reach this run and waiting on them only delays it.
-    if (item.target.usesKnowledgeBase) {
-      return false;
     }
     // Project sources are retrieved whatever the Docs pill says (chat-adapter's
     // rag_scope), and isIndexing() above only answers while the bar that watches
@@ -1928,6 +1935,21 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   }, [threadId, anchor]);
 };
 
+// One read per source chat for the divider's label; a failed read is dropped so a later mount retries.
+const forkSourceTitles = new Map<string, Promise<string | null>>();
+
+function forkSourceTitle(sourceThreadId: string): Promise<string | null> {
+  let title = forkSourceTitles.get(sourceThreadId);
+  if (!title) {
+    title = readBackendChatThread(sourceThreadId).then((source) => {
+      if (source === undefined) forkSourceTitles.delete(sourceThreadId);
+      return source?.title?.trim() || null;
+    });
+    forkSourceTitles.set(sourceThreadId, title);
+  }
+  return title;
+}
+
 // Closes the history a fork inherited. Rendered by the message it follows, since the row slot
 // is propless and the boundary arrives through the store.
 const ForkContinuationRule: FC = () => {
@@ -1944,11 +1966,28 @@ const ForkContinuationRule: FC = () => {
       : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
   );
   const navigate = useNavigate();
+  const isAnchor = anchor !== undefined && anchor === messageId;
+  const [source, setSource] = useState<{ id: string; title: string | null } | null>(null);
+  useEffect(() => {
+    if (!isAnchor || !sourceThreadId) return;
+    let live = true;
+    void forkSourceTitle(sourceThreadId).then((title) => {
+      if (live) setSource({ id: sourceThreadId, title });
+    });
+    return () => {
+      live = false;
+    };
+  }, [isAnchor, sourceThreadId]);
   if (anchor === undefined || anchor !== messageId) return null;
+  const sourceTitle = source?.id === sourceThreadId ? source.title : null;
   const label = (
     <>
       <HugeiconsIcon icon={WorkflowCircle05Icon} strokeWidth={1.75} className="size-3.5" />
-      Continued from chat
+      {sourceTitle ? (
+        <span className="max-w-80 truncate">Forked from {sourceTitle}</span>
+      ) : (
+        "Continued from chat"
+      )}
     </>
   );
   const labelClass =
@@ -2033,6 +2072,7 @@ const startGrammarPrewarm = (): void => {
       },
       quiet: () =>
         !streamActive()
+        && !inputPointerHeld()
         && performance.now() - lastInputAt >= PREWARM_INPUT_QUIET_MS,
       skip: grammarWarmed,
     },
@@ -2570,6 +2610,13 @@ const ThreadComposerDock: FC<{
     };
   }, [onHeightChange]);
 
+  const composerColumnRef = useRef<HTMLDivElement | null>(null);
+  const uiSpaceScale = useUiSpaceScale();
+  useEffect(() => {
+    const column = composerColumnRef.current;
+    return column ? watchComposerClearance(column, uiSpaceScale) : undefined;
+  }, [uiSpaceScale]);
+
   const dockInnerRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const dock = dockRef.current;
@@ -2578,16 +2625,34 @@ const ThreadComposerDock: FC<{
       ":scope > .aui-thread-viewport",
     );
     if (!dock || !inner || !viewport) return;
+    const resizeObserver = new ResizeObserver(() => apply());
+    let observedFooter: Element | null = null;
     const apply = () => {
-      const inset = composerColumnInset(
-        readViewportBox(viewport),
-        dock.getBoundingClientRect(),
+      // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
+      const footer = viewport.querySelector(
+        ":scope > .aui-thread-viewport-footer",
       );
+      if (footer && footer !== observedFooter) {
+        if (observedFooter) resizeObserver.unobserve(observedFooter);
+        resizeObserver.observe(footer);
+        observedFooter = footer;
+      }
+      const dockRect = dock.getBoundingClientRect();
+      const footerRect = footer?.getBoundingClientRect();
+      // The footer scrolls sideways with the content; the composer does not.
+      const inset = footerRect
+        ? composerInsetFromColumn(
+            {
+              left: footerRect.left + viewport.scrollLeft,
+              right: footerRect.right + viewport.scrollLeft,
+            },
+            dockRect,
+          )
+        : composerColumnInset(readViewportBox(viewport), dockRect);
       inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
       inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
     };
     apply();
-    const resizeObserver = new ResizeObserver(apply);
     resizeObserver.observe(viewport);
     resizeObserver.observe(dock);
     return () => resizeObserver.disconnect();
@@ -2614,7 +2679,10 @@ const ThreadComposerDock: FC<{
         )}
       />
       <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
-        <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
+        <div
+          ref={composerColumnRef}
+          className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)"
+        >
           <ComposerAnimated
             disabled={disabled}
             threadId={threadId}
@@ -2871,6 +2939,8 @@ const Composer: FC<{
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
+  // The local Images pill counts only while it is on, like RAG.
+  const localImagePills = useChatRuntimeStore(localImagePillCount);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const deepResearchEnabled = useChatRuntimeStore(
@@ -2919,6 +2989,7 @@ const Composer: FC<{
     3 +
     (ragEnabled ? 1 : 0) +
     (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (mcpEnabledForChat ? 1 : 0) +
     (effectiveDeepResearchEnabled ? 1 : 0);
   // Under the count threshold the row still overflows on long labels ("Run
@@ -3831,6 +3902,16 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
+  // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
+  // Only when decline would take that Escape: not for an image disclosure (no keyboard), nor once rebound.
+  const soleToolRequest = useChatRuntimeStore((s) => {
+    const pending = Object.values(s.toolConfirmations);
+    return pending.length === 1 && !pending[0].imageDisclosure;
+  });
+  const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
+    const bindings = resolveBindings(s.overrides, "declineToolRequest");
+    return bindings.primary === "Escape" || bindings.alternate === "Escape";
+  });
   const composerFocusable = useContext(ChatComposerFocusableContext);
   // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
   // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
@@ -4269,9 +4350,6 @@ const Composer: FC<{
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
-    const usesKnowledgeBaseAtQueueStart =
-      chatStateAtQueueStart.ragEnabled &&
-      chatStateAtQueueStart.ragSource.type === "kb";
     let deferModelResolution =
       chatStateAtQueueStart.modelLoading &&
       parseExternalModelId(
@@ -4541,7 +4619,6 @@ const Composer: FC<{
         indexingActiveRef.current,
       getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
-      usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
@@ -5815,6 +5892,7 @@ const Composer: FC<{
                 // no effect on Latin / CJK / Devanagari.
                 dir="auto"
                 {...inputProps}
+                cancelOnEscape={!(soleToolRequest && declineOwnsEscape)}
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
@@ -6695,17 +6773,15 @@ const ImagesToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  // OpenAI cloud Responses-API models advertise image_generation as a
-  // server-side tool; no local runtime fallback. Mirror of shared-composer's
-  // imageDisabled / showImagePill so this composer matches the empty state.
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
+  // The provider's own image_generation, or the image or video model loaded in
+  // Unsloth for a model that calls Unsloth tools. Mirror of
+  // shared-composer's imageDisabled / showImagePill so this composer matches the empty state.
+  const imageToolShown = useChatRuntimeStore(imageToolAvailable);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  if (!supportsBuiltinImageGeneration) {
+  if (!imageToolShown) {
     return null;
   }
   const disabled = !modelLoaded;
@@ -6899,9 +6975,7 @@ const ComposerToolsMenu: FC<{
   const supportsBuiltinCodeExecution = useChatRuntimeStore(
     (s) => s.supportsBuiltinCodeExecution,
   );
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
+  const imageToolShown = useChatRuntimeStore(imageToolAvailable);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
@@ -6940,11 +7014,8 @@ const ComposerToolsMenu: FC<{
         externalSelection?.modelId,
       ) !== true) ||
     incognito;
-  // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
-  const recentProjects = [...projects]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 3);
+  const recentProjects = sortProjectsByActivity(projects).slice(0, 3);
   const openProject = (projectId: string) => {
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
@@ -7095,7 +7166,15 @@ const ComposerToolsMenu: FC<{
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // With the files panel hidden, the item brings it back rather than turning RAG off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -7268,6 +7347,7 @@ const ComposerToolsMenu: FC<{
   };
   const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
     splitPlusMenuItems(plusOrder, plusPins);
+  const deepResearchWithTools = pinnedPlusItems.includes("deepResearch");
 
   return (
     <>
@@ -7361,7 +7441,8 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
-        {supportsBuiltinImageGeneration && (
+        {deepResearchWithTools ? plusMenuNodes.deepResearch : null}
+        {imageToolShown && (
           <DropdownMenuItem
             disabled={imageDisabled}
             className={
@@ -7384,9 +7465,11 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
-        {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-        ))}
+        {pinnedPlusItems
+          .filter((id) => id !== "deepResearch")
+          .map((id) => (
+            <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+          ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
@@ -7559,8 +7642,32 @@ const ComposerRightControls: FC<{
     // A reply replayed after a reload has no adapter run for Cancel to abort.
     stopRecoveredRun(threadRemoteId);
   };
+  const aui = useAui();
+  const chatActive = useChatActive();
+  const threadRunning = useAuiState(({ thread }) => thread.isRunning);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  // Claimed only while foreground: Compare keeps this composer mounted and inert behind its own.
+  useShortcut(
+    "stopGeneration",
+    () => {
+      const research = isResearchActive;
+      stop();
+      if (research) return;
+      const composer = aui.composer();
+      if (composer.getState().canCancel) composer.cancel();
+    },
+    {
+      enabled: chatActive && (threadRunning || isResearchActive),
+      claims: () =>
+        controlsRef.current !== null &&
+        !controlsRef.current.closest('[aria-hidden="true"], [inert]'),
+    },
+  );
   return (
-    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+    <div
+      ref={controlsRef}
+      className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5"
+    >
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
@@ -8173,6 +8280,9 @@ const CodeExecutionToolUIConfirmable =
 const ImageGenerationToolUIConfirmable = withToolConfirmation(
   ImageGenerationToolUI,
 );
+const VideoGenerationToolUIConfirmable = withToolConfirmation(
+  VideoGenerationToolUI,
+);
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 // Read at render time, not module scope: the skill modules reach the chat barrel.
 const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
@@ -8205,6 +8315,8 @@ const ASSISTANT_PART_COMPONENTS = {
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
       image_generation: ImageGenerationToolUIConfirmable,
+      generate_image: ImageGenerationToolUIConfirmable,
+      generate_video: VideoGenerationToolUIConfirmable,
       render_html: RenderHtmlToolUIConfirmable,
     },
     Fallback: ToolFallbackConfirmable,
@@ -8368,7 +8480,7 @@ const AssistantMessage: FC = () => {
               onInput={adjustHeight}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                if (isModEnter(e)) {
                   handleSave();
                 }
                 if (e.key === 'Escape') {
@@ -8547,12 +8659,10 @@ const useForkMessageAction = () => {
         search: { thread: result.thread.id },
         replace: false,
       });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
       console.error("Failed to fork", error);
-      toast.error("Failed to fork", {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      showForkFailedToast(error);
     } finally {
       setPending(false);
     }
@@ -8600,7 +8710,7 @@ const ForkMessageButton: FC = () => {
 
   return (
     <TooltipIconButton
-      tooltip="Fork in new chat"
+      tooltip="Fork from here"
       disabled={forkDisabled}
       onClick={forkMessage}
     >

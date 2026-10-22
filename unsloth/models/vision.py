@@ -137,11 +137,14 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
-from ._custom_dtype import resolve_dtype, trusted_custom_dtype
+from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
     _bnb_bits_requested,
+    vlm_gradient_checkpointing_reentrant,
+    set_deepspeed_moe_leaf_modules,
+    fsdp2_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
@@ -152,6 +155,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _dequantize_leftover_fp8_params,
+    _drop_fp8_dequantize_conversions,
     _restore_dropped_fp8_scales,
     _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
@@ -169,6 +173,7 @@ from .loader_utils import (
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
+from .fsdp2_qlora import packed_4bit_as_uint8, prepare_fsdp2_qlora, set_fsdp2_quant_storage
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
 # `_gpu_init` hid that by importing `.models` first; the MLX branch never reaches it. So the
@@ -191,6 +196,11 @@ from unsloth_zoo.gradient_checkpointing import (
     unpatch_unsloth_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
 )
+
+try:
+    from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
+except ImportError:  # older unsloth_zoo
+    non_reentrant_offload_hooks = None
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -233,6 +243,7 @@ try:
 except:
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
+    xpu_keeps_explicit_bf16,
     get_device_stats,
     clean_gpu_cache,
     is_hip,
@@ -1143,6 +1154,10 @@ VLLM_SUPPORTED_VLM = [
     "qwen3_5_moe",
     "gemma4",
     "gemma4_text",
+    "gemma4_unified",
+    "gemma4_unified_text",
+    "muse_glimmer",
+    "muse_glimmer_text",
 ]
 
 
@@ -1158,17 +1173,53 @@ def _zoo_supports_idefics3_fast_inference():
         return False
 
 
+def _zoo_supports_new_vlm_fast_inference(model_types):
+    """Only Gemma-4 Unified / Muse Glimmer loads probe the zoo; every other model passes."""
+    unified = any(t in ("gemma4_unified", "gemma4_unified_text") for t in model_types)
+    muse = any(t in ("muse_glimmer", "muse_glimmer_text") for t in model_types)
+    if not (unified or muse):
+        return True
+    try:
+        from types import SimpleNamespace
+        from unsloth_zoo.empty_model import _is_gemma4_config, get_model_layer_config
+
+        if unified and not _is_gemma4_config(SimpleNamespace(model_type = "gemma4_unified")):
+            return False
+        if muse and (
+            "model.vision_tower.layers.{kk}.attn.proj"
+            not in get_model_layer_config()["vision_layers"]
+        ):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 # Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
 VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
-# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
-# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
-VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+# Dense Gemma-4 (E2B / E4B) needs a zoo that turns vLLM's audio profiling off (audio limit 0).
+VLLM_DENSE_NEEDS_ZOO_VLM = ("gemma4", "gemma4_text")
+
+
+def _zoo_supports_dense_gemma4_fast_inference():
+    # Older unsloth_zoo leaves the clipped vision linears of dense Gemma-4 clamping at +-inf.
+    try:
+        from unsloth_zoo.empty_model import get_model_layer_config
+        return (
+            "model.vision_tower.encoder.layers.{kk}.self_attn.q_proj.input_min"
+            in get_model_layer_config()["vision_layers"]
+        )
+    except Exception:
+        return False
 
 
 def _is_sparse_moe_config(config):
     text_config = getattr(config, "text_config", None) or config
     return bool(
-        getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
+        getattr(text_config, "num_experts", None)
+        or getattr(text_config, "num_local_experts", None)
+        or getattr(text_config, "n_routed_experts", None)
+        or getattr(text_config, "enable_moe_block", False)
     )
 
 
@@ -2476,6 +2527,72 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _in_layers(
+    name,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    # Lazy, so the first numbered segment wins (the layer, not the expert in "layers.31.mlp.experts.0"); PEFT < 0.20 matched greedily.
+    patterns = [layers_pattern] if isinstance(layers_pattern, str) else list(layers_pattern or [])
+    match = None
+    for pattern in [p for p in patterns if p] or [None]:
+        regex = r".*?\.[^.]*\.(\d+)\." if pattern is None else rf"(?:^|.*?\.){pattern}\.(\d+)\."
+        match = re.match(regex, name)
+        if match is not None:
+            break
+    if match is None:
+        return False
+    index = int(match.group(1))
+    if isinstance(layers_to_transform, int):
+        return index == layers_to_transform
+    return index in layers_to_transform
+
+
+def _regex_targets_as_names(
+    model,
+    target_modules,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT rejects layers_to_transform with a str target_modules, so a regex or "all-linear" becomes the module names it matches in those layers."""
+    if layers_to_transform is None or not isinstance(target_modules, str):
+        return target_modules
+    modules = [name for name, _ in model.named_modules() if name]
+    if target_modules.lower() == "all-linear":
+        from peft import LoraConfig
+        from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
+
+        # Older PEFT expands to leaf names, newer to full names; heads carry no layer index and drop below.
+        linear = _maybe_include_all_linear_layers(
+            LoraConfig(target_modules = "all-linear"), model
+        ).target_modules
+        names = [name for name in modules if name in linear or name.rsplit(".", 1)[-1] in linear]
+    else:
+        names = [name for name in modules if re.fullmatch(target_modules, name)]
+    return [name for name in names if _in_layers(name, layers_to_transform, layers_pattern)]
+
+
+def _target_parameters_in_layers(
+    model,
+    target_parameters,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT applies layers_to_transform to target_modules only, so name each targeted parameter inside those layers."""
+    if layers_to_transform is None or not target_parameters:
+        return target_parameters
+    targets = set(target_parameters)
+    # On a wrapped model the tensor sits under PEFT's base_layer; name it as PEFT stored it.
+    keys = [
+        f"{module_name}.{param_name}".replace(".base_layer", "")
+        for module_name, module in model.named_modules()
+        if module_name
+        for param_name, _ in module.named_parameters(recurse = False)
+    ]
+    keys = [key for key in keys if key in targets or any(key.endswith("." + t) for t in targets)]
+    return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -2958,6 +3075,15 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
+def _offload_activation_hooks():
+    # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
+    if non_reentrant_offload_hooks is not None:
+        return non_reentrant_offload_hooks()
+    return torch.autograd.graph.saved_tensors_hooks(
+        _offload_activation_pack, _offload_activation_unpack
+    )
+
+
 _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
@@ -3168,15 +3294,20 @@ class FastBaseModel:
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
         # Outside the VLM block: text_only = True has is_vlm_config False.
+        if fast_inference and not _zoo_supports_new_vlm_fast_inference(model_types):
+            raise RuntimeError(
+                f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`."
+            )
         if (
             fast_inference
-            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and any(arch in VLLM_DENSE_NEEDS_ZOO_VLM for arch in model_types)
             and not _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_dense_gemma4_fast_inference()
         ):
             raise RuntimeError(
-                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
-                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
-                "Please set fast_inference = False."
+                f"Unsloth: dense {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`, or set fast_inference = False."
             )
         if (
             fast_inference
@@ -3250,7 +3381,8 @@ class FastBaseModel:
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
             if dtype == torch.float16:
                 dtype = torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -3365,6 +3497,7 @@ class FastBaseModel:
             gptq_trainable_quantization_config,
             quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
+            gpt_oss_keeps_checkpoint_quantization,
         )
         from .fp8_to_nf4 import fp8_to_nf4_planner_quantization_config
 
@@ -3409,7 +3542,19 @@ class FastBaseModel:
             keep_task_heads_unquantized(auto_config, auto_model, model_class)
         pop_modelopt_key_mapping(auto_config, kwargs, model_class)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
-        sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
+        sync_unsloth_model_name_bnb_flags(
+            load_in_4bit,
+            load_in_8bit,
+            config = auto_config,
+            model_name = model_name,
+            token = token,
+            revision = _revision,
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+            variant = kwargs.get("variant"),
+            use_safetensors = kwargs.get("use_safetensors"),
+        )
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
@@ -3606,6 +3751,10 @@ class FastBaseModel:
                 bnb_4bit_compute_dtype = bnb_compute_dtype,
                 llm_int8_skip_modules = _skip_modules,
             )
+            if fsdp2_requested():
+                # FSDP2 shards packed 4-bit bytes only in a float storage dtype; the compute dtype makes its
+                # mixed precision cast of them a no-op.
+                set_fsdp2_quant_storage(bnb_config, bnb_compute_dtype)
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_8bit = True,
@@ -3651,7 +3800,7 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config.
         if load_in_4bit or load_in_8bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4; better to get the config file.
-            if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
+            if gpt_oss_keeps_checkpoint_quantization(model_name, auto_config, load_in_4bit):
                 pass
             else:
                 if user_quantization_config is None:
@@ -3745,7 +3894,9 @@ class FastBaseModel:
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
 
-        verify_fp8_support_if_applicable(model_config)
+        verify_fp8_support_if_applicable(
+            model_config, fast_inference = bool(fast_inference and is_vLLM_available())
+        )
 
         raise_handler = RaiseUninitialized()
         try:
@@ -3771,6 +3922,9 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
+                if "bailing_hybrid" in (model_types or ()):
+                    from ..import_fixes import fix_transformers_bailing_hybrid_low_rank_query
+                    fix_transformers_bailing_hybrid_low_rank_query()
                 with _tolerate_dtype_cast_on_quantized_model(
                     bool(trust_remote_code)
                     and (
@@ -3864,7 +4018,10 @@ class FastBaseModel:
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
                 if full_finetuning:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
+                elif fsdp2_requested():
+                    prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                    _drop_fp8_dequantize_conversions(model)
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
@@ -3926,18 +4083,23 @@ class FastBaseModel:
                     )
 
                 from unsloth_zoo.utils import get_quant_type
+                from .loader_utils import refuse_fast_inference_load_in_8bit
+
+                refuse_fast_inference_load_in_8bit(
+                    load_in_8bit,
+                    model_config,
+                    kwargs.get("quantization_config", None),
+                )
 
                 # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
+                # Every sparse MoE, text ones too: vLLM's MoE LoRA layer rejects the bnb MoE
+                # method ("Old-style modular kernel not supported", vLLM 0.31 lora/layers/fused_moe.py).
                 if (
-                    (
-                        load_in_4bit
-                        or load_in_8bit
-                        or str(model_name).lower().endswith("-bnb-4bit")
-                        or get_quant_type(model_config) == "bitsandbytes"
-                    )
-                    and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
-                    and _is_sparse_moe_config(model_config)
-                ):
+                    load_in_4bit
+                    or load_in_8bit
+                    or str(model_name).lower().endswith("-bnb-4bit")
+                    or get_quant_type(model_config) == "bitsandbytes"
+                ) and _is_sparse_moe_config(model_config):
                     raise NotImplementedError(
                         f"Unsloth: fast_inference = True does not support bitsandbytes weights (load_in_4bit / load_in_8bit = True "
                         "or a prequantized bnb-4bit checkpoint) for the sparse MoE "
@@ -4043,6 +4205,7 @@ class FastBaseModel:
             with torch.no_grad():
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
+                cast_mixed_linear_inputs(model, torch_dtype)
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
@@ -4228,14 +4391,16 @@ class FastBaseModel:
                 patch_medias_processor = None
             if patch_medias_processor is not None:
                 patch_medias_processor(tokenizer)
-        model, tokenizer = patch_model_and_tokenizer(
-            model,
-            tokenizer,
-            downcast_rope = False,
-            fix_embeddings = False,
-            do_forced_float32 = do_forced_float32,
-            correct_dtype = correct_dtype,
-        )
+        # FSDP2 packs 4-bit weights in a float dtype, which the dtype passes in here would cast.
+        with packed_4bit_as_uint8(model, enabled = fsdp2_requested()):
+            model, tokenizer = patch_model_and_tokenizer(
+                model,
+                tokenizer,
+                downcast_rope = False,
+                fix_embeddings = False,
+                do_forced_float32 = do_forced_float32,
+                correct_dtype = correct_dtype,
+            )
 
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -4423,6 +4588,13 @@ class FastBaseModel:
                     f"({type(_exc).__name__}: {_exc})."
                 )
         _install_bnb_nf4_override()
+        # head_dim 512 layers (Gemma-4 globals) otherwise fall to SDPA's efficient / math kernels.
+        # Lazy: the kernel module defines Triton autotuners, which need a driver at import.
+        from ..kernels.large_head_attention import (
+            patch_large_head_attention as _patch_large_head_attention,
+        )
+
+        _patch_large_head_attention(model)
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
@@ -4464,6 +4636,8 @@ class FastBaseModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
+            skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
 
@@ -4593,6 +4767,7 @@ class FastBaseModel:
 
         # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
+        _target_modules_from_explicit_list = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -4626,16 +4801,26 @@ class FastBaseModel:
                         "finetune_(vision|language|attention|mlp) filters; adapters "
                         "attach only where both select."
                     )
-                target_modules = get_peft_regex(
-                    model,
-                    finetune_vision_layers = finetune_vision_layers,
-                    finetune_language_layers = finetune_language_layers,
-                    finetune_attention_modules = finetune_attention_modules,
-                    finetune_mlp_modules = finetune_mlp_modules,
-                    target_modules = list(target_modules),
-                    **_audio_kwargs,
-                )
+                try:
+                    target_modules = get_peft_regex(
+                        model,
+                        finetune_vision_layers = finetune_vision_layers,
+                        finetune_language_layers = finetune_language_layers,
+                        finetune_attention_modules = finetune_attention_modules,
+                        finetune_mlp_modules = finetune_mlp_modules,
+                        target_modules = list(target_modules),
+                        **_audio_kwargs,
+                    )
+                except RuntimeError:
+                    # Mixtral's [w1, w2, w3]: block_sparse_moe has no MLP tag, so Zoo matches nothing.
+                    expert_regex = None
+                    if finetune_language_layers and finetune_mlp_modules:
+                        expert_regex = native_expert_only_regex(model, target_modules)
+                    if expert_regex is None:
+                        raise
+                    target_modules = expert_regex
                 _target_modules_auto_regex = True
+                _target_modules_from_explicit_list = True
 
         if hasattr(model, "vllm_engine"):
             if (
@@ -4680,6 +4865,7 @@ class FastBaseModel:
                 target_modules,
                 _moe_module_detect,
                 auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
+                explicit_leaves = _target_modules_from_explicit_list and bool(finetune_mlp_modules),
             )
         )
         if _expert_submodule_leaves:
@@ -4752,6 +4938,16 @@ class FastBaseModel:
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
+        _expanded = isinstance(target_modules, str) and layers_to_transform is not None
+        target_modules = _regex_targets_as_names(
+            model, target_modules, layers_to_transform, layers_pattern
+        )
+        target_parameters = _target_parameters_in_layers(
+            model, target_parameters, layers_to_transform, layers_pattern
+        )
+        if _expanded:
+            # The names pin the layers; PEFT < 0.20 would re-filter them (or its compacted suffixes) by the expert index.
+            layers_to_transform = layers_pattern = None
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
 
@@ -4901,6 +5097,7 @@ class FastBaseModel:
         float32_mixed_precision = None,
     ):
         reject_alora(model)
+        set_deepspeed_moe_leaf_modules(model)
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
@@ -4914,12 +5111,17 @@ class FastBaseModel:
                 float32_mixed_precision = False
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
-        use_reentrant = not is_distributed()
+        # FSDP2 has no DDP reducer to mark twice: each unit reduce-scatters in its own post-backward hook,
+        # recompute included, so it keeps Unsloth's offloaded checkpointing (and unsloth_stream) as 1 GPU does.
+        use_reentrant = vlm_gradient_checkpointing_reentrant()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
         if _force_non_reentrant:
             use_reentrant = False
+        model._unsloth_vlm_gc_non_reentrant = bool(
+            use_gradient_checkpointing and not use_reentrant and not _force_non_reentrant
+        )
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
@@ -4934,12 +5136,12 @@ class FastBaseModel:
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with torch.autograd.graph.saved_tensors_hooks(
-                    _offload_activation_pack, _offload_activation_unpack
-                ):
+                with _offload_activation_hooks():
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
+            # Already offloads through _offload_activation_hooks: transformers' offload=True would nest it.
+            _nonre_checkpoint._unsloth_offloads = _offload
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
         else:
@@ -5057,6 +5259,12 @@ class FastBaseModel:
         from ..tokenizer_utils import zero_pad_embedding_rows
 
         zero_pad_embedding_rows(model, tokenizer)
+        # One compiled region per decoder layer (_block_compile.py).
+        try:
+            from ._block_compile import patch_block_compile
+            patch_block_compile(model)
+        except Exception as e:
+            logger.warning(f"Unsloth: per-block compile not installed: {e}")
         return model
 
     @staticmethod

@@ -19,10 +19,8 @@ BeforeAll {
 
     $script:SetupText = Get-Content -Raw -LiteralPath $script:SetupPs1
 
-    # Follow the common parameters declared by the current PowerShell host.
     $script:CommonParameterNames = [System.Management.Automation.Internal.CommonParameters].GetProperties().Name
 
-    # Collect wrapper invocations, excluding declarations and comments.
     $script:WrapperCallLines = @(
         ($script:SetupText -split "`r?`n") |
             ForEach-Object -Begin { $n = 0 } -Process {
@@ -38,7 +36,6 @@ BeforeAll {
 
     function Test-BindsAsCommonParameter {
         param([Parameter(Mandatory)][string]$Token)
-        # Unique matches are swallowed; ambiguous matches fail binding.
         $bare = $Token.TrimStart('-')
         if (-not $bare) { return $false }
         return [bool](@($script:CommonParameterNames | Where-Object {
@@ -57,7 +54,6 @@ Describe 'Fast-* wrappers are advanced functions (why short flags are unsafe)' {
     }
 
     It 'swallows -d as -Debug instead of forwarding it' {
-        # Match the wrappers' advanced-function parameter binding.
         function script:Probe-Args { param([Parameter(ValueFromRemainingArguments=$true)]$Args_) return , @($Args_) }
 
         $withShort = Probe-Args --no-deps -d 'C:\tmp' 'pkg==1.0'
@@ -107,7 +103,6 @@ Describe 'Fast-Download forwards the destination through to pip' {
     }
 
     It 'reaches pip with --dest and the directory adjacent' {
-        # Shadow the external command to capture the wrapper's arguments.
         function script:python { $script:PipArgs = @($args); return '' }
         $script:PipArgs = @()
 

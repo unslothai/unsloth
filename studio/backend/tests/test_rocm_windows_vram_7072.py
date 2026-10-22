@@ -2514,3 +2514,38 @@ def test_an_igpu_enumerated_first_is_still_paired_by_luid(win_rocm, monkeypatch)
     assert devices[0]["used_gb"] == pytest.approx(1.5, abs = 0.01)
     assert devices[1]["used_gb"] == pytest.approx(4.28, abs = 0.01)
     assert aggregate == pytest.approx(5.78, abs = 0.01)
+
+
+@pytest.mark.parametrize(
+    "gfx, name",
+    [
+        ("gfx1153", "AMD Radeon(TM) 820M Graphics"),  # Krackan Point 2, Windows-supported
+        ("gfx1036", "AMD Radeon(TM) Graphics"),  # Raphael / Granite Ridge iGPU
+        ("gfx1035", "AMD Radeon(TM) 680M"),
+        ("gfx1033", "AMD Custom GPU 0405"),  # Van Gogh
+        ("gfx90c", "AMD Radeon(TM) Graphics"),
+    ],
+)
+def test_every_llvm_apu_target_is_positively_unified_without_the_flag(win_rocm, gfx, name):
+    """LLVM's AMDGPUUsage processor table types these APU only; a runtime that leaves is_integrated 0 must not
+    make one read as a discrete card (the diffusion layer split would then hand it denoiser blocks)."""
+
+    class _P:
+        gcnArchName = f"{gfx}:xnack-"
+        total_memory = int(PHOENIX_POOL)
+        is_integrated = 0
+
+    _P.name = name
+    assert hw._rocm_props_unified_status(_P()) is True
+    assert hw._rocm_props_are_positively_unified(_P()) is True
+
+
+def test_a_krackan_point_2_with_no_arch_attrs_or_flag_is_unified_by_name(win_rocm):
+    """AMD SDK / Radeon wheels may leave every arch attribute and is_integrated unset: the name is all there is."""
+
+    class _P:
+        name = "AMD Radeon(TM) 820M Graphics"
+        total_memory = int(PHOENIX_POOL)
+
+    assert hw._rocm_props_unified_status(_P()) is True
+    assert hw._rocm_props_are_positively_unified(_P()) is True
