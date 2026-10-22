@@ -964,7 +964,8 @@ def test_predicted_branch_hits_and_stays_exact():
     router, _replicas = _router(dit)
     out = _cfg_loop(dit, latents.clone(), steps = 6)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+    # the replica's first call (it may compile) runs unpredicted, after the primary branch
+    assert router.stats["predicted_hits"] == 4 and router.stats["predicted_misses"] == 0
     assert router.stats["replica_calls"] == 5
 
 
@@ -989,7 +990,7 @@ def test_mispredicted_branch_is_recomputed_exactly():
     router, _replicas = _router(dit)
     out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 3
     assert router.stats["replica_calls"] == 4
 
 
@@ -1013,7 +1014,7 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
     router, _replicas = _router(dit)
     out = loop(6)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+    assert router.stats["predicted_hits"] == 4 and router.stats["predicted_misses"] == 0
 
 
 def test_bitwise_equal_on_an_expanded_scalar():
@@ -1171,7 +1172,7 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         router, _replicas = _router(dit)
         out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 3
     router.prefetched = {id(uncond): (uncond, uncond)}
     router.pending = {
         "leaves": [],
