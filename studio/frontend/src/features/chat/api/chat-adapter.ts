@@ -7544,6 +7544,26 @@ export function createOpenAIStreamAdapter(
                   if (deepResearchHandoff.question !== null) break;
                   continue;
                 }
+                // A call answered elsewhere (another tab or device): its prompt clears now, not at tool_end,
+                // which can be a whole tool run later.
+                if (toolEvent.type === "tool_approved") {
+                  const approvedBackendId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvedId = toolEvent.approval_id;
+                  const confirmationId =
+                    toolConfirmationIdsByBackendId.get(approvedBackendId) ??
+                    (typeof approvedId === "string" && approvedId
+                      ? toolCallParts.find(
+                          (p) => p.toolApprovalId === approvedId,
+                        )?.toolCallId
+                      : undefined);
+                  if (confirmationId) {
+                    useChatRuntimeStore
+                      .getState()
+                      .clearToolConfirmation(confirmationId);
+                  }
+                  continue;
+                }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as

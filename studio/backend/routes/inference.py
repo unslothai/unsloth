@@ -34615,6 +34615,7 @@ async def produce_openai_chat_completions(
                             "tool_args",
                             "skill_load",
                             "tool_model_note",
+                            "tool_approved",
                         ):
                             if (
                                 event["type"] == "skill_load"
@@ -36615,8 +36616,8 @@ async def produce_openai_chat_completions(
                         yield _OPENAI_TOOL_HEARTBEAT_SSE
                         continue
 
-                    if event["type"] in ("tool_output", "tool_args"):
-                        # Live stdout/stderr, or tool-call arguments as the model writes them.
+                    if event["type"] in ("tool_output", "tool_args", "tool_approved"):
+                        # Live stdout/stderr, tool-call arguments as the model writes them, or an approval.
                         if _ui_events:
                             yield f"data: {json.dumps(event)}\n\n"
                         elif _drop_keepalive.due():

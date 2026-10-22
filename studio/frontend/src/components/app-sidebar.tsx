@@ -720,8 +720,8 @@ function NavItem({
 }
 
 /** A chat row's spinner, swapped in while its run waits on an Allow / Deny prompt. The accent of
- *  the unread dot, pulsing so the two read apart; boxed at the spinner's size so it centres on the
- *  same column. */
+ *  the unread dot, told apart by its ring even with reduced motion, and pulsing otherwise; boxed at
+ *  the spinner's size so it centres on the same column. */
 function ChatRowApprovalDot({ label }: { label: string }) {
   return (
     <span
@@ -730,7 +730,7 @@ function ChatRowApprovalDot({ label }: { label: string }) {
       data-testid="chat-row-approval"
       className="flex size-3.5 shrink-0 items-center justify-center"
     >
-      <span className="size-2 rounded-full bg-primary motion-safe:animate-pulse" />
+      <span className="size-2 rounded-full bg-primary ring-2 ring-primary/30 motion-safe:animate-pulse" />
     </span>
   );
 }

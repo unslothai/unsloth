@@ -372,7 +372,8 @@ export function createGenerationToolRecovery(
       event?.type !== "tool_end" &&
       event?.type !== "tool_model_note" &&
       event?.type !== "document_citations" &&
-      event?.type !== "compaction_block"
+      event?.type !== "compaction_block" &&
+      event?.type !== "tool_approved"
     ) {
       return;
     }
@@ -391,6 +392,17 @@ export function createGenerationToolRecovery(
     }
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
+    // Answered, possibly in another tab: the card stops offering the decision now, not at tool_end, which
+    // can be a whole tool run later. A frame older than the snapshot was already settled by the seeded
+    // check, which asks the backend whether the call is still parked.
+    if (event.type === "tool_approved") {
+      if (seq <= snapshotSeq) return;
+      const entry =
+        (backendId ? pending.get(backendId) : undefined) ??
+        findSavedEntry(backendId, event.approval_id);
+      if (entry) disarmApproval(entry);
+      return;
+    }
     if (event.tool_name === "deep_research") {
       if (event.type === "tool_start")
         researchHandoff.hiddenCallIds.delete(backendId);

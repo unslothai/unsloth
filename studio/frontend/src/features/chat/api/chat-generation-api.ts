@@ -89,7 +89,8 @@ export function normalizeChatGenerationChunkPayload(
       frameType === "tool_end" ||
       frameType === "tool_output" ||
       frameType === "tool_args" ||
-      frameType === "tool_model_note"
+      frameType === "tool_model_note" ||
+      frameType === "tool_approved"
     ) {
       // tool_start/end carry full input/output; tool_output streams incremental stdout and
       // tool_args streams the call arguments live. The consumer accumulates by tag, so keep the frame whole.

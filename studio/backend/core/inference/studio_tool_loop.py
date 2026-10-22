@@ -2066,6 +2066,7 @@ async def stream_with_studio_tools(
                     denied = True
                 elif verdict is not None:
                     yield _status_sse(decision.status_text)
+                    yield _sse(decision.tool_approved_event(approval_id))
                 if not denied:
                     decision_slot = None
             finally:

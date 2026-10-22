@@ -179,6 +179,58 @@ test("the decision goes away when the call gets a result", async () => {
   assert.equal(spy.live.size, 0, "no Approve/Deny over a finished result");
 });
 
+// Answered in another tab: this one must stop offering the decision as soon as the backend says so,
+// not at tool_end, which only comes after the tool has run.
+test("the decision goes away when another tab approves the call", async () => {
+  const spy = spyConfirmations();
+  const carried: { at: number; part: unknown }[] = [];
+  const recovery = createGenerationToolRecovery(carried, "run-1", 0, spy.hooks);
+
+  recovery.apply(parkedStart("appr-1"), 0, 1, "sess-1");
+  const part = carried[0].part as Record<string, unknown>;
+  assert.equal(spy.live.size, 1);
+
+  recovery.apply(
+    {
+      _toolEvent: {
+        type: "tool_approved",
+        tool_name: "terminal",
+        tool_call_id: "call-1",
+        approval_id: "appr-1",
+      },
+    },
+    0,
+    2,
+    "sess-1",
+  );
+  assert.deepEqual(spy.resolved, [part.toolCallId]);
+  assert.equal(spy.live.size, 0, "no Approve/Deny while the approved call runs");
+  const after = carried[0].part as Record<string, unknown>;
+  assert.equal(after.result, undefined, "the card keeps running until tool_end");
+});
+
+test("an approval older than the snapshot leaves the seeded check in charge", async () => {
+  const spy = spyConfirmations();
+  const carried: { at: number; part: unknown }[] = [];
+  const recovery = createGenerationToolRecovery(carried, "run-1", 5, spy.hooks);
+
+  recovery.apply(
+    {
+      _toolEvent: {
+        type: "tool_approved",
+        tool_name: "terminal",
+        tool_call_id: "call-1",
+        approval_id: "appr-1",
+      },
+    },
+    0,
+    3,
+    "sess-1",
+  );
+  assert.deepEqual(spy.resolved, []);
+  assert.equal(carried.length, 0, "an approval frame never mints a card");
+});
+
 test("a call that never needed a decision arms nothing", async () => {
   const spy = spyConfirmations();
   const carried: { at: number; part: unknown }[] = [];

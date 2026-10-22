@@ -215,6 +215,7 @@ test("the sidebar watches once and swaps the row spinner for the approval dot", 
   assert.match(component, /role="status"\s+aria-label=\{label\}/);
   assert.match(
     component,
-    /size-2 rounded-full bg-primary motion-safe:animate-pulse/,
+    // The ring tells it from the unread dot when reduced motion stops the pulse.
+    /size-2 rounded-full bg-primary ring-2 ring-primary\/30 motion-safe:animate-pulse/,
   );
 });

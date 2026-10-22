@@ -42630,6 +42630,7 @@ class LlamaCppBackend:
                         if _decision is not None and _decision != "deny":
                             # Approved: now it really is running.
                             yield {"type": "status", "text": decision.status_text}
+                            yield decision.tool_approved_event(approval_id)
                         if _decision == "deny":
                             decision_slot = None
                             _forced_choice_resolved = True
