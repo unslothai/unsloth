@@ -103,6 +103,14 @@ def _no_torch_off_mac(
     # Pinned: the test host's own torch and install record must not vouch for an Intel iGPU.
     monkeypatch.setattr(hw, "_expected_xpu_flavor_was_chosen", lambda: False)
     monkeypatch.setattr(hw, "_torch_reports_an_xpu_runtime", lambda: False)
+    # An emptied mask on the test host (CUDA_VISIBLE_DEVICES="") would hide the card.
+    for var in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "ZE_AFFINITY_MASK",
+    ):
+        monkeypatch.delenv(var, raising = False)
 
 
 def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypatch):
