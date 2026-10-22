@@ -69,7 +69,12 @@ def test_a_stale_forced_float32_env_does_not_fail_a_language_model_load():
     # leave it at "1" in the process, which must not refuse a later Llama-path load.
     assert (
         _resolve(
-            "llama.py", "xpu", torch.bfloat16, True, refuses = True, env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+            "llama.py",
+            "xpu",
+            torch.bfloat16,
+            True,
+            refuses = True,
+            env = {"UNSLOTH_FORCE_FLOAT32": "1"},
         )
         is torch.float16
     )
