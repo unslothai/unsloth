@@ -10211,6 +10211,9 @@ class LlamaCppBackend:
             # RPC devices go ahead of the local ones, so the shares would land on them.
             or (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
             or str(env.get("LLAMA_ARG_RPC", "")).strip()
+            # A projector pinned to another device is charged to device 0 below.
+            or (_extra_args_device(extra_args, {"--mmproj-device", "-mmdev"}) or "").strip()
+            or str(env.get("MTMD_BACKEND_DEVICE", "")).strip()
             # A surviving device list owns the share order; a gpu_ids pin strips it.
             or (
                 not pin_owns_devices
@@ -10223,6 +10226,10 @@ class LlamaCppBackend:
             return None
         # Adapters may target only some layers, which a total cannot place.
         if _sidecar_adapter_paths(extra_args):
+            return None
+        # A larger pass-through --parallel (last-wins) grows the cache priced here.
+        _np_override = _extra_args_n_parallel(extra_args, env)
+        if _np_override is not None and _np_override > int(spill_inputs.get("n_parallel") or 1):
             return None
         layout = self._tensor_spill_layout(spill_inputs.get("model_path"))
         if layout is None or not layout.complete or not layout.blocks:
@@ -10252,7 +10259,7 @@ class LlamaCppBackend:
             layout.excluded_block_bytes / n_mtp
             if n_mtp and spill_inputs.get("mtp_will_engage")
             else 0.0
-        )
+        ) + max(kv_weights) * kv_scale  # archs walking n_layer_all cache these rows too
         layer_bytes.extend([mtp_row] * n_mtp)
         # The output layer rides the last row (the last device's run).
         layer_bytes.append(layout.lm_head_bytes + layout.other_resident_bytes)

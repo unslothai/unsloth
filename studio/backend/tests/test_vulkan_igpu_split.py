@@ -312,3 +312,101 @@ def test_an_unpriced_uneven_kv_cache_leaves_the_split_to_llama_cpp():
     backend._kv_lora_rank = backend._ssm_inner_size = backend._sliding_window_pattern = None
     with pytest.raises(KeyError):
         call()
+
+
+def _priced_backend(layout):
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._tensor_spill_layout = lambda _path: layout
+    backend._kv_lora_rank = backend._ssm_inner_size = backend._sliding_window_pattern = None
+    return backend
+
+
+def _mixed(
+    backend,
+    inputs,
+    args = (),
+    env = None,
+):
+    return backend._mixed_pin_split(
+        [DGPU, IGPU],
+        inputs,
+        SHARED,
+        list(args),
+        env or {},
+        layer_min_gpus = 1,
+        tensor_parallel = False,
+        pin_owns_devices = True,
+    )
+
+
+class _Priced(Exception):
+    pass
+
+
+def _pricing_backend():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+
+    def _priced(*_a, **_k):
+        raise _Priced
+
+    backend._tensor_spill_layout = _priced
+    return backend
+
+
+def test_a_projector_pinned_to_another_device_leaves_the_split_to_llama_cpp():
+    backend = _pricing_backend()
+    inputs = {"separate_draft_on_gpu": False, "model_path": "m.gguf"}
+    assert _mixed(backend, inputs, ["--mmproj-device", "Vulkan1"]) is None
+    assert _mixed(backend, inputs, ["-mmdev=Vulkan1"]) is None
+    assert _mixed(backend, inputs, env = {"MTMD_BACKEND_DEVICE": "Vulkan1"}) is None
+    with pytest.raises(_Priced):
+        _mixed(backend, inputs)
+
+
+def test_a_larger_pass_through_parallel_leaves_the_split_to_llama_cpp():
+    backend = _pricing_backend()
+    inputs = {"separate_draft_on_gpu": False, "model_path": "m.gguf", "n_parallel": 1}
+    assert _mixed(backend, inputs, ["--parallel", "4"]) is None
+    assert _mixed(backend, inputs, ["-np=2"]) is None
+    # Fewer slots than priced leaves the plan over-reserved, the safe direction.
+    with pytest.raises(_Priced):
+        _mixed(backend, {**inputs, "n_parallel": 4}, ["--parallel", "2"])
+
+
+def test_trailing_mtp_rows_carry_a_layer_of_cache():
+    block = _types.SimpleNamespace(spillable_bytes = 0, resident_bytes = 0)
+    layout = _types.SimpleNamespace(
+        complete = True,
+        blocks = [block] * 4,
+        has_excluded_blocks = True,
+        excluded_block_bytes = 0,
+        n_attention_layers = 4,
+        lm_head_bytes = 0,
+        other_resident_bytes = 0,
+    )
+    backend = _priced_backend(layout)
+    backend._nextn_predict_layers = 1
+    seen = {}
+
+    def _record(gpu_indices, usable, shared, layer_mib, *_a):
+        seen["rows"] = layer_mib
+        return None
+
+    backend._discrete_first_split = _record
+    _mixed(
+        backend,
+        {
+            "separate_draft_on_gpu": False,
+            "model_path": "m.gguf",
+            "kv_cache_bytes": 8 * MIB,
+            "kv_layer_weights": [],
+            "mtp_will_engage": False,
+            "compute_buffer_flat": 0,
+            "extra_gpu_bytes": 0,
+            "ctx_compute_per_device": 0,
+            "soft_overhead": 0,
+            "gpu_usable_mib": {DGPU: 100.0, IGPU: 100.0},
+        },
+    )
+    # 4 blocks + 1 nextn row + output: the nextn row holds one block's 2 MiB of cache.
+    assert seen["rows"] == [2.0, 2.0, 2.0, 2.0, 2.0, 0.0]
