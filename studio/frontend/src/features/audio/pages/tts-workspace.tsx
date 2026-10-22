@@ -450,6 +450,7 @@ export function TtsOutput({
   clips,
   selectedClip,
   selectedClipSrc,
+  retryClipSrc,
   srcById,
   peaksById,
   handleDownloadClip,
@@ -486,6 +487,7 @@ export function TtsOutput({
   AudioGallery,
   | "srcById"
   | "peaksById"
+  | "retryClipSrc"
   | "handleDownloadClip"
   | "handleDeleteClip"
   | "fallbackClip"
@@ -633,7 +635,21 @@ export function TtsOutput({
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
-          <div className="flex w-full flex-col gap-2">
+          <div
+            className="flex w-full flex-col gap-2"
+            onErrorCapture={(event) => {
+              // Covers the waveform and the Edit/Convert comparison players. Ignore an
+              // original/source clip's error and late errors from a previous selection.
+              const media = event.target;
+              if (
+                selectedClipSrc &&
+                media instanceof HTMLMediaElement &&
+                media.getAttribute("src") === selectedClipSrc
+              ) {
+                retryClipSrc(selectedClip, selectedClipSrc);
+              }
+            }}
+          >
             <VariationChips
               siblings={siblings}
               selectedId={selectedClip.id}
