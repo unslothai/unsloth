@@ -80,16 +80,12 @@ type ChatModelNoticeProps = {
   activeGgufVariant: string | null;
   /** Every model that can be selected right now, by id. */
   selectableModelIds: ReadonlySet<string>;
-  /** The models kept loaded side by side, the selected one included. */
   loadedModels: readonly LoadedChatModelSlot[];
   onSwitch: (target: ChatModelSwitchTarget) => void;
 };
 
-/** Puts a chat back on the model it last used. When that model is still loaded alongside the
- *  selected one (Keep models loaded on), the switch costs no load, so it happens on opening the
- *  chat, once per open, and a later pick in the same chat is left alone. Otherwise it stays an offer: for a local model that
- *  is not loaded, switching would evict whatever is resident and spend a multi-gigabyte load on
- *  opening a chat. */
+/** Puts a chat back on its last used model: at once when that model is still loaded alongside,
+ *  else only as an offer, since a local load would evict the resident model. */
 export function ChatModelNotice({
   active,
   threadId,
@@ -100,7 +96,7 @@ export function ChatModelNotice({
   onSwitch,
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
-  // With Keep models loaded off, picking another model unloads the selected one: not a free switch.
+  // Off, picking another model unloads the selected one.
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const resident =
     createdModel != null &&

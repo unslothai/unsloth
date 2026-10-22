@@ -68,17 +68,13 @@ export function chatModelIsResident(
   );
 }
 
-/** A model kept loaded alongside the selected one, as the chat store lists it. */
 export type LoadedChatModelSlot = {
   id: string;
   quant?: string | null;
   checkpoint?: string;
 };
 
-/** The loaded slot a chat's model already sits in, or null when putting the chat back on it would
- *  need a load. Switching to a loaded slot is the same pick as its row in the picker's Loaded
- *  section, so it costs no load and can happen without asking. A saved GGUF variant has to match the
- *  slot's quant: another quant of the same repo is a different load. */
+/** The loaded slot already serving a chat's model, or null. Another quant of the same repo is a different load. */
 export function chatModelLoadedTarget(
   createdModel: ChatModelSwitchTarget,
   loadedModels: readonly LoadedChatModelSlot[],
@@ -106,9 +102,7 @@ export function chatModelLoadedTarget(
 
 export type ChatModelAutoSwitch = { threadId?: string; settled: boolean };
 
-/** One step of the switch made on opening a chat. Settled once this open of the chat is on its
- *  model, by itself or by the switch, so a pick made inside the open chat is never undone; a new
- *  thread id starts over, so coming back to a chat switches again. */
+/** Settles once the open chat is on its model, so a later pick inside it is never undone. */
 export function stepChatModelAutoSwitch(
   previous: ChatModelAutoSwitch,
   input: {
