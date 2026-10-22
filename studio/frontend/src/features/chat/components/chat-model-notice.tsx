@@ -122,6 +122,13 @@ export function ChatModelNotice({
     createdKeyRef.current = createdKey;
   }, [createdKey]);
   const autoSwitchRef = useRef<ChatModelAutoSwitch>({ settled: false });
+  // Unmounting (Compare, a Project) ends the open too, so a pending switch must not land after it.
+  useEffect(
+    () => () => {
+      autoSwitchRef.current = { settled: false };
+    },
+    [],
+  );
   useEffect(() => {
     const { state, switchTo } = stepChatModelAutoSwitch(autoSwitchRef.current, {
       threadId,

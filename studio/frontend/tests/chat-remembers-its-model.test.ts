@@ -221,6 +221,8 @@ test("the automatic switch runs once per chat open", () => {
   );
   // With Keep models loaded off, picking another model unloads the selected one.
   assert.match(body, /createdModel && !resident && keepModelsLoaded\s*\?/);
+  // Unmounting ends the open, so a pending switch's check turns false.
+  assert.match(body, /useEffect\(\s*\(\) => \(\) => \{\s*autoSwitchRef\.current = \{ settled: false \};\s*\},\s*\[\],\s*\);/);
   assert.match(
     page,
     /loadedModels=\{loadedModels\}\s*onSwitch=\{handleSwitchBackToChatModel\}\s*onAutoSwitch=\{handleAutoSwitchToChatModel\}/,

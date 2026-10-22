@@ -379,9 +379,9 @@ export const BUDGET = {
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
   // adopt-only pick in the chat runtime, +1,674 B raw / +549 B transfer (6,894,819 -> 6,896,493 B raw,
-  // 2,077,209 -> 2,077,758 B transfer against 833416887, Node 24, 98 chunks). Raised by that.
+  // 2,077,209 -> 2,077,758 B transfer against 833416887, Node 24, 98 chunks). Raised to that build plus about 100 B.
   transferBytes: 2_077_862,
-  rawBytes: 6_896_404,
+  rawBytes: 6_896_600,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
