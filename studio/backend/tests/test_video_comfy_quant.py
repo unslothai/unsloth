@@ -413,16 +413,50 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True)) == {
         "int8_backend": "torchao",
         "fp8_backend": "torchao",
+        "fp8_storage": False,
     }
-    # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 dequantizes
+    # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 has no GEMM
+    # and stays stored as fp8, widened per layer
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False)) == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "fp8_storage": True,
     }
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
+        "fp8_storage": False,
     }
+    h3 = types.SimpleNamespace(name = "minimax-h3")
+    assert (
+        vid._video_comfy_backends(h3, "b", None, _plan(True), _plan(False))["fp8_storage"] is False
+    )
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert (
+        vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False))["fp8_storage"] is False
+    )
+
+
+def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monkeypatch):
+    """fp8 stored under offload prices below the widened resident estimate: re-plan at it, and a plan that now fits
+    resident keeps fp8 storage (else the load widens past the size it was planned at)."""
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    assert vid._video_offload_reprice(fam, 2000, 1000) == (1000, True)
+    assert vid._video_offload_reprice(fam, 1000, 2000) == (2000, False)
+    assert vid._video_offload_reprice(fam, 1000, 1000) == (1000, False)
+    assert vid._video_offload_reprice(fam, None, 1000) == (None, False)
+    h3 = types.SimpleNamespace(name = "minimax-h3")
+    assert vid._video_offload_reprice(h3, 2000, 1000) == (2000, False)
+    assert vid._video_offload_reprice(h3, 1000, 2000) == (2000, False)
+    monkeypatch.setattr(vid, "plan_keeps_transformer_resident", lambda p: p.resident)
+    monkeypatch.setattr(
+        vid, "comfy_int8_backend", lambda t, f, b, *, offload = False: "native" if offload else None
+    )
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda t, f, b, *, offload = False: None)
+    resident = vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True))
+    assert resident["fp8_storage"] is False and resident["int8_backend"] is None
+    kept = vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True), priced_offload = True)
+    assert kept == {"int8_backend": "native", "fp8_backend": None, "fp8_storage": True}
 
 
 def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
@@ -444,6 +478,12 @@ def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 3
+    # no fp8 GEMM under offload: the codes stay stored as fp8 (widened per layer), priced at their stored size
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
     assert n == 2**20
 
 
@@ -679,6 +719,8 @@ def test_offloaded_plan_size_prices_fp8_that_only_runs_resident(monkeypatch, tmp
         vid, "comfy_fp8_backend", lambda *a, offload = False, **k: None if offload else "torchao"
     )
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
 
 
@@ -973,3 +1015,96 @@ def test_a_full_width_tag_retry_that_does_not_fit_is_refused_before_converting(
             int8_backend = "native",
         )
     assert len(calls) == 1  # refused before the full-width conversion ran
+
+
+def test_a_resident_video_dit_that_fits_only_stored_gets_fp8_storage(tmp_path, monkeypatch):
+    """A resident ComfyUI fp8 video DiT whose widened form would leave under the host reserve stores fp8, as an
+    image single file does: free RAM between the stored and the widened need loads, and is refused when
+    UNSLOTH_DIFFUSION_FP8_STORAGE=0 makes the load widen."""
+    import core.inference.diffusion_single_file_converters as conv
+    import core.inference.diffusion_small_host as small_host
+
+    torch.manual_seed(4)
+    dense = _H3Like()
+    tensors = {"head.weight": dense.head.weight.detach(), "head.bias": dense.head.bias.detach()}
+    quantized = {
+        "attn.to_q": dense.attn.to_q.weight,
+        "attn.to_k": dense.attn.to_k.weight,
+        "attn.to_v": dense.attn.to_v.weight,
+        "ff.proj": dense.ff.proj.weight,
+    }
+    for name, w in quantized.items():
+        w = w.detach().float()
+        scale = w.abs().max() / torch.finfo(torch.float8_e4m3fn).max
+        tensors[f"{name}.weight"] = (w / scale).to(torch.float8_e4m3fn)
+        tensors[f"{name}.weight_scale"] = scale.reshape(1)
+        tensors[f"{name}.comfy_quant"] = _conf(format = "float8_e4m3fn")
+    path = _save(tmp_path / "wan_fp8.safetensors", tensors)
+    monkeypatch.setattr(
+        cq,
+        "_mapping",
+        lambda cls: (
+            lambda checkpoint = None, **_kw: checkpoint,
+            types.SimpleNamespace(
+                _should_convert_state_dict_to_diffusers = lambda a, b: False,
+                _get_mapping_function_kwargs = lambda fn, **kw: {},
+            ),
+        ),
+    )
+    monkeypatch.setattr(vid, "plan_keeps_transformer_resident", lambda p: p.resident)
+    monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    # Price in bytes, no reserves: the tiny model's needs are a few hundred KB apart.
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    monkeypatch.setattr(conv, "_MIB", 1)
+    monkeypatch.setattr(small_host, "host_reserve_mib", lambda total: 0)
+    monkeypatch.setattr(cq, "FP8_STORAGE_HOST_RESERVE_MIB", 0)
+    keys = [n + ".weight" for n in quantized]
+    widened = conv.converted_host_bytes(
+        path, torch.bfloat16, dequantized = dict.fromkeys(keys, 1).get
+    )
+    stored = conv.converted_host_bytes(
+        path, torch.bfloat16, dequantized = dict.fromkeys(keys, 0).get
+    ) + 4 * sum(int(tensors[k].shape[0]) for k in keys)
+    assert 0 < stored < widened
+    available = (stored + widened) // 2
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, available))
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+
+    def backends(**kw):
+        return vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True), **kw)
+
+    def load(**kw):
+        return cq.load_comfy_quant_transformer(
+            _H3Like,
+            path,
+            cq.refuse_comfy_quant(path),
+            {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+            family = fam.name,
+            **kw,
+        )
+
+    picked = backends(widened_mib = widened)
+    assert picked == {"int8_backend": None, "fp8_backend": None, "fp8_storage": True}
+    model = load(**picked)
+    assert model._unsloth_comfy_quant["fp8_stored"] == 4
+    assert model.attn.to_q.weight_q.dtype == torch.uint8
+    # room to widen: the faster widened load; H3 keeps its torchao-or-dequantize rule
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, 4 * widened))
+    assert backends(widened_mib = widened)["fp8_storage"] is False
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, available))
+    h3 = types.SimpleNamespace(name = "minimax-h3")
+    assert (
+        vid._video_comfy_backends(h3, "b", None, _plan(True), _plan(True), widened_mib = widened)[
+            "fp8_storage"
+        ]
+        is False
+    )
+    # the kill switch widens, and the host RAM check refuses that load
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    widened_pick = backends(widened_mib = widened)
+    assert widened_pick["fp8_storage"] is False
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        load(**widened_pick)
