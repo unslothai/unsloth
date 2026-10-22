@@ -290,7 +290,6 @@ export function useSystemInfo({
         .finally(() => {
           inFlight = false;
           if (cancelled || !pollMs) return;
-          // A hidden tab skips its poll; visibilitychange resumes the loop.
           timeoutId = window.setTimeout(() => {
             timeoutId = null;
             if (!document.hidden) update(true);

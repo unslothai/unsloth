@@ -290,10 +290,7 @@ export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
 
 const RAM_DRIFT_TOLERANCE_GB = 0.25;
 
-/**
- * The snapshot a poll should publish: `current` when nothing moved but free RAM by under
- * RAM_DRIFT_TOLERANCE_GB, so every subscribed page does not re-render on each /api/system probe.
- */
+/** Keeps `current` when only free RAM drifted, so subscribed pages do not re-render on every poll. */
 export function nextGpuInfo(current: GpuInfo, next: GpuInfo): GpuInfo {
   const ramDrift = Math.max(
     Math.abs(current.systemRamAvailableGb - next.systemRamAvailableGb),

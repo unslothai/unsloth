@@ -524,7 +524,6 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
-  // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
   const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
   const vramCapacityLabel =
     metrics.vramShared > 0 && !unifiedPool

@@ -162,7 +162,6 @@ export function useExportRuntimeLifecycle(): void {
       statusTimer = setTimeout(
         () => {
           statusTimer = null;
-          // A hidden idle tab skips the poll; visibilitychange resumes it.
           if (!active && document.hidden) return;
           void pollStatus();
         },
