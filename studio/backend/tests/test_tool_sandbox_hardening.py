@@ -87,6 +87,59 @@ def test_an_approved_terminal_call_reuses_chat_packages_without_shadowing(tmp_pa
 
 
 @_POSIX
+def test_approved_calls_import_chat_helpers_without_shadowing_the_stdlib(tmp_path, monkeypatch):
+    workdir = _planted_workdir(tmp_path)
+    (workdir / "helper.py").write_text("VALUE = 'from-chat-folder'\n", encoding = "utf-8")
+    for name in ("json.py", "os.py"):
+        (workdir / name).write_text("print('PLANTED', __file__)\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = "import helper, json, os; print('HELPER', helper.VALUE); print('JSON', json.dumps([1]), json.__file__)\n"
+    for _ in range(2):
+        out = tools._python_exec(
+            code + f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n",
+            None,
+            60,
+            "hardening-chat",
+            host_access_approved = True,
+        )
+        assert "HELPER from-chat-folder" in out, out
+        assert "JSON [1]" in out and str(workdir) not in out.split("JSON", 1)[1], out
+        assert "PLANTED" not in out, out
+    # Terminal-started Python keeps importing helpers from the chat folder too.
+    (workdir / "json.py").unlink()
+    command = (
+        "python -c "
+        + shlex.quote("import helper; print('HELPER', helper.VALUE)")
+        + " "
+        + str(tmp_path)
+    )
+    assert tools._reaches_host_paths("terminal", command)
+    out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+    assert "HELPER from-chat-folder" in out, out
+    assert "PLANTED" not in out, out
+
+
+@_POSIX
+def test_an_approved_terminal_call_runs_chat_clis_after_system_ones(tmp_path, monkeypatch):
+    workdir = _planted_workdir(tmp_path)
+    bin_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / "bin"
+    bin_dir.mkdir()
+    for name, body in (("chatcli", "echo CHATCLI ok"), ("cat", "echo PLANTED cat")):
+        (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n", encoding = "utf-8")
+        (bin_dir / name).chmod(0o755)
+    host_file = tmp_path / "notes.csv"
+    host_file.write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = "chatcli && cat " + shlex.quote(str(host_file))
+    assert tools._reaches_host_paths("terminal", command)
+    for _ in range(2):
+        out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+        assert "CHATCLI ok" in out, out
+        assert "a,b" in out, out
+        assert "PLANTED" not in out, out
+
+
+@_POSIX
 def test_an_approved_host_launch_env_drops_every_workdir_input(tmp_path):
     workdir = _planted_workdir(tmp_path)
     script = workdir / "studio_exec_x.py"
@@ -107,7 +160,10 @@ def test_an_approved_host_launch_env_drops_every_workdir_input(tmp_path):
         assert prepared.env["HOME"] != str(workdir)
         packages = str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
         assert packages not in prepared.env.get("PYTHONPATH", "").split(os.pathsep)
-        assert not any(part.startswith(packages) for part in prepared.env["PATH"].split(os.pathsep))
+        # Chat-installed CLIs only after every system executable.
+        path = prepared.env["PATH"].split(os.pathsep)
+        assert path[-1] == os.path.join(packages, "bin")
+        assert not any(part.startswith(packages) for part in path[:-1])
         assert not prepared.argv[-1].startswith(str(workdir))
         # The approved code, not whatever the workdir copy was replaced with.
         ran = subprocess.run(
