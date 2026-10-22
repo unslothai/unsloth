@@ -18,7 +18,7 @@ import {
 import { createCompareRun, gridParameters, gridRecipeFields, gridTitles, sliceCells } from "../src/features/images/compare/compare-run.ts";
 import { joinAxisList, parseAxisValues, splitAxisList } from "../src/features/images/compare/compare-values.ts";
 import { drawCellsInTurn, gridInfotext, gridLayout, MAX_CANVAS_PIXELS, MAX_CANVAS_SIDE, withPngText, wrapText } from "../src/features/images/compare/compose-grid.ts";
-import { pngTextChunks } from "../src/features/images/lib/image-metadata.ts";
+import { parseA1111Parameters, pngTextChunks } from "../src/features/images/lib/image-metadata.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const values = (text: string, type: "int" | "float" | "str") => {
@@ -560,7 +560,43 @@ test("grid metadata writes a schedule or shift only when every cell ran it", () 
   const shifted = Object.fromEntries(gridRecipeFields(steps, [base({ shift: 3 }), base({ shift: 3, steps: 20 })], form));
   assert.equal(shifted.Shift, 3);
   const none = Object.fromEntries(gridRecipeFields(steps, [base(), base({ steps: 20 })], form));
-  assert.equal("Shift" in none, false);
+  assert.equal(none.Shift, undefined);
+});
+
+test("grid metadata: one every-cell-agrees rule for Flux shift, fitted size, seeds and variation strength", () => {
+  const form = { steps: 25, guidance: 6, width: 2048, height: 2048, model: "m" };
+  const steps = plan([{ axisId: "steps", text: "10, 20" }]);
+  const fields = Object.fromEntries(
+    gridRecipeFields(
+      steps,
+      [
+        base({ steps: 10, width: 1024, height: 1024, base_shift: 0.5, max_shift: 1.15, ...({ variation_strength: 0.15 } as object) }),
+        base({ steps: 20, width: 1024, height: 1024, base_shift: 0.5, max_shift: 1.15, ...({ variation_strength: 0.15 } as object) }),
+      ],
+      form,
+    ),
+  );
+  assert.equal(fields["Base shift"], 0.5);
+  assert.equal(fields["Max shift"], 1.15);
+  // The size the cells were fitted to, not the 2048 form value.
+  assert.equal(fields.Size, "1024x1024");
+  assert.equal(fields.Seed, 999);
+  assert.equal(fields["Variation seed strength"], 0.15);
+  // A varied axis is never written as shared, even if only one cell ran.
+  assert.equal(fields.Steps, undefined);
+  // Keep -1 with an empty seed box: each cell drew its own seed, so none is shared.
+  const random = Object.fromEntries(gridRecipeFields(steps, [base({ seed: 1 }), base({ seed: 2 })], form));
+  assert.equal(random.Seed, undefined);
+  // The implicit Vary strength a Variation seed axis adds reaches the grid's parameters and parses back.
+  const ctx = sdxl({ sdControls: { variation_seed: true, vary_strength: 0.2 } as never });
+  const vp = plan([{ axisId: "variation_seed", text: "1, 2" }], ctx);
+  const reqs = vp.order.map((cell) => buildCellRequest(vp, cell, base(), ctx, { base: 5, keepRandom: false, seedFieldEmpty: false }));
+  const info = gridParameters(vp, ctx, reqs, { ...form, keepRandomSeeds: false });
+  assert.match(info, /Variation seed strength: 0\.2/);
+  // The importer restores the Flux shift pair the grid writes.
+  const recipe = parseA1111Parameters(gridInfotext({ prompt: "p", fields: [["Steps", 4], ["Base shift", 0.5], ["Max shift", 1.15]], axes: [] }));
+  assert.equal(recipe?.base_shift, 0.5);
+  assert.equal(recipe?.max_shift, 1.15);
 });
 
 test("grid cells are decoded and drawn one at a time; missing and failed cells keep the placeholder", async () => {

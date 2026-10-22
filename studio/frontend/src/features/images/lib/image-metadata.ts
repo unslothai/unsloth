@@ -794,6 +794,9 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       if (names.length > 0) out.textual_inversions = names;
     }
     else if (key === "shift" && n !== undefined) out.shift = n;
+    // Flux's resolution-dependent shift, as Studio's compare grid writes it.
+    else if (key === "base shift" && n !== undefined) out.base_shift = n;
+    else if (key === "max shift" && n !== undefined) out.max_shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
     else if (key === "emphasis") {
       if (value && value.toLowerCase() !== "original")

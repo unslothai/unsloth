@@ -91,34 +91,53 @@ export function completedCells(run: CompareRunState): number {
   return run.results.filter(Boolean).length;
 }
 
-/** The grid's shared recipe for its `parameters` chunk, from the cells' requests. Sampler and schedule are written
- *  whenever an axis does not vary them, so the PNG still names the scheduler its cells ran; a schedule a sampler
- *  could not take (fallen back to Automatic for some cells) is not shared, so it is left out. */
+/** The value every sent cell agrees on for `key`, or none when an axis varies it or any two cells differ (a
+ *  schedule a sampler fell back from, a per-cell random seed, a Seed axis). `{ value: undefined }` = every cell
+ *  omitted it. */
+function sharedValue(
+  sent: ReadonlyArray<Readonly<Record<string, unknown>>>,
+  varied: ReadonlySet<string>,
+  key: string,
+  axisId: string = key,
+): { value: string | number | undefined } | null {
+  if (varied.has(axisId) || sent.length === 0) return null;
+  const value = sent[0][key];
+  if (!sent.every((r) => r[key] === value)) return null;
+  return { value: typeof value === "string" || typeof value === "number" ? value : undefined };
+}
+
+/** The grid's shared recipe for its `parameters` chunk, from the requests the cells were sent with: a field is
+ *  written only when every cell ran the same value, so the PNG never claims one cell's setting for the grid. */
 export function gridRecipeFields(
   plan: CompareGridPlan,
   requests: ReadonlyArray<DiffusionGenerateRequest | null | undefined>,
   form: { steps: number; guidance: number; width: number; height: number; model: string | null },
 ): Array<[string, string | number | null | undefined]> {
   const varied = new Set(plan.axes.map((a) => a.def.id));
-  const sent = requests.filter((r): r is DiffusionGenerateRequest => Boolean(r));
-  const first = sent[0];
-  const shared = <K extends keyof DiffusionGenerateRequest>(key: K) =>
-    first !== undefined && sent.every((r) => r[key] === first[key]) ? first[key] : undefined;
+  const sent = requests.filter((r): r is DiffusionGenerateRequest => Boolean(r)) as unknown as Array<
+    Record<string, unknown>
+  >;
+  const shared = (key: string, axisId?: string) => sharedValue(sent, varied, key, axisId)?.value;
+  const sampler = sharedValue(sent, varied, "sampler");
+  const schedule = shared("schedule_type", "schedule");
+  const width = shared("width");
+  const height = shared("height");
   const fields: Array<[string, string | number | null | undefined]> = [
-    ["Steps", first?.steps ?? form.steps],
-  ];
-  if (!varied.has("sampler")) fields.push(["Sampler", SAMPLER_LABELS[first?.sampler ?? "default"] ?? first?.sampler]);
-  const schedule = varied.has("schedule") ? undefined : shared("schedule_type");
-  if (schedule) fields.push(["Schedule type", SCHEDULE_LABELS[schedule] ?? schedule]);
-  const shift = varied.has("shift") ? undefined : shared("shift");
-  if (typeof shift === "number") fields.push(["Shift", shift]);
-  fields.push(
-    ["CFG scale", first?.guidance ?? form.guidance],
-    ["Seed", first?.seed],
-    ["Size", `${form.width}x${form.height}`],
+    ["Steps", sent.length ? shared("steps") : form.steps],
+    ["Sampler", sampler ? (SAMPLER_LABELS[String(sampler.value ?? "default")] ?? sampler.value) : undefined],
+    ["Schedule type", schedule ? (SCHEDULE_LABELS[String(schedule)] ?? schedule) : undefined],
+    ["Shift", shared("shift")],
+    ["Base shift", shared("base_shift")],
+    ["Max shift", shared("max_shift")],
+    ["CFG scale", sent.length ? shared("guidance") : form.guidance],
+    ["Seed", shared("seed")],
+    ["Variation seed", shared("variation_seed")],
+    ["Variation seed strength", shared("variation_strength")],
+    // The fitted size the cells ran at, not the form's (Generate may shrink it to the model's pixel limit).
+    ["Size", sent.length ? (width && height ? `${width}x${height}` : undefined) : `${form.width}x${form.height}`],
     ["Model", form.model],
-  );
-  return fields;
+  ];
+  return fields.filter(([, value]) => value !== undefined);
 }
 
 /** The grid's active LoRAs as A1111 `<lora:name:weight>` prompt tags (what the Images importer restores), at the
