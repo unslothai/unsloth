@@ -421,7 +421,11 @@ QUEUE_IDLE_CONFLICTS = 12
 _TERMINAL_KEEP = 256
 _BUSY_ERRORS = ("Training already active", "Diffusion training already active")
 # 409s that clear by themselves (a chat request in flight, a transformers install): never give up on these.
-_TRANSIENT_CONFLICTS = ("inference request is in progress", "installation is in progress")
+_TRANSIENT_CONFLICTS = (
+    "inference request is in progress",
+    "installation is in progress",
+    "is replacing the latest sidecar",
+)
 _ALIAS_TABLE = "openai_fine_tuning_aliases"
 
 
@@ -621,7 +625,10 @@ async def _drain_once() -> None:
         await _start_queued(entry)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Could not start queued fine-tuning job %s", entry.alias)
-        _finish(entry, "failed", f"Training did not start: {type(exc).__name__}")
+        if entry.cancel_requested:
+            _finish(entry, "cancelled")
+        else:
+            _finish(entry, "failed", f"Training did not start: {type(exc).__name__}")
 
 
 async def _drain() -> None:

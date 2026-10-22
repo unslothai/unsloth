@@ -795,3 +795,37 @@ def test_a_create_during_a_chat_request_is_queued_not_refused(queue, monkeypatch
         return await _create(client, uploaded.id)
 
     assert _run(flow()).status == "queued"
+
+
+def test_a_sidecar_swap_conflict_queues_and_a_crash_after_cancel_stays_cancelled(
+    queue, monkeypatch
+):
+    client, _calls, _live, gpu = queue
+    release, entered = asyncio.Event(), asyncio.Event()
+
+    async def sidecar_swap(request, current_subject, via_api_key):
+        raise openai_fine_tuning.HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is replacing the latest sidecar; retry when it completes.",
+        )
+
+    async def crash_after_cancel(request, current_subject, via_api_key):
+        entered.set()
+        await release.wait()
+        raise RuntimeError("worker spawn blew up")
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        monkeypatch.setattr(training_routes, "start_training", sidecar_swap)
+        gpu["busy"] = False
+        queued = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", crash_after_cancel)
+        drain = asyncio.ensure_future(openai_fine_tuning._drain_once())
+        await entered.wait()
+        await client.fine_tuning.jobs.cancel(queued.id)
+        release.set()
+        await drain
+        return queued, await client.fine_tuning.jobs.retrieve(queued.id)
+
+    queued, after = _run(flow())
+    assert queued.status == "queued" and after.status == "cancelled"
