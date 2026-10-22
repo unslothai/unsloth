@@ -4,6 +4,7 @@
 import {
   ChefHatIcon,
   DashboardCircleIcon,
+  DashboardSpeed01Icon,
   Download01Icon,
   DragDropVerticalIcon,
   FlimSlateIcon,
@@ -44,6 +45,10 @@ const ITEM_META: Record<
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
   api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
+  benchmarks: {
+    icon: DashboardSpeed01Icon,
+    labelKey: "shell.navigation.benchmarks",
+  },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
