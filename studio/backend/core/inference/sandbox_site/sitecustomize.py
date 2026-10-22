@@ -333,7 +333,25 @@ class _HostWorkdirFinder:
         if path is not None or name not in self._names:
             return None
         import importlib.machinery
-        return importlib.machinery.PathFinder.find_spec(name, [self._workdir])
+
+        spec = importlib.machinery.PathFinder.find_spec(name, [self._workdir])
+        if spec is not None and spec.origin and spec.origin.endswith(".py"):
+            # A requested helper's own absolute imports come from the chat folder too, as before.
+            try:
+                import ast
+
+                with open(spec.origin, "rb") as f:
+                    tree = ast.parse(f.read())
+                found = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        found.update(alias.name.split(".")[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                        found.add(node.module.split(".")[0])
+                self._names = self._names | (frozenset(found) - self._skip)
+            except Exception:  # noqa: BLE001 - an unreadable helper just adds nothing
+                pass
+        return spec
 
 
 _host_workdir = os.environ.get("_UNSLOTH_HOST_WORKDIR")

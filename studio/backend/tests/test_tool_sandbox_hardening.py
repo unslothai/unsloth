@@ -131,7 +131,8 @@ def test_chat_folder_only_supplies_the_helpers_the_script_imports(tmp_path):
     assert tools._script_top_level_imports("def (") == []
     workdir = tmp_path / "chat"
     workdir.mkdir()
-    (workdir / "helper.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    (workdir / "helper.py").write_text("import config\nVALUE = config.X\n", encoding = "utf-8")
+    (workdir / "config.py").write_text("X = 1\n", encoding = "utf-8")
     for name in ("usercustomize.py", "optional_dep.py"):
         (workdir / name).write_text("print('PLANTED')\n", encoding = "utf-8")
     site_dir = os.path.join(os.path.dirname(tools.__file__), "sandbox_site")
