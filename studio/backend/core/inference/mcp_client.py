@@ -142,10 +142,7 @@ def _public_http_client_factory(**kwargs):
 
 
 def _tool_http_client_factory(**kwargs):
-    """httpx client for HTTP/SSE MCP sessions with no read cap. Each call's budget (the Max Tool Call Duration
-    slider, up to unlimited) is enforced by _race_tool_call, and one cached session serves calls with different
-    budgets, so the SDK's default 300s read timeout would cut long tool calls short regardless of the slider. A reply
-    abandoned by a timed-out or stopped call is bounded by _ABANDONED_REPLY_TIMEOUT instead (see _McpSession)."""
+    """No read cap: _race_tool_call enforces each call's budget, which the SDK's 300s read timeout would cut short."""
     if _managed_mcp_restricted():
         client = _public_http_client_factory(**kwargs)
     else:
@@ -161,8 +158,7 @@ def _tool_http_client_factory(**kwargs):
 
 
 class _PostTracker:
-    """POSTs still open on one cached session's httpx client, so an abandoned reply that the server later finished
-    stops counting against the session (see _McpSession.abandoned_overdue)."""
+    """POSTs open on a cached session's httpx client, so a finished abandoned reply stops counting against it."""
 
     def __init__(self):
         self.open: dict = {}
@@ -187,7 +183,6 @@ class _PostTracker:
                     posts.pop(self.token, None)
 
         class Transport(http.AsyncBaseTransport):
-            # Counts a POST from send until its body closes or the send fails, cancellation included.
             def __init__(self, inner):
                 self.inner = inner
 
@@ -207,8 +202,7 @@ class _PostTracker:
             async def aclose(self):
                 await self.inner.aclose()
 
-        # httpx has no public hook that sees a request end without a response, so wrap its transports; a client
-        # without them stays untracked, and abandoned_overdue then keeps the plain deadline.
+        # httpx has no public hook for a request ending without a response; unwrappable clients keep the deadline.
         if not hasattr(client, "_transport") or not isinstance(
             getattr(client, "_mounts", None), dict
         ):
@@ -743,10 +737,7 @@ _SESSION_CLOSE_TIMEOUT = 10.0
 _SESSION_WEDGE_MARGIN = 15.0
 _SESSION_LIVENESS_TIMEOUT = 5.0
 _CANCEL_UNWIND_TIMEOUT = 2.0
-# A tool call abandoned on a cached HTTP session (budget expired, or Stop) leaves its POST open in the SDK transport
-# until the server closes it, and _tool_http_client_factory lifted the read cap that used to end it. The session is
-# retired once an abandoned reply still open has outlived the cap the SDK would have applied, or once it holds too
-# many of them, so hung replies cannot pile up on the httpx pool. A reply the server did finish costs nothing.
+# With no read cap, a still-open abandoned reply is bounded by retiring its session after the old cap or a pile-up.
 _ABANDONED_REPLY_TIMEOUT = 300.0
 _MAX_ABANDONED_REPLIES = 8
 # An HTTP session idle this long is re-proved with tools/list before the next dispatch: the server may have expired it
@@ -951,8 +942,6 @@ class _McpSession:
         self.closed = threading.Event()
         self.defunct = False  # discarded; close once in_flight drains (see _retire)
         self.dirty = False  # a call was abandoned on it; ping before reuse
-        # Abandoned HTTP replies presumed still open on the transport: when the oldest and newest were abandoned, and
-        # how many. Cleared once every POST open at the newest abandonment has closed (posts), else by retirement.
         self.abandoned_at: Optional[float] = None
         self.abandoned_last: Optional[float] = None
         self.abandoned = 0
@@ -989,12 +978,10 @@ class _McpSession:
         self.abandoned += 1
 
     def abandoned_overdue(self, now: Optional[float] = None) -> bool:
-        """Whether abandoned replies have outlived _ABANDONED_REPLY_TIMEOUT or exceeded _MAX_ABANDONED_REPLIES,
-        so the session must be closed to free them rather than probed and reused."""
+        """Whether still-open abandoned replies require closing the session rather than probing it."""
         if self.abandoned_at is None:
             return False
         if self.posts.installed and not self.posts.open_since(self.abandoned_last):
-            # The server finished every abandoned reply: nothing is leaking, so keep the chat's session.
             self.abandoned_at = self.abandoned_last = None
             self.abandoned = 0
             return False
@@ -2260,8 +2247,7 @@ def _call_session_tool(
                 else:
                     raise RuntimeError("MCP server connection is not available")
             elif session.abandoned_overdue():
-                # Its abandoned replies are past the cleanup deadline: a live probe would only prove the server is
-                # up, not that those POSTs closed, so close the client to free them and move to a fresh session.
+                # A probe would prove the server is up, not that the abandoned POSTs closed.
                 discard_session = True
                 if attempt == 0:
                     retry = True
@@ -2299,8 +2285,7 @@ def _call_session_tool(
                 return out
         except (_MCPCancelled, asyncio.TimeoutError):
             # Keep the session so a Stop doesn't destroy the server's state; the SDK drops the abandoned reply, and
-            # reuse is gated on a live probe. The reply's POST stays open on the transport with no read cap, so note
-            # it: abandoned_overdue() retires the session once it has held one too long or holds too many.
+            # reuse is gated on a live probe.
             session.dirty = True
             if not ephemeral:
                 session.note_abandoned()
