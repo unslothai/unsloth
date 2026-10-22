@@ -5100,8 +5100,17 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
 def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
     """``no_context``: skip only torch's per-device occupancy reads (they leave a resident driver context): the
     unified-memory correction of amd-smi rows and the torch fallback. The vendor CLI, Windows adapter counters and Linux
-    sysfs still answer; devices are empty only when none of those can."""
+    sysfs still answer; devices are empty only when none of those can. Windows ROCm still returns no devices: its
+    adapter path can read an APU's pool total through mem_get_info."""
     device = get_device()
+    if no_context and IS_ROCM and device == DeviceType.CUDA and sys.platform == "win32":
+        return {
+            "available": False,
+            "backend": _backend_label(device),
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+            "index_kind": "relative",
+        }
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
