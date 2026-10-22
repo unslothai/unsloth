@@ -329,27 +329,51 @@ def test_benchmark_postprocesses_the_per_card_tuner():
     assert kernels and all(id(n) in wrapped for n in kernels)
 
 
-def test_identical_cards_tune_a_cold_shape_once(monkeypatch):
-    # Two cards of one model missing the same shape at once: the second waits for the first's result.
+def test_identical_cards_launch_concurrently(monkeypatch):
+    # Per-device autograd threads launch on two identical cards at once: a cached launch on one card
+    # must not wait on the other card's launch or tuning (no model-wide lock around run).
     import threading
-    import time
 
     module, _ = _load(monkeypatch, [H100, H100])
-    tuned = []
+    barrier = threading.Barrier(2, timeout = 5)
+    finished = []
 
     class Tuner(_Tuner):
         def run(self, key = "shape"):
-            if key not in self.cache:
-                tuned.append(key)
-                time.sleep(0.2)
-                self.cache[key] = "config"
-            return self.cache[key]
+            barrier.wait()  # both cards inside run at the same time, or BrokenBarrierError
+            finished.append(self.cache.get(key))
+            return self.cache.get(key)
 
     base = Tuner()
     tuners = [module._autotuner_for(base, torch.device("cuda", i)) for i in (0, 1)]
-    threads = [threading.Thread(target = t.run) for t in tuners]
+    tuners[0].cache["shape"] = "h100-config"  # warm: shared by both identical cards
+    errors = []
+
+    def launch(tuner):
+        try:
+            tuner.run()
+        except threading.BrokenBarrierError as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target = launch, args = (t,)) for t in tuners]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(5)
-    assert tuned == ["shape"]
+        t.join(10)
+    assert not errors and finished == ["h100-config", "h100-config"]
+
+
+def test_sm_count_is_read_once_per_card(monkeypatch):
+    module, _ = _load(monkeypatch, [H100, A100])
+    reads = []
+    real = module.torch.cuda.get_device_properties
+
+    def counting(device = None):
+        reads.append(device)
+        return real(device)
+
+    monkeypatch.setattr(module.torch.cuda, "get_device_properties", counting)
+    for _ in range(3):
+        assert module._num_sms(torch.device("cuda", 1)) == 4
+        assert module._num_sms(torch.device("cuda", 0)) == 4
+    assert sorted(reads) == [0, 1]

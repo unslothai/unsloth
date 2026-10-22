@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
+import type { SdControlsCapability } from "./sd-controls.ts";
 
 /** Generation settings in exported images, read back from dropped ones. PNG: `unsloth` + `parameters` text chunks;
  *  JPEG / WebP: EXIF UserComment (`parameters`, read by AUTOMATIC1111 / Forge / Civitai) + MakerNote (recipe). */
@@ -784,16 +785,21 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       n !== undefined
     )
       out.inpaint_padding = n;
-    // `TI hashes: "name: hash, ..."` lists the embeddings the prompt used; Studio loads none.
+    // `TI hashes`: the prompt names each embedding, so an installed one applies; importNotApplied names the rest.
     else if (key === "ti hashes") {
+      const names: string[] = [];
       for (const item of value.split(",")) {
         const name = item.slice(0, item.lastIndexOf(":") > 0 ? item.lastIndexOf(":") : undefined).trim();
-        if (name) notApplied.push(`textual inversion ${name}`);
+        if (name) names.push(name);
       }
+      if (names.length > 0) out.textual_inversions = names;
     }
+    else if (key === "shift" && n !== undefined) out.shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
+    // "None" skips the parser entirely (brackets are prompt text): Studio's prompt weighting off.
     else if (key === "emphasis") {
-      if (value && value.toLowerCase() !== "original")
+      if (value.toLowerCase() === "none") out.prompt_weighting = false;
+      else if (value && value.toLowerCase() !== "original")
         notApplied.push(`${label}: ${value}`);
     } else if (key.startsWith("hires")) hires[label] = value;
     else if (key === "sampler") {
@@ -900,6 +906,15 @@ export interface RestorableRecipe {
   model_kind?: string;
   sampler?: string;
   schedule_type?: string;
+  // SDXL controls (lib/sd-controls); absent = off, except prompt_weighting (absent = on).
+  prompt_weighting?: boolean;
+  clip_skip?: number;
+  cfg_rescale?: number;
+  variation_seed?: number;
+  variation_strength?: number;
+  shift?: number;
+  base_shift?: number;
+  max_shift?: number;
   // The prompt upsampler's caption and outcome; restore decides the Enhance prompt toggle from them.
   enhanced_prompt?: string | null;
   prompt_enhancement?: "applied" | "off" | "unavailable" | "failed" | null;
@@ -927,6 +942,13 @@ export const APPLIED_RECIPE_KEYS = [
   "localized_edit",
   "sampler",
   "schedule_type",
+  "clip_skip",
+  "cfg_rescale",
+  "variation_seed",
+  "variation_strength",
+  "shift",
+  "base_shift",
+  "max_shift",
   "enhanced_prompt",
   "prompt_enhancement",
   "mask_blur",
@@ -955,6 +977,9 @@ export const INFO_RECIPE_KEYS = [
   "engine",
   "generator",
   "schema_version",
+  "prompt_weighting",
+  // The prompt names the embeddings it used, so restoring the prompt is what applies them.
+  "embeddings",
 ] as const;
 
 /** Matches RECIPE_SCHEMA_VERSION in core/inference/image_gallery.py. */
@@ -962,14 +987,11 @@ export const RECIPE_SCHEMA_VERSION = 1;
 
 /** Read from AUTOMATIC1111 text but not sent by this build. */
 export const PENDING_RECIPE_KEYS = [
-  "clip_skip",
-  "cfg_rescale",
-  "variation_seed",
-  "variation_strength",
   "hires",
   "lora_tags",
   "prompt_emphasis",
   "prompt_escaped_brackets",
+  "textual_inversions",
   "parameters_not_applied",
 ] as const;
 
@@ -1011,18 +1033,24 @@ const bounded = (r: ImportedRecipe, key: keyof typeof RECIPE_BOUNDS): number | u
 };
 
 /** `family`: the loaded model's family, when one is loaded. `parsesEmphasis`: the loaded engine reads
- *  A1111 attention syntax itself (sd.cpp's parse_prompt_attention); diffusers and MLX do not. */
+ *  A1111 attention syntax itself (sd.cpp's parse_prompt_attention); diffusers and MLX do not.
+ *  `sdControls`: status `sd_controls`; only the controls it lacks are named. */
 export function importNotApplied(
   r: ImportedRecipe,
   family?: string | null,
   parsesEmphasis = false,
+  sdControls?: SdControlsCapability | null,
 ): string[] {
   const out: string[] = [];
+  const literal = literalPromptNotApplied(r, parsesEmphasis, sdControls);
+  if (literal) out.push(literal);
+  // Weighting off reads brackets and escapes as typed, which an engine without the parser does too.
+  if (sdControls?.prompt_weighting || r.prompt_weighting === false) parsesEmphasis = true;
   if (!parsesEmphasis && Array.isArray(r.prompt_emphasis) && r.prompt_emphasis.length > 0) {
     const groups = r.prompt_emphasis.filter((g): g is string => typeof g === "string");
     const shown = groups.slice(0, 3).join(", ") + (groups.length > 3 ? ", ..." : "");
     out.push(`prompt emphasis (${shown}) is passed as plain text`);
-  }
+  } else if (!parsesEmphasis && r.prompt_weighting) out.push("prompt weighting");
   if (
     !parsesEmphasis &&
     Array.isArray(r.prompt_escaped_brackets) &&
@@ -1042,14 +1070,23 @@ export function importNotApplied(
   // SDXL already encodes from the penultimate layer, which is what A1111 / Forge render for Clip skip
   // 1 and 2 (Forge minimal_clip_skip=2; A1111 skips CLIP-G never, CLIP-L only with sdxl_clip_l_skip).
   // Elsewhere Studio applies no clip skip, so anything past A1111's default 1 is not applied.
-  if (clipSkip !== undefined && clipSkip > (family === "sdxl" ? 2 : 1))
-    out.push(`Clip skip ${clipSkip}`);
+  const clipMax = sdControls?.clip_skip?.max;
+  if (clipSkip !== undefined && clipSkip > (family === "sdxl" ? 2 : 1)) {
+    if (clipMax === undefined) out.push(`Clip skip ${clipSkip}`);
+    else if (clipSkip > clipMax) out.push(`Clip skip ${clipSkip} (clamped to ${clipMax})`);
+  }
   const rescale = num(r.cfg_rescale);
-  if (rescale !== undefined && rescale !== 0)
-    out.push(`CFG rescale ${rescale}`);
+  if (rescale !== undefined && rescale !== 0) {
+    // recipeSettings clamps to the request's [0, 1], the request to the model's max.
+    const hi = sdControls?.cfg_rescale ? Math.min(1, sdControls.cfg_rescale.max) : undefined;
+    const sent = hi === undefined ? undefined : clamp(rescale, 0, hi);
+    if (sent === undefined) out.push(`CFG rescale ${rescale}`);
+    else if (sent !== rescale) out.push(`CFG rescale ${rescale} (clamped to ${sent})`);
+  }
   const variation = num(r.variation_seed);
   const variationStrength = num(r.variation_strength);
-  if (variation !== undefined && variationStrength !== 0) {
+  if (variationApplies(r, sdControls)) {
+  } else if (variation !== undefined && variationStrength !== 0) {
     out.push(
       `variation seed ${variation}${variationStrength !== undefined ? ` (strength ${variationStrength})` : ""}`,
     );
@@ -1063,11 +1100,47 @@ export function importNotApplied(
       .map(([k, v]) => `${k}: ${String(v)}`);
     if (parts.length > 0) out.push(`hires fix (${parts.join(", ")})`);
   }
+  if (Array.isArray(r.textual_inversions)) {
+    for (const name of r.textual_inversions)
+      if (typeof name === "string" && name) out.push(textualInversionLabel(name));
+  }
   if (Array.isArray(r.parameters_not_applied)) {
     for (const item of r.parameters_not_applied)
       if (typeof item === "string") out.push(item);
   }
   return out;
+}
+
+/** A run that turned prompt weighting off (its prompt has attention syntax) cannot be replayed literally on an
+ *  engine that always parses that syntax itself (sd.cpp) and has no off switch. */
+export function literalPromptNotApplied(
+  r: ImportedRecipe | { prompt_weighting?: boolean | null },
+  parsesEmphasis: boolean,
+  sdControls?: SdControlsCapability | null,
+): string | null {
+  return r.prompt_weighting === false && parsesEmphasis && !sdControls?.prompt_weighting
+    ? "prompt weighting off (the native sd.cpp engine always reads (word:1.2) syntax)"
+    : null;
+}
+
+/** The variation seed restores only on a model that offers it, for text-to-image (and ControlNet):
+ *  the backend refuses it for a workflow that derives its noise from a source image. */
+export function variationApplies(
+  r: ImportedRecipe,
+  sdControls?: SdControlsCapability | null,
+): boolean {
+  const strength = num(r.variation_strength);
+  if (!sdControls?.variation_seed || strength === undefined || strength <= 0) return false;
+  // Out of the request's bounds (32-bit seed, strength up to 1) it would restore changed: a random seed, a clamped strength.
+  const seed = num(r.variation_seed);
+  if (strength > 1 || (seed !== undefined && !(Number.isInteger(seed) && seed >= 0 && seed < 2 ** 32))) return false;
+  const workflow = typeof r.workflow === "string" ? r.workflow : undefined;
+  return workflow === undefined || workflow === "txt2img" || workflow === "create" || workflow === "controlnet";
+}
+
+/** How importNotApplied names a TI hashes embedding; the page re-labels the ones it matched. */
+export function textualInversionLabel(name: string): string {
+  return `textual inversion ${name}`;
 }
 
 export function newerRecipeSchema(r: ImportedRecipe): boolean {
@@ -1159,6 +1232,21 @@ export function recipeSettings(
     model_kind: r.model_kind === "connection" ? "connection" : undefined,
     sampler: str(r.sampler),
     schedule_type: str(r.schedule_type),
+    prompt_weighting: r.prompt_weighting === false ? false : undefined,
+    clip_skip: clamp(int(r.clip_skip), 1, 12),
+    cfg_rescale: clamp(num(r.cfg_rescale), 0, 1),
+    variation_seed: (() => {
+      const n = int(r.variation_seed);
+      return n !== undefined && n >= 0 && n < 2 ** 32 ? n : undefined;
+    })(),
+    variation_strength: clamp(num(r.variation_strength), 0, 1),
+    // The request's bounds: shift in (0, 100], base / max shift in [0, 100].
+    shift: (() => {
+      const n = num(r.shift);
+      return n !== undefined && n > 0 && n <= 100 ? n : undefined;
+    })(),
+    base_shift: clamp(num(r.base_shift), 0, 100),
+    max_shift: clamp(num(r.max_shift), 0, 100),
     enhanced_prompt: str(r.enhanced_prompt) ?? null,
     prompt_enhancement:
       r.prompt_enhancement === "applied" ||
