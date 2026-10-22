@@ -775,6 +775,7 @@ _AUDIO_HEAD_AUTO_CLASS_NAMES = (
 def _resolve_audio_auto_model(
     model_config,
     include_bare = True,
+    trust_remote_code = None,
     **hub_kwargs,
 ):
     """The auto class whose mapped class is the checkpoint's own architecture (Wav2Vec2ForCTC,
@@ -789,7 +790,9 @@ def _resolve_audio_auto_model(
             continue
         auto_class = getattr(transformers, name, None)
         try:
-            model_class = auto_class and resolve_model_class(auto_class, model_config, **hub_kwargs)
+            model_class = auto_class and resolve_model_class(
+                auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            )
         except Exception:
             model_class = None
         if model_class is not None and getattr(model_class, "__name__", None) == architectures[0]:
