@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -64,6 +74,7 @@ import {
   type CustomReasoningConfig,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
+import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
@@ -313,6 +324,11 @@ export function ChatProvidersSettings({
   // Only the newest Codex catalog request may write to the form.
   const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
+  const [testingProviderIds, setTestingProviderIds] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const [pendingDeleteProvider, setPendingDeleteProvider] =
+    useState<ExternalProviderConfig | null>(null);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [customProviderName, setCustomProviderName] = useState(
@@ -669,30 +685,6 @@ export function ChatProvidersSettings({
     setSelectedModelIds((prev) => prev.filter((id) => !visible.has(id)));
   }
 
-  function parseOptionalBaseUrl(
-    input: string,
-    options: { appendOpenAiVersionPath?: boolean } = {},
-  ): string | null {
-    const trimmed = input.trim();
-    if (!trimmed) return null;
-    let parsed: URL;
-    try {
-      parsed = new URL(trimmed);
-    } catch {
-      throw new Error("Base URL must be a valid URL.");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("Base URL must use http or https.");
-    }
-    if (options.appendOpenAiVersionPath) {
-      const pathname = parsed.pathname.replace(/\/+$/, "");
-      if (!pathname) {
-        parsed.pathname = "/v1";
-      }
-    }
-    return parsed.toString().replace(/\/+$/, "");
-  }
-
   function parseBaseUrlForProvider(
     input: string,
     required: boolean,
@@ -705,7 +697,7 @@ export function ChatProvidersSettings({
       }
       return null;
     }
-    const baseUrl = parseOptionalBaseUrl(trimmed, {
+    const baseUrl = normalizeProviderBaseUrl(trimmed, {
       appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
     });
     return apiType === "systemone"
@@ -778,6 +770,15 @@ export function ChatProvidersSettings({
     }
     if (!isCustomProvider && !apiKey.trim() && !editingProviderHasSavedKey) {
       toast.error("Add an API key first.");
+      return;
+    }
+    if (
+      editingProvider?.hasApiKey &&
+      !apiKey.trim() &&
+      baseUrlDraft.trim() !== editingProvider.baseUrl
+    ) {
+      // The saved key only goes to the saved server, so the backend would list that server's models.
+      toast.info("Save the new Base URL first, then load its models.");
       return;
     }
     setModelsLoading(true);
@@ -1449,7 +1450,20 @@ export function ChatProvidersSettings({
   }
 
   async function testProvider(provider: ExternalProviderConfig) {
+    if (testingProviderIds.has(provider.id)) return;
+    setTestingProviderIds((prev) => new Set(prev).add(provider.id));
+    try {
+      await runProviderTest(provider);
+    } finally {
+      setTestingProviderIds((prev) => {
+        const next = new Set(prev);
+        next.delete(provider.id);
+        return next;
+      });
+    }
+  }
 
+  async function runProviderTest(provider: ExternalProviderConfig) {
     if (provider.authKind === "chatgpt_oauth") {
       if (provider.authStatus === "connected") {
         toast.success("ChatGPT subscription is connected.");
@@ -1496,24 +1510,10 @@ export function ChatProvidersSettings({
       if (result.success) {
         toast.success(result.message);
       } else {
-        if (
-          isCustomProviderType(provider.providerType) &&
-          result.message.includes("Illegal header value b'Bearer '")
-        ) {
-          toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
-          return;
-        }
         toast.error(result.message);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      if (
-        isCustomProviderType(provider.providerType) &&
-        message.includes("Illegal header value b'Bearer '")
-      ) {
-        toast.error(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
-        return;
-      }
       toast.error(`Test failed: ${message}`);
     }
   }
@@ -2491,12 +2491,20 @@ export function ChatProvidersSettings({
                         size="icon-sm"
                         variant="ghost"
                         className="size-7 hover:text-foreground"
-                        disabled={mutatingProvider}
+                        disabled={
+                          mutatingProvider ||
+                          testingProviderIds.has(provider.id)
+                        }
+                        aria-busy={testingProviderIds.has(provider.id)}
                         onClick={() => void testProvider(provider)}
                         title="Check connection"
                         aria-label={`Check ${provider.name}`}
                       >
-                        <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
+                        {testingProviderIds.has(provider.id) ? (
+                          <Spinner className="size-4" />
+                        ) : (
+                          <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
+                        )}
                       </Button>
                       {provider.sharedByOwner ? null : (
                       <Button
@@ -2505,7 +2513,7 @@ export function ChatProvidersSettings({
                         variant="ghost"
                         className="size-7 hover:text-destructive"
                         disabled={mutatingProvider}
-                        onClick={() => void deleteProvider(provider.id)}
+                        onClick={() => setPendingDeleteProvider(provider)}
                         title="Delete connection"
                         aria-label={`Delete ${provider.name}`}
                       >
@@ -2520,6 +2528,36 @@ export function ChatProvidersSettings({
           )}
         </div>
       </section>
+      <AlertDialog
+        open={pendingDeleteProvider !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteProvider(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {pendingDeleteProvider?.name ?? "connection"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the connection and its saved API key.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const provider = pendingDeleteProvider;
+                setPendingDeleteProvider(null);
+                if (provider) void deleteProvider(provider.id);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

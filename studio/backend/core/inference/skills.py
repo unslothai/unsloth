@@ -7,6 +7,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -50,6 +51,9 @@ _WINDOWS_RESERVED_STEMS = frozenset(
     | {f"lpt{index}" for index in "¹²³"}
 )
 _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
+# Only plain scalars are repaired; a rejected quoted, block, flow, anchored or tagged value is broken.
+_FRONTMATTER_KEY = re.compile(r"([a-zA-Z_-]+):[ \t]+(?=[^\s\"'|>&!\[{])(?![-?:]\s)")
+MAX_FRONTMATTER_REPAIRS = 16
 
 
 class SkillError(ValueError):
@@ -284,6 +288,49 @@ def _read_limited(
     return raw
 
 
+def _quote_frontmatter_value(text: str, line: int) -> Optional[tuple[str, str, str]]:
+    lines = text.splitlines(keepends = True)
+    match = _FRONTMATTER_KEY.match(lines[line]) if line < len(lines) else None
+    if match is None:
+        return None
+    rest = lines[line][match.end() :]
+    value = rest.splitlines()[0]
+    ending = rest[len(value) :]
+    value = re.sub(r"[ \t]+#.*", "", value).rstrip()
+    if not re.search(r":[ \t]", value):
+        return None
+    quoted = value.replace("\\", "\\\\").replace('"', '\\"')
+    lines[line] = f'{lines[line][: match.end()]}"{quoted}"{ending}'
+    return "".join(lines), match.group(1), value
+
+
+def _load_frontmatter(text: str):
+    repaired = []
+    for _ in range(MAX_FRONTMATTER_REPAIRS):
+        try:
+            frontmatter = yaml.safe_load(text)
+            break
+        except (yaml.scanner.ScannerError, yaml.composer.ComposerError) as exc:
+            # Agent skill loaders accept unquoted values such as `description: Use when: ...`.
+            # Parser errors are structural, such as a colon inside a flow collection.
+            repair = (
+                _quote_frontmatter_value(text, exc.problem_mark.line) if exc.problem_mark else None
+            )
+            if repair is None:
+                raise
+            text, key, value = repair
+            repaired.append((key, value))
+    else:
+        frontmatter = yaml.safe_load(text)
+    # A line that only looked top-level, such as one inside a flow mapping, would not read back.
+    if repaired and (
+        not isinstance(frontmatter, dict)
+        or any(frontmatter.get(key) != value for key, value in repaired)
+    ):
+        raise yaml.YAMLError("Repaired frontmatter does not read back as written.")
+    return frontmatter
+
+
 def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
@@ -301,7 +348,7 @@ def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if closing is None:
         raise SkillError("SKILL.md YAML frontmatter is not closed.")
     try:
-        frontmatter = yaml.safe_load("".join(lines[1:closing]))
+        frontmatter = _load_frontmatter("".join(lines[1:closing]))
     except (
         yaml.YAMLError,
         AttributeError,

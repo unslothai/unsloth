@@ -709,7 +709,7 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
     // Load-bearing once the editors share a draft: an edit the OTHER one made before this
     // read started is already in configAtStart, so the comparison below reads as untouched.
     "!isModelConfigDraftEdited\\(draftKey\\) &&",
-    "configRef\\.current === configAtStart &&",
+    "perModelConfigsEqual\\(configRef\\.current, configAtStart\\) &&",
     "rememberRef\\.current === rememberAtStart",
     "\\) \\{",
   ].join("\\s*\\n\\s*");
