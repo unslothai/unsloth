@@ -1519,9 +1519,28 @@ def detect_family_for_pick(
         fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    if fam is None and not override:
+        fam = _family_from_hub_evidence(repo_id, gguf_filename)
     if not override:
         fam = _family_from_content(fam, repo_id, gguf_filename)
     return fam
+
+
+def _family_from_hub_evidence(
+    repo_id: str, gguf_filename: Optional[str]
+) -> Optional[DiffusionFamily]:
+    """A Hub pick named for no family (``Laxhar/noobai-XL-Vpred-1.0``): the family its cached
+    ``model_index.json`` or picked checkpoint header declares. Never overrides a name that said no
+    (a ``...-layered`` / ``...-edit`` veto) or an excluded repo; disk only, no network."""
+    needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
+    if any(_best_family_match(model_identity(n).lower()) is not None for n in needles):
+        return None
+    if excluded_model_reason(repo_id):
+        return None
+    from .diffusion_hub_evidence import cached_family
+
+    name = cached_family(repo_id, gguf_filename)
+    return detect_family("", override = name) if name else None
 
 
 def _family_from_content(

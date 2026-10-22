@@ -211,13 +211,42 @@ def checkpoint_prediction_overrides(path: Optional[str]) -> dict[str, Any]:
     return overrides
 
 
-def apply_checkpoint_prediction_type(
-    pipe: Any,
-    path: Optional[str],
-    logger: Any = None,
+def pipeline_prediction_overrides(config: Any, root: Optional[str]) -> dict[str, Any]:
+    """Scheduler overrides a diffusers SDXL pipeline directory asks for. Empty when it asks for none.
+
+    Two sources. The repo's packaged root single file: NoobAI-XL V-Pred 1.0 ships an epsilon
+    ``scheduler_config.json`` beside a root ``.safetensors`` carrying ``v_pred`` / ``ztsnr``, which is
+    the file ComfyUI loads and samples as v-prediction with zero terminal SNR. Only when every root
+    single file agrees, so a repo shipping an eps and a v-pred variant side by side keeps its config.
+    And a config that declares v-prediction with ``rescale_betas_zero_snr`` but leading spacing,
+    which never samples the terminal timestep that zero-SNR training exists for (the marker path
+    sets ``trailing`` for the same reason)."""
+    from pathlib import Path
+
+    overrides: dict[str, Any] = {}
+    try:
+        folder = Path(str(root)) if root else None
+        singles = (
+            sorted(p for p in folder.glob("*.safetensors") if p.is_file())
+            if folder is not None and folder.is_dir()
+            else []
+        )
+    except OSError:
+        singles = []
+    marks = [checkpoint_prediction_overrides(str(p)) for p in singles]
+    if marks and marks[0] and all(m == marks[0] for m in marks):
+        overrides.update(marks[0])
+    config = config or {}
+    prediction = overrides.get("prediction_type", config.get("prediction_type"))
+    zsnr = overrides.get("rescale_betas_zero_snr", config.get("rescale_betas_zero_snr"))
+    if prediction == "v_prediction" and zsnr and config.get("timestep_spacing") != "trailing":
+        overrides["timestep_spacing"] = "trailing"
+    return overrides
+
+
+def _apply_scheduler_overrides(
+    pipe: Any, overrides: dict[str, Any], logger: Any, source: str
 ) -> bool:
-    """Rebuild ``pipe.scheduler`` for a v-prediction checkpoint. True when it changed; idempotent."""
-    overrides = checkpoint_prediction_overrides(path)
     scheduler = getattr(pipe, "scheduler", None)
     config = getattr(scheduler, "config", None)
     if not overrides or config is None:
@@ -228,5 +257,29 @@ def apply_checkpoint_prediction_type(
         return False
     pipe.scheduler = type(scheduler).from_config(config, **overrides)
     if logger is not None:
-        logger.info("scheduler set from checkpoint markers: %s", overrides)
+        logger.info("scheduler set from %s: %s", source, overrides)
     return True
+
+
+def apply_checkpoint_prediction_type(
+    pipe: Any,
+    path: Optional[str],
+    logger: Any = None,
+) -> bool:
+    """Rebuild ``pipe.scheduler`` for a v-prediction checkpoint. True when it changed; idempotent."""
+    return _apply_scheduler_overrides(
+        pipe, checkpoint_prediction_overrides(path), logger, "checkpoint markers"
+    )
+
+
+def apply_pipeline_prediction_type(
+    pipe: Any,
+    root: Optional[str],
+    logger: Any = None,
+) -> bool:
+    """``apply_checkpoint_prediction_type`` for a diffusers pipeline directory
+    (``pipeline_prediction_overrides``). True when it changed; idempotent."""
+    config = getattr(getattr(pipe, "scheduler", None), "config", None)
+    return _apply_scheduler_overrides(
+        pipe, pipeline_prediction_overrides(config, root), logger, "pipeline v-prediction"
+    )
