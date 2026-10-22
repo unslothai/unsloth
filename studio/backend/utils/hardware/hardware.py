@@ -3141,7 +3141,7 @@ _apple_gpu_stats_cache: Optional[tuple[float, Dict[str, Any]]] = None
 
 
 def _read_apple_gpu_stats() -> Dict[str, Any]:
-    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed. One /api/system refresh asks twice (visibility, then utilization under display_reads), so display reads reuse a reading up to 1.5 s old; fit and placement always read fresh."""
+    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed. Display reads reuse one up to 1.5 s old (a refresh asks twice); fit and placement read fresh."""
     global _apple_gpu_stats_cache
     try:
         from utils.hardware import gpu_query
