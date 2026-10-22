@@ -47,6 +47,12 @@ def _discrete(monkeypatch):
     )
 
 
+def _margins(cmd):
+    """Per-device ``--fit-target`` entries (a scalar is one entry)."""
+    raw = _r2._last(cmd, "--fit-target") or "1024"
+    return [int(float(e)) for e in str(raw).split(",")]
+
+
 def _dspark(backend, gguf, tmp_path, **kw):
     return _placement._launch(
         backend,
@@ -63,21 +69,48 @@ def test_a_launch_the_arch_gate_narrows_to_one_card_gets_the_reserve(tmp_path, _
     assert _r4._margin(_dspark(backend, gguf, tmp_path)) >= _FLOOR
 
 
-def test_a_launch_left_on_two_cards_keeps_the_larger_cards_share(tmp_path, _discrete):
-    """The unpinned drafter layer-splits by free memory too, so the one broadcast
-    --fit-target carries the largest card's share of it: half on two equal cards."""
+def test_a_launch_left_on_two_cards_reserves_each_cards_share(tmp_path, _discrete):
+    """The unpinned drafter layer-splits by free memory too, so each card's --fit-target
+    entry carries that card's share of it: half on two equal cards."""
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     backend._arch_gate_survivors = lambda binary = None: []
-    margin = _r4._margin(_dspark(backend, gguf, tmp_path))
-    assert 1024 + 4 * 1024 <= margin < 1024 + 5 * 1024
+    margins = _margins(_dspark(backend, gguf, tmp_path))
+    assert len(margins) == 2
+    assert all(1024 + 4 * 1024 <= m < 1024 + 5 * 1024 for m in margins)
 
 
-def test_unequal_cards_carry_the_larger_cards_share(tmp_path, _discrete):
+def test_unequal_cards_carry_their_own_shares(tmp_path, _discrete):
     backend, gguf = _r2._cuda_backend(tmp_path, memory = ((0, 30_000, 30_000), (1, 10_000, 10_000)))
     backend._arch_gate_survivors = lambda binary = None: []
-    margin = _r4._margin(_dspark(backend, gguf, tmp_path))
-    # 30,000 of 40,000 MiB free: three quarters of the ~8.3 GiB reserve.
-    assert 1024 + 6 * 1024 <= margin < 1024 + 7 * 1024
+    big, small = _margins(_dspark(backend, gguf, tmp_path))
+    # 30,000 of 40,000 MiB free: three quarters of the ~8.3 GiB reserve, a quarter on the other.
+    assert 1024 + 6 * 1024 <= big < 1024 + 7 * 1024
+    assert 1024 + 2 * 1024 <= small < 1024 + 3 * 1024
+
+
+def test_a_small_card_beside_a_large_one_is_not_over_reserved(tmp_path, _discrete):
+    """A broadcast of the large card's share (~7.6 GiB) would exceed the 8,000 MiB card."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = ((0, 80_000, 80_000), (1, 8_000, 8_000)))
+    backend._arch_gate_survivors = lambda binary = None: []
+    big, small = _margins(_dspark(backend, gguf, tmp_path))
+    assert big >= 1024 + 7 * 1024
+    assert small < 1024 + 1024
+
+
+def test_a_share_rounds_up_to_whole_draft_layers(tmp_path, _discrete):
+    """Three draft blocks over two equal cards put two on one of them: 2/3, not 1/2."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    read = backend._draft_backend_for
+
+    def three_blocks(path):
+        db = read(path)
+        db._n_layers = 3
+        return db
+
+    backend._draft_backend_for = three_blocks
+    margins = _margins(_dspark(backend, gguf, tmp_path))
+    assert all(1024 + 5 * 1024 <= m < 1024 + 6 * 1024 for m in margins)
 
 
 @pytest.mark.parametrize("pin, reserved", [("CUDA1", True), ("CUDA0", False)])
@@ -201,9 +234,61 @@ def test_a_users_per_device_margins_stay_per_device_across_cards():
         {},
         1024,
         4213,
-        spread = True,
+        per_device = [4213, 4213],
     )
     assert flags == ["--fit-target", "5237,24213"]
+
+
+def test_a_scalar_user_margin_is_broadcast_under_per_device_shares():
+    flags = _lc._sidecar_reserve_margin_flags(
+        ["--model-draft", "/d.gguf", "--fit", "on"],
+        ["--fit-target", "2048"],
+        {},
+        1024,
+        5000,
+        per_device = [5000, 500],
+    )
+    assert flags == ["--fit-target", "7048,2548"]
+
+
+@pytest.mark.parametrize(
+    "argv, devices, on_target",
+    [
+        # --split-mode none puts the target on --main-gpu, not device 0.
+        (["--split-mode", "none", "--main-gpu", "1", "--spec-draft-device", "CUDA1"], None, True),
+        (["--split-mode", "none", "--main-gpu", "1", "--spec-draft-device", "CUDA0"], None, False),
+        (
+            [
+                "--device",
+                "CUDA0,CUDA1",
+                "--split-mode",
+                "none",
+                "--main-gpu",
+                "1",
+                "--spec-draft-device",
+                "CUDA1",
+            ],
+            "CUDA0,CUDA1",
+            True,
+        ),
+        (
+            [
+                "--device",
+                "CUDA0,CUDA1",
+                "--split-mode",
+                "none",
+                "--main-gpu",
+                "1",
+                "--spec-draft-device",
+                "CUDA0",
+            ],
+            "CUDA0,CUDA1",
+            False,
+        ),
+    ],
+)
+def test_split_mode_none_compares_the_pin_with_the_main_gpu(argv, devices, on_target):
+    assert _lc._spawn_draft_on_target(argv, devices, {}) is on_target
 
 
 def test_split_mode_none_keeps_the_whole_reserve_on_the_main_card(tmp_path, _discrete):

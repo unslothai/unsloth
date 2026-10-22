@@ -38,7 +38,9 @@ def _studio_home(tmp_path, monkeypatch):
 
 
 def _margin(cmd):
-    return int(float(_r2._last(cmd, "--fit-target") or 1024))
+    """The largest card's margin (a per-device list keeps one entry per card)."""
+    raw = str(_r2._last(cmd, "--fit-target") or 1024)
+    return max(int(float(e)) for e in raw.split(","))
 
 
 def _sidecar(tmp_path):

@@ -218,8 +218,8 @@ def test_reserve_is_read_after_the_budget_price():
 
 
 def test_multi_gpu_cuda_does_not_broadcast_the_reserve(tmp_path):
-    """--fit-target is one margin applied to every device: adding the whole sidecar to
-    it would withhold the sidecar on each card and push target layers to the host."""
+    """A scalar --fit-target applies to every device: adding the whole sidecar to it would
+    withhold the sidecar on each card and push target layers to the host."""
     backend, gguf = _placement._backend_non_vulkan(
         tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
     )
@@ -233,7 +233,9 @@ def test_multi_gpu_cuda_does_not_broadcast_the_reserve(tmp_path):
         backend, gguf, speculative_type = "dspark", dspark_draft_path = str(sidecar)
     )["cmd"]
     assert _flag(cmd, "--model-draft") == str(sidecar)
-    assert int(_flag(cmd, "--fit-target") or 1024) < 1024 + 8 * 1024
+    # Each card keeps only its own share of the drafter.
+    margins = [int(e) for e in str(_flag(cmd, "--fit-target") or 1024).split(",")]
+    assert max(margins) < 1024 + 8 * 1024
 
 
 @pytest.mark.parametrize("spec_type", ["draft-dspark", "draft-dflash"])
