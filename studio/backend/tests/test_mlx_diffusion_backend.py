@@ -249,7 +249,7 @@ def test_local_files_only_reaches_every_fetch(env):
     "kwargs, needle",
     [
         ({"gguf_filename": None}, "gguf_filename is required"),
-        ({"gguf_filename": "z-image-turbo-Q4_K_M.gguf"}, "Q4_K_M"),
+        ({"gguf_filename": "z-image-turbo-Q3_K_M.gguf"}, "Q3_K_M"),
         ({"gguf_filename": GGUF, "model_kind": "pipeline"}, "GGUF"),
         ({"gguf_filename": "sdxl-Q4_0.gguf", "family_override": "sdxl"}, "no MLX implementation"),
         ({"gguf_filename": GGUF, "loras": [("a/b", 1.0)]}, "LoRA"),

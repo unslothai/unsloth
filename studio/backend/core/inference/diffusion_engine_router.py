@@ -26,8 +26,9 @@ Env knobs:
 
 The MLX engine (``mlx_diffusion_backend``) is considered only when UNSLOTH_DIFFUSION_MLX=1, on macOS 14+ on
 Apple Silicon, for a GGUF of a family that declares ``mlx_model_config`` in a quant the converter handles
-(Q4_0 / Q4_1 / Q8_0 / BF16 / F16), with ``mlx`` and ``mflux`` installed. Every refusal is recorded
-(``mlx_fallback_reason`` in the status) and falls through to the choice this module makes without it.
+(Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0, the Q4_K / Q5_K / Q6_K mixes, BF16 / F16), with ``mlx`` and ``mflux`` installed.
+Every refusal is recorded (``mlx_fallback_reason`` in the status) and falls through to the choice this module makes
+without it.
 """
 
 from __future__ import annotations
