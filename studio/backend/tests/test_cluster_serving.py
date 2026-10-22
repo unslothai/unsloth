@@ -589,6 +589,38 @@ def test_a_worker_cancelled_while_starting_is_stopped(monkeypatch):
     assert cs.state().workers == {}
 
 
+def test_a_worker_start_cancelled_mid_plan_restores_the_served_split(monkeypatch):
+    """Regression: a cancel during worker startup left in_flight set and the served plan and block cleared."""
+    _serve(monkeypatch)
+    state = cs.state()
+    served = (state.topology, state.plan, list(state.block))
+    assert served[0] == "layer_split" and served[2]
+    monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: "/b/ggml-rpc-server")
+
+    async def fake_ssh(target, remote, **kw):
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    async def fake_start(self):
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def fake_stop(self, timeout = 10.0):
+        self.proc = SimpleNamespace(returncode = 0)
+
+    async def cancelled_while_waiting(process, host, port, timeout, **kw):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss.PeerProcess, "stop", fake_stop)
+    monkeypatch.setattr(ss, "wait_for_own_port", cancelled_while_waiting)
+    with pytest.raises(asyncio.CancelledError):
+        run(ss.before_load(_request(force_reload = True), 4))
+    assert not state.in_flight and state._pre_load is None
+    assert (state.topology, state.plan, state.block) == served
+
+
 def test_ssh_takes_a_nodes_own_login_and_keeps_the_spark_one(monkeypatch):
     monkeypatch.setattr(ss, "_ssh_user", lambda: "studio")
     assert ss.ssh_argv("10.0.0.2", "true")[-2] == "studio@10.0.0.2"

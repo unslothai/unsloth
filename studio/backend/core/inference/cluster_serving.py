@@ -1366,16 +1366,33 @@ class ClusterServing:
     ) -> Any:
         from core.inference import spark_serving as ss
 
-        out = await self._plan_load(
-            request,
-            n_parallel,
-            inherited_extra_args = inherited_extra_args,
-            cancel_event = cancel_event,
-        )
+        try:
+            out = await self._plan_load(
+                request,
+                n_parallel,
+                inherited_extra_args = inherited_extra_args,
+                cancel_event = cancel_event,
+            )
+        except BaseException:
+            # No load follows a failed plan and the route calls load_failed only for the load itself:
+            # put the served split back, or the next plan saves this cleared one as the state to restore.
+            self._abandon_plan()
+            raise
         if not self._passthrough and self.topology != "layer_split" and self._serving_split():
             # The route strips the old block, so equal arguments would keep the primary on remote buffers.
             out = ss.SparkServing._request_with(out, {"force_reload": True})
         return out
+
+    def _abandon_plan(self) -> None:
+        """Undo ``_plan_load`` for a plan that raised: nothing was loaded, so the pre-load state stands."""
+        self.in_flight = False
+        self._passthrough = False
+        self._cancel_event = None
+        pre, self._pre_load = self._pre_load, None
+        if pre is not None:
+            self.topology, self.reason, self.plan, self.block = pre
+            if self.block:
+                _remember_block(self.block)
 
     async def _plan_load(
         self,
