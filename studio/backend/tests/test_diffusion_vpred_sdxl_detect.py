@@ -632,3 +632,75 @@ def test_a_refresh_keeps_the_last_verdict_visible(hub_cache, monkeypatch):
     assert during == ["sdxl"]
     # A failed refresh keeps the last good read rather than forgetting it.
     assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+
+
+# ---- review round 5 ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("given, sent", [(False, False), ("  hf_x  ", "hf_x"), ("", None)])
+def test_the_pipeline_marker_probe_keeps_the_anonymous_sentinel(tmp_path, monkeypatch, given, sent):
+    import huggingface_hub
+
+    root = _pipeline_dir(tmp_path, NOOB_SCHEDULER, {})
+    seen = []
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        seen.append(token)
+        return [NOOB_FILE]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        seen.append(token)
+        return types.SimpleNamespace(tensors = {"v_pred": None}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    pipeline_prediction_overrides(NOOB_SCHEDULER, str(root), NOOB, given, True)
+    assert seen == [sent, sent]
+
+
+def test_the_load_hands_the_uncollapsed_token_to_the_marker_probe():
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    ).read_text()
+    tree = ast.parse(source)
+    methods = {
+        n.name: n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name in ("begin_load", "load_pipeline")
+    }
+    # begin_load forwards normalize_token(hf_token) to the worker before collapsing hf_token.
+    begin = methods["begin_load"]
+    assigns = [
+        a
+        for a in ast.walk(begin)
+        if isinstance(a, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "hub_token" for t in a.targets)
+    ]
+    assert assigns and isinstance(assigns[0].value, ast.Call)
+    assert getattr(assigns[0].value.func, "id", None) == "normalize_token"
+    assert any(isinstance(k, ast.keyword) and k.arg == "_hub_token" for k in ast.walk(begin))
+    # load_pipeline accepts it and the marker probe receives it, never the collapsed hf_token.
+    load = methods["load_pipeline"]
+    assert "_hub_token" in {a.arg for a in load.args.kwonlyargs}
+    probe = [
+        c
+        for c in ast.walk(load)
+        if isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "apply_pipeline_prediction_type"
+    ]
+    assert len(probe) == 1
+    token_kw = next(k for k in probe[0].keywords if k.arg == "hf_token")
+    assert isinstance(token_kw.value, ast.Name) and token_kw.value.id == "hub_token"

@@ -250,6 +250,10 @@ def _root_single_marks(
 
         from .diffusion_families import pinned_revision_kwargs
 
+        from hub.utils.hf_tokens import normalize_token
+
+        # One normalisation for every Hub call this PR adds: False (anonymous) never becomes None (ambient).
+        hf_token = normalize_token(hf_token)
         api = HfApi()
         rev = pinned_revision_kwargs(rid)
         names = sorted(

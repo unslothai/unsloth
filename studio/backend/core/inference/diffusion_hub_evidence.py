@@ -134,7 +134,9 @@ def prefetch_for_pick(
 
         from .diffusion_content import classify_tensors
 
-        token = (hf_token.strip() or None) if isinstance(hf_token, str) else hf_token
+        from hub.utils.hf_tokens import normalize_token
+
+        token = normalize_token(hf_token)
         meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
         shapes = {name: list(info.shape) for name, info in meta.tensors.items()}
         family = _dit_family(classify_tensors(shapes, meta.metadata))

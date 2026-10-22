@@ -42,6 +42,7 @@ from core._torchao_stub import (
     install_xformers_windows_rocm_stub,
 )
 from hub.utils.hf_errors import modelscope_missing
+from hub.utils.hf_tokens import normalize_token
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
@@ -4560,6 +4561,8 @@ class DiffusionBackend:
         with self._load_cancel_lock:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
+        # The probes this load adds read the Hub directly; they keep a managed account's False (anonymous) sentinel.
+        hub_token = normalize_token(hf_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
         # load that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land.
@@ -4671,6 +4674,7 @@ class DiffusionBackend:
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
+                _hub_token = hub_token,
             ),
             daemon = True,
         ).start()
@@ -7322,11 +7326,14 @@ class DiffusionBackend:
         _pipeline_prequant_skipped: tuple[str, ...] = (),
         _prequant_unreachable: tuple[str, ...] = (),
         _te_prequant_resolved: bool = True,
+        # begin_load's ``normalize_token`` of the request token: False stays the anonymous sentinel.
+        _hub_token: Any = None,
     ) -> dict[str, Any]:
         with self._load_cancel_lock:
             if _load_token is None:
                 _load_token = self._load_token
             self._raise_if_load_cancelled(_load_token)
+        hub_token = _hub_token if _hub_token is not None else normalize_token(hf_token)
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
         hf_token = hf_token or None
@@ -8728,7 +8735,8 @@ class DiffusionBackend:
                                             _base_local_dir or fetch_base,
                                             logger,
                                             repo_id = fetch_base,
-                                            hf_token = hf_token,
+                                            # Not hf_token: that collapsed False (anonymous) to None (ambient).
+                                            hf_token = hub_token,
                                             allow_network = not local_files_only,
                                         )
                                 if small_host is not None and small_host.engaged:
