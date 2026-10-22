@@ -576,5 +576,7 @@ def test_adamw_flash_fused_bf16_variance_tracks_fp32(monkeypatch):
     opt, p, ema = _train_through_a_gradient_drop(cls, "cuda", master_weight_bits = 32)
     var = opt.state[p]["exp_avg_sq"].materialize()
     assert var.dtype == torch.float32
-    torch.testing.assert_close(var, ema, rtol = 1e-5, atol = 1e-8)
+    # fp32 rounding differs between the kernel and the torch EMA (about 2e-5 after 2000 steps);
+    # the bf16 store was 4x off here.
+    torch.testing.assert_close(var, ema, rtol = 1e-4, atol = 1e-8)
     assert var.mean().item() < 0.15

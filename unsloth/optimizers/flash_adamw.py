@@ -40,6 +40,7 @@ FLASH_ADAMW_NAME = "adamw_flash"
 _FLASH_ADAMW_PLACEHOLDER = "adamw_torch"
 _FLASH_ADAMW_MARKER = "unsloth_adamw_flash"
 _FLASH_ADAMW_CLASS = None
+_VARIANCE_UPDATE_KERNEL = None
 _FLASH_ADAMW_MIN_VERSION = "0.1.4"
 _TRUE_VALUES = ("1", "true", "yes")
 _FALSE_VALUES = ("0", "false", "no")
@@ -211,11 +212,10 @@ def _get_flash_adamw_class():
             ):
                 return super()._do_step(param, grad, errors, param_state, hparams)
             # The fused kernel reads the fp32 variance exactly but writes its update back rounded
-            # to the param dtype, so the same fp32 update is computed here and stored afterwards.
-            beta2 = hparams["betas"][1]
-            new_var = var.mul(beta2).addcmul_(grad, grad, value = 1 - beta2)
+            # to the param dtype, so the same fp32 update is computed beside it and kept.
+            new_var = _variance_update(var, grad, hparams["betas"][1])
             out = super()._do_step(param, grad, errors, param_state, hparams)
-            var.copy_(new_var)
+            param_state["exp_avg_sq"]._data = new_var
             return out
 
         # Every update goes through step_param: step() loops over it and gradient release calls
@@ -240,6 +240,30 @@ def _get_flash_adamw_class():
 
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
     return _FLASH_ADAMW_CLASS
+
+
+def _variance_update(var, grad, beta2):
+    """fp32 `var * beta2 + grad**2 * (1 - beta2)` in one pass, the expression flashoptim's fused
+    Adam kernel evaluates before it rounds the result to the param dtype."""
+    global _VARIANCE_UPDATE_KERNEL
+    import triton
+
+    if _VARIANCE_UPDATE_KERNEL is None:
+        import triton.language as tl
+
+        @triton.jit
+        def kernel(var_ptr, grad_ptr, out_ptr, n, beta2, BLOCK: tl.constexpr):
+            offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+            mask = offsets < n
+            v = tl.load(var_ptr + offsets, mask = mask)
+            g = tl.load(grad_ptr + offsets, mask = mask).to(tl.float32)
+            tl.store(out_ptr + offsets, v * beta2 + g * g * (1.0 - beta2), mask = mask)
+
+        _VARIANCE_UPDATE_KERNEL = kernel
+    out = torch.empty_like(var)
+    n = var.numel()
+    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](var, grad, out, n, beta2, BLOCK = 1024)
+    return out
 
 
 def _widen_variance(state):
