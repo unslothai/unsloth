@@ -381,8 +381,7 @@ _smc: Optional[_SMCConnection] = None
 _smc_failed = False
 _energy: Optional[_IOReportEnergy] = None
 _energy_failed = False
-# /api/system and the training poll read from different threads; gpu_power_w releases the
-# previous CF sample, so an unlocked race double-frees it.
+# Two polling threads: gpu_power_w releases the previous CF sample, so unlocked it double-frees.
 _sensor_lock = threading.Lock()
 
 

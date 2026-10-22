@@ -8153,8 +8153,7 @@ def _load_probe_memo_scope():
 # "Probed, no usable answer", kept apart from None = "not probed yet".
 _MISSING = object()
 
-# UI Vulkan inventory between loads, keyed (kind, binary): /api/system would otherwise spawn
-# the probe on every poll. Served to display reads only; a GPU memory event or fresh_reads() skips it.
+# Display reads only (/api/system would spawn the probe per poll); a GPU memory event or fresh_reads() skips it.
 _VULKAN_INVENTORY_TTL_S = 30.0
 _vulkan_inventory_lock = threading.Lock()
 _vulkan_inventory_cache: dict = {}

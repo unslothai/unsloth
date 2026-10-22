@@ -2948,7 +2948,6 @@ def get_system_info(
             "available_gb": round(memory_available / 1024**3, 2),
             "percent_used": memory_percent,
             "process_used_mb": process_used_mb,
-            # Additive: also counts llama-server and the training child, which hold the model.
             "process_tree_used_mb": process_tree_used_mb,
         },
         "disk": {

@@ -20,9 +20,6 @@ from utils import gpu_memory_events
 from utils.hardware import gpu_query
 
 
-# ── Vulkan inventory ────────────────────────────────────────────────────────
-
-
 @pytest.fixture
 def vulkan(monkeypatch):
     from core.inference import llama_cpp
@@ -89,9 +86,6 @@ def test_system_route_reads_vulkan_inside_display_reads_unless_refreshing():
     assert "nullcontext() if refresh_memory else gpu_query.display_reads" in block[:220]
 
 
-# ── amd-smi ─────────────────────────────────────────────────────────────────
-
-
 @pytest.fixture
 def amd(monkeypatch):
     from utils.hardware import amd as amd_mod
@@ -131,9 +125,6 @@ def test_amd_smi_metric_stays_live_for_fit_and_after_failures(amd):
     assert len(calls) == 5
 
 
-# ── CPU percent ─────────────────────────────────────────────────────────────
-
-
 def test_cpu_percent_is_sampled_at_most_once_per_window(monkeypatch):
     psutil = pytest.importorskip("psutil")
 
@@ -163,9 +154,6 @@ def test_cpu_percent_is_primed_at_import():
     pytest.importorskip("psutil")
     import main
     assert main._cpu_percent_reading is not None
-
-
-# ── Process tree memory ─────────────────────────────────────────────────────
 
 
 def test_process_tree_memory_adds_children_and_skips_vanished_ones():
@@ -208,9 +196,6 @@ def test_process_tree_memory_adds_children_and_skips_vanished_ones():
             raise psutil.AccessDenied(3)
 
     assert main._process_tree_rss_mb(Locked(100 * mib)) == 100
-
-
-# ── Apple Silicon telemetry ─────────────────────────────────────────────────
 
 
 def test_mlx_visible_utilization_carries_apple_telemetry(monkeypatch):
@@ -271,9 +256,6 @@ def test_agx_ioreg_is_read_once_per_display_refresh(monkeypatch):
     assert len(calls) == 2
 
 
-# ── RAG embedder release ────────────────────────────────────────────────────
-
-
 def test_releasing_the_st_embedder_frees_the_allocator_cache(monkeypatch):
     from core.rag import embeddings
     import utils.hardware as hardware
@@ -294,9 +276,6 @@ def test_releasing_the_st_embedder_frees_the_allocator_cache(monkeypatch):
     monkeypatch.setattr(hardware, "clear_gpu_cache", boom)
     monkeypatch.setattr(embeddings, "_model", object())
     assert embeddings._release_st_model() is True
-
-
-# ── Video reference uploads ─────────────────────────────────────────────────
 
 
 class _Upload:
@@ -326,9 +305,6 @@ def test_video_reference_uploads_read_at_most_one_byte_past_the_cap(monkeypatch)
         asyncio.run(video_routes._reference_to_data_url(image))
     assert image.sizes == [17]
     assert "is too large; the limit is 0 MB." in str(getattr(exc.value, "detail", exc.value))
-
-
-# ── Broken torch import ─────────────────────────────────────────────────────
 
 
 def test_a_broken_torch_import_is_retried_once_per_detection_epoch(monkeypatch):
