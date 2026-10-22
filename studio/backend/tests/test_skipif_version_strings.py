@@ -20,6 +20,17 @@ _TESTS = Path(__file__).resolve().parent
 _VERSION_ATTRS = ("hip", "cuda")
 
 
+def _imported_names(tree: ast.AST, module: str, name: str) -> set[str]:
+    """Local names bound by ``from <module> import <name> [as x]``."""
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == module
+        for alias in node.names
+        if alias.name == name
+    }
+
+
 def _version_names(tree: ast.AST) -> set[str]:
     """Names bound to ``torch.version`` by ``from torch import version [as v]``."""
     return {
@@ -47,6 +58,8 @@ def _string_operands(condition: ast.expr, version_names: set[str] = frozenset())
     if isinstance(condition, ast.BoolOp):
         values = condition.values if isinstance(condition.op, ast.Or) else condition.values[-1:]
         return [found for value in values for found in _string_operands(value, version_names)]
+    if isinstance(condition, ast.NamedExpr):
+        return _string_operands(condition.value, version_names)
     if isinstance(condition, ast.IfExp):
         return [
             *_string_operands(condition.body, version_names),
@@ -55,14 +68,16 @@ def _string_operands(condition: ast.expr, version_names: set[str] = frozenset())
     return [ast.unparse(condition)] if _is_version_string(condition, version_names) else []
 
 
-def _marker_conditions(node: ast.AST) -> list[ast.expr]:
+def _marker_conditions(node: ast.AST, mark_names: set[str] = frozenset()) -> list[ast.expr]:
     """Conditions of a ``*.mark.skipif`` / ``*.mark.xfail`` marker; ``condition=`` overrides positionals."""
     if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr in ("skipif", "xfail")
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "mark"
+        and (
+            (isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "mark")
+            or (isinstance(node.func.value, ast.Name) and node.func.value.id in mark_names)
+        )
     ):
         return []
     keyword = [k.value for k in node.keywords if k.arg == "condition"]
@@ -112,7 +127,10 @@ def test_ternaries_from_imports_and_marker_semantics(tmp_path, monkeypatch):
         "@pytest.mark.skipif(v.hip, condition = False, reason = 'x')\n"
         "def test_b(): pass\n"
         "def test_c():\n"
-        "    pytest.xfail(v.hip)\n",
+        "    pytest.xfail(v.hip)\n"
+        "from pytest import mark as m\n"
+        "@m.skipif((h := v.cuda), reason = 'x')\n"
+        "def test_d(): pass\n",
         encoding = "utf-8",
     )
     monkeypatch.setattr(sys.modules[__name__], "_TESTS", tmp_path)
@@ -122,6 +140,7 @@ def test_ternaries_from_imports_and_marker_semantics(tmp_path, monkeypatch):
     assert "test_more.py:3: v.hip" in str(offenders)
     assert "test_more.py:5" not in str(offenders)  # condition= wins over positionals
     assert "test_more.py:8" not in str(offenders)  # imperative pytest.xfail takes a reason
+    assert "test_more.py:10: v.cuda" in str(offenders)  # from pytest import mark, walrus
 
 
 def test_no_skip_condition_can_evaluate_to_a_version_string():
@@ -137,9 +156,12 @@ def test_no_skip_condition_can_evaluate_to_a_version_string():
         except SyntaxError:
             continue
         names = _version_names(tree)
+        marks = _imported_names(tree, "pytest", "mark")
         for node in ast.walk(tree):
             for operand in (
-                found for c in _marker_conditions(node) for found in _string_operands(c, names)
+                found
+                for c in _marker_conditions(node, marks)
+                for found in _string_operands(c, names)
             ):
                 offenders.append(f"{path.relative_to(_TESTS)}:{node.lineno}: {operand}")
     assert not offenders, offenders
