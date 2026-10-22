@@ -536,3 +536,48 @@ def test_offload_hook_on_unselected_embedding_is_not_refused(qat_scheme):
     model = _prepare_model_for_qat(model, qat_scheme)  # Linear-only recipes never touch the embedding
     assert model.get_input_embeddings() is original
     assert _is_fake_quantized(model.model.layers[0].mlp.down_proj)  # in_features 128 fits int4's group
+
+
+@pytest.mark.parametrize("convert", ["unsloth", "strip"])
+def test_offloaded_embedding_with_offloaded_buffers_converts(convert):
+    # offload_buffers = True on a meta-initialized module: weight AND embed_scale live only in weights_map.
+    pytest.importorskip("accelerate.hooks")
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    from accelerate.utils import PrefixedDataset
+    from unsloth.models._utils import _strip_torchao_fake_quantization
+
+    ids = torch.randint(0, 256, (2, 12))
+    reference = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
+    model = _tiny_gemma3()
+    emb = model.get_input_embeddings()
+    scale = emb.embed_scale.detach().clone()
+    emb.register_buffer("embed_scale", scale.clone(), persistent = True)
+    prefix = "model.embed_tokens."
+    weights = {prefix + "weight": emb.weight.detach().clone(), prefix + "embed_scale": scale.clone()}
+    emb.to("meta")
+    add_hook_to_module(
+        emb,
+        AlignDevicesHook(
+            execution_device = "cpu",
+            offload = True,
+            offload_buffers = True,
+            weights_map = PrefixedDataset(weights, prefix),
+        ),
+    )
+    assert emb.embed_scale.device.type == "meta"
+    model = _prepare_model_for_qat(model, "int8-int4")
+    with torch.no_grad():  # the hook still serves forward from weights_map
+        torch.testing.assert_close(model.get_input_embeddings()(ids), reference.get_input_embeddings()(ids))
+    if convert == "unsloth":
+        _convert_torchao_model(reference)
+        _convert_torchao_model(model)
+    else:
+        _strip_torchao_fake_quantization(reference)
+        _strip_torchao_fake_quantization(model)
+    emb = model.get_input_embeddings()
+    assert not hasattr(emb, "_hf_hook")
+    assert emb.weight.device.type == "cpu"
+    assert emb.embed_scale.device.type == "cpu"
+    assert float(emb.embed_scale) == float(scale)
+    with torch.no_grad():
+        torch.testing.assert_close(emb(ids), reference.get_input_embeddings()(ids))

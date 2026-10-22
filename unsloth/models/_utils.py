@@ -7711,13 +7711,26 @@ def _materialize_offloaded_fake_quantized_embeddings(model: torch.nn.Module) -> 
         from accelerate.hooks import remove_hook_from_module
         from accelerate.utils import set_module_tensor_to_device
 
-        values = {n: hook.weights_map[n] for n, _ in module.named_parameters(recurse = False)}
+        weights_map = hook.weights_map
+        values = {n: weights_map[n] for n, _ in module.named_parameters(recurse = False)}
+        # offload_buffers = True keeps buffers (Gemma's embed_scale) in weights_map too, meta on the module.
+        buffers = {}
+        for name, buffer in module.named_buffers(recurse = False):
+            if name in weights_map:
+                buffers[name] = weights_map[name]
+            elif buffer.device.type == "meta":
+                raise RuntimeError(
+                    f"Unsloth: cannot convert the offloaded embedding: its buffer {name!r} is on the meta "
+                    "device and its offload hook's weights_map has no value for it."
+                )
         remove_hook_from_module(module)
         for name, value in values.items():
             set_module_tensor_to_device(module, name, "cpu", value = value)
-        # Keep the module on one device: non-offloaded buffers (Gemma's embed_scale) sat on the execution device.
+        # Keep the module on one device: offloaded buffers come from weights_map, the rest sat on the GPU.
         for name, buffer in list(module.named_buffers(recurse = False)):
-            if buffer.device.type != "cpu":
+            if name in buffers:
+                set_module_tensor_to_device(module, name, "cpu", value = buffers[name])
+            elif buffer.device.type != "cpu":
                 set_module_tensor_to_device(module, name, "cpu")
 
 
