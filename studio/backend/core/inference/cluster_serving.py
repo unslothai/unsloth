@@ -1237,6 +1237,9 @@ class ClusterServing:
         self._internal_pre: Optional[Tuple[Any, ...]] = None
         self._requested_model: Tuple[str, Any] = ("", None)
         self._served_model: Tuple[str, Any] = ("", None)
+        # What the served block was planned for, so a config-error reload only reuses it unchanged.
+        self._requested_settings: Optional[Tuple[Any, ...]] = None
+        self._served_settings: Optional[Tuple[Any, ...]] = None
         self._attention_layers: int = 0
         self._nextn_bytes: float = 0.0
         self._projector_file: Optional[str] = None
@@ -1402,6 +1405,13 @@ class ClusterServing:
             str(getattr(request, "model_path", "") or ""),
             getattr(request, "gguf_variant", None),
         )
+        _explicit = getattr(request, "llama_extra_args", None)
+        self._requested_settings = _load_settings(
+            request,
+            n_parallel,
+            list(_explicit if _explicit is not None else (inherited_extra_args or [])),
+            self.block,
+        )
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         self.plan, self.block = None, []
         self._down = set()
@@ -1418,6 +1428,21 @@ class ClusterServing:
                     self.topology = "single"
                     self.reason = f"cluster config: {self.config_error}; {owner}"
                     return request
+                if (
+                    self._served_settings is not None
+                    and self._requested_settings != self._served_settings
+                ):
+                    # The served block (pipeline groups, speculation) was planned for the old settings and
+                    # cannot be replanned: refuse rather than relaunch with a block llama-server may reject.
+                    why = (
+                        f"the cluster config is invalid ({self.config_error}), so the split serving "
+                        "this model cannot be replanned for new load settings; fix the cluster "
+                        "config, or reload with the settings it was loaded with"
+                    )
+                    self._pre_load, self.in_flight = None, False
+                    self._cancel_event = None
+                    self.last_error = why
+                    raise ss.SparkLoadDoesNotFit(why)
                 if not _contains([str(a) for a in effective], self.block):
                     effective += self.block
                 return ss.SparkServing._request_with(request, {"llama_extra_args": effective})
@@ -2174,6 +2199,7 @@ class ClusterServing:
         self._cancel_event = None
         self._backend = llama_backend
         self._served_model = self._requested_model
+        self._served_settings = self._requested_settings
         self._started = set()
         plan = self.plan
         local_count = sum(1 for d in plan.devices if not d.remote) if plan is not None else 0
@@ -2305,6 +2331,64 @@ class ClusterServing:
             "split_args": list(self.block) or None,
             "last_error": self.last_error,
         }
+
+
+# Sampling-only pass-through flags (each takes one value): they change no buffer a split block was planned for.
+_SAMPLING_ONLY_FLAGS = frozenset(
+    {
+        "-s",
+        "--seed",
+        "--temp",
+        "--temperature",
+        "--top-k",
+        "--top-p",
+        "--min-p",
+        "--typical",
+        "--repeat-penalty",
+        "--repeat-last-n",
+        "--presence-penalty",
+        "--frequency-penalty",
+    }
+)
+_LOAD_SETTING_FIELDS = (
+    "max_seq_length",
+    "cache_type_kv",
+    "speculative_type",
+    "spec_draft_n_max",
+    "n_batch",
+    "n_ubatch",
+    "disable_vision",
+    "gpu_ids",
+    "tensor_split",
+)
+
+
+def _load_settings(
+    request: Any, n_parallel: int, effective: Sequence[str], block: Sequence[str]
+) -> Tuple[Any, ...]:
+    """Everything a split block is planned from: slots, the memory fields and the pass-through args."""
+    tokens = strip_managed_block(_normalized(effective))
+    block = [str(t) for t in block]
+    n = len(block)
+    if n:
+        for i in range(0, max(0, len(tokens) - n) + 1):
+            if tokens[i : i + n] == block:
+                tokens = tokens[:i] + tokens[i + n :]
+                break
+    kept: List[str] = []
+    i = 0
+    while i < len(tokens):
+        name, sep, _ = tokens[i].partition("=")
+        if name in _SAMPLING_ONLY_FLAGS:
+            i += 1 if sep else 2
+            continue
+        kept.append(tokens[i])
+        i += 1
+    fields = []
+    for name in _LOAD_SETTING_FIELDS:
+        value = getattr(request, name, None)
+        fields.append(tuple(value) if isinstance(value, (list, tuple)) else value)
+    return (int(n_parallel), tuple(fields), tuple(kept))
 
 
 def _contains(argv: List[str], block: List[str]) -> bool:

@@ -3055,6 +3055,23 @@ def test_an_unread_hub_projector_listing_keeps_the_load_local(monkeypatch):
     assert "cannot be sized" in ss.status()["reason"]
 
 
+def test_a_config_error_reload_with_new_load_settings_does_not_reuse_the_split(monkeypatch):
+    """Regression: the served block was planned for 4 slots; a config-error reload at 2 must not reuse it."""
+    _serve(monkeypatch)
+    block = list(cs.state().block)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 2))
+    state = cs.state()
+    assert state.block == block and state.topology == "layer_split"
+    assert not state.in_flight and state._pre_load is None
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(max_seq_length = 65536), 4))
+    # The settings it was served with still reuse it.
+    out = run(ss.before_load(_request(), 4))
+    assert out.llama_extra_args == block
+
+
 def test_a_config_error_does_not_lend_the_split_to_another_model(monkeypatch):
     _serve(monkeypatch)
     monkeypatch.setenv(cs.ENV_NODES, "bad host!")
