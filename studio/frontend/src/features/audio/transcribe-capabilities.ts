@@ -63,7 +63,7 @@ function formatSize(bytes: number): string {
 }
 
 const TRANSCRIBE_MODEL_ID =
-  /whisper|transcri|parakeet|voxtral|(?:^|[\W_])(?:asr|stt)(?:[\W_]|$)/i;
+  /whisper|transcri|parakeet|voxtral-mini|(?:^|[\W_])(?:asr|stt)(?:[\W_]|$)/i;
 // OpenAI's catalog in Studio keeps only chat models.
 const OPENAI_TRANSCRIBE_MODELS = [
   "whisper-1",
