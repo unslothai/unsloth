@@ -1,42 +1,64 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep ``datasets`` from fetching untrusted Image() URL rows on its own, outside the SSRF guard."""
+"""Dataset image URLs are untrusted row content: fetch them only through the SSRF guard."""
+
+import functools
+
+_MAX_IMAGE_BYTES = 64 * 1024 * 1024
+_IMAGE_TIMEOUT_S = 30
 
 
-def is_remote_image_path(path):
-    # hf:// paths resolve against the Hub itself; any other scheme is a fetch the row chose.
-    return isinstance(path, str) and "://" in path and not path.startswith("hf://")
+def fetch_untrusted_image_bytes(url):
+    """Public addresses only, pinned to the resolved IP, every redirect re-checked, size capped."""
+    import time
 
+    from core.inference.tools import _fetch_url_raw
 
-def undecode_remote_image_columns(dataset, columns = None):
-    """Image() columns self-decode on access, so a bytes-less URL row is fetched unguarded. Turn
-    decoding off for exactly the columns holding such rows; any other dataset is returned as is."""
-    try:
-        from datasets import Dataset
-        from datasets import Image as ImageFeature
-
-        if not isinstance(dataset, Dataset):
-            return dataset
-        for name, feature in dataset.features.items():
-            if columns is not None and name not in columns:
-                continue
-            if not isinstance(feature, ImageFeature) or not feature.decode:
-                continue
-            for chunk in dataset.data.column(name).chunks:
-                paths = chunk.field("path").to_pylist()
-                missing = chunk.field("bytes").is_null().to_pylist()
-                if any(m and is_remote_image_path(p) for p, m in zip(paths, missing)):
-                    dataset = dataset.cast_column(name, ImageFeature(decode = False))
-                    break
-        return dataset
-    except Exception:
-        return dataset
-
-
-def is_remote_image_cell(value):
-    return (
-        isinstance(value, dict)
-        and not value.get("bytes")
-        and is_remote_image_path(value.get("path"))
+    error, body, _ = _fetch_url_raw(
+        url,
+        timeout = _IMAGE_TIMEOUT_S,
+        extra_headers = {"Accept": "image/*"},
+        deadline = time.monotonic() + _IMAGE_TIMEOUT_S * 2,
+        raw_bytes_max = _MAX_IMAGE_BYTES,
     )
+    if error is not None:
+        raise OSError(error)
+    return body
+
+
+def install_guarded_image_decode():
+    """``datasets.Image`` decodes a bytes-less URL cell by fetching it itself, wherever a row is
+    read (detection, previews, conversion, streaming, nested features). Route those fetches through
+    the guard; Hub URLs keep datasets' own token-aware fetch. Idempotent."""
+    try:
+        from datasets import config
+        from datasets.features import image as hf_image
+    except Exception:
+        return
+    original = hf_image.Image.decode_example
+    if getattr(original, "_unsloth_guarded", False):
+        return
+
+    @functools.wraps(original)
+    def decode_example(
+        self,
+        value,
+        token_per_repo_id = None,
+    ):
+        path = value.get("path") if isinstance(value, dict) else None
+        if isinstance(path, str) and value.get("bytes") is None:
+            source = path.split("::")[-1]
+            if source.startswith(("http://", "https://")) and not source.startswith(
+                config.HF_ENDPOINT
+            ):
+                if "::" in path:
+                    raise OSError(f"Refusing a remote archive image path: {path}")
+                value = {"path": None, "bytes": fetch_untrusted_image_bytes(path)}
+        return original(self, value, token_per_repo_id)
+
+    decode_example._unsloth_guarded = True
+    hf_image.Image.decode_example = decode_example
+
+
+install_guarded_image_decode()

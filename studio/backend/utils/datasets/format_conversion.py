@@ -7,11 +7,7 @@ import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
-from .remote_images import (
-    is_remote_image_cell,
-    is_remote_image_path,
-    undecode_remote_image_columns,
-)
+from .remote_images import fetch_untrusted_image_bytes
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -397,46 +393,11 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
-_MAX_ROW_IMAGE_BYTES = 64 * 1024 * 1024
-_ROW_IMAGE_TIMEOUT_S = 30
-
-
-def _fetch_row_image(url, exif_transpose = False):
-    """Rows are untrusted: use the web tool's SSRF-guarded fetch (public IPs, redirects re-checked)."""
-    import time
+def _fetch_row_image(url):
     from io import BytesIO
 
     from PIL import Image
-    from core.inference.tools import _fetch_url_raw
-
-    error, body, _ = _fetch_url_raw(
-        url,
-        timeout = _ROW_IMAGE_TIMEOUT_S,
-        extra_headers = {"Accept": "image/*"},
-        deadline = time.monotonic() + _ROW_IMAGE_TIMEOUT_S * 2,
-        raw_bytes_max = _MAX_ROW_IMAGE_BYTES,
-    )
-    if error is not None:
-        raise OSError(error)
-    image = Image.open(BytesIO(body))
-    if exif_transpose:
-        # Image() cells were decoded by datasets, which applies EXIF orientation.
-        from PIL import ImageOps
-        image = ImageOps.exif_transpose(image)
-    return image.convert("RGB")
-
-
-def _guard_remote_image_feature(dataset, image_column):
-    return undecode_remote_image_columns(dataset, [image_column])
-
-
-def _decode_image_cell(value):
-    """Remote paths via the guarded fetch, everything else via datasets' own decoder."""
-    if is_remote_image_cell(value):
-        return _fetch_row_image(value["path"], exif_transpose = True)
-    from datasets import Image as ImageFeature
-
-    return ImageFeature().decode_example(value).convert("RGB")
+    return Image.open(BytesIO(fetch_untrusted_image_bytes(url))).convert("RGB")
 
 
 def convert_to_vlm_format(
@@ -456,7 +417,6 @@ def convert_to_vlm_format(
     from .vlm_processing import generate_smart_vlm_instruction
 
     account = current_account()
-    dataset = _guard_remote_image_feature(dataset, image_column)
 
     def _notify(msg):
         """Send a status update to the training overlay if callback set."""
@@ -490,9 +450,7 @@ def convert_to_vlm_format(
         # Image may be a PIL Image, local path, URL, or bare filename
         image_data = sample[image_column]
 
-        if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
-            image_data = _decode_image_cell(image_data)
-        elif isinstance(image_data, str):
+        if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
                 image_data = _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
@@ -541,9 +499,7 @@ def convert_to_vlm_format(
     first_image = next(
         (row[image_column] for row in dataset if row[image_column] is not None), None
     )
-    has_urls = (
-        isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
-    ) or is_remote_image_cell(first_image)
+    has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
     if has_urls:
         with_image = [i for i, url in enumerate(dataset[image_column]) if url is not None]
@@ -803,7 +759,6 @@ def convert_sharegpt_with_images_to_vlm_format(
     from utils.account_context import current_account
 
     account = current_account()
-    dataset = _guard_remote_image_feature(dataset, image_column)
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     _ROLE_MAP = {
         "human": "user",
@@ -882,8 +837,6 @@ def convert_sharegpt_with_images_to_vlm_format(
             if image_data.get("bytes"):
                 from io import BytesIO
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
-            if is_remote_image_path(image_data.get("path")):
-                return _fetch_row_image(image_data["path"], exif_transpose = True)
             if image_data.get("path"):
                 return Image.open(_own_image_path(image_data["path"], account)).convert("RGB")
         raise ValueError(f"Cannot resolve image: {type(image_data)}")

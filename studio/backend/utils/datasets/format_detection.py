@@ -802,12 +802,6 @@ def detect_vlm_dataset_structure(dataset):
     from .cells import text_cell_check
 
     try:
-        from .remote_images import undecode_remote_image_columns
-    except ImportError:
-        undecode_remote_image_columns = None
-    if undecode_remote_image_columns is not None:
-        dataset = undecode_remote_image_columns(dataset)
-    try:
         sample = next(iter(dataset))
     except StopIteration:
         return {
