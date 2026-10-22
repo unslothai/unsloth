@@ -720,6 +720,14 @@ def _enabled():
 _enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
 
 
+def _furthest_offset(t):
+    """Element offset of the last element the kernel addresses in `t`. Rows are addressed in int32,
+    and a strided view with a unit last stride is passed as is, so it can reach far past numel."""
+    if t.stride(-1) != 1:
+        return t.numel() - 1  # made contiguous before the launch
+    return sum((n - 1) * st for n, st in zip(t.shape, t.stride()))
+
+
 def _shapes_qualify(query, key, value):
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         return False
@@ -737,7 +745,10 @@ def _shapes_qualify(query, key, value):
         return False
     if key.dtype != query.dtype or value.dtype != query.dtype:
         return False
-    return max(query.numel(), key.numel(), value.numel()) <= _INT32_MAX
+    # The output is a fresh contiguous query-sized tensor; the inputs may be strided views.
+    return max(
+        query.numel() - 1, _furthest_offset(query), _furthest_offset(key), _furthest_offset(value)
+    ) <= _INT32_MAX
 
 
 _SELF_CHECK = {}
@@ -864,6 +875,9 @@ def _make_router(original):
             and not dropout
             # The kernel only reads the mask's structure, so a trainable mask would get no grad.
             and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
+            # transformers 4.x keeps an explicit is_causal beside a mask and SDPA applies both, while 5.x
+            # drops it; the intervals carry the mask only, so leave that pairing to the wrapped function.
+            and not (attention_mask is not None and is_causal is not None and is_causal is not False)
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
@@ -882,7 +896,11 @@ def _make_router(original):
                 # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
                 # masks cannot cache the verdict, so they are rescanned per layer: one sync each, only
                 # at prefill (decode never qualifies), cheaper than SDPA's repeated KV heads and mask.
-                intervals = intervals_from_mask(attention_mask, B, S)
+                try:
+                    intervals = intervals_from_mask(attention_mask, B, S)
+                except torch.cuda.OutOfMemoryError:
+                    # The mask scan allocates row chunks; near capacity, SDPA below decides as before.
+                    LARGE_HEAD_ENGAGED["fallback"] += 1
             if compiling:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)
             elif intervals is not None:
