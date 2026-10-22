@@ -10349,7 +10349,7 @@ def widen_target_regex_to_expert_submodules(
             requested = {t for t in detect_targets if isinstance(t, str) and "." not in t}
         native, named_leaves = _native_expert_parents(model, target_modules, requested)
         parents = parents | native
-        # Requested expert siblings (Mixtral's router gate) too, as PEFT suffix matching would.
+        # Requested expert siblings (Mixtral's router gate), as PEFT suffix matching would.
         for name, module in model.named_modules():
             parent, _, leaf = name.rpartition(".")
             if leaf in requested and any(re.fullmatch(p, parent) for p in native) and (

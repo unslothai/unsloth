@@ -900,7 +900,7 @@ def test_gate_up_shorthand_with_down_proj_peft_injects_real_hf_split_experts():
     "leaves", [["w1", "w2", "w3", "gate"], ["q_proj", "w1", "w2", "w3", "gate"]]
 )
 def test_requested_router_sibling_is_kept_when_attention_is_also_listed(leaves):
-    """Adding q_proj sends the list down the widen path, which must still keep the requested router."""
+    """q_proj forces the widen path, which must still keep a requested router."""
     U = _utils()
     model = _native_mixtral_4x_model()
     model.get_decoder = lambda: model.model
@@ -914,7 +914,6 @@ def test_requested_router_sibling_is_kept_when_attention_is_also_listed(leaves):
     )
     matched = {n for n in names if re.fullmatch(widened, n)}
     assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
-    # The router is added only when asked for.
     unrequested = [leaf for leaf in leaves if leaf != "gate"]
     regex = _explicit_list_regex(model, unrequested) if "q_proj" in leaves else None
     if regex is not None:
@@ -925,7 +924,6 @@ def test_requested_router_sibling_is_kept_when_attention_is_also_listed(leaves):
 
 
 def test_requested_router_sibling_peft_injects_real_hf_mixtral():
-    """Real tiny Mixtral (per-expert w1 / w2 / w3 Linears): router adapters with and without q_proj."""
     from transformers import MixtralConfig, MixtralForCausalLM
 
     peft = pytest.importorskip("peft")
