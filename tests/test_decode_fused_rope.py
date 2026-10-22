@@ -200,7 +200,7 @@ def test_decode_strided_int32_positions():
 
 
 def test_decode_split_sync_and_mixed_devices(monkeypatch):
-    # Split models: the decode helpers launch on Q's device and stream and never drain it on the host.
+    # Split models: the decode helpers never drain the stream on the host.
     cos, sin = _table(64, 128, torch.bfloat16)
     q = torch.randn(2, 4, 1, 128, device = "cuda", dtype = torch.bfloat16)
     k = torch.randn(2, 2, 1, 128, device = "cuda", dtype = torch.bfloat16)
@@ -229,8 +229,7 @@ def test_decode_split_sync_and_mixed_devices(monkeypatch):
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
 def test_decode_rope_on_another_device_orders_with_the_copy():
-    # Q / K live on GPU 1 while GPU 0 is current, then go straight to GPU 0 (as a split model's next
-    # layer does): the stream-ordered copy must see the rotated values without a host drain.
+    # Rotate on GPU 1 with GPU 0 current, then copy to GPU 0: the copy must see rotated values.
     cos, sin = _table(4096, 128, torch.bfloat16)
     cos, sin = cos.to("cuda:1"), sin.to("cuda:1")
     p = torch.randint(0, 4000, (4, 1), device = "cuda:1")
