@@ -131,6 +131,7 @@ function TextFile({
         {previewed ? (
           <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
             <ReactPreview
+              onFrameReady={onFrameReady}
               source={text}
               lang={/\.jsx$/i.test(name) ? "jsx" : "tsx"}
               title={name}

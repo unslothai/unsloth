@@ -4358,6 +4358,9 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
             };
           }
         };
+        const annotationFactory = (post) => {
+          /* ANNOTATE_JS */
+        };
         // Named for canvasStack() in the frontend, which trims from this frame down.
         const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
@@ -4369,8 +4372,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           captureConsole();
           document.write(html);
           document.close();
-          // Install only on a parent command. Inline script insertion works under the strict
-          // preview CSP without unsafe-eval, and keeps all code inside the opaque sandbox.
+          // Instantiate only on a parent command; the factory predates the page's meta CSP.
           let annotation = null;
           const postAnnotation = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
           window.addEventListener("message", (event) => {
@@ -4378,16 +4380,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
             const data = event.data;
             if (!data || data.type !== "unsloth:browser-command") return;
             if (data.command === "annotateInstall") {
-              if (annotation || typeof data.code !== "string" || data.code.length > 262144) return;
-              const script = document.createElement("script");
-              window.__unslothInstallAnnotation = (factory) => { annotation = factory(postAnnotation); };
-              try {
-                script.textContent = "window.__unslothInstallAnnotation((post) => {" + data.code + "\\n});";
-                (document.head || document.documentElement).appendChild(script);
-              } finally {
-                script.remove();
-                delete window.__unslothInstallAnnotation;
-              }
+              if (!annotation) annotation = annotationFactory(postAnnotation);
             } else if (data.command === "annotate") {
               if (data.on === true) annotation?.start(data.color);
               else annotation?.stop();
@@ -4414,6 +4407,12 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 </html>"""
 
 
+def _artifact_preview_frame_html() -> str:
+    # Imported at request time: browser also uses the frame-ancestors policy from this module.
+    from routes.browser import _ANNOTATE_JS
+    return _ARTIFACT_PREVIEW_FRAME_HTML.replace("/* ANNOTATE_JS */", _ANNOTATE_JS, 1)
+
+
 async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
     """Resolve the bearer token from the Authorization header or the ``?token=``
     query param (needed for <img src> / <iframe>, which can't send custom
@@ -4438,7 +4437,7 @@ async def artifact_preview_frame(allow_network: bool = False):
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
     )
     return Response(
-        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        content = _artifact_preview_frame_html(),
         media_type = "text/html; charset=utf-8",
         headers = {
             "Cache-Control": "no-store",
@@ -4656,7 +4655,7 @@ async def mcp_app_frame(
         _mcp_app_domains(base_uri, local_schemes = False),
     )
     return Response(
-        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        content = _artifact_preview_frame_html(),
         media_type = "text/html; charset=utf-8",
         headers = {
             "Cache-Control": "no-store",
