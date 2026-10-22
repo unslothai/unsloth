@@ -97,7 +97,10 @@ test("the notice never loads a model on its own", () => {
   // The one automatic switch is to a slot that is already loaded.
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
   assert.match(body, /chatModelLoadedTarget\(createdModel, loadedModels\)/);
-  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo, \(\) => autoSwitchRef\.current === state\);/);
+  assert.match(
+    body,
+    /onAutoSwitch\(\s*switchTo,\s*\(\) => autoSwitchRef\.current === state && createdKeyRef\.current === key,\s*\);/,
+  );
 });
 
 test("a chat goes back to its model when that model is still loaded", () => {
@@ -213,7 +216,10 @@ test("the automatic switch runs once per chat open", () => {
   assert.equal(stepChatModelAutoSwitch({ settled: false }, open(undefined)).switchTo, null);
 
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo, \(\) => autoSwitchRef\.current === state\);/);
+  assert.match(
+    body,
+    /onAutoSwitch\(\s*switchTo,\s*\(\) => autoSwitchRef\.current === state && createdKeyRef\.current === key,\s*\);/,
+  );
   // With Keep models loaded off, picking another model unloads the selected one.
   assert.match(body, /createdModel && !resident && keepModelsLoaded\s*\?/);
   assert.match(

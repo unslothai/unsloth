@@ -113,6 +113,14 @@ export function ChatModelNotice({
         : null,
     [createdModel, resident, keepModelsLoaded, loadedModels],
   );
+  // A send that moves the chat to another model before the switch lands drops the switch.
+  const createdKey = createdModel
+    ? `${createdModel.modelId}\0${createdModel.ggufVariant ?? ""}`
+    : null;
+  const createdKeyRef = useRef(createdKey);
+  useEffect(() => {
+    createdKeyRef.current = createdKey;
+  }, [createdKey]);
   const autoSwitchRef = useRef<ChatModelAutoSwitch>({ settled: false });
   useEffect(() => {
     const { state, switchTo } = stepChatModelAutoSwitch(autoSwitchRef.current, {
@@ -123,7 +131,13 @@ export function ChatModelNotice({
       modelLoading: useChatRuntimeStore.getState().modelLoading,
     });
     autoSwitchRef.current = state;
-    if (switchTo) onAutoSwitch(switchTo, () => autoSwitchRef.current === state);
+    if (switchTo) {
+      const key = createdKeyRef.current;
+      onAutoSwitch(
+        switchTo,
+        () => autoSwitchRef.current === state && createdKeyRef.current === key,
+      );
+    }
   }, [active, threadId, resident, loadedTarget, onAutoSwitch]);
   // Drop the portaled UI off-route, retaining the successful read and history subscription.
   if (!active) return null;
