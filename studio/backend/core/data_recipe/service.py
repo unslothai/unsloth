@@ -6,11 +6,14 @@ from __future__ import annotations
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
 import functools
+import hashlib
 import io
 import json
 import logging
 import math
 import os
+import posixpath
+import re
 from pathlib import Path
 from typing import Any
 
@@ -680,21 +683,62 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
     }
 
 
+def _escapes_folder(name: str) -> bool:
+    # Windows resolves `..` lexically and takes either separator, so check both forms.
+    posix = name.replace("\\", "/")
+    normalized = posixpath.normpath(posix)
+    return (
+        posix.startswith("/")
+        or re.match(r"^[A-Za-z]:", posix) is not None
+        or normalized in (".", "..")
+        or normalized.startswith("../")
+    )
+
+
 def validate_recipe_names(recipe: dict[str, Any]) -> None:
-    """Refuse a column, processor or validator target name holding a path separator: the code
-    validator writes `<tmp>/<record id>_<column>.py`, and Windows resolves `..` after it lexically."""
-    for field in ("columns", "processors"):
-        items = recipe.get(field)
-        for item in items if isinstance(items, list) else []:
-            if not isinstance(item, dict):
-                continue
-            # A validator's targets can be seed columns, named by the seed file rather than the recipe.
-            targets = item.get("target_columns")
-            for name in [item.get("name"), *(targets if isinstance(targets, list) else ())]:
-                if isinstance(name, str) and ("/" in name or "\\" in name or name in (".", "..")):
-                    raise ValueError(
-                        f"Column and processor names can't contain '/' or '\\' or be '.' / '..': {name!r}"
-                    )
+    """Refuse a processor name that leaves `processors-files/<name>/`. Column and validator target
+    names may hold any text: the code validator's temp file name is sanitized in
+    `_apply_data_designer_python_validator_path_patch`."""
+    processors = recipe.get("processors")
+    for item in processors if isinstance(processors, list) else []:
+        name = item.get("name") if isinstance(item, dict) else None
+        if isinstance(name, str) and _escapes_folder(name):
+            raise ValueError(f"Processor names can't leave the processor output folder: {name!r}")
+
+
+def _safe_module_name(record_id: Any, column_name: str) -> str:
+    # The code validator writes `<tmp>/<module>.py`: keep the column name readable but path-free.
+    safe = re.sub(r"[^\w-]", "_", str(column_name))
+    if safe != column_name:
+        safe += "_" + hashlib.sha256(str(column_name).encode("utf-8")).hexdigest()[:8]
+    return f"{record_id}_{safe}"
+
+
+def _apply_data_designer_python_validator_path_patch() -> None:
+    try:
+        from data_designer.engine.validators.python import (  # pyright: ignore[reportMissingImports]
+            RECORD_ID_COLUMN_NAME,
+            PythonValidator,
+        )
+    except ImportError:
+        return
+
+    if getattr(PythonValidator, "_unsloth_python_validator_path_patch_applied", False):
+        return
+
+    def _patched_write(self: Any, row: Any, code_column: str, path: str) -> None:
+        root = Path(path).resolve()
+        target = (
+            root / f"{self._get_module_name(row[RECORD_ID_COLUMN_NAME], code_column)}.py"
+        ).resolve()
+        if target.parent != root:
+            raise ValueError(f"Code validator file left its temp folder: {code_column!r}")
+        with open(target, "w") as file:
+            file.write(row[code_column])
+
+    PythonValidator._get_module_name = staticmethod(_safe_module_name)
+    PythonValidator._write_code_to_file = _patched_write
+    setattr(PythonValidator, "_unsloth_python_validator_path_patch_applied", True)
 
 
 def build_config_builder(recipe: dict[str, Any]):
@@ -748,6 +792,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_mixed_type_parquet_patch()
     _apply_data_designer_seed_uri_quote_patch()
     _apply_data_designer_sql_inline_config_patch()
+    _apply_data_designer_python_validator_path_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
