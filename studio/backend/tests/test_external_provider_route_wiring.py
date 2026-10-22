@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seams between the external-provider route and the shared Unsloth tool loop.
-
-Both are one-line policy decisions in ``_proxy_to_external_provider`` that no
-loop test can reach: the tool-call budget it hands the loop, and whether a
-durable Deep Research hop may use the saved connection its run was created with.
-"""
+"""Route seams the loop tests cannot reach: tool-call budget and Deep Research saved connections."""
 
 import ast
 import pathlib

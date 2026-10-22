@@ -25465,6 +25465,8 @@ def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
 async def _dispatch_audio_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
+    if body.provider_id:
+        return await _speak_on_connection(body, request)
     if body.workflow == "separate":
         return await _run_separation(body, request, current_subject)
     if body.workflow == "convert":
@@ -25956,6 +25958,64 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     return Response(content = audio_bytes, media_type = media_type)
+
+
+async def _speak_on_connection(body: AudioRunRequest, request: Request) -> AudioRunResponse:
+    import wave
+
+    if (
+        body.workflow != "speak"
+        or body.inputs != AudioRunInputs()
+        or body.language
+        or body.options
+        or body.seed is not None
+        or body.max_tokens is not None
+        or any(
+            name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+            for name in _MUSIC_ONLY_FIELDS
+        )
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A saved connection only speaks text, in a voice, with instructions and speed.",
+        )
+    speech = await _external_tts_speech(
+        AudioSpeechRequest(
+            input = body.text,
+            model = body.model,
+            voice = body.voice,
+            speed = body.speed,
+            instructions = body.instructions,
+            provider_id = body.provider_id,
+        ),
+        request,
+    )
+    try:
+        with wave.open(io.BytesIO(speech.body)) as wav:
+            params = wav.getparams()
+            frames = wav.readframes(wav.getnframes())
+    except (wave.Error, EOFError):
+        raise HTTPException(
+            status_code = 502, detail = "The TTS endpoint did not return WAV audio."
+        ) from None
+    # OpenAI streams WAV with 0xFFFFFFFF sizes; rewrite the header from the frames received.
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setparams(params._replace(nframes = 0))
+        wav.writeframes(frames)
+    wav_bytes, sample_rate = out.getvalue(), params.framerate
+    settings = {"voice": body.voice, "instructions": body.instructions, "speed": body.speed}
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        body.model,
+        "connection",
+        {"settings": settings},
+        "speak",
+    )
+    return _audio_run_response(record, wav_bytes, sample_rate, body.model)
 
 
 # openai-compatible speech api: the router's dual mount also answers /v1/audio/speech

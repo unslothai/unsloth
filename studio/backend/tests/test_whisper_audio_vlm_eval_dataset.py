@@ -352,7 +352,7 @@ def test_whisper_cancel_during_eval_preprocessing_leaves_no_eval(audio_trainer):
 
     def counting_extractor(array, sampling_rate = None):
         calls["n"] += 1
-        if calls["n"] == 2:  # both train rows are done
+        if calls["n"] == 2:
             audio_trainer.should_stop = True
         return real_extractor(array, sampling_rate = sampling_rate)
 
