@@ -374,10 +374,13 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
-  // at 630bdfa30: 6,734.8 KB raw / 2,029.1 KB transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_078_050,
-  rawBytes: 6_896_700,
+  // at b172be42d: 6,898,264 B raw / 2,078,277 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  transferBytes: 2_078_477,
+  rawBytes: 6_898_464,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

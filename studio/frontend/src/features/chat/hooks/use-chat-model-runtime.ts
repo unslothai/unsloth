@@ -688,12 +688,13 @@ function unloadKeptModel(keptId: string): Promise<boolean> {
   );
 }
 
-async function syncInferenceStatusToStore(options?: {
+export async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
   preserveIdleUnloaded?: boolean;
   /** A TTS load owns the chat slot even though Chat did not start the load. */
   externalChatSlotLoad?: boolean;
+  quiet?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const downWhenIssued = isBackendDownForDesktopUpdate();
@@ -834,7 +835,7 @@ async function syncInferenceStatusToStore(options?: {
         if (wasResident) {
           toast.info(`${wasResident} is no longer loaded`, {
             description:
-              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+              "The server released it, as loading an image, video or audio model does, or its process stopped. Pick it again to keep chatting.",
           });
         }
         // Drop the pick too, as a server-side unload does: the name alone reads as "this is my model"
@@ -846,6 +847,7 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
+    if (options?.quiet) return;
     // The update screen already reports the backend it stopped.
     if (isSilencedDesktopUpdateFailure(error, downWhenIssued)) return;
     const message =

@@ -38,7 +38,11 @@ def _wipe_auth() -> str:
     return match.group(0)
 
 
-def _run(tmp_path: Path, busy_calls: int, tries: int = 30) -> tuple[subprocess.CompletedProcess, int]:
+def _run(
+    tmp_path: Path,
+    busy_calls: int,
+    tries: int = 30,
+) -> tuple[subprocess.CompletedProcess, int]:
     """Runs the script's wipe_auth with an rm that reports a busy file for its first calls."""
     assert BASH, "bash is required to run the wrapper's own code"
     shims = tmp_path / "bin"
@@ -63,9 +67,7 @@ def _run(tmp_path: Path, busy_calls: int, tries: int = 30) -> tuple[subprocess.C
     body = f'set -euo pipefail\nstudio_home="{home}"\n{_wipe_auth()}wipe_auth\necho wiped\n'
     env = dict(os.environ, PATH = f"{shims}{os.pathsep}{os.environ['PATH']}")
     env["STUDIO_AUTH_WIPE_TRIES"] = str(tries)
-    result = subprocess.run(
-        [BASH, "-c", body], env = env, capture_output = True, text = True, timeout = 60
-    )
+    result = subprocess.run([BASH, "-c", body], env = env, capture_output = True, text = True, timeout = 60)
     return result, int(calls.read_text())
 
 
@@ -98,9 +100,9 @@ def test_the_wrapper_wipes_only_through_the_retry_before_booting():
     code = _code(_source())
     helper = _code(_wipe_auth())
     outside = code.replace(helper, "")
-    assert not re.search(r"rm -rf \"\$studio_home/auth\"", outside), (
-        "a bare rm of $studio_home/auth fails the lane while the previous server still holds auth.db"
-    )
+    assert not re.search(
+        r"rm -rf \"\$studio_home/auth\"", outside
+    ), "a bare rm of $studio_home/auth fails the lane while the previous server still holds auth.db"
     calls = [m.start() for m in re.finditer(r"^wipe_auth\s*$", code, re.M)]
     boot = code.index("unsloth studio -H")
     assert calls and calls[0] < boot, "the auth dir must be wiped before the server boots"
