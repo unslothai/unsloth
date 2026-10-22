@@ -131,7 +131,7 @@ def _vllm_unsupported_model_types(model_types):
 
 
 def _vllm_needs_newer_gpu(model_types):
-    """First model type vLLM cannot run on this CUDA GPU (compute capability < 8), else None."""
+    """First model type vLLM cannot run on its CUDA GPU (compute capability < 8), else None."""
     if DEVICE_TYPE != "cuda":
         return None
     model_type = next((t for t in model_types if t in VLLM_NEEDS_SM80_MODEL_TYPES), None)
@@ -140,7 +140,8 @@ def _vllm_needs_newer_gpu(model_types):
     import torch
 
     try:
-        if torch.cuda.get_device_capability()[0] >= 8:
+        # load_vllm runs the engine on logical GPU 0 whatever device is current: probe that one.
+        if torch.cuda.get_device_capability(0)[0] >= 8:
             return None
     except Exception:
         return None
