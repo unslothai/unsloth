@@ -4648,12 +4648,14 @@ class FastBaseModel:
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
-        feature_extractor = getattr(tokenizer, "feature_extractor", None)
-        if (
-            feature_extractor is not None
-            and getattr(feature_extractor, "padding_side", None) == "left"
-        ):
-            feature_extractor.padding_side = "right"
+        # Granite Speech names its frontend audio_processor.
+        for _audio_attr in ("feature_extractor", "audio_processor"):
+            feature_extractor = getattr(tokenizer, _audio_attr, None)
+            if (
+                feature_extractor is not None
+                and getattr(feature_extractor, "padding_side", None) == "left"
+            ):
+                feature_extractor.padding_side = "right"
         m = model
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length

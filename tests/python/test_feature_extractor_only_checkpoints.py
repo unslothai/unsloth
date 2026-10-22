@@ -123,8 +123,11 @@ def test_default_auto_model_loads_the_checkpoints_own_audio_head():
     )
     assert resolve(transformers.Wav2Vec2Config()) is None  # no architectures: keep today's route
     source = LOADER_PATH.read_text(encoding = "utf-8")
-    assert "_resolve_audio_auto_model(model_config, **_probe_hub_kwargs)" in source
-    assert (
-        "include_bare = resolve_model_class(auto_model, model_config, **_probe_hub_kwargs)"
-        in source
-    )
+    flat = "".join(source.split())
+    assert "_resolve_audio_auto_model(model_config,**_probe_hub_kwargs)" in flat
+    assert "include_bare=resolve_model_class(auto_model,model_config,**_probe_hub_kwargs)" in flat
+
+
+def test_audio_processor_frontends_are_right_padded_too():
+    source = VISION_PATH.read_text(encoding = "utf-8")
+    assert 'for _audio_attr in ("feature_extractor", "audio_processor"):' in source
