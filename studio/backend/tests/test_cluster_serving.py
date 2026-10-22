@@ -2985,10 +2985,63 @@ def test_shares_host_memory_reads_metal_and_the_host_size(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 128 * 1024)
     )
+    monkeypatch.setattr(cs, "_backend_says_integrated", lambda device: None)
     gpu = lambda name, gib: cs.Device(name, name, gib * GIB, gib * GIB)  # noqa: E731
     assert cs._shares_host_memory(gpu("MTL0", 8))
     assert cs._shares_host_memory(gpu("CUDA0", 120))  # a GB10 in a 128 GiB Spark
     assert not cs._shares_host_memory(gpu("CUDA0", 24))  # a discrete card
+
+
+def _fake_cuda(
+    monkeypatch,
+    *,
+    rocm = False,
+    **props,
+):
+    import torch
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    props.setdefault("name", "gpu")
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda ordinal: SimpleNamespace(**props)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: rocm))
+
+
+def test_a_large_discrete_card_in_a_small_host_does_not_share_host_memory(monkeypatch):
+    """Regression: a 24 GiB RTX in a 32 GiB host passed the half-the-host-RAM ratio as unified."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 32 * 1024)
+    )
+    _fake_cuda(monkeypatch, is_integrated = 0, name = "NVIDIA GeForce RTX 4090")
+    rtx = cs.Device("CUDA0", "NVIDIA GeForce RTX 4090", 24 * GIB, 23 * GIB)
+    assert not cs._shares_host_memory(rtx)
+
+
+def test_unified_memory_parts_are_still_detected(monkeypatch):
+    """Detection only widens: a GB10, a Strix Halo and an unclassifiable Vulkan APU stay unified."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 128 * 1024)
+    )
+    _fake_cuda(monkeypatch, is_integrated = 1, name = "NVIDIA GB10")
+    assert cs._shares_host_memory(cs.Device("CUDA0", "NVIDIA GB10", 8 * GIB, 8 * GIB))
+    _fake_cuda(monkeypatch, rocm = True, is_integrated = 0, gcnArchName = "gfx1151")
+    assert cs._shares_host_memory(cs.Device("ROCm0", "Radeon 8060S", 96 * GIB, 96 * GIB))
+    # An old wheel without the field: the backend cannot answer, so the name decides.
+    _fake_cuda(monkeypatch, name = "NVIDIA GB10")
+    assert cs._shares_host_memory(cs.Device("CUDA0", "NVIDIA GB10", 8 * GIB, 8 * GIB))
+    vulkan = cs.Device("Vulkan0", "AMD Radeon 8060S Graphics (RADV GFX1151)", 8 * GIB, 8 * GIB)
+    assert cs._shares_host_memory(vulkan)
+    assert not cs._shares_host_memory(
+        cs.Device("Vulkan0", "AMD Radeon RX 7900 XTX", 24 * GIB, 24 * GIB)
+    )
 
 
 def test_an_unread_hub_projector_listing_keeps_the_load_local(monkeypatch):

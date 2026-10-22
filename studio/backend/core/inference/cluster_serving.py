@@ -338,9 +338,58 @@ def _ctx_compute_bytes(
                 pass
 
 
+# Unified-memory parts named by llama.cpp's description, for a backend torch cannot classify (Vulkan, SYCL).
+_UNIFIED_NAME_MARKERS = ("gb10", "jetson", "orin", "thor")
+# Strix Point / Strix Halo / Krackan Point, as core.training.worker._rocm_classify_unified_memory names them.
+_RADEON_APU_MARKERS = ("890m", "880m", "8065s", "8060s", "8050s", "860m", "840m")
+
+
+def _backend_says_integrated(device: Device) -> Optional[bool]:
+    """The driver's integrated flag for a local CUDA / ROCm device; None when it cannot answer."""
+    match = re.fullmatch(r"(?:CUDA|ROCm|HIP)(\d+)", device.name.strip(), re.IGNORECASE)
+    if match is None:
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        ordinal = int(match.group(1))
+        if ordinal >= torch.cuda.device_count():
+            return None
+        props = torch.cuda.get_device_properties(ordinal)
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if LlamaCppBackend._torch_is_rocm(torch):
+            from core.training.worker import _rocm_classify_unified_memory
+            if _rocm_classify_unified_memory(props)[1]:
+                return True
+        elif getattr(props, "is_integrated", False) or getattr(props, "integrated", False):
+            return True
+        if not (hasattr(props, "is_integrated") or hasattr(props, "integrated")):
+            return None  # a wheel without the field says nothing about the hardware
+        return False
+    except Exception:
+        return None
+
+
 def _shares_host_memory(device: Device) -> bool:
-    """Whether a local accelerator's memory is the host RAM pool: Metal, or a device holding >= half the host RAM."""
+    """Whether a local accelerator's memory is the host RAM pool.
+
+    Metal always; a CUDA / ROCm device by the driver's integrated flag (DGX Spark GB10, Jetson,
+    Strix Halo), never by its size, since a 24 GiB card in a 32 GiB host is still discrete. Only
+    a device the backend cannot classify falls back to known names, then to holding >= half the
+    host RAM, so a unified part this cannot name is still treated as one.
+    """
     if device.name.upper().startswith("MTL"):
+        return True
+    said = _backend_says_integrated(device)
+    if said is not None:
+        return said
+    described = f"{device.name} {device.description}".lower()
+    if any(m in described for m in _UNIFIED_NAME_MARKERS) or (
+        "radeon" in described and any(m in described for m in _RADEON_APU_MARKERS)
+    ):
         return True
     try:
         from core.inference.llama_cpp import LlamaCppBackend
