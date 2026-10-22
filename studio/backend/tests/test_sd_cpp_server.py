@@ -532,7 +532,6 @@ def test_readiness_check_is_best_effort(patched):
 
 
 def test_readiness_refuses_a_hidden_owner_when_our_child_is_not_listening():
-    # Another OS user's socket lists no pid on Linux/macOS; our own child's sockets are readable.
     import http.server
     import subprocess
     import sys

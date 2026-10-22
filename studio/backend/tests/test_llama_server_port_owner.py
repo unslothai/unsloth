@@ -62,7 +62,6 @@ def _urllib_get(
     timeout = 2.0,
     **_kw,
 ):
-    # Sibling tests stub httpx; a plain urllib probe keeps this file order-independent.
     try:
         with urllib.request.urlopen(url, timeout = timeout) as r:
             return SimpleNamespace(status_code = r.status)
@@ -89,7 +88,6 @@ def foreign_listener():
 
 @pytest.fixture
 def idle_child():
-    # Stands in for a llama-server that hasn't bound its port yet.
     p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     yield p
     p.kill()
@@ -113,7 +111,6 @@ def test_foreign_listener_on_our_port_is_not_healthy(probe, foreign_listener, id
 def test_hidden_owner_with_our_child_not_listening_is_not_healthy(
     probe, foreign_listener, idle_child, monkeypatch
 ):
-    # Another OS user's socket on Linux/macOS: listed, but with no pid.
     real = psutil.net_connections
 
     def hidden(kind = "inet"):
