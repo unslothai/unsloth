@@ -40,6 +40,12 @@ def install_guarded_image_decode():
     if getattr(original, "_unsloth_guarded", False):
         return
 
+    from urllib.parse import urlsplit
+
+    def _origin(url):
+        parts = urlsplit(url)
+        return parts.scheme.lower(), (parts.hostname or "").lower(), parts.port
+
     @functools.wraps(original)
     def decode_example(
         self,
@@ -49,7 +55,8 @@ def install_guarded_image_decode():
         path = value.get("path") if isinstance(value, dict) else None
         if isinstance(path, str) and value.get("bytes") is None:
             source = path.split("::")[-1]
-            if source.startswith(("http://", "https://")) and not source.startswith(
+            # Exact origin, not a prefix: huggingface.co.attacker.example would match a prefix.
+            if source.startswith(("http://", "https://")) and _origin(source) != _origin(
                 config.HF_ENDPOINT
             ):
                 if "::" in path:

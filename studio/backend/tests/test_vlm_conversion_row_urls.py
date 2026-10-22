@@ -245,3 +245,17 @@ def test_guarded_decode_is_installed_once():
     remote_images.install_guarded_image_decode()
     assert hf_image.Image.decode_example is before
     assert getattr(before, "_unsloth_guarded", False)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://huggingface.co.attacker.example/a.png",
+        "https://huggingface.co@attacker.example/a.png",
+    ],
+)
+def test_lookalike_hub_hosts_still_go_through_the_guard(monkeypatch, url):
+    calls = _recording_fetch(monkeypatch)
+    with pytest.raises(OSError):
+        _typed_image_dataset(url)[0]
+    assert calls == [url]
