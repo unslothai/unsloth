@@ -349,3 +349,14 @@ def test_nvfp4_takes_float16_autocast_activations(monkeypatch, weight_dtype):
     assert out.dtype == torch.float16 and out.shape == (2, 3, 128)
     out.float().sum().backward()
     assert x.grad is not None and model[1].weight.grad is not None
+
+
+def test_nvfp4_float16_activations_under_bfloat16_autocast_return_bfloat16(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    x = torch.randn(2, 3, 64, dtype = torch.float16)
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        out = model(x)
+    assert out.dtype == torch.bfloat16 and out.shape == (2, 3, 128)
