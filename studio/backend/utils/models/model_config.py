@@ -2051,7 +2051,7 @@ def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
 
 # MiMo-VL's F16 projector overflows to NaN on GPU: every image, then the rest of the chat, answers "!!!!".
 _F16_UNSAFE_MMPROJ_RE = _re.compile(r"mimo[-_ ]?vl", _re.IGNORECASE)
-_MMPROJ_PRECISION_RE = _re.compile(r"[-_.](bf16|f16|f32)\.gguf$", _re.IGNORECASE)
+_MMPROJ_PRECISION_RE = _re.compile(r"[-_.](bf16|f16|f32)(?:[-_.]mmproj)?\.gguf$", _re.IGNORECASE)
 # None = a projector name with no precision tag.
 MMPROJ_ORDER_BF16 = ("bf16", "f16", "f32", None)
 MMPROJ_ORDER_NO_F16 = ("bf16", "f32", None, "f16")

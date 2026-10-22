@@ -330,3 +330,18 @@ def test_local_folder_named_after_mimo_vl_with_a_generic_weight(device, tmp_path
     for n in ("model-Q4_K_M.gguf", "mmproj-F16.gguf", "mmproj-BF16.gguf"):
         _touch(folder / n)
     assert Path(detect_mmproj_file(str(folder / "model-Q4_K_M.gguf"))).name == "mmproj-BF16.gguf"
+
+
+@pytest.mark.parametrize(
+    "name, precision",
+    [
+        ("mmproj-F16.gguf", "f16"),
+        ("MiMo-VL-7B-F16-mmproj.gguf", "f16"),
+        ("MiMo-VL-7B-RL-2508.mmproj-f16.gguf", "f16"),
+        ("mmproj-MiMo-VL-7B-RL_BF16.gguf", "bf16"),
+        ("Qwen3.5-9B-BF16-mmproj.gguf", "bf16"),
+        ("MiMo-VL-7B-RL-2508.mmproj-Q8_0.gguf", None),
+    ],
+)
+def test_projector_precision_tags(name, precision):
+    assert model_config.mmproj_precision(name) == precision
