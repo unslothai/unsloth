@@ -488,7 +488,7 @@ def _fused_ok(
         and packed.dtype == torch.uint8
         and packed.dim() == 2
         and packed.shape[0] > 0
-        # N and K both 64 aligned (inner is N for dX, so K is checked separately); unaligned dX is up to 2.8x slower.
+        # N and K both 64 aligned (inner is N for dX); unaligned dX is up to 2.8x slower.
         and (mode in _FUSED_FORCE or (packed.shape[0] % 64 == 0 and packed.shape[1] % 32 == 0))
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
@@ -692,8 +692,7 @@ _AUTOCAST_CASTS = (torch.float16, torch.bfloat16, torch.float32)
 
 
 def _autocast_operand(X):
-    # Dense torch.matmul runs in the autocast dtype, the fused GEMM (CUDA only) in X.dtype: cast X here, outside
-    # the opaque op, so both paths (and the fake impl) return the autocast dtype. Autocast state is a dynamo guard.
+    # Cast outside the opaque op so fused, dense and fake impl all return the autocast dtype.
     if X.is_cuda and X.dtype in _AUTOCAST_CASTS and torch.is_autocast_enabled("cuda"):
         dtype = torch.get_autocast_dtype("cuda")
         if dtype != X.dtype:

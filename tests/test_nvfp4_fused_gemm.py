@@ -523,7 +523,6 @@ def _amp_step(N, X, packed, scale, gs, amp, monkeypatch, mode):
 @_needs_bf16
 @pytest.mark.parametrize("dtype, amp", _AMP_CASES)
 def test_autocast_dtype_matches_dense(N, monkeypatch, dtype, amp):
-    # Dense torch.matmul autocasts; the fused GEMM must compute and return the autocast dtype too.
     # fp16 1000s against all ones weights: 128000 is finite in bf16, inf in fp16.
     packed = torch.full((128, 64), 0x22, device = "cuda", dtype = torch.uint8)
     scale = torch.ones(128, 8, device = "cuda")
