@@ -27,8 +27,11 @@ wipe_auth() {
   until rm -rf "$studio_home/auth" 2>/dev/null; do
     tries=$((tries + 1))
     if [ "$tries" -ge "${STUDIO_AUTH_WIPE_TRIES:-30}" ]; then
-      echo "::error::$studio_home/auth is still held open after $tries tries; a server on this home did not exit" >&2
-      rm -rf "$studio_home/auth"
+      # One last attempt with rm's own error showing; it can still be the one that succeeds.
+      if rm -rf "$studio_home/auth"; then
+        return 0
+      fi
+      echo "::error::$studio_home/auth is still held open after $((tries + 1)) tries; a server on this home did not exit" >&2
       return 1
     fi
     sleep 1

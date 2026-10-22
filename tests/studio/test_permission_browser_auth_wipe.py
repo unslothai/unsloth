@@ -86,6 +86,14 @@ def test_an_auth_dir_that_stays_held_fails_loudly(tmp_path):
     assert "Device or resource busy" in result.stderr
 
 
+def test_a_release_on_the_final_attempt_is_a_success(tmp_path):
+    result, calls = _run(tmp_path, busy_calls = 5, tries = 5)
+    assert result.returncode == 0, result.stderr
+    assert "wiped" in result.stdout
+    assert calls == 6
+    assert not (tmp_path / "home" / "auth").exists()
+
+
 def test_the_wrapper_wipes_only_through_the_retry_before_booting():
     code = _code(_source())
     helper = _code(_wipe_auth())
