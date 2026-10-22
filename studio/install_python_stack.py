@@ -10910,8 +10910,11 @@ _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PIN
 )
 # mflux goes in --no-deps: its declared torch / transformers floors would move the MLX pins, and Z-Image
 # needs only the deps below. Best-effort: a failure must never mark the MLX stack broken.
+# Pillow is capped: mflux imports PIL._typing, which in Pillow 13.0.0 needs numbers._IntegralLike,
+# absent on CPython 3.11 - 3.14, so every mflux import fails with it.
 _MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
 _MLX_DIFFUSION_DEPS: tuple[str, ...] = (
+    "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
     "platformdirs>=4,<5",
     "toml>=0.10.2,<1",

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
+export { FullInstallDialog } from "./components/full-install-dialog";
 export {
   type JobResult,
   jobOutputLines,
@@ -117,6 +118,7 @@ export {
   currentBinding,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
+  resolveBindings,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
@@ -134,4 +136,8 @@ export {
 } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
-export { isMacPlatform } from "./lib/keyboard-shortcuts";
+export {
+  isMacPlatform,
+  isModEnter,
+  modEnterLabel,
+} from "./lib/keyboard-shortcuts";

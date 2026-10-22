@@ -59,6 +59,9 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mp, "current_device_name", lambda: "NVIDIA L4", raising = False
     )  # the planner's card
+    # Video keys read the card per device; without this a host with a real GPU records under None (stubbed torch)
+    # and reads under its own card name.
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
     return path
 
 
@@ -248,6 +251,9 @@ def test_video_request_peaks_persist_across_processes(store, monkeypatch):
     assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) == 3000
     monkeypatch.undo()
     monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(store))
+    monkeypatch.setattr(
+        mp, "device_name", lambda dev: "NVIDIA L4"
+    )  # undo() dropped the fixture's card
     monkeypatch.setattr(vsr, "_PEAKS", {})  # a new process
     mp._cache.update(path = None, mtime = None, data = None)
     assert vsr.measured_extra_mib(key, work) == 3000

@@ -319,6 +319,30 @@ def test_a_resident_denoiser_is_armed_by_default(monkeypatch):
     )
 
 
+def test_a_resident_denoiser_off_cuda_stays_plain_unless_forced(monkeypatch):
+    """CPU / MPS loads have no device timer, so the trial cannot price the doubled call: the shape stays plain and the
+    render matches two plain calls exactly. ``force`` still batches."""
+    model = Flux2Transformer2DModel()
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    router = cb.router_for(pipe)
+    ref, _ = _flux_loop(Flux2Transformer2DModel())
+    for _ in range(2):
+        got, _ = _flux_loop(model)
+        cb.end_cfg_batch_render(pipe)
+        torch.testing.assert_close(got, ref, rtol = 0, atol = 0)
+    assert set(model.calls) == {1}
+    assert router.stats["batched_steps"] == 0
+    assert "no device timer on cpu" in cb.cfg_batch_status(pipe)["shape_off"]
+
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
+    forced = Flux2Transformer2DModel()
+    fpipe = _Pipe(forced)
+    assert cb.install_cfg_batch(fpipe, offload_policy = "none") is None
+    _flux_loop(forced)
+    assert 2 in forced.calls and cb.router_for(fpipe).stats["batched_steps"] > 0
+
+
 class _Clock:
     """A fake device timer: each forward costs ``cost(batch)`` seconds of the router's perf_counter."""
 

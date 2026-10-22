@@ -109,7 +109,7 @@ function CloneInputs({
             aria-busy={transcriber.transcribing}
             onChange={(event) => setReferenceText(event.target.value)}
             placeholder="Type the words in the clip exactly, or press Transcribe."
-            className="min-h-16"
+            className="min-h-16 rounded-lg"
           />
           {transcriber.error ? (
             <p
@@ -152,7 +152,7 @@ function CloneInputs({
           value={clone.text}
           onChange={(event) => setText(event.target.value)}
           placeholder="Type what the voice should say…"
-          className="min-h-28"
+          className="min-h-28 rounded-lg"
         />
         {clone.text.trim() ? null : (
           <div

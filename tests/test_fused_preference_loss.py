@@ -708,3 +708,83 @@ def test_hooked_or_custom_head_falls_back(dpo_module, monkeypatch, kind):
     loss, metrics, _ = _run(trainer, model, batch)
     assert HiddenStatesLlama.hidden_calls == 0
     torch.testing.assert_close(loss, reference[0])
+
+
+def _zero_head_input_grad(module, grad_input, grad_output):
+    return (torch.zeros_like(grad_input[0]),)
+
+
+@pytest.mark.parametrize(
+    "kind", ["full_backward_hook", "backward_pre_hook", "legacy_backward_hook", "global_backward_hook"]
+)
+def test_backward_hooked_head_falls_back(dpo_module, monkeypatch, kind):
+    """The kernel never calls the head module, so its module backward hooks would never fire."""
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    batch = _orpo_batch(seed = 4)
+    model = _model(0)
+    head = model.get_output_embeddings()
+    calls = []
+
+    def count(fn):
+        def hook(*args):
+            calls.append(1)
+            return fn(*args)
+
+        return hook
+
+    with contextlib.ExitStack() as stack:
+        if kind == "full_backward_hook":
+            handle = head.register_full_backward_hook(count(_zero_head_input_grad))
+        elif kind == "backward_pre_hook":
+            handle = head.register_full_backward_pre_hook(
+                count(lambda m, grad_output: (grad_output[0] * 3,))
+            )
+        elif kind == "legacy_backward_hook":
+            handle = head.register_backward_hook(
+                count(lambda m, gi, go: tuple(None if g is None else g * 3 for g in gi))
+            )
+        else:
+            from torch.nn.modules.module import register_module_full_backward_hook
+
+            def global_hook(module, grad_input, grad_output):
+                if module is head:
+                    return _zero_head_input_grad(module, grad_input, grad_output)
+
+            handle = register_module_full_backward_hook(count(global_hook))
+        stack.callback(handle.remove)
+        trainer = _orpo_trainer(dpo_module, model, "orpo", "auto")
+        assert dpo_module._output_head(trainer, model) == (None, None)
+        reference = _run(_orpo_trainer(dpo_module, model, "orpo", False), model, batch)
+        ref_calls = len(calls)
+        assert ref_calls >= 1
+        HiddenStatesLlama.hidden_calls = 0
+        result = _run(trainer, model, batch)
+        assert HiddenStatesLlama.hidden_calls == 0
+        assert len(calls) == 2 * ref_calls
+    _assert_same(reference, result)
+
+
+def test_weight_tensor_hooks_still_take_fused_path(dpo_module, monkeypatch):
+    """Tensor and AccumulateGrad hooks on the head weight see the kernel's returned dW, so the
+    fused path stays eligible and still gives the stock gradients."""
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    batch = _orpo_batch(seed = 4)
+    model = _model(0)
+    weight = model.get_output_embeddings().weight
+    calls = []
+    handles = [
+        weight.register_hook(lambda g: (calls.append("tensor"), g * 2)[1]),
+        weight.register_post_accumulate_grad_hook(lambda p: calls.append("post")),
+    ]
+    try:
+        reference = _run(_orpo_trainer(dpo_module, model, "orpo", False), model, batch)
+        assert calls == ["tensor", "post"]
+        calls.clear()
+        HiddenStatesLlama.hidden_calls = 0
+        result = _run(_orpo_trainer(dpo_module, model, "orpo", True), model, batch)
+        assert HiddenStatesLlama.hidden_calls >= 1
+        assert calls == ["tensor", "post"]
+    finally:
+        for handle in handles:
+            handle.remove()
+    _assert_same(reference, result)

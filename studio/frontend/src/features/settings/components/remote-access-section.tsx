@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useLoginMode } from "@/features/auth/account-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
+import { useLoginMode } from "@/features/auth/account-session";
 import {
   loadRemoteAccess,
   startRemoteAccess,
@@ -23,6 +23,7 @@ import {
   type RemoteAccessStatus,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
+  remoteAccessErrorMessage,
   remoteAccessPollDelay,
   remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
@@ -33,8 +34,8 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
-  QrCodeIcon,
   HomeWifiIcon,
+  QrCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -173,6 +174,7 @@ function StatusMessage({
 }
 
 function RemoteUrlPanel({ url }: { url: string | null }) {
+  const multi = useLoginMode() === "multi";
   if (!url) {
     return null;
   }
@@ -189,7 +191,13 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
         {url}
       </code>
       <span className="text-xs text-muted-foreground leading-snug">
-        Anyone with this URL and the remote password can sign in.
+        {multi
+          ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
+          : "Anyone with this URL reaches the sign-in page. Signing in gives full control, including running code on this computer through tools. API keys also work here."}
+      </span>
+      <span className="text-xs text-muted-foreground leading-snug">
+        While remote access is on, MCP servers that run local commands are
+        paused.
       </span>
     </div>
   );
@@ -382,7 +390,7 @@ export function RemoteAccessSection() {
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               Use Unsloth and its APIs from other devices through a secure,
-              temporary Cloudflare URL.
+              temporary public Cloudflare URL.
             </p>
           </div>
         </div>
@@ -399,9 +407,10 @@ export function RemoteAccessSection() {
       </div>
 
       <StatusMessage
-        message={blockMessage ?? status?.error}
-        destructive={!blockMessage}
+        message={remoteAccessErrorMessage(status?.error)}
+        destructive={true}
       />
+      <StatusMessage message={blockMessage} />
       <RemoteUrlPanel url={status?.url ?? null} />
 
       <div className="border-t border-border/60 px-4 py-1">

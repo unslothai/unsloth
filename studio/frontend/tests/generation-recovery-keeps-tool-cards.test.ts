@@ -57,7 +57,6 @@ test("a recovered turn keeps the tool calls it was streamed with", () => {
 });
 
 test("the text a recovery rebuilds is unchanged by carrying the parts", () => {
-  // The projection is what the follower compares and stores against, so it must not move.
   assert.equal(
     generationRawContent(recoverBody(TURN)).raw,
     generationRawContent(TURN).raw,
@@ -65,7 +64,6 @@ test("the text a recovery rebuilds is unchanged by carrying the parts", () => {
 });
 
 test("a call between two runs of text splits the text it sits in", () => {
-  // The rebuild coalesces "A" and "B" into one part, so the call has to land by offset.
   const body: Part[] = [
     { type: "text", text: "A" },
     { type: "tool-call", toolCallId: "call_0", toolName: "python" },
@@ -96,7 +94,6 @@ test("an unfinished reply keeps its calls and its open reasoning", () => {
 });
 
 test("a publish cannot swap a body that has cards for one that lost them", () => {
-  // The prefix guard compares projections, which hide tool calls: a stripped body used to win.
   const stripped = TURN.filter((part) => part.type !== "tool-call");
   const kept = recoveredContentToImport(TURN, stripped) as Part[];
 
