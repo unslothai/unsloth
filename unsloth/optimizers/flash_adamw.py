@@ -186,6 +186,11 @@ def _get_flash_adamw_class():
                     )
                 if group is not None and not self._group_quantizes(group):
                     _refuse_unquantized_fp16()
+            # Triton launches on the current CUDA device, which is not p.device for a model
+            # split across GPUs by device_map; without peer access the pointer is refused.
+            if p.is_cuda:
+                with torch.cuda.device(p.device):
+                    return super().step_param(p, group)
             return super().step_param(p, group)
 
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
