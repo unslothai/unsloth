@@ -386,10 +386,15 @@ def plan_layer_split(
         # the text encoders can always stream from host memory, so they do not count against the cards
         shortfall = need_total - te_mib - available
         best_shortfall = shortfall if best_shortfall is None else min(best_shortfall, shortfall)
+    shortfall_text = (
+        f"short by about {best_shortfall} MiB"
+        if best_shortfall is not None and best_shortfall > 0
+        else "no cut of the blocks fits every card"
+    )
     return None, (
         f"layer split does not fit the selected cards ({need_total - te_mib} MiB of denoiser and VAE weights with "
-        f"the text encoders streamed, short by about {max(0, best_shortfall or 0)} MiB after the per-card reserves "
-        f"and {max(denoise, decode)} MiB of activations on cuda:{primary})"
+        f"the text encoders streamed, {shortfall_text} after the per-card reserves and {max(denoise, decode)} MiB "
+        f"of activations on cuda:{primary})"
     )
 
 
