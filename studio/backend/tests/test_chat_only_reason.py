@@ -129,6 +129,36 @@ def test_a_no_torch_install_whose_inventory_cannot_answer_keeps_no_torch(monkeyp
     assert hw.CHAT_ONLY_REASON == "no_torch"
 
 
+_AMD_CARD = {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX", "gfx": "gfx1100"}
+
+
+@pytest.mark.parametrize(
+    "devices, nodes_closed, hinted",
+    [
+        ([_AMD_CARD], True, True),
+        ([_AMD_CARD], False, False),
+        ([_AMD_CARD, _NVIDIA_CARD], True, False),
+    ],
+    ids = ["amd-closed-nodes", "amd-open-nodes", "amd-closed-beside-nvidia"],
+)
+def test_a_no_torch_amd_host_behind_closed_nodes_gets_no_full_install_offer(
+    monkeypatch, devices, nodes_closed, hinted
+):
+    # The full install would restart into torch_cuda_unavailable: no reinstall opens /dev/kfd (#14067).
+    import utils.hardware.amd as amd
+
+    _no_torch_off_mac(monkeypatch, devices = devices)
+    monkeypatch.setattr(hw, "_amd_device_can_establish_a_mismatch", lambda _device: True)
+    monkeypatch.setattr(amd, "amd_closed_nodes_block_the_runtime", lambda **_: nodes_closed)
+    monkeypatch.setattr(
+        amd, "amd_node_permission_hint", lambda **_: "Add this user to the render group."
+    )
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    expected = "Add this user to the render group." if hinted else None
+    assert hw.chat_only_permission_hint("no_torch", None) == expected
+
+
 def test_a_torch_install_off_mac_without_an_accelerator_stays_no_gpu(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")

@@ -1731,6 +1731,7 @@ def _detect_hardware_locked() -> DeviceType:
             # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
             # Without such a GPU it stays no_gpu: the Desktop offers the full install on no_torch.
             CHAT_ONLY_REASON = "no_torch"
+            _record_chat_only_hint("no_torch", None)
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1924,11 +1925,24 @@ def _no_torch_mac_without_mlx_wheels() -> Optional[str]:
     return _mlx_wheel_blocker() if is_apple_silicon() else None
 
 
+def _no_torch_amd_node_hint() -> Optional[str]:
+    """A --no-torch host whose only trainable cards are AMD behind closed or missing nodes: the full install would restart into torch_cuda_unavailable (#14067)."""
+    devices = _devices_that_can_establish_a_mismatch(
+        get_physical_gpu_inventory().get("devices") or []
+    )
+    if not devices or {str(device.get("vendor")).lower() for device in devices} != {"amd"}:
+        return None
+    from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
+
+    return amd_node_permission_hint() if amd_closed_nodes_block_the_runtime() else None
+
+
 def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
     """Why the fix this verdict points at cannot enable Train: a closed AMD node from the last detection pass, or a --no-torch Mac the MLX wheels skip. The Desktop offers the full install only when this is None."""
     if reason == "no_torch":
         blocker = _no_torch_mac_without_mlx_wheels()
-        return f"Training on this Mac needs MLX, which requires {blocker}." if blocker else None
+        if blocker:
+            return f"Training on this Mac needs MLX, which requires {blocker}."
     # Keyed on the reason only: the refreshed verdict can relabel the same wheel.
     stored = _CHAT_ONLY_HINT
     return stored[1] if stored is not None and stored[0] == reason else None
@@ -1938,7 +1952,12 @@ def _record_chat_only_hint(reason: Optional[str], detail: Optional[str]) -> None
     """Detection-time only: the probe stats nodes and resolves group names, which /api/health (async) must not."""
     global _CHAT_ONLY_HINT
     hint = None
-    if reason == "torch_cuda_unavailable":
+    if reason == "no_torch":
+        try:
+            hint = _no_torch_amd_node_hint()
+        except Exception as exc:
+            logger.debug("AMD device node hint for no_torch failed: %s", exc)
+    elif reason == "torch_cuda_unavailable":
         try:
             node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
             hint = node_hint if wheel_targets_amd else None
