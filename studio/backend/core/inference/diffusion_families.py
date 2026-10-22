@@ -696,6 +696,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         profile = FamilyProfile(preview_factors = "flux1"),
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        # FLUX.1 VAE, as flux.1: with cudnn.benchmark one 768 px latent decoded 4 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = flux_mu_shift(
             1.15
         ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
@@ -735,6 +737,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "qwen_image",
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # Qwen-Image VAE, as qwen-image: cudnn.benchmark split one latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         comfy_flow_shift_variants = (
             ("qwen-image-edit-2511", 3.1),
@@ -809,6 +813,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # RGBA Qwen-Image VAE: cudnn.benchmark split one 768 px latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
         comfy_flow_shift = 1.0,
         layer_count = 2,

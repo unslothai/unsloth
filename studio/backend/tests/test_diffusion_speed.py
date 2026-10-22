@@ -636,26 +636,42 @@ def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
 def test_cudnn_benchmark_opt_out_image_families():
     from core.inference.diffusion_families import _FAMILIES
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
-    assert off == {"qwen-image", "flux.1", "flux.2-dev", "flux.2-klein", "z-image", "sdxl"}
+    assert off == {
+        "qwen-image",
+        "qwen-image-edit",
+        "qwen-image-layered",
+        "flux.1",
+        "flux.1-kontext",
+        "flux.2-dev",
+        "flux.2-klein",
+        "z-image",
+        "sdxl",
+    }
 
 
+# Repos whose VAE decode split across fresh B200 processes with cudnn.benchmark on (one latent, Studio's VAE layer):
+# FLUX.2 6 images over 9, FLUX.1 (Kontext) 4 over 5, Qwen-Image (Edit) 2 over 5, Qwen-Image RGBA (Layered) 2 over 5.
 @pytest.mark.parametrize(
-    "repo",
+    "repo, pipeline_class",
     [
-        "black-forest-labs/FLUX.2-dev",
-        "black-forest-labs/FLUX.2-klein-4B",
-        "black-forest-labs/FLUX.2-klein-base-4B",
-        "black-forest-labs/FLUX.2-klein-9B",
-        "black-forest-labs/FLUX.2-klein-base-9B",
-        "unsloth/FLUX.2-klein-base-4B",
+        ("black-forest-labs/FLUX.2-dev", "Flux2Pipeline"),
+        ("black-forest-labs/FLUX.2-klein-4B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.2-klein-base-4B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.2-klein-9B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.2-klein-base-9B", "Flux2KleinPipeline"),
+        ("unsloth/FLUX.2-klein-base-4B", "Flux2KleinPipeline"),
+        ("black-forest-labs/FLUX.1-Kontext-dev", "FluxKontextPipeline"),
+        ("unsloth/FLUX.1-Kontext-dev", "FluxKontextPipeline"),
+        ("Qwen/Qwen-Image-Edit-2511", "QwenImageEditPlusPipeline"),
+        ("unsloth/Qwen-Image-Edit-2511", "QwenImageEditPlusPipeline"),
+        ("Qwen/Qwen-Image-Layered", "QwenImageLayeredPipeline"),
     ],
 )
-def test_flux2_vae_families_hold_cudnn_benchmark_off(repo):
-    # One FLUX.2 VAE decode, one latent: the per-process conv pick gave 6 images over 9 fresh processes.
+def test_split_vae_families_hold_cudnn_benchmark_off(repo, pipeline_class):
     from core.inference.diffusion_families import detect_family
 
     fam = detect_family(repo)
-    assert fam is not None and fam.pipeline_class in ("Flux2Pipeline", "Flux2KleinPipeline")
+    assert fam is not None and fam.pipeline_class == pipeline_class
     assert fam.cudnn_benchmark is False
 
 

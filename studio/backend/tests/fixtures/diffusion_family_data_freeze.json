@@ -288,7 +288,7 @@
    ]
   },
   "flux.1-kontext": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -408,7 +408,7 @@
    "filter_reduction_configs_archs": []
   },
   "qwen-image-edit": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -430,7 +430,7 @@
    ]
   },
   "qwen-image-layered": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
