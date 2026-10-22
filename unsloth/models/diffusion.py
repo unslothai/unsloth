@@ -23,7 +23,7 @@ import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, set_seed
 from unsloth_zoo.hf_utils import add_dtype_kwargs
 
-from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
+from ._utils import check_mixed_gpu_placement, is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from ..device_type import DEVICE_TYPE, xpu_keeps_explicit_bf16
 from .diffusion_profiles import (
     diffusion_model_types,
@@ -416,6 +416,7 @@ class FastDiffusionModel:
         )
 
         model = model_cls.from_pretrained(model_name, config = config, **load_kwargs).eval()
+        check_mixed_gpu_placement(model, dtype)
         model._unsloth_full_finetuning = bool(full_finetuning)
         if trust_remote_code:
             # 4.x remote code builds RoPE inv_freq in __init__; transformers 5 leaves it uninitialised.
