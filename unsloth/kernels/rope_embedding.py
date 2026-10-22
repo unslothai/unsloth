@@ -154,6 +154,9 @@ def _rope_embedding_QK(
             rot_position = tl.load(rope_embedding_indices + row_position).to(tl.int32)
     else:
         rot_position = row_position % seqlen
+    if LONG_INDEXING:
+        # A cos / sin table past 2**31 elements (millions of positions) needs a 64-bit row offset.
+        rot_position = rot_position.to(tl.int64)
 
     sin1 = tl.load(sin + rot_position * sin_row_stride + col_offsets, mask = mask, other = 0)
     cos1 = tl.load(cos + rot_position * cos_row_stride + col_offsets, mask = mask, other = 0)
@@ -271,7 +274,7 @@ def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, 
         n_groups_K = (n_heads_K + HEADS_K - 1) // HEADS_K
     if rope_ptr is None:
         rope_ptr = cos  # never read without HAS_ROPE_INDICES
-    tensors = (Q, Q_out, K, K_out)
+    tensors = (Q, Q_out, K, K_out, cos, sin)
     wrap(_rope_embedding_QK)[(batch * seq_len, n_groups_Q + n_groups_K)](
         Q,
         Q_out,
