@@ -796,6 +796,22 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       if (names.length > 0) out.textual_inversions = names;
     }
     else if (key === "shift" && n !== undefined) out.shift = n;
+    // Studio's compare grid: its adapters by exact id (Hub ones too, which a prompt tag matches only locally) and
+    // the prompt enhancer it forced off.
+    else if (key === "loras" && value) {
+      // CSV items: an entry whose id holds a comma or quote is written "id: weight" with "" for a quote.
+      const items = [...value.matchAll(/\s*(?:"((?:[^"]|"")*)"|([^,]+))\s*(?:,|$)/g)].map((m) =>
+        m[1] !== undefined ? m[1].replace(/""/g, '"') : (m[2] ?? "").trim(),
+      );
+      const loras = items.flatMap((item) => {
+        const at = item.lastIndexOf(":");
+        return at > 0 ? [`${item.slice(0, at).trim()}:${item.slice(at + 1).trim()}`] : [];
+      });
+      if (loras.length > 0) out.loras = loras;
+    } else if (key === "prompt enhancement" && value.toLowerCase() === "off") out.prompt_enhancement = "off";
+    // Flux's resolution-dependent shift, as Studio's compare grid writes it.
+    else if (key === "base shift" && n !== undefined) out.base_shift = n;
+    else if (key === "max shift" && n !== undefined) out.max_shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
     // "None" skips the parser entirely (brackets are prompt text): Studio's prompt weighting off.
     else if (key === "emphasis") {

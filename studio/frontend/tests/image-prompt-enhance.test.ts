@@ -85,7 +85,7 @@ test("enhance_prompt is sent only when the loaded family supports it", () => {
   assert.deepEqual(enhancePromptRequestField(promptUpsamplerCapability(null), true), {});
   // Wired into the generate request.
   const page = readSrc("features/images/images-page.tsx");
-  const call = page.slice(page.indexOf("res = await generateDiffusionImage({"));
+  const call = page.slice(page.indexOf("res = await generateDiffusionImage("));
   assert.match(call.slice(0, 4000), /\.\.\.enhancePromptRequestField\(upsamplerCapability, enhanceOn\)/);
 });
 
