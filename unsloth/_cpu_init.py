@@ -102,7 +102,17 @@ class UnslothTrainer(_SFTTrainer):
         # Same split as the GPU UnslothTrainer: trained embed_tokens / lm_head copies get their own lr.
         model = self.model
         decay = set(self.get_decay_parameter_names(model))
-        optimizer_cls, optimizer_kwargs = _SFTTrainer.get_optimizer_cls_and_kwargs(self.args, model)
+        custom = getattr(self, "optimizer_cls_and_kwargs", None)
+        if custom is not None:
+            optimizer_cls, optimizer_kwargs = custom[0], dict(custom[1])
+        else:
+            optimizer_cls, optimizer_kwargs = _SFTTrainer.get_optimizer_cls_and_kwargs(
+                self.args, model
+            )
+        if any(key in optimizer_kwargs for key in ("params", "model", "optimizer_dict")):
+            raise NotImplementedError(
+                f"Unsloth: embedding_learning_rate cannot be combined with optim = {self.args.optim!r} on CPU."
+            )
         embedding_ids = set()
         for getter in ("get_input_embeddings", "get_output_embeddings"):
             module = getattr(model, getter, lambda: None)()
