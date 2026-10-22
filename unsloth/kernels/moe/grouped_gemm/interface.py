@@ -107,11 +107,12 @@ _OPERAND_TILE_FITS = {}
 
 def _autotune_cache():
     from .. import autotune_cache
-
     return autotune_cache
 
 
-def _fit_tiles_to_operand_device(kind, operand, weight_dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
+def _fit_tiles_to_operand_device(
+    kind, operand, weight_dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+):
     """Caller-supplied tiles were fitted to the current card's shared memory when the caller passed no device
     (unsloth_zoo <= 2026.10.7). If the operands sit on a different GPU model, shrink a copy to fit their card.
     One GPU, or the same model as the current card: returned unchanged."""
@@ -122,7 +123,9 @@ def _fit_tiles_to_operand_device(kind, operand, weight_dtype, BLOCK_SIZE_M, BLOC
             return tiles
         current = torch.cuda.current_device()
         index = _device_index(device)
-        if index == current or _device_model(device) == _device_model(torch.device("cuda", current)):
+        if index == current or _device_model(device) == _device_model(
+            torch.device("cuda", current)
+        ):
             return tiles
     except Exception:
         return tiles
@@ -151,7 +154,12 @@ def _fit_tiles_to_operand_device(kind, operand, weight_dtype, BLOCK_SIZE_M, BLOC
                     tuple(torch.cuda.get_device_capability(device)),
                     smem,
                 )
-                fitted = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
+                fitted = (
+                    config.BLOCK_SIZE_M,
+                    config.BLOCK_SIZE_N,
+                    config.BLOCK_SIZE_K,
+                    config.num_stages,
+                )
         except Exception:
             fitted = tiles
         _OPERAND_TILE_FITS[key] = fitted

@@ -84,7 +84,6 @@ def _uses_fsdp1(trainer, model):
 def _global_module_backward_hooks():
     # torch.nn.modules.module.register_module_full_backward_(pre_)hook applies to every module.
     from torch.nn.modules import module as _module
-
     return bool(
         getattr(_module, "_global_backward_hooks", None)
         or getattr(_module, "_global_backward_pre_hooks", None)
