@@ -143,8 +143,7 @@ def set_mcp_settings(
 
             known = set(tool_names())
             stored = _read_from_db()[1]
-            # Unreadable reads as every tool off, as the GET shows it, so a toggle writes a valid list again. A
-            # name this build no longer serves is dropped, as a whole-list save drops it.
+            # Unreadable counts as all off, as the GET shows it; names this build no longer serves are dropped.
             stored = known if stored is None else stored & known
             disabled_tools = (stored - {n for n, on in tool_states.items() if on}) | {
                 n for n, on in tool_states.items() if not on
