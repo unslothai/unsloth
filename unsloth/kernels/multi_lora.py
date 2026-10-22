@@ -530,6 +530,7 @@ class MultiLoraLinear(nn.Module):
         self.reset_parameters()
         self.batch: Optional[MultiLoraBatch] = None
         self.seen: Optional[torch.Tensor] = None
+        self.trained: Optional[torch.Tensor] = None
 
     @torch.no_grad()
     def reset_parameters(self):
@@ -627,23 +628,24 @@ def _distributed() -> bool:
 def drop_absent_adapter_grads_(model: nn.Module, process_group = None) -> list[int]:
     """Clear the gradients of adapters that did not train this step; call before ``optimizer.step()``.
 
-    Absent = no tokens in any batch routed since the previous call (gradient accumulation) on any rank of
-    ``process_group``, or an exactly zero gradient (routed rows whose labels were all ignored). PyTorch
-    optimizers skip a parameter whose ``grad`` is None, so such an adapter keeps its weights, moments and
-    step count, exactly as if it had not trained this step.
+    An adapter trained if, in any batch since the previous call (gradient accumulation) on any rank of
+    ``process_group``, it had valid label tokens in ``per_adapter_loss(..., model = model)``, or, without
+    that, any routed token. PyTorch optimizers skip a parameter whose ``grad`` is None, so an absent adapter
+    keeps its weights, moments and step count, exactly as if it had not trained this step.
     """
     layers = _layers(model)
-    if not layers:
+    first = layers[0][1] if layers else None
+    present = (
+        None if first is None else (first.trained if first.trained is not None else first.seen)
+    )
+    if present is None:
         return []
-    first = layers[0][1]
-    sq = _grad_sq(model, process_group)
-    seen = first.seen.to(sq) if first.seen is not None else torch.ones_like(sq)
-    stats = torch.stack([seen, sq])
+    present = present.to(torch.int32)
     if _distributed():
-        torch.distributed.all_reduce(stats, group = process_group)
-    absent = [u for u, (s, n) in enumerate(zip(*stats.tolist())) if s == 0 or n == 0]
+        torch.distributed.all_reduce(present, group = process_group)
+    absent = [u for u, n in enumerate(present.tolist()) if n == 0]
     for _, layer in layers:
-        layer.seen = None
+        layer.seen = layer.trained = None
         for u in absent:
             layer.lora_A[u].grad = None
             layer.lora_B[u].grad = None
@@ -657,12 +659,14 @@ def per_adapter_loss(
     num_adapters: int,
     ignore_index: int = -100,
     process_group = None,
+    model: Optional[nn.Module] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal LM loss averaged within each adapter, summed over adapters.
 
     Each adapter's parameters only see its own rows, so the gradient of the sum is, per adapter, the
-    gradient of its own mean loss: the same as training it alone. Returns (total, this rank's per-adapter
-    losses).
+    gradient of its own mean loss: the same as training it alone. Pass ``model`` so that
+    ``drop_absent_adapter_grads_`` knows which adapters had valid tokens. Returns (total, this rank's
+    per-adapter losses).
     """
     shift_logits = logits[:, :-1].float()
     shift_labels = labels[:, 1:]
@@ -682,6 +686,12 @@ def per_adapter_loss(
         0, ids[keep], valid.sum(1)[keep]
     )
     losses = sums / counts.clamp_min(1)
+    if model is not None:
+        # Adapters with valid label tokens: routed rows whose labels are all ignored do not train.
+        trained = counts > 0
+        for _, layer in _layers(model):
+            mark = trained.to(layer.lora_A[0].device)
+            layer.trained = mark if layer.trained is None else layer.trained | mark
     if not _distributed():
         return losses.sum(), losses.detach()
     # DDP / FSDP average gradients over ranks: divide by every rank's tokens and undo that average, so each
