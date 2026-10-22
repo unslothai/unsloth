@@ -6416,7 +6416,11 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     return include
 
 
-def _fsdp2_collective_save(trainable_only, offload_to_cpu = None, offload_4bit = False):
+def _fsdp2_collective_save(
+    trainable_only,
+    offload_to_cpu = None,
+    offload_4bit = False,
+):
     """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
     return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough;
     `offload_to_cpu(self, args, kwargs)` (default True) whether gathered weights go to the CPU.
