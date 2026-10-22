@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -3263,6 +3264,31 @@ def test_a_status_poll_during_the_cpu_backend_restart_keeps_the_load(monkeypatch
     assert server is not None and polls == [True] and b._state is state
     b._hand_over_replacement(dataclasses.replace(state, server = server), server)
     assert b._state.server is server and not server.stopped
+
+
+def test_a_cancel_during_the_respawn_stops_the_replacement_start(monkeypatch, tmp_path):
+    # cancel_generate() (or a superseding load) only sets the generation's event; the replacement start blocks for the
+    # model load while _generate_lock is held, so it must notice and bail instead of loading for the full timeout.
+    kwargs = _gen_kwargs()
+    cancel = kwargs["cancel"]
+
+    def _cancel_mid_start(server):
+        cancel.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if server.stopped:
+                raise RuntimeError("sd-server startup aborted before ready")
+            time.sleep(0.01)
+
+    b, servers, payloads = _device_loss_backend(monkeypatch, tmp_path, on_start = _cancel_mid_start)
+    monkeypatch.setattr(b, "status", lambda: {})
+    started = time.monotonic()
+    with pytest.raises(SdCppCancelled):
+        b._generate_server(b._state, **kwargs)
+    assert time.monotonic() - started < 4.0
+    assert len(servers) == 2 and all(s.stopped for s in servers)
+    assert len(payloads) == 1   # no retry job was posted
+    assert b._pending_server is None and b._replacing_server is None
 
 
 def test_an_unload_before_the_respawn_starts_skips_it(monkeypatch, tmp_path):

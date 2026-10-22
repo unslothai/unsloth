@@ -4921,6 +4921,45 @@ class SdCppDiffusionBackend:
             self._stop_reserved(server)
             raise SdCppCancelled("sd-server generation was cancelled.")
 
+    def _start_replacement(
+        self, state: _SdState, server: SdCppServer, cancel: threading.Event, **start_kwargs: Any
+    ) -> Optional[SdCppServer]:
+        """Start a published-as-pending replacement sd-server for this generation; None when it fails.
+
+        The start blocks for the model load (up to its startup timeout) while the caller holds
+        ``_generate_lock``. ``cancel_generate()`` and a superseding load only set ``cancel``, so a watcher stops
+        the pending server when that happens: the readiness wait bails at once and the generation raises
+        ``SdCppCancelled`` instead of loading a replacement nobody wants."""
+        done = threading.Event()
+
+        def _watch() -> None:
+            while not done.is_set():
+                if cancel.wait(0.25):
+                    server.stop()
+                    return
+
+        watcher = threading.Thread(target = _watch, name = "sd-server-replacement-cancel", daemon = True)
+        watcher.start()
+        failed = False
+        try:
+            server.start(state.files, **start_kwargs)
+        except Exception:  # noqa: BLE001 -- the original server error is the more useful one
+            failed = True
+        finally:
+            done.set()
+            watcher.join()
+        if failed or cancel.is_set():
+            with self._lock:
+                if self._pending_server is server:
+                    self._pending_server = None
+            server.stop()
+            self._end_replacement(state.server)
+            if cancel.is_set():
+                raise SdCppCancelled("sd-server generation was cancelled.")
+            return None
+        # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
+        return server
+
     def _respawn_server_after_device_loss(
         self, state: _SdState, error_text: str, cancel: threading.Event
     ) -> Optional[SdCppServer]:
@@ -4942,24 +4981,16 @@ class SdCppDiffusionBackend:
         server = SdCppServer(state.server.binary)
         with self._lock:
             self._pending_server = server
-        try:
-            server.start(
-                state.files,
-                vae_format = state.vae_format,
-                offload = state.offload_flags,
-                native_speed = state.native_speed,
-                threads = state.threads,
-                env = state.spawn_env(),
-            )
-        except Exception:  # noqa: BLE001 -- the lost device is the more useful error
-            with self._lock:
-                if self._pending_server is server:
-                    self._pending_server = None
-            server.stop()
-            self._end_replacement(state.server)
-            return None
-        # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
-        return server
+        return self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            offload = state.offload_flags,
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+        )
 
     def _restart_server_on_cpu_backend(
         self, state: _SdState, error_text: str, cancel: threading.Event
@@ -5001,28 +5032,20 @@ class SdCppDiffusionBackend:
         server = SdCppServer(server_binary)
         with self._lock:
             self._pending_server = server
-        try:
-            server.start(
-                state.files,
-                vae_format = state.vae_format,
-                # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec instead of replacing,
-                # and an explicit diffusion=CUDA0 outranks the bare `cpu` default, so leaving the pin on would restart
-                # the server onto the very backend that just aborted.
-                offload = without_device_backend_flags(state.offload_flags),
-                native_speed = state.native_speed,
-                threads = state.threads,
-                env = state.spawn_env(),
-                extra_args = list(CPU_BACKEND_FLAGS),
-            )
-        except Exception:  # noqa: BLE001 -- the original abort is the more useful error
-            with self._lock:
-                if self._pending_server is server:
-                    self._pending_server = None
-            server.stop()
-            self._end_replacement(state.server)
-            return None
-        # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
-        return server
+        return self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec instead of replacing,
+            # and an explicit diffusion=CUDA0 outranks the bare `cpu` default, so leaving the pin on would restart
+            # the server onto the very backend that just aborted.
+            offload = without_device_backend_flags(state.offload_flags),
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+            extra_args = list(CPU_BACKEND_FLAGS),
+        )
 
     def _generate_oneshot(
         self,
