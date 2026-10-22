@@ -383,8 +383,10 @@ export const BUDGET = {
   // catalog. Raised by that.
   // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
   // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
-  transferBytes: 2_077_648,
-  rawBytes: 6_895_497,
+  // Merged with main at 588e1c4ff the build measures 6,895,453 B raw / 2,077,633 B transfer (Node 24, 99 chunks).
+  // Raised to that plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_077_822,
+  rawBytes: 6_895_613,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
