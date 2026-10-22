@@ -694,7 +694,6 @@ export async function syncInferenceStatusToStore(options?: {
   preserveIdleUnloaded?: boolean;
   /** A TTS load owns the chat slot even though Chat did not start the load. */
   externalChatSlotLoad?: boolean;
-  /** A failed read reports nothing. */
   quiet?: boolean;
 }): Promise<void> {
   const signal = options?.signal;

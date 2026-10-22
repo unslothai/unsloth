@@ -9192,7 +9192,7 @@ export function createOpenAIStreamAdapter(
               description: msg || "Unknown error",
             });
           }
-          // Only a status read tells the UI a killed worker's model is gone; quiet, as this failure has its toast.
+          // Only a status read shows a killed worker's model is gone; quiet, the failure has its toast.
           if (!isExternalRequest) {
             void syncInferenceStatusToStore({ includeLoras: false, quiet: true });
           }
