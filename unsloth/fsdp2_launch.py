@@ -3,13 +3,16 @@
 
 """FSDP launch detection from the launcher env only (no torch): identical on every rank."""
 
+import ast
 import importlib.util
 import os
+import re
 import sys
 
 __all__ = [
     "unsloth_fsdp2_requested",
     "unsloth_fsdp2_native_requested",
+    "non_cuda_install",
     "fsdp_version_from_env",
     "apply_unsloth_fsdp2_launch_env",
     "NATIVE_BACKEND_TABLE",
@@ -56,7 +59,67 @@ def unsloth_fsdp2_native_requested():
         )
     if backend == "" and _env_flag("ACCELERATE_USE_FSDP"):
         return False
+    if backend == "" and non_cuda_install() is not None:
+        # Native FSDP2 runs on CUDA / ROCm or the CPU. On an XPU / NPU / HPU / ... install,
+        # UNSLOTH_FSDP2=1 keeps accelerate's FSDP2 wrap, as it did before the native backend existed;
+        # an explicit UNSLOTH_FSDP2_BACKEND=native is still refused (refuse_native_backend_conflicts).
+        return False
     return True
+
+
+def _torch_build():
+    """{"cuda", "hip", "xpu"}: the torch build's `torch.version` strings (None when absent), read from
+    torch/version.py without importing torch (the launch step runs before torch is imported), or None
+    when torch is not found. Same answer at the launch step and at Trainer setup."""
+    torch = sys.modules.get("torch")
+    version = getattr(torch, "version", None) if torch is not None else None
+    if version is not None:
+        return {name: getattr(version, name, None) for name in ("cuda", "hip", "xpu")}
+    try:
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
+        return None
+    for location in getattr(spec, "submodule_search_locations", None) or ():
+        try:
+            with open(os.path.join(location, "version.py"), encoding = "utf-8") as f:
+                source = f.read()
+        except OSError:
+            continue
+        build = {}
+        for name in ("cuda", "hip", "xpu"):
+            match = re.search(rf"^{name}\s*(?::[^=\n]*)?=\s*(.+?)\s*$", source, re.M)
+            try:
+                build[name] = ast.literal_eval(match.group(1)) if match else None
+            except (ValueError, SyntaxError):
+                build[name] = None
+        return build
+    return None
+
+
+def non_cuda_install():
+    """The label of the non-CUDA accelerator accelerate would pick on this install (a
+    NATIVE_BACKEND_TABLE device row), from the torch build and the installed vendor packages only, so
+    every rank and every call agrees; None on a CUDA / ROCm torch build, for a CPU launch
+    (ACCELERATE_USE_CPU), or when nothing matches."""
+    if _env_flag("ACCELERATE_USE_CPU"):
+        return None
+    build = _torch_build()
+    if not build or build.get("cuda") or build.get("hip"):
+        return None
+    for row in NATIVE_BACKEND_TABLE:
+        if row["action"] != "refuse" or "device" not in row:
+            continue
+        package, attr, _ = row["device"]
+        if package is None:
+            if build.get(attr):
+                return row["label"]
+            continue
+        try:
+            if importlib.util.find_spec(package.split(".")[0]) is not None:
+                return row["label"]
+        except (ImportError, ValueError):
+            continue
+    return None
 
 
 def fsdp_version_from_env():
@@ -328,6 +391,14 @@ def apply_unsloth_fsdp2_launch_env():
     if _env_flag("ACCELERATE_USE_DEEPSPEED"):
         raise RuntimeError(
             "Unsloth: UNSLOTH_FSDP2=1 was set on a DeepSpeed launch. Unset one of them."
+        )
+    device = None
+    if _env_value("UNSLOTH_FSDP2_BACKEND") == "" and not _env_flag("ACCELERATE_USE_FSDP"):
+        device = non_cuda_install()
+    if device is not None and str(os.environ.get("RANK", "0")).strip() in ("", "0"):
+        print(
+            f"Unsloth: UNSLOTH_FSDP2=1 with {device} (not a CUDA / ROCm torch build): native FSDP2 "
+            "runs on CUDA / ROCm or the CPU, so accelerate's FSDP2 shards the model."
         )
     version = str(os.environ.get("FSDP_VERSION", "")).strip()
     if version not in ("", "2"):
