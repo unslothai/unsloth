@@ -631,6 +631,16 @@ def resolve_ssm_kernels(
         required = model_requires_mamba_ssm(probe)
     if wants is None:
         wants = model_wants_causal_conv1d(probe)
+    # The zoo kernel only replaces causal_conv1d inside the native Qwen3.5 / Qwen3-Next modeling
+    # modules. A remote implementation (auto_map, run under trust_remote_code or when the caller
+    # does not say) may import causal_conv1d itself, so it keeps the package as it did before.
+    if (
+        not wants
+        and remote_code
+        and trust_remote_code is not False
+        and any(_is_zoo_gdn_model_type(model_type) for model_type in model_types)
+    ):
+        wants = True
     ssm_types = {t for t in model_types if t in SSM_MODEL_TYPES}
     remote_code_used = bool(remote_code) and (
         bool(trust_remote_code)
