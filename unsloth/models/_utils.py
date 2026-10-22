@@ -1249,15 +1249,12 @@ def _enable_flex_attention_support(model_class, model_type = ""):
     return True
 
 
-# Inductor's default flex template at head_dim 256. On cards with less shared memory per block
-# (L4 sm89, RTX PRO 6000 sm120: 101376) Gemma 3's flex backward gives wrong LoRA gradients on padded
-# batches (grad norm 28000x plain transformers, cosine 0.08; an A100 matches it), #14439.
+# Inductor's head_dim 256 flex template; with less, Gemma 3's flex backward is wrong (#14439).
 _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
 
 
 def _flex_preferred_fits(config):
-    """False when a _FLEX_PREFERRED_MODELS decoder's head dim needs more shared memory than a visible
-    CUDA card has. Fails open: no CUDA, ROCm or an unreadable probe keeps flex."""
+    """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
     head_dim = _text_attention_head_dim(config)
     if head_dim is None or not (
         _SDPA_FLASH_MAX_HEAD_DIM < head_dim <= _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM

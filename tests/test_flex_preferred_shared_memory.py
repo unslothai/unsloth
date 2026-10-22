@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Gemma 3 keeps flex attention only where Inductor's head_dim 256 flex template fits the card: on
-L4 / RTX PRO 6000 class cards its backward gave wrong LoRA gradients on padded batches (#14439)."""
+"""Gemma 3 keeps flex attention only where its head_dim 256 template fits the card (#14439)."""
 
 from types import SimpleNamespace
 from unittest import mock
