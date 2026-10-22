@@ -175,16 +175,14 @@ def unbacked_supported() -> bool:
 
 
 def _torchao_float8_weights(transformer: Any) -> bool:
-    """Whether a torchao float8 tensor holds any of ``transformer``'s weights."""
-    parameters = getattr(transformer, "parameters", None)
-    if not callable(parameters):
-        return False
+    """Whether a torchao float8 tensor holds any of ``transformer``'s weights (wrapped in a plain Parameter or not)."""
     try:
-        for p in parameters():
-            if "float8" in type(p).__name__.lower():
+        from .diffusion_speed import torchao_weight_tensors
+        for t in torchao_weight_tensors(transformer):
+            if "float8" in type(t).__name__.lower():
                 return True
             layout = getattr(
-                p, "_layout", None
+                t, "_layout", None
             )  # torchao < 0.12: AffineQuantizedTensor + Float8Layout
             if layout is not None and "float8" in type(layout).__name__.lower():
                 return True

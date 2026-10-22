@@ -544,7 +544,10 @@ def test_slice_identity_fix_is_probe_gated_and_reversible(monkeypatch):
 
 
 class Float8Tensor(torch.Tensor):
-    """Stands in for torchao's float8 weight subclass (only the class name is read)."""
+    """Stands in for torchao's float8 weight subclass (its module and class name are read)."""
+
+
+Float8Tensor.__module__ = "torchao.quantization.quantize_.workflows.float8.float8_tensor"
 
 
 def _h3_with_float8_weight():
@@ -571,3 +574,14 @@ def test_minimax_h3_float8_weights_keep_temb_backed_dynamic():
     dt.uninstall(m)
     # a plain (bf16 / int8) H3 keeps the unbacked temb
     assert dt.unbacked_sources_for(MiniMaxH3Transformer3DModel()) == ("L['temb']",)
+
+
+def test_minimax_h3_float8_inside_a_plain_parameter_keeps_temb_backed_dynamic():
+    """Some torchao builds keep ``Linear.weight`` a plain Parameter whose ``.data`` is the float8 subclass."""
+    if not dt.unbacked_supported():
+        pytest.skip("torch lacks compiler.config.unbacked_sources")
+    m = MiniMaxH3Transformer3DModel()
+    plain = types.SimpleNamespace(data = torch.Tensor._make_subclass(Float8Tensor, torch.zeros(8, 8)))
+    m.parameters = lambda recurse = True: iter([plain])
+    assert dt.unbacked_sources_for(m) == ()
+    assert "L['temb']" in dt.sources_for(m)
