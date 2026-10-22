@@ -1541,6 +1541,8 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         _BNB_GEMM_4BIT
         and X.dtype in _BNB_GEMM_4BIT_DTYPES
         and X.is_cuda
+        # bitsandbytes returns X.dtype; torch.matmul under autocast returns the autocast dtype.
+        and not (torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != X.dtype)
         and _bnb_gemm_4bit_device_ok(X.device)
         # bitsandbytes passes raw pointers to the kernel on X's device.
         and W.device == X.device
@@ -1657,6 +1659,18 @@ def _rows_plans(quant_state):
     return plans
 
 
+def _fast_lora_weights(lora_A, lora_B, dtype):
+    if lora_A.dtype == dtype and lora_B.dtype == dtype:
+        return lora_A, lora_B
+    # Cast once per weight version: adapters keep training between decodes (GRPO, SFT then generate).
+    key = (lora_A._version, lora_B._version, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
+    cache = getattr(lora_A, "_fast_lora", None)
+    if cache is None or cache[0] != key:
+        cache = (key, lora_A.to(dtype), lora_B.to(dtype))
+        lora_A._fast_lora = cache
+    return cache[1], cache[2]
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1704,7 +1718,10 @@ def fast_linear_forward(
     ):
         out = rows
     elif (
-        _BNB_GEMM_4BIT is not False
+        # _is_compiling() first: reading the lazily set global while tracing guards on it, so the first
+        # eager call (None -> False) would recompile every captured graph.
+        not _is_compiling()
+        and _BNB_GEMM_4BIT is not False
         and bsz <= _BNB_GEMM_4BIT_MAX_ROWS
         and _bnb_gemm_4bit_ok(X, W, W_quant)
     ):
@@ -1717,18 +1734,20 @@ def fast_linear_forward(
         out_dim = out.shape[2]
         dtype = X.dtype
 
-        if not hasattr(lora_A, "_fast_lora"):
-            lora_A._fast_lora = lora_A.to(dtype)
-            lora_B._fast_lora = lora_B.to(dtype)
+        if _is_compiling():
+            # No lazy attribute while tracing: it guards, so the first eager call would recompile.
+            A, B = lora_A.to(dtype), lora_B.to(dtype)
+        else:
+            A, B = _fast_lora_weights(lora_A, lora_B, dtype)
 
         if bsz == 1:
             out = out.view(out_dim)
-            temp_lora = torch_mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
-            out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
+            temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
+            out.addmv_(B, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch_mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
-            out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
+            temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
+            out.addmm_(temp_lora, B.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 
     if bias is not None:
