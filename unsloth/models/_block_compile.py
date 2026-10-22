@@ -587,6 +587,10 @@ def _nf4_in_blocks():
         from ..kernels import bnb_override as O
     except Exception:
         return
+    try:
+        from ..kernels.fast_lora import _MLP_OUTPUT_UNUSED
+    except Exception:
+        _MLP_OUTPUT_UNUSED = [False]
     if not O._TRACE or O._LINEAR == "0":
         return  # torch < 2.11 miscompiles the traced backward; "0" = the user's opt-out
     Linear4bit = bnb.nn.Linear4bit
@@ -620,6 +624,16 @@ def _nf4_in_blocks():
                 and not (quant_state.dtype is torch.float32 and rows < 8)
             ):
                 dtype = quant_state.dtype
+                if (
+                    _MLP_OUTPUT_UNUSED[0]
+                    and getattr(self, "_unsloth_output_unused", False)
+                    and x.requires_grad
+                    and torch.is_grad_enabled()
+                ):
+                    # Recompute of a down_proj nobody reads (kernels/fast_lora.py): _NF4Linear's backward only.
+                    return O._apply(O._NF4LinearOutputUnused, x.to(dtype), weight, quant_state).to(
+                        x.dtype
+                    )
                 bias = None if self.bias is None else self.bias.to(dtype)
                 return O._linear(x.to(dtype), weight, quant_state, bias).to(x.dtype)
         return current(self, x, *args, **kwargs)
@@ -664,10 +678,6 @@ def _wrap(cls, compile_options):
     # Unsloth layer forwards read packed lengths on the host (packing.py): packed calls stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
-    # Decided here, outside the graph: inside a compiled block the forward cannot see the recompute.
-    mlp_output_unused = getattr(original, "_unsloth_mlp_output_unused", None) or (
-        lambda layer: contextlib.nullcontext()
-    )
     try:
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
     except Exception:
@@ -682,7 +692,11 @@ def _wrap(cls, compile_options):
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
         try:
-            with mlp_output_unused(self):
+            # Decided here, outside the graph: inside a compiled block the forward cannot see the recompute.
+            mlp_output_unused = getattr(original, "_unsloth_mlp_output_unused", None) or getattr(
+                type(self), "_unsloth_mlp_output_unused", None
+            )
+            with mlp_output_unused(self) if mlp_output_unused else contextlib.nullcontext():
                 return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous

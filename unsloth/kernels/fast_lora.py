@@ -11,6 +11,7 @@
 
 import os
 import sys
+import types
 import torch
 from contextlib import contextmanager
 from unsloth_zoo.utils import Version
@@ -71,6 +72,64 @@ def mlp_output_unused(layer):
         yield
     finally:
         _MLP_OUTPUT_UNUSED[0] = previous
+
+
+# Decoder layers whose MLP output only reaches the residual add, trained through PEFT LoRA.
+_MLP_OUTPUT_ONLY_TO_RESIDUAL = ("Qwen3_5DecoderLayer",)
+
+
+class _OutputUnusedLinear(torch.autograd.Function):
+    """F.linear whose output nobody reads: forward only allocates it, backward sends dY @ W to X."""
+
+    @staticmethod
+    def forward(ctx, X, W):
+        ctx.save_for_backward(W)
+        return X.new_empty((*X.shape[:-1], W.shape[0]))
+
+    @staticmethod
+    def backward(ctx, dY):
+        (W,) = ctx.saved_tensors
+        return dY.matmul(W), None
+
+
+def _down_proj_base_forward(self, X):
+    if _MLP_OUTPUT_UNUSED[0]:
+        # Recompute: PEFT still needs this node for dY @ W, not its output.
+        return _OutputUnusedLinear.apply(X, self.weight)
+    return torch.nn.Linear.forward(self, X)
+
+
+def _is_bnb_linear4bit(module):
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        return False
+    return isinstance(module, bnb.nn.Linear4bit)
+
+
+def install_mlp_output_unused(model):
+    """Lets a checkpoint recompute skip the base down_proj GEMM of PEFT LoRA MLPs.
+
+    Frozen bases without bias, in decoder layers whose MLP output only reaches the residual add:
+    16-bit nn.Linear here, NF4 Linear4bit where a compiled block runs it (models/_block_compile.py).
+    The LoRA branch and act(gate) * up still run: PEFT's backward needs them.
+    """
+    installed = 0
+    for layer in model.modules():
+        if type(layer).__name__ not in _MLP_OUTPUT_ONLY_TO_RESIDUAL:
+            continue
+        base = getattr(getattr(getattr(layer, "mlp", None), "down_proj", None), "base_layer", None)
+        if base is None or base.bias is not None or base.weight.requires_grad:
+            continue
+        if type(base) is torch.nn.Linear and base.weight.dtype in (torch.float16, torch.bfloat16):
+            base.forward = types.MethodType(_down_proj_base_forward, base)
+        elif _is_bnb_linear4bit(base):
+            base._unsloth_output_unused = True
+        else:
+            continue
+        type(layer)._unsloth_mlp_output_unused = mlp_output_unused
+        installed += 1
+    return installed
 
 
 # Inductor before torch 2.11 miscompiles traced backward passes and produces wrong LoRA gradients.

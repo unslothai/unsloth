@@ -122,3 +122,55 @@ def test_recompute_skips_mlp_tail_with_identical_grads(model_name, block_compile
     assert all(ref[n].abs().sum() > 0 for n in ref)
     mismatched = [n for n in ref if not torch.equal(ref[n], grads[n])]
     assert not mismatched, mismatched
+
+
+_DEVICES = [
+    "cpu",
+    pytest.param("cuda", marks = pytest.mark.skipif(not has_real_cuda(), reason = "CUDA")),
+]
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+@pytest.mark.parametrize("shape", [(2, 37, 64), (5, 64), (1, 3, 7, 64)])
+def test_output_unused_linear_backward_matches_linear(device, dtype, shape):
+    from unsloth.kernels.fast_lora import _OutputUnusedLinear
+
+    generator = torch.Generator().manual_seed(0)
+    W = torch.randn(96, 64, generator = generator).to(device, dtype)
+    X = torch.randn(*shape, generator = generator).to(device, dtype)
+    dY = torch.randn(*shape[:-1], 96, generator = generator).to(device, dtype)
+    ref = X.clone().requires_grad_()
+    torch.nn.functional.linear(ref, W).backward(dY)
+    got = X.clone().requires_grad_()
+    out = _OutputUnusedLinear.apply(got, W)
+    out.backward(dY)
+    assert out.shape == (*shape[:-1], 96) and out.dtype == dtype
+    assert torch.equal(ref.grad, got.grad)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_nf4_output_unused_backward_matches_nf4_linear(dtype):
+    bnb = pytest.importorskip("bitsandbytes")
+    from unsloth.kernels import bnb_override as O
+
+    torch.manual_seed(0)
+    layer = bnb.nn.Linear4bit(256, 96, bias = False, compute_dtype = dtype, quant_type = "nf4")
+    # Quantized from the compute dtype, as a loaded checkpoint is (bnb_override._eligible needs it).
+    layer.weight = bnb.nn.Params4bit(
+        torch.randn(96, 256, dtype = dtype), requires_grad = False, quant_type = "nf4"
+    )
+    layer = layer.cuda()
+    weight, quant_state = layer.weight, layer.weight.quant_state
+    assert quant_state.dtype is dtype
+    X = torch.randn(2, 37, 256, device = "cuda", dtype = dtype)
+    dY = torch.randn(2, 37, 96, device = "cuda", dtype = dtype)
+    ref = X.clone().requires_grad_()
+    O._apply(O._NF4Linear, ref, weight, quant_state, None).backward(dY)
+    got = X.clone().requires_grad_()
+    out = O._apply(O._NF4LinearOutputUnused, got, weight, quant_state)
+    out.backward(dY)
+    assert out.shape == (2, 37, 96) and out.dtype == dtype
+    assert torch.equal(ref.grad, got.grad)
