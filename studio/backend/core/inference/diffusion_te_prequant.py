@@ -349,7 +349,7 @@ def te_prequant_budget_scale(
         return 1.0
     scale = (
         te_int8_convrot_budget_scale(fam)
-        if _int8_convrot_only(te_quant_mode, target)
+        if _int8_convrot_only(te_quant_mode, target) or auto_int8_takes_file_only(te_quant_mode)
         else TE_PREQUANT_BUDGET_SCALE
     )
     return _with_dense_siblings(fam, base, te_quant_mode, scale)
@@ -530,6 +530,18 @@ def te_prequant_sources_confirmed(
         confirmed = False
     _confirmed_cache[key] = (now, confirmed)
     return confirmed
+
+
+def auto_int8_takes_file_only(te_quant_mode: Any) -> bool:
+    """Whether this pick is an AUTOMATIC int8 one, which loads the hosted int8 ConvRot file or the dense encoder and
+    never the fp8 file behind it (``te_prequant_sources`` drops it). Its pre-cast budget is the int8 file's own
+    fraction, not ``TE_PREQUANT_BUDGET_SCALE``: that ceiling covers an fp8 file this pick never opens, and pricing it
+    oversized every auto load by up to 1.6 GB (Qwen-Image-2.1: 0.65 against the file's 0.533 of 17.5 GB)."""
+    try:
+        from .diffusion_precision import TE_QUANT_INT8, normalize_te_quant
+        return normalize_te_quant(te_quant_mode) == TE_QUANT_INT8 and _auto_pick(te_quant_mode)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:
