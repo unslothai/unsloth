@@ -499,6 +499,15 @@ class CfgBatchRouter:
         if first is None:
             return
         if not self._sync(latent):
+            if not self.offloaded and cfg_batch_mode() != "force":
+                # A resident denoiser off CUDA (CPU, MPS): nothing can time the doubled call, and the gate only turns
+                # batching on where it was measured to win, so the shape stays plain unless forced.
+                self._shape_off(
+                    shape,
+                    f"no device timer on {getattr(latent.device, 'type', 'this device')} to price the doubled call "
+                    f"({CFG_BATCH_ENV}=force batches anyway)",
+                )
+                return
             self._judge(shape)
             return
         if not self._memory_ok(latent, shape):
@@ -697,15 +706,16 @@ def _matches(snapshots: list, call: tuple) -> bool:
     actual = mg._leaves(call)
     if len(actual) != len(snapshots):
         return False
+    tensors = []
     for (pa, va), (ps, vs) in zip(actual, snapshots):
         if pa != ps:
             return False
         if isinstance(vs, torch.Tensor):
-            if not mg._bitwise_equal(va, vs):
-                return False
+            tensors.append((va, vs))
         elif not mg._same_value(va, vs):
             return False
-    return True
+    # Every tensor argument under one host read per device (once per guided step), not one torch.equal each.
+    return mg._bitwise_equal_all(tensors)
 
 
 def _pad_text(first: dict, second: dict) -> None:

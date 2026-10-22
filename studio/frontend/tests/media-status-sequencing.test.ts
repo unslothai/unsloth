@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Images and Video pages hold their own status and re-read it on tab
-// activation and on their own actions, never on a timer. So two reads can be in
-// flight across an eject: an activation read that saw the pipeline loaded, and
-// the post-eject read that saw it gone. Responses have no order, and the older
-// one landing last left the page offering to generate against a freed runtime,
-// with no poll coming to correct it.
-//
-// Asserted by reading the source: both pages pull in the whole media runtime,
-// which the node suite cannot mount.
+// Reads can be in flight across an eject and land out of order; a ticket drops stale ones.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,7 +13,6 @@ const PAGES = [
   ["video", "features/video/video-page.tsx", "getVideoStatus", "unloadVideoModel"],
 ] as const;
 
-/** The argument list of `const NAME = useCallback(...)`, parentheses balanced. */
 function callbackBody(source: string, name: string): string {
   const declaration = `const ${name} = useCallback`;
   const at = source.indexOf(declaration);
@@ -42,43 +33,27 @@ for (const [name, path, read, unload] of PAGES) {
   test(`the ${name} page lets only the newest status read write`, () => {
     const page = readSrc(path);
     assert.match(page, /const statusTicket = useRef\(0\);/);
-    // Read the GUARD, not the one line that spelled it. #10788 rewrote this as an early
-    // return, which admits exactly the same reads, and the exact-text form went red over a
-    // refactor that changed nothing. Both spellings are checked against the callback's own
-    // body, so a guard that lives somewhere else in the file cannot stand in for it.
+    // Checks the guard semantically so equivalent spellings pass.
     const body = callbackBody(page, "setStatusIfNewest");
     const write = body.indexOf("setStatus(");
     assert.notEqual(write, -1, "setStatusIfNewest no longer writes the status");
     const held = /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.exec(body);
-    // The stale branch's return must be BARE. `return setStatus(next);` also reads as an
-    // early return and also precedes the normal write, while writing the superseded
-    // status out of the return expression itself.
+    // The stale branch's return must be bare, not return setStatus(next).
     const early = /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\s*(?:[;}]|\r?\n)/.exec(
       body,
     );
     const guard = held ?? early;
     assert.ok(guard, "a superseded read must not write");
-    // Ordering, not just presence. Either spelling can be present while the write happens
-    // FIRST, and `setStatus(next); if (ticket !== statusTicket.current) return;` has already
-    // published the superseded status by the time it returns, which is the whole bug.
     assert.ok(
       guard.index < write,
       "the ticket guard must come before the status write, not after it",
     );
-    // And there is only the one write. Guarding the first while a second sits unguarded
-    // after it leaves every stale response overwriting the status, which is the same bug
-    // with an extra line in front of it.
     assert.equal(
       (body.match(/setStatus\(/g) ?? []).length,
       1,
       "setStatusIfNewest must write the status exactly once, under the ticket guard",
     );
-    // Ordering says the write comes after the early return. It does not say the write is
-    // still REACHED: `if (ticket !== current) { return; setStatus(next); }` returns first
-    // and satisfies every rule above while never publishing anything. So when the stale
-    // branch has a block of its own, the write has to live past the end of it. The
-    // `ticket === current` spelling needs no such rule, since its regex ties the write to
-    // the guard directly.
+    // The write must be reachable past the stale branch's block.
     if (early && !held && /\{/.test(early[0])) {
       const open = body.indexOf("{", early.index);
       let depth = 0;
@@ -96,7 +71,6 @@ for (const [name, path, read, unload] of PAGES) {
       assert.notEqual(close, -1, "the stale branch never closes");
       assert.ok(write > close, "the status write is stranded inside the stale branch");
     }
-    // Every writer goes through it, so none can be the one that slips past.
     assert.doesNotMatch(
       page,
       new RegExp(`setStatus\\(await ${read}\\(\\)\\)`),
@@ -116,8 +90,7 @@ for (const [name, path, read, unload] of PAGES) {
 
   test(`the ${name} page claims its ticket before awaiting, not after`, () => {
     const page = readSrc(path);
-    // Claiming after the await would hand every read the newest ticket and
-    // defeat the whole thing.
+    // Claiming the ticket after the await would give every read the newest ticket.
     assert.match(page, /const ticket = \+\+statusTicket\.current;\s*\n\s*try \{/);
   });
 }

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CUDA graphs over an offloaded denoiser (``diffusion_cuda_graph.arm_after_placement``).
-
-Block streaming: Studio's ``_apply_group_offload`` with the event-fenced prefetch; one graph records the whole forward
-with the copy-stream copies inside it. Partial residency: some groups pinned, the rest streamed; a release / restore
-moves the resident weights and the graph records again. Model offload: accelerate's CPU-offload hook moves the module
-eagerly, the replay sits under it and records again when the weights land elsewhere. Every case checks the replay is
-bit-identical to the eager forward of the same placement and that a replay makes no host synchronization."""
+"""Offloaded-denoiser CUDA graphs: each replay matches eager bit for bit and does no host sync."""
 
 from __future__ import annotations
 
@@ -23,6 +17,7 @@ import core.inference.diffusion_cuda_graph as cg  # noqa: E402
 import core.inference.diffusion_memory as dm  # noqa: E402
 import core.inference.diffusion_offload_prefetch as op  # noqa: E402
 import core.inference.diffusion_speed as ds  # noqa: E402
+import core.inference.diffusion_stable_arena as sa  # noqa: E402
 
 
 @pytest.fixture(autouse = True)
@@ -33,13 +28,14 @@ def _clean_env(monkeypatch):
         cg.OFFLOAD_CUDA_GRAPH_ENV,
         cg.CUDA_GRAPH_DISABLE_ENV,
         cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV,
+        sa.ARENA_ENV,
         cg.SPEED_CHECK_ENV,
         "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT",
         "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN",
         "UNSLOTH_DIFFUSION_PIN_TOP_GROUP",
     ):
         monkeypatch.delenv(name, raising = False)
-    # timing a tiny forward on a shared card is noise: these tests check engagement and exactness
+    # Timing a tiny forward on a shared card is noise; these tests check engagement and exactness.
     monkeypatch.setenv(cg.SPEED_CHECK_ENV, "0")
     yield
     cg._POOL_BOX[0] = None
@@ -142,16 +138,14 @@ def test_block_streamed_forward_replays_bit_identically_with_no_host_sync(reside
     for a, b in zip(got, want):
         assert torch.equal(a, b)
     assert handles[0].stats["captures"] == 1 and handles[0].stats["eager_calls"] == 0
-    # weights are back on their host copies between calls; the streamed ones were copied inside the replay
     assert net.blocks[-1].weight.device.type == "cpu"
     pf = op.module_prefetcher(net)
     assert pf.stats["missed"] == 0
-    # the pool (the step's activations plus the streamed copies) is what the generate-time guard leaves uncredited
+    # The pool (activations plus streamed copies) is what the generate-time guard leaves uncredited.
     assert cg.live_pool_bytes() >= handles[0].stats["pool_bytes"] > 0
-    # the guard leaves out only the pool's unallocated part; its allocated outputs are already not reclaimable
     assert 0 < cg.live_pool_free_bytes() <= cg.live_pool_bytes()
     cg.uninstall_all(handles)
-    assert net.__dict__["forward"] is handles[0].placement.prev  # the offload hook chain is back
+    assert net.__dict__["forward"] is handles[0].placement.prev
 
 
 def test_release_and_restore_records_again_and_stays_exact():
@@ -165,7 +159,7 @@ def test_release_and_restore_records_again_and_stays_exact():
     got = _run(net, seeds[:2])
     restore = dm.release_resident_groups(pipe, 10_000, None)
     assert restore is not None
-    got += _run(net, seeds[2:3])  # everything streams now: a new placement, recorded again
+    got += _run(net, seeds[2:3])
     restore()
     got += _run(net, seeds[3:])
     for a, b in zip(got, want):
@@ -226,11 +220,9 @@ def test_model_offload_replays_under_the_hook_and_records_again_when_weights_mov
     assert len(handles) == 1 and handles[0].placement.mode == "model", reason
     got = _run(net, seeds[:3])
     assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 3
-    hook.offload()  # what the next pipeline stage does: the weights go back to the host
+    hook.offload()
     assert net.proj_in.weight.device.type == "cpu"
-    got += _run(
-        net, seeds[3:]
-    )  # onloaded again by the hook; recorded again only if the addresses moved
+    got += _run(net, seeds[3:])
     for a, b in zip(got, want):
         assert torch.equal(a, b)
     assert handles[0].stats["captures"] == 1 + handles[0].stats["invalidations"]
@@ -259,7 +251,7 @@ def test_model_offload_re_records_a_moved_module_without_a_warm_up(monkeypatch):
         calls.append(1)
         return stock(*a, **k)
 
-    handle.orig = counting  # what the warm-up and the capture call
+    handle.orig = counting
     flushes = []
     handle._release = lambda: flushes.append(1)  # gc + empty_cache: a move must not pay them
     for render in range(4):
@@ -270,13 +262,13 @@ def test_model_offload_re_records_a_moved_module_without_a_warm_up(monkeypatch):
             assert torch.equal(a, b)
         hook.offload()
         torch.cuda.empty_cache()
-        # a block of the size the denoiser freed, so the next onload is likely to land elsewhere
+        # Hold a block of the freed size so the next onload likely lands elsewhere.
         _hold = torch.empty(4 << 20, device = "cuda")
     moves = handle.stats["invalidations"]
-    assert moves >= 1  # the onloads did land elsewhere, so the re-record path ran
+    assert moves >= 1
     assert handle.stats["captures"] == 1 + moves, (handle.stats, handle.capture_error)
     assert handle.placement.refusal(handle.stats) is None
-    # first recording: WARMUP_ITERS warm-ups + the capture call; each re-record: the capture call only
+    # First recording: WARMUP_ITERS warm-ups + capture; each re-record: the capture only.
     assert len(calls) == cg.WARMUP_ITERS + 1 + moves
     assert flushes == []
     del _hold
@@ -292,9 +284,10 @@ def _model_offloaded():
     return ref, net, hook
 
 
-def test_model_offload_keeps_the_step_eager_by_default_with_the_reason():
+def test_model_offload_keeps_the_step_eager_without_the_stable_range(monkeypatch):
     _cuda()
     pytest.importorskip("accelerate")
+    monkeypatch.setenv(sa.ARENA_ENV, "0")
     _ref, net, _hook = _model_offloaded()
     placement, why = cg.offload_placement(net)
     assert placement is None and why == cg.MODEL_OFFLOAD_REASON
@@ -312,7 +305,7 @@ def test_model_offload_records_nothing_after_the_first_render(monkeypatch, opt_i
         monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")
     ref, net, hook = _model_offloaded()
     handles, reason = cg.arm_after_placement(_pipe(net))
-    assert len(handles) == (1 if opt_in else 0), reason
+    assert len(handles) == 1, reason
     dev = torch.cuda.current_device()
     later, hold = 0, []
     for render in range(4):
@@ -330,7 +323,65 @@ def test_model_offload_records_nothing_after_the_first_render(monkeypatch, opt_i
     if opt_in:
         assert later >= 1 and handles[0].stats["invalidations"] >= 1
     else:
-        assert later == 0
+        # the stable range: the step recorded on render 1 replays on every later render
+        assert later == 0 and handles[0].stats["invalidations"] == 0
+        assert handles[0].stats["replays"] >= 4 * 5 - cg.WARMUP_ITERS - 1
+
+
+def test_model_offload_replays_over_the_stable_range_and_frees_it_between_renders():
+    """low_vram: the denoiser's onloads land in one reserved VA range, so render 1's graph replays on renders 2+ with
+    no capture, bit-identical, while each offload returns the range's memory to the card for the other stages."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    from accelerate import cpu_offload_with_hook
+
+    torch.manual_seed(0)
+    ref = _Net(width = 1024).cuda()
+    torch.manual_seed(0)
+    net, hook = cpu_offload_with_hook(_Net(width = 1024), execution_device = "cuda")
+    other, other_hook = cpu_offload_with_hook(
+        torch.nn.Linear(1024, 1024), execution_device = "cuda", prev_module_hook = hook
+    )
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1 and "stable device range" in reason, reason
+    arena = sa.arena_of(net)
+    assert arena is not None
+    dev = torch.cuda.current_device()
+    weight_bytes = sum(p.numel() * p.element_size() for p in net.parameters())
+    ptrs, later = None, 0
+    for render in range(4):
+        seeds = [10 * render + i for i in range(5)]
+        before = cg.capture_generation(dev)
+        got = _run(net, seeds)
+        if render:
+            later += cg.capture_generation(dev) - before
+        now = tuple(p.data_ptr() for p in net.parameters())
+        assert ptrs is None or now == ptrs  # same addresses on every onload
+        ptrs = now
+        for a, b in zip(got, _run(ref, seeds)):
+            assert torch.equal(a, b)
+        other(torch.zeros(2, 1024))  # the next stage's pre-forward offloads the denoiser
+        assert net.proj_in.weight.device.type == "cpu"
+        assert not arena.arena.mapped  # its physical memory went back to the card
+        assert arena.arena.size >= weight_bytes
+        other_hook.offload()
+        torch.cuda.empty_cache()
+        _hold = torch.empty(4 << 20, device = "cuda")  # the freed VRAM is reused meanwhile
+        del _hold
+        # diffusers re-hooks every render (remove_hook_from_module also drops instance ``to`` overrides)
+        from accelerate.hooks import remove_hook_from_module
+
+        remove_hook_from_module(net)
+        remove_hook_from_module(other)
+        net, hook = cpu_offload_with_hook(net, execution_device = "cuda")
+        other, other_hook = cpu_offload_with_hook(
+            other, execution_device = "cuda", prev_module_hook = hook
+        )
+    assert later == 0
+    assert handles[0].stats["captures"] == 1 and handles[0].stats["invalidations"] == 0
+    assert arena.stats["onloads"] == 4 and arena.stats["unmaps"] == 4
+    assert arena.stats.get("reinstalls", 0) >= 3
+    cg.uninstall_all(handles)
 
 
 def test_model_offload_stops_recording_only_when_moves_outpace_replays():
@@ -340,14 +391,13 @@ def test_model_offload_stops_recording_only_when_moves_outpace_replays():
     many = cg.OffloadPlacement.MODEL_MAX_INVALIDATIONS
 
     def judge(stats, where):
-        placement._fp = where  # a new placement: judged afresh
+        placement._fp = where
         return placement.refusal(stats)
 
     assert judge({"invalidations": 1}, 1) is None
     assert "new addresses" in judge({"invalidations": many, "captures": many, "replays": many}, 2)
-    # one move per render, a render's worth of replays per recording: keep recording
     assert judge({"invalidations": 5, "captures": 5, "replays": 5 * 8}, 3) is None
-    # judged once per placement: the recording just made does not count against it until the next move
+    # Judged once per placement: the latest recording does not count until the next move.
     assert placement.refusal({"invalidations": 5, "captures": 6, "replays": 5 * 8 + 1}) is None
 
 
@@ -381,10 +431,8 @@ def test_a_failed_streamed_capture_falls_back_eager_without_stale_copies():
     handles, reason = cg.arm_after_placement(_pipe(net))
     assert len(handles) == 1, reason
     stream = torch.cuda.current_stream()
-    got = _run(
-        net, seeds
-    )  # the first call's capture fails: it and every later call run eager, correctly
-    assert torch.cuda.current_stream() == stream  # not left on the failed capture's stream
+    got = _run(net, seeds)
+    assert torch.cuda.current_stream() == stream
     for a, b in zip(got, want):
         assert torch.equal(a, b)
     assert handles[0].poisoned and handles[0].stats["captures"] == 0
@@ -420,9 +468,7 @@ def _capture_safe_forward(
 ):
     x = self.proj_in(x) * t
     total = x.abs().sum()
-    gate = torch.where(
-        total >= 0, torch.ones_like(total), torch.zeros_like(total)
-    )  # on the device: no host read
+    gate = torch.where(total >= 0, torch.ones_like(total), torch.zeros_like(total))
     for block in self.blocks:
         x = torch.nn.functional.gelu(block(x))
     out = self.proj_out(x) * gate
@@ -461,9 +507,7 @@ def test_a_capture_safe_rewrite_records_under_block_offload(monkeypatch):
     assert not handles[0].poisoned, handles[0].capture_error
     assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 4
     cg.uninstall_all(handles)
-    assert (
-        inner.forward.__func__ is _SyncsOnStock.forward
-    )  # the stock forward is back with the hook chain
+    assert inner.forward.__func__ is _SyncsOnStock.forward
 
 
 class _Branchy(_Net):
@@ -526,10 +570,7 @@ def test_a_failed_capture_leaves_the_cuda_rng_usable_and_on_its_sequence():
 
 
 def test_a_failed_capture_takes_the_allocator_off_its_pool(monkeypatch):
-    """capture_end raises in cudaStreamEndCapture before endAllocateToPool, so an invalidated capture left its pool in
-    the allocator's captures_underway: on torch 2.6 the next empty_cache tripped INTERNAL ASSERT captures_underway.empty()
-    and no later capture recorded (seen on an A100); later torch skips the global release instead, so empty_cache freed
-    nothing. Reproduced here on any torch by putting the pool back under capture before the raise."""
+    """A failed capture must take the allocator off its pool, or empty_cache trips captures_underway."""
     _cuda()
     real_end = torch.cuda.CUDAGraph.capture_end
     begin = torch._C._cuda_beginAllocateCurrentStreamToPool
@@ -549,8 +590,7 @@ def test_a_failed_capture_takes_the_allocator_off_its_pool(monkeypatch):
         got = _run(net, [0])
         monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_end", real_end)
         assert stuck and handles[0].poisoned and handles[0].stats["fallbacks"] == 1
-        # While the pool stayed under capture, empty_cache raised INTERNAL ASSERT (torch 2.6) or silently freed nothing
-        # outside the private pools (later torch skips the global release while captures_underway is not empty).
+        # Under capture, empty_cache raised INTERNAL ASSERT (torch 2.6) or silently freed nothing (later torch).
         block = torch.empty(256 << 20, dtype = torch.uint8, device = "cuda")
         held = torch.cuda.memory_reserved()
         del block
@@ -561,16 +601,14 @@ def test_a_failed_capture_takes_the_allocator_off_its_pool(monkeypatch):
         other = _streamed(_Net())
         again, _ = cg.arm_after_placement(_pipe(other))
         _run(other, [0, 1])
-        assert (
-            again[0].stats["captures"] == 1 and again[0].stats["replays"] == 2
-        )  # later captures still record
+        assert again[0].stats["captures"] == 1 and again[0].stats["replays"] == 2
         cg.uninstall_all(again)
     finally:
         end = (
             getattr(torch._C, "_cuda_endAllocateToPool", None)
             or torch._C._cuda_endAllocateCurrentStreamToPool
         )
-        for pool in stuck:  # never leave the process broken for the tests after this one
+        for pool in stuck:
             try:
                 end(torch.cuda.current_device(), pool)
             except Exception:  # noqa: BLE001 - the fix already took it off
@@ -638,29 +676,20 @@ def test_an_offloaded_replay_slower_than_eager_drops_the_graphs():
     stream's own copies); a key's first replays are timed against its own eager steps and its graph goes when slower."""
     handle, why = _judged([550.0, 552.0], [655.0, 657.0, 654.0])
     assert why and "slower" in why and handle.cache == {} and handle._dropped == {"k"}
-    assert handle.capture_error == {
-        "type": "Refused",
-        "msg": why,
-    }  # no graph left: the status names it
+    assert handle.capture_error == {"type": "Refused", "msg": why}
     handle._judge_keys()
-    assert handle._judge["k"]["verdict"] == why  # the verdict holds for the load
+    assert handle._judge["k"]["verdict"] == why
     handle.placement, handle.poisoned = None, False
-    assert (
-        cg.stats([handle])["eager_ms"] == 550.0 and cg.stats([handle])["replay_ms"] == 654.0
-    )  # in the status
-    handle, why = _judged(
-        [550.0, 552.0], [560.0, 700.0, 710.0]
-    )  # one clean replay: a stall is not the verdict
+    assert cg.stats([handle])["eager_ms"] == 550.0 and cg.stats([handle])["replay_ms"] == 654.0
+    handle, why = _judged([550.0, 552.0], [560.0, 700.0, 710.0])
     assert why == "" and handle.cache
     handle, why = _judged([550.0, 552.0], [540.0, 541.0, 539.0])
     assert why == "" and handle.cache and not handle._dropped
-    handle, why = _judged([550.0], [560.0, 561.0, 559.0])  # inside the margin: kept
+    handle, why = _judged([550.0], [560.0, 561.0, 559.0])
     assert why == "" and handle.cache
-    handle, why = _judged(
-        [550.0], [655.0, 657.0, 654.0], done = False
-    )  # not finished yet: never waits on them
+    handle, why = _judged([550.0], [655.0, 657.0, 654.0], done = False)
     assert why is None and handle._slower is None and handle.cache
-    handle, why = _judged([550.0], [655.0, 657.0])  # too few replays yet
+    handle, why = _judged([550.0], [655.0, 657.0])
     assert why is None and handle._slower is None
 
 
@@ -678,12 +707,8 @@ def test_the_eager_reference_is_the_callers_own_steps_not_the_recorded_warm_ups(
     reference is the caller's eager steps on the stock prefetch path, timed before the first capture."""
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
-    monkeypatch.setattr(
-        cg, "SPEED_MARGIN", 1e9
-    )  # this checks where the reference comes from, not a tiny net's speed
-    monkeypatch.setattr(
-        cg, "SPEED_GAIN", -1e9
-    )  # nor whether a streamed key gains enough to keep its memory
+    monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)
+    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)
     seeds = list(range(8))
     want = _eager_reference(None, seeds)
     torch.manual_seed(0)
@@ -704,13 +729,11 @@ def test_the_eager_reference_is_the_callers_own_steps_not_the_recorded_warm_ups(
     (state,) = handle._judge.values()
     assert len(state["eager"]) == cg.SPEED_EAGER_SAMPLES
     eager_events = list(state["eager"])
-    got += _run(net, seeds[3:])  # records, then replays
+    got += _run(net, seeds[3:])
     assert handle.stats["captures"] == 1 and handle.stats["replays"] == len(seeds) - 3
-    assert state["eager"] == eager_events  # the recorder's warm-ups added nothing
-    assert (
-        handle.stats["eager_ms"] > 0 and handle.stats["replay_ms"] > 0 and state["verdict"] == ""
-    )  # judged, kept
-    assert recorded_steps  # and the capture did go through the recorder
+    assert state["eager"] == eager_events
+    assert handle.stats["eager_ms"] > 0 and handle.stats["replay_ms"] > 0 and state["verdict"] == ""
+    assert recorded_steps
     for a, b in zip(got, want):
         assert torch.equal(a, b)
     cg.uninstall_all(handles)
@@ -722,9 +745,7 @@ def test_the_timed_eager_steps_run_on_capture_like_copies(monkeypatch):
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
     monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)
-    monkeypatch.setattr(
-        cg, "SPEED_GAIN", -1e9
-    )  # nor whether a streamed key gains enough to keep its memory
+    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)
     torch.manual_seed(0)
     net = _streamed(_Net())
     handles, _ = cg.arm_after_placement(_pipe(net))
@@ -736,9 +757,7 @@ def test_the_timed_eager_steps_run_on_capture_like_copies(monkeypatch):
         with torch.no_grad():
             for seed in range(3):
                 x, t = _inputs(seed)
-                padded = torch.cat([torch.zeros(1, 64, device = "cuda"), x])[
-                    1:
-                ]  # a view at offset 64, like a slice
+                padded = torch.cat([torch.zeros(1, 64, device = "cuda"), x])[1:]
                 assert padded.storage_offset() == 64
                 want = _eager_reference(None, [seed])[0]
                 assert torch.equal(net(padded, t, return_dict = False)[0], want)
@@ -753,9 +772,7 @@ def test_every_key_times_its_own_eager_reference_before_it_records(monkeypatch):
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
     monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)
-    monkeypatch.setattr(
-        cg, "SPEED_GAIN", -1e9
-    )  # nor whether a streamed key gains enough to keep its memory
+    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)
     torch.manual_seed(0)
     net = _streamed(_Net())
     handles, _ = cg.arm_after_placement(_pipe(net))
@@ -783,7 +800,7 @@ def test_status_stays_on_while_the_eager_reference_is_timed():
     handle.stats = {"captures": 0, "replays": 0, "eager_calls": 3, "speed_eager": 3}
     handle.cache, handle.capture_error, handle.poisoned, handle.placement = {}, None, False, None
     assert cg.never_engaged([handle]) is None
-    handle.stats.update(eager_calls = 4)  # one eager call for another reason: reported
+    handle.stats.update(eager_calls = 4)
     assert "ran eager" in cg.never_engaged([handle])
 
 
@@ -806,8 +823,161 @@ def test_status_names_graphs_dropped_after_replaying():
         and why in live["cuda_graph"]["reason"]
     )
     assert optims == ["int8"] and resolved["cuda_graph"]["value"] == "on"
-    handle.cache = {
-        "k": object()
-    }  # a live graph again (refusal lifted, recorded anew): status stays as recorded
+    handle.cache = {"k": object()}
     handle.capture_error = None
     assert cg.live_status(resolved, ["cuda_graph"], [handle])[0]["cuda_graph"]["value"] == "on"
+
+
+def _inner_of(t):
+    """A torchao wrapper weight's inner tensors, read without the module under test."""
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    if not is_traceable_wrapper_subclass(t):
+        return None
+    names, _ctx = t.__tensor_flatten__()
+    inner = [(n, getattr(t, n)) for n in names]
+    return inner if all(type(x) is torch.Tensor for _, x in inner) else None
+
+
+def test_model_offload_stable_range_holds_torchao_int8_weights():
+    """Studio's compiled low_vram tier quantizes the denoiser to torchao int8: those wrapper weights are rebuilt over
+    the stable range too (same inner addresses on every onload, memory released between renders), exactly.
+    The eager torchao int8 matmul here is not capture-safe, so this checks placement, not the replay; the compiled
+    Studio step records over it (scripts/graphs_split_offload)."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    quant = pytest.importorskip("torchao.quantization")
+    from accelerate import cpu_offload_with_hook
+
+    def build():
+        torch.manual_seed(0)
+        net = _Net(width = 256).to(torch.bfloat16)
+        try:
+            config = quant.Int8DynamicActivationInt8WeightConfig(version = 2)
+        except TypeError:
+            config = quant.Int8DynamicActivationInt8WeightConfig()
+        quant.quantize_(net.blocks, config)
+        return net
+
+    probe = build()
+    if _inner_of(probe.blocks[0].weight.data) is None:
+        pytest.skip("this torchao build stores int8 weights without a traceable wrapper")
+    ref = build().cuda()
+    net, hook = cpu_offload_with_hook(build(), execution_device = "cuda")
+    arena, why = sa.attach(net)
+    assert arena is not None, why
+
+    def run(module, seeds):
+        outs = []
+        with torch.no_grad():
+            for seed in seeds:
+                x, t = _inputs(seed)
+                outs.append(
+                    module(x.to(torch.bfloat16), t.to(torch.bfloat16), return_dict = False)[0].clone()
+                )
+        torch.cuda.synchronize()
+        return outs
+
+    def inner_ptrs():
+        return [x.data_ptr() for b in net.blocks for _, x in _inner_of(b.weight.data)]
+
+    ptrs = None
+    for render in range(3):
+        seeds = [10 * render + i for i in range(3)]
+        got = run(net, seeds)
+        assert type(net.blocks[0].weight.data) is type(probe.blocks[0].weight.data)
+        now = inner_ptrs()
+        lo, hi = arena.arena.va, arena.arena.va + arena.arena.size
+        assert all(lo <= q < hi for q in now)
+        assert ptrs is None or now == ptrs
+        ptrs = now
+        for a, b in zip(got, run(ref, seeds)):
+            assert torch.equal(a, b)
+        hook.offload()
+        assert net.blocks[0].weight.device.type == "cpu"
+        assert not arena.arena.mapped
+    assert arena.stats["onloads"] == 3 and arena.stats["unmaps"] == 3
+
+
+@pytest.mark.parametrize("where", ["forward_refusal", "placement"])
+def test_a_refused_model_offload_leaves_the_stock_onload(monkeypatch, where):
+    """A denoiser whose step stays eager keeps accelerate's own onload: no stable range, no instance ``to``, no
+    re-install hook (so no per-offload card sync for a step that never replays)."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    _ref, net, _hook = _model_offloaded()
+    if where == "forward_refusal":
+        monkeypatch.setattr(cg, "_forward_refusal", lambda module, mode: "not capture-safe")
+    else:
+
+        def boom(*a, **k):
+            raise RuntimeError("no hook forward")
+
+        monkeypatch.setattr(cg, "OffloadPlacement", boom)
+    placement, why = cg.offload_placement(net)
+    assert placement is None and why
+    assert sa.arena_of(net) is None
+    assert "to" not in net.__dict__
+    assert not net._forward_pre_hooks
+
+
+class _SharedBuffer(_Net):
+    """One buffer tensor registered on two submodules, as tied rotary / scale tables are."""
+
+    def __init__(self):
+        super().__init__(width = 512)
+        scale = torch.linspace(0.5, 1.5, 512)
+        self.blocks[0].register_buffer("scale", scale)
+        self.blocks[-1].register_buffer("scale", scale)
+
+    def forward(
+        self,
+        x,
+        t,
+        return_dict = True,
+    ):
+        x = self.proj_in(x) * t
+        for i, block in enumerate(self.blocks):
+            x = torch.nn.functional.gelu(block(x))
+            if i in (0, len(self.blocks) - 1):
+                x = x * block.scale
+        out = self.proj_out(x)
+        return (out,) if not return_dict else {"sample": out}
+
+
+def test_model_offload_stable_range_places_every_registration_of_a_shared_buffer():
+    _cuda()
+    pytest.importorskip("accelerate")
+    from accelerate import cpu_offload_with_hook
+    from accelerate.hooks import remove_hook_from_module
+
+    torch.manual_seed(0)
+    ref = _SharedBuffer().cuda()
+    torch.manual_seed(0)
+    net, hook = cpu_offload_with_hook(_SharedBuffer(), execution_device = "cuda")
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1 and "stable device range" in reason, reason
+    arena = sa.arena_of(net)
+    later = 0
+    dev = torch.cuda.current_device()
+    for render in range(4):
+        seeds = [10 * render + i for i in range(5)]
+        before = cg.capture_generation(dev)
+        got = _run(net, seeds)
+        if render:
+            later += cg.capture_generation(dev) - before
+        first, last = net.blocks[0].scale, net.blocks[-1].scale
+        lo, hi = arena.arena.va, arena.arena.va + arena.arena.size
+        # Module.to() splits a shared buffer into two host copies; the onload shares one placed tensor again
+        assert first is last and lo <= first.data_ptr() < hi
+        for a, b in zip(got, _run(ref, seeds)):
+            assert torch.equal(a, b)
+        hook.offload()
+        assert net.blocks[-1].scale.device.type == "cpu" and not arena.arena.mapped
+        torch.cuda.empty_cache()
+        _hold = torch.empty(4 << 20, device = "cuda")  # the freed VRAM is reused meanwhile
+        del _hold
+        remove_hook_from_module(net)
+        net, hook = cpu_offload_with_hook(net, execution_device = "cuda")
+    assert later == 0 and handles[0].stats["invalidations"] == 0, handles[0].stats
+    cg.uninstall_all(handles)

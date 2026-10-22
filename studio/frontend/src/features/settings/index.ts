@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
+export { FullInstallDialog } from "./components/full-install-dialog";
 export {
   type JobResult,
   jobOutputLines,
