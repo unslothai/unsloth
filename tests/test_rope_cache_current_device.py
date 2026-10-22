@@ -493,3 +493,31 @@ def test_cache_build_keeps_grad_mode():
     rope = _llama(1 << 17)
     rope.get_cached(10, 0)
     assert torch.is_grad_enabled() and not rope.multi_gpu_cos_cached[0].requires_grad
+
+
+@pytest.mark.parametrize("kind", ["llama", "gemma", "longrope"])
+def test_cold_build_under_compile_never_asks_for_inference_mode(kind, monkeypatch):
+    # A compiled block that builds a device's cache first (a device_map split) must not reach
+    # torch.is_inference_mode_enabled: Dynamo cannot trace it (graph break; fullgraph error).
+    if kind == "longrope":
+        rope = _llama_ns()["LongRopeRotaryEmbedding"](
+            dim = DIM,
+            max_position_embeddings = 128,
+            original_max_position_embeddings = 16,
+            short_factor = [1.0] * (DIM // 2),
+            long_factor = [2.0] * (DIM // 2),
+        )
+    else:
+        rope = _llama(1 << 17) if kind == "llama" else _gemma(1 << 17)
+
+    def untraceable():
+        raise AssertionError("is_inference_mode_enabled reached while compiling")
+
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    monkeypatch.setattr(torch, "is_inference_mode_enabled", untraceable)
+    cos, sin = rope.get_cached(8, 1)
+    assert cos is not None and sin is not None
+    if kind == "longrope":
+        rope.extend_rope_embedding(_x(1), 100)
+    else:
+        rope.extend_rope_embedding(_x(2), 50000)

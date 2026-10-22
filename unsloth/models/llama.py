@@ -2323,7 +2323,9 @@ class _PerDeviceRopeCache:
         # saved for backward, so the compiled training block failed and fell back to eager.
         import contextlib
 
-        if not torch.is_inference_mode_enabled():
+        # Dynamo cannot trace is_inference_mode_enabled (a graph break, an error under fullgraph), and
+        # a compiled block builds a cold cache only in training, outside inference_mode.
+        if torch.compiler.is_compiling() or not torch.is_inference_mode_enabled():
             return contextlib.nullcontext()
         stack = contextlib.ExitStack()
         stack.enter_context(torch.inference_mode(False))
