@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: the training worker must not import ``transformers`` before it activates the
-transformers sidecar.
-
-``core/training/worker.py:run_training_process`` runs a preflight (Xet decision, logging, hardware
-detection) and only THEN calls ``_activate_transformers_version`` -> ``activate_transformers_for_subprocess``,
-which prepends the correct ``.venv_t5_*`` (5.x) sidecar to ``sys.path``. Because activation only edits
-``sys.path``, it is a no-op for any module already cached in ``sys.modules``. So if the preflight imports
-``transformers`` (directly or transitively via ``unsloth_zoo``), the default 4.57.x gets pinned before
-the sidecar is on the path -- and 5.x models (Qwen3.5, GLM-4.7, gemma-4) then fail to load their
-tokenizer/config ("Tokenizer class TokenizersBackend does not exist").
-
-This regression shipped once when ``utils/hf_xet_fallback.py`` eagerly imported ``unsloth_zoo`` (which
-imports ``transformers``) at module load; the worker imports that shim during preflight to decide the
-Xet env flip (see issue #6951). This test locks the invariant in a fresh interpreter. It is CPU-only,
-needs no network/GPU/weights/sidecars, so it runs in the standard ``studio-backend-ci`` matrix.
-"""
+"""The worker must not import transformers before the sidecar is activated, or 4.57 gets pinned."""
 
 from __future__ import annotations
 
@@ -24,11 +9,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 
-# Mirrors run_training_process's imports that run BEFORE _activate_transformers_version (worker.py);
-# keep in sync. torch-dependent imports are optional (a no-torch CI shard skips them) but must still
-# not drag in transformers.
+# Mirrors run_training_process's imports before _activate_transformers_version
+# (worker.py); keep in sync. Must not pull in transformers.
 _PREFLIGHT_SNIPPET = r"""
 import sys
 

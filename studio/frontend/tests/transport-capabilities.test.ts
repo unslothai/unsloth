@@ -13,8 +13,7 @@ const { normalizeDownloadTransportCapabilities } = await import(
 );
 
 test("the backend's auto verdict survives normalization", () => {
-  // Rebuilding the object from http/xet alone discarded the verdict, so Auto resolved to Xet on
-  // every machine, including ones the backend had just demoted to HTTP.
+  // Rebuilding from http/xet alone discarded the backend's verdict.
   const caps = normalizeDownloadTransportCapabilities({
     http: { available: true, reason: null },
     xet: { available: true, reason: null },
@@ -27,8 +26,7 @@ test("the backend's auto verdict survives normalization", () => {
 });
 
 test("a backend with no auto fields still resolves to xet", () => {
-  // Older backend, predating Auto: the download-time ladder still falls back to HTTP, so Xet is
-  // the safe assumption.
+  // Older backends predate Auto, but their download ladder falls back to HTTP, so Xet is safe.
   const caps = normalizeDownloadTransportCapabilities({
     http: { available: true, reason: null },
     xet: { available: true, reason: null },
@@ -49,7 +47,6 @@ test("the resumability verdict survives normalization", () => {
 });
 
 test("an unverified backend never claims a partial is resumable", () => {
-  // Older backend, or junk: continuing a partial is honest either way, a byte-resume is not.
   for (const value of [{}, { partials_resumable: "yes" }]) {
     const caps = normalizeDownloadTransportCapabilities({
       http: { available: true, reason: null },

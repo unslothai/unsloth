@@ -275,6 +275,7 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_int8_prefill",
     "mlx_int8_prefill_requested",
     "mlx_int8_prefill_reason",
+    "mlx_offload",
     "chat_template_override_requested",
     "chat_template_override_reason",
     "speculative_type",
@@ -2082,6 +2083,7 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
         mlx_int8_prefill: bool = False,
+        mlx_offload: tuple = (None, None),
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         spec_draft_model: Optional[str] = None,
@@ -2159,6 +2161,7 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
                 "mlx_int8_prefill": bool(mlx_int8_prefill),
+                "mlx_offload": tuple(mlx_offload),
                 "speculative_type": speculative_type,
                 "spec_draft_n_max": spec_draft_n_max,
                 "spec_draft_model": spec_draft_model,
@@ -2494,6 +2497,30 @@ class InferenceOrchestrator:
                 self._shutdown_subprocess()
                 return getattr(self, "_managed_engine", None) is None
             return False
+
+    def reap_dead_worker(self) -> bool:
+        proc = self._proc
+        if proc is None or proc.is_alive():
+            return False
+        with self._subprocess_shutdown_lock:
+            if (
+                self._proc is not proc
+                or self._managed_engine is not None
+                or not self.active_model_name
+                or self.loading_models
+                or self._replies_in_flight()
+            ):
+                return False
+            logger.warning(
+                "Inference worker for '%s' exited (exitcode=%s); clearing the loaded model",
+                self.active_model_name,
+                proc.exitcode,
+            )
+            self._retire_stderr_capture()
+            self._shutdown_subprocess_locked(2)
+            self.active_model_name = None
+            self.models.clear()
+            return True
 
     def _load_managed_engine(
         self,

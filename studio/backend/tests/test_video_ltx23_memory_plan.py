@@ -22,9 +22,7 @@ from core.inference.diffusion_memory import (
 
 MIB = 1024 * 1024
 B200_TOTAL_MIB = 182_633
-# What torch reported with another tenant holding ~91 GiB of the card.
 TENANT_FREE_MIB = 89_106
-# The live LTX-2.3 single-file inputs (ltx-2 table companions 24.4 + 5.5 GB, 121-frame 768x512 headroom).
 LTX23_DIT_MIB = 40_073
 LTX23_FILE_MIB = 44_011
 COMPANION_MIB = 28_514
@@ -161,7 +159,6 @@ def _plan_inputs_for_single_file_load(monkeypatch, tmp_path, speed_mode, free_mi
     monkeypatch.setattr(vid, "file_size_mib", lambda _p: LTX23_FILE_MIB)
     monkeypatch.setattr(vid, "settled_snapshot_device_memory", lambda _t: _b200(free_mib))
     monkeypatch.setattr(te_prequant, "te_prequant_budget_scale", lambda *a, **k: 1.0)
-    # The plan is drawn before any diffusers class is touched; CPU CI installs no diffusers.
     diffusers = types.ModuleType("diffusers")
     diffusers.__version__ = "0.40.0"
     diffusers.LTX2Pipeline = type("LTX2Pipeline", (), {})

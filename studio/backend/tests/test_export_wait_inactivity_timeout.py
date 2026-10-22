@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The export response wait must be an INACTIVITY timeout, not an absolute deadline.
-
-An absolute deadline cannot tell a busy worker from a hung one, so a large export dies at exactly
-one hour and the cleanup that follows SIGKILLs it mid-write, leaving a half-written model on disk.
-"""
+"""Export wait must time out on inactivity; an absolute deadline kills busy exports mid-write."""
 
 from __future__ import annotations
 
@@ -33,8 +29,7 @@ def waiting_orchestrator(monkeypatch):
     from core.export import orchestrator as orchestrator_module
 
     clock = types.SimpleNamespace(now = 0.0)
-    # Swap the module reference, not `time.monotonic` itself: patching the attribute would hand the
-    # frozen clock to every other thread in the process for the length of the test.
+    # swap the module reference: patching time.monotonic would freeze every thread's clock
     fake_time = types.SimpleNamespace(monotonic = lambda: clock.now, time = real_time.time)
     monkeypatch.setattr(orchestrator_module, "time", fake_time)
 
@@ -42,7 +37,6 @@ def waiting_orchestrator(monkeypatch):
     script: list = []
 
     def fake_read(timeout = None):
-        # A real read blocks for at most the timeout it was given, so charge the clock the same.
         clock.now += min(READ_SECONDS, timeout) if timeout is not None else READ_SECONDS
         return script.pop(0) if script else None
 
@@ -88,11 +82,7 @@ def test_a_quiet_worker_still_times_out(waiting_orchestrator) -> None:
 
 
 def test_max_wait_caps_a_chatty_wait(waiting_orchestrator) -> None:
-    """Cleanup must fail fast even though the worker is still printing.
-
-    The log gate the worker opens for an export is never closed again, so teardown chatter reaches
-    a wait whose short budget exists precisely to give up quickly.
-    """
+    """Cleanup must fail fast even while the worker keeps logging, since the log gate never closes."""
     orch, clock, script = waiting_orchestrator
     script.extend(
         [
@@ -131,17 +121,10 @@ def test_cleanup_passes_a_hard_cap(monkeypatch) -> None:
 
 
 def test_a_multi_quant_export_is_allowed_to_stay_silent_for_the_whole_batch(monkeypatch) -> None:
-    """The silence budget scales with quant count, because the batch reports nothing while it runs.
-
-    Studio never sets UNSLOTH_ENABLE_LOGGING, which is the condition save.py needs to run the quant
-    passes in parallel, and that branch prints once and then waits on all of them. Flattening this
-    to one hour kills a 12-quant export mid-write, which is the failure this file exists to prevent.
-    """
+    """The silence budget scales with quant count, since a batch export prints nothing while it runs."""
     from core.export import orchestrator as orchestrator_module
 
-    # _run_export imports this at call time. Injected per test and undone after: a module-level
-    # sys.modules entry would shadow the real utils.transformers_version for the whole session,
-    # and the rest of the backend suite imports a dozen names from it.
+    # injected per test: a module-level sys.modules entry would shadow the real one suite-wide
     tv_stub = types.ModuleType("utils.transformers_version")
     tv_stub.sidecar_swap_in_progress = lambda: False
     tv_stub.SidecarSwapInProgress = type("SidecarSwapInProgress", (RuntimeError,), {})

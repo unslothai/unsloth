@@ -48,7 +48,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": installed --no-torch on Apple Silicon, or on a host whose GPU inventory shows a card a PyTorch GPU build could use, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -179,19 +179,30 @@ def _running_under_rosetta() -> bool:
 
 # Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
 TORCH_IMPORT_ERROR: Optional[str] = None
+# Detection epoch of the last broken import: retried (and logged) once per epoch, not on every poll.
+_TORCH_IMPORT_FAILED_EPOCH: Optional[int] = None
 
 
 def _has_torch() -> bool:
     """True if PyTorch is importable. Any failure counts as "no torch": ensure_hardware_detected() re-runs while DEVICE is None, so an escaping OSError would make every request retry the import. The error is recorded, or the host is told to install the torch it already has."""
-    global TORCH_IMPORT_ERROR
+    global TORCH_IMPORT_ERROR, _TORCH_IMPORT_FAILED_EPOCH
+    if (
+        TORCH_IMPORT_ERROR is not None
+        and _TORCH_IMPORT_FAILED_EPOCH == DETECTION_EPOCH
+        and "torch" not in sys.modules
+    ):
+        return False
     try:
         import torch
+
         TORCH_IMPORT_ERROR = None
+        _TORCH_IMPORT_FAILED_EPOCH = None
         return True
     except Exception as exc:
         # ImportError does NOT mean "not installed": a wheel with unresolved native libs raises it from torch's own __init__. Only ModuleNotFoundError naming torch itself is absent; a failed submodule is a broken install.
         absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
         TORCH_IMPORT_ERROR = None if absent else repr(exc)
+        _TORCH_IMPORT_FAILED_EPOCH = None if absent else DETECTION_EPOCH
         if TORCH_IMPORT_ERROR is not None:
             logger.error("torch is installed but failed to import: %r", exc)
         # A part-way failure leaves submodules cached under an evicted parent, so the next importer gets a torch missing pieces; purge_partial_import() clears that.
@@ -845,6 +856,18 @@ def _installed_without_torch() -> bool:
         return recorded()
     except Exception:
         return False
+
+
+def _a_gpu_build_would_train_here() -> bool:
+    """Whether the PyTorch-free inventory shows a card the mismatch verdicts count. Blocking, so detection only. An inventory that cannot answer counts: no_gpu on a GPU host is the bug no_torch replaced."""
+    try:
+        inventory = get_physical_gpu_inventory()
+        if _devices_that_can_establish_a_mismatch(inventory.get("devices") or []):
+            return True
+        return bool(inventory.get("unknown"))
+    except Exception as e:
+        logger.debug("GPU inventory for the no_torch verdict failed: %s", e)
+        return True
 
 
 def _mlx_distribution_installed() -> bool:
@@ -1715,9 +1738,11 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
-        elif _installed_without_torch():
+        elif _installed_without_torch() and _a_gpu_build_would_train_here():
             # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            # Without such a GPU it stays no_gpu: the Desktop offers the full install on no_torch.
             CHAT_ONLY_REASON = "no_torch"
+            _record_chat_only_hint("no_torch", None)
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1889,8 +1914,48 @@ def _amd_permission_hint_for_mismatch(
     return node_hint, wheel_targets_amd
 
 
+# install_python_stack.py's _MLX_MIN_PYTHON / _MLX_MIN_MACOS_MAJOR: the pinned MLX wheels need both.
+_MLX_MIN_PYTHON = (3, 10)
+_MLX_MIN_MACOS_MAJOR = 14
+
+
+def _mlx_wheel_blocker() -> Optional[str]:
+    """Mirrors install_python_stack._mlx_pins_are_installable, which skips MLX; an unreadable macOS reads as too old."""
+    try:
+        major = int(platform.mac_ver()[0].split(".", 1)[0])
+    except (ValueError, IndexError):
+        major = 0
+    if major < _MLX_MIN_MACOS_MAJOR:
+        return f"macOS {_MLX_MIN_MACOS_MAJOR} or later"
+    if sys.version_info < _MLX_MIN_PYTHON:
+        return f"Python {_MLX_MIN_PYTHON[0]}.{_MLX_MIN_PYTHON[1]} or later"
+    return None
+
+
+def _no_torch_mac_without_mlx_wheels() -> Optional[str]:
+    return _mlx_wheel_blocker() if is_apple_silicon() else None
+
+
+def _no_torch_amd_node_hint() -> Optional[str]:
+    """A --no-torch host whose trainable AMD cards sit behind closed or missing nodes, with no NVIDIA card to train instead: the full install would restart into torch_cuda_unavailable (#14067)."""
+    devices = _devices_that_can_establish_a_mismatch(
+        get_physical_gpu_inventory().get("devices") or []
+    )
+    vendors = {str(device.get("vendor")).lower() for device in devices}
+    # Only NVIDIA routes the installer elsewhere: install.sh's _intel_xpu_auto_gpu_id skips XPU when AMD is present.
+    if "amd" not in vendors or "nvidia" in vendors:
+        return None
+    from utils.hardware.amd import amd_closed_nodes_block_the_runtime, amd_node_permission_hint
+
+    return amd_node_permission_hint() if amd_closed_nodes_block_the_runtime() else None
+
+
 def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
-    """The closed-node sentence for /api/health, read from the last detection pass that recorded this verdict."""
+    """Why the fix this verdict points at cannot enable Train: a closed AMD node from the last detection pass, or a --no-torch Mac the MLX wheels skip. The Desktop offers the full install only when this is None."""
+    if reason == "no_torch":
+        blocker = _no_torch_mac_without_mlx_wheels()
+        if blocker:
+            return f"Training on this Mac needs MLX, which requires {blocker}."
     # Keyed on the reason only: the refreshed verdict can relabel the same wheel.
     stored = _CHAT_ONLY_HINT
     return stored[1] if stored is not None and stored[0] == reason else None
@@ -1900,7 +1965,12 @@ def _record_chat_only_hint(reason: Optional[str], detail: Optional[str]) -> None
     """Detection-time only: the probe stats nodes and resolves group names, which /api/health (async) must not."""
     global _CHAT_ONLY_HINT
     hint = None
-    if reason == "torch_cuda_unavailable":
+    if reason == "no_torch":
+        try:
+            hint = _no_torch_amd_node_hint()
+        except Exception as exc:
+            logger.debug("AMD device node hint for no_torch failed: %s", exc)
+    elif reason == "torch_cuda_unavailable":
         try:
             node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
             hint = node_hint if wheel_targets_amd else None
@@ -1973,8 +2043,11 @@ def export_capability() -> dict:
         )
     elif verdict[0] == "no_torch":
         reason = "no_torch"
+        blocker = _no_torch_mac_without_mlx_wheels()
         message = (
-            "This install was set up without the training stack (--no-torch), so export is "
+            f"Export on this Mac needs MLX, which requires {blocker}."
+            if blocker
+            else "This install was set up without the training stack (--no-torch), so export is "
             "disabled. Reinstall Unsloth Studio without --no-torch to enable export."
         )
     elif is_apple_silicon():
@@ -3124,8 +3197,33 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
     return None
 
 
+_APPLE_GPU_STATS_TTL_S = 1.5
+_apple_gpu_stats_lock = threading.Lock()
+_apple_gpu_stats_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
 def _read_apple_gpu_stats() -> Dict[str, Any]:
-    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed."""
+    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed. Display reads reuse one up to 1.5 s old (a refresh asks twice); fit and placement read fresh."""
+    global _apple_gpu_stats_cache
+    try:
+        from utils.hardware import gpu_query
+        serve_cached = gpu_query.display_cache_allowed()
+    except Exception:
+        serve_cached = False
+    with _apple_gpu_stats_lock:
+        cached = _apple_gpu_stats_cache
+        if (
+            serve_cached
+            and cached is not None
+            and time.monotonic() - cached[0] < _APPLE_GPU_STATS_TTL_S
+        ):
+            return dict(cached[1])
+        stats = _read_apple_gpu_stats_uncached()
+        _apple_gpu_stats_cache = (time.monotonic(), dict(stats)) if stats else None
+        return stats
+
+
+def _read_apple_gpu_stats_uncached() -> Dict[str, Any]:
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
@@ -5160,6 +5258,15 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
                 "devices": [],
                 "index_kind": "relative",
             }
+        gpu_utilization_pct = temperature_c = power_draw_w = None
+        try:
+            from . import apple
+
+            gpu_utilization_pct = _read_apple_gpu_stats().get("utilization_pct")
+            temperature_c = apple.read_gpu_temperature_c()
+            power_draw_w = apple.read_gpu_power_w()
+        except Exception as e:
+            logger.debug("Apple GPU telemetry unavailable: %s", e)
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -5169,14 +5276,14 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
                     "index": 0,
                     "index_kind": "relative",
                     "visible_ordinal": 0,
-                    "gpu_utilization_pct": None,
-                    "temperature_c": None,
+                    "gpu_utilization_pct": gpu_utilization_pct,
+                    "temperature_c": temperature_c,
                     "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
                     "vram_total_gb": round(mem.get("total_gb", 0), 2),
                     # Unified memory: free is not total - used, so publish it rather than let the caller subtract.
                     "vram_free_gb": round(mem.get("free_gb", 0), 2),
                     "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
-                    "power_draw_w": None,
+                    "power_draw_w": power_draw_w,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
                 }
@@ -7164,6 +7271,14 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 "index_kind": "relative",
             }
         memory_total_gb = round(mem.get("total_gb", 0), 2)
+        # The loader budgets min(this, available) * 0.85, not total RAM; the picker flags tight GGUFs with it.
+        try:
+            working_set_bytes = int(_metal_recommended_working_set_bytes() or 0)
+        except Exception:
+            working_set_bytes = 0
+        metal_working_set_gb = (
+            round(working_set_bytes / (1024**3), 2) if working_set_bytes > 0 else None
+        )
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -7178,6 +7293,7 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                     "memory_total_gb": memory_total_gb,
                     "shared_memory": True,
                     "shared_memory_host_backed_gb": memory_total_gb,
+                    "metal_working_set_gb": metal_working_set_gb,
                 }
             ],
             "index_kind": "relative",

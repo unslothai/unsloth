@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Exercise the Save/Load path through the real store action.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -27,13 +25,11 @@ const { mapBackendModelConfigToTrainingPatch } = await import(
   "../src/features/training/lib/model-defaults.ts"
 );
 
-// A tuned shipped config: non-default LR, batch size, optimizer and scheduler.
 const TUNED_MODEL_CONFIG = new URL(
   "../../backend/assets/configs/model_defaults/llama/unsloth_Llama-3.2-1B-Instruct.yaml",
   import.meta.url,
 );
 
-/** Seed the store as model selection does. */
 function seedTunedModelDefaults(): void {
   const config = yaml.load(
     readFileSync(TUNED_MODEL_CONFIG, "utf8"),
@@ -41,10 +37,7 @@ function seedTunedModelDefaults(): void {
   useTrainingConfigStore.setState(mapBackendModelConfigToTrainingPatch(config));
 }
 
-/**
- * Snapshot every non-action store value. userEditRevision is edit bookkeeping every
- * user edit bumps, not a config value, so it stays out of the comparison.
- */
+/** userEditRevision is edit bookkeeping, not config, so it is excluded. */
 function snapshot(): Record<string, unknown> {
   const state = useTrainingConfigStore.getState() as unknown as Record<
     string,
@@ -90,7 +83,6 @@ test("a tuned model recipe survives an unrelated import", () => {
   seedTunedModelDefaults();
   const tuned = snapshot();
 
-  // Ensure sparse import preserves unrelated seeded values.
   assert.equal(tuned.learningRate, 2e-5);
   assert.equal(tuned.batchSize, 1);
   assert.equal(tuned.optimizerType, "adamw_torch");
@@ -132,8 +124,7 @@ test("gradient_checkpointing is read from a YAML boolean as well as a string", (
 });
 
 test("a quoted checkpointing value means what the trainer says it means", () => {
-  // trainer.py accepts these spellings, so the picker must not silently ignore
-  // one and leave Unsloth GC selected on a config that asked for none.
+  // trainer.py accepts all these spellings of off.
   for (const off of ["false", '"false"', "'0'", "no", "OFF", '" none "']) {
     seedTunedModelDefaults();
     importConfig(`training:\n  gradient_checkpointing: ${off}\n`);
@@ -152,7 +143,6 @@ test("a quoted checkpointing value means what the trainer says it means", () => 
       on,
     );
   }
-  // Anything unrecognised, or blank, leaves the selection alone.
   for (const ignored of ['""', '"   "', "maybe", "[]"]) {
     seedTunedModelDefaults();
     importConfig(`training:\n  gradient_checkpointing: ${ignored}\n`);
@@ -234,7 +224,7 @@ test("saving and reloading a config keeps the embedding learning rate", () => {
   importConfig(saved);
   assert.equal(useTrainingConfigStore.getState().embeddingLearningRate, 3e-5);
 
-  // Preserve null as "derive it", distinct from an absent key.
+  // null means "derive it", distinct from an absent key.
   useTrainingConfigStore.setState({ embeddingLearningRate: null });
   const clearedSave = serializeConfigToYaml(
     useTrainingConfigStore.getState(),

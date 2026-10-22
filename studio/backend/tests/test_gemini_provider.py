@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the native Gemini API translation layer.
-
-Gemini does NOT speak OpenAI Chat Completions on its primary endpoint
-(`streamGenerateContent`). `_stream_gemini` in
-`core/inference/external_provider.py` translates between the two shapes:
-
-  Request:
-    OpenAI messages [{role, content}]
-      -> Gemini contents [{role, parts: [{text}|{inlineData}|{functionCall}|...]}]
-        + systemInstruction.parts[].text for role=system messages
-        + generationConfig.{temperature,topP,topK,maxOutputTokens}
-        + tools[{googleSearch:{}}] for web_search
-        + tools[{codeExecution:{}}] for code_execution
-        + responseModalities=[TEXT,IMAGE] for Nano Banana (gemini-2.5-flash-image)
-        + cachedContent for prompt caching
-
-  Response:
-    Gemini SSE chunks { candidates:[{content:{parts:[...]}, finishReason}],
-                        usageMetadata:{promptTokenCount, candidatesTokenCount} }
-      -> OpenAI chat.completion.chunk frames
-        (delta.content for text, delta.tool_calls for functionCall,
-         _toolEvent for image_b64/web_search, usage block before [DONE])
-
-These tests pin the outbound body shape AND the inbound translation via
-httpx.MockTransport (no live network). Mirrors test_anthropic_cache_ttl.py
-and test_openai_image_generation.py.
-"""
+"""Gemini native translation: outbound body shape and inbound SSE chunks, via httpx.MockTransport."""
 
 import asyncio
 import base64
@@ -62,9 +36,7 @@ def _assistant_call(
 
 
 def _drive(coro):
-    # Fresh loop per drive so tests don't share asyncio state. Close mocked
-    # clients + shutdown async-generators inside this loop so Python 3.13
-    # doesn't emit `Response.aiter_*.aclose was never awaited` on GC.
+    # Fresh loop per drive; close clients and asyncgens in it to avoid py3.13 'aclose never awaited'.
     loop = asyncio.new_event_loop()
     try:
         result = loop.run_until_complete(coro)
@@ -92,8 +64,6 @@ def _make_gemini_client(
 def _mock_http(monkeypatch, handler):
     mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
     monkeypatch.setattr(ep_mod, "_http_client", mock_client)
-    # `_drive` acloses this at end of run inside the same event loop, so we
-    # don't leak an unawaited aclose() coroutine.
     _active_mock_clients.append(mock_client)
 
 
@@ -184,7 +154,6 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
         captured["headers"] = dict(request.headers)
         captured["url"] = str(request.url)
         captured["method"] = request.method
-        # Minimal valid Gemini stream so the helper completes.
         return httpx.Response(
             200,
             content = _gemini_sse(
@@ -270,9 +239,6 @@ def _parse_chunks(lines: list[str]) -> list[dict]:
     return out
 
 
-# ── request body translation ─────────────────────────────────────────
-
-
 def test_request_body_uses_contents_and_parts_shape(monkeypatch):
     """OpenAI messages must be translated to Gemini's `contents` shape."""
     captured = _capture_body(
@@ -285,15 +251,12 @@ def test_request_body_uses_contents_and_parts_shape(monkeypatch):
         ],
     )
     body = captured["body"]
-    # system -> systemInstruction
     assert body["systemInstruction"] == {"parts": [{"text": "Be brief."}]}, body
-    # user/assistant -> contents with role user/model
     assert body["contents"] == [
         {"role": "user", "parts": [{"text": "Hello"}]},
         {"role": "model", "parts": [{"text": "Hi there"}]},
         {"role": "user", "parts": [{"text": "Follow up"}]},
     ], body["contents"]
-    # generationConfig fields map across with Google's casing.
     gc = body["generationConfig"]
     assert gc["temperature"] == 0.7
     assert gc["topP"] == 0.95
@@ -332,12 +295,9 @@ def test_presence_penalty_forwarded_to_generation_config(monkeypatch):
     captured = _capture_body(monkeypatch, presence_penalty = 0.7)
     assert captured["body"]["generationConfig"]["presencePenalty"] == 0.7
 
-    # Default zero is omitted, matching top_k semantics.
+    # Zero is omitted, matching top_k.
     captured = _capture_body(monkeypatch, presence_penalty = 0.0)
     assert "presencePenalty" not in captured["body"]["generationConfig"]
-
-
-# ── thinkingConfig translation ────────────────────────────────────────
 
 
 def test_gemini25_flash_thinking_disabled_sets_budget_zero(monkeypatch):
@@ -587,10 +547,7 @@ def test_image_models_skip_thinking_config(monkeypatch):
 
 
 def test_image_models_drop_code_execution(monkeypatch):
-    """All image-tier ids reject `tools: [{codeExecution: {}}]`; drop
-    silently. (Gemini 3 image models DO accept googleSearch -- see
-    test_gemini3_image_models_allow_google_search; older ones drop
-    everything.)"""
+    """Image-tier model ids drop codeExecution silently; only Gemini 3 image models accept googleSearch."""
     for model in (
         "gemini-2.5-flash-image",
         "gemini-3.1-flash-image-preview",
@@ -739,10 +696,7 @@ def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
 
 
 def test_image_models_suppress_phantom_web_search_card(monkeypatch):
-    """When the image guard filters googleSearch out of the request, the
-    inbound stream must NOT emit web_search tool_start / tool_end (else the UI
-    shows a misleading 'Search complete' card on a turn Gemini never
-    searched)."""
+    """Image-guard-dropped googleSearch must emit no web_search tool_start/tool_end, so no phantom card."""
     sse = [_event([{"text": "drawn"}])]
     lines = _collect(
         monkeypatch,
@@ -761,11 +715,7 @@ def test_image_models_suppress_phantom_web_search_card(monkeypatch):
 
 
 def test_image_generation_tool_on_image_model_drops_text_tools(monkeypatch):
-    """`enabled_tools=["image_generation", "web_search", "code_execution"]`
-    on a Gemini IMAGE model flips responseModalities to TEXT+IMAGE; in that
-    mode codeExecution must NOT be forwarded (Gemini rejects text code tools
-    alongside image responseModalities). Older image families also drop
-    googleSearch."""
+    """TEXT+IMAGE responseModalities must drop codeExecution; Gemini rejects text code tools with images."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
@@ -794,10 +744,7 @@ def test_prompt_feedback_block_reason_surfaces_as_error(monkeypatch):
 
 
 def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
-    """`thoughtsTokenCount` is the hidden-reasoning slice of output; roll it
-    into `output_tokens` AND surface it on
-    `output_tokens_details.reasoning_tokens` so total_tokens reflects the full
-    billable spend."""
+    """Hidden thoughtsTokenCount is rolled into output_tokens so total_tokens reflects billable spend."""
     sse = [
         _event(
             [{"text": "ok"}],
@@ -814,12 +761,9 @@ def test_usage_chunk_includes_thoughts_tokens(monkeypatch):
     assert usage_chunk is not None, chunks
     usage = usage_chunk["usage"]
     assert usage.get("prompt_tokens") == 10, usage
-    # candidates 5 + thoughts 20 = 25 output tokens; total = 35.
+    # candidates 5 + thoughts 20 = 25; total 35.
     assert usage.get("completion_tokens") == 25, usage
     assert usage.get("total_tokens") == 35, usage
-
-
-# ── web_search forwarded as googleSearch tool ────────────────────────
 
 
 def test_web_search_forwarded_as_google_search_tool(monkeypatch):
@@ -845,9 +789,6 @@ def test_omitted_tools_leaves_body_untouched(monkeypatch):
     assert "tools" not in captured["body"], captured["body"]
 
 
-# ── prompt caching passthrough ───────────────────────────────────────
-
-
 def test_cached_content_pass_through(monkeypatch):
     """A string cache id on enable_prompt_caching is forwarded verbatim."""
     cache_name = "cachedContents/abc123"
@@ -868,10 +809,7 @@ def test_boolean_caching_does_not_set_cached_content(monkeypatch):
 
 
 def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypatch):
-    """`enabled_tools=["image_generation"]` flips responseModalities
-    only when the selected model is image-capable; otherwise the
-    request stays plain text (text-only models 400 on
-    responseModalities)."""
+    """image_generation sets responseModalities only on image-capable models; text-only models 400 on it."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
@@ -904,9 +842,6 @@ def test_image_response_emits_image_b64_tool_event(monkeypatch):
     assert len(image_ends) == 1, tool_events
     assert image_ends[0]["image_b64"] == fake_b64
     assert image_ends[0]["image_mime"] == "image/png"
-
-
-# ── function calling round-trips both directions ─────────────────────
 
 
 def test_function_call_response_translates_to_tool_calls_delta(monkeypatch):
@@ -948,16 +883,13 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
     ]
     captured = _capture_body(monkeypatch, messages = messages)
     contents = captured["body"]["contents"]
-    # Last turn must be a functionResponse part (Gemini wraps it as a role=user
-    # turn carrying the result).
+    # Gemini wraps a functionResponse as a role=user turn.
     last = contents[-1]
     assert last["role"] == "user", last
     fr = last["parts"][0].get("functionResponse")
     assert fr is not None, last
     assert fr["name"] == "get_weather"
     assert fr["response"] == {"temp_c": 18, "summary": "Sunny"}
-    # And the assistant turn carries the original functionCall so the model
-    # sees the round-trip context.
     assistant_turn = [c for c in contents if c["role"] == "model"][0]
     fc_part = next(
         (p for p in assistant_turn["parts"] if "functionCall" in p),
@@ -1103,8 +1035,7 @@ def test_code_execution_parts_translate_to_code_execution_tool_events(monkeypatc
     assert code_starts[0]["arguments"]["code"] == "print(2+2)"
     assert code_starts[0]["arguments"]["language"] == "python"
     assert len(code_ends) == 1, tool_events
-    # tool_start and tool_end must share a tool_call_id so the frontend pairs
-    # them onto one CodeExecutionToolUI block.
+    # Shared tool_call_id lets the frontend pair them into one CodeExecutionToolUI block.
     assert code_starts[0]["tool_call_id"] == code_ends[0]["tool_call_id"]
 
 
@@ -1156,9 +1087,6 @@ def test_tool_message_recovers_name_from_tool_call_id(monkeypatch):
     ), "name should fall back to the prior tool_call's function name"
 
 
-# ── usage chunk surfaces promptTokenCount / candidatesTokenCount ─────
-
-
 def test_usage_chunk_translates_gemini_token_counts(monkeypatch):
     sse = [
         _event(
@@ -1179,9 +1107,6 @@ def test_usage_chunk_translates_gemini_token_counts(monkeypatch):
     assert usage["completion_tokens"] == 56
     assert usage["total_tokens"] == 1290
     assert usage["prompt_tokens_details"]["cached_tokens"] == 1000
-
-
-# ── multimodal: vision image -> inlineData ───────────────────────────
 
 
 def test_vision_data_url_translates_to_inline_data(monkeypatch):
@@ -1274,9 +1199,6 @@ def test_finish_reason_translation(monkeypatch, gemini_reason, openai_reason):
     ), finish_chunks
 
 
-# ── grounding citations surface as web_search tool_end ───────────────
-
-
 def test_grounding_metadata_surfaces_as_tool_end_citations(monkeypatch):
     """`groundingMetadata.groundingChunks[].web` -> tool_end result block."""
     sse = [
@@ -1309,9 +1231,6 @@ def test_grounding_metadata_surfaces_as_tool_end_citations(monkeypatch):
     assert "https://example.com/b" in result
     assert "Example A" in result
     assert "Example B" in result
-
-
-# ── round 3 review follow-ups ─────────────────────────────────────────
 
 
 def test_custom_gemini_proxy_base_url_not_rewritten():
@@ -1389,7 +1308,6 @@ def test_invalid_gemini_model_id_rejected_before_request(monkeypatch):
         await client.close()
 
     _drive(run())
-    # No outbound request should have been issued.
     assert captured == [], captured
     error_lines = [line for line in out if '"error"' in line]
     assert error_lines, out
@@ -1495,7 +1413,6 @@ def test_enable_prompt_caching_false_string_coerces_to_bool():
     )
     assert req.enable_prompt_caching is True
 
-    # An actual cache resource name passes through untouched.
     req = ChatCompletionRequest.model_validate(
         {
             "model": "gemini-2.5-flash",
@@ -1790,9 +1707,7 @@ def test_code_execution_tool_events_stow_native_part(monkeypatch):
     assert code_start is not None, starts
     assert code_start["tool_call_id"] == "code_a", code_start
     native = code_start["arguments"]["google"]["native_part"]
-    # Round 21: native_part uses an ordered `parts` list so per-part
-    # `thoughtSignature` survives a frontend merge of executableCode +
-    # codeExecutionResult into one tool-call card.
+    # native_part is an ordered parts list so per-part thoughtSignature survives the frontend merge.
     start_parts = native["parts"]
     assert start_parts[0]["executableCode"]["id"] == "code_a"
     assert start_parts[0]["thoughtSignature"] == "SIG-CODE"
@@ -1830,11 +1745,7 @@ def test_inline_image_tool_end_carries_thought_signature(monkeypatch):
     image_ends = [e for e in tool_events if e.get("type") == "tool_end" and e.get("image_b64")]
     assert image_ends, tool_events
     assert image_ends[0]["google"]["thought_signature"] == "SIG-IMG"
-    # Multi-turn image edit must replay the original inlineData part with its
-    # thoughtSignature; the outbound translator reads
-    # google.native_part.parts[].inlineData, so stow it on the tool_end too.
-    # Round 21 made native_part an ordered parts list so a per-part signature
-    # stays attached to inlineData only.
+    # Multi-turn edits replay inlineData with its thoughtSignature from google.native_part.parts.
     native = image_ends[0]["google"]["native_part"]
     image_parts = native["parts"]
     assert image_parts[0]["inlineData"]["mimeType"] == "image/png"
@@ -1873,11 +1784,7 @@ def test_code_execution_plot_attaches_inline_image_native_part(monkeypatch):
     code_ends = [
         e for e in tool_events if e.get("type") == "tool_end" and e.get("tool_call_id") == "code_a"
     ]
-    # Two tool_end events on the same id: one for codeExecutionResult, one
-    # merging in the inlineData plot. The plot one must carry the native
-    # inlineData under google.native_part so the frontend tool_end merge union
-    # joins it with the prior executableCode and codeExecutionResult parts on
-    # the same card.
+    # The plot tool_end needs native inlineData so the frontend merge keeps all parts on one card.
     assert len(code_ends) == 2, code_ends
     image_end = next(
         (e for e in code_ends if "__IMAGES__:" in (e.get("result") or "")),
@@ -1956,10 +1863,8 @@ def test_tool_choice_auto_maps_to_function_calling_mode_auto(monkeypatch):
 
 
 def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
-    """A codeExecution sandbox plot (matplotlib) ships as an inline image part
-    right after the codeExecutionResult. Instead of a separate empty
-    image_generation card, attach to the same code_execution tool_end via the
-    `__IMAGES__:` marker the chat adapter already understands."""
+    """A codeExecution inline plot attaches to the code_execution tool_end card via the __IMAGES__
+    marker."""
     sse = [
         _event(
             [
@@ -1988,15 +1893,12 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
     )
     chunks = _parse_chunks(lines)
     tool_events = [c["_toolEvent"] for c in chunks if "_toolEvent" in c]
-    # No standalone image_generation card should have been emitted.
     image_starts = [
         e
         for e in tool_events
         if e.get("type") == "tool_start" and e.get("tool_name") == "image_generation"
     ]
     assert not image_starts, tool_events
-    # The code_execution tool_end should now carry the inline image
-    # via the `__IMAGES__:` marker.
     code_ends = [
         e
         for e in tool_events
@@ -2009,10 +1911,7 @@ def test_code_exec_inline_image_attaches_to_code_execution_card(monkeypatch):
 
 
 def test_code_execution_tool_call_replays_native_executable_code(monkeypatch):
-    """An assistant tool_call with toolName=code_execution and
-    extra_content.google.native_part holding the originally-emitted
-    `executableCode` + `codeExecutionResult` must round-trip as native Gemini
-    parts (not a generic functionCall) on the next turn."""
+    """code_execution tool_call replays stored native_part parts, not a generic functionCall."""
     captured = _capture_body(
         monkeypatch,
         messages = [
@@ -2065,10 +1964,7 @@ def test_code_execution_tool_call_replays_native_executable_code(monkeypatch):
 
 
 def test_image_generation_tool_call_replays_native_inline_data(monkeypatch):
-    """An assistant tool_call with toolName=image_generation and
-    extra_content.google.native_part.inlineData must replay the prior image as
-    a native Gemini inlineData part (not a generic functionCall) so multi-turn
-    image editing keeps the image context."""
+    """image_generation tool_call replays its stored inlineData as a native part, not functionCall."""
     pixel = base64.b64encode(b"PNG").decode()
     captured = _capture_body(
         monkeypatch,
@@ -2118,11 +2014,7 @@ def test_image_generation_tool_call_replays_native_inline_data(monkeypatch):
 
 
 def test_assistant_text_thought_signature_replays_on_outbound_text_part(monkeypatch):
-    """Assistant text with extra_content.google.thought_signature must attach
-    `thoughtSignature` to the LAST text part of the replayed Gemini history.
-    Gemini 3 strict function-calling rejects history that drops returned
-    signatures, so the frontend stows the latest signed-text signature and the
-    backend pins it on the next turn."""
+    """Replayed thought_signature lands on the last text part; Gemini 3 rejects dropped signatures."""
     captured = _capture_body(
         monkeypatch,
         messages = [
@@ -2218,10 +2110,7 @@ def test_assistant_thought_parts_replay_exact_boundaries_before_answer(monkeypat
 
 
 def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
-    """OpenAI strict tools commonly include `additionalProperties`, `$schema`,
-    `$defs`, `strict`, etc. Gemini's Schema rejects those with
-    INVALID_ARGUMENT, so the translator must strip them while keeping
-    properties.<field>.type intact."""
+    """Gemini rejects OpenAI-only schema keys like additionalProperties and $schema; they are stripped."""
     captured = _capture_body(
         monkeypatch,
         tools = [
@@ -2260,12 +2149,7 @@ def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
 
 
 def test_function_declarations_inline_local_refs_into_gemini_schema(monkeypatch):
-    """Round 25: Pydantic-generated tool schemas hoist nested object shapes
-    into `$defs` and reference them with `{"$ref": "#/$defs/..."}`. Gemini's
-    OpenAPI subset has no $ref, so a naive allowlist sanitizer drops the
-    reference and reduces the nested property to `{}`, losing its type, fields,
-    and required keys. The sanitizer must resolve local `#/...` pointers and
-    inline the referenced schema."""
+    """Gemini's schema subset has no $ref, so local #/$defs pointers must be inlined, not dropped to {}."""
     captured = _capture_body(
         monkeypatch,
         tools = [
@@ -2347,9 +2231,7 @@ def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch)
     assert decls is not None
     params = decls[0]["parameters"]
     primary = params["properties"]["primary"]
-    # anyOf with single non-null branch + null collapses to inline +
-    # nullable: true; the inlined branch must contain the resolved Address
-    # shape.
+    # anyOf [X, null] collapses to inline X with nullable: true.
     assert primary.get("nullable") is True
     assert primary.get("type") == "object"
     assert primary.get("properties", {}).get("zip", {}).get("type") == "string"
@@ -2400,11 +2282,7 @@ def test_function_declarations_self_referential_schema_terminates(monkeypatch):
 
 
 def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(monkeypatch):
-    """Round 26: when the assistant-side synthetic web_search/web_fetch
-    tool_call is dropped from native Gemini history, the matching role="tool"
-    follow-up must also be dropped. Otherwise the outbound body carries an
-    orphan functionResponse with no preceding functionCall, which 400s the
-    Gemini turn."""
+    """Replies to dropped synthetic builtins are dropped too, or an orphan functionResponse 400s Gemini."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -2441,12 +2319,7 @@ def test_gemini_native_skips_orphan_function_response_for_dropped_builtin(monkey
 
 
 def test_gemini_native_skips_orphan_function_response_for_native_part_replay(monkeypatch):
-    """Round 26: code_execution / image_generation tool_calls are replayed as
-    Gemini-native executableCode / codeExecutionResult / inlineData parts. The
-    matching role="tool" follow-up must NOT then be emitted as a
-    functionResponse named code_execution -- there is no declared user
-    function with that name, and Gemini's history rules already attribute the
-    result to the native parts above."""
+    """Replies to native-replayed code_execution/image_generation calls must not become functionResponse."""
     captured = _capture_body(
         monkeypatch,
         messages = [
@@ -2507,16 +2380,7 @@ def test_gemini_native_skips_orphan_function_response_for_native_part_replay(mon
 
 
 def test_gemini_native_part_falls_back_to_args_google(monkeypatch):
-    """Round 27: a direct OpenAI-compat API caller (or imported third-party
-    thread) cannot use Unsloth's non-standard `tool_calls[].extra_content`
-    field, so the native_part payload round-trips through `function.arguments`
-    as `{"google": {"native_part": {...}}}`. The synthetic-builtin detector
-    recognizes that location, but the replay branch was only reading from
-    `tc.extra_content.google.native_part`. Result: the round-25 guard saw a
-    synthetic builtin with no _native_part and dropped the entire assistant
-    turn, losing the prior code/image context. The translator must fall back
-    to args.google.native_part and still emit the native executableCode /
-    inlineData parts."""
+    """native_part also round-trips via function.arguments.google, so replay must fall back to it."""
     import json as _json
 
     captured = _capture_body(
@@ -2565,12 +2429,7 @@ def test_gemini_native_part_falls_back_to_args_google(monkeypatch):
 
 
 def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
-    """Round 25: Marked server-side builtin tool_calls (web_search /
-    web_fetch with `_server_tool` or `args.google.native_part`) must not fall
-    through to the generic Gemini `functionCall` replay path when no replayable
-    native part exists. Without this guard the outbound body contains a fake
-    `functionCall` whose name isn't a declared user function, and the Gemini
-    turn 400s."""
+    """Marked server builtins without a native part must be skipped, not replayed as a fake functionCall."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -2607,10 +2466,7 @@ def test_gemini_native_skips_synthetic_server_builtin_replay(monkeypatch):
 
 
 def test_chat_message_extra_content_round_trips_through_validation():
-    """Round 9: ChatMessage was missing `extra_content`, so Pydantic discarded
-    it during request validation and the text-part signature replay path read
-    nothing. The field must survive model_validate and pass through
-    _build_external_messages."""
+    """ChatMessage must declare extra_content; Pydantic otherwise drops it during validation."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -2644,17 +2500,14 @@ def test_chat_message_extra_content_round_trips_through_validation():
     )
     assistant_out = built[1]
     assert assistant_out["extra_content"] == {"google": {"thought_signature": "SIG-TEXT"}}
-    # Non-Gemini providers must NOT receive extra_content; Google's
-    # thought_signature is unknown to OpenAI / Mistral / etc.
+    # thought_signature is Gemini-only; other providers must not get extra_content.
     built_openai = _build_external_messages(
         req.messages,
         supports_vision = True,
         provider_type = "openai",
     )
     assert "extra_content" not in built_openai[1], built_openai[1]
-    # Custom non-Google Gemini bases (LiteLLM / OAI-compat gateways) also must
-    # not receive Gemini-only extra_content -- the backend dispatches them
-    # through /chat/completions.
+    # Custom Gemini OAI-compat gateways go through /chat/completions, so no extra_content.
     built_custom = _build_external_messages(
         req.messages,
         supports_vision = True,
@@ -2718,10 +2571,7 @@ def test_metadata_only_gemini_assistant_turn_survives_external_message_build():
 
 
 def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
-    """Round 14: Gemini docs group parallel functionResponses in a single
-    subsequent user content with multiple functionResponse parts. Consecutive
-    OpenAI role="tool" messages must merge into one Gemini user block, not
-    split into separate user turns."""
+    """Consecutive role=tool messages merge into one user block, not separate user turns."""
     captured = _capture_body(
         monkeypatch,
         messages = [
@@ -2757,8 +2607,6 @@ def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
         ],
     )
     contents = captured["body"]["contents"]
-    # Initial user, model with two functionCalls, ONE user with two
-    # functionResponses.
     tool_result_users = [
         c
         for c in contents
@@ -2773,10 +2621,7 @@ def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
 
 
 def test_function_schema_nullable_type_array_flattens(monkeypatch):
-    """Round 14: OpenAI strict tools commonly use `"type": ["string", "null"]`
-    for optional fields. Gemini's OpenAPI-style Schema rejects union types and
-    expects `"type": "string"` with `"nullable": true`. The sanitizer must
-    translate the union form."""
+    """Gemini rejects union type arrays, so a type list with null must flatten to type plus nullable."""
     captured = _capture_body(
         monkeypatch,
         tools = _tools(
@@ -2799,11 +2644,7 @@ def test_function_schema_nullable_type_array_flattens(monkeypatch):
 
 
 def test_image_picker_model_with_search_off_pill_strips_text_tools(monkeypatch):
-    """Round 11: image-tier model ids reject text-only tools and
-    thinkingConfig at the model level regardless of the Images pill. Selecting
-    gemini-2.5-flash-image + enabled_tools=["web_search"] with no
-    image_generation must NOT forward googleSearch or thinkingConfig (Gemini
-    400s on text tools for legacy image ids)."""
+    """Legacy image model ids reject googleSearch and thinkingConfig even with the Images pill off."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
@@ -2837,15 +2678,11 @@ def test_safe_fetch_image_rejects_malformed_bracketed_url():
 
 
 def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(monkeypatch):
-    """Round 17: the fetch helper must pin the validated IP into the outgoing
-    request URL (with a Host header carrying the original hostname). A second
-    hostname-style getaddrinfo after validate would be a DNS-rebinding gap, so
-    we assert the urllib opener is called with an IP-rewritten URL."""
+    """Image fetch pins the validated IP in the URL; re-resolving the hostname would allow DNS rebinding."""
     import socket
 
     captured: dict = {"requests": []}
 
-    # Public IP during validate; record every getaddrinfo call.
     original_getaddrinfo = socket.getaddrinfo
 
     def fake_getaddrinfo(host, *args, **kwargs):
@@ -2874,7 +2711,6 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        # One body followed by EOF, as a real response reads.
         _body = io.BytesIO(b"PNG")
 
         def read(self, n = -1):
@@ -2899,10 +2735,10 @@ def test_safe_fetch_image_pins_validated_ip_no_hostname_in_request(monkeypatch):
     res = _drive(ep_mod._safe_fetch_image_for_gemini("https://cdn.example.com/x.png", "image/png"))
     assert res is not None
     assert res[0] == "image/png"
-    # Outgoing URL must use the pinned IP literal, not the hostname.
+    # Must connect to the pinned IP, not re-resolve the hostname (DNS rebinding).
     assert any("8.8.8.8" in r["url"] for r in captured["requests"]), captured
     assert all("cdn.example.com" not in r["url"] for r in captured["requests"]), captured
-    # Host header still carries the original hostname for vhost/SNI.
+    # Host header keeps the hostname for vhost/SNI.
     assert captured["requests"][0]["host_header"] == "cdn.example.com"
 
 
@@ -2951,8 +2787,7 @@ def test_safe_fetch_image_carries_the_addresses_only_on_a_direct_request(
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     proxies = {"https": "http://proxy.corp:3128"} if configured else {}
     monkeypatch.setattr(urllib.request, "getproxies", lambda: proxies)
-    # A bracketed host is the pinned IP: NO_PROXY matching it but not the hostname
-    # makes urllib's own decision disagree with the request's.
+    # Bracketed host is the pinned IP: NO_PROXY matching it but not the hostname splits urllib's decision.
     monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: bypassed or host[0] == "[")
     monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
 
@@ -3006,7 +2841,6 @@ def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
             req,
             timeout = None,
         ):
-            # Simulate a 302 to a private host.
             raise urllib.error.HTTPError(
                 req.full_url,
                 302,
@@ -3022,11 +2856,7 @@ def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
 
 
 def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
-    """Round 17: a CDN URL whose path/query merely contains the Files API
-    substring must NOT be sent as `fileData.fileUri`; route it through the
-    safe-fetch path. The old substring check
-    `"generativelanguage.googleapis.com/" in url.lower()` matched any URL
-    carrying that text anywhere."""
+    """A CDN URL that merely contains the Files API host text must go through safe fetch, not fileData."""
     captured_outbound: dict = {}
     fetch_calls: list[str] = []
 
@@ -3063,15 +2893,12 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
                         {
                             "type": "image_url",
                             "image_url": {
-                                # Files-API-looking path, but host is an
-                                # attacker CDN.
                                 "url": "https://evil.example/path/generativelanguage.googleapis.com/v1beta/files/abc.png",
                             },
                         },
                         {
                             "type": "image_url",
                             "image_url": {
-                                # Looks YouTube-ish in the path.
                                 "url": "https://cdn.example.com/youtube.com/cat.png",
                             },
                         },
@@ -3096,10 +2923,7 @@ def test_files_api_substring_url_not_misclassified_as_filedata(monkeypatch):
 
 
 def test_function_schema_anyof_null_variant_flattens_to_nullable(monkeypatch):
-    """Round 17: OpenAI/Pydantic emit `anyOf: [{X}, {"type":"null"}]` for
-    Optional[X]. Gemini's OpenAPI subset rejects `"type":"null"` inside anyOf.
-    The sanitizer must collapse a singleton-plus-null union back to the
-    non-null branch with `nullable: true`."""
+    """Gemini rejects type null inside anyOf; a singleton-plus-null union must collapse to nullable true."""
     captured = _capture_body(
         monkeypatch,
         tools = _tools(
@@ -3174,8 +2998,6 @@ def test_tool_calls_extra_content_stripped_for_non_native_gemini():
     }
     req = ChatCompletionRequest.model_validate(payload)
 
-    # Non-native providers (openai, custom Gemini OAI-compat proxy) must have
-    # extra_content stripped from the tool_call entry.
     for provider_type, base_url in [
         ("openai", None),
         ("gemini", "https://litellm.example/v1"),
@@ -3190,7 +3012,6 @@ def test_tool_calls_extra_content_stripped_for_non_native_gemini():
         tc = result[0]["tool_calls"][0]
         assert "extra_content" not in tc, (provider_type, tc)
 
-    # Native Gemini still receives extra_content for the round-trip.
     result_native = _build_external_messages(
         req.messages,
         supports_vision = True,
@@ -3202,10 +3023,7 @@ def test_tool_calls_extra_content_stripped_for_non_native_gemini():
 
 
 def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
-    """Round 17: the OpenAI Responses translator must NOT drop a user function
-    whose JSON arguments contain `_server_tool: true` UNLESS the function name
-    is also a canonical builtin name. Otherwise a user schema with an
-    `_server_tool` field becomes invisible to the model."""
+    """A user function is dropped for a _server_tool argument only when its name is also a builtin name."""
     items = _capture_responses_input(
         monkeypatch,
         [
@@ -3235,7 +3053,6 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
     )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
     fn_outs = [i for i in items if i.get("type") == "function_call_output"]
-    # User function call must survive (call + output).
     assert any(c.get("name") == "user_function" for c in fn_calls), items
     assert len(fn_outs) == 1, items
 
@@ -3254,15 +3071,11 @@ def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
         ],
     )
     fn_calls = [i for i in items if i.get("type") == "function_call"]
-    # Builtin server-side tool call must be filtered out.
     assert all(c.get("name") != "web_search" for c in fn_calls), items
 
 
 def test_gemini_tool_choice_none_disables_hosted_builtins(monkeypatch):
-    """Round 18: `tool_choice="none"` must drop hosted Google Search / code
-    execution from the Gemini body, not just user function declarations.
-    Otherwise an API client that opted out of tool use still triggers grounded
-    search (privacy + billing)."""
+    """tool_choice none must also drop hosted Google Search and code execution from the Gemini body."""
     captured = _capture_body(
         monkeypatch,
         enabled_tools = ["web_search", "code_execution"],
@@ -3358,10 +3171,7 @@ def test_safe_fetch_image_malformed_port_no_crash():
 
 
 def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
-    """Round 18: when the server returns image bytes but no Content-Type
-    header, the helper must use the caller-provided fallback MIME (guessed from
-    URL extension) instead of dropping the image as `non-image
-    content-type=<none>`."""
+    """An image response without Content-Type must use the URL-extension fallback MIME, not be dropped."""
     import socket
 
     original_getaddrinfo = socket.getaddrinfo
@@ -3391,7 +3201,6 @@ def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        # One body followed by EOF, as a real response reads.
         _body = io.BytesIO(b"PNG")
 
         def read(self, n = -1):
@@ -3415,11 +3224,7 @@ def test_safe_fetch_image_missing_content_type_uses_fallback(monkeypatch):
 
 
 def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch):
-    """Round 18: an assistant turn with OpenAI-style top-level `tool_calls`
-    must be translated into Anthropic native `{type:"tool_use", id, name,
-    input}` content blocks before forwarding. The OpenAI `role="tool"`
-    follow-up must become a `role:"user"` message with a `tool_result`
-    block."""
+    """OpenAI tool_calls must become tool_use blocks and role=tool replies become tool_result blocks."""
     captured: dict = {"messages": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -3462,17 +3267,13 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
     _drive(run())
 
     msgs = captured["messages"] or []
-    # No top-level tool_calls should remain.
     assert all("tool_calls" not in m for m in msgs), msgs
-    # The assistant turn must now have content blocks including a tool_use
-    # block.
     asst = [m for m in msgs if m.get("role") == "assistant"]
     assert asst and isinstance(asst[0]["content"], list), asst
     tool_uses = [b for b in asst[0]["content"] if b.get("type") == "tool_use"]
     assert len(tool_uses) == 1, asst[0]
     assert tool_uses[0]["name"] == "lookup"
     assert tool_uses[0]["input"] == {"q": "x"}
-    # The role="tool" message must become a user/tool_result message.
     tool_results: list[dict] = []
     for m in msgs:
         if m.get("role") == "user" and isinstance(m.get("content"), list):
@@ -3484,10 +3285,7 @@ def test_anthropic_translates_openai_tool_calls_into_tool_use_blocks(monkeypatch
 
 
 def test_unmarked_user_web_search_function_survives_serialization():
-    """Round 18: a user-defined function literally named `web_search` with NO
-    `_server_tool` marker must survive `_build_external_messages` when
-    forwarded to a non-native provider; only marked synthetic builtin cards may
-    be dropped."""
+    """Unmarked user web_search function survives; only _server_tool-marked builtin cards are dropped."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -3510,11 +3308,7 @@ def test_unmarked_user_web_search_function_survives_serialization():
 
 
 def test_marked_server_builtin_dropped_from_build_external_messages():
-    """Round 18: when a Gemini-native turn carrying a marked `image_generation`
-    server-tool card is forwarded to OpenAI / a custom Gemini OAI-compat proxy,
-    the tool_call must be dropped, not just have its extra_content stripped.
-    Forwarding an orphan `image_generation` tool_call would 400 the receiving
-    API."""
+    """A marked image_generation card must be dropped entirely when forwarded, since an orphan call 400s."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -3525,8 +3319,7 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
         "stream": True,
     }
     req = ChatCompletionRequest.model_validate(payload)
-    # Non-native providers: marked builtin tool_call must be dropped, and if it
-    # was the only payload, the whole message disappears.
+    # Non-native providers drop marked builtin tool_calls; a message left empty disappears.
     for provider_type, base_url in [
         ("openai", None),
         ("gemini", "https://litellm.example/v1"),
@@ -3537,13 +3330,11 @@ def test_marked_server_builtin_dropped_from_build_external_messages():
             provider_type = provider_type,
             base_url = base_url,
         )
-        # Empty assistant turn with only synthetic tool_call dropped.
         assert result == [] or all(not (m.get("tool_calls") or []) for m in result), (
             provider_type,
             result,
         )
 
-    # Native Gemini preserves it (round-trips via extra_content).
     result_native = _build_external_messages(
         req.messages,
         supports_vision = True,
@@ -3753,10 +3544,7 @@ def test_user_code_execution_function_not_dropped():
 
 
 def test_native_part_code_execution_treated_as_server_side():
-    """Round 19: a Gemini `code_execution` card persists its replay payload at
-    `args.google.native_part` (no `_server_tool` marker on pre-PR cards). The
-    backend filter must still drop it for non-native providers because it's a
-    synthetic card, not a real user function."""
+    """Cards with args.google.native_part and no _server_tool marker are synthetic and must be dropped."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -3872,10 +3660,7 @@ def test_orphan_function_call_output_dropped_when_call_skipped(monkeypatch):
 
 
 def test_schema_multitype_union_with_null_preserves_anyof(monkeypatch):
-    """Round 19: a JSON Schema `"type": ["string","integer","null"]` must be
-    sanitized to anyOf:[{string},{integer}] + nullable:true. Flattening to just
-    `{"type":"string"}` silently drops the integer branch and changes the
-    function contract."""
+    """A type list with string, integer and null must become anyOf of both plus nullable, not one branch."""
     captured = _capture_body(
         monkeypatch,
         tools = _tools(
@@ -3947,10 +3732,7 @@ def test_invalid_gemini_model_rejected_before_image_fetch(monkeypatch):
 
 
 def test_empty_assistant_turn_skipped_after_synthetic_tool_calls_dropped():
-    """Round 20: when `_filter_tool_calls` drops every synthetic server-builtin
-    tool_call on an empty-content assistant turn, the whole message must be
-    skipped. Several providers reject `{"role":"assistant","content":""}` as an
-    empty assistant turn."""
+    """An empty assistant turn left after dropping synthetic builtin calls must be skipped entirely."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -3971,16 +3753,11 @@ def test_empty_assistant_turn_skipped_after_synthetic_tool_calls_dropped():
             provider_type = provider_type,
             base_url = base_url,
         )
-        # The empty assistant turn (only a synthetic builtin) must NOT appear
-        # in the output at all.
         assert result == [], (provider_type, result)
 
 
 def test_role_tool_dropped_when_matching_synthetic_call_filtered():
-    """Round 20: `_build_external_messages` drops the matching role=tool
-    follow-up when its tool_call was a synthetic builtin that
-    `_filter_tool_calls` removed. Otherwise the receiving provider sees an
-    orphan tool_result with no tool_call."""
+    """Filtered synthetic tool_calls take their role=tool replies with them, leaving no orphan result."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -4006,7 +3783,6 @@ def test_role_tool_dropped_when_matching_synthetic_call_filtered():
         provider_type = "openai",
         base_url = None,
     )
-    # Only the user "continue" message survives.
     roles = [m.get("role") for m in result]
     assert roles == ["user"], result
 
@@ -4050,9 +3826,7 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(monkeypatc
                 obj = json.loads(payload)
             except Exception:
                 continue
-            # Backend emits synthetic tool events as a top-level `_toolEvent`
-            # on the SSE payload (not nested inside `delta`). Read both shapes
-            # so a future format change can't mask this regression.
+            # Synthetic tool events are a top-level _toolEvent, not inside delta; read both shapes.
             evt = obj.get("_toolEvent")
             if isinstance(evt, dict):
                 captured_events.append(evt)
@@ -4064,15 +3838,11 @@ def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(monkeypatc
         await client.close()
 
     _drive(run())
-    # No synthetic web_search tool_start / tool_end emitted.
     assert all(e.get("tool_name") != "web_search" for e in captured_events), captured_events
 
 
 def test_anthropic_role_tool_list_content_translates_to_tool_result(monkeypatch):
-    """Round 20: an OpenAI-shape role=tool message with list content
-    (`content=[{"type":"text","text":"result"}]`) must be translated into
-    Anthropic's native tool_result block, not forwarded as an invalid role=tool
-    message."""
+    """Role=tool list content must become an Anthropic tool_result block, never a role=tool message."""
     captured: dict = {"messages": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4178,11 +3948,7 @@ def test_youtube_filedata_uses_video_mime(monkeypatch):
 
 
 def test_openai_responses_assistant_text_serialized_before_function_call(monkeypatch):
-    """Round 20: in OpenAI Responses history, the assistant's visible text for
-    a turn that ALSO emitted a function_call must serialize BEFORE the
-    function_call item, matching the prior response.output sequence. Otherwise
-    function_call_output (the role=tool follow-up) appears to follow an
-    unrelated assistant message."""
+    """Assistant text is serialized before its function_call, matching response.output order."""
     items = _capture_responses_input(
         monkeypatch,
         [
@@ -4198,21 +3964,11 @@ def test_openai_responses_assistant_text_serialized_before_function_call(monkeyp
         ],
     )
     types = [i.get("type") or i.get("role") for i in items]
-    # Expected order:
-    #   user ("weather?")
-    #   assistant ("Let me check that.")
-    #   function_call (get_weather)
-    #   function_call_output (sunny)
-    #   user ("thanks")
     assert types == ["user", "assistant", "function_call", "function_call_output", "user"], items
 
 
 def test_gemini_tool_choice_none_disables_image_generation(monkeypatch):
-    """Round 21: `tool_choice="none"` must also flip the implicit
-    image-generation hosted tool off on image-tier models. Otherwise
-    `responseModalities=["TEXT","IMAGE"]` still rides on the body and the
-    provider can generate (and bill for) image output despite the explicit
-    OpenAI tool opt-out."""
+    """tool_choice none must also disable implicit image generation, so no image output is billed."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
@@ -4224,12 +3980,7 @@ def test_gemini_tool_choice_none_disables_image_generation(monkeypatch):
 
 
 def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
-    """Round 21: forced-function `tool_choice` (e.g.
-    `{"type":"function","function":{"name":"lookup"}}`) must suppress hosted
-    Google Search / code execution. Gemini's toolConfig only constrains
-    function declarations, not hosted tools, so leaving
-    `googleSearch`/`codeExecution` in `tools[]` lets them fire despite the
-    caller pinning a specific user function."""
+    """Forced-function tool_choice drops hosted tools too; toolConfig only constrains user functions."""
     captured = _capture_body(
         monkeypatch,
         enabled_tools = ["web_search", "code_execution"],
@@ -4243,7 +3994,6 @@ def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
     tool_kinds = [list(t.keys())[0] for t in (body.get("tools") or [])]
     assert "googleSearch" not in tool_kinds, body
     assert "codeExecution" not in tool_kinds, body
-    # User function declaration still survives.
     assert "functionDeclarations" in tool_kinds, body
 
 
@@ -4265,9 +4015,7 @@ def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
 
 
 def test_gemini_code_execution_native_part_list_replays_per_part_signatures(monkeypatch):
-    """Round 21: merged code-execution history must replay per-part
-    `thoughtSignature`s, not fan one top-level signature across every native
-    subpart. Gemini 3 strict validators reject a signature on the wrong
+    """Each native subpart keeps its own thoughtSignature; Gemini 3 rejects a signature on the wrong
     part."""
     history = [
         {"role": "user", "content": "plot 1+1"},
@@ -4318,23 +4066,18 @@ def test_gemini_code_execution_native_part_list_replays_per_part_signatures(monk
     ]
     captured = _capture_body(monkeypatch, messages = history)
     contents = captured["body"]["contents"]
-    # Find the assistant turn replayed as native code-exec parts.
     assistant_turn = next(c for c in contents if c["role"] == "model")
     parts = assistant_turn["parts"]
     exec_parts = [p for p in parts if "executableCode" in p]
     result_parts = [p for p in parts if "codeExecutionResult" in p]
     assert exec_parts and result_parts, parts
     assert exec_parts[0].get("thoughtSignature") == "SIG-EXEC", exec_parts[0]
-    # codeExecutionResult had no signature -- must NOT inherit one.
+    # Unsigned parts must not inherit a neighbour's signature.
     assert "thoughtSignature" not in result_parts[0], result_parts[0]
 
 
 def test_gemini_code_execution_legacy_merged_signature_only_on_executable(monkeypatch):
-    """Round 21: backward compat for pre-round-21 persisted history that stored
-    merged `native_part` as a single object plus a top-level
-    `thoughtSignature`. The replay branch must attach that signature only to
-    `executableCode` (where Gemini 3 emits it), not fan it across
-    `codeExecutionResult` / `inlineData`."""
+    """Legacy merged native_part with one top-level thoughtSignature attaches it only to executableCode."""
     history = [
         {"role": "user", "content": "plot 1+1"},
         {
@@ -4386,10 +4129,7 @@ def test_gemini_code_execution_legacy_merged_signature_only_on_executable(monkey
 
 
 def test_gemini_role_tool_list_content_flattens_to_result_text(monkeypatch):
-    """Round 21: OpenAI-shape role=tool messages may carry list content like
-    `[{"type":"text","text":"result"}]`. Forwarding those parts verbatim into
-    `functionResponse.response.result` yields a list of content-part objects
-    instead of the actual tool output text."""
+    """Role=tool list content flattens to plain result text inside functionResponse.response.result."""
     history = [
         {"role": "user", "content": "look up"},
         _assistant_call("lookup", json.dumps({"q": "x"})),
@@ -4416,10 +4156,8 @@ def test_gemini_role_tool_list_content_flattens_to_result_text(monkeypatch):
 
 
 def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
-    """Round 21: the aggregate per-request byte cap must be passed into
-    `_safe_fetch_image_for_gemini` so an oversize URL is refused via
-    Content-Length (short-circuit) rather than fully downloaded then
-    discarded."""
+    """The per-request byte budget reaches the image fetch so an oversize Content-Length is refused
+    early."""
     import socket
 
     captured: dict = {"reads": 0, "content_length_seen": None}
@@ -4443,7 +4181,7 @@ def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
 
     class _StubResp:
         status = 200
-        # Declared 5 MiB, but caller passes a 1 MiB remaining budget.
+        # Declared 5 MiB vs a 1 MiB remaining budget.
         headers = {
             "content-type": "image/png",
             "content-length": str(5 * 1024 * 1024),
@@ -4477,16 +4215,11 @@ def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
         )
     )
     assert res is None
-    # Refused via Content-Length pre-check, never read.
     assert captured["reads"] == 0
 
 
 def test_openai_chat_delta_type_includes_tool_calls_and_extra_content():
-    """Round 21: the frontend `OpenAIChatDelta` interface must expose
-    `tool_calls` and `extra_content` so TypeScript callers can consume the
-    Gemini-native stream fields without `any` casts. A static-string assertion
-    against the .ts source; mirrors how other frontend wire-contract tests are
-    pinned from the backend suite."""
+    """OpenAIChatDelta in api.ts must expose tool_calls and extra_content for typed Gemini stream fields."""
     import os
 
     here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -4499,11 +4232,7 @@ def test_openai_chat_delta_type_includes_tool_calls_and_extra_content():
 
 
 def test_anthropic_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
-    """Round 22: forced-function tool_choice must suppress Anthropic hosted
-    builtins like it does for Gemini. Pinning a user function
-    (`tool_choice={"type":"function","function":{"name":...}}`) while passing
-    `enabled_tools=["web_search","web_fetch","code_execution"]` should not still
-    fire those server-side."""
+    """Forced-function tool_choice must also drop Anthropic hosted web_search, web_fetch and code tools."""
     captured: dict = {"body": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4539,8 +4268,6 @@ def test_anthropic_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
 
     _drive(run())
     body = captured["body"] or {}
-    # No hosted tools in the body — only the caller's user-function
-    # declarations (none passed here).
     tools = body.get("tools") or []
     hosted_tool_names = {"web_search", "web_fetch", "code_execution"}
     for tool in tools:
@@ -4590,10 +4317,7 @@ def test_openrouter_forced_function_tool_choice_drops_web_plugin(monkeypatch):
 
 
 def test_kimi_forced_function_tool_choice_skips_web_search_helper(monkeypatch):
-    """Round 22: forced-function tool_choice plus enabled_tools=["web_search"]
-    on Kimi must NOT route into `_stream_kimi_web_search`. Caller pinned a user
-    function; hosted $web_search should be suppressed for the same
-    privacy/billing reason."""
+    """Forced-function tool_choice on Kimi must not route into the hosted web_search helper."""
     routed_to_helper = {"called": False}
 
     async def fake_helper(self, *args, **kwargs):  # noqa: ARG001
@@ -4642,10 +4366,7 @@ def test_kimi_forced_function_tool_choice_skips_web_search_helper(monkeypatch):
 
 
 def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
-    """Round 23: forced-function tool_choice on the OpenAI Responses path must
-    suppress hosted builtins (web_search, shell, image_generation) like it does
-    for Gemini / Anthropic / OpenRouter / Kimi. User-defined function tools
-    still flow through so the pinned function can resolve."""
+    """Forced-function tool_choice on Responses drops hosted builtins but keeps user function tools."""
     captured: dict = {"body": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4686,23 +4407,16 @@ def test_openai_responses_forced_function_tool_choice_drops_hosted_tools(monkeyp
     hosted_types = {"web_search", "shell", "image_generation"}
     hosted_seen = {t.get("type") for t in tools if isinstance(t, dict)}
     assert not (hosted_seen & hosted_types), body
-    # The user function declaration must still be present so the pin has a
-    # target.
     user_function_seen = any(isinstance(t, dict) and t.get("type") == "function" for t in tools)
     assert user_function_seen, body
-    # And the forced-function tool_choice must be forwarded in Responses shape:
-    # `{type:"function", name:"..."}`.
+    # Responses API shape: {type: function, name}.
     tc = body.get("tool_choice")
     assert isinstance(tc, dict) and tc.get("type") == "function", body
     assert tc.get("name") == "lookup_record", body
 
 
 def test_strip_provider_synthetic_tool_history_drops_text_only_extra_content():
-    """Round 24: a plain text Gemini reply (no tool_calls) carrying
-    `extra_content.google.thought_signature` must still have that metadata
-    stripped before being forwarded to a local llama-server backend. Without
-    it, switching a Gemini thread mid-stream to a local GGUF model leaks
-    Gemini-only fields to llama-server."""
+    """Gemini-only extra_content on a text reply is stripped before a local llama-server sees it."""
     from routes.inference import _strip_provider_synthetic_tool_history
 
     messages = [
@@ -4715,7 +4429,6 @@ def test_strip_provider_synthetic_tool_history_drops_text_only_extra_content():
         {"role": "user", "content": "now in pirate voice"},
     ]
     out = _strip_provider_synthetic_tool_history(messages)
-    # Same three turns, but the assistant's `extra_content` is gone.
     assert [m["role"] for m in out] == ["user", "assistant", "user"]
     assistant = out[1]
     assert "extra_content" not in assistant, assistant
@@ -4723,11 +4436,7 @@ def test_strip_provider_synthetic_tool_history_drops_text_only_extra_content():
 
 
 def test_validate_and_resolve_host_blocks_shared_address_space():
-    """Round 24 SSRF P1: 100.64.0.0/10 carrier-grade NAT addresses are
-    `is_private=False` AND `is_global=False` per Python's ipaddress docs. The
-    old denylist (is_private/loopback/link_local/etc.) missed them. Adding `not
-    ip.is_global` as the primary gate covers all non-public ranges, current and
-    future."""
+    """CGNAT 100.64.0.0/10 is not is_private nor is_global; the SSRF gate must check not is_global."""
     import socket as _socket
     from core.inference import tools as _tools
 
@@ -4756,12 +4465,7 @@ def test_validate_and_resolve_host_blocks_shared_address_space():
 
 
 def test_gemini_custom_oai_compat_base_skips_native_allowlist():
-    """Round 24: a custom Gemini OAI-compatible base (LiteLLM/proxy) must NOT
-    have its model list filtered through the native Gemini allowlist regex. A
-    LiteLLM gateway returning
-    `["google/gemini-2.5-flash", "my-team/gemini", "gemini-2.5-flash"]` should
-    pass through; the native filter would strip the prefixed IDs even though
-    chat dispatch routes them via the OpenAI-compatible client."""
+    """Custom OAI-compatible Gemini bases skip the native allowlist, so proxy-prefixed model IDs survive."""
     import asyncio as _asyncio
 
     from routes import providers as _providers
@@ -4799,18 +4503,13 @@ def test_gemini_custom_oai_compat_base_skips_native_allowlist():
     finally:
         _providers.ExternalProviderClient = orig
     ids = {m.id for m in result}
-    # All three IDs survive — native allowlist bypassed.
     assert "google/gemini-2.5-flash" in ids, ids
     assert "my-team/gemini" in ids, ids
     assert "gemini-2.5-flash" in ids, ids
 
 
 def test_strip_provider_synthetic_tool_history_drops_synthetic_only():
-    """Round 22: switching a thread from native Gemini (code_execution /
-    image_generation tool_cards in history) to a local GGUF backend must strip
-    the synthetic tool_calls + matching role=tool replies before llama-server
-    sees them. Real user-function tool_calls and their matching tool replies
-    must survive."""
+    """Synthetic builtin tool history is stripped before llama-server; real user-function calls are kept."""
     from routes.inference import _strip_provider_synthetic_tool_history
 
     messages = [
@@ -4909,17 +4608,11 @@ def test_strip_provider_synthetic_tool_history_drops_empty_assistant():
     ]
     out = _strip_provider_synthetic_tool_history(messages)
     roles = [m.get("role") for m in out]
-    # Synthetic assistant + its tool reply are both gone; only the two user
-    # turns survive.
     assert roles == ["user", "user"], out
 
 
 def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice(monkeypatch):
-    """Round 22 sibling of the round-20 `tool_choice='none'` test: when the
-    caller forces a specific function via `tool_choice={"type":"function", ...}`
-    AND passes `enabled_tools=["web_search"]`, the OpenRouter path must NOT
-    synthesize a fake `web_search` tool card. The plugin wasn't attached
-    upstream, so the UI must not see a server-tool card."""
+    """Forced-function tool_choice on OpenRouter emits no synthetic web_search card, since no plugin ran."""
     captured_events: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
