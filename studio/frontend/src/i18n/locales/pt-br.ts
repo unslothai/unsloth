@@ -745,7 +745,6 @@ export const ptBR = {
       more: "Mais",
       customizeSidebar: "Personalizar barra lateral",
       newBadge: "Novo",
-      addBadge: "Adicionar",
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",

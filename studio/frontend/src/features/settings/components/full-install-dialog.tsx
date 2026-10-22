@@ -18,10 +18,9 @@ import { SettingsRow } from "./settings-row";
 /**
  * Confirms turning a Chat only (GGUF) install into the full one. The work is the manual repair:
  * it reruns the installer with PyTorch, which training, export, video, safetensors models and
- * the image generation features beyond GGUF need. The sidebar's Train row and the Settings row
- * both open this, so the two cannot describe it differently.
+ * the image generation features beyond GGUF need.
  */
-export function FullInstallDialog({
+function FullInstallDialog({
   open,
   onOpenChange,
   onConfirm,

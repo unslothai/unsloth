@@ -740,7 +740,6 @@ export const zhCN = {
       more: "更多",
       customizeSidebar: "自定义侧边栏",
       newBadge: "新",
-      addBadge: "添加",
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",

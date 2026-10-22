@@ -746,7 +746,6 @@ export const de = {
       more: "Mehr",
       customizeSidebar: "Seitenleiste anpassen",
       newBadge: "Neu",
-      addBadge: "Hinzufügen",
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",

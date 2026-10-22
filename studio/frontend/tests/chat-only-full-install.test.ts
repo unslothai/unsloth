@@ -3,9 +3,9 @@
 
 // A Desktop install set up as Chat only (GGUF) becomes the full install through the manual repair,
 // which reruns the installer with PyTorch: training, export, video, safetensors models and the
-// image generation features beyond GGUF need it. The only pointer used to be a tooltip on a Train row that
-// could not be clicked, aimed at a Settings row filed under Danger zone. Train now offers the
-// upgrade directly, and Settings has an Install type row, both only where the repair can do it.
+// image generation features beyond GGUF need it. The only pointer used to be the greyed Train row's
+// tooltip, aimed at a Settings row filed under Danger zone. Settings now has an Install type row,
+// shown only where the repair can do it, and the tooltip names that row.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -77,20 +77,22 @@ test("the Chat only confirm copy states the download and does not claim a reinst
   assert.doesNotMatch(repair.confirmDescriptionChatOnly, /reinstalls/);
 });
 
-test("the Train row opens the full install dialog instead of greying out", async () => {
+test("the greyed Train row points at the Install type row, not at Danger zone", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
-  const train = /\n    train: \{([\s\S]*?)\n    \},\n/.exec(source);
-  assert.ok(train, "could not find the train row");
-  const body = train[1];
-  assert.match(body, /disabled: chatOnlyMeasured && !fullInstallUpgrade,/);
-  assert.match(
-    body,
-    /if \(fullInstallUpgrade\) \{[\s\S]*?setFullInstallOpen\(true\);[\s\S]*?return;\s*\}\s*if \(chatOnlyMeasured\) return;/,
-    "the upgrade branch must come before the chat-only early return",
-  );
-  assert.match(
-    source,
-    /\{fullInstallUpgrade && \(\s*<FullInstallDialog[\s\S]*?onConfirm=\{\(\) => void fullInstallUpgrade\.repairInstall\(\)\}/,
-    "the dialog runs the same manual repair as Settings",
-  );
+  const hint = /const trainDisabledHint: string \| undefined = ([\s\S]*?\n\s*: undefined);/.exec(source);
+  assert.ok(hint, "could not find trainDisabledHint");
+  const forNoTorch = (canRepair: boolean) =>
+    new Function(
+      "chatOnlyMeasured",
+      "chatOnlyReason",
+      "chatOnlyDetail",
+      "chatOnlyHint",
+      "canRepair",
+      `return ${hint[1]};`,
+    )(true, "no_torch", null, null, canRepair) as string;
+  // Desktop: the row the hint names is the one DesktopInstallTypeControl renders in this case.
+  assert.match(forNoTorch(true), /Use Upgrade to full install in Settings/);
+  assert.doesNotMatch(forNoTorch(true), /Repair installation/);
+  // Web and terminal-started backends have no repair to run, so they keep the CLI advice.
+  assert.match(forNoTorch(false), /--no-torch/);
 });

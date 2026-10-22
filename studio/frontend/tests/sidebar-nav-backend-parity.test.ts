@@ -80,8 +80,7 @@ test("Train and Video are still the capability-gated rows", async () => {
   // not restated here. Video is still required to have a disabled state -- swapping it for
   // Train's would pass there, and un-gate the row on a Mac whose only problem is MLX.
   for (const [id, disabled] of [
-    // A Chat only install that can be upgraded keeps Train clickable to offer the full install.
-    ["train", /disabled: chatOnlyMeasured && !fullInstallUpgrade,/],
+    ["train", /disabled: chatOnlyMeasured,/],
     ["video", /disabled: (?!chatOnlyMeasured)\w+,/],
   ] as const) {
     const body = bodies.get(id);

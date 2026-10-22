@@ -649,7 +649,6 @@ export const it = {
       more: "Altro",
       customizeSidebar: "Personalizza la barra laterale",
       newBadge: "Novità",
-      addBadge: "Aggiungi",
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",

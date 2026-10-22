@@ -742,7 +742,6 @@ export const ko = {
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
       newBadge: "신규",
-      addBadge: "추가",
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",

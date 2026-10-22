@@ -746,7 +746,6 @@ export const fr = {
       more: "Plus",
       customizeSidebar: "Personnaliser la barre latérale",
       newBadge: "Nouveau",
-      addBadge: "Ajouter",
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",

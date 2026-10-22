@@ -797,7 +797,6 @@ export const en = {
       customizeSidebar: "Customize sidebar",
       // Rendered uppercase in a pill beside a recently shipped tab.
       newBadge: "New",
-      addBadge: "Add",
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",

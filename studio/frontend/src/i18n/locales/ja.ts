@@ -744,7 +744,6 @@ export const ja = {
       more: "その他",
       customizeSidebar: "サイドバーをカスタマイズ",
       newBadge: "新機能",
-      addBadge: "追加",
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",

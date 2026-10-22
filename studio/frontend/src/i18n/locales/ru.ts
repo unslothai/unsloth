@@ -745,7 +745,6 @@ export const ru = {
       more: "Ещё",
       customizeSidebar: "Настроить боковую панель",
       newBadge: "Новое",
-      addBadge: "Добавить",
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",

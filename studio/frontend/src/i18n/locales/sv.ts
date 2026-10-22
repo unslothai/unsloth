@@ -844,7 +844,6 @@ export const sv = {
       more: "Mer",
       customizeSidebar: "Anpassa sidofältet",
       newBadge: "Ny",
-      addBadge: "Lägg till",
       export: "Exportera",
       recents: "Senaste",
       noChatsYet: "Inga chattar ännu",

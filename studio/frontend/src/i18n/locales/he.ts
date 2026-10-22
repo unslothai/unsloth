@@ -826,7 +826,6 @@ export const he = {
       more: "עוד",
       customizeSidebar: "התאמת סרגל הצד",
       newBadge: "חדש",
-      addBadge: "הוספה",
       export: "ייצוא",
       recents: "אחרונים",
       noChatsYet: "אין עדיין צ'אטים",

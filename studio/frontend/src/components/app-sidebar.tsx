@@ -92,10 +92,7 @@ import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
-import {
-  canUpgradeToFullInstall,
-  useTauriRepairController,
-} from "@/hooks/tauri-repair-context";
+import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
@@ -240,7 +237,6 @@ import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   sidebarNavRowPinned,
-  FullInstallDialog,
   useAppearanceCustomStore,
   useSettingsDialogStore,
   isSurfaceBackgrounded,
@@ -1324,9 +1320,6 @@ export function AppSidebar() {
   // rows on a measured verdict and let them spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
-  // Chat only by request: Train stays clickable and offers the full install instead of greying out.
-  const fullInstallUpgrade = canUpgradeToFullInstall(chatOnlyReason, chatOnlyMeasured, repair) ? repair : null;
-  const [fullInstallOpen, setFullInstallOpen] = useState(false);
   // Explain a greyed-out Train (chat-only host) on hover. Export stays navigable so its page
   // can show a precise reason.
   const trainDisabledHint: string | undefined = !chatOnlyMeasured
@@ -1341,9 +1334,9 @@ export function AppSidebar() {
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "no_torch"
         ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
-          // on Desktop the manual repair reruns the installer with PyTorch.
+          // on Desktop the Install type row in Settings > General reruns the installer with PyTorch.
           canRepair
-          ? "Training needs the full install. Click to upgrade."
+          ? "Training was left out of this install (Chat only). Use Upgrade to full install in Settings to add it."
           : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
         : chatOnlyReason === "rosetta"
         ? "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
@@ -3410,24 +3403,17 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured && !fullInstallUpgrade,
+      disabled: chatOnlyMeasured,
       tooltip: trainDisabledHint,
-      badge: fullInstallUpgrade ? t("shell.navigation.addBadge") : undefined,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (fullInstallUpgrade) {
-          closeMobileIfOpen();
-          setFullInstallOpen(true);
-          return;
-        }
         if (chatOnlyMeasured) return;
         navigateFromRow({ to: "/studio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
-        if (chatOnlyMeasured) return;
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
@@ -6855,13 +6841,6 @@ export function AppSidebar() {
     </Sidebar>
     </TooltipProvider>
     <ChatSearchDialog />
-    {fullInstallUpgrade && (
-      <FullInstallDialog
-        open={fullInstallOpen}
-        onOpenChange={setFullInstallOpen}
-        onConfirm={() => void fullInstallUpgrade.repairInstall()}
-      />
-    )}
     {!isTauri && (
       <ShutdownDialog
         open={shutdownOpen}

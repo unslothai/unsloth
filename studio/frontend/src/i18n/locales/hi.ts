@@ -746,7 +746,6 @@ export const hi = {
       more: "अधिक",
       customizeSidebar: "साइडबार कस्टमाइज़ करें",
       newBadge: "नया",
-      addBadge: "जोड़ें",
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",

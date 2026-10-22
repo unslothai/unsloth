@@ -742,7 +742,6 @@ export const ar = {
       more: "المزيد",
       customizeSidebar: "تخصيص الشريط الجانبي",
       newBadge: "جديد",
-      addBadge: "إضافة",
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
