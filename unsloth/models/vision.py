@@ -4653,6 +4653,9 @@ class FastBaseModel:
         ):
             # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
             task_type = TaskType.SEQ_2_SEQ_LM
+        if task_type == TaskType.CAUSAL_LM and not hasattr(model, "prepare_inputs_for_generation"):
+            # CTC / audio classification heads (Wav2Vec2ForCTC) cannot generate; PeftModelForCausalLM reads that hook in __init__.
+            task_type = None
         if _is_text_seq2seq_config(getattr(model, "config", None)):
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
             finetune_vision_layers = True
