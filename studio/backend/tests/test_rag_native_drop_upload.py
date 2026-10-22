@@ -104,7 +104,7 @@ def test_forged_signature_is_rejected(rag_home, tmp_path):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"operation": "load-model"},  # a model grant cannot be spent as an attachment
+        {"operation": "load-model"},
         {"path_kind": "model"},
     ],
 )
@@ -142,7 +142,6 @@ def test_grant_is_single_use(rag_home, tmp_path):
     source = _doc(tmp_path)
     lease = _sign(source)
     _save_native_path_upload(lease)
-    # Replaying the same nonce must not mint a second read of the path.
     with pytest.raises(HTTPException):
         _save_native_path_upload(lease)
 

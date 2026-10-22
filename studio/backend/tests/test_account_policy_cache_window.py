@@ -3,11 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""No policy read may answer from the pre-write state once an account mutation has committed.
-
-The observation point is the account write's own ``conn.close()``: the INSERT/UPDATE is durable by
-then, and it sits inside the window that a concurrent request would land in.
-"""
+"""Policy reads must not see pre-write state after an account write commits at conn.close()."""
 
 import importlib.util
 import secrets
@@ -87,7 +83,6 @@ def test_desktop_login_while_the_first_account_is_created_is_not_granted(auth_db
     raw = storage.create_desktop_secret()
     client = _auth_client()
 
-    # A single-user install answers desktop-login from the cached owner-only count.
     granted = client.post("/api/auth/desktop-login", json = {"secret": raw})
     assert granted.status_code == 200 and granted.json().get("access_token")
 

@@ -6,7 +6,7 @@ import functools
 import inspect
 import logging
 import os
-import threading
+import types
 import warnings
 from typing import Optional
 from dataclasses import asdict
@@ -63,7 +63,6 @@ _SUPPORTS_TMA = _check_tma_support()
 
 _DEVICE_AUTOTUNERS = {}
 _MODEL_AUTOTUNE_CACHES = {}
-_MODEL_AUTOTUNE_LOCKS = {}
 _DEVICE_MODELS = {}
 
 
@@ -89,10 +88,25 @@ def _device_model(device):
     return model
 
 
+_DEVICE_SM_COUNTS = {}
+
+
+def _num_sms(device):
+    """multi_processor_count of ``device``, read once per card (it cannot change in a process)."""
+    index = _device_index(device)
+    count = _DEVICE_SM_COUNTS.get(index)
+    if count is None:
+        count = _DEVICE_SM_COUNTS[index] = torch.cuda.get_device_properties(
+            index
+        ).multi_processor_count
+    return count
+
+
 def _autotuner_for(kernel, device):
     """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
-    the same GPU model share one results cache, so identical cards tune once; a run's scratch state
-    (nargs) stays per card, since backward runs one autograd thread per device."""
+    the same GPU model share one results cache, so identical cards reuse each other's tuning; a run's
+    scratch state (nargs) stays per card, since backward runs one autograd thread per device. No lock:
+    a cached launch never waits on another card's tuning."""
     if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
         return kernel
     key = (id(kernel), _device_index(device))
@@ -101,22 +115,6 @@ def _autotuner_for(kernel, device):
         tuner = copy.copy(kernel)
         model_key = (id(kernel), _device_model(device))
         tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault(model_key, {})
-        # One tuning per shape per model: a second card waits, then reads the first card's result
-        # (concurrent benchmarking would also skew both timings). A cached launch holds it briefly.
-        lock = _MODEL_AUTOTUNE_LOCKS.setdefault(model_key, threading.Lock())
-        run = getattr(tuner, "run", None)
-        if run is not None:
-
-            def _run_single_flight(
-                *args,
-                _run = run,
-                _lock = lock,
-                **kwargs,
-            ):
-                with _lock:
-                    return _run(*args, **kwargs)
-
-            tuner.run = _run_single_flight
         _DEVICE_AUTOTUNERS[key] = tuner
     # Callers reassign kernel.configs (benchmarks, tests): follow it like the shared tuner would.
     configs = getattr(kernel, "configs", None)
@@ -283,7 +281,7 @@ def _grouped_gemm_forward_impl(
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count
+    NUM_SMS = _num_sms(X.device)
 
     def grid(META):
         return (NUM_SMS,)
@@ -430,7 +428,7 @@ def _grouped_gemm_dX_impl(
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties(dY.device).multi_processor_count
+    NUM_SMS = _num_sms(dY.device)
 
     def grid(META):
         return (NUM_SMS,)
@@ -500,6 +498,43 @@ def _use_per_expert_dW_kernel():
     return os.environ.get("UNSLOTH_MOE_DW_KERNEL", "").strip().lower() != "legacy"
 
 
+_PER_EXPERT_DW_FITS = {}
+
+
+def _per_expert_dW_fits(device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
+    """False when this tile overflows ``device`` shared memory in the per-expert dW kernel.
+
+    It double buffers both operands, so a caller-supplied tile the legacy kernel launched can raise OutOfResources."""
+    index = _device_index(device)
+    key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    fits = _PER_EXPERT_DW_FITS.get(key)
+    if fits is None:
+        fits = True
+        try:
+            if not getattr(torch.version, "hip", None):
+                from ..autotune_cache import _estimate_smem
+
+                props = torch.cuda.get_device_properties(index)
+                smem = int(props.shared_memory_per_block_optin)
+                tile = types.SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                need = _estimate_smem("dW", tile, act_bytes, act_bytes, (props.major, props.minor))
+                fits = need <= smem
+                if not fits:
+                    logger.info(
+                        f"Unsloth: MoE dW tile (M, N, K, stages) {key[2:]} needs ~{need} B shared "
+                        f"memory per-expert, over {smem} B on cuda:{index}; using the legacy dW kernel."
+                    )
+        except Exception:
+            fits = True
+        _PER_EXPERT_DW_FITS[key] = fits
+    return fits
+
+
 def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
@@ -532,7 +567,7 @@ def _launch_grouped_gemm_dW(
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
-    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count if not debug else 1
+    NUM_SMS = _num_sms(X.device) if not debug else 1
     X = X.view(-1, X.shape[-1]).contiguous()
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
@@ -577,6 +612,14 @@ def _launch_grouped_gemm_dW(
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
     per_expert = _use_per_expert_dW_kernel()
+    if (
+        per_expert
+        and not autotune
+        and not _per_expert_dW_fits(
+            X.device, X.element_size(), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
+    ):
+        per_expert = False
 
     if accumulate:
         # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.

@@ -398,6 +398,9 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
 RESERVE_SHARE = 0.06
 
 
+MANAGED_ENGINE_BUDGET_FLOOR = 0.80
+
+
 def gpu_memory_fraction(
     gpu_ids: list[int],
     reserve_mib: int = 512,
@@ -416,7 +419,9 @@ def gpu_memory_fraction(
         rows = (measure or _nvidia_memory_rows)(gpu_ids)
         if len(rows) != len(gpu_ids):
             raise ValueError("Could not measure every selected GPU")
-        fraction = get_vram_budget_fraction()
+        # vLLM / SGLang cannot offload to the CPU, so a GGUF-only low budget must not shrink them;
+        # the per-load engine_gpu_memory_utilization still caps lower.
+        fraction = max(get_vram_budget_fraction(), MANAGED_ENGINE_BUDGET_FLOOR)
         for total, free in rows:
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:

@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The compat endpoint now stamps Ollama rows "ollama" (#9986 bug 1), so every
-// consumer of LocalModelInfo.source must name that source rather than fall to
-// its generic default. The recipe selector's sourceLabel switch lives inside a
-// component, so its ollama case is pinned via the AST, and its label text is
-// held in parity with the hub inventory's label for the same source.
+// Ollama rows are stamped "ollama"; the label must match the hub inventory's label.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -33,7 +29,6 @@ const source = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
-/** The string literal returned by sourceLabel's `case "ollama"` clause, if any. */
 function ollamaCaseLabel(): string | null {
   let label: string | null = null;
   const visit = (node: ts.Node): void => {

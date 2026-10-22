@@ -26,7 +26,6 @@ function reset(ids: string[] = []): void {
 test("pinning a selection prepends only the chats that were not pinned", () => {
   reset(["b"]);
   usePinnedChatsStore.getState().setPinned(["a", "b", "c"], true);
-  // b keeps its place; a and c lead, as a single pin does.
   assert.deepEqual(usePinnedChatsStore.getState().pinnedIds, ["a", "c", "b"]);
 });
 
@@ -58,13 +57,10 @@ test("an empty selection changes nothing in either direction", () => {
 });
 
 test("a shift range survives the list re-sorting between the two clicks", () => {
-  // A background stream re-sorts the list by updatedAt mid-selection; the
-  // anchor must still name the chat it was set on.
+  // A background stream can reorder the list mid-selection, so the anchor is an id.
   const before = ["a", "b", "c", "d"];
   const after = ["d", "a", "b", "c"];
-  // Anchor on "b", then shift-click "c" after the reorder: still exactly b..c.
   assert.deepEqual(rangeBetween(after, "b", "c"), ["b", "c"]);
-  // An index anchor would instead sweep a..c, deleting "a" unasked.
   assert.equal(before.indexOf("b"), 1);
   assert.equal(after[1], "a");
   assert.deepEqual(rangeBetween(after, after[1], "c"), ["a", "b", "c"]);

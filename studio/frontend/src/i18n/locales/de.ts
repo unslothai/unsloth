@@ -118,6 +118,7 @@ export const de = {
     reload: "Neu laden",
     more: "Mehr",
     addressPlaceholder: "Suchen oder URL eingeben",
+    local: "Lokal",
     suggested: "Vorschläge",
     suggestedMenu: {
       open: "Öffnen",
@@ -468,6 +469,8 @@ export const de = {
       downloadFailed: "{name} konnte nicht heruntergeladen werden",
       notMarked: "{name} wurde gespeichert, konnte aber nicht als aus dem Internet heruntergeladen markiert werden. Dein System warnt deshalb vor dem Öffnen nicht.",
       blocked: "Diese Adresse kann im Browserbereich nicht geöffnet werden. Er öffnet nur öffentliche Websites.",
+      blockedLocal: "Diese lokale Adresse kann hier nicht geöffnet werden. Gib sie in die Adressleiste ein, um sie zu öffnen.",
+      studioAddress: "Das ist die Adresse von Unsloth selbst und kann deshalb nicht im Browserbereich geöffnet werden.",
       clearDataSettingDescription: "Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten löschen. Du wirst dabei von Websites abgemeldet.",
       clearDataDescription: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",
       clearDataFailed: "Websitedaten konnten nicht gelöscht werden. Versuche es erneut.",
@@ -623,6 +626,8 @@ export const de = {
       "Dieser Chat erscheint nicht in deinem Verlauf und wird nicht gespeichert. Er verschwindet, wenn du ihn verlässt.",
   },
   picker: {
+    unifiedTightFit: "Knapp",
+    unifiedTightFitHint: "Lädt auf diesem Mac eventuell nur mit kürzerem Kontext oder läuft langsamer.",
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
     retry: "Erneut versuchen",
@@ -1090,6 +1095,10 @@ export const de = {
       alternateSlot: "Alternatives Kürzel",
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
+      metaUnsupported: "Die Windows-Taste kann nicht in Tastenkürzeln verwendet werden.",
+      altGraphUnsupported: "AltGr-Kombinationen können nicht als Tastenkürzel verwendet werden.",
+      desktopOnly: "Nur in der Desktop-App",
+      builtInKey: "Integriert: {key}",
       actions: {
         findInPage: {
           label: "Auf der Seite suchen",
@@ -1290,6 +1299,10 @@ export const de = {
         steerMessage: {
           label: "Antwort steuern",
           description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
+        stopGeneration: {
+          label: "Generierung stoppen",
+          description: "Die laufende Antwort anhalten",
         },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
@@ -1829,20 +1842,14 @@ export const de = {
       },
       notifications: {
         sectionTitle: "Benachrichtigungen",
-        showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
-        showLlamaUpdatesDescription:
-          "Benachrichtigt, wenn ein neuerer llama.cpp-Build verfügbar ist, um neue Modelle auszuführen. Deaktivieren Sie dies, wenn Sie nur trainieren.",
-        showLoadedModels: "Anzeige geladener Modelle",
-        showLoadedModelsDescription:
-          "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
-        showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
-        showAudioCppUpdatesDescription:
-          "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
-        showUnslothUpdates: "Unsloth-Update-Benachrichtigungen",
-        showUnslothUpdatesDescription:
-          "Benachrichtigen, wenn eine neuere Unsloth-Version zur Installation bereitsteht.",
+        showLoadedModels: "Karte geladener Modelle",
+        showLoadedModelsDescription: "Eine Eckkarte mit allen geladenen Modellen, mit einem Klick entladbar.",
+        updateReminders: "Update-Erinnerungen",
+        updateRemindersDescription: "Wie oft eine neue Version angeboten wird, sobald sie bereit ist.",
+        llamaHint: "Chat- und GGUF-Modelle",
+        audioHint: "Sprache, Musik und Transkription",
         frequency: {
-          always: "Immer",
+          always: "Sobald verfügbar",
           daily: "Einmal täglich",
           weekly: "Einmal pro Woche",
           biweekly: "Alle zwei Wochen",
@@ -2006,6 +2013,18 @@ export const de = {
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",
       },
+      fullInstall: {
+        label: "Installationstyp",
+        description:
+          "Nur Chat (GGUF). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
+        action: "Auf vollständige Installation upgraden",
+        confirmTitle: "Auf die vollständige Installation upgraden?",
+        confirmDescription:
+          "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmAction: "Upgraden",
+        keywords:
+          "full install upgrade installationstyp vollständige installation nur chat chat only gguf add training training trainieren train fine-tune pytorch torch export video bildgenerierung safetensors",
+      },
       repairInstall: {
         label: "Installation reparieren",
         description:
@@ -2014,6 +2033,8 @@ export const de = {
         confirmTitle: "Diese Installation reparieren?",
         confirmDescription:
           "Stoppt den Server und führt das Installationsprogramm erneut aus, wodurch PyTorch für die GPU dieses Rechners neu installiert wird. Chats und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmDescriptionChatOnly:
+          "Stoppt den Server und führt das Installationsprogramm erneut aus. Dies ist eine Nur-Chat-Installation, daher upgradet das Installationsprogramm sie auch auf die vollständige Installation mit PyTorch, insgesamt mehrere Gigabyte. Chats und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Jetzt reparieren",
       },
       resetPreferences: {
@@ -2094,9 +2115,9 @@ export const de = {
         longestStreak: "Längste Serie",
         activityTitle: "Token-Aktivität",
         activityDescription: {
-          daily: "Zeitraum: {weeks} · {total}",
-          weekly: "Spitzenwoche {total} · letzte {weeks}",
-          cumulative: "{total} kumuliert in den letzten {weeks}",
+          daily: "{total} seit {since}",
+          weekly: "Aktivste Woche {total} · seit {since}",
+          cumulative: "{total} insgesamt seit {since}",
         },
         mode: {
           daily: "Täglich",
@@ -2105,8 +2126,9 @@ export const de = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Woche vom {date} · {tokens}",
-        chartToggle: "Diagramm",
-        chartToggleHint: "Wöchentlich und Kumuliert als Diagramm mit beschrifteten Achsen anzeigen",
+        emptyDayTooltip: "{date} · Keine Aktivität",
+        apiRequests: "{count} über die API",
+        cumulativeTooltip: "Bis zur Woche vom {date} · {tokens} insgesamt",
         less: "Weniger",
         more: "Mehr",
         insightsTitle: "Aktivitätsauswertung",
@@ -2745,6 +2767,10 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      showReplyTimes: "Antwortzeiten",
+      showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
+      showReplyTimesKeywords:
+        "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
@@ -3158,6 +3184,7 @@ export const de = {
       relativeNever: "nie",
       relativeJustNow: "gerade eben",
       expired: "abgelaufen",
+      expiredStatus: "Abgelaufen",
       today: "heute",
       created: "Erstellt {value}",
       used: "Verwendet {value}",
@@ -3186,6 +3213,14 @@ export const de = {
         autoSwitchOff:
           "Das Modell wird nur per Name geladen, wenn der automatische Modellwechsel an ist. Schalte ihn ein oder lade das Modell zuerst auf seiner Audio-Seite.",
         useViaApi: "Per API nutzen",
+      },
+      mediaApi: {
+        title: "Bild- und Video-API",
+        description: "Erzeuge Bilder und Videos aus deinem eigenen Code über die OpenAI-kompatiblen Endpunkte.",
+        images: "Bilder",
+        video: "Video",
+        placeholderModel: "Das gezeigte Modell ist ein Beispiel. Lade ein Modell auf der Bilder- oder Video-Seite und öffne dies über deren API-Schaltfläche, um es einzusetzen.",
+        autoSwitchOff: "Der automatische Medienwechsel ist aus, daher laufen Anfragen auf dem Modell, das die Seite geladen hat, egal welches sie nennen.",
       },
       decisionApi: {
         title: "Entscheidungs-API",
@@ -3266,6 +3301,24 @@ export const de = {
       desktopAppVersionUnavailable: "Nicht verfügbar",
       llamaCppVersion: "llama.cpp-Version",
       audioCppVersion: "audio.cpp-Version",
+      whisperCppVersion: "whisper.cpp-Version",
+      engines: {
+        title: "Engines",
+        description: "Die Laufzeiten, mit denen Unsloth Modelle ausführt. Updates werden im Hintergrund installiert, ohne Neustart.",
+        updatesLabel: "Engine-Updates",
+        notInstalled: "Nicht installiert",
+        available: "{version} verfügbar",
+        upToDate: "Auf dem neuesten Stand",
+        updatesAvailable: "Updates verfügbar",
+        checking: "Suche nach Updates...",
+        checkFailed: "Updates konnten nicht geprüft werden. Versuche es später erneut.",
+        unsupported: "Die Engines dieser Installation werden außerhalb von Unsloth verwaltet.",
+        checkForUpdates: "Nach Updates suchen",
+        update: "Aktualisieren",
+        updating: "Wird aktualisiert...",
+        updated: "Engines aktualisiert.",
+        updateFailed: "Update fehlgeschlagen: {error}",
+      },
       hardware: "Hardware",
       gpu: "GPU",
       gpuIntegrated: "integriert",
@@ -3352,6 +3405,9 @@ export const de = {
         docsUpdating: "Aktualisierung",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4720,5 +4776,42 @@ export const de = {
     cantRun: "Konnte nicht ausgeführt werden",
     failed: "Fehler {status}",
     invalidJson: "Der Anfrage-Body ist kein gültiges JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Geladene Modelle",
+      countOne: "{count} Modell geladen",
+      countMany: "{count} Modelle geladen",
+      pillLabel: "{count}. Details anzeigen oder zum Verschieben ziehen",
+      dragToMove: "Zum Verschieben ziehen",
+      dragHandleLabel: "Geladene Modelle verschieben. Mit den Pfeiltasten feinjustieren.",
+      collapse: "Einklappen",
+      collapseLabel: "Geladene Modelle einklappen",
+      close: "Schließen",
+      closeLabel: "Geladene Modelle schließen",
+      backOnNextLoad: "Erscheint beim nächsten Laden eines Modells wieder",
+      ejectToFree: "Auswerfen, um Speicher freizugeben",
+      ejectLabel: "{model} auswerfen",
+      openTarget: "{target} öffnen",
+      rowLabel: "{model}. {target} öffnen",
+      loading: "Wird geladen",
+      ejecting: "Wird ausgeworfen",
+      stillInMemory: "Noch im Speicher",
+      alsoServing: "Stellt außerdem bereit",
+      noneLoaded: "Keine Modelle geladen",
+      noneLoadedDetail: "Modelle, die du lädst, werden hier angezeigt.",
+      otherAccount: "Von einem anderen Konto verwendet",
+      otherAccountDetail: "Der Speicher wird von einem Modell belegt, das du nicht sehen kannst",
+      toastStillResident: "„{model}“ wurde während des Auswerfens geladen und belegt daher weiterhin Speicher. Wirf es erneut aus, um ihn freizugeben.",
+      toastUnverified: "{model} sollte entladen werden, aber die Laufzeit hat dies nicht bestätigt. Prüfe die Karte gleich noch einmal.",
+      toastAlreadyFree: "{model} war nicht mehr geladen.",
+      toastReplaced: "{model} ist nicht mehr geladen. „{resident}“ hat seinen Platz eingenommen und wurde nicht angetastet.",
+      toastEjected: "{model} ausgeworfen",
+      toastFailed: "{model} konnte nicht ausgeworfen werden",
+    },
+    monitor: {
+      dragHandleLabel: "Live-Monitor verschieben. Mit den Pfeiltasten feinjustieren, per Doppelklick zurücksetzen.",
+      reconnecting: "Verbindung wird wiederhergestellt...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -79,11 +79,17 @@ type InsetStyle = Pick<
 
 const insetScopes = new Set<HTMLElement>();
 const insetValues = new Map<string, string>();
+const insetListeners = new Set<() => void>();
+
+function notifyInsetChange(): void {
+  for (const listener of insetListeners) listener();
+}
 
 function removeCornerInset(name: string): string {
   const previous = insetValues.get(name) ?? "";
   insetValues.delete(name);
   for (const scope of insetScopes) scope.style.removeProperty(name);
+  if (previous) notifyInsetChange();
   return previous;
 }
 
@@ -92,8 +98,18 @@ function setCornerInset(name: string, value: string | null): void {
     removeCornerInset(name);
     return;
   }
+  const changed = insetValues.get(name) !== value;
   insetValues.set(name, value);
   for (const scope of insetScopes) scope.style.setProperty(name, value);
+  if (changed) notifyInsetChange();
+}
+
+/** Fires after a corner inset changes: rail cards move with it without resizing, so no ResizeObserver sees it. */
+export function subscribeCornerInsets(listener: () => void): () => void {
+  insetListeners.add(listener);
+  return () => {
+    insetListeners.delete(listener);
+  };
 }
 
 export const cornerInsets: { style: InsetStyle } = {
