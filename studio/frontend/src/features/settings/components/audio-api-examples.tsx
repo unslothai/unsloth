@@ -5,6 +5,7 @@ import { SegmentedPill } from "@/components/segmented-control";
 import { usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -206,7 +207,11 @@ export function AudioApiExamples({
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
   const key = audioApiKey(apiKey, {
     base,
     tunnel: useTunnel && !!cloudflareUrl,

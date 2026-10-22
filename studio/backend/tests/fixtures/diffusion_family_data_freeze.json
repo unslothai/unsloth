@@ -3475,7 +3475,7 @@
      10,
      0
     ],
-    "gated": false,
+    "gated": true,
     "schemes": [
      "nvfp4",
      "int8",
@@ -3506,6 +3506,12 @@
    "flux.3-klein-base": [
     "nvfp4"
    ],
+   "hunyuanvideo-1.5": [
+    "nvfp4"
+   ],
+   "hunyuanvideo-1.5-720p": [
+    "nvfp4"
+   ],
    "qwen-image": [
     "mxfp8",
     "nvfp4"
@@ -3516,6 +3522,9 @@
    ],
    "qwen-image-layered": [
     "mxfp8",
+    "nvfp4"
+   ],
+   "wan2.2-ti2v-5b": [
     "nvfp4"
    ]
   },

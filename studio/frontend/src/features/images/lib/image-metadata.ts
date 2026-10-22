@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+import { parseHiresInfotext } from "./hires-choice.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
 import type { SdControlsCapability } from "./sd-controls.ts";
 
@@ -827,12 +828,15 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       notApplied.push(`${label}: ${value}`);
   }
   out.schedule_type ??= legacySchedule;
+  const hadHires = Object.keys(hires).length > 0;
+  // Maps Hires upscale / steps / upscaler / CFG Scale; whatever stays in `hires` is named as not applied.
+  if (hadHires) Object.assign(out, parseHiresInfotext(hires, typeof out.strength === "number" ? out.strength : undefined, { width: out.width, height: out.height }));
   const hiresKeys = Object.keys(hires);
   if (hiresKeys.length > 0) out.hires = hires;
   // txt2img hires fix also writes a denoising strength; without it the strength means img2img,
   // or inpaint when A1111 wrote its mask-only fields.
   if (out.strength !== undefined) {
-    if (hiresKeys.length > 0) delete out.strength;
+    if (hadHires) delete out.strength;
     else
       out.workflow ??=
         out.mask_blur !== undefined ||
@@ -921,6 +925,14 @@ export interface RestorableRecipe {
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
+  upscale_model?: string | null;
+  hires_scale?: number;
+  hires_denoise?: number;
+  hires_steps?: number;
+  hires_upscaler?: string;
+  hires_guidance?: number;
+  hires_base_width?: number;
+  hires_base_height?: number;
 }
 
 export const APPLIED_RECIPE_KEYS = [
@@ -954,6 +966,14 @@ export const APPLIED_RECIPE_KEYS = [
   "mask_blur",
   "inpaint_only_masked",
   "inpaint_padding",
+  "upscale_model",
+  "hires_scale",
+  "hires_denoise",
+  "hires_steps",
+  "hires_upscaler",
+  "hires_guidance",
+  "hires_base_width",
+  "hires_base_height",
 ] as const;
 
 /** Known but not applied: loading a model or a ControlNet image stays the user's call. */
@@ -1261,7 +1281,31 @@ export function recipeSettings(
         ? r.inpaint_only_masked
         : undefined,
     inpaint_padding: bounded(r, "inpaint_padding"),
+    ...hiresRecipeFields(r),
   };
+}
+
+function hiresRecipeFields(r: ImportedRecipe): Partial<RestorableRecipe> {
+  const out: Partial<RestorableRecipe> = {};
+  const upscaleModel = str(r.upscale_model);
+  if (upscaleModel) out.upscale_model = upscaleModel;
+  const scale = clamp(num(r.hires_scale), 1, 4);
+  if (scale === undefined) return out;
+  out.hires_scale = scale;
+  out.hires_denoise = clamp(num(r.hires_denoise), 0, 1);
+  const steps = int(r.hires_steps);
+  if (steps !== undefined && steps > 0) out.hires_steps = Math.min(steps, 100);
+  const upscaler = str(r.hires_upscaler);
+  if (upscaler) out.hires_upscaler = upscaler;
+  const cfg = clamp(num(r.hires_guidance), 0, 20);
+  if (cfg !== undefined) out.hires_guidance = cfg;
+  const w = int(r.hires_base_width);
+  const h = int(r.hires_base_height);
+  if (w && h && w > 0 && h > 0) {
+    out.hires_base_width = w;
+    out.hires_base_height = h;
+  }
+  return out;
 }
 
 const LORA_EXTENSIONS = /\.(safetensors|gguf|ckpt|pt|bin)$/i;

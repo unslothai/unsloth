@@ -679,6 +679,8 @@ export const en = {
       "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
+    unifiedTightFit: "Tight fit",
+    unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -2064,6 +2066,18 @@ export const en = {
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
       },
+      fullInstall: {
+        label: "Install type",
+        description:
+          "Chat only (GGUF). The full install adds training, export, video, safetensors models and additional image generation features.",
+        action: "Upgrade to full install",
+        confirmTitle: "Upgrade to the full install?",
+        confirmDescription:
+          "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+        confirmAction: "Upgrade",
+        keywords:
+          "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",
+      },
       repairInstall: {
         label: "Repair installation",
         description:
@@ -2072,6 +2086,8 @@ export const en = {
         confirmTitle: "Repair this installation?",
         confirmDescription:
           "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU at the newest supported release. Chats and settings are kept. This can take several minutes.",
+        confirmDescriptionChatOnly:
+          "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
       },
       resetPreferences: {
@@ -3134,7 +3150,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
@@ -3179,6 +3195,7 @@ export const en = {
       relativeNever: "never",
       relativeJustNow: "just now",
       expired: "expired",
+      expiredStatus: "Expired",
       today: "today",
       created: "Created {value}",
       used: "Used {value}",
