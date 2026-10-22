@@ -1316,9 +1316,14 @@ H3_PRE_MOVE_COPIES: dict[str, tuple[str, int, str, tuple[tuple[str, str], ...]]]
 _SHA256_MEMO: dict[tuple[str, int, int], str] = {}
 
 
-def _file_sha256(path: Path) -> Optional[str]:
+class H3HashCancelled(RuntimeError):
+    """The load that asked for a pre-move copy was cancelled while its bytes were being hashed."""
+
+
+def _file_sha256(path: Path, cancel_event: Any = None) -> Optional[str]:
     """sha256 of ``path``. An HF cache snapshot entry links to ``blobs/<sha256>``, its content address, so that name is
-    the answer without reading GBs; a copied entry (no symlinks, e.g. Windows) is hashed once per process."""
+    the answer without reading GBs; a copied entry (no symlinks, e.g. Windows) is hashed once per process, checking
+    ``cancel_event`` between chunks so an unload is not held for a 27 GB disk scan."""
     import hashlib
     import re
 
@@ -1332,6 +1337,8 @@ def _file_sha256(path: Path) -> Optional[str]:
             digest = hashlib.sha256()
             with open(real, "rb") as handle:
                 for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise H3HashCancelled("Cancelled while hashing a pre-move MiniMax-H3 copy.")
                     digest.update(chunk)
             _SHA256_MEMO[key] = digest.hexdigest()
         return _SHA256_MEMO[key]
@@ -1339,7 +1346,11 @@ def _file_sha256(path: Path) -> Optional[str]:
         return None
 
 
-def _matches_pinned(path: Optional[Path], filename: str) -> bool:
+def _matches_pinned(
+    path: Optional[Path],
+    filename: str,
+    cancel_event: Any = None,
+) -> bool:
     pinned = H3_PRE_MOVE_COPIES.get(filename)
     if pinned is None or path is None:
         return False
@@ -1348,7 +1359,7 @@ def _matches_pinned(path: Optional[Path], filename: str) -> bool:
             return False
     except OSError:
         return False
-    return _file_sha256(path) == pinned[0]
+    return _file_sha256(path, cancel_event) == pinned[0]
 
 
 def h3_pre_move_bundle_file(
@@ -1356,6 +1367,7 @@ def h3_pre_move_bundle_file(
     filename: str,
     *,
     verify: bool = True,
+    cancel_event: Any = None,
 ) -> Optional[Path]:
     """``filename`` under a local bundle ``root`` by its pre-move name, when the bundle predates the move. Without
     ``verify`` only the name and size are checked (the pure request builder); the load verifies the hash."""
@@ -1369,7 +1381,7 @@ def h3_pre_move_bundle_file(
             child = resolve_local_gguf_child(Path(root), old_name)
         except Exception:  # noqa: BLE001 -- not in this bundle
             continue
-        if verify and _matches_pinned(child, filename):
+        if verify and _matches_pinned(child, filename, cancel_event):
             return child
         if not verify:
             try:
@@ -1401,6 +1413,8 @@ def h3_pre_move_copy_if_uncached(
     repo_id: str,
     filename: str,
     cache_dirs: Optional[tuple[Optional[str], ...]] = None,
+    *,
+    cancel_event: Any = None,
 ) -> Optional[Path]:
     """The hash-identical pre-move copy to read INSTEAD of fetching ``repo_id``/``filename``, else None.
 
@@ -1412,18 +1426,25 @@ def h3_pre_move_copy_if_uncached(
     from huggingface_hub import try_to_load_from_cache
 
     roots = _h3_cache_roots() if cache_dirs is None else cache_dirs
-    for cache_dir in roots:
+    # Only an official copy the fetch can actually resolve wins: hf_hub_download_with_xet_fallback reads the live root
+    # and huggingface_hub's import-time root (None), never Studio's legacy or platform-default roots, so a hit there
+    # must not suppress a pre-move copy the load could read.
+    reachable = (roots[0], None) if cache_dirs is None and roots else roots
+    for cache_dir in dict.fromkeys(reachable):
         try:
             hit = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
         except Exception:  # noqa: BLE001
             continue
         if isinstance(hit, str):
             return None
-    return h3_pre_move_cached_copy(filename, roots)
+    return h3_pre_move_cached_copy(filename, roots, cancel_event = cancel_event)
 
 
 def h3_pre_move_cached_copy(
-    filename: str, cache_dirs: Optional[tuple[Optional[str], ...]] = None
+    filename: str,
+    cache_dirs: Optional[tuple[Optional[str], ...]] = None,
+    *,
+    cancel_event: Any = None,
 ) -> Optional[Path]:
     """A hash-identical copy of ``filename`` already in an HF cache under its pre-move name, else None. Cache lookup
     only: no network, and nothing is downloaded from any of the listed repos."""
@@ -1440,7 +1461,7 @@ def h3_pre_move_cached_copy(
                 hit = try_to_load_from_cache(repo, old_name, cache_dir = cache_dir)
             except Exception:  # noqa: BLE001 -- an unreadable root just falls through
                 continue
-            if isinstance(hit, str) and _matches_pinned(Path(hit), filename):
+            if isinstance(hit, str) and _matches_pinned(Path(hit), filename, cancel_event):
                 return Path(hit)
     return None
 

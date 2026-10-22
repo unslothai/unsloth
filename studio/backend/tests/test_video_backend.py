@@ -13835,3 +13835,103 @@ def test_h3_te_quant_fetch_reads_the_pre_move_conditioner_without_a_download(mon
     )
     assert VideoBackend()._fetch_h3_te_quant("int8", None) == ("text_encoder",)
     assert calls == []
+
+
+def test_h3_plan_keeps_a_pre_move_conditioner_in_the_required_footprint(monkeypatch, tmp_path):
+    """A conditioner cached only under its pre-move name stages nothing, but its 27 GB still belongs in required_bytes:
+    the picker derives the companion footprint from required_bytes - checkpoint_bytes."""
+    import core.inference.video as video_mod
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES
+
+    _cuda_bf16_target(monkeypatch)
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_hub_cache(
+        cache,
+        "unsloth/MiniMax-H3-FP8",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        sha,
+        _PRE_MOVE_BYTES,
+    )
+    _pre_move_cache_roots(monkeypatch, cache)
+    _plan_api(
+        monkeypatch,
+        {
+            "MiniMaxAI/MiniMax-H3": _H3_BASE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS,
+        },
+    )
+    conditioner = H3_TE_QUANT_FILES["int8"]
+    monkeypatch.setattr(VideoBackend, "_h3_te_quant_scheme_verified", lambda self, *a, **k: "int8")
+    monkeypatch.setattr(
+        VideoBackend,
+        "_h3_te_quant_hub_files",
+        staticmethod(lambda scheme, api: ("unsloth/MiniMax-H3-FP8", [(conditioner, 27)])),
+    )
+
+    def _plan():
+        return VideoBackend().download_plan(
+            "MiniMaxAI/MiniMax-H3",
+            family_override = "minimax-h3",
+            model_kind = "pipeline",
+            text_encoder_quant = "int8",
+        )
+
+    cached = _plan()
+    assert conditioner not in {f for e in cached["entries"] for f in e["files"]}
+    monkeypatch.setattr(video_mod, "_h3_pre_move_copy_if_uncached", lambda *a, **k: None)
+    fresh = _plan()
+    assert conditioner in {f for e in fresh["entries"] for f in e["files"]}
+    assert cached["required_bytes"] == fresh["required_bytes"]
+
+
+def test_h3_an_official_copy_the_fetch_cannot_reach_does_not_hide_the_pre_move_copy(
+    monkeypatch, tmp_path
+):
+    """The fetch resolves only the live root and huggingface_hub's import-time root. An official-path hit in Studio's
+    legacy root is unreachable to it, so it must not suppress a pre-move copy the load can read."""
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE, h3_pre_move_copy_if_uncached
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    live, legacy, default = tmp_path / "live", tmp_path / "legacy", tmp_path / "default"
+    for root in (live, legacy, default):
+        root.mkdir()
+    _seed_hub_cache(legacy, "unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, sha, _PRE_MOVE_BYTES)
+    _seed_pre_move_vaes(default, "unsloth/MiniMax-H3-GGUF", sha)
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: legacy)
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: default)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "import_root"))
+    hit = h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE)
+    assert hit is not None and str(default) in str(hit)
+    # An official copy in the live root is reachable, so it still wins.
+    _seed_hub_cache(live, "unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, sha, _PRE_MOVE_BYTES)
+    assert h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE) is None
+
+
+def test_h3_hashing_a_copied_pre_move_entry_honours_the_load_cancel(monkeypatch, tmp_path):
+    """A cache without symlinks is hashed in full (27 GB for the conditioner): a cancelled load stops the scan, and the
+    conditioner stager never reports success after the cancel."""
+    import threading
+
+    from core.inference.video_minimax_h3 import (
+        H3_VIDEO_VAE,
+        H3HashCancelled,
+        h3_pre_move_copy_if_uncached,
+    )
+
+    _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    for old in (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    ):
+        repo = "unsloth/MiniMax-H3-FP8" if old.startswith("text_") else "unsloth/MiniMax-H3-GGUF"
+        _seed_hub_cache(cache, repo, old, "0" * 64, _PRE_MOVE_BYTES, symlink = False)
+    _pre_move_cache_roots(monkeypatch, cache)
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(H3HashCancelled):
+        h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, cancel_event = cancel)
+    with pytest.raises(RuntimeError):
+        VideoBackend()._fetch_h3_te_quant("int8", None, cancel_event = cancel)

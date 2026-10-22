@@ -4024,11 +4024,18 @@ def _return_direct_loaded_modules(
             )
 
 
-def _h3_pre_move_copy_if_uncached(repo_id: str, filename: str) -> Optional[Path]:
-    """``video_minimax_h3.h3_pre_move_copy_if_uncached``, failing closed (fetch as usual) on any error."""
+def _h3_pre_move_copy_if_uncached(
+    repo_id: str,
+    filename: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> Optional[Path]:
+    """``video_minimax_h3.h3_pre_move_copy_if_uncached``, failing closed (fetch as usual) on any error except a
+    cancellation, which surfaces as the load's own cancel."""
+    from .video_minimax_h3 import H3HashCancelled, h3_pre_move_copy_if_uncached
     try:
-        from .video_minimax_h3 import h3_pre_move_copy_if_uncached
-        return h3_pre_move_copy_if_uncached(repo_id, filename)
+        return h3_pre_move_copy_if_uncached(repo_id, filename, cancel_event = cancel_event)
+    except H3HashCancelled:
+        raise RuntimeError(VIDEO_CANCELLED_MSG)
     except Exception:  # noqa: BLE001
         return None
 
@@ -5259,7 +5266,9 @@ class VideoBackend:
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
 
-        requests = self._h3_native_requests(repo_id, filename, qwen_filename)
+        requests = self._h3_native_requests(
+            repo_id, filename, qwen_filename, cancel_event = cancel_event
+        )
         total = 0
         try:
             # Skipped wholesale offline: model_info is a Hub call, and the number it produces is the size of a download
@@ -5295,10 +5304,12 @@ class VideoBackend:
                     local = resolve_local_gguf_child(root, wanted)
                 except FileNotFoundError:
                     # The request builder routed here on a pre-move name of the right size; the bytes must match too.
-                    local = h3_pre_move_bundle_file(root, wanted)
+                    local = h3_pre_move_bundle_file(root, wanted, cancel_event = cancel_event)
                     if local is None:
                         raise
-            elif (pre_move := _h3_pre_move_copy_if_uncached(repo, wanted)) is not None:
+            elif (
+                pre_move := _h3_pre_move_copy_if_uncached(repo, wanted, cancel_event)
+            ) is not None:
                 # An install staged before the official-provenance move holds the same bytes under the old name
                 # (hash-checked): a cache read, not a download, and the plan already counted it as present.
                 local = pre_move
@@ -6305,7 +6316,7 @@ class VideoBackend:
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         repo = h3_te_quant_source(scheme)
-        if _h3_pre_move_copy_if_uncached(repo, filename) is not None:
+        if _h3_pre_move_copy_if_uncached(repo, filename, cancel) is not None:
             # Staged before the official-provenance move: the same bytes are already on disk under the old name.
             return ("text_encoder",)
         try:
@@ -7153,10 +7164,14 @@ class VideoBackend:
             h3_te_repo, h3_te_files = self._h3_te_quant_hub_files(
                 self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token), api
             )
-            if h3_te_repo and not any(
+            if h3_te_repo and any(
                 _h3_pre_move_copy_if_uncached(h3_te_repo, name) is not None
                 for name, _ in h3_te_files
             ):
+                # On disk under its pre-move name: nothing to stage, but still part of the footprint required_bytes
+                # reports (the picker derives the companion size from it).
+                total += sum(int(size) for _name, size in h3_te_files)
+            elif h3_te_repo:
                 total += add(h3_te_repo, h3_te_files)
             if base and not Path(base).expanduser().exists():
                 listing = _video_listing_repo(base)
@@ -7260,7 +7275,12 @@ class VideoBackend:
         }
 
     @staticmethod
-    def _h3_bundled_repo(repo_id: str, filename: str, hub_repo: str) -> str:
+    def _h3_bundled_repo(
+        repo_id: str,
+        filename: str,
+        hub_repo: str,
+        cancel_event: Any = None,
+    ) -> str:
         """``repo_id`` when it is a LOCAL directory that already holds ``filename``, else
         ``hub_repo``.
 
@@ -7279,7 +7299,7 @@ class VideoBackend:
                 # A bundle cloned before the official-provenance move holds the same bytes under the old name.
                 # Hash-checked here, not only at load: a same-size file with other bytes must keep the Hub copy rather
                 # than route the load to a bundle it then refuses. Memoized, so the plan and the load hash it once.
-                if h3_pre_move_bundle_file(root, filename) is None:
+                if h3_pre_move_bundle_file(root, filename, cancel_event = cancel_event) is None:
                     return hub_repo
             return repo_id
         return hub_repo
@@ -7292,7 +7312,11 @@ class VideoBackend:
 
     @staticmethod
     def _h3_native_requests(
-        repo_id: str, filename: str, qwen_filename: str
+        repo_id: str,
+        filename: str,
+        qwen_filename: str,
+        *,
+        cancel_event: Any = None,
     ) -> tuple[tuple[str, str], ...]:
         """``(repo, filename)`` for the four native H3 components, in download order.
 
@@ -7309,13 +7333,13 @@ class VideoBackend:
             (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
             (
                 VideoBackend._h3_bundled_repo(
-                    repo_id, H3_VIDEO_VAE, h3_component_source(H3_VIDEO_VAE)
+                    repo_id, H3_VIDEO_VAE, h3_component_source(H3_VIDEO_VAE), cancel_event
                 ),
                 H3_VIDEO_VAE,
             ),
             (
                 VideoBackend._h3_bundled_repo(
-                    repo_id, H3_AUDIO_VAE, h3_component_source(H3_AUDIO_VAE)
+                    repo_id, H3_AUDIO_VAE, h3_component_source(H3_AUDIO_VAE), cancel_event
                 ),
                 H3_AUDIO_VAE,
             ),
