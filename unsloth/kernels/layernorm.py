@@ -314,12 +314,18 @@ class Fast_Layernorm(torch.autograd.Function):
         dW = torch.empty(n_cols, dtype = W.dtype, device = device) if train_w else None
         dB = torch.empty(n_cols, dtype = b.dtype, device = device) if train_b else None
         outs = [t for t in (dW, dB) if t is not None]
+        # With one gradient the second pointer is never written, but it must not alias the first:
+        # torch.compile drops one of two writes into the same buffer.
+        spare = partials.new_empty(1) if len(outs) == 1 else None
+        partial_w = partials[0] if train_w else spare
+        partial_b = partials[-1] if train_b else spare
+        out1 = outs[-1] if len(outs) == 2 else outs[0].new_empty(1)
         with torch_gpu_device(device):
             if n_rows > 0:
                 _launch(
                     layernorm_backward_dw,
                     (programs,),
-                    (dY, dX, X, W, r, mu, partials[0], partials[-1], n_rows, rows_per_program),
+                    (dY, dX, X, W, r, mu, partial_w, partial_b, n_rows, rows_per_program),
                     8,
                     dict(
                         dY_row_stride = dY.stride(0),
@@ -338,7 +344,7 @@ class Fast_Layernorm(torch.autograd.Function):
             _launch(
                 _layernorm_sum_partials,
                 ((n_cols + 63) // 64, len(outs)),
-                (partials, outs[0], outs[-1], programs, n_cols),
+                (partials, outs[0], out1, programs, n_cols),
                 3,
                 dict(BLOCK_ROWS = 64, BLOCK_COLS = 64),
                 device,
