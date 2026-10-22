@@ -178,3 +178,15 @@ test("chat load paths warm the device cache even for an Automatic pick", () => {
     assert.doesNotMatch(source, gated, file);
   }
 });
+
+test("a background load with no saved pick still reconciles as Automatic", () => {
+  // An unconfigured model's config has no selectedGpuIds; skipping the reconcile sent no gpu_ids.
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const effectiveGpuIds = reconcilePersistedGpuIds\(\s*config\.selectedGpuIds \?\? null,/,
+  );
+});

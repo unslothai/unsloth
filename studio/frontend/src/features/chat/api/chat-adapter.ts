@@ -3744,14 +3744,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveTensorParallel = isDiffusion ? false : config.tensorParallel;
     // The diffusion runner has no projector to skip, so the toggle is inert there.
     const effectiveDisableVision = isDiffusion ? false : config.disableVision;
-    const effectiveGpuIds =
-      config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(
-            config.selectedGpuIds,
-            config.selectedGpuIndexKind,
-            isDiffusion,
-          )
-        : null;
+    // No saved pick (a model never configured) reconciles as Automatic, so it still gets the default pick.
+    const effectiveGpuIds = reconcilePersistedGpuIds(
+      config.selectedGpuIds ?? null,
+      config.selectedGpuIndexKind,
+      isDiffusion,
+    );
     // Under Manual GPU memory with Auto layers llama.cpp's --fit owns context sizing, so send 0
     // or the per-model pin (GGUF-only).
     const fitMaxSeqLength = resolveFitMaxSeqLength(
