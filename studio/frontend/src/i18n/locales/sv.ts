@@ -1204,6 +1204,10 @@ export const sv = {
       alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
+      metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
+      altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
+      desktopOnly: "Endast i skrivbordsappen",
+      builtInKey: "Inbyggt: {key}",
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1404,6 +1408,10 @@ export const sv = {
         steerMessage: {
           label: "Styr svaret",
           description: "Stoppa det aktuella svaret och skicka utkastet härnäst",
+        },
+        stopGeneration: {
+          label: "Stoppa genereringen",
+          description: "Stoppa svaret som skrivs",
         },
         cycleReasoningEffort: {
           label: "Växla resonemangsnivå",
@@ -2233,9 +2241,9 @@ export const sv = {
         longestStreak: "Längsta svit",
         activityTitle: "Tokenaktivitet",
         activityDescription: {
-          daily: "{total} under de senaste {weeks}",
-          weekly: "Toppvecka {total} · senaste {weeks}",
-          cumulative: "{total} sammanlagt under de senaste {weeks}",
+          daily: "{total} sedan {since}",
+          weekly: "Mest aktiva veckan {total} · sedan {since}",
+          cumulative: "{total} totalt sedan {since}",
         },
         mode: {
           daily: "Dagligen",
@@ -2244,8 +2252,9 @@ export const sv = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Veckan som börjar {date} · {tokens}",
-        chartToggle: "Diagram",
-        chartToggleHint: "Visa Veckovis och Kumulativt som ett diagram med märkta axlar",
+        emptyDayTooltip: "{date} · Ingen aktivitet",
+        apiRequests: "{count} via API",
+        cumulativeTooltip: "Till veckan {date} · {tokens} totalt",
         less: "Mindre",
         more: "Mer",
         insightsTitle: "Aktivitetsinsikter",

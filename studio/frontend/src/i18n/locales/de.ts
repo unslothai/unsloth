@@ -1090,6 +1090,10 @@ export const de = {
       alternateSlot: "Alternatives Kürzel",
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
+      metaUnsupported: "Die Windows-Taste kann nicht in Tastenkürzeln verwendet werden.",
+      altGraphUnsupported: "AltGr-Kombinationen können nicht als Tastenkürzel verwendet werden.",
+      desktopOnly: "Nur in der Desktop-App",
+      builtInKey: "Integriert: {key}",
       actions: {
         findInPage: {
           label: "Auf der Seite suchen",
@@ -1290,6 +1294,10 @@ export const de = {
         steerMessage: {
           label: "Antwort steuern",
           description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
+        stopGeneration: {
+          label: "Generierung stoppen",
+          description: "Die laufende Antwort anhalten",
         },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
@@ -2094,9 +2102,9 @@ export const de = {
         longestStreak: "Längste Serie",
         activityTitle: "Token-Aktivität",
         activityDescription: {
-          daily: "Zeitraum: {weeks} · {total}",
-          weekly: "Spitzenwoche {total} · letzte {weeks}",
-          cumulative: "{total} kumuliert in den letzten {weeks}",
+          daily: "{total} seit {since}",
+          weekly: "Aktivste Woche {total} · seit {since}",
+          cumulative: "{total} insgesamt seit {since}",
         },
         mode: {
           daily: "Täglich",
@@ -2105,8 +2113,9 @@ export const de = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Woche vom {date} · {tokens}",
-        chartToggle: "Diagramm",
-        chartToggleHint: "Wöchentlich und Kumuliert als Diagramm mit beschrifteten Achsen anzeigen",
+        emptyDayTooltip: "{date} · Keine Aktivität",
+        apiRequests: "{count} über die API",
+        cumulativeTooltip: "Bis zur Woche vom {date} · {tokens} insgesamt",
         less: "Weniger",
         more: "Mehr",
         insightsTitle: "Aktivitätsauswertung",

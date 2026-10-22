@@ -362,12 +362,14 @@ export const BUDGET = {
   // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
   // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
   // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
-  // Lighter system polling (#14592) plus the floating panels (#14601), in the eager system, export,
-  // loaded models and monitor modules and the eager locales:
-  // +12,508 B raw / +3,423 B transfer (6,881,936 -> 6,894,444 B raw,
-  // 2,073,188 -> 2,076,611 B transfer against 665e7a6ada, Node 26, 97 chunks). Raised by that.
-  transferBytes: 2_076_732,
-  rawBytes: 6_894_619,
+  // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Lighter system polling (#14592) plus the floating panels (#14601):
+  // +12,552 B raw / +3,439 B transfer (6,885,298 -> 6,897,850 B raw,
+  // 2,074,890 -> 2,078,329 B transfer against 8bcbf837bd, Node 26, 98 chunks). Raised by that.
+  transferBytes: 2_078_475,
+  rawBytes: 6_898_002,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
