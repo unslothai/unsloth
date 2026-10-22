@@ -143,8 +143,7 @@ def test_vocab_at_most_65536_stays_on_the_single_block_kernel(monkeypatch):
 @pytest.mark.parametrize("config", [(16384, 8), (MAX_FUSED_SIZE, 32)])
 @pytest.mark.parametrize("masked", [(16384, 32768), (65536, 131072)])
 def test_an_all_masked_chunk_matches_the_fp64_reference(config, masked, monkeypatch):
-    # A vocab range set to -inf (a masked or banned token range) can fill a whole chunk: its
-    # partial logsumexp must be -inf, not NaN, so loss and grads stay finite and exact.
+    # A fully -inf chunk must give logsumexp -inf, not NaN.
     monkeypatch.setattr(ce_mod, "_chunked_forward_config", lambda device, vocab_size: config)
     vocab = 131073
     generator = torch.Generator(device = "cuda").manual_seed(0)
