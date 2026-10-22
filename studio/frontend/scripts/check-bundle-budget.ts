@@ -365,13 +365,13 @@ export const BUDGET = {
   // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
   // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
-  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
-  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
+  // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate)
   // add 1,504 B raw / 375 B transfer (6,886,968 -> 6,888,472 B raw, 2,075,385 -> 2,075,760 B transfer against
-  // 6bbe268, one machine and build, Node 24, 98 chunks). Raised by that.
-  transferBytes: 2_075_925,
-  rawBytes: 6_888_504,
+  // 6bbe268, one machine and build, Node 24, 98 chunks). Raised by that, on top of the above.
+  transferBytes: 2_076_525,
+  rawBytes: 6_892_804,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
