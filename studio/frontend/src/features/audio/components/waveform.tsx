@@ -246,34 +246,49 @@ export function WaveformBars({
         );
       }}
     >
-      <svg
-        aria-hidden="true"
-        className="size-full"
-        viewBox={`0 0 ${count * 3} 32`}
-        preserveAspectRatio="none"
-      >
-        {Array.from({ length: count }, (_, index) => {
-          const peak = bars ? (bars[index] ?? 0) : 0;
-          const height = Math.max(2, peak * 30);
-          const played = fraction > 0 && (index + 0.5) / count <= fraction;
-          return (
-            <rect
-              // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
-              key={index}
-              x={index * 3 + 0.5}
-              y={(32 - height) / 2}
-              width={2}
-              height={height}
-              rx={1}
+      <WaveformBarGlyphs
+        peaks={bars}
+        count={count}
+        isPlayed={(index) => fraction > 0 && (index + 0.5) / count <= fraction}
+      />
+    </div>
+  );
+}
+
+/** Pill bars drawn in HTML: an SVG stretched with preserveAspectRatio="none" squashes rx, so its
+ *  bars came out square-ended. */
+export function WaveformBarGlyphs({
+  peaks,
+  count,
+  isPlayed,
+}: {
+  peaks: readonly number[] | null;
+  count: number;
+  isPlayed: (index: number) => boolean;
+}) {
+  return (
+    <div aria-hidden="true" className="flex size-full items-center">
+      {Array.from({ length: count }, (_, index) => {
+        const peak = peaks ? (peaks[index] ?? 0) : 0;
+        // A floor keeps silence visible as a dot rather than a gap.
+        const height = Math.max(2, peak * 30);
+        return (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
+            key={index}
+            className="flex h-full min-w-0 flex-1 items-center justify-center"
+          >
+            <span
               className={cn(
-                "fill-current",
-                played ? "text-foreground" : "text-muted-foreground",
-                bars ? "opacity-100" : "opacity-40",
+                "w-2/3 min-h-[2px] rounded-full bg-current",
+                isPlayed(index) ? "text-foreground" : "text-muted-foreground",
+                peaks ? "opacity-100" : "opacity-40",
               )}
+              style={{ height: `${(height / 32) * 100}%` }}
             />
-          );
-        })}
-      </svg>
+          </span>
+        );
+      })}
     </div>
   );
 }

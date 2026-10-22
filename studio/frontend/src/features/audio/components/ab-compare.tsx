@@ -16,6 +16,7 @@ import {
   resumeAfterLoad,
   switchSide,
 } from "./ab-compare-state";
+import { WaveformBarGlyphs } from "./waveform";
 import { WAVEFORM_BARS, computePeaks, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
@@ -225,37 +226,13 @@ export function ABCompare({
             seekTo(((event.clientX - box.left) / box.width) * duration);
           }}
         >
-          <svg
-            aria-hidden="true"
-            className="size-full"
-            viewBox={`0 0 ${count * 3} 32`}
-            preserveAspectRatio="none"
-          >
-            {Array.from({ length: count }, (_, index) => {
-              const peak = bars ? (bars[index] ?? 0) : 0;
-              // A floor keeps silence visible as a line rather than a gap.
-              const height = Math.max(2, peak * 30);
-              const played = (index + 0.5) / count <= fraction;
-              return (
-                <rect
-                  // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
-                  key={index}
-                  x={index * 3 + 0.5}
-                  y={(32 - height) / 2}
-                  width={2}
-                  height={height}
-                  rx={1}
-                  className={cn(
-                    "fill-current",
-                    played && ab.position > 0
-                      ? "text-foreground"
-                      : "text-muted-foreground",
-                    bars ? "opacity-100" : "opacity-40",
-                  )}
-                />
-              );
-            })}
-          </svg>
+          <WaveformBarGlyphs
+            peaks={bars}
+            count={count}
+            isPlayed={(index) =>
+              ab.position > 0 && (index + 0.5) / count <= fraction
+            }
+          />
         </div>
         <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
           {ab.position > 0 ? `${formatSeconds(ab.position)} / ` : ""}

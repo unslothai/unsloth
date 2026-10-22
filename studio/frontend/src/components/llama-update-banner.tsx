@@ -353,9 +353,10 @@ export function LlamaUpdateBanner({
       key,
       // detail is 0 for Enter or Space, so only keyboard users get focus moved to Undo.
       fromKeyboard: event.detail === 0,
+      // A skip lasts until the app is reopened; Settings > About can still update meanwhile.
       message: skippedTag
-        ? `Skipped ${label} ${skippedTag}`
-        : `Skipped the ${label} ${bundled ? "updates" : "update"}`,
+        ? `Skipped ${label} ${skippedTag} for now`
+        : `Skipped the ${label} ${bundled ? "updates" : "update"} for now`,
     });
   }
   // show the backend pair when a migration has no version change.

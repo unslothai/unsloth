@@ -106,6 +106,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
+  DashboardSquareEditIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -6756,6 +6757,17 @@ export function AppSidebar() {
                     </DropdownMenuItem>
                   );
                 })}
+                {/* Pinned like Settings, so hiding every shortcut never removes the way back. */}
+                <DropdownMenuItem
+                  onSelect={() =>
+                    useSettingsDialogStore.getState().openDialog("appearance", {
+                      scrollTarget: "appearance-profile-menu",
+                    })
+                  }
+                >
+                  <HugeiconsIcon icon={DashboardSquareEditIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("shell.navigation.customizeProfileMenu")}</span>
+                </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
               <DropdownMenuSub>

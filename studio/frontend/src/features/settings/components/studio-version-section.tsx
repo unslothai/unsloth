@@ -64,19 +64,14 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   }
 }
 
-// Shared "Unsloth" version block, shown in both General and About. The About
-// tab passes llamaCppVersion and audioCppVersion to surface the installed
-// llama.cpp and audio.cpp builds alongside the version rows; General omits them,
-// so those rows only show on About. Children are appended below the version
-// rows, for controls that act on them.
+// Shared "Unsloth" version block, shown in both General and About. The engine
+// builds (llama.cpp, whisper.cpp, audio.cpp) live in About's Engines section,
+// beside their update controls. Children are appended below the version rows,
+// for controls that act on them.
 export function StudioVersionSection({
-  llamaCppVersion,
-  audioCppVersion,
   desktopAppVersion,
   children,
 }: {
-  llamaCppVersion?: string | null;
-  audioCppVersion?: string | null;
   desktopAppVersion?: string | null;
   children?: ReactNode;
 } = {}) {
@@ -113,20 +108,6 @@ export function StudioVersionSection({
           <code className="font-mono text-xs text-muted-foreground">
             {desktopAppVersion ??
               t("settings.about.desktopAppVersionUnavailable")}
-          </code>
-        </SettingsRow>
-      ) : null}
-      {llamaCppVersion ? (
-        <SettingsRow label={t("settings.about.llamaCppVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
-            {llamaCppVersion}
-          </code>
-        </SettingsRow>
-      ) : null}
-      {audioCppVersion ? (
-        <SettingsRow label={t("settings.about.audioCppVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
-            {audioCppVersion}
           </code>
         </SettingsRow>
       ) : null}
