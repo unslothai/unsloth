@@ -17,7 +17,7 @@ import {
   switchSide,
 } from "./ab-compare-state";
 import { PlaybackTime, WaveformBarGlyphs } from "./waveform";
-import { WAVEFORM_BARS, computePeaks, formatSeconds } from "./waveform-peaks";
+import { computePeaks, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 // Decoding holds every sample in memory; past this the bars stay flat.
@@ -115,7 +115,6 @@ export function ABCompare({
   const fraction = duration > 0 ? Math.min(1, ab.position / duration) : 0;
   const barsSrc = ab.side === "original" ? originalBarsSrc : editedBarsSrc;
   const bars = barsSrc ? (peaks[barsSrc] ?? null) : null;
-  const count = bars?.length ?? WAVEFORM_BARS;
   const src = current.src;
 
   // A new pair resets the player; the Original's object URL arriving late does not.
@@ -228,10 +227,7 @@ export function ABCompare({
         >
           <WaveformBarGlyphs
             peaks={bars}
-            count={count}
-            isPlayed={(index) =>
-              ab.position > 0 && (index + 0.5) / count <= fraction
-            }
+            isPlayed={(at) => ab.position > 0 && at <= fraction}
           />
         </div>
         <PlaybackTime position={ab.position} duration={duration} />

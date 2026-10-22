@@ -13,12 +13,15 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
+import { formatSeconds, resamplePeaks } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
+const BAR_GAP_PX = 1;
+const BAR_PITCH_PX = 3 + BAR_GAP_PX;
 
 export interface WaveformControl {
   seek: (seconds: number, play?: boolean) => void;
@@ -217,7 +220,6 @@ export function WaveformBars({
   style?: CSSProperties;
 }) {
   const bars = peaks && peaks.length > 0 ? peaks : null;
-  const count = bars?.length ?? WAVEFORM_BARS;
   return (
     <div
       role="slider"
@@ -245,8 +247,7 @@ export function WaveformBars({
     >
       <WaveformBarGlyphs
         peaks={bars}
-        count={count}
-        isPlayed={(index) => fraction > 0 && (index + 0.5) / count <= fraction}
+        isPlayed={(at) => fraction > 0 && at <= fraction}
       />
     </div>
   );
@@ -280,40 +281,67 @@ export function PlaybackTime({
   );
 }
 
-/** HTML pills: an SVG stretched with preserveAspectRatio="none" squashes rx into square ends. */
+/** HTML pills: an SVG stretched with preserveAspectRatio="none" squashes rx into square ends.
+ * Whole-pixel bars and gaps, so no bar straddles a pixel and renders thinner than its neighbours. */
 export function WaveformBarGlyphs({
   peaks,
-  count,
   isPlayed,
 }: {
   peaks: readonly number[] | null;
-  count: number;
-  isPlayed: (index: number) => boolean;
+  /** `at` is the bar's centre as a 0..1 fraction of the track. */
+  isPlayed: (at: number) => boolean;
 }) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    setWidth(box.clientWidth);
+    const observer = new ResizeObserver(() => setWidth(box.clientWidth));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+  const count =
+    width > 0
+      ? Math.max(1, Math.floor((width + BAR_GAP_PX) / BAR_PITCH_PX))
+      : 0;
+  const levels = peaks ? resamplePeaks(peaks, count) : null;
   return (
-    <div aria-hidden="true" className="flex size-full items-center">
+    <div
+      ref={boxRef}
+      aria-hidden="true"
+      className="flex size-full justify-center gap-px"
+    >
       {Array.from({ length: count }, (_, index) => {
-        const peak = peaks ? (peaks[index] ?? 0) : 0;
-        // A curve lifts quiet passages off the floor; the floor is a round dot, never a dash.
-        const height = 14 + peak ** 0.7 * 86;
+        const peak = levels ? (levels[index] ?? 0) : 0;
+        // SoundCloud-style: a bar above the baseline and a fainter reflection below it.
+        const height = 10 + peak ** 0.8 * 90;
         return (
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
             key={index}
-            className="flex h-full min-w-0 flex-1 items-center justify-center"
+            className={cn(
+              "flex h-full w-[3px] shrink-0 flex-col gap-px",
+              isPlayed((index + 0.5) / count)
+                ? "text-foreground"
+                : cn(
+                    "text-muted-foreground",
+                    peaks ? "opacity-50" : "opacity-25",
+                  ),
+            )}
           >
-            <span
-              className={cn(
-                "w-[3px] max-w-[75%] rounded-full bg-current",
-                isPlayed(index)
-                  ? "text-foreground"
-                  : cn(
-                      "text-muted-foreground",
-                      peaks ? "opacity-50" : "opacity-25",
-                    ),
-              )}
-              style={{ height: `max(3px, ${height}%)` }}
-            />
+            <span className="flex flex-[7] items-end">
+              <span
+                className="w-full rounded-t-full bg-current"
+                style={{ height: `max(2px, ${height}%)` }}
+              />
+            </span>
+            <span className="flex flex-[3] items-start">
+              <span
+                className="w-full rounded-b-full bg-current opacity-40"
+                style={{ height: `max(1px, ${height}%)` }}
+              />
+            </span>
           </span>
         );
       })}
