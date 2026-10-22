@@ -5391,6 +5391,7 @@ def _check_agent_context(
     max_tokens: Optional[int] = None,
     loaded: bool = True,
     refuse: bool = True,
+    model: Optional[str] = None,
 ) -> None:
     window = entry.get("context_length") or entry.get("max_context_length")
     if not window:
@@ -5417,9 +5418,11 @@ def _check_agent_context(
     ):
         hint = f"Its full context is {native:,} tokens, so pick a model with a longer one."
     else:
+        quote = _powershell_quote if os.name == "nt" else shlex.quote
+        target = f" --model {quote(model)}" if model else ""
         hint = (
-            f"Load it with --max-seq-length {suggested} (a smaller quant if that does not fit "
-            f"in memory) and re-run unsloth start {agent}."
+            f"Run unsloth start {agent}{target} --max-seq-length {suggested} "
+            "(a smaller quant if that does not fit in memory)."
         )
     state = "is loaded" if loaded else "would load"
     # Its own prompt is past the compaction point, so every turn compacts and compacting a single exchange fails.
@@ -7057,7 +7060,6 @@ def claude(
     )
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
-    _require_agent_for_launch("claude", install_hint, launch)
     # Only a bare interactive launch is refused: its prompt is the stock one and the TUI would hide a warning. Forwarded args (-p, --tools, a --no-launch recipe a driver extends) can shrink the prompt, so they only warn.
     refuse_small_context = launch and not ctx.args
     if max_seq_length > 0 and not as_subagent:
@@ -7068,8 +7070,10 @@ def claude(
             {"id": model or "The loaded model", "context_length": max_seq_length},
             _CLAUDE_PROMPT_TOKENS,
             loaded = False,
+            model = model,
             refuse = refuse_small_context,
         )
+    _require_agent_for_launch("claude", install_hint, launch)
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -7473,7 +7477,6 @@ def opencode(
     _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
-    _require_agent_for_launch(command_name, install_hint, launch and not app)
     opencode_prompt_tokens = _OPENCODE_V2_PROMPT_TOKENS if opencode_v2 else _OPENCODE_PROMPT_TOKENS
     # Same rule as claude: refuse only the bare TUI launch.
     refuse_small_context = launch and not ctx.args
@@ -7485,8 +7488,10 @@ def opencode(
             opencode_prompt_tokens,
             max_tokens,
             loaded = False,
+            model = model,
             refuse = refuse_small_context,
         )
+    _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,

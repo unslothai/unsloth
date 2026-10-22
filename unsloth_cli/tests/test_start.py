@@ -7796,7 +7796,11 @@ def test_claude_compaction_point_matches_claude_code(window, compacts_at):
 
 
 @pytest.mark.parametrize("agent", ["claude", "opencode"])
-def test_agent_context_check_refuses_before_loading(fake_studio, launched, agent):
+def test_agent_context_check_refuses_before_installing_or_loading(
+    fake_studio, launched, monkeypatch, agent
+):
+    requirements = []
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: requirements.append(args))
     result = CliRunner().invoke(
         start.start_app, [agent, "--model", "unsloth/other-GGUF", "--max-seq-length", "8192"]
     )
@@ -7804,6 +7808,25 @@ def test_agent_context_check_refuses_before_loading(fake_studio, launched, agent
     assert "unsloth/other-GGUF would load with 8,192 tokens of context, too few" in result.output
     assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
     assert not launched
+    assert not requirements
+
+
+@pytest.mark.parametrize("agent, suggested", [("claude", 65536), ("opencode", 32768)])
+def test_agent_context_retry_keeps_the_requested_model(fake_studio, launched, agent, suggested):
+    target = "unsloth/other-GGUF"
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", target, "--max-seq-length", "8192"]
+    )
+    assert result.exit_code == 1, result.output
+    command = f"unsloth start {agent} --model {target} --max-seq-length {suggested}"
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    loads = [payload for _, url, payload in fake_studio if url.endswith("/api/inference/load")]
+    assert len(loads) == 1
+    assert loads[0]["model_path"] == target
+    assert loads[0]["max_seq_length"] == suggested
+    assert launched
 
 
 @pytest.mark.parametrize("args", [["--no-launch"], ["run", "hi"], []])
