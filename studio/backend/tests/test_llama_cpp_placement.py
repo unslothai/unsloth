@@ -5904,6 +5904,7 @@ def _mixed_host_launch(
     rocm = (),
     cuda = (),
     setup = None,
+    native = 131_072,
     **kw,
 ):
     monkeypatch.setattr(
@@ -5923,7 +5924,7 @@ def _mixed_host_launch(
         backend._estimate_compute_buffer_bytes = lambda **k: 1
 
         def read_metadata(_path):
-            backend._context_length = 131_072
+            backend._context_length = native
 
         backend._read_gguf_metadata = read_metadata
         kw["n_ctx"] = 0 if path == "auto_ctx" else 8192
@@ -5946,8 +5947,17 @@ def _mixed_host_launch(
 def test_auto_placement_prefers_a_discrete_gpu_that_holds_the_model(
     tmp_path, monkeypatch, memory, rocm, cuda, expected, path
 ):
+    # Auto context: at a native context the dGPU holds in full (it would cap 131K, which the
+    # APU holds, and then the base walk wins: see the Auto-context tests below).
     got = _mixed_host_launch(
-        tmp_path, monkeypatch, memory, gguf_gb = 8, path = path, rocm = rocm, cuda = cuda
+        tmp_path,
+        monkeypatch,
+        memory,
+        gguf_gb = 8,
+        path = path,
+        rocm = rocm,
+        cuda = cuda,
+        native = 32_768,
     )
     assert got == expected
 
@@ -5991,7 +6001,7 @@ def test_select_gpus_discrete_tier_keeps_a_spread_request_spread():
     assert LlamaCppBackend._select_gpus(8 * gib, gpus, total_by_idx = total) == ([0], False)
 
 
-def _mixed_drafter_launch(tmp_path, monkeypatch, *, speculative_type):
+def _mixed_drafter_launch(tmp_path, monkeypatch, *, speculative_type, slots = 1):
     """14 GiB target and a sidecar drafter; the dGPU holds the target alone at native context."""
     gb, mib = 1024**3, 1024 * 1024
     monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
@@ -6022,19 +6032,31 @@ def _mixed_drafter_launch(tmp_path, monkeypatch, *, speculative_type):
         "spec_draft_n_max_flag": "--spec-draft-n-max",
     }
     kw = {"dspark_draft_path": str(sidecar)} if speculative_type == "auto" else {}
+    if slots > 1:
+        caps = backend.probe_server_capabilities()
+        backend.probe_server_capabilities = lambda *a, **k: dict(caps, supports_kv_unified = True)
+        backend._estimate_mtp_overhead_bytes = lambda ctx, *a, n_parallel = slots, **k: int(
+            0.6 * gb * n_parallel
+        )
+        kw.update(n_parallel = slots, n_parallel_from_default = True)
     result = _launch(backend, gguf, n_ctx = 0, speculative_type = speculative_type, **kw)
     cmd = result["cmd"]
     return result["env"].get("CUDA_VISIBLE_DEVICES"), int(cmd[cmd.index("-c") + 1]), cmd
 
 
-def test_drafter_probe_prices_the_discrete_tier_the_placement_takes(tmp_path, monkeypatch):
-    # The APU holds target + drafter; the dGPU holds the target only at full context. The
-    # probe must answer for the dGPU placement, not keep a drafter that costs it context.
+@pytest.mark.parametrize("slots", [1, 4])
+def test_the_drafter_probe_does_not_give_up_what_the_base_walk_keeps(tmp_path, monkeypatch, slots):
+    # The APU holds target + drafter at full context and every default slot; the dGPU holds
+    # the target alone. Preferring the dGPU would drop the drafter or the slots (4 -> 1), so
+    # the discrete tier does not win here, and the launch matches the pick before #14372.
     _dev, ctx_off, _cmd = _mixed_drafter_launch(tmp_path, monkeypatch, speculative_type = "off")
-    dev, ctx, cmd = _mixed_drafter_launch(tmp_path, monkeypatch, speculative_type = "auto")
-    assert dev == "1"
+    dev, ctx, cmd = _mixed_drafter_launch(
+        tmp_path, monkeypatch, speculative_type = "auto", slots = slots
+    )
+    assert dev == "0"
     assert ctx == ctx_off == 32_768
-    assert "--model-draft" not in cmd
+    assert "--model-draft" in cmd
+    assert int(cmd[cmd.index("--parallel") + 1]) == slots
 
 
 def test_cuda_integrated_ids_join_pci_rows_only_under_pci_bus_order(tmp_path, monkeypatch):
@@ -6107,6 +6129,7 @@ def test_discrete_tier_subset_is_not_charged_host_checkpoints(tmp_path, monkeypa
         rocm = {0},
         setup = setup,
         ctx_checkpoints = 32,
+        native = 32_768,
     )
     assert got == "1"
     # The APU candidate makes the pool pay; the dGPU-only subset does not.
@@ -6319,7 +6342,14 @@ def _shared_host_launch(tmp_path, monkeypatch, memory, rocm, path):
         backend._other_planned_vram_mib = lambda: {1: 0}
 
     return _mixed_host_launch(
-        tmp_path, monkeypatch, memory, gguf_gb = 8, path = path, rocm = rocm, setup = setup
+        tmp_path,
+        monkeypatch,
+        memory,
+        gguf_gb = 8,
+        path = path,
+        rocm = rocm,
+        setup = setup,
+        native = 32_768,
     )
 
 
@@ -6640,14 +6670,48 @@ def test_auto_context_does_not_trade_most_of_the_context_for_the_dgpu(
     assert ctx == 131_072
 
 
-def test_auto_context_keeps_a_dgpu_that_holds_the_context_floor(tmp_path, monkeypatch):
-    # 8 GiB on the 16 GB dGPU still holds well over 32K: the dGPU wins, capped below native.
+def test_auto_context_does_not_trade_half_the_context_for_the_dgpu(tmp_path, monkeypatch):
+    # 8 GiB on the 16 GB dGPU holds well over 32K but not the native 131K the APU holds:
+    # any context the dGPU gives up is context the host had before #14372, so the APU wins.
     mask, ctx, backend = _native_ctx_mixed_launch(
         tmp_path, monkeypatch, [(0, 100_000, 0), _DGPU], gguf_gb = 8, native = 131_072, n_ctx = 0
     )
-    assert mask == "1"
-    assert 32_768 <= ctx < 131_072
-    assert backend.max_context_length >= ctx
+    assert (mask, ctx) == ("0", 131_072)
+    assert backend.max_context_length == 131_072
+
+
+def test_auto_context_keeps_a_dgpu_that_holds_the_base_context(tmp_path, monkeypatch):
+    # The dGPU holds the full native 32K the APU would give: the dGPU wins (speed).
+    mask, ctx, backend = _native_ctx_mixed_launch(
+        tmp_path, monkeypatch, [(0, 100_000, 0), _DGPU], gguf_gb = 8, native = 32_768, n_ctx = 0
+    )
+    assert (mask, ctx) == ("1", 32_768)
+    assert backend.max_context_length == 32_768
+
+
+@pytest.mark.parametrize("apu_total", [0, 131_072])
+@pytest.mark.parametrize("dgpu", [(7_600, 8_192), (11_000, 12_288)])
+def test_auto_discrete_preference_keeps_native_context(tmp_path, monkeypatch, apu_total, dgpu):
+    # The post-merge review's spoof: 6 GiB, native 131072, 64 KiB/token, 256 MiB compute,
+    # four slots. The dGPU capped to ~10K or ~62K before; the APU holds all of it.
+    backend, gguf = _mixed_auto_backend(
+        tmp_path, monkeypatch, [(0, *dgpu), (1, 100_000, apu_total)], 6, rocm = (1,)
+    )
+    backend._read_gguf_metadata = lambda _p: setattr(backend, "_context_length", 131_072)
+    backend._estimate_compute_buffer_bytes = lambda **k: 256 * 1024**2
+    backend.probe_server_capabilities = lambda *a, **k: {"supports_kv_unified": True}
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = 0,
+        n_parallel = 4,
+        speculative_type = "off",
+        refuse_partial_gpu_fit = True,
+    )
+    assert _launched_ctx(result) == 131_072
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    assert _launched(result, "--parallel") == "4"
+    assert _launched(result, "-ngl") == "-1"
 
 
 def test_auto_context_keeps_a_dgpu_holding_a_short_native_context(tmp_path, monkeypatch):
