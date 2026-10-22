@@ -106,6 +106,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
+  DashboardSquareEditIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -6810,6 +6811,18 @@ export function AppSidebar() {
                   alignEnd={true}
                   className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-56"
                 >
+                  {/* Pinned here rather than among the shortcuts above, which it can hide. */}
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      useSettingsDialogStore.getState().openDialog("appearance", {
+                        scrollTarget: "appearance-sidebar-nav",
+                      })
+                    }
+                  >
+                    <HugeiconsIcon icon={DashboardSquareEditIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.customizeSidebar")}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   {HELP_GROUPS.map((group, index) => (
                     <DropdownMenuGroup key={group[0]}>
                       {index > 0 && <DropdownMenuSeparator />}
