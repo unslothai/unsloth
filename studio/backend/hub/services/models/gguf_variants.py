@@ -1392,7 +1392,7 @@ def _release_unrun_lookup(started: list, key, task: "asyncio.Future") -> None:
 
 async def _lookup_await_once(key, deadline: float, fn, /, *args):
     """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time); None when
-    late or already in flight. A late call keeps running."""
+    late or already in flight. A late call keeps running once started."""
     with _lookup_arch_lock:
         if key in _lookup_inflight:
             return None
@@ -1413,7 +1413,12 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
     task.add_done_callback(functools.partial(_release_unrun_lookup, started, key))
     loop = asyncio.get_running_loop()
     done, _pending = await asyncio.wait({task}, timeout = max(0.0, deadline - loop.time()))
-    if task not in done or task.cancelled() or task.exception() is not None:
+    if task not in done:
+        # Unstarted, it is dropped (key released) rather than left in the shared queue;
+        # started, it keeps running and lands in the cache.
+        task.cancel()
+        return None
+    if task.cancelled() or task.exception() is not None:
         return None
     return task.result()
 

@@ -821,6 +821,44 @@ class TestListing:
         with gv._lookup_arch_lock:
             assert not [k for k in gv._lookup_inflight if k[:2] == ("table", "o/stalled")]
 
+    def test_an_expired_architecture_lookup_leaves_no_queue(self, monkeypatch):
+        import threading
+
+        from hub.services.models import gguf_variants as gv
+
+        release = threading.Event()
+        ran = []
+
+        def slow(name):
+            ran.append(name)
+            release.wait(10)
+            return name
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            # Fill the pool, then ask for one more past its deadline.
+            busy = [
+                asyncio.ensure_future(gv._lookup_thread(slow, f"busy{i}"))
+                for i in range(gv._LOOKUP_CONCURRENCY)
+            ]
+            await asyncio.sleep(0.2)
+            got = await gv._lookup_await_once(
+                ("arch", "o/late", "fp"), loop.time() + 0.2, slow, "late"
+            )
+            release.set()
+            await asyncio.gather(*busy)
+            await asyncio.sleep(0.3)
+            return got
+
+        try:
+            got = asyncio.run(main())
+        finally:
+            release.set()
+        assert got is None
+        assert "late" not in ran
+        with gv._lookup_arch_lock:
+            assert ("arch", "o/late", "fp") not in gv._lookup_inflight
+
     def test_a_capability_read_never_falls_back_to_a_torch_context(self, monkeypatch):
         from core.inference import llama_cpp as lc
 
