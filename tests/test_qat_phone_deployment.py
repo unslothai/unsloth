@@ -457,7 +457,8 @@ def test_unsloth_offload_embedding_hooks_survive_qat():
     assert len(emb._forward_pre_hooks) >= 1 and len(emb._forward_hooks) >= 1
     if had_forward:
         assert emb.forward.__self__ is emb
-        assert emb.forward.__func__ is vars(original)["forward"].__func__
+        inner = getattr(emb.forward.__func__, "_unsloth_inner_forward", None)
+        assert inner is vars(original)["forward"].__func__
     calls = _count_fake_quant_calls(emb)
     ids = torch.randint(0, model.config.vocab_size, (2, 12))
     with torch.no_grad():
@@ -489,3 +490,49 @@ def test_accelerate_hook_over_instance_override_keeps_both():
     with torch.no_grad():
         emb(torch.tensor([[1, 2, 3]]))
     assert seen == [emb] and len(calls) == 1
+
+
+def test_offloaded_embedding_converts_on_cpu_not_the_execution_device():
+    pytest.importorskip("accelerate.hooks")
+    model = _prepare_model_for_qat(_offload_embedding(_tiny_gemma3()), "int8-int4")
+    emb = model.get_input_embeddings()
+    # A real offload runs on a GPU; conversion must not pull the whole table onto it.
+    emb._hf_hook.execution_device = torch.device("cuda", 7)
+    _convert_torchao_model(model)
+    emb = model.get_input_embeddings()
+    assert emb.weight.device.type == "cpu"
+    assert all(b.device.type == "cpu" for b in emb.buffers())
+
+
+def test_instance_forward_reading_weight_directly_is_fake_quantized():
+    import types
+
+    model = _tiny_gemma3()
+    original = model.get_input_embeddings()
+
+    def _direct(self, input_ids):
+        return torch.nn.functional.embedding(input_ids, self.weight).float() * self.embed_scale
+
+    original.forward = types.MethodType(_direct, original)
+    ids = torch.randint(0, model.config.vocab_size, (2, 12))
+    with torch.no_grad():
+        unquantized = original(ids)
+    model = _prepare_model_for_qat(model, "int8-int4")
+    emb = model.get_input_embeddings()
+    calls = _count_fake_quant_calls(emb)
+    with torch.no_grad():
+        out = emb(ids)
+    assert len(calls) == 1
+    assert not torch.equal(out, unquantized)
+    torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
+    assert isinstance(emb.weight, torch.nn.Parameter)
+
+
+@pytest.mark.parametrize("qat_scheme", ["int4", "int8"])
+def test_offload_hook_on_unselected_embedding_is_not_refused(qat_scheme):
+    pytest.importorskip("accelerate.hooks")
+    model = _offload_embedding(_tiny_gemma3(), place_submodules = True)
+    original = model.get_input_embeddings()
+    model = _prepare_model_for_qat(model, qat_scheme)  # Linear-only recipes never touch the embedding
+    assert model.get_input_embeddings() is original
+    assert _is_fake_quantized(model.model.layers[0].mlp.down_proj)  # in_features 128 fits int4's group

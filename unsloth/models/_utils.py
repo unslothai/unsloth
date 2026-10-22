@@ -7593,7 +7593,8 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
         if name not in dst._parameters:
             dst.register_parameter(name, param)
     for name, module in src._modules.items():
-        if name not in dst._modules:
+        # weight_fake_quantizer is FakeQuantizedEmbedding's own; a converted plain embedding must not carry it.
+        if name not in dst._modules and name != "weight_fake_quantizer":
             dst.add_module(name, module)
     for name, buffer in src._buffers.items():
         if name not in dst._buffers:
@@ -7611,6 +7612,39 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
         setattr(dst, name, value)
     _copy_instance_forward(dst, src)
     _move_dispatch_hook(dst, src)
+
+
+def _call_with_fake_quantized_weight(module: torch.nn.Module, fn, *args, **kwargs):
+    """Run fn with module.weight swapped for its fake quantized value, so code that reads self.weight directly
+    (an instance forward override, unsloth_zoo's float32 Gemma forward) trains against the quantized weight.
+    Re-entrant: inside the scope weight is a plain tensor, not the Parameter, so it is quantized once."""
+    fake_quantizer = getattr(module, "weight_fake_quantizer", None)
+    weight = module.weight
+    if fake_quantizer is None or not isinstance(weight, torch.nn.Parameter):
+        return fn(*args, **kwargs)
+    from torch.nn.utils.stateless import _reparametrize_module
+
+    with _reparametrize_module(module, {"weight": fake_quantizer(weight)}):
+        return fn(*args, **kwargs)
+
+
+def _fake_weight_method(func):
+    """func(self, ...) run under _call_with_fake_quantized_weight; the original is kept for rebinding."""
+
+    def _unsloth_fake_weight_forward(self, *args, **kwargs):
+        return _call_with_fake_quantized_weight(self, func, self, *args, **kwargs)
+
+    _unsloth_fake_weight_forward._unsloth_inner_forward = func
+    return _unsloth_fake_weight_forward
+
+
+def _fake_weight_callable(fn):
+    """An instance forward that is not bound to the module (a closure or partial), run in the same scope."""
+
+    def _unsloth_fake_weight_forward(self, *args, **kwargs):
+        return _call_with_fake_quantized_weight(self, fn, *args, **kwargs)
+
+    return _unsloth_fake_weight_forward
 
 
 def _is_accelerate_forward(module: torch.nn.Module, forward) -> bool:
@@ -7633,14 +7667,19 @@ def _copy_instance_forward(dst: torch.nn.Module, src: torch.nn.Module) -> None:
         return
     if _is_accelerate_forward(src, forward):
         forward = vars(src)["_old_forward"]  # what the hook wrapped: src's bound class forward, or an override
+    fake_quantized = getattr(dst, "weight_fake_quantizer", None) is not None
     if isinstance(forward, types.MethodType) and forward.__self__ is src:
-        if forward.__func__ is getattr(type(src).forward, "__func__", type(src).forward):
+        func = forward.__func__
+        if func is getattr(type(src).forward, "__func__", type(src).forward):
             return  # src's own class forward; dst's class forward replaces it
-        forward = types.MethodType(forward.__func__, dst)
+        func = getattr(func, "_unsloth_inner_forward", func)
+        forward = types.MethodType(_fake_weight_method(func) if fake_quantized else func, dst)
     elif _is_accelerate_forward(src, forward) or (
         isinstance(forward, functools.partial) and forward.args and forward.args[0] is src
     ):
         return  # bound to src in a way that cannot be rebound safely
+    elif fake_quantized:
+        forward = types.MethodType(_fake_weight_callable(forward), dst)
     dst.forward = forward
     # Unsloth's offloaded embedding pairs its forward with pre / post hooks that move ids and outputs.
     for hooks_name in ("_forward_pre_hooks", "_forward_hooks"):
@@ -7658,7 +7697,8 @@ def _copy_instance_forward(dst: torch.nn.Module, src: torch.nn.Module) -> None:
 
 def _materialize_offloaded_fake_quantized_embeddings(model: torch.nn.Module) -> None:
     """QAT convert / strip read embedding weights directly, not through forward: give an offloaded fake quantized
-    embedding its real weight on the execution device and drop the offload hook, so conversion sees real data."""
+    embedding its real weight on the CPU (where offload keeps it; the execution GPU may not fit it) and drop the
+    offload hook, so conversion sees real data."""
     for module in list(model.modules()):
         hook = getattr(module, "_hf_hook", None)
         if not (
@@ -7671,11 +7711,14 @@ def _materialize_offloaded_fake_quantized_embeddings(model: torch.nn.Module) -> 
         from accelerate.hooks import remove_hook_from_module
         from accelerate.utils import set_module_tensor_to_device
 
-        device = hook.execution_device if hook.execution_device is not None else "cpu"
         values = {n: hook.weights_map[n] for n, _ in module.named_parameters(recurse = False)}
         remove_hook_from_module(module)
         for name, value in values.items():
-            set_module_tensor_to_device(module, name, device, value = value)
+            set_module_tensor_to_device(module, name, "cpu", value = value)
+        # Keep the module on one device: non-offloaded buffers (Gemma's embed_scale) sat on the execution device.
+        for name, buffer in list(module.named_buffers(recurse = False)):
+            if buffer.device.type != "cpu":
+                set_module_tensor_to_device(module, name, "cpu")
 
 
 def _offload_hook_problem(module: torch.nn.Module):
@@ -7695,9 +7738,13 @@ def _offload_hook_problem(module: torch.nn.Module):
     return None
 
 
-def _check_offloaded_embeddings(originals: Dict[str, torch.nn.Module]) -> None:
-    """Refuse, before QAT replaces anything, an offloaded embedding whose real weight could not follow it."""
+def _check_offloaded_embeddings(originals: Dict[str, torch.nn.Module], base_config_and_filter_fns) -> None:
+    """Refuse, before QAT replaces anything, an offloaded embedding selected for QAT whose real weight could not
+    follow it. A filter of None selects Linears only, so it never selects an embedding."""
+    filters = [f for _, f in base_config_and_filter_fns if f is not None]
     for fqn, module in originals.items():
+        if not any(f(module, fqn) for f in filters):
+            continue
         problem = _offload_hook_problem(module)
         if problem is not None:
             raise RuntimeError(
@@ -7774,13 +7821,7 @@ def _fake_quantized_embedding_class(original_cls):
     def forward(self, *args, **kwargs):
         # Fake quantize the weight the original forward reads, whether it calls super().forward() (transformers'
         # Gemma3) or F.embedding(self.weight) directly (unsloth_zoo's float32 Gemma3 / Gemma4 patch).
-        fake_quantizer = self.weight_fake_quantizer
-        if fake_quantizer is None:
-            return original_cls.forward(self, *args, **kwargs)
-        from torch.nn.utils.stateless import _reparametrize_module
-
-        with _reparametrize_module(self, {"weight": fake_quantizer(self.weight)}):
-            return original_cls.forward(self, *args, **kwargs)
+        return _call_with_fake_quantized_weight(self, original_cls.forward, self, *args, **kwargs)
 
     name = "_FakeQuantized_" + re.sub(
         r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"
@@ -8476,7 +8517,7 @@ def _prepare_model_for_qat(
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
     embedding_subclasses = _embedding_subclasses(model)
-    _check_offloaded_embeddings(embedding_subclasses)
+    _check_offloaded_embeddings(embedding_subclasses, torchao_config.base_config_and_filter_fns)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
