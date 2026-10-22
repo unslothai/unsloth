@@ -366,8 +366,7 @@ def test_moss_denies_nvfp4():
 def test_fp8_te_cast_keeps_the_gated_delta_conv1d_in_compute_dtype():
     """Qwen3.5's gated-delta layers hand ``linear_attn.conv1d.weight`` straight to the causal-conv kernel without
     calling the module, so the layerwise upcast hook never runs: the cast must leave conv1d out."""
-    import torch
-
+    torch = pytest.importorskip("torch")
     pytest.importorskip("diffusers.hooks")
 
     try:

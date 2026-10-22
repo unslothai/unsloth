@@ -512,11 +512,21 @@ def _callback_block_source() -> str:
 
 def _old_pythons():
     import shutil
+    import subprocess
 
     found = []
     for name in ("python3.9", "python3.10", "python3.11"):
         path = os.environ.get("MOSS_OLD_PYTHON") if name == "python3.11" else None
-        path = path or shutil.which(name)
+        if not path:
+            path = shutil.which(name)
+            # A pyenv / asdf shim for an uninstalled version is on PATH but exits nonzero: not an interpreter.
+            if (
+                path
+                and subprocess.run(
+                    [path, "-I", "-c", "pass"], capture_output = True, timeout = 60
+                ).returncode
+            ):
+                path = None
         if path:
             found.append(path)
     return found
