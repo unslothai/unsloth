@@ -497,3 +497,10 @@ def test_cluster_list_reads_host_and_port_pairs():
         addrs = ["10.0.0.5:50099", "10.0.0.5:50070", "10.0.0.9"], agent_port = 50099
     )
     assert cli._addresses(peer) == [("10.0.0.5", 50099), ("10.0.0.5", 50070), ("10.0.0.9", 50099)]
+
+
+def test_discover_rejects_negative_seconds_but_allows_zero(fakes):
+    bad = invoke("cluster", "discover", "--seconds", "-1")
+    assert bad.exit_code == 2 and "Traceback" not in bad.output
+    assert not isinstance(bad.exception, ValueError)
+    assert invoke("cluster", "discover", "--seconds", "0").exit_code == 0

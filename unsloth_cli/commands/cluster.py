@@ -457,7 +457,7 @@ def list_workers(
 
 
 @cluster_app.command("discover")
-def discover(seconds: float = typer.Option(6.0, "--seconds", help = "How long to listen.")):
+def discover(seconds: float = typer.Option(6.0, "--seconds", min = 0, help = "How long to listen.")):
     """Workers announcing themselves on this LAN, paired or not."""
     identity = _link()
     from studio.cluster_link.discovery import Listener
