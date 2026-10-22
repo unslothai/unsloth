@@ -16011,8 +16011,10 @@ def _mlx_estimate_offload(
         ),
         pinned = request.max_seq_length or None,
         load_in_4bit = load_in_4bit,
+        # As the load: any mlx-vlm route, a speculative text load included, keeps no history without the store.
         retains_history = (
-            not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
+            not (getattr(config, "is_vision", False) or vision)
+            or mlx_vlm_snapshot_store_available()
         ),
         kv_bits = kv_bits,
         vision = vision,

@@ -1360,6 +1360,40 @@ class TestEstimateMemoryRoute:
         four_bit["on"] = False
         assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
 
+    def test_a_speculative_mlx_estimate_plans_offload_without_the_history_reserve(
+        self, monkeypatch, tmp_path
+    ):
+        import core.inference.mlx_inference as mlx_inference
+        import core.inference.mlx_memory as mlx_memory
+
+        self._mlx_target(monkeypatch, str(tmp_path))
+        (tmp_path / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
+        reserves = []
+        monkeypatch.setattr(ri, "_mlx_estimate_load_in_4bit", lambda *a: False)
+        monkeypatch.setattr(
+            mlx_memory, "mlx_offloadable_parts", lambda d, vision = None: ("experts",)
+        )
+        monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: object())
+        monkeypatch.setattr(mlx_inference, "mlx_vlm_snapshot_store_available", lambda: False)
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_memory_budget",
+            lambda retains_history: reserves.append(retains_history) or 1 << 40,
+        )
+        monkeypatch.setattr(mlx_memory, "mlx_offload_plan", lambda d, **kw: (None, 0.5))
+        monkeypatch.setattr(
+            mlx_memory,
+            "mlx_memory_breakdown",
+            lambda model_dir, *, n_ctx, **kw: mlx_memory.MlxMemoryBreakdown(1, 1, 1, 3, 3, n_ctx),
+        )
+        estimate = lambda: _estimate(model_path = "org/model", max_seq_length = 4096)
+        estimate()
+        assert reserves[-1] is True
+        # The load speculates through mlx-vlm, which keeps no history without the snapshot store.
+        monkeypatch.setattr(ri, "_mlx_estimate_speculates", lambda request, model_dir: True)
+        estimate()
+        assert reserves[-1] is False
+
     def test_an_mlx_estimate_prices_max_seq_length_not_n_ctx(self, monkeypatch):
         self._mlx_target(monkeypatch, "/models/thing")
         seen = self._record_breakdown(
