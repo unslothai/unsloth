@@ -196,6 +196,7 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
         "tokens": 175,
         "messages": 2,
         "chats": 1,
+        "apiRequests": 1,
     }
     assert stats["peakDay"] == {"date": today.date().isoformat(), "tokens": 175}
     assert stats["models"][0]["id"] == "unsloth/gpt-oss-20b"
@@ -1646,9 +1647,10 @@ def test_server_timings_stand_in_for_a_missing_usage_chunk(stats_db):
 
     totals = compute_profile_stats(days = 7)["totals"]
 
-    assert totals["promptTokens"] == 400
+    # prompt_n is only what llama.cpp evaluated; the usage chunk it stands in for counts the cache hits too.
+    assert totals["promptTokens"] == 490
     assert totals["completionTokens"] == 120
-    assert totals["totalTokens"] == 520
+    assert totals["totalTokens"] == 610
     assert totals["cachedTokens"] == 90
 
 
