@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Simulation suite: the engine stats poller across platforms, backends and bad input.
-
-The poller reads llama-server /metrics over loopback HTTP and nothing else, so the
-platform and GPU axes reduce to "what does this build's /metrics look like". These
-walk the [Windows, Linux, WSL, macOS] x [NVIDIA, AMD/ROCm, Vulkan, CPU] product as
-metric payloads, plus the malformed and hostile bodies a daemon thread must survive
-without dying.
-"""
+"""Engine stats poller fed fake /metrics payloads for each platform and GPU, plus malformed bodies."""
 
 from __future__ import annotations
 
@@ -73,29 +66,23 @@ def _stalls(cap):
     return [kw for ev, kw in cap.events if ev == "engine_no_decode_progress"]
 
 
-# ------------------------------------------------------- platform x backend matrix
-
 PLATFORMS = ["win32", "linux", "linux-wsl", "darwin"]
 BACKENDS = ["cuda", "rocm", "vulkan", "cpu"]
 
 
 @pytest.mark.parametrize("platform,backend", list(itertools.product(PLATFORMS, BACKENDS)))
 def test_healthy_generation_is_never_flagged_on_any_platform(platform, backend, monkeypatch):
-    """The signature that matters is identical everywhere: llama-server freezes the
-    token counters for the whole of a healthy generation and only n_decode_total moves.
-
-    A build that reported a stall here would cancel real work on that platform.
-    """
+    """Token counters stay frozen during healthy generation, so only n_decode_total may signal progress."""
     monkeypatch.setattr(sys, "platform", platform.replace("-wsl", ""))
     snaps = [
         {
             "tokens_predicted_total": 4096.0,  # frozen until the slot is released
-            "prompt_tokens_total": 512.0,  # flushed once, at the first token
+            "prompt_tokens_total": 512.0,
             "n_decode_total": 30000.0 + i,
             "requests_processing": 1.0,
             "requests_deferred": 0.0,
         }
-        for i in range(180)  # 30 simulated minutes
+        for i in range(180)
     ]
     cap = _drive(snaps, monkeypatch)
     assert not _stalls(cap), f"{platform}/{backend} flagged a healthy generation"
@@ -108,7 +95,7 @@ def test_a_real_wedge_is_reported_on_any_platform(platform, backend, monkeypatch
         {
             "tokens_predicted_total": 4096.0,
             "prompt_tokens_total": 512.0,
-            "n_decode_total": 30000.0,  # frozen: the engine is not decoding
+            "n_decode_total": 30000.0,
             "requests_processing": 1.0,
         }
         for _ in range(120)
@@ -118,19 +105,14 @@ def test_a_real_wedge_is_reported_on_any_platform(platform, backend, monkeypatch
 
 
 def test_cpu_only_slow_decode_is_never_flagged(monkeypatch):
-    # A CPU build can sit many seconds between decode calls. As long as the counter
-    # moves at all between scrapes, it is alive.
     snaps = []
     decode = 100.0
     for i in range(240):
-        if i % 20 == 0:  # a decode call only every 200 simulated seconds
+        if i % 20 == 0:
             decode += 1
         snaps.append({"n_decode_total": decode, "requests_processing": 1.0})
     cap = _drive(snaps, monkeypatch)
     assert not _stalls(cap)
-
-
-# ------------------------------------------------------------------ scrape robustness
 
 
 def _scrape_body(body, monkeypatch):
@@ -166,7 +148,6 @@ def test_scrape_handles_scientific_notation_and_labels(monkeypatch):
 def test_scrape_survives_malformed_values(monkeypatch):
     body = "llamacpp:n_decode_total NaNsense\nllamacpp:requests_processing 1\n"
     m = _scrape_body(body, monkeypatch)
-    # The bad line is skipped, the good one still parses.
     assert m.get("requests_processing") == 1.0
 
 
@@ -188,11 +169,7 @@ def test_scrape_failure_returns_none(monkeypatch):
     assert LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())._scrape() is None
 
 
-# ------------------------------------------------------------------- lifecycle edges
-
-
 def test_scrape_failures_do_not_advance_the_stall_clock(monkeypatch):
-    # /metrics briefly unavailable during a model swap must not read as a wedge.
     cap = _Capture()
     clock = {"t": 0.0}
     monkeypatch.setattr(ls.time, "monotonic", lambda: clock["t"])
@@ -206,7 +183,7 @@ def test_scrape_failures_do_not_advance_the_stall_clock(monkeypatch):
         if state["i"] > 200:
             lg.stop()
             return None
-        return None  # every scrape fails
+        return None
 
     lg._scrape = fake_scrape
     lg._run()

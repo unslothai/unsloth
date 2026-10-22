@@ -67,6 +67,61 @@ _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
 _system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
 
+_CPU_PERCENT_MIN_WINDOW_S = 1.0
+_cpu_percent_lock = threading.Lock()
+_cpu_percent_reading: Optional[tuple[float, Optional[float]]] = None
+
+
+def _prime_cpu_percent() -> None:
+    global _cpu_percent_reading
+    try:
+        import psutil
+        psutil.cpu_percent(interval = None)
+    except Exception:
+        return
+    with _cpu_percent_lock:
+        _cpu_percent_reading = (time.monotonic(), None)
+
+
+def _cpu_usage_percent() -> float:
+    """cpu_percent(None) measures since anyone's last call: sample at most once per window."""
+    global _cpu_percent_reading
+    import psutil
+
+    with _cpu_percent_lock:
+        now = time.monotonic()
+        reading = _cpu_percent_reading
+        if (
+            reading is not None
+            and reading[1] is not None
+            and now - reading[0] < _CPU_PERCENT_MIN_WINDOW_S
+        ):
+            return reading[1]
+        value = psutil.cpu_percent(interval = None)
+        _cpu_percent_reading = (now, value)
+        return value
+
+
+_prime_cpu_percent()
+
+
+def _process_tree_rss_mb(process: Any) -> int:
+    """RSS of this process and its children (llama-server, the training worker), best effort."""
+    import psutil
+
+    total = process.memory_info().rss
+    try:
+        children = process.children(recursive = True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        children = []
+    for child in children:
+        try:
+            total += child.memory_info().rss
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return round(total / 1024**2)
+
+
 # Windows AMD ROCm DLL injection: Python 3.8+ ignores PATH for extension modules, so register ROCm bin
 # dirs with os.add_dll_directory() to find amdhip64.dll etc. before any torch import.
 if sys.platform == "win32":
@@ -273,6 +328,11 @@ from utils.security.hub_data_files import install as _guard_hub_data_files
 _guard_hub_data_files()
 del _guard_hub_data_files
 
+from utils.security.dataset_media import install as _guard_dataset_media
+
+_guard_dataset_media()
+del _guard_dataset_media
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
@@ -351,6 +411,7 @@ from routes import (
     inference_router,
     inference_studio_router,
     mcp_servers_router,
+    openai_fine_tuning_router,
     skills_router,
     models_router,
     providers_router,
@@ -745,7 +806,7 @@ def banner_autofill_available(app_state, environ) -> bool:
     api_only = getattr(app_state, "api_only", None)
     if api_only is None:
         api_only = environ.get("UNSLOTH_API_ONLY") == "1"
-    # Desktop-owned api-only still serves the UI (and the autofill) to a loopback browser.
+    # Desktop-owned: the console gets the path, never the password (desktop logs land in bug reports).
     return not api_only or _desktop_owner() is not None
 
 
@@ -804,6 +865,18 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+
+    def _prune_open_staging_in_background() -> None:
+        try:
+            from utils.paths.path_utils import prune_open_staging
+            prune_open_staging()
+        except Exception:  # noqa: BLE001
+            _lifespan_log.warning("could not prune open-staging", exc_info = True)
+
+    # Off the startup path: the cache can sit on a slow mount, and a tool launched first runs the same cleanup.
+    threading.Thread(
+        target = _prune_open_staging_in_background, name = "open-staging-prune", daemon = True
+    ).start()
 
     # Warm the OS sandbox probe so the "off" gate has an answer.
     try:
@@ -967,6 +1040,8 @@ async def lifespan(app: FastAPI):
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     _created = storage.ensure_default_admin()
     app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
+    # Read by desktop-login, which cannot import this module.
+    app.state.desktop_owned = _desktop_owner() is not None
     # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
     # _created is False there and the whole banner would be skipped on exactly the launch
     # that needs it. requires_password_change: the gate may also have taken a new password
@@ -1483,6 +1558,8 @@ _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
     "/api/hub/datasets/upload",
 )
+# OpenAI-compatible fine-tuning upload: the same dataset upload and cap, matched by EXACT path.
+_OPENAI_FILES_UPLOAD_PATH = "/v1/files"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
     "/api/data-recipe/seed/upload-unstructured-file"
 )
@@ -1523,6 +1600,7 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
+    _OPENAI_FILES_UPLOAD_PATH,
 )
 # Which of those may arrive with no Content-Length and be counted instead of refused. Deliberately NOT the
 # whole set above: this middleware runs before authentication, and a counted body is a held body, so the dataset
@@ -1556,9 +1634,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
-    if (
-        path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES)
-        or path.rstrip("/") == _DIFFUSION_DATASET_UPLOAD_PATH
+    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES) or path.rstrip("/") in (
+        _DIFFUSION_DATASET_UPLOAD_PATH,
+        _OPENAI_FILES_UPLOAD_PATH,
     ):
         return upload_request_limit_bytes()
     return default_request_body_limit_bytes()
@@ -1759,6 +1837,11 @@ from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
 
 app.add_middleware(ModelAliasMiddleware)
 
+# Idle auto-unload request tracker; added before MaxBodyMiddleware so only fully received requests count.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
@@ -1770,11 +1853,6 @@ app.add_middleware(
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
     upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
-
-# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
-from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
-
-app.add_middleware(LlamaKeepWarmMiddleware)
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
@@ -1885,6 +1963,7 @@ app.include_router(video_openai_router, prefix = "/api/inference", tags = ["infe
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(openai_fine_tuning_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 # llama-server / Ollama discovery probes. Declares its own full paths (/props, /version, /api/tags, ...) so it
 # needs no prefix, and must be registered ahead of the SPA catch-all in serve_frontend() or /props and /version
@@ -2421,6 +2500,7 @@ def _get_cached_system_gpu_info(
     logger, *, refresh_memory: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return training and inference GPU info with bounded live-probe churn."""
+    import contextlib
     import time
     from utils.hardware import (
         LIVE_GPU_TELEMETRY_KEYS,
@@ -2429,6 +2509,7 @@ def _get_cached_system_gpu_info(
         get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
         get_vulkan_inference_gpu_info,
+        gpu_query,
     )
 
     global _system_gpu_cache
@@ -2446,10 +2527,6 @@ def _get_cached_system_gpu_info(
             visibility_info = {"available": False, "devices": []}
 
         try:
-            import contextlib
-
-            from utils.hardware import gpu_query
-
             # Already behind a 10 s cache: no stale-while-revalidate on top.
             with (
                 contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
@@ -2550,7 +2627,10 @@ def _get_cached_system_gpu_info(
             gpu_info["gguf_gpu_ids_supported"] = bool(enriched_devices)
             inference_gpu_info = gpu_info
         else:
-            vulkan_info = get_vulkan_inference_gpu_info()
+            with (
+                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
+            ):
+                vulkan_info = get_vulkan_inference_gpu_info()
             cross_vendor_info = (
                 get_cross_vendor_inference_gpu_info() if vulkan_info is None else None
             )
@@ -2825,7 +2905,15 @@ def get_system_info(
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
     except Exception as e:
         logger.debug(f"Failed to get current process memory: {e}")
+        current_process = None
         process_used_mb = 0
+    try:
+        process_tree_used_mb = (
+            _process_tree_rss_mb(current_process) if current_process else process_used_mb
+        )
+    except Exception as e:
+        logger.debug(f"Failed to get process tree memory: {e}")
+        process_tree_used_mb = process_used_mb
 
     try:
         boot_time = psutil.boot_time()
@@ -2855,7 +2943,7 @@ def get_system_info(
         "cpu": {
             "logical_count": psutil.cpu_count(logical = True),
             "physical_count": psutil.cpu_count(logical = False),
-            "usage_percent": psutil.cpu_percent(interval = None),
+            "usage_percent": _cpu_usage_percent(),
             "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
@@ -2863,6 +2951,7 @@ def get_system_info(
             "available_gb": round(memory_available / 1024**3, 2),
             "percent_used": memory_percent,
             "process_used_mb": process_used_mb,
+            "process_tree_used_mb": process_tree_used_mb,
         },
         "disk": {
             "total_gb": round(disk.total / 1e9, 2) if disk else 0,
@@ -2906,12 +2995,12 @@ def get_disk_space(
     is about to start.
 
     shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
-    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    is microseconds on every platform Unsloth runs on and needs no directory walk. Note that on
     Windows it reports the quota available to the CALLING user, which is the number that decides
     whether the download fits, so that difference is the correct one.
 
     Measured at the models root rather than the filesystem root: those are different volumes
-    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    whenever HF_HUB_CACHE, or the Unsloth root, sits on another disk, and the free space that
     matters is the one the bytes are going to.
 
     Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved
@@ -3128,6 +3217,10 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
 
     # A local browser may belong to any account, including a deactivated one.
     if installation_has_managed_accounts():
+        return html_bytes, None
+
+    # The desktop shell never reads it, and any local process can fetch this page from loopback.
+    if _desktop_owner() is not None:
         return html_bytes, None
 
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)

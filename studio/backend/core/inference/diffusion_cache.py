@@ -63,6 +63,8 @@ def _auto_static_skip_table() -> dict:
 
 AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
 
+AUTO_STATIC_SKIP_TIERS = (_TIER_MAX,)
+
 # Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
 AUTO_STATIC_MIN_STEPS = 20
 
@@ -106,15 +108,17 @@ def auto_static_skip_plan(
     """Settings for an auto static skip (``{"every": n, "min_steps": m}``), or None when auto must not pick it.
 
     ``speed_mode`` is the tier the user ASKED for (an eager downgrade forced by offload does not change what the
-    skip costs in quality); off / eager are the lossless tiers and never skip."""
+    skip costs in quality). Only ``max`` skips automatically: the skip is lossy (mean LPIPS up to 0.05 on the
+    ``default`` interval, 0.10 on ``max``, PR #12652) and ComfyUI never skips steps by default, so ``default``, an
+    unset speed and the deferred profile render every step. An explicit ``static`` request is still honoured."""
     if auto_step_skip_disabled(env):
         return None
     if isinstance(identifiers, str) or identifiers is None:
         identifiers = (identifiers,)
     entry = auto_static_skip_entry(*identifiers)
-    if not entry or speed_mode not in (_TIER_DEFAULT, _TIER_MAX):
+    if not entry or speed_mode not in AUTO_STATIC_SKIP_TIERS:
         return None
-    every = entry.get(_TIER_DEFAULT) if speed_mode == _TIER_DEFAULT else entry.get(_TIER_MAX)
+    every = entry.get(_TIER_MAX)
     try:
         steps_ok = default_steps is not None and int(default_steps) >= AUTO_STATIC_MIN_STEPS
     except (TypeError, ValueError):
@@ -432,6 +436,7 @@ def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool
     if not callable(named_children):
         return True
     register_unregistered_transformer_blocks(logger)
+    _register_layer_split_blocks(transformer)
     blocks = [
         getattr(block, "_orig_mod", block)
         for name, child in named_children()
@@ -498,6 +503,107 @@ def install_fbcache_length_guard() -> bool:
 
     _should_compute_remaining_blocks._unsloth_length_guard = True
     FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    return True
+
+
+def _register_layer_split_blocks(transformer: Any) -> bool:
+    """Register a layer split's block classes (same-named subclasses of the real blocks) with their base's metadata,
+    so the cache finds them. A copy, never the base's own object: ``register`` writes ``_cls`` into it. True when
+    every split block class is registered."""
+    try:
+        import dataclasses
+
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - no registry: enable_cache decides
+        return True
+    ok = True
+    for cls in {type(m) for m in transformer.modules()}:
+        base = cls.__dict__.get("_unsloth_layer_split_base")
+        if base is None:
+            continue
+        try:
+            TransformerBlockRegistry.get(cls)
+            continue
+        except Exception:  # noqa: BLE001 - not registered yet
+            pass
+        try:
+            meta = TransformerBlockRegistry.get(base)
+        except Exception:  # noqa: BLE001 - the base is not a cacheable block either
+            continue
+        try:
+            TransformerBlockRegistry.register(
+                model_class = cls,
+                metadata = dataclasses.replace(meta, _cls = None, _cached_parameter_indices = None),
+            )
+        except Exception:  # noqa: BLE001
+            ok = False
+    return ok
+
+
+def _tensors_to(obj: Any, device: Any) -> Any:
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_tensors_to(x, device) for x in obj)
+    to = getattr(obj, "to", None)
+    return to(device) if callable(to) else obj
+
+
+def _first_device(obj: Any) -> Any:
+    if isinstance(obj, (list, tuple)):
+        for x in obj:
+            dev = _first_device(x)
+            if dev is not None:
+                return dev
+        return None
+    return getattr(obj, "device", None)
+
+
+def install_fbcache_split_guard() -> bool:
+    """Make First-Block-Cache's tail hook work when the tail block runs on another card than the head block (a layer
+    split): the head block's output is copied to the tail's card for the residual, and the residual goes back to the
+    head's card, where the head hook adds it on a cached step. Copies are exact, so the cache decides and renders as
+    on one card. Calls whose tensors share a card take the original path unchanged. Process-wide and idempotent;
+    must run before ``enable_cache`` (diffusers binds ``new_forward`` when it registers the hook). False when this
+    diffusers has no FBCache block hook."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    install_fbcache_mixed_stream_tail()
+    original = getattr(FBCBlockHook, "new_forward", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_split_guard", False):
+        return True
+
+    def new_forward(self, module, *args, **kwargs):
+        if not getattr(self, "is_tail", False):
+            return original(self, module, *args, **kwargs)
+        state = self.state_manager.get_state()
+        head = state.head_block_output
+        home = _first_device(head)
+        try:
+            here = self._metadata._get_parameter_from_args_kwargs(
+                "hidden_states", args, kwargs
+            ).device
+        except Exception:  # noqa: BLE001 - the original raises the same way
+            here = None
+        if not state.should_compute or home is None or here is None or here == home:
+            return original(self, module, *args, **kwargs)
+        state.head_block_output = _tensors_to(head, here)
+        try:
+            out = original(self, module, *args, **kwargs)
+        finally:
+            state.head_block_output = head
+        residuals = state.tail_block_residuals
+        if residuals is not None:
+            state.tail_block_residuals = tuple(
+                r.to(home) if r is not None else None for r in residuals
+            )
+        return out
+
+    new_forward._unsloth_split_guard = True
+    new_forward._unsloth_mixed_stream_tail = getattr(original, "_unsloth_mixed_stream_tail", False)
+    FBCBlockHook.new_forward = new_forward
     return True
 
 
@@ -674,6 +780,14 @@ def apply_step_cache(
         return None
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
+        return None
+    from .diffusion_layer_split import is_layer_split
+
+    if is_layer_split(transformer) and not (
+        install_fbcache_split_guard() and _register_layer_split_blocks(transformer)
+    ):
+        # without the guard the tail hook subtracts the head block's output (primary) from its own (another card)
+        _warn(logger, mode, RuntimeError("denoiser is split across cards; running uncached"))
         return None
     # Before enable_cache, which is what raises on a block class the registry has never seen.
     register_unregistered_transformer_blocks(logger)

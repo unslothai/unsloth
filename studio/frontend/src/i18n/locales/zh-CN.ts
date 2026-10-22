@@ -118,6 +118,7 @@ export const zhCN = {
     reload: "重新加载",
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
+    local: "本地",
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -215,7 +216,7 @@ export const zhCN = {
     importBookmarksDoneOne: "已导入 {count} 个书签。",
     importBookmarksDoneMany: "已导入 {count} 个书签。",
     importBookmarksNone: "该文件中没有新书签。",
-    importBookmarksPartial: "已导入 {count} 个，但还有 {leftOut} 个放不下：Studio 最多保存 {max} 个书签。",
+    importBookmarksPartial: "已导入 {count} 个，但还有 {leftOut} 个放不下：Unsloth 最多保存 {max} 个书签。",
     importBookmarksFailed: "无法读取该文件。请选择从浏览器导出的书签 HTML 文件。",
     downloadsTitle: "下载",
     askWhereToSaveSetting: "每次询问文件保存位置",
@@ -266,7 +267,7 @@ export const zhCN = {
     annotationScreenshotsAlways: "始终附带",
     annotationScreenshotsNever: "从不附带",
     clearDataSetting: "清除浏览数据",
-    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Studio 之前保留 Cookie 和网站数据。",
+    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Unsloth 之前保留 Cookie 和网站数据。",
     manage: "管理",
     fullView: {
       enter: "全屏视图",
@@ -468,6 +469,8 @@ export const zhCN = {
       downloadFailed: "无法下载 {name}",
       notMarked: "{name} 已保存,但无法标记为从互联网下载,因此打开前系统不会发出警告。",
       blocked: "此地址无法在浏览器面板中打开。面板只打开公开网站。",
+      blockedLocal: "此本地地址无法在此打开。请在地址栏中输入它来打开。",
+      studioAddress: "这是 Unsloth 自身的地址，因此无法在浏览器面板中打开。",
       clearDataSettingDescription: "清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，这会让你退出各网站。",
       clearDataDescription: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       clearDataFailed: "无法清除网站数据。请重试。",
@@ -842,6 +845,7 @@ export const zhCN = {
       byProject: "按项目",
       inOneList: "合并为一个列表",
       sortChatsBy: "对话排序方式",
+      projectsHome: "项目主页",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
       switchedToManual: "已改为手动排序，拖动行即可重新排序",
@@ -1082,6 +1086,10 @@ export const zhCN = {
       alternateSlot: "备用快捷键",
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
+      metaUnsupported: "Windows 键不能用于快捷键。",
+      altGraphUnsupported: "AltGr 组合不能用作快捷键。",
+      desktopOnly: "仅限桌面应用",
+      builtInKey: "内置：{key}",
       actions: {
         findInPage: {
           label: "在页面中查找",
@@ -1283,6 +1291,10 @@ export const zhCN = {
           label: "引导回复",
           description: "停止当前回复并接着发送草稿",
         },
+        stopGeneration: {
+          label: "停止生成",
+          description: "停止正在生成的回复",
+        },
         cycleReasoningEffort: {
           label: "循环切换推理强度",
           description: "在各推理强度等级之间循环",
@@ -1444,15 +1456,15 @@ export const zhCN = {
       dictation: {
         audioUploadTitle: "使用录音进行语音输入",
         audioUploadDescription:
-          "浏览器需要安全连接 (HTTPS) 才能直接在 Studio 中录音。在当前 HTTP 连接下，请改用手机录音工具，或选择已保存的录音。Studio 服务器会转写音频，并将文字添加到您的消息中。",
+          "浏览器需要安全连接 (HTTPS) 才能直接在 Unsloth 中录音。在当前 HTTP 连接下，请改用手机录音工具，或选择已保存的录音。Unsloth 服务器会转写音频，并将文字添加到您的消息中。",
         audioUploadChooseFile: "选择录音",
         audioUploadRecord: "录制音频",
         audioUploadIphoneHint:
           "在 iPhone 上，请通过“语音备忘录”(Voice Memos) 或其他录音应用保存录音，然后在此处选择。",
         audioUploadServerModelNote:
-          "此录音会使用 Studio 服务器上方显示的本地模型，即使普通语音输入使用的是其他引擎。",
+          "此录音会使用 Unsloth 服务器上方显示的本地模型，即使普通语音输入使用的是其他引擎。",
         audioUploadAutomatic: "自动",
-        audioUploadModelReady: "已在此 Studio 服务器上就绪",
+        audioUploadModelReady: "已在此 Unsloth 服务器上就绪",
         audioUploadRetryTitle: "无法转写 {file}",
         audioUploadRetry: "重试转写",
         audioUploadChooseModel:
@@ -1788,23 +1800,14 @@ export const zhCN = {
       },
       notifications: {
         sectionTitle: "通知",
-        showLlamaUpdates: "llama.cpp 更新通知",
-        showLlamaUpdatesDescription:
-          "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
-        showLoadedModels: "已加载模型指示器",
-        showLoadedModelsDescription:
-          "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
-        showWhisperUpdates: "whisper.cpp 更新通知",
-        showWhisperUpdatesDescription:
-          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
-        showAudioCppUpdates: "audio.cpp 更新通知",
-        showAudioCppUpdatesDescription:
-          "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
-        showUnslothUpdates: "Unsloth 更新通知",
-        showUnslothUpdatesDescription:
-          "有新版本的 Unsloth 可供安装时通知。",
+        showLoadedModels: "已加载模型卡片",
+        showLoadedModelsDescription: "角落卡片列出每个已加载的模型，一键卸载。",
+        updateReminders: "更新提醒",
+        updateRemindersDescription: "新版本就绪时多久提醒一次。",
+        llamaHint: "聊天和 GGUF 模型",
+        audioHint: "语音、音乐和转录",
         frequency: {
-          always: "总是",
+          always: "一有就提醒",
           daily: "每天一次",
           weekly: "每周一次",
           biweekly: "每两周一次",
@@ -1939,7 +1942,7 @@ export const zhCN = {
         menuSubtitle: "用于文件搜索",
         device: "嵌入设备",
         deviceDescription:
-          "嵌入模型的运行位置，适用于所有模型。GPU 索引大量文档更快，但在 Studio 重启前会占用部分显存。",
+          "嵌入模型的运行位置，适用于所有模型。GPU 索引大量文档更快，但在 Unsloth 重启前会占用部分显存。",
         deviceAuto: "自动",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2043,9 +2046,9 @@ export const zhCN = {
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
         activityDescription: {
-          daily: "过去{weeks}共{total}",
-          weekly: "峰值周 {total} · 最近{weeks}",
-          cumulative: "过去{weeks}累计{total}",
+          daily: "自 {since} 起共 {total}",
+          weekly: "最活跃的一周 {total} · 自 {since} 起",
+          cumulative: "自 {since} 起累计 {total}",
         },
         mode: {
           daily: "按天",
@@ -2054,8 +2057,9 @@ export const zhCN = {
         },
         cellTooltip: "{date} · {tokens}，{messages}",
         weekTooltip: "{date} 当周 · {tokens}",
-        chartToggle: "图表",
-        chartToggleHint: "以带坐标轴标签的图表显示按周和累计",
+        emptyDayTooltip: "{date} · 无活动",
+        apiRequests: "通过 API {count} 次",
+        cumulativeTooltip: "截至 {date} 那一周 · 累计 {tokens}",
         less: "较少",
         more: "较多",
         insightsTitle: "活跃度分析",
@@ -2367,7 +2371,7 @@ export const zhCN = {
         multiModelHint: "适用于聊天、语音、图像和视频模型。每个已加载的聊天模型都会响应指定它的请求。在多 GPU 机器上，Unsloth 会尽量把新模型放到没有其他模型使用的 GPU 上。“能容纳时”会预留约 1 GB 空间。“能容纳时”和“总是”都不会卸载其他 GPU 上的模型。",
         allowOversizedLoad: "允许加载超大模型",
         allowOversizedLoadDescription: "即使内存检查认为放不下，也加载图像和视频模型。",
-        allowOversizedLoadHint: "适用于 CPU 和 GPU 共用一块内存的设备（Apple Silicon、集成显卡）。当模型权重的估算值大于为操作系统预留空间后剩余的内存时，Studio 会拒绝加载。开启后仍会尝试加载。估算可能偏高也可能偏低：超大加载可能失败、耗尽内存、导致电脑大量换页或无响应，或使 Studio 停止运行。默认关闭。",
+        allowOversizedLoadHint: "适用于 CPU 和 GPU 共用一块内存的设备（Apple Silicon、集成显卡）。当模型权重的估算值大于为操作系统预留空间后剩余的内存时，Unsloth 会拒绝加载。开启后仍会尝试加载。估算可能偏高也可能偏低：超大加载可能失败、耗尽内存、导致电脑大量换页或无响应，或使 Unsloth 停止运行。默认关闭。",
         mediaIdleUnloadDescription:
           "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
@@ -2663,6 +2667,10 @@ export const zhCN = {
         "通知 提醒 完成 结束 就绪 回复 后台 最小化 notify notification alert done finished reply background",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
+      showReplyTimes: "回复时间",
+      showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
+      showReplyTimesKeywords:
+        "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       modelDisclaimer: "显示模型免责声明",
@@ -2718,6 +2726,22 @@ export const zhCN = {
         visibility: "思考过程",
         visibilityDescription:
           "思考过程如何展开。你仍可自行展开或折叠任意区块。",
+      },
+      memory: {
+        title: "记忆",
+        description: "每个对话都会读取的笔记，适用于所有本地或云端模型。项目中的对话还会读取该项目的 AGENTS.md。",
+        enable: "在对话中使用记忆",
+        enableDescription: "在每个对话中发送这些笔记。",
+        locked: "已被 UNSLOTH_STUDIO_AGENTS_MD 在此安装中关闭。",
+        editor: "记忆笔记",
+        placeholder: "例如：\n- 我用 Python 编程，使用 uv。\n- 回答尽量简短。",
+        hint: "保存在 {path}。你也可以用任意文本编辑器编辑该文件。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "记忆已保存",
+        loadError: "无法加载记忆。",
+        saveError: "无法保存记忆。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md 记忆 记住 个性化 个人资料 笔记",
       },
       currentDate: {
         label: "告诉模型今天的日期",
@@ -2797,7 +2821,7 @@ export const zhCN = {
       importFailed: "导入失败。",
       importFromSource: "从 {source} 导入",
       importFromSourceDescription:
-        "将你在 {source} 中的对话按项目分组复制到 Studio。",
+        "将你在 {source} 中的对话按项目分组复制到 Unsloth。",
       importingAction: "导入中...",
       importedSourceOneChat: "已从 {source} 导入 1 个对话。",
       importedSourceChatCount: "已从 {source} 导入 {count} 个对话。",
@@ -3072,6 +3096,14 @@ export const zhCN = {
           "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
         useViaApi: "通过 API 使用",
       },
+      mediaApi: {
+        title: "图像和视频 API",
+        description: "通过兼容 OpenAI 的端点，在你自己的代码中生成图像和视频。",
+        images: "图像",
+        video: "视频",
+        placeholderModel: "显示的模型只是示例。在图像或视频页面加载模型，再从该页面的 API 按钮打开此处即可填入。",
+        autoSwitchOff: "媒体自动切换已关闭，因此请求无论指定哪个模型，都会在页面已加载的模型上运行。",
+      },
       decisionApi: {
         title: "决策 API",
         docs: "文档",
@@ -3151,6 +3183,24 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      whisperCppVersion: "whisper.cpp 版本",
+      engines: {
+        title: "引擎",
+        description: "Unsloth 用来运行模型的运行时。更新在后台安装，无需重启。",
+        updatesLabel: "引擎更新",
+        notInstalled: "未安装",
+        available: "{version} 可用",
+        upToDate: "已是最新",
+        updatesAvailable: "有可用更新",
+        checking: "正在检查更新...",
+        checkFailed: "无法检查更新，请稍后重试。",
+        unsupported: "此安装的引擎由 Unsloth 之外管理。",
+        checkForUpdates: "检查更新",
+        update: "更新",
+        updating: "正在更新...",
+        updated: "引擎已更新。",
+        updateFailed: "更新失败：{error}",
+      },
       hardware: "硬件",
       gpu: "GPU",
       gpuIntegrated: "集成",
@@ -3208,7 +3258,7 @@ export const zhCN = {
         desktopAvailable: "桌面应用 {version} 已可用",
         desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
         desktopExternalServer:
-          "应用已连接到正在运行的 Studio 服务器，无法更新该服务器。请先停止该服务器，再退出并重新打开桌面应用以进行更新。",
+          "应用已连接到正在运行的 Unsloth 服务器，无法更新该服务器。请先停止该服务器，再退出并重新打开桌面应用以进行更新。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
         desktopCheckFailed: "无法检查更新",
         desktopCheckFailedDescription: "请检查网络连接后重试。",
@@ -3229,6 +3279,9 @@ export const zhCN = {
         docsUpdating: "更新",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3784,7 +3837,7 @@ export const zhCN = {
           "请输入大于 0 且小于 1 的 Embedding 学习率。",
         decisionColumnsMissing:
           "决策模型需要 state、questions 和 gold（或 answers）列。缺少：{columns}。",
-        decisionOwnerOnly: "只有 Studio 所有者可以微调决策模型。",
+        decisionOwnerOnly: "只有 Unsloth 所有者可以微调决策模型。",
         hfDatasetRequired: "请先选择 Hugging Face 数据集。",
         hfDatasetSplitRequired: "请先选择或输入训练拆分。",
         localDatasetRequired: "请先选择本地数据集。",

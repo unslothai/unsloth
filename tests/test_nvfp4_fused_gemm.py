@@ -212,6 +212,29 @@ def test_split_reduction_matches_unsplit(N, fused, monkeypatch, dtype, M, N_out,
 
 
 @pytest.mark.parametrize("dtype", _dtypes())
+@pytest.mark.parametrize("M", [1, 32])
+def test_sm89_unsplit_dx_matches_split(N, fused, monkeypatch, dtype, M):
+    # The sm89 dX rule (split 1 once the output fills every SM) against the split it replaced.
+    if torch.cuda.get_device_capability() < (8, 0):
+        pytest.skip("fp16 / bf16 Ampere tiles")
+    packed, scale, gs = _random_nvfp4(512, 14336, seed = 11)
+    G = torch.randn(M, 512, device = "cuda", dtype = dtype)
+    monkeypatch.setattr(N, "_device_capability", lambda index: (8, 9))
+    monkeypatch.setattr(N, "_sm_count", lambda index: 58)
+    assert N._fused_config(M, 14336, 512, G.device, True)[-1] == 1
+    dX = _dx(N, G, packed, scale, gs)
+    old = N._fused_config(M, 14336, 512, G.device, True)[:-1] + (4,)
+    monkeypatch.setattr(N, "_CONFIG_HOOK", lambda *a: old)
+    dX_split = _dx(N, G, packed, scale, gs)
+    W = N.nvfp4_dequantize(packed, scale, gs, dtype)
+    exact = G.double() @ W.double()
+    err_new, err_old = _oracle_errors(dX, dX_split, exact)
+    assert err_new <= 1.25 * err_old + 1e-6, (err_new, err_old)
+    _close_to_dense(dX, dX_split)
+    _close_to_dense(dX, G @ W)
+
+
+@pytest.mark.parametrize("dtype", _dtypes())
 def test_strided_operands(N, fused, monkeypatch, dtype):
     big_packed, big_scale, gs = _random_nvfp4(72, 512, seed = 3)
     packed, scale = big_packed[:, :96], big_scale[:, :12]
@@ -477,3 +500,82 @@ def test_fullgraph_compile_runs_the_fused_kernels(N, fused):
     compiled(X).backward()
     assert _calls(N)["fwd"] >= before["fwd"] + 3 and _calls(N)["bwd"] >= before["bwd"] + 3
     torch.testing.assert_close(X.grad, eager)
+
+
+_AMP_CASES = [(torch.float16, torch.bfloat16), (torch.bfloat16, torch.float16)]
+_needs_bf16 = pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.get_device_capability() < (8, 0), reason = "needs bf16"
+)
+
+
+def _amp_step(N, X, packed, scale, gs, amp, monkeypatch, mode):
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", mode)
+    X = X.detach().clone().requires_grad_(True)
+    before = _calls(N)
+    with torch.autocast("cuda", dtype = amp):
+        Y = N.nvfp4_linear(X, packed, scale, gs)
+        loss = Y.float().square().mean()
+    loss.backward()
+    engaged = _calls(N)["fwd"] - before["fwd"], _calls(N)["bwd"] - before["bwd"]
+    return Y, X.grad, engaged
+
+
+@_needs_bf16
+@pytest.mark.parametrize("dtype, amp", _AMP_CASES)
+def test_autocast_dtype_matches_dense(N, monkeypatch, dtype, amp):
+    # fp16 1000s against all ones weights: 128000 is finite in bf16, inf in fp16.
+    packed = torch.full((128, 64), 0x22, device = "cuda", dtype = torch.uint8)
+    scale = torch.ones(128, 8, device = "cuda")
+    gs = torch.ones(1, device = "cuda")
+    X = torch.full((4, 128), 1000.0, device = "cuda", dtype = dtype)
+    Yf, gf, ef = _amp_step(N, X, packed, scale, gs, amp, monkeypatch, "1")
+    Yd, gd, ed = _amp_step(N, X, packed, scale, gs, amp, monkeypatch, "0")
+    assert ef == (1, 1) and ed == (0, 0)
+    assert Yf.dtype == amp and gf.dtype == dtype
+    _same(Yf, Yd)
+    _same(gf, gd)
+    assert Yf.isfinite().all() == (amp == torch.bfloat16)
+
+
+@_needs_bf16
+@pytest.mark.parametrize("dtype, amp", _AMP_CASES + [(torch.float32, torch.bfloat16)])
+def test_autocast_random_weights_match_dense_and_oracle(N, monkeypatch, dtype, amp):
+    packed, scale, gs = _random_nvfp4(256, 512, seed = 7)
+    X = torch.randn(16, 512, device = "cuda", dtype = dtype)
+    Yf, gf, ef = _amp_step(N, X, packed, scale, gs, amp, monkeypatch, "1")
+    Yd, gd, _ = _amp_step(N, X, packed, scale, gs, amp, monkeypatch, "0")
+    assert ef == (1, 1) and Yf.dtype == Yd.dtype == amp and gf.dtype == gd.dtype == dtype
+    W = N.nvfp4_dequantize(packed, scale, gs, torch.float64)
+    Xe = X.to(amp).double()
+    _check(Yf, Yd, Xe @ W.t())
+    dY = (2 / Yd.numel()) * Yd.double()
+    _check(gf, gd, dY @ W)
+
+
+@_needs_bf16
+def test_autocast_fullgraph_compile_has_no_graph_break(N, fused):
+    import torch._dynamo
+
+    packed, scale, gs = _random_nvfp4(384, 256)
+
+    def step(X):
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            Y = N.nvfp4_linear(X, packed, scale, gs)
+        return Y, Y.float().square().mean()
+
+    X = torch.randn(32, 256, device = "cuda", dtype = torch.float16, requires_grad = True)
+    eager, loss = step(X)
+    loss.backward()
+    eager_grad = X.grad.clone()
+    X.grad = None
+    torch._dynamo.reset()
+    assert torch._dynamo.explain(step)(X).graph_break_count == 0
+    torch._dynamo.reset()
+    compiled = torch.compile(step, fullgraph = True)
+    before = _calls(N)
+    Y, loss = compiled(X)
+    loss.backward()
+    assert _calls(N)["fwd"] >= before["fwd"] + 1 and _calls(N)["bwd"] >= before["bwd"] + 1
+    assert Y.dtype == eager.dtype == torch.bfloat16 and X.grad.dtype == torch.float16
+    torch.testing.assert_close(Y, eager)
+    torch.testing.assert_close(X.grad, eager_grad)

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Both formatters drop to zero decimals at 1000, so the trailing-zero trim has
-// no decimal point left to work on and used to eat significant digits.
+// Both formatters drop to zero decimals at 1000, so the trailing-zero trim must not eat digits.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -61,8 +60,6 @@ test("a non-finite metric is still reported as zero", () => {
 });
 
 test("no formatted metric is shorter than its integer part", () => {
-  // The original defect showed up as silent truncation, so pin the invariant
-  // rather than only the values that happened to trigger it.
   for (let value = 1; value <= 2_000_000; value *= 10) {
     for (const scale of [1, 2, 5, 25]) {
       const metric = value * scale;

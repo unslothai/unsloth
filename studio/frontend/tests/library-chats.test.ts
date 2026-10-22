@@ -130,7 +130,6 @@ test("section groups put unfiled chats last, and pinned chats lead in their own 
       [null, ["a", "c"]],
     ],
   );
-  // Pinned "c" gets its own group instead of reordering "week".
   const byDate = groupChats(chats, "date", { now, pinned: context.pinned });
   assert.deepEqual(
     byDate.map((group) => group.key),
@@ -226,7 +225,6 @@ test("section stats count filed chats and live projects, and sections sort by th
 });
 
 test("chats never enter the file listing that every other tab reads", () => {
-  // File tabs read the library API; chat history must not feed it.
   for (const file of ["api.ts", "store.ts", "file-kind.ts", "filters.ts"]) {
     const source = readSrc(`features/library/${file}`);
     assert.doesNotMatch(source, /useChatSidebarItems|listStoredChatThreads|chats\/model/, file);
@@ -264,7 +262,6 @@ test("contents count messages on the shown branch", () => {
   const summary = summarizeChatMessages([
     message("u1", null, "user", 1),
     message("a1", "u1", "assistant", 2),
-    // An older sibling of a1, from a regenerate: not on the shown branch.
     message("a0", "u1", "assistant", 1.5),
     message("u2", "a1", "user", 3),
     message("s", null, "system", 0),
@@ -278,7 +275,6 @@ test("one date column picks created, last active or last modified", () => {
   assert.equal(chatTime(chat, "created"), 1);
   assert.equal(chatTime(chat, "updated"), 5);
   assert.equal(chatTime(chat, "modified"), 9);
-  // A rename older than the last message leaves modified at the last message.
   assert.equal(chatTime({ ...chat, modifiedAt: 2 }, "modified"), 5);
   const older = { ...chat, id: "older", modifiedAt: 3 };
   const sorted = sortChats([older, chat], { key: "modified", desc: true }, new Set(), false);
@@ -311,7 +307,6 @@ test("the Library lists chat metadata and counts messages without reading them",
   );
   const contents = readSrc("features/library/chats/contents.ts");
   assert.match(contents, /await countStoredChatMessages\(ids\)/);
-  // A re-render must not cancel a read in flight and ask for the same batch again.
   assert.doesNotMatch(contents, /let cancelled/);
   assert.match(contents, /!pending\.has\(key\)/);
 });
@@ -402,7 +397,6 @@ test("sections have created and last modified dates, and Last modified is the de
   assert.equal(sectionTime(section, stats, "created"), 10);
   assert.equal(sectionTime(section, stats, "updated"), 50);
   assert.equal(sectionTime(section, stats, "modified"), 80);
-  // A newer chat counts as a change, as it does for chats; old sections have no created date.
   assert.equal(sectionTime({ id: "o", name: "O" }, stats, "modified"), 50);
   assert.equal(sectionTime({ id: "o", name: "O" }, stats, "created"), 0);
   const sorted = sortSections(
@@ -588,7 +582,6 @@ test("clearing the selection drops the shift-click anchor", () => {
     library,
     /const setSelection = useCallback\(\(next: SetStateAction<Set<string>>\) => \{\n\s*if \(typeof next !== "function" && next\.size === 0\) selectionAnchor\.current = null;/,
   );
-  // Every emptying write goes through the wrapper, never the raw state setter.
   assert.doesNotMatch(library, /setSelectionState\(new Set\(\)\)/);
 });
 
@@ -609,7 +602,6 @@ test("a chat card's location has its project or section icon; menus leave out Vi
   const plain = items.slice(items.indexOf("  if (plain) {"), items.indexOf('<span className="flex min-w-0 items-center gap-3">'));
   assert.match(plain, /icon=\{projectId \? Folder02Icon : LayerIcon\}/);
   assert.match(plain, /<span className="truncate">\{projectId \? projectName : section\?\.name\}<\/span>/);
-  // No View chats anywhere: clicking a project or section already shows its chats.
   for (const file of [
     "features/library/chats/chats-items.tsx",
     "features/chat/components/project-menu-items.tsx",

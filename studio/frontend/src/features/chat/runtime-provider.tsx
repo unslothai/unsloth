@@ -110,6 +110,7 @@ import {
 import {
   CHAT_IMAGE_ACCEPT,
   convertedImageType,
+  getChatImageSizeError,
   normalizeChatImage,
 } from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -147,6 +148,7 @@ import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
+import { claimUntitledForkTitle } from "./utils/untitled-fork-title";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import type { OpenAIChatChunk } from "./types/api";
 import {
@@ -470,9 +472,10 @@ class VisionImageAdapter implements AttachmentAdapter {
       throw new Error(reason);
     }
 
-    const maxSize = 20 * 1024 * 1024;
-    if (picked.size > maxSize) {
-      throw new Error("Image size exceeds 20MB limit");
+    const sizeError = getChatImageSizeError(picked);
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
     }
     const attachment = {
       id: crypto.randomUUID(),
@@ -4422,9 +4425,29 @@ function ThreadBackendAutosave({
     };
   }, []);
 
+  const nameUntitledFork = useCallback(
+    async (threadId: string) => {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) return;
+      let item;
+      try {
+        item = runtime.threads.getItemById(threadId);
+      } catch {
+        return;
+      }
+      const { status, remoteId, title } = item.getState();
+      if (status !== "regular" || !remoteId || title !== "New Chat") return;
+      const record = await getStoredChatThread(remoteId).catch(() => undefined);
+      if (!claimUntitledForkTitle(record)) return;
+      await item.generateTitle().catch(() => undefined);
+    },
+    [aui],
+  );
+
   useAuiEvent("thread.runEnd", ({ threadId }) => {
     checkpoints().stop(threadId);
     queueSave(threadId);
+    void nameUntitledFork(threadId);
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {

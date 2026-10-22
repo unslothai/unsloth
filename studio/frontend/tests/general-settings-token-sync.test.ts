@@ -135,6 +135,7 @@ function generalTab(initialToken: string) {
       emitTrainingRunsChanged: noop,
       TRAINING_UI_PREFERENCE_KEYS: [],
     },
+    "@/hooks/floating-panel-position": { FLOATING_PANEL_POSITION_KEYS: {} },
     "@/hooks/use-notification-frequency": notificationPrefStub,
     "@/hooks": {
       useHfTokenValidation: () => ({
@@ -194,6 +195,7 @@ function generalTab(initialToken: string) {
     "../components/language-select": componentStub,
     "../components/download-transport-row": componentStub,
     "../components/developer-mode-section": componentStub,
+    "../components/engine-versions-section": componentStub,
     "../components/hub-settings-section": componentStub,
     "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,
