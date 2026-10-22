@@ -548,7 +548,7 @@ export function ChatSettingsPanel({
         "./lib/save-sampling-for-model"
       );
       await saveSamplingForModel(modelId, current);
-      setRememberedParamsForModel(modelId, {
+      const sampling = {
         temperature: current.temperature,
         topP: current.topP,
         topK: current.topK,
@@ -556,7 +556,17 @@ export function ChatSettingsPanel({
         minPMode: current.minPMode,
         repetitionPenalty: current.repetitionPenalty,
         presencePenalty: current.presencePenalty,
-      });
+      };
+      // Writing the memory also sets the live sliders: skip it if one moved during the save.
+      const live = useChatRuntimeStore.getState().params;
+      if (
+        live.checkpoint === modelId &&
+        Object.entries(sampling).every(
+          ([key, value]) => live[key as keyof typeof sampling] === value,
+        )
+      ) {
+        setRememberedParamsForModel(modelId, sampling);
+      }
       toast.success("Sampling saved for this model.");
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : String(error));
