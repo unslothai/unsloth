@@ -673,7 +673,13 @@ def test_header_reader_stops_strings_at_the_first_nul(tmp_path):
         ({"mirostat": 0}, False),
         ({"mirostat": True}, False),
         ({"mirostat": 10**1000}, True),
-        ({"mirostat": float("inf")}, False),
+        ({"mirostat": float("inf")}, True),
+        ({"mirostat": -1}, False),
+        ({"mirostat": 0.9}, False),
+        ({"mirostat": 3}, True),
+        ({"mirostat": 2**32 + 1}, True),
+        ({"mirostat": 2**32}, False),
+        ({"mirostat": float("nan")}, True),
         ({"samplers": ["top_k", "Adaptive-P"]}, True),
         ({"samplers": ["top_k", "adaptivep"]}, True),
         ({"samplers": "kpa"}, True),
@@ -808,3 +814,31 @@ def test_a_launch_with_sampled_drafts_sets_the_marker_and_unload_clears_it(tmp_p
     assert backend._spec_draft_probabilistic is True
     backend.unload_model()
     assert backend._spec_draft_probabilistic is False
+
+
+@pytest.mark.parametrize(
+    "body, launch, stateful",
+    [
+        ({"samplers": "kpa"}, -1.0, False),
+        ({"samplers": ["adaptive_p"]}, 0.45, True),
+        ({"samplers": ["adaptive_p"]}, None, True),
+        ({"samplers": ["adaptive_p"], "adaptive_target": 0.3}, -1.0, True),
+        ({"samplers": ["adaptive_p"], "adaptive_target": -1}, 0.45, False),
+    ],
+)
+def test_an_omitted_adaptive_target_is_the_launchs(body, launch, stateful):
+    from core.inference.llama_cpp import _request_selects_stateful_sampler
+    assert _request_selects_stateful_sampler(body, launch) is stateful
+
+
+def test_launch_adaptive_target_reads_config_then_the_command(tmp_path):
+    from core.inference.llama_cpp import _launch_adaptive_target
+
+    env = {"XDG_CONFIG_HOME": str(tmp_path), "HOME": str(tmp_path)}
+    assert _launch_adaptive_target(["llama-server"], env, "linux") == -1.0
+    (tmp_path / "llama.cpp").mkdir()
+    (tmp_path / "llama.cpp" / "config.ini").write_text("adaptive-target = 0.5\n")
+    assert _launch_adaptive_target(["llama-server"], env, "linux") == 0.5
+    cmd = ["llama-server", "--adaptive-target", "-0.25"]
+    assert _launch_adaptive_target(cmd, env, "linux") == -0.25
+    assert _launch_adaptive_target(["llama-server", "--adaptive-target", "x"], env, "linux") is None

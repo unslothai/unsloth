@@ -39754,7 +39754,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
     if getattr(llama_backend, "_spec_draft_probabilistic", False):
         from core.inference.llama_cpp import _request_selects_stateful_sampler
-        if _request_selects_stateful_sampler(body):
+        if _request_selects_stateful_sampler(
+            body, getattr(llama_backend, "_launch_adaptive_target", None)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = (

@@ -4798,7 +4798,78 @@ def _apply_sampler_setting(state: list, key: str, value: str) -> bool:
     return True
 
 
-def _request_selects_stateful_sampler(body: Mapping) -> bool:
+def _request_mirostat_on(value) -> bool:
+    """Whether a request's ``mirostat`` leaves Mirostat on: server-schema.cpp reads it as int32
+    (nlohmann get<int32_t>, so a 64-bit integer keeps its low 32 bits and a float truncates)
+    and soft-clamps it to [0, 2], so only a positive result is on. Values whose cast has no
+    defined result (beyond 64 bits, NaN, a float outside int32) count as on."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        if not -(2**63) <= value < 2**64:
+            return True
+        return ((value + 2**31) % 2**32) - 2**31 > 0
+    if not math.isfinite(value) or not -(2**31) < value < 2**31:
+        return True
+    return int(value) > 0
+
+
+_STOF_PREFIX = re.compile(
+    r"[ \t\n\v\f\r]*[+-]?(?:inf(?:inity)?|nan|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _launch_adaptive_target(
+    cmd: Iterable[str],
+    env: Optional[Mapping[str, str]] = None,
+    platform: Optional[str] = None,
+) -> Optional[float]:
+    """The adaptive-p target llama-server starts with (default -1, disabled): config.ini's
+    ``adaptive-target`` first, then the last --adaptive-target in ``cmd`` (std::stof). None
+    when a value cannot be read the way llama.cpp reads it."""
+    target = -1.0
+    for path in _llama_config_paths(env, platform):
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, "rb") as fh:
+                raw = fh.read(_LLAMA_CONFIG_MAX_BYTES + 1)
+        except (OSError, ValueError):
+            continue
+        if len(raw) > _LLAMA_CONFIG_MAX_BYTES:
+            return None
+        sections = _parse_llama_config_ini(raw.decode("utf-8", errors = "replace"))
+        for name in ("*", "default"):
+            value = ((sections or {}).get(name) or {}).get("adaptive-target")
+            if value is not None:
+                match = _STOF_PREFIX.match(value)
+                if not match:
+                    return None
+                target = float(match.group(0))
+    try:
+        value = _last_flag_value(list(cmd), frozenset({"--adaptive-target"}))
+    except Exception:
+        return None
+    if value is not None:
+        match = _STOF_PREFIX.match(value)
+        if not match:
+            return None
+        target = float(match.group(0))
+    return target
+
+
+def _float32_negative(value) -> bool:
+    """``value < 0`` once stored as a float32, as llama.cpp keeps the adaptive-p target."""
+    try:
+        return struct.unpack("f", struct.pack("f", float(value)))[0] < 0
+    except (OverflowError, ValueError):
+        return value < 0
+
+
+def _request_selects_stateful_sampler(
+    body: Mapping, launch_adaptive_target: Optional[float] = None
+) -> bool:
     """A /v1/completions body that turns on Mirostat or adaptive-p at a positive temperature.
 
     llama-server verifies a sampled draft by rejection sampling only above temperature 0, and
@@ -4808,13 +4879,7 @@ def _request_selects_stateful_sampler(body: Mapping) -> bool:
     switch one on per slot. Read like tools/server/server-schema.cpp: ``mirostat`` a number,
     ``samplers`` an array of names or a string of sequence chars; a missing ``temperature``
     counts as positive."""
-    mirostat = body.get("mirostat")
-    # An int is compared as is: JSON integers are unbounded and float() of a long one raises.
-    stateful = (
-        mirostat != 0
-        if isinstance(mirostat, int) and not isinstance(mirostat, bool)
-        else isinstance(mirostat, float) and math.isfinite(mirostat) and int(mirostat) != 0
-    )
+    stateful = _request_mirostat_on(body.get("mirostat"))
     samplers = body.get("samplers")
     probe = [False, False, False, False]
     adaptive = False
@@ -4823,14 +4888,14 @@ def _request_selects_stateful_sampler(body: Mapping) -> bool:
     elif isinstance(samplers, str):
         _apply_sampler_setting(probe, "seq", samplers)
         adaptive = probe[1]
-    # adaptive-p is a plain dist draw below target 0 (llama_sampler_adaptive_p_apply), read
-    # as the float32 llama-server stores. An omitted target stays the launch's, so it counts.
+    # adaptive-p is a plain dist draw below target 0 (llama_sampler_adaptive_p_apply). An
+    # omitted target is the launch's (None: unknown, so it counts as on).
     target = body.get("adaptive_target")
-    if adaptive and isinstance(target, (int, float)) and not isinstance(target, bool):
-        try:
-            adaptive = not struct.unpack("f", struct.pack("f", float(target)))[0] < 0
-        except (OverflowError, ValueError):
-            adaptive = not target < 0
+    if adaptive:
+        if isinstance(target, (int, float)) and not isinstance(target, bool):
+            adaptive = not _float32_negative(target)
+        elif "adaptive_target" not in body and launch_adaptive_target is not None:
+            adaptive = not _float32_negative(launch_adaptive_target)
     stateful = stateful or adaptive
     if not stateful:
         return False
@@ -8984,6 +9049,8 @@ class LlamaCppBackend:
         # running child was spawned with it (a recovery without speculation clears it).
         self._spec_draft_sampling_emitted: bool = False
         self._spec_draft_probabilistic: bool = False
+        # adaptive-p's target at launch (None: unknown), for requests that omit it.
+        self._launch_adaptive_target: Optional[float] = None
         # Canonical UI-facing mode the user requested
         # (auto/mtp/ngram/mtp+ngram/off/ngram-simple). Round-tripped through the
         # status API so the dropdown reflects the picked mode, not the resolved
@@ -33294,6 +33361,11 @@ class LlamaCppBackend:
                             self._spec_draft_sampling_emitted
                             and _last_flag_value(run_cmd, frozenset({"--spec-draft-sampling"}))
                             == "probabilistic"
+                        )
+                        self._launch_adaptive_target = (
+                            _launch_adaptive_target(run_cmd)
+                            if self._spec_draft_probabilistic
+                            else None
                         )
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
