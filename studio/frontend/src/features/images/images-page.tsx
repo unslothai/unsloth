@@ -261,6 +261,19 @@ import { LocalizedEditCanvas } from "./localized-edit-canvas";
 import type { AppliedMask } from "./lib/mask-from-text";
 import { applyMaskToLayer } from "./mask-apply";
 import { MaskFromTextPanel } from "./mask-from-text-panel";
+import { DetailerField, useDetailerSegmenter } from "./detailer-field";
+import {
+  detailerAvailable,
+  detailerErrors,
+  detailerModelCapable,
+  detailerRecordOf,
+  detailerRequestField,
+  detailerSummary,
+  readDetailerOptions,
+  restoredDetailer,
+  saveDetailerOptions,
+  type DetailerOptions,
+} from "./lib/detailer";
 
 import {
   type ControlNetSpecInput,
@@ -1410,6 +1423,9 @@ function RecipePopover({
             />
           ) : null}
           {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
+          {detailerSummary(detailerRecordOf(image.detailer)) ? (
+            <RecipeRow label="Detailer" value={detailerSummary(detailerRecordOf(image.detailer)) ?? ""} />
+          ) : null}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
@@ -2240,6 +2256,16 @@ export function ImagesPage({
     [samplerModelKey],
   );
   const embeddingsEnabled = !external && status?.loaded === true && !!status.textual_inversion;
+  // Detailer (face fix): off by default; its options persist, the switch does not.
+  const [detailerOn, setDetailerOn] = useState(false);
+  const [detailerOptions, setDetailerOptionsState] = useState<DetailerOptions>(readDetailerOptions);
+  const setDetailerOptions = useCallback((next: DetailerOptions) => {
+    setDetailerOptionsState(next);
+    saveDetailerOptions(next);
+  }, []);
+  const detailerCapable = detailerModelCapable(status, Boolean(external));
+  const detailerSegmenter = useDetailerSegmenter(detailerCapable, loadedModelKey(status) ?? "");
+  const detailerReady = detailerAvailable(status, Boolean(external), detailerSegmenter);
   const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
     if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
     else setPrompt((p) => withEmbeddingTrigger(p, trigger));
@@ -2826,6 +2852,9 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
+    const detail = restoredDetailer(image);
+    setDetailerOn(detail.enabled);
+    if (detail.enabled) setDetailerOptions({ ...readDetailerOptions(), ...detail.options });
     const maskOptions = restoredInpaintMaskOptions(image);
     if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
     if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
@@ -2870,7 +2899,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -2988,6 +3017,8 @@ export function ImagesPage({
         ...shiftNotApplied(recipe, shiftControl),
         ...unknownRecipeKeys(recipe),
       ];
+      // Restored into the hidden control when this model cannot inpaint or SAM 3 is missing: say so.
+      if (settings.detailer && !detailerReady) notApplied.unshift("Detailer (face fix)");
       if (tiMatch) {
         const { installed, missing } = tiMatch;
         const resolved = new Map<string, string | null>([
@@ -3049,7 +3080,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, embeddingsEnabled, shiftControl],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, embeddingsEnabled, shiftControl, detailerReady],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -5309,6 +5340,7 @@ export function ImagesPage({
             ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
+            ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
             loras: (() => {
@@ -5364,6 +5396,13 @@ export function ImagesPage({
           if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
         }
         res.images.forEach((image) => void ensureSrc(image));
+        const detailFailed = detailerErrors(res.images);
+        if (detailFailed.length > 0) {
+          toast.warning("The Detailer did not run on this image", {
+            id: "images-detailer-error",
+            description: detailFailed.join("; "),
+          });
+        }
         setGenDone(i + 1);
       }
     } catch (err) {
@@ -5404,7 +5443,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -6760,6 +6799,13 @@ export function ImagesPage({
               family={status?.family}
               enabled={embeddingsEnabled}
               onInsert={insertEmbedding}
+            />
+            <DetailerField
+              available={detailerReady}
+              enabled={detailerOn}
+              onEnabledChange={setDetailerOn}
+              options={detailerOptions}
+              onOptionsChange={setDetailerOptions}
             />
             {!external && (
               <>

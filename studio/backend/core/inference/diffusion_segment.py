@@ -903,6 +903,9 @@ class SegmentResult:
     device: str = "cpu"
     elapsed_ms: float = 0.0
     precision: Optional[str] = None
+    # One CPU float (h, w) mask-logit plane per instance, in ``instances`` order, only when the call asked for
+    # instance masks (the Images detailer); never part of the route body.
+    instance_logits: list = field(default_factory = list)
 
     def to_json(self) -> dict:
         return {
@@ -1301,6 +1304,7 @@ class MaskSegmenter:
         threshold: float = DEFAULT_THRESHOLD,
         allow_gpu: bool = True,
         path: Optional[str] = None,
+        instance_masks: bool = False,
     ) -> SegmentResult:
         concepts = parse_prompt(prompt)
         if not concepts:
@@ -1327,20 +1331,30 @@ class MaskSegmenter:
             with self._state_lock:
                 self._call_device, self._call_settled = "", False
             try:
-                return self._segment_locked(image, concepts, threshold, path, allow_gpu)
+                return self._segment_locked(
+                    image, concepts, threshold, path, allow_gpu, instance_masks
+                )
             finally:
                 with self._state_lock:
                     self._call_device, self._call_settled = None, False
 
     def _segment_locked(
-        self, image: Any, concepts: list[Concept], threshold: float, path: str, allow_gpu: bool
+        self,
+        image: Any,
+        concepts: list[Concept],
+        threshold: float,
+        path: str,
+        allow_gpu: bool,
+        instance_masks: bool = False,
     ) -> SegmentResult:
         started = time.perf_counter()
         device, dtype = choose_device(allow_gpu)
         self._call_device = device
+        # Passed only when asked, so the plain Find call is the one it always was.
+        extra = {"instance_masks": True} if instance_masks else {}
         oom = False
         try:
-            result = self._segment_on(image, concepts, threshold, path, device, dtype)
+            result = self._segment_on(image, concepts, threshold, path, device, dtype, **extra)
         except Exception as exc:
             if not _is_oom(exc) or device == "cpu":
                 self._after_call()
@@ -1357,7 +1371,7 @@ class MaskSegmenter:
             device, dtype = "cpu", torch.float32
             self._call_device = device
             try:
-                result = self._segment_on(image, concepts, threshold, path, device, dtype)
+                result = self._segment_on(image, concepts, threshold, path, device, dtype, **extra)
             except Exception:
                 # The CPU copy and any release asked for mid-call are settled here too, not left resident.
                 self._after_call()
@@ -1374,6 +1388,7 @@ class MaskSegmenter:
         path: str,
         device: str,
         dtype: Any,
+        instance_masks: bool = False,
     ) -> SegmentResult:
         import torch
 
@@ -1383,6 +1398,7 @@ class MaskSegmenter:
         scale = torch.tensor([width, height, width, height], dtype = torch.float32)
         union = torch.zeros(height, width, dtype = torch.bool, device = device)
         instances: list[Instance] = []
+        logits_out: list = []
         summary: list[dict] = []
         with torch.inference_mode():
             pixels = preprocess(image, device, dtype, model_image_size(model))
@@ -1403,7 +1419,7 @@ class MaskSegmenter:
                 caps[concept.text] = max(caps.get(concept.text, 0), concept.max_detections)
             # Per text only its kept scores and boxes outlive the forward: the union of a text's best-``cap`` masks
             # covers every occurrence's best-``k`` (k <= cap), so the masks are OR-ed in at once and dropped.
-            kept: dict[str, tuple[Any, Any]] = {}
+            kept: dict[str, tuple[Any, Any, list]] = {}
             for concept in concepts:
                 if concept.text not in kept:
                     index = texts.index(concept.text)
@@ -1423,9 +1439,13 @@ class MaskSegmenter:
                     )
                     del out, presence
                     union |= union_mask(masks, height, width)
+                    # Low resolution (SAM 3's 288x288 planes), so a capped list stays small on the host.
+                    planes = [m.float().cpu() for m in masks] if instance_masks else []
                     del masks
-                    kept[concept.text] = (scores, boxes)
-                scores, boxes = (t[: concept.max_detections] for t in kept[concept.text])
+                    kept[concept.text] = (scores, boxes, planes)
+                scores, boxes, planes = kept[concept.text]
+                scores, boxes = scores[: concept.max_detections], boxes[: concept.max_detections]
+                logits_out.extend(planes[: concept.max_detections])
                 boxes_px = (boxes.float().cpu() * scale).tolist()
                 for score, box in zip(scores.tolist(), boxes_px):
                     x1, y1, x2, y2 = (float(v) for v in box)
@@ -1457,6 +1477,7 @@ class MaskSegmenter:
             concepts = summary,
             device = device,
             precision = self.precision,
+            instance_logits = logits_out,
         )
 
 

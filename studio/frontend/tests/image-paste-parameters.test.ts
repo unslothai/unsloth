@@ -107,8 +107,9 @@ test("Clip skip, CFG rescale, variation seed and hires keys are read and named a
     "variation seed 99 (strength 0.3)",
     "hires fix (Hires upscale: 1.5, Hires steps: 10, Hires upscaler: R-ESRGAN 4x+)",
     "VAE: sdxl_vae.safetensors",
-    "ADetailer model: face_yolov8n.pt",
   ]);
+  // ADetailer's keys restore Studio's Detailer instead of being named as not applied.
+  assert.equal((r.detailer as { model?: string } | undefined)?.model, "face_yolov8n.pt");
   assert.deepEqual(unknownRecipeKeys(r), []);
   for (const label of [
     "RescaleCFG: 0.5",

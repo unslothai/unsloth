@@ -52289,6 +52289,12 @@ async def _generate_diffusion_image_run(
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_adapters, request)
+    # Refused before the render, so a model with no inpaint path or a missing SAM 3 never costs one.
+    detailer = (
+        await asyncio.to_thread(_detailer_settings, backend, request.detailer)
+        if request.detailer is not None
+        else None
+    )
     # An edit that names no size matches Image 1 in the backend instead of the schema's 1024 square default.
     size_omitted = request.workflow == "edit" and not (
         {"width", "height"} & request.model_fields_set
@@ -52419,6 +52425,10 @@ async def _generate_diffusion_image_run(
             logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
 
+    if detailer is not None:
+        with account_access.media_generation("diffusion"):
+            await asyncio.to_thread(_run_detailer, backend, request, result, enhancement, detailer)
+
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
@@ -52521,6 +52531,12 @@ async def _generate_diffusion_image_run(
                             )
                             if result.get(key) not in (None, [])
                         },
+                        # Present only when the Detailer ran (or was asked for and failed), so other recipes are unchanged.
+                        **(
+                            {"detailer": result["detailer"][index]}
+                            if result.get("detailer") and index < len(result["detailer"])
+                            else {}
+                        ),
                         "created_at": created_at,
                     },
                 )
@@ -53553,6 +53569,64 @@ def _cancel_upsampler_warm_start() -> None:
             module.cancel_warm_start()
         except Exception as exc:  # noqa: BLE001 -- the start times out on its own
             logger.warning("flux3.prompt_upsampler: could not cancel a warm start: %s", exc)
+
+
+def _detailer_settings(backend: Any, spec: Any) -> Any:
+    """The request's Detailer settings, or 400 when the loaded model cannot run the pass."""
+    from core.inference import diffusion_detailer
+
+    try:
+        settings = diffusion_detailer.DetailerSettings.from_request(spec)
+        diffusion_detailer.check_available(backend.status())
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    return settings
+
+
+def _run_detailer(
+    backend: Any, request: Any, result: dict, enhancement: Any, settings: Any
+) -> None:
+    """The Detailer pass over a finished render: one inpaint per detection on the same load, LoRAs, sampler and
+    shift, with no live preview (the preview would show a crop)."""
+    from core.inference import diffusion_detailer
+    from core.inference.diffusion_families import load_identity
+
+    status = backend.status()
+    if status.get("repo_id") != result.get("repo_id"):
+        # Another model was loaded after the render: its pass would not be the same model's.
+        result["detailer"] = [
+            {**diffusion_detailer.settings_record(settings), "error": "the model changed"}
+            for _ in result.get("images") or []
+        ]
+        return
+
+    def _prompt_for(index: int) -> str:
+        typed = (
+            request.prompts[index]
+            if request.prompts and index < len(request.prompts)
+            else request.prompt
+        )
+        return enhancement.encoded(typed)
+
+    diffusion_detailer.detail_result(
+        backend.generate,
+        result,
+        settings,
+        prompt_for = _prompt_for,
+        negative_prompt = result.get("negative_prompt"),
+        steps = request.steps,
+        guidance = request.guidance,
+        generate_kwargs = {
+            "expected_load": load_identity(
+                status.get("repo_id"), status.get("base_repo"), status.get("family")
+            ),
+            "allow_oversized": request.allow_oversized and not account_access.managed_account(),
+            "loras": [(l.id, l.weight) for l in request.loras] if request.loras else None,
+            **_live_preview_kwarg(backend.generate, False),
+            **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+            **_shift_kwargs(backend.generate, request),
+        },
+    )
 
 
 def _release_mask_segmenter_for_render() -> None:

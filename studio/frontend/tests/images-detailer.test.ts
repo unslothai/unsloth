@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import {
+  DETAILER_DEFAULTS,
+  detailerAvailable,
+  detailerErrors,
+  detailerFromInfotext,
+  detailerModelCapable,
+  detailerRecordOf,
+  detailerRequestField,
+  detailerSummary,
+  readDetailerOptions,
+  restoredDetailer,
+} from "../src/features/images/lib/detailer.ts";
+import {
+  APPLIED_RECIPE_KEYS,
+  importNotApplied,
+  parseA1111Parameters,
+  recipeSettings,
+} from "../src/features/images/lib/image-metadata.ts";
+
+const inpaintModel = { loaded: true, workflows: ["txt2img", "img2img", "inpaint", "outpaint"] };
+const ready = { supported: true, downloaded: true };
+
+test("the Detailer shows only for a model with an inpaint path and a downloaded SAM 3", () => {
+  assert.equal(detailerAvailable(inpaintModel, false, ready), true);
+  // No inpaint pipeline (FLUX.2 dev, edit models, sd.cpp): hidden.
+  assert.equal(detailerAvailable({ loaded: true, workflows: ["txt2img", "reference"] }, false, ready), false);
+  assert.equal(detailerAvailable({ loaded: true, workflows: ["edit"] }, false, ready), false);
+  // Nothing loaded, or a Connection (external provider): hidden.
+  assert.equal(detailerAvailable({ loaded: false, workflows: ["inpaint"] }, false, ready), false);
+  assert.equal(detailerAvailable(inpaintModel, true, ready), false);
+  assert.equal(detailerAvailable(null, false, ready), false);
+  // SAM 3 unsupported (transformers 4) or not downloaded, or its status not read yet: hidden.
+  assert.equal(detailerAvailable(inpaintModel, false, { supported: false, downloaded: false }), false);
+  assert.equal(detailerAvailable(inpaintModel, false, { supported: true, downloaded: false }), false);
+  assert.equal(detailerAvailable(inpaintModel, false, null), false);
+  // The segmenter status is only fetched for a capable model.
+  assert.equal(detailerModelCapable(inpaintModel, false), true);
+  assert.equal(detailerModelCapable({ loaded: true, workflows: ["txt2img"] }, false), false);
+});
+
+test("off by default, and nothing is sent unless on and available", () => {
+  assert.deepEqual(detailerRequestField(false, true, DETAILER_DEFAULTS), {});
+  assert.deepEqual(detailerRequestField(true, false, DETAILER_DEFAULTS), {});
+  // Defaults send only the targets: the backend holds the same FaceDetailer defaults.
+  assert.deepEqual(detailerRequestField(true, true, DETAILER_DEFAULTS), { detailer: { targets: "face" } });
+  // Node has no localStorage: the stored options read as the defaults.
+  assert.deepEqual(readDetailerOptions(), DETAILER_DEFAULTS);
+});
+
+test("changed options are sent, bounded to the request schema", () => {
+  const field = detailerRequestField(true, true, {
+    ...DETAILER_DEFAULTS,
+    targets: "  ",
+    prompt: " detailed face ",
+    denoise: 0.35,
+    cropFactor: 99,
+    guideSize: 768,
+    feather: 5,
+    steps: 12.4,
+  });
+  assert.deepEqual(field, {
+    detailer: { targets: "face", prompt: "detailed face", denoise: 0.35, crop_factor: 10, guide_size: 768, steps: 12 },
+  });
+});
+
+test("the frontend defaults are the backend's", () => {
+  const source = readFileSync(
+    new URL("../../backend/core/inference/diffusion_detailer.py", import.meta.url),
+    "utf8",
+  );
+  const constant = (name: string) => Number(new RegExp(`^${name} = ([\\d.]+)`, "m").exec(source)?.[1]);
+  assert.equal(constant("DEFAULT_DENOISE"), DETAILER_DEFAULTS.denoise);
+  assert.equal(constant("DEFAULT_CONFIDENCE"), DETAILER_DEFAULTS.confidence);
+  assert.equal(constant("DEFAULT_CROP_FACTOR"), DETAILER_DEFAULTS.cropFactor);
+  assert.equal(constant("DEFAULT_GUIDE_SIZE"), DETAILER_DEFAULTS.guideSize);
+  assert.equal(constant("DEFAULT_MAX_SIZE"), DETAILER_DEFAULTS.maxSize);
+  assert.equal(constant("DEFAULT_DILATION"), DETAILER_DEFAULTS.dilation);
+  assert.equal(constant("DEFAULT_FEATHER"), DETAILER_DEFAULTS.feather);
+});
+
+const record = {
+  targets: "face, hand:2",
+  prompt: "sharp eyes",
+  confidence: 0.5,
+  denoise: 0.4,
+  crop_factor: 2.5,
+  guide_size: 512,
+  guide_size_for: "bbox",
+  max_size: 1024,
+  dilation: 10,
+  feather: 5,
+  drop_size: 10,
+  steps: 12,
+  model: "sam3.1",
+  detections: [{ target: "face", score: 0.91, box: [1, 2, 3, 4], seed: 7 }],
+  found: 1,
+};
+
+test("a gallery record restores the pass and turns the switch on; one without turns it off", () => {
+  const on = restoredDetailer({ detailer: record });
+  assert.equal(on.enabled, true);
+  assert.deepEqual(on.options, {
+    targets: "face, hand:2",
+    prompt: "sharp eyes",
+    denoise: 0.4,
+    confidence: 0.5,
+    cropFactor: 2.5,
+    guideSize: 512,
+    maxSize: 1024,
+    dilation: 10,
+    feather: 5,
+    steps: 12,
+  });
+  assert.deepEqual(restoredDetailer({}), { enabled: false, options: {} });
+  assert.deepEqual(restoredDetailer({ detailer: "nonsense" }), { enabled: false, options: {} });
+  // Untrusted input: wrong types are dropped.
+  assert.deepEqual(detailerRecordOf({ denoise: "0.4", targets: 3, steps: 9 }), { steps: 9 });
+});
+
+test("the Unsloth recipe carries the record through import", () => {
+  const settings = recipeSettings(
+    { prompt: "p", detailer: record },
+    { width: 1024, height: 1024, steps: 9, guidance: 0 },
+  );
+  assert.equal(settings.detailer?.denoise, 0.4);
+  assert.ok((APPLIED_RECIPE_KEYS as readonly string[]).includes("detailer"));
+  assert.equal(recipeSettings({ prompt: "p" }, { width: 1024, height: 1024, steps: 9, guidance: 0 }).detailer, null);
+});
+
+// What core/inference/image_gallery._params_text writes with a pass (diffusion_detailer.infotext_fields).
+const STUDIO_INFOTEXT = [
+  "a portrait of two friends",
+  "Steps: 9, CFG scale: 0.0, Seed: 42, Size: 1024x1024, Model: Tongyi-MAI/Z-Image-Turbo, ADetailer model: sam3.1, " +
+    'ADetailer model classes: face, ADetailer prompt: "detailed face, smile", ADetailer confidence: 0.5, ' +
+    "ADetailer dilate erode: 10, ADetailer mask blur: 5, ADetailer denoising strength: 0.4, " +
+    "ADetailer inpaint only masked: True, ADetailer use separate steps: True, ADetailer steps: 12, Version: Unsloth",
+].join("\n");
+
+test("Studio's own ADetailer infotext pastes back as the same pass", () => {
+  const parsed = parseA1111Parameters(STUDIO_INFOTEXT);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.detailer, {
+    model: "sam3.1",
+    targets: "face",
+    prompt: "detailed face, smile",
+    confidence: 0.5,
+    dilation: 10,
+    feather: 5,
+    denoise: 0.4,
+    steps: 12,
+  });
+  // Not reported as unapplied, and the main image stays text-to-image (ADetailer's strength is not img2img's).
+  assert.equal(parsed.parameters_not_applied, undefined);
+  assert.equal(parsed.workflow, undefined);
+  assert.equal(parsed.strength, undefined);
+  assert.deepEqual(importNotApplied(parsed, "z-image", false), []);
+  const restored = restoredDetailer(recipeSettings(parsed, { width: 1024, height: 1024, steps: 9, guidance: 0 }));
+  assert.equal(restored.enabled, true);
+  assert.equal(restored.options.denoise, 0.4);
+  assert.equal(restored.options.steps, 12);
+});
+
+test("an AUTOMATIC1111 ADetailer infotext maps its YOLO model to a target", () => {
+  const parsed = parseA1111Parameters(
+    "girl\nSteps: 28, Sampler: DPM++ 2M, CFG scale: 7, Seed: 1, Size: 512x768, ADetailer model: face_yolov8n.pt, " +
+      "ADetailer confidence: 0.3, ADetailer dilate erode: 4, ADetailer mask blur: 4, ADetailer denoising strength: 0.4, " +
+      "ADetailer inpaint only masked: True, ADetailer inpaint padding: 32, ADetailer model 2nd: hand_yolov8n.pt, " +
+      "ADetailer version: 24.9.0",
+  );
+  assert.ok(parsed);
+  assert.deepEqual(parsed.detailer, {
+    model: "face_yolov8n.pt",
+    targets: "face",
+    confidence: 0.3,
+    dilation: 4,
+    feather: 4,
+    denoise: 0.4,
+  });
+  assert.equal(detailerFromInfotext({ "adetailer model": "hand_yolov8s.pt" })?.targets, "hand");
+  assert.equal(detailerFromInfotext({ "adetailer model": "None" }), null);
+  assert.equal(detailerFromInfotext({}), null);
+});
+
+test("errors are surfaced, a cancel is not", () => {
+  assert.deepEqual(
+    detailerErrors([{ detailer: { error: "cancelled" } }, { detailer: { error: "CUDA out of memory" } }, {}]),
+    ["CUDA out of memory"],
+  );
+  assert.equal(detailerSummary(record), "face, hand:2: 1 fixed, denoise 0.4");
+  assert.equal(detailerSummary({ error: "the model changed" }), "not applied (the model changed)");
+  assert.equal(detailerSummary(null), null);
+});
+
+test("the page wires the control behind the gate and keeps it out of the startup bundle", () => {
+  const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
+  // Rendered with the gate, sent with the gate.
+  assert.match(page, /<DetailerField\s+available=\{detailerReady\}/);
+  assert.match(page, /detailerRequestField\(detailerOn, detailerReady, detailerOptions\)/);
+  assert.match(page, /useState\(false\);\n\s*const \[detailerOptions/);
+  // The field is a separate module of the lazily loaded Images page; api.ts only takes its types.
+  const api = readFileSync(new URL("../src/features/images/api.ts", import.meta.url), "utf8");
+  assert.match(api, /^import type \{ DetailerRecord, DetailerRequest \} from "\.\/lib\/detailer";$/m);
+  const root = readFileSync(new URL("../src/app/routes/__root.tsx", import.meta.url), "utf8");
+  assert.match(root, /import\("@\/features\/images"\)/);
+});

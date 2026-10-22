@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+import { detailerFromInfotext, detailerRecordOf, type DetailerRecord } from "./detailer.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
 
 /** Generation settings in exported images, read back from dropped ones. PNG: `unsloth` + `parameters` text chunks;
@@ -753,6 +754,8 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   if (escaped.length > 0) out.prompt_escaped_brackets = escaped;
   const notApplied: string[] = networks.other.slice();
   const hires: Record<string, string> = {};
+  // ADetailer's own keys (adetailer/args.py), read as one Detailer pass.
+  const adetailer: Record<string, string> = {};
   let legacySchedule: string | undefined;
   for (const [label, value] of hasSettings ? fields : []) {
     const key = label.toLowerCase();
@@ -799,6 +802,7 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       if (value && value.toLowerCase() !== "original")
         notApplied.push(`${label}: ${value}`);
     } else if (key.startsWith("hires")) hires[label] = value;
+    else if (key.startsWith("adetailer ")) adetailer[key] = value;
     else if (key === "sampler") {
       out.sampler = labelId(SAMPLER_LABELS, value);
       // Before AUTOMATIC1111 1.9 the schedule rode on the sampler name: `DPM++ 2M Karras`.
@@ -826,6 +830,8 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   out.schedule_type ??= legacySchedule;
   const hiresKeys = Object.keys(hires);
   if (hiresKeys.length > 0) out.hires = hires;
+  const detailer = detailerFromInfotext(adetailer);
+  if (detailer) out.detailer = detailer;
   // txt2img hires fix also writes a denoising strength; without it the strength means img2img,
   // or inpaint when A1111 wrote its mask-only fields.
   if (out.strength !== undefined) {
@@ -912,6 +918,7 @@ export interface RestorableRecipe {
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
+  detailer?: DetailerRecord | null;
 }
 
 export const APPLIED_RECIPE_KEYS = [
@@ -941,6 +948,7 @@ export const APPLIED_RECIPE_KEYS = [
   "mask_blur",
   "inpaint_only_masked",
   "inpaint_padding",
+  "detailer",
 ] as const;
 
 /** Known but not applied: loading a model or a ControlNet image stays the user's call. */
@@ -1201,6 +1209,7 @@ export function recipeSettings(
         ? r.inpaint_only_masked
         : undefined,
     inpaint_padding: bounded(r, "inpaint_padding"),
+    detailer: detailerRecordOf(r.detailer),
   };
 }
 

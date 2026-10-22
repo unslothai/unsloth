@@ -332,6 +332,36 @@ def test_tiny_model_segments_at_source_size(tiny_sam3):
     assert torch.is_grad_enabled()
 
 
+def test_instance_masks_are_the_union_split_per_detection(tiny_sam3):
+    """The Detailer's per-detection masks: one plane per instance in ``instances`` order, whose OR at the source
+    size is exactly the union mask; a plain Find keeps none."""
+    import numpy as np
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    image = Image.new("RGB", (64, 40), (120, 80, 40))
+    plain = segmenter.segment(
+        image, "sofa, pillow:3", threshold = 0.0, allow_gpu = False, path = tiny_sam3
+    )
+    assert plain.instance_logits == []
+    result = segmenter.segment(
+        image,
+        "sofa, pillow:3",
+        threshold = 0.0,
+        allow_gpu = False,
+        path = tiny_sam3,
+        instance_masks = True,
+    )
+    assert len(result.instance_logits) == len(result.instances) == 4
+    assert all(p.device.type == "cpu" and p.ndim == 2 for p in result.instance_logits)
+    import torch
+
+    union = seg.union_mask(torch.stack(result.instance_logits), 40, 64).numpy()
+    png = np.array(Image.open(io.BytesIO(result.mask_png))) > 0
+    assert (union == png).all()
+    assert "instance_logits" not in result.to_json()
+
+
 def test_mask_planes_do_not_outlive_their_text(tiny_sam3, monkeypatch):
     import weakref
 

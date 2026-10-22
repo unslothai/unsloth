@@ -11,6 +11,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import type { DetailerRecord, DetailerRequest } from "./lib/detailer";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { ShiftControl } from "./lib/shift-choice";
 
@@ -253,6 +254,8 @@ export interface DiffusionGenerateRequest {
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
+  // Detailer (face fix) post-pass; absent = off.
+  detailer?: DetailerRequest;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
   allow_oversized?: boolean;
@@ -374,6 +377,8 @@ export interface GalleryImage {
   mask_blur?: number | null;
   inpaint_only_masked?: boolean | null;
   inpaint_padding?: number | null;
+  // The Detailer pass this image ran (settings, detections) or why it did not; absent = none.
+  detailer?: DetailerRecord | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
