@@ -61,6 +61,7 @@ def _nvfp4_linear_module(in_features, out_features, seed, dtype):
 
 def _dense_weight(layer, dtype):
     from unsloth.kernels import nvfp4
+
     qs = layer.weight.quant_state
     return nvfp4.nvfp4_dequantize(layer.weight, qs.scale, qs.global_scale, dtype)
 
@@ -177,7 +178,9 @@ def test_llama_attention_decode_under_mixed_autocast(mods, bsz, dtype, amp):
         assert out.dtype == (dtype if bsz == 1 else amp)
         assert K.dtype == dtype and V.dtype == dtype
         assert K.shape == (bsz, N_KV, cached + step + 1, HEAD_DIM)
-        torch.testing.assert_close(out.double(), _reference(attn, X, K, V), atol = 5e-2, rtol = 5e-2)
+        torch.testing.assert_close(
+            out.double(), _reference(attn, X, K, V), atol = 5e-2, rtol = 5e-2
+        )
 
 
 @pytest.mark.parametrize("bias_dtype", [torch.float16, torch.float32])
