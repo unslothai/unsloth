@@ -14,7 +14,6 @@ from startup_banner import print_studio_access_banner
 
 
 def test_non_alias_loopback_shows_real_address(capsys):
-    # A server bound to 127.0.0.2 does not listen on 127.0.0.1.
     print_studio_access_banner(port = 8891, bind_host = "127.0.0.2", display_host = "127.0.0.2")
     out = capsys.readouterr().out
     assert "http://127.0.0.2:8891" in out

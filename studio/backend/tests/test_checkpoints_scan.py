@@ -20,7 +20,6 @@ from utils.models import checkpoints as checkpoints_module
 from utils.training_runs import build_default_output_dir_name
 
 
-# No markers and no weight probe in a bulk listing: full_state stays unverified.
 _PLAIN_FEATURES = {
     "dora": False,
     "full_state": None,

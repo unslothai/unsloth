@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A cached snapshot that loads from a subdirectory must still resolve.
-
-``unsloth/Spark-TTS-0.5B`` keeps everything trainable under ``LLM/``; its snapshot root
-holds only ``README.md`` and ``config.yaml`` (verified against the Hub file listing), so a
-resolver that insists on a root-level ``config.json`` plus root-level weights finds
-nothing. The remote preflight already expands those load roots through
-``load_scan_target``, and ``security_load_subdirs`` reports ``("LLM",)`` for BiCodec, so
-the cached path has to agree or a perfectly good cache is reported as absent:
-``_apply_model_cache_pin`` warns "not found on disk; downloading" and, offline, the start
-route turns the same ``None`` into a 409 ``hf_model_not_cached_offline``.
-"""
+"""Snapshots that load from a subdirectory (Spark-TTS LLM/) must resolve, or a good cache reads absent."""
 
 import json
 
@@ -74,7 +64,6 @@ def bicodec_subdirs(monkeypatch):
 
 def test_a_cached_bicodec_snapshot_resolves_from_its_llm_load_root(cache_root, bicodec_subdirs):
     _, snapshot = _snapshot(cache_root, _REPO)
-    # Exactly the real layout: nothing loadable at the root, everything under LLM/.
     (snapshot / "config.yaml").write_text("sample_rate: 16000\n")
     _write_model(snapshot / "LLM")
 

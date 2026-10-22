@@ -115,6 +115,7 @@ export const en = {
     reload: "Reload",
     more: "More",
     addressPlaceholder: "Search or enter a URL",
+    local: "Local",
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",
@@ -465,6 +466,8 @@ export const en = {
       downloadFailed: "Couldn't download {name}",
       notMarked: "{name} was saved but couldn't be marked as downloaded from the internet, so your system won't warn before opening it.",
       blocked: "This address can't open in the browser panel. It only opens public websites.",
+      blockedLocal: "This local address can't open here. Type it in the address bar to open it.",
+      studioAddress: "This is Unsloth's own address, so it can't open in the browser panel.",
       clearDataSettingDescription: "Clear browsing history, download history, cached pages, and the cookies and site data pages keep, which signs you out of sites.",
       clearDataDescription: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",
       clearDataFailed: "Couldn't clear site data. Try again.",
@@ -1143,6 +1146,10 @@ export const en = {
       alternateSlot: "Alternate shortcut",
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
+      metaUnsupported: "The Windows key can't be used in shortcuts.",
+      altGraphUnsupported: "AltGr chords can't be used as shortcuts.",
+      desktopOnly: "Desktop app only",
+      builtInKey: "Built in: {key}",
       actions: {
         findInPage: {
           label: "Find in page",
@@ -1343,6 +1350,10 @@ export const en = {
         steerMessage: {
           label: "Steer response",
           description: "Stop the current response and send the draft next",
+        },
+        stopGeneration: {
+          label: "Stop generating",
+          description: "Stop the response being written",
         },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",
@@ -1888,20 +1899,14 @@ export const en = {
       },
       notifications: {
         sectionTitle: "Notifications",
-        showLlamaUpdates: "llama.cpp update notifications",
-        showLlamaUpdatesDescription:
-          "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
-        showLoadedModels: "Loaded models indicator",
-        showLoadedModelsDescription:
-          "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
-        showAudioCppUpdates: "audio.cpp update notifications",
-        showAudioCppUpdatesDescription:
-          "Notify when the audio.cpp runtime needs an update to run the Audio pages. Turn off if you never use Audio.",
-        showUnslothUpdates: "Unsloth update notifications",
-        showUnslothUpdatesDescription:
-          "Notify when a newer version of Unsloth is available to install.",
+        showLoadedModels: "Loaded models card",
+        showLoadedModelsDescription: "A corner card with every loaded model, to unload one in a click.",
+        updateReminders: "Update reminders",
+        updateRemindersDescription: "How often to offer a new version when one is ready.",
+        llamaHint: "Chat and GGUF models",
+        audioHint: "Speech, music and transcription",
         frequency: {
-          always: "Always",
+          always: "Whenever available",
           daily: "Once a day",
           weekly: "Once a week",
           biweekly: "Every two weeks",
@@ -2128,9 +2133,9 @@ export const en = {
         longestStreak: "Longest streak",
         activityTitle: "Token activity",
         activityDescription: {
-          daily: "{total} over the last {weeks}",
-          weekly: "Peak week {total} · last {weeks}",
-          cumulative: "{total} accumulated over the last {weeks}",
+          daily: "{total} since {since}",
+          weekly: "Busiest week {total} · since {since}",
+          cumulative: "{total} in total since {since}",
         },
         mode: {
           daily: "Daily",
@@ -2138,9 +2143,10 @@ export const en = {
           cumulative: "Cumulative",
         },
         cellTooltip: "{date} · {tokens}, {messages}",
+        emptyDayTooltip: "{date} · No activity",
+        apiRequests: "{count} via API",
         weekTooltip: "Week of {date} · {tokens}",
-        chartToggle: "Chart",
-        chartToggleHint: "Show Weekly and Cumulative as a chart with labelled axes",
+        cumulativeTooltip: "By the week of {date} · {tokens} in total",
         less: "Less",
         more: "More",
         insightsTitle: "Activity insights",
@@ -3199,6 +3205,14 @@ export const en = {
           "The model loads by name only while Model auto-switch is on. Turn it on, or load the model on its Audio page first.",
         useViaApi: "Use via API",
       },
+      mediaApi: {
+        title: "Image and video API",
+        description: "Generate images and videos from your own code with the OpenAI-compatible endpoints.",
+        images: "Images",
+        video: "Video",
+        placeholderModel: "The model shown is an example. Load a model on the Images or Video page and open this from its API button to fill it in.",
+        autoSwitchOff: "Media auto-switch is off, so requests run on the model the page has loaded, whatever they name.",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Docs",
@@ -3276,6 +3290,24 @@ export const en = {
       desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
+      whisperCppVersion: "whisper.cpp Version",
+      engines: {
+        title: "Engines",
+        description: "The runtimes Unsloth uses to run models. Updates install in the background, with no restart.",
+        updatesLabel: "Engine updates",
+        notInstalled: "Not installed",
+        available: "{version} available",
+        upToDate: "Up to date",
+        updatesAvailable: "Updates available",
+        checking: "Checking for updates...",
+        checkFailed: "Couldn't check for updates. Try again later.",
+        unsupported: "This install's engines are managed outside Unsloth.",
+        checkForUpdates: "Check for updates",
+        update: "Update",
+        updating: "Updating...",
+        updated: "Engines updated.",
+        updateFailed: "Update failed: {error}",
+      },
       hardware: "Hardware",
       gpu: "GPU",
       gpuIntegrated: "integrated",
@@ -3360,6 +3392,9 @@ export const en = {
         docsUpdating: "Updating",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4293,7 +4328,7 @@ export const en = {
         compare: "Compare",
       },
       menu: {
-        fork: "Fork",
+        fork: "Fork chat",
         moveTo: "Move to project",
         newChatInProject: "New chat in project",
         edit: "Edit",
