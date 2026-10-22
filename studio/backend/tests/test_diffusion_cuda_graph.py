@@ -1649,8 +1649,6 @@ def test_a_refused_capture_runs_eager_and_records_on_a_later_call(stub_torch, mo
 
 
 def test_capture_warmups_wait_for_held_replica_work(stub_torch):
-    # The warm-ups may compile, and up to torch 2.13 FX tracing is flagged process-wide: a compile on one thread fails
-    # any compiled call another thread makes meanwhile, so held replica work drains before the warm-ups too.
     seen = []
 
     class Dit(_FakeDiT):

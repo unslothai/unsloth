@@ -178,10 +178,7 @@ def capture_refused_now() -> bool:
 
 
 def _wait_outside_drained(own: int) -> None:
-    """Under ``_CAPTURE_IDLE``: wait for replica-side holds to drain, else raise ``CaptureRefused``.
-
-    Replica-side recording (inside this thread's own held work) discounts only this thread's holds: another
-    worker's held work still running must drain first, or the global capture would forbid its CUDA calls."""
+    """Under ``_CAPTURE_IDLE``: wait for other threads' held work to drain (a global capture forbids its CUDA calls), else raise ``CaptureRefused``."""
     drained = _other_holds(own, _OUTSIDE_PARKED[0]) <= 0
     if not drained and not _OUTSIDE_STUCK[0]:
         if own:
@@ -204,8 +201,7 @@ def _wait_outside_drained(own: int) -> None:
 
 
 def await_outside_drained() -> None:
-    """Wait as a capture does, without starting one: for the warm-ups, which may compile. Up to torch 2.13 FX tracing is
-    flagged process-wide, so a compile on one thread fails any compiled call another thread makes meanwhile."""
+    """Wait as a capture does, for the warm-ups: they may compile, and up to torch 2.13 FX tracing is flagged process-wide."""
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
     with _CAPTURE_IDLE:
         _wait_outside_drained(own)

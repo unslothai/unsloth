@@ -1823,9 +1823,7 @@ class CfgParallelRouter:
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
         self.pairs: list = []
-        # Call signatures each side has completed once. A first call may compile, and up to torch 2.13 a compile
-        # flags FX tracing process-wide: a compiled call on the other card's thread meanwhile raises. So a call new to
-        # either side never overlaps the other side's work.
+        # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
         self.warm_replica: set = set()
         self._pair_job: Optional[dict] = None

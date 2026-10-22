@@ -792,9 +792,7 @@ def test_a_held_capture_alone_records_at_once_and_two_record_one_after_the_other
 
 
 class _FxTrace:
-    """torch <= 2.13's FX tracing flag, one per process: the first call per (side, shapes) "compiles" and holds it until
-    the other side enters a compiled call (or a short timeout); a compiled call entered meanwhile raises as
-    eval_frame does. ``waiter``'s warm calls first wait for a compile to start, which forces the overlap."""
+    """torch <= 2.13's process-wide FX tracing flag; ``waiter``'s warm calls wait for a compile to start, forcing the overlap."""
 
     def __init__(
         self,
@@ -886,7 +884,7 @@ def test_a_pair_new_to_the_primary_never_overlaps_the_replica_half():
     x, uncond = torch.randn(2, 4), torch.randn(5, 4)
     _FX[0] = _FxTrace(compiled = {("primary", (2, 4), (3, 4)), ("replica", (2, 4), (5, 4))})
     router, _replicas = _router(dit)
-    _pairs(dit, router, x, torch.randn(3, 4), uncond, 2)  # both halves warm, on both sides
+    _pairs(dit, router, x, torch.randn(3, 4), uncond, 2)
     _FX[0].waiter = "replica"
     _pairs(dit, router, x, torch.randn(7, 4), uncond, 2)  # a new primary-side length: it compiles
     assert _FX[0].errors == [] and router.disabled_reason is None
