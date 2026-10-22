@@ -17,6 +17,10 @@ __all__ = ["enable_hf_packed_attention", "HF_PACKED_ATTENTION_STATS"]
 _FLAG = "_unsloth_hf_packed_varlen"
 _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
+# True while _block_compile runs one of its compiled decoder blocks (not a user's outer compile).
+# Packed rows there leave the graph for the varlen kernel: the traced fallback is SDPA over the
+# dense block-causal mask, which SM100 sends to cuDNN, rebuilding its plan at every new length.
+IN_COMPILED_BLOCK = [False]
 # efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens.
 HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0, "efficient": 0}
 # Layers of one window share a mask object: window -> [weakref, (cu_seqlens, versions), verdict].
@@ -330,6 +334,24 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
     # Before any counter while tracing: Dynamo would guard on it and recompile every forward.
+    if (
+        IN_COMPILED_BLOCK[0]
+        and torch.compiler.is_compiling()
+        and kwargs.get("packed_seq_lengths") is not None
+        and not _disabled()
+    ):
+        # One graph break per layer; norms, MLP and LoRA around it stay compiled.
+        return _sdpa_packed_varlen_eager(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            dropout = dropout,
+            scaling = scaling,
+            is_causal = is_causal,
+            **kwargs,
+        )
     if kwargs.get("packed_seq_lengths") is None or _disabled() or torch.compiler.is_compiling():
         return orig(
             module,
@@ -531,6 +553,9 @@ def _sdpa_packed_varlen(
     )
     out = run_attention(config = config, context = context, Q = query, K = key, V = value)
     return out.contiguous(), None
+
+
+_sdpa_packed_varlen_eager = torch.compiler.disable(_sdpa_packed_varlen)
 
 
 def enable_hf_packed_attention() -> bool:
