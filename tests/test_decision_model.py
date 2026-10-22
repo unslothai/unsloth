@@ -6,6 +6,7 @@ import json
 import math
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -1411,15 +1412,12 @@ def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
         ),
         callbacks = [Grads()],
     )
-    # The float32 path keeps fp16's loss scaler with autocast off (#14439).
-    assert trainer.args.fp16 == (dtype == torch.float16) and trainer.args.bf16 == (
-        dtype == torch.bfloat16
-    )
-    handler = trainer.accelerator.autocast_handler
-    assert (handler is not None and handler.enabled is False) == (dtype == torch.float16)
+    assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
+    # The float32 path trains with a loss scaler of its own, autocast still off (#14439).
+    assert isinstance(trainer.accelerator.scaler, torch.amp.GradScaler) == (dtype == torch.float16)
     trainer.train()
     assert grads and all(math.isfinite(loss) for loss, _ in grads)
-    # fp16's loss scaler skips the steps that overflow while it calibrates; they log a nan grad norm.
+    # The scaler skips the steps that overflow while it calibrates; they log a nan grad norm.
     stepped = [g for _, g in grads if math.isfinite(g)]
     assert len(stepped) * 2 >= len(grads) and all(g > 0 for g in stepped), grads
     assert math.isfinite(FastDecisionModel.evaluate(model, processor, items)["loss"])
@@ -1506,28 +1504,38 @@ def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, f
     args = _args(tmp_path)
     assert not args.bf16 and not args.fp16
     decision._clef_mixed_precision(model, args)
-    # The float32 path takes fp16 for its loss scaler only; DecisionTrainer turns its autocast off.
-    expected = "fp16" if forced else "bf16"
-    assert args.bf16 == (not forced) and args.fp16 == forced, (args.bf16, args.fp16)
+    expected = "no" if forced else "bf16"
+    assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
     assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
     assert getattr(args, "mixed_precision", expected) == expected
 
 
 @pytest.mark.parametrize(
-    "engine",
-    [{"deepspeed": {"zero_optimization": {"stage": 2}}}, {"fsdp": ["full_shard"]}],
+    "case, wants",
+    [
+        ("float32_path", True),
+        ("deepspeed", False),
+        ("fsdp", False),
+        ("cpu", False),
+        ("not_forced", False),
+    ],
 )
-def test_clef_float32_path_keeps_float32_under_deepspeed_and_fsdp(tmp_path, monkeypatch, engine):
-    # Both read fp16 as a request for their own fp16 engine, which would cast the float32 path away.
-    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
-    model = torch.nn.Linear(1, 1)
-    model._unsloth_forced_float32 = True
+def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
+    # DeepSpeed and FSDP run their own fp16 engines and keep the float32 path as it was.
+    device = torch.device("cpu" if case == "cpu" else "cuda")
+    model = types.SimpleNamespace(
+        parameters = lambda: iter([types.SimpleNamespace(device = device)]),
+        _unsloth_forced_float32 = case != "not_forced",
+    )
     args = _args(tmp_path)
-    for key, value in engine.items():
-        setattr(args, key, value)
-    decision._clef_mixed_precision(model, args)
-    assert not args.fp16 and not args.bf16, (args.bf16, args.fp16)
-    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "no"
+    if case == "deepspeed":
+        args.deepspeed = {"zero_optimization": {"stage": 2}}
+    if case == "fsdp":
+        args.fsdp = ["full_shard"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # GradScaler warns when this host has no CUDA
+        scaler = decision._clef_loss_scaler(model, args)
+    assert isinstance(scaler, torch.amp.GradScaler) == wants
 
 
 def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):

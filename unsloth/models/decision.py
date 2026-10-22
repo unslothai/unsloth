@@ -1068,14 +1068,25 @@ def _attach_gguf_saving(model) -> None:
     model.push_to_hub_gguf = types.MethodType(push_to_hub_gguf, model)
 
 
-def _sharded_engine(args) -> bool:
+def _clef_loss_scaler(model, args):
+    """A GradScaler for the float32 path, else None. Its weights stay float16, so the backward
+    runs in float16, and unscaled that left Gemma 3's adapter gradients mostly rounding noise
+    (#14439). A scaler of its own rather than fp16 = True: that flag also asks for autocast, Apex
+    or a DeepSpeed / FSDP fp16 engine, and Accelerate's process-wide precision cannot change once
+    an earlier Trainer set it. DeepSpeed and FSDP keep the float32 path as it was."""
     from .loader_utils import deepspeed_zero_stage, fsdp_version_requested
-    return bool(
-        getattr(args, "deepspeed", None)
+
+    device = next(model.parameters()).device
+    if (
+        not _clef_forced_float32(model)
+        or device.type not in ("cuda", "xpu")
+        or getattr(args, "deepspeed", None)
         or getattr(args, "fsdp", None)
         or deepspeed_zero_stage() is not None
         or fsdp_version_requested()
-    )
+    ):
+        return None
+    return torch.amp.GradScaler(device.type)
 
 
 def _clef_mixed_precision(model, args) -> None:
@@ -1086,11 +1097,7 @@ def _clef_mixed_precision(model, args) -> None:
             print(
                 "Unsloth: Qwen3.5 overflows under float16 autocast, so Clef trains without autocast, keeping float32 activations."
             )
-        # fp16 only for its loss scaler: DecisionTrainer turns autocast off, but the float16 weights
-        # still backpropagate in float16, and unscaled that left Gemma 3's adapter gradients mostly
-        # rounding noise, so it never learned (#14439). DeepSpeed and FSDP read fp16 as a request
-        # for their own fp16 engines, which would cast the float32 path away: they keep float32.
-        args.fp16, args.bf16 = not _sharded_engine(args), False
+        args.fp16 = args.bf16 = False
     elif args.fp16 and getattr(model._backbone(), "dtype", None) == torch.bfloat16:
         print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
         args.fp16, args.bf16 = False, True
@@ -1226,9 +1233,22 @@ class DecisionTrainer(Trainer):
                 return backward(loss, **backward_kwargs)
 
         self.accelerator.backward = _backward
-        if clef and _clef_forced_float32(model) and self.args.fp16:
-            from accelerate.utils import AutocastKwargs
-            self.accelerator.autocast_handler = AutocastKwargs(enabled = False)
+        scaler = _clef_loss_scaler(model, self.args) if clef else None
+        if scaler is not None:
+            # Accelerate's backward scales the loss and its optimizer steps through the scaler; its
+            # own unscale before clipping only runs under fp16 mixed precision, so unscale here.
+            self.accelerator.scaler = scaler
+            clip = self.accelerator.clip_grad_norm_
+
+            def _clip_grad_norm(
+                parameters,
+                max_norm,
+                norm_type = 2,
+            ):
+                scaler.unscale_(getattr(self.optimizer, "optimizer", self.optimizer))
+                return clip(parameters, max_norm, norm_type)
+
+            self.accelerator.clip_grad_norm_ = _clip_grad_norm
 
     @contextlib.contextmanager
     def _dataset_field_order(self):
@@ -1256,8 +1276,6 @@ class DecisionTrainer(Trainer):
             batches = math.ceil(len(self.train_dataset) / self.args.train_batch_size)
             forwards = int(batches * self.args.num_train_epochs)
         amp_dtype = torch.bfloat16 if self.args.bf16 else torch.float16 if self.args.fp16 else None
-        if _clef_forced_float32(self.model):
-            amp_dtype = None
         try:
             max_length = max(len(item["input_ids"]) for item in self.train_dataset)
         except (TypeError, KeyError, ValueError):
