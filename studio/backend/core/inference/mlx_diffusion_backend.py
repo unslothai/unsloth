@@ -132,6 +132,140 @@ def dense_bits(ram_bytes: Optional[int] = None) -> int:
     return 4 if 0 < ram <= _LOW_RAM_BYTES else 0
 
 
+# Unified-memory plan. Rungs in order of accuracy cost, measured on Z-Image-Turbo (16 renders at 1024, LPIPS vs the
+# all-bf16 MLX render, paired bootstrap): an 8-bit text encoder is within noise of bf16 (+0.002), a 4-bit one is not
+# (+0.029, 13 of 16 images worse); re-quantizing the GGUF's own BF16 tensors to 4 bits costs +0.008. So the 4-bit
+# text encoder is the last rung, taken only when nothing above it fits the Metal working set.
+_TE_BIT_OPTIONS = (8, 4)
+_DENSE_BIT_OPTIONS = (0, 8, 4)
+# Group-64 affine: one bf16 scale and one bf16 bias per 64 weights.
+_TE_GROUP_OVERHEAD_BITS = 2 * 16 / _TE_GROUP_SIZE
+# Live activations above the weights during a step and the VAE decode at 1024x1024.
+ACTIVATION_HEADROOM_BYTES = 2 * 1024**3
+
+
+@dataclass(frozen = True)
+class QuantPlan:
+    te_bits: Optional[int]
+    dense_bits: int
+    planned_bytes: int = 0
+    budget_bytes: int = 0
+    fits: bool = True
+    source: str = "plan"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "te_bits": self.te_bits,
+            "dense_bits": self.dense_bits,
+            "planned_bytes": self.planned_bytes,
+            "budget_bytes": self.budget_bytes,
+            "fits": self.fits,
+            "source": self.source,
+        }
+
+
+def text_encoder_resident_bytes(bf16_bytes: int, bits: Optional[int]) -> int:
+    if not bits:
+        return int(bf16_bytes)
+    return int(bf16_bytes * (bits + _TE_GROUP_OVERHEAD_BITS) / 16)
+
+
+def working_set_bytes(ram_bytes: Optional[int] = None) -> int:
+    """Metal's recommendedMaxWorkingSetSize: what one process can keep resident before macOS starts paging it."""
+    try:
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+        recommended = int(_metal_recommended_working_set_bytes() or 0)
+    except Exception:  # noqa: BLE001 -- unreadable: estimate from RAM below
+        recommended = 0
+    if recommended > 0:
+        return recommended
+    ram = _total_ram_bytes() if ram_bytes is None else ram_bytes
+    # Metal's own figure is about two thirds of RAM on 8-32 GB Macs.
+    return int(ram * 2 / 3) if ram > 0 else 0
+
+
+def plan_quantization(
+    *,
+    budget_bytes: int,
+    transformer_bytes: dict[int, int],
+    text_encoder_bf16_bytes: int,
+    vae_bytes: int = 0,
+    headroom_bytes: int = ACTIVATION_HEADROOM_BYTES,
+) -> QuantPlan:
+    """The most accurate (text encoder bits, dense bits) whose resident set fits ``budget_bytes``; the smallest when
+    none does. ``UNSLOTH_DIFFUSION_MLX_TE_BITS`` / ``_DENSE_BITS`` pin their axis."""
+    forced_te = _env_int("UNSLOTH_DIFFUSION_MLX_TE_BITS", (4, 8, 16))
+    forced_dense = _env_int("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", (0, 4, 8))
+    te_options = (forced_te,) if forced_te is not None else _TE_BIT_OPTIONS
+    dense_options = (forced_dense,) if forced_dense is not None else _DENSE_BIT_OPTIONS
+    rungs = [
+        (None if te == 16 else te, dense)
+        for te in te_options
+        for dense in dense_options
+        if dense in transformer_bytes
+    ]
+    if not rungs:
+        raise ValueError("no converted transformer size for the requested dense bits")
+    planned = None
+    for te, dense in rungs:
+        total = (
+            transformer_bytes[dense]
+            + text_encoder_resident_bytes(text_encoder_bf16_bytes, te)
+            + int(vae_bytes)
+            + int(headroom_bytes)
+        )
+        planned = QuantPlan(te, dense, total, int(budget_bytes), total <= budget_bytes)
+        if planned.fits:
+            return planned
+    return planned
+
+
+def _safetensors_numel(folder: Path) -> int:
+    """Element count of every tensor in ``folder``'s safetensors, from the headers alone."""
+    import struct
+
+    total = 0
+    for path in sorted(Path(folder).glob("*.safetensors")):
+        with open(path, "rb") as fh:
+            (n,) = struct.unpack("<Q", fh.read(8))
+            if n > 100_000_000:
+                raise ValueError(f"{path.name}: implausible safetensors header")
+            header = json.loads(fh.read(n))
+        for name, info in header.items():
+            if name == "__metadata__":
+                continue
+            count = 1
+            for dim in info.get("shape", ()):
+                count *= int(dim)
+            total += count
+    return total
+
+
+def plan_for_load(gguf_path: str, base_dir: str) -> QuantPlan:
+    """The load's plan: header sizes of the GGUF and the base repo's text encoder / VAE against the working set.
+    Any unreadable input falls back to the RAM-size rule (``text_encoder_bits`` / ``dense_bits``)."""
+    try:
+        sizes = convert.planned_output_bytes(gguf_path)
+        # mflux holds the text encoder and VAE in bf16 (2 bytes per element) before any quantization.
+        te_bf16 = 2 * _safetensors_numel(Path(base_dir) / "text_encoder")
+        vae = 2 * _safetensors_numel(Path(base_dir) / "vae")
+        if te_bf16 <= 0:
+            raise ValueError("no text encoder weights found")
+        budget = working_set_bytes()
+        if budget <= 0:
+            raise ValueError("Metal working set unknown")
+        return plan_quantization(
+            budget_bytes = budget,
+            transformer_bytes = sizes,
+            text_encoder_bf16_bytes = te_bf16,
+            vae_bytes = vae,
+        )
+    except Exception as exc:  # noqa: BLE001 -- the size-free rule below still loads
+        logger.info("mlx_diffusion.quant_plan_fallback: %s", exc)
+        return QuantPlan(text_encoder_bits(), dense_bits(), source = "ram_rule")
+
+
 def _chip_name() -> str:
     try:
         out = subprocess.run(
@@ -786,7 +920,18 @@ class MlxDiffusionBackend:
             timings["fetch_s"] = round(time.perf_counter() - t0, 3)
             if _cancel_event.is_set():
                 return
-            bits = dense_bits()
+            plan = plan_for_load(gguf_path, base_dir)
+            bits = plan.dense_bits
+            timings["quant_plan"] = plan.as_dict()
+            if not plan.fits:
+                logger.warning(
+                    "mlx_diffusion.quant_plan_over_budget: planned %.2f GiB > working set %.2f GiB "
+                    "even at te_bits=%s dense_bits=%s",
+                    plan.planned_bytes / 1024**3,
+                    plan.budget_bytes / 1024**3,
+                    plan.te_bits,
+                    plan.dense_bits,
+                )
             revision = _snapshot_revision(gguf_path)
             if revision is None:
                 st = os.stat(gguf_path)
@@ -820,7 +965,7 @@ class MlxDiffusionBackend:
             if _cancel_event.is_set():
                 return
             precision = compute_precision_name()
-            te_bits = text_encoder_bits()
+            te_bits = plan.te_bits
             t2 = time.perf_counter()
             runtime = self._rt()
             # Free the replaced model first: two resident DiTs do not fit a small Mac.

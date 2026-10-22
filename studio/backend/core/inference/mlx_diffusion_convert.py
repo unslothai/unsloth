@@ -403,6 +403,21 @@ def _header_bytes(entries: list[tuple[str, str, list[int]]], metadata: dict[str,
     return blob
 
 
+def planned_output_bytes(
+    gguf_path: os.PathLike | str, dense_bits_options: tuple[int, ...] = (0, 8, 4)
+) -> dict[int, int]:
+    """Exact size of the converted transformer per ``dense_bits``, from the GGUF header alone (no tensor data read)."""
+    from gguf import GGUFReader
+
+    reader = GGUFReader(str(gguf_path))
+    _check_types(reader)
+    sizes: dict[int, int] = {}
+    for bits in dense_bits_options:
+        jobs, _ = _plan(reader, dense_bits = bits, scale_dtype = "bf16")
+        sizes[bits] = sum(_nbytes(dtype, shape) for job in jobs for _n, dtype, shape in job.outputs)
+    return sizes
+
+
 def convert_gguf_to_mflux(
     gguf_path: os.PathLike | str,
     out_dir: os.PathLike | str,

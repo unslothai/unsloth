@@ -542,6 +542,143 @@ def test_a_local_undistilled_gguf_resolves_without_the_hub(tmp_path, monkeypatch
     assert resolve(str(tmp_path), fam, None, "z-image-turbo-Q4_K_M.gguf", fallback = BASE) == BASE
 
 
+GIB = 1024**3
+# Unsloth's Z-Image-Turbo Q4_0 GGUF converted at dense_bits 0 / 8 / 4, and the base repo's Qwen3-4B text encoder and
+# VAE in bf16 (header sizes of the real files).
+ZIMAGE_Q4_0 = {0: int(4.51 * GIB), 8: int(3.90 * GIB), 4: int(3.58 * GIB)}
+ZIMAGE_TE_BF16 = int(7.5 * GIB)
+ZIMAGE_VAE = int(0.16 * GIB)
+
+
+def _clear_quant_env(monkeypatch):
+    for name in ("UNSLOTH_DIFFUSION_MLX_TE_BITS", "UNSLOTH_DIFFUSION_MLX_DENSE_BITS"):
+        monkeypatch.delenv(name, raising = False)
+
+
+@pytest.mark.parametrize(
+    "budget, expected, fits",
+    [
+        # 32 GB and 16 GB Macs (Metal working set 21.3 / 10.67 GiB): the 8-bit text encoder and the GGUF as stored.
+        (int(21.3 * GIB), (8, 0), True),
+        (int(10.67 * GIB), (8, 0), True),
+        # Tighter budgets walk down the rungs: the dense tensors first, the text encoder last.
+        (int(10.2 * GIB), (8, 8), True),
+        (int(9.8 * GIB), (8, 4), True),
+        (int(9.0 * GIB), (4, 0), True),
+        (int(8.5 * GIB), (4, 8), True),
+        (int(8.0 * GIB), (4, 4), True),
+        # 8 GB Mac: nothing fits, so the smallest build (what the RAM rule picked).
+        (int(5.33 * GIB), (4, 4), False),
+    ],
+)
+def test_quant_plan_takes_the_most_accurate_build_that_fits(monkeypatch, budget, expected, fits):
+    _clear_quant_env(monkeypatch)
+    plan = mb.plan_quantization(
+        budget_bytes = budget,
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+        vae_bytes = ZIMAGE_VAE,
+    )
+    assert (plan.te_bits, plan.dense_bits) == expected
+    assert plan.fits is fits and plan.budget_bytes == budget
+    if fits:
+        assert plan.planned_bytes <= budget
+
+
+def test_quant_plan_shrinks_monotonically_with_the_budget(monkeypatch):
+    _clear_quant_env(monkeypatch)
+    previous = None
+    seen = set()
+    for tenth in range(220, 40, -1):
+        plan = mb.plan_quantization(
+            budget_bytes = int(tenth / 10 * GIB),
+            transformer_bytes = ZIMAGE_Q4_0,
+            text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+            vae_bytes = ZIMAGE_VAE,
+        )
+        if previous is not None:
+            assert plan.planned_bytes <= previous
+        previous = plan.planned_bytes
+        seen.add((plan.te_bits, plan.dense_bits))
+    assert seen == {(8, 0), (8, 8), (8, 4), (4, 0), (4, 8), (4, 4)}
+
+
+def test_quant_plan_env_pins_one_axis(monkeypatch):
+    _clear_quant_env(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_TE_BITS", "16")
+    plan = mb.plan_quantization(
+        budget_bytes = int(10.67 * GIB),
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+        vae_bytes = ZIMAGE_VAE,
+    )
+    assert plan.te_bits is None and plan.dense_bits == 4 and not plan.fits
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_TE_BITS", "4")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", "0")
+    plan = mb.plan_quantization(
+        budget_bytes = int(64 * GIB),
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+    )
+    assert (plan.te_bits, plan.dense_bits) == (4, 0)
+
+
+def _header_only_safetensors(path, shapes):
+    import struct
+
+    header = {"__metadata__": {"format": "pt"}}
+    offset = 0
+    for name, shape in shapes.items():
+        size = 2
+        for dim in shape:
+            size *= dim
+        header[name] = {"dtype": "BF16", "shape": list(shape), "data_offsets": [offset, offset + size]}
+        offset += size
+    blob = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(blob)) + blob)
+
+
+def test_a_16gb_mac_loads_z_image_q4_0_with_an_8bit_text_encoder(env, monkeypatch, tmp_path):
+    """main quantized the text encoder to 4 bits on every Mac up to 16 GB, which costs +0.03 LPIPS."""
+    backend, runtime, calls = env
+    _clear_quant_env(monkeypatch)
+    base_dir = tmp_path / "base"
+    # 3.75 Gi bf16 elements = the 7.5 GiB text encoder; 80 Mi = the VAE.
+    _header_only_safetensors(
+        base_dir / "text_encoder" / "model.safetensors", {"w": (3 * 1024, 1024, 1280)}
+    )
+    _header_only_safetensors(base_dir / "vae" / "model.safetensors", {"w": (80, 1024, 1024)})
+    monkeypatch.setattr(mb.convert, "planned_output_bytes", lambda path, *a, **k: dict(ZIMAGE_Q4_0))
+    monkeypatch.setattr(mb, "_total_ram_bytes", lambda: 16 * GIB)
+    monkeypatch.setattr(mb, "working_set_bytes", lambda ram_bytes = None: int(10.67 * GIB))
+    assert _load(backend)["phase"] == "ready"
+    assert runtime.builds[-1]["te_bits"] == 8
+    assert calls["dense_bits"] == 0
+    status = backend.status()
+    assert status["text_encoder_quant"] == "mlx_int8"
+    plan = status["mlx"]["timings"]["quant_plan"]
+    assert plan["source"] == "plan" and plan["fits"] is True
+    assert plan["planned_bytes"] <= plan["budget_bytes"] == int(10.67 * GIB)
+
+
+def test_an_unreadable_gguf_keeps_the_ram_rule(env, monkeypatch):
+    backend, runtime, calls = env
+    _clear_quant_env(monkeypatch)
+    monkeypatch.setattr(mb, "_total_ram_bytes", lambda: 16 * GIB)
+    assert _load(backend)["phase"] == "ready"
+    assert runtime.builds[-1]["te_bits"] == 4 and calls["dense_bits"] == 4
+    assert backend.status()["mlx"]["timings"]["quant_plan"]["source"] == "ram_rule"
+
+
+def test_working_set_falls_back_to_two_thirds_of_ram(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(hw, "_metal_recommended_working_set_bytes", lambda: 0)
+    assert mb.working_set_bytes(12 * GIB) == 8 * GIB
+    monkeypatch.setattr(hw, "_metal_recommended_working_set_bytes", lambda: 11 * GIB)
+    assert mb.working_set_bytes(12 * GIB) == 11 * GIB
+
+
 def test_policy_helpers(monkeypatch):
     for name in (
         "UNSLOTH_DIFFUSION_MLX_TE_BITS",
