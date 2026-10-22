@@ -215,3 +215,45 @@ test("a router loop is reported instead of hanging", () => {
   const s = R.initialState(m);
   assert.equal(s.status, "error");
 });
+
+test("a scene whose dialogue is still being written waits for it", () => {
+  const m: Manifest = {
+    title: "W",
+    start: "a",
+    vars: {},
+    characters: [],
+    mode: "live",
+    entry_points: { next_scene: "next" },
+    scenes: [
+      {
+        id: "a",
+        lines: [{ text: "Hello." }],
+        choices: [{ id: "go", text: "", goto: "b" }],
+      },
+      {
+        id: "b",
+        generate_lines: true,
+        choices: [{ id: "end", text: "", goto: "c" }],
+      },
+      { id: "c", lines: [{ text: "Bye." }] },
+    ],
+  };
+  let s = R.initialState(m);
+  s = R.reduce(m, s, { type: "advance" });
+  assert.equal(s.sceneId, "b");
+  assert.equal(s.status, "reading");
+  assert.equal(R.currentLine(m, s)?.text, "...");
+  const before = s.backlog.length;
+  s = R.reduce(m, s, {
+    type: "setLines",
+    sceneId: "b",
+    lines: [{ text: "Written." }],
+    rev: s.rev,
+  });
+  assert.equal(R.currentLine(m, s)?.text, "Written.");
+  assert.equal(
+    s.backlog.length,
+    before + 1,
+    "the earlier line stays in the history",
+  );
+});

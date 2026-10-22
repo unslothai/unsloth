@@ -228,3 +228,18 @@ async def test_export_embeds_media_defaults_of_flow_inputs():
     parsed, files, _ = read_package(data)
     assert set(files) == {PNG_SHA}
     assert parsed["params"][0]["default"]["ref"] == f"sha256:{PNG_SHA}"
+
+
+@run_async
+async def test_json_export_drops_local_media_defaults():
+    gallery = {"kind": "image", "ref": "image:abc", "url": "/api/inference/images/gallery/abc/file"}
+    d = doc(
+        [node("a", "input.text", value = "hi")],
+        params = [{"id": "photo", "type": "image", "default": gallery}],
+    )
+
+    async def read_media(media):
+        return PNG, "image/png"
+
+    data, _, _ = await package.export_flow(d, "json", read_media)
+    assert json.loads(data)["params"][0]["default"] is None

@@ -403,3 +403,21 @@ async def test_a_request_aborted_by_stop_reads_as_cancelled():
     await asyncio.wait_for(rs.task, 60)
     assert rs.status == "cancelled"
     assert _status(rs, "g") == "cancelled" and rs.nodes["g"].error is None
+
+
+@run_async
+async def test_a_run_value_change_is_not_served_from_the_cache():
+    calls = []
+
+    async def template(ctx):
+        calls.append(ctx.flow_params.get("name"))
+        return {"text": f"hi {ctx.flow_params.get('name')}"}
+
+    eng = _engine({**BASE, "text.template": template})
+    d = doc([node("t", "text.template", template = "hi {{name}}")])
+    first = await _run(eng, d, params = {"name": "Alice"})
+    second = await _run(eng, d, params = {"name": "Bob"})
+    again = await _run(eng, d, params = {"name": "Bob"})
+    assert calls == ["Alice", "Bob"]
+    assert _status(first, "t") == "done" and _status(second, "t") == "done"
+    assert _status(again, "t") == "cached"

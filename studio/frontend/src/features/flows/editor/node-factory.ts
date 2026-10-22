@@ -51,7 +51,12 @@ export function tryConnect(req: ConnectRequest): string | null {
   if (!check.ok) return check.reason ?? "Cannot connect";
   if (
     check.kind === "data" &&
-    wouldCreateCycle(Object.values(doc.graph.edges), req.source, req.target)
+    wouldCreateCycle(
+      Object.values(doc.graph.edges),
+      req.source,
+      req.target,
+      check.targetPort,
+    )
   ) {
     return "That would make a loop. Use For Each to repeat steps.";
   }

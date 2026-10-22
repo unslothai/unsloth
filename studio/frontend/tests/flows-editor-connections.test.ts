@@ -179,3 +179,16 @@ test("drag-to-empty suggests nodes that can take the value", () => {
   assert.ok(flows.includes("story.scene") && flows.includes("story.ending"));
   assert.ok(!flows.includes("story.start"));
 });
+
+test("a For Each body can feed its result back to collect", () => {
+  const edges = [
+    edge("1", "fe", "item", "t", "values"),
+    edge("2", "t", "text", "fe", "collect"),
+  ];
+  assert.equal(
+    wouldCreateCycle(edges.slice(0, 1), "t", "fe", "collect"),
+    false,
+  );
+  assert.equal(wouldCreateCycle(edges.slice(1), "fe", "t", "values"), false);
+  assert.equal(wouldCreateCycle(edges.slice(0, 1), "t", "fe", "items"), true);
+});

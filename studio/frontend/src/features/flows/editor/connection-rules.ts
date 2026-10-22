@@ -126,16 +126,21 @@ export function checkConnection(
   return { ok: true, kind: "data", sourcePort: out.id, targetPort: inp.id };
 }
 
+/** For Each `collect` edges come back from the loop body; the compiler does not count them as dependencies. */
+const COLLECT_PORT = "collect";
+
 /** Whether adding source->target data edge would close a cycle (data edges must stay acyclic). */
 export function wouldCreateCycle(
   edges: Iterable<FlowEdge>,
   sourceId: string,
   targetId: string,
+  targetPort?: string,
 ): boolean {
   if (sourceId === targetId) return true;
+  if (targetPort === COLLECT_PORT) return false;
   const out = new Map<string, string[]>();
   for (const edge of edges) {
-    if (edge.kind !== "data") continue;
+    if (edge.kind !== "data" || edge.target_port === COLLECT_PORT) continue;
     const list = out.get(edge.source);
     if (list) list.push(edge.target);
     else out.set(edge.source, [edge.target]);

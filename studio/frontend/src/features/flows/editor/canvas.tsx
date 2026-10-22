@@ -284,6 +284,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         Object.values(doc.edges),
         connection.source,
         connection.target,
+        check.targetPort,
       )
     ) {
       return false;

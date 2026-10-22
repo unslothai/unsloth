@@ -207,6 +207,21 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
 _LOADED_VARIANT: dict[str, tuple[str, str]] = {}
 
 
+async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
+    """The loaded variant. Studio's chat status names it, so a load from the Chat page or MCP counts too."""
+    if slot != "llm":
+        loaded = _LOADED_VARIANT.get(slot)
+        return loaded[1] if loaded and loaded[0] == repo.lower() else None
+    from studio_mcp import loading
+
+    try:
+        _slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    variant = status.get("gguf_variant")
+    return variant.lower() if isinstance(variant, str) else None
+
+
 async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Optional[dict]:
     """Load ``choice`` into its slot unless it is already resident; None keeps what is loaded."""
     from core.flows.engine import LOAD_KIND, MODEL_SLOT
@@ -231,7 +246,7 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
     if (
         resident
         and resident.lower() == repo.lower()
-        and (not variant or _LOADED_VARIANT.get(slot) == wanted)
+        and (not variant or await _resident_variant(ctx, slot, repo) == variant.lower())
     ):
         return {"repo": repo, "variant": variant}
     ctx.set_status("loading_model", f"Loading {repo}{':' + variant if variant else ''}")
@@ -316,11 +331,15 @@ async def _chat_body(
     if seed is not None:
         body["seed"] = int(seed)
 
+    _register_chat_cancel(ctx, cancel_id)
+    return body
+
+
+def _register_chat_cancel(ctx: Any, cancel_id: str) -> None:
     async def cancel() -> None:
         await ctx.call("POST", "/api/inference/cancel", json = {"cancel_id": cancel_id})
 
     ctx.on_cancel(cancel)
-    return body
 
 
 async def llm_text(
@@ -441,6 +460,8 @@ async def llm_json(
         body["messages"][-1]["content"],
     )
     body["cancel_id"] = f"flow-{uuid.uuid4().hex[:24]}"
+    # The retry is a new request, so Stop needs its id too.
+    _register_chat_cancel(ctx, body["cancel_id"])
     with tools_force_disabled():
         payload = await ctx.call("POST", "/v1/chat/completions", json = body)
     return first_json(_message_text(payload))

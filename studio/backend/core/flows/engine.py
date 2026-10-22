@@ -879,7 +879,7 @@ class FlowEngine:
                     inputs,
                     model = model_key,
                     seed = seed,
-                    flow_params = ctx.flow_params if spec["type"] == "input.param" else None,
+                    flow_params = ctx.flow_params,
                 )
                 hit = flows_db.cache_get(key)
             except Exception:
@@ -893,7 +893,7 @@ class FlowEngine:
                 key = cache_key(
                     spec["type"], spec["v"], params, inputs,
                     model = await self._model_key(ctx, spec, params), seed = seed,
-                    flow_params = ctx.flow_params if spec["type"] == "input.param" else None,
+                    flow_params = ctx.flow_params,
                 )  # fmt: skip
             except Exception:
                 key = None

@@ -242,6 +242,9 @@ function enter(
       backlog: withBacklog(s, scene, lines[0]),
     };
   }
+  // Its dialogue is being written: wait on the scene (shown as "...") instead of skipping past it.
+  if (scene.generate_lines && m.entry_points?.next_scene)
+    return { ...s, status: "reading" };
   return leave(m, s, scene, hops + 1);
 }
 
@@ -388,7 +391,8 @@ export function reduce(
       };
       // Only restart the scene if the reader is still on its first line.
       if (s.sceneId === a.sceneId && s.line === 0 && s.status === "reading") {
-        const backlog = s.backlog.slice(0, -1);
+        const shown = visibleLines(scene, s.vars).length > 0;
+        const backlog = shown ? s.backlog.slice(0, -1) : s.backlog;
         return {
           ...next,
           backlog: withBacklog(
@@ -421,7 +425,10 @@ export function nextSceneIds(
 export function currentLine(m: StoryManifest, s: StoryState): StoryLine | null {
   const scene = sceneOf(m, s, s.sceneId);
   if (!scene) return null;
-  return visibleLines(scene, s.vars)[s.line] ?? null;
+  const line = visibleLines(scene, s.vars)[s.line];
+  if (!line && scene.generate_lines && s.status === "reading")
+    return { text: "..." };
+  return line ?? null;
 }
 
 /** The nearest scene at or before the current one that has a background (routers have none). */
