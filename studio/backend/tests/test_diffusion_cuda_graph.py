@@ -1675,3 +1675,30 @@ def test_capture_warmups_wait_for_held_replica_work(stub_torch):
     assert handle.stats["captures"] == 1
     assert seen == [0] * (cg.WARMUP_ITERS + 1)
     assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0
+
+
+def test_engagement_reports_captures_replays_and_per_card_segments():
+    """Status shows whether the graph layers are ENGAGED, not only that nothing recompiled."""
+    import types as _types
+
+    seg = _types.SimpleNamespace(stats = {"segment_captures": 2, "segment_replays": 30})
+    whole = _types.SimpleNamespace(
+        cache = {1: None},
+        stats = {"captures": 1, "replays": 7, "eager_calls": 2, "invalidations": 0},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+    )
+    blocks = _types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 3, "replays": 9},
+        placement = None,
+        poisoned = False,
+        capture_error = None,
+        segments = [seg],
+    )
+    out = cg.engagement((whole, blocks))
+    assert out["graphs"] == 1 and out["captures"] == 4 and out["replays"] == 16
+    assert out["eager_calls"] == 2 and out["segment_captures"] == 2 and out["segment_replays"] == 30
+    assert set(out) >= {"dynamo_frames", "graph_breaks"}
+    assert cg.engagement(())["captures"] == 0
