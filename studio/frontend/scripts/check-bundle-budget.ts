@@ -374,11 +374,14 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
-  // adopt-only pick in the chat runtime, +1,675 B raw / +550 B transfer (6,893,180 -> 6,894,855 B raw,
-  // 2,076,779 -> 2,077,329 B transfer against f76dd2295, Node 24, 98 chunks). Raised by that.
-  transferBytes: 2_077_445,
-  rawBytes: 6_894_891,
+  // adopt-only pick in the chat runtime, +1,674 B raw / +549 B transfer (6,894,819 -> 6,896,493 B raw,
+  // 2,077,209 -> 2,077,758 B transfer against 833416887, Node 24, 98 chunks). Raised by that.
+  transferBytes: 2_077_862,
+  rawBytes: 6_896_404,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
