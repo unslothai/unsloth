@@ -1487,14 +1487,12 @@ def test_archive_embed_honors_cancel_between_batches(conn, monkeypatch):
         evicted.append({"role": "user", "content": f"cancel question {index} unique {index}"})
         evicted.append({"role": "assistant", "content": f"cancel answer {index} unique {index}"})
 
-    # Stop lands once the first batch is embedded, so later groups stay unindexed.
     def cancel_check():
         return bool(calls)
 
     written = conversation_archive.archive_turns(thread_id, evicted, cancel_check = cancel_check)
     assert 0 < written < 8
     assert len(calls) == 1
-    # A later pass without cancel finishes the rest (idempotent by digest).
     assert conversation_archive.archive_turns(thread_id, evicted) == 8 - written
 
 
@@ -1524,7 +1522,6 @@ def test_archive_embed_caps_chunks_per_call(conn, monkeypatch):
     first = conversation_archive.archive_turns(thread_id, evicted)
     assert 0 < first < 10
     assert calls and calls[0] <= 4
-    # Each later request picks up the next capped slice until the backlog is gone.
     total = first
     for _ in range(10):
         written = conversation_archive.archive_turns(thread_id, evicted)
@@ -1635,7 +1632,6 @@ def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
     written = conversation_archive.archive_turns(thread_id, evicted)
     assert 0 < written < 8
     assert conversation_archive.degraded()
-    # The retry embeds only what the failure left behind.
     calls.clear()
     assert conversation_archive.archive_turns(thread_id, evicted) == 8 - written
     assert sum(calls) <= 8 - written

@@ -33,7 +33,6 @@ from .parsers import Page
 
 logger = logging.getLogger(__name__)
 
-# One encode of every pending chunk held the reply for minutes and ignored Chat Stop (#14519).
 _ARCHIVE_EMBED_BATCH = 64
 # Per call; the rest is archived by later requests, which re-evict the same turns.
 _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
@@ -381,12 +380,8 @@ def _embed_pending_chunks(
     model_name: str,
     cancel_check: Optional[Callable[[], bool]] = None,
 ):
-    """``(vectors, identity, cancelled, error)`` for archive chunk texts, in batches.
-
-    Returns whatever was completed before a cancel or a failed batch; callers must only
-    write groups whose chunks are fully covered by ``vectors``. A failure on the first
-    batch raises, so nothing is lost and the caller's error handling is unchanged.
-    """
+    """``(vectors, identity, cancelled, error)``, partial after a cancel or a late failure:
+    write only groups ``vectors`` fully covers. A failing first batch raises."""
     vectors: list = []
     identity: Optional[str] = None
     restarted = False
@@ -407,8 +402,7 @@ def _embed_pending_chunks(
         if identity is not None and batch_identity != identity:
             if restarted:
                 break
-            # An ST failure swaps the process to llama-server for good: restart in the new
-            # space, as ingestion does, so the turns are recallable by this request's query.
+            # An ST failure swaps to llama-server for good: restart in the new space, as ingestion does.
             logger.warning("conversation_archive.embedder_changed_mid_pass; re-embedding")
             vectors, identity, start, restarted = [], None, 0, True
             continue
@@ -435,9 +429,7 @@ def archive_turns(
     copies of a repeated turn the archive is allowed to hold right now; see ``_write_budget``.
     Optional, and omitting it keeps the previous behaviour.
 
-    ``cancel_check`` is polled between embedding batches so Chat Stop can leave the pre-inference
-    archive path (#14519). Already-written groups are kept; incomplete groups are left for a
-    later compaction.
+    ``cancel_check`` (Chat Stop) is polled before chunking and between embedding batches.
     """
     if not thread_id or not evicted or not enabled():
         return 0
@@ -514,7 +506,6 @@ def archive_turns(
                 _widen_span(conn, scope, digest, span)
                 continue
             if collected >= max_chunks:
-                # Past the cap: chunking the rest is wasted work, later requests take it.
                 skipped += 1
                 continue
             if chunk_limit is None:
@@ -577,7 +568,7 @@ def archive_turns(
             _ARCHIVE_EMBED_BATCH,
         )
         # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
-        # with a space they were never in. Batched so Chat Stop can interrupt between batches.
+        # with a space they were never in.
         vectors, identity, cancelled, embed_error = _embed_pending_chunks(
             texts, model_name = model, cancel_check = cancel_check
         )

@@ -2292,9 +2292,6 @@ def _archive_and_recall(
     Returns ``{"conversation", "events", "counts", "recalled"}``. Never raises: every
     failure degrades to the plain fitted messages. Recall fires at most once per request,
     or the tool loop's per-iteration refit would stack a recall block onto each pass.
-
-    ``cancel_check`` is forwarded to ``archive_turns`` so Chat Stop can interrupt the
-    CPU embedding pass that otherwise blocked llama.cpp (#14519).
     """
     result = {
         "conversation": conversation,
