@@ -247,16 +247,19 @@ test("unsubscribing stops the refetch, so an unmounted panel cannot set state", 
   assert.equal(refreshed, 0);
 });
 
-test("the panel subscribes, and does not resurrect a row it just deleted", async () => {
+test("the panel's list refetches once per change, and does not resurrect a row it just deleted", async () => {
   const src = await readSrcAsync("features/rag/components/project-sources-panel.tsx");
+  const hook = await readSrcAsync("features/rag/components/use-rag-documents.ts");
+  // Only the hook listens: a panel subscription on top doubled every refetch.
   assert.match(
-    src,
-    /subscribeProjectSourcesUpdated\(projectId, \(\) => \{\n\s*void refresh\(\{ quiet: true \}\);\n\s*\}\),/,
+    hook,
+    /window\.addEventListener\(PROJECT_SOURCES_CHANGED_EVENT, onChanged\)/,
     "the mounted list no longer refreshes when a source is saved elsewhere",
   );
   assert.ok(
-    !src.includes("PROJECT_SOURCES_UPDATED_EVENT"),
-    "the panel listens for the raw event again, bypassing the tested subscription",
+    !src.includes("subscribeProjectSourcesUpdated") &&
+      !/void refresh\(/.test(src),
+    "the panel refetches on top of the hook's own listener again",
   );
   // handleRemove drops the row optimistically and *then* invalidates, so an
   // invalidate that also refetched would re-list the row before the DELETE went
