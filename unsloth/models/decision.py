@@ -1069,11 +1069,8 @@ def _attach_gguf_saving(model) -> None:
 
 
 def _clef_loss_scaler(model, args):
-    """A GradScaler for the float32 path, else None. Its weights stay float16, so the backward
-    runs in float16, and unscaled that left Gemma 3's adapter gradients mostly rounding noise
-    (#14439). A scaler of its own rather than fp16 = True: that flag also asks for autocast, Apex
-    or a DeepSpeed / FSDP fp16 engine, and Accelerate's process-wide precision cannot change once
-    an earlier Trainer set it. DeepSpeed and FSDP keep the float32 path as it was."""
+    """A GradScaler for the float32 path, whose float16 backward loses Gemma 3's gradients unscaled
+    (#14439); not fp16 = True, which also means autocast, Apex and DeepSpeed / FSDP fp16 engines."""
     from .loader_utils import deepspeed_zero_stage, fsdp_version_requested
 
     device = next(model.parameters()).device
@@ -1238,8 +1235,7 @@ class DecisionTrainer(Trainer):
         self.accelerator.backward = _backward
         scaler = _clef_loss_scaler(model, self.args) if clef else None
         if scaler is not None:
-            # Accelerate's backward scales the loss and its optimizer steps through the scaler; its
-            # own unscale before clipping only runs under fp16 mixed precision, so unscale here.
+            # Accelerate unscales before clipping only under fp16 mixed precision.
             self.accelerator.scaler = scaler
             clip = self.accelerator.clip_grad_norm_
 

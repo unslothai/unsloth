@@ -1416,7 +1416,6 @@ def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
         callbacks = [Grads()],
     )
     assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
-    # The float32 path trains with a loss scaler of its own, autocast still off (#14439).
     assert isinstance(trainer.accelerator.scaler, GRAD_SCALER) == (dtype == torch.float16)
     trainer.train()
     assert grads and all(math.isfinite(loss) for loss, _ in grads)
@@ -1524,7 +1523,6 @@ def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, f
     ],
 )
 def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
-    # DeepSpeed and FSDP run their own fp16 engines and keep the float32 path as it was.
     device = torch.device("cpu" if case == "cpu" else "cuda")
     model = types.SimpleNamespace(
         parameters = lambda: iter([types.SimpleNamespace(device = device)]),
@@ -1542,7 +1540,6 @@ def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
 
 
 def test_clef_loss_scaler_on_torch_without_torch_amp_grad_scaler(tmp_path, monkeypatch):
-    # torch < 2.3 has no torch.amp.GradScaler, only torch.cuda.amp.GradScaler.
     monkeypatch.delattr(torch.amp, "GradScaler", raising = False)
     made = []
     monkeypatch.setattr(torch.cuda.amp, "GradScaler", lambda: made.append(1) or "legacy")
