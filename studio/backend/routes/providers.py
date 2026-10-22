@@ -1007,7 +1007,8 @@ async def test_provider(
             models_count = None,
         )
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
@@ -1195,7 +1196,8 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
     if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
         return cached[1]
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
@@ -1280,7 +1282,8 @@ async def list_provider_models(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
