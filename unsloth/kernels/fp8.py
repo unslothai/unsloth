@@ -996,9 +996,19 @@ def fp8_block_gemv(X, weight, weight_scale):
 
 
 def _with_fp8_block_gemv(block_forward):
+    fused_small_m = block_forward is fp8_torch_block_quant_forward
+
     @functools.wraps(block_forward)
     def forward(X, weight, weight_scale):
         if can_use_fp8_block_gemv(X, weight, weight_scale):
+            # On 100+ SM parts the fused act_quant + w8a8 kernel decodes faster end to end where it applies
+            # (eager only, so compiled regions keep the GEMV); on smaller ones the GEMV does.
+            if (
+                fused_small_m
+                and _sm_count(X.device) >= 100
+                and can_use_fp8_block_small_m(X, weight, weight_scale, _fp8_block_size(weight, weight_scale))
+            ):
+                return fp8_block_small_m_linear(X, weight, weight_scale)
             return fp8_block_gemv(X, weight, weight_scale)
         return block_forward(X, weight, weight_scale)
 
