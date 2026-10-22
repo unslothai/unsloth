@@ -1007,8 +1007,15 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
             logger.warning("Could not remove the uploaded documents for %s", thread_id)
 
 
-def _fork_document_cutoff(source_thread_id: str, branch_message_id: Optional[str]) -> Optional[str]:
-    """Uploads made once the source moved past the fork point stay behind; None at the tip."""
+def _fork_document_cutoff(
+    source_thread_id: str, branch_message_id: Optional[str], client_now_ms: int
+) -> Optional[str]:
+    """Uploads made once the source moved past the fork point stay behind; None at the tip.
+
+    Message times come from the browser's clock and upload times from this server's, so the
+    cutoff is shifted by the skew the fork request itself shows (its browser ``createdAt``
+    against server now)."""
+    import time
     from datetime import datetime, timezone
 
     if not branch_message_id:
@@ -1016,7 +1023,8 @@ def _fork_document_cutoff(source_thread_id: str, branch_message_id: Optional[str
     next_at = next_message_created_at(source_thread_id, branch_message_id)
     if next_at is None:
         return None
-    return datetime.fromtimestamp(next_at / 1000, timezone.utc).isoformat()
+    skew_ms = int(time.time() * 1000) - client_now_ms
+    return datetime.fromtimestamp((next_at + skew_ms) / 1000, timezone.utc).isoformat()
 
 
 def _copy_thread_rag_documents(
@@ -2110,7 +2118,9 @@ def fork_thread(
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
-    created_before = _fork_document_cutoff(thread_id, forked.get("forkedFromMessageId"))
+    created_before = _fork_document_cutoff(
+        thread_id, forked.get("forkedFromMessageId"), payload.createdAt
+    )
     if not _copy_thread_rag_documents(
         thread_id, payload.newThreadId, created_before = created_before
     ):
