@@ -251,9 +251,7 @@ def test_a_stall_after_a_listed_device_fails_without_a_cpu_replay(monkeypatch, t
     assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is False
 
 
-def test_a_suspect_launch_cut_off_by_the_ceiling_fails_without_a_cpu_replay(
-    monkeypatch, tmp_path
-):
+def test_a_suspect_launch_cut_off_by_the_ceiling_fails_without_a_cpu_replay(monkeypatch, tmp_path):
     """Still loading when the ceiling hit: that is progress, not a dead driver."""
     _route_env(monkeypatch, "timeout")
     sink = {}
