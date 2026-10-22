@@ -101,6 +101,62 @@ def _num_sms(device):
     return count
 
 
+_OPERAND_TILE_FITS = {}
+
+
+def _autotune_cache():
+    from .. import autotune_cache
+
+    return autotune_cache
+
+
+def _fit_tiles_to_operand_device(kind, operand, weight_dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
+    """Caller-supplied tiles were fitted to the current card's shared memory when the caller passed no device
+    (unsloth_zoo <= 2026.10.7). If the operands sit on a different GPU model, shrink a copy to fit their card.
+    One GPU, or the same model as the current card: returned unchanged."""
+    tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    device = operand.device
+    try:
+        if device.type != "cuda" or DEVICE_TYPE != "cuda" or torch.cuda.device_count() <= 1:
+            return tiles
+        current = torch.cuda.current_device()
+        index = _device_index(device)
+        if index == current or _device_model(device) == _device_model(torch.device("cuda", current)):
+            return tiles
+    except Exception:
+        return tiles
+    key = (kind, index, operand.dtype, weight_dtype, tiles)
+    fitted = _OPERAND_TILE_FITS.get(key)
+    if fitted is None:
+        fitted = tiles
+        try:
+            from types import SimpleNamespace
+
+            autotune_cache = _autotune_cache()
+
+            smem = autotune_cache._device_smem_per_block(device)
+            if smem is not None:
+                config = SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                autotune_cache._fit_config_to_smem(
+                    kind,
+                    config,
+                    operand.dtype.itemsize,
+                    weight_dtype.itemsize,
+                    tuple(torch.cuda.get_device_capability(device)),
+                    smem,
+                )
+                fitted = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
+        except Exception:
+            fitted = tiles
+        _OPERAND_TILE_FITS[key] = fitted
+    return fitted
+
+
 def _autotuner_for(kernel, device):
     """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
     the same GPU model share one results cache, so identical cards reuse each other's tuning; a run's
@@ -286,7 +342,9 @@ def _grouped_gemm_forward_impl(
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "fwd", X, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -433,7 +491,9 @@ def _grouped_gemm_dX_impl(
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dX", dY, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -593,7 +653,9 @@ def _launch_grouped_gemm_dW(
         use_tma_store = False
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dW", X, X.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     def grid(META):
         if per_expert:
