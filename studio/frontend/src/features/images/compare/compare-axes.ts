@@ -360,23 +360,23 @@ export function planCompare(
   return problem ? { ok: false, error: problem } : { ok: true, plan };
 }
 
-/** Combinations no cell may run: a Prompt S/R term no cell's prompt carries (a negative prompt counts only where
- *  that cell's CFG engages it), or a Schedule type the cell's sampler does not take (the backend would run its
- *  Automatic schedule under a Karras label). */
+/** Combinations no cell may run: a Prompt S/R term a cell's text lacks once the earlier axes' substitutions ran
+ *  (A1111 apply_prompt raises per cell; a negative prompt counts only where that cell's CFG engages it), or a
+ *  Schedule type the cell's sampler does not take (the backend would run Automatic under a Karras label). */
 function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null {
-  const srAxes: Array<[number, string]> = [];
-  plan.axes.forEach((axis, a) => {
-    if (axis.def.id === "prompt_sr") srAxes.push([a, String(axis.values[0])]);
-  });
-  const srHit = srAxes.map(() => false);
+  const srAxes = plan.axes.flatMap((axis, a) => (axis.def.id === "prompt_sr" ? [a] : []));
   for (let i = 0; i < plan.cellCount; i++) {
     const cell = cellState(plan, i);
-    const g = cell.guidance ?? ctx.guidance;
-    const negative =
-      ctx.negativeCapable && (ctx.negativeMinGuidance === null || g > ctx.negativeMinGuidance) ? ctx.negativePrompt : "";
-    srAxes.forEach(([, search], k) => {
-      if (ctx.prompt.includes(search) || negative.includes(search)) srHit[k] = true;
-    });
+    let prompt = ctx.prompt;
+    let negative = negativeEngaged(ctx, cell.guidance ?? ctx.guidance) ? ctx.negativePrompt : "";
+    for (let k = 0; k < cell.replacements.length; k++) {
+      const [search, replace] = cell.replacements[k];
+      if (!prompt.includes(search) && !negative.includes(search)) {
+        return `${AXIS_NAMES[srAxes[k]]}: Prompt S/R did not find "${search}" in cell "${cellTitle(plan, i)}" (its prompt after earlier substitutions, or a negative prompt its CFG uses)`;
+      }
+      prompt = prompt.split(search).join(replace);
+      negative = negative.split(search).join(replace);
+    }
     if (cell.schedule !== undefined && cell.schedule !== AUTOMATIC) {
       const sampler = cell.sampler ?? ctx.samplerChoice.sampler;
       const option = ctx.samplers.find((s) => s.id === sampler);
@@ -386,12 +386,21 @@ function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null 
       }
     }
   }
-  const miss = srAxes.findIndex((_, k) => !srHit[k]);
-  if (miss >= 0) {
-    const [a, search] = srAxes[miss];
-    return `${AXIS_NAMES[a]}: Prompt S/R did not find "${search}" in the prompt, or in a negative prompt any cell uses`;
-  }
   return null;
+}
+
+function negativeEngaged(ctx: CompareContext, guidance: number): boolean {
+  return ctx.negativeCapable && (ctx.negativeMinGuidance === null || guidance > ctx.negativeMinGuidance);
+}
+
+/** The negative prompt the grid's recipe records: the form's text when any cell runs with it engaged. */
+export function gridNegativePrompt(plan: CompareGridPlan, ctx: CompareContext): string | undefined {
+  const text = ctx.negativePrompt.trim();
+  if (!text) return undefined;
+  for (let i = 0; i < plan.cellCount; i++) {
+    if (negativeEngaged(ctx, cellState(plan, i).guidance ?? ctx.guidance)) return text;
+  }
+  return undefined;
 }
 
 /** The cell's overrides, every axis applied in X, Y, Z order (so two Prompt S/R axes chain as in A1111). */

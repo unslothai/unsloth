@@ -6,8 +6,10 @@
 
 import type { DiffusionGenerateRequest, GalleryImage } from "../api.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "../lib/sampler-choice.ts";
+import { gridInfotext } from "./compose-grid.ts";
 import {
   buildCellRequest,
+  gridNegativePrompt,
   cellTitle,
   NOTHING,
   type CompareContext,
@@ -19,6 +21,8 @@ export interface CompareRun {
   request(run: number, base: DiffusionGenerateRequest, baseSeed: number): DiffusionGenerateRequest;
   title(done: number): string;
   onImages(run: number, images: readonly GalleryImage[]): void;
+  // The seed run `run` was actually sent with (a Seed axis or Keep -1 replaces the form's).
+  sentSeed(run: number): number | undefined;
 }
 
 export interface CompareRunState extends CompareRun {
@@ -55,6 +59,10 @@ export function createCompareRun(
       const cell = plan.order[Math.min(done, plan.cellCount - 1)];
       const label = cellTitle(plan, cell);
       return `Cell ${Math.min(done + 1, plan.cellCount)}/${plan.cellCount}${label ? `: ${label}` : ""}`;
+    },
+    sentSeed(run) {
+      const cell = plan.order[run];
+      return cell === undefined ? undefined : requests[cell]?.seed;
     },
     onImages(run, images) {
       const cell = plan.order[run];
@@ -105,4 +113,54 @@ export function gridRecipeFields(
     ["Model", form.model],
   );
   return fields;
+}
+
+/** The grid's active LoRAs as A1111 `<lora:name:weight>` prompt tags (what the Images importer restores), at the
+ *  first cell's weights; an id a tag cannot carry goes in a `LoRAs` field instead. */
+export function gridLoraTags(
+  ctx: Pick<CompareContext, "loraCapable" | "loras">,
+  first: DiffusionGenerateRequest | null | undefined,
+): { tags: string; field: string | null } {
+  if (!ctx.loraCapable) return { tags: "", field: null };
+  const tags: string[] = [];
+  const plain: string[] = [];
+  for (const row of ctx.loras) {
+    const id = row.id.trim();
+    if (!id) continue;
+    const weight = first?.loras?.find((l) => l.id === id)?.weight ?? 0;
+    if (/[:<>]/.test(id)) plain.push(`${id}: ${weight}`);
+    else tags.push(`<lora:${id}:${weight}>`);
+  }
+  return { tags: tags.join(" "), field: plain.length ? plain.join(", ") : null };
+}
+
+const AXIS_NAMES = ["X", "Y", "Z"] as const;
+
+/** The grid PNG's A1111-style `parameters`: the prompt with the active LoRAs as tags, the negative prompt when any
+ *  cell engages it (the first cell may not), the shared recipe, then the axes. */
+export function gridParameters(
+  plan: CompareGridPlan,
+  ctx: CompareContext,
+  first: DiffusionGenerateRequest | null | undefined,
+  form: { steps: number; guidance: number; width: number; height: number; model: string | null; keepRandomSeeds: boolean },
+): string {
+  const fields = gridRecipeFields(plan, first, form);
+  const loras = gridLoraTags(ctx, first);
+  if (loras.field) fields.push(["LoRAs", loras.field]);
+  const axes = plan.axes
+    .map((a, i) => ({ a, name: AXIS_NAMES[i] }))
+    .filter(({ a }) => a.def.id !== NOTHING)
+    .map(({ a, name }) => ({
+      name,
+      type: a.def.label,
+      text: a.text,
+      fixed: a.def.id === "seed" && !form.keepRandomSeeds ? a.values : undefined,
+    }));
+  const prompt = ctx.prompt.trim();
+  return gridInfotext({
+    prompt: loras.tags ? `${prompt} ${loras.tags}` : prompt,
+    negativePrompt: gridNegativePrompt(plan, ctx),
+    fields,
+    axes,
+  });
 }

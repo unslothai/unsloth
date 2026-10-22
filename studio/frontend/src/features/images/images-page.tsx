@@ -5367,7 +5367,7 @@ export function ImagesPage({
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
           // The run landed without its records, so Reuse last seed takes the seed it was sent.
-          if (!external) setSessionSeed(runBaseSeed);
+          if (!external) setSessionSeed(compare?.sentSeed(i) ?? runBaseSeed);
           setGenDone(i + 1);
           continue;
         }

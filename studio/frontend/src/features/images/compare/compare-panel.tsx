@@ -33,9 +33,9 @@ import {
   type AxisInput,
   type CompareContext,
 } from "./compare-axes";
-import { createCompareRun, gridRecipeFields, gridTitles, sliceCells, type CompareRun, type CompareRunState } from "./compare-run";
+import { createCompareRun, gridParameters, gridTitles, sliceCells, type CompareRun, type CompareRunState } from "./compare-run";
 import { joinAxisList } from "./compare-values";
-import { drawCellsInTurn, drawGrid, gridInfotext, gridLayout, withPngText } from "./compose-grid";
+import { drawCellsInTurn, drawGrid, gridLayout, withPngText } from "./compose-grid";
 
 export interface ComparePanelProps {
   context: CompareContext;
@@ -191,28 +191,13 @@ export default function ComparePanel(props: ComparePanelProps) {
     const done = state.results.filter(Boolean).length;
     if (done === 0) return;
     const plan = result.plan;
-    const firstReq = state.requests.find(Boolean);
-    const fields = gridRecipeFields(plan, firstReq, {
+    const infotext = gridParameters(plan, context, state.requests.find(Boolean), {
       steps: props.steps,
       guidance: props.guidance,
       width: props.width,
       height: props.height,
       model: props.modelName,
-    });
-    const axesInfo = plan.axes
-      .map((a, i) => ({ a, name: AXIS_NAMES[i] }))
-      .filter(({ a }) => a.def.id !== NOTHING)
-      .map(({ a, name }) => ({
-        name,
-        type: a.def.label,
-        text: a.text,
-        fixed: a.def.id === "seed" && !keepRandom ? a.values : undefined,
-      }));
-    const infotext = gridInfotext({
-      prompt: context.prompt.trim(),
-      negativePrompt: firstReq?.negative_prompt,
-      fields,
-      axes: axesInfo,
+      keepRandomSeeds: keepRandom,
     });
     try {
       // One Z slice at a time, for the same memory reason as the cells.

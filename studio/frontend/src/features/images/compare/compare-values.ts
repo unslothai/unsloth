@@ -26,7 +26,12 @@ const FLOAT_RANGE = new RegExp(
 );
 const FLOAT_COUNT = new RegExp(String.raw`^\s*(${NUM})\s*-\s*(${NUM})\s*\[\s*(\d+)\s*\]\s*$`);
 
-const num = (text: string): number => Number(text.replace(/\s+/g, ""));
+// A space may follow a sign (A1111's `[+-]?\s*\d+`); anywhere else inside a number it is a typo (`1 2`, `1 e2`).
+const literal = (text: string): string => text.trim().replace(/^([+-])\s+/, "$1");
+const num = (text: string): number => {
+  const t = literal(text);
+  return /\s/.test(t) ? Number.NaN : Number(t);
+};
 
 /** Labels and requests use the same rounding as A1111's format_value (8 decimals), so 0.1+0.2 reads 0.3. */
 export function roundValue(value: number): number {
@@ -116,7 +121,7 @@ export function parseAxisValues(text: string, type: AxisValueType): ParsedValues
       values.push(...spaced.map(isInt ? Math.trunc : roundValue));
     } else {
       const value = num(item);
-      if (!Number.isFinite(value) || !/^[+-]?\d*\.?\d+(?:e[+-]?\d+)?$|^[+-]?\d+\.$/i.test(item.replace(/\s+/g, ""))) {
+      if (!Number.isFinite(value) || !/^[+-]?\d*\.?\d+(?:e[+-]?\d+)?$|^[+-]?\d+\.$/i.test(literal(item))) {
         return { ok: false, error: `"${item}" is not a number` };
       }
       if (isInt && !Number.isInteger(value)) return { ok: false, error: `"${item}" is not a whole number` };

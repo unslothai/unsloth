@@ -15,7 +15,7 @@ import {
   type CompareContext,
   type CompareGridPlan,
 } from "../src/features/images/compare/compare-axes.ts";
-import { createCompareRun, gridRecipeFields, gridTitles, sliceCells } from "../src/features/images/compare/compare-run.ts";
+import { createCompareRun, gridParameters, gridRecipeFields, gridTitles, sliceCells } from "../src/features/images/compare/compare-run.ts";
 import { joinAxisList, parseAxisValues, splitAxisList } from "../src/features/images/compare/compare-values.ts";
 import { drawCellsInTurn, gridInfotext, gridLayout, MAX_CANVAS_SIDE, withPngText, wrapText } from "../src/features/images/compare/compose-grid.ts";
 import { pngTextChunks } from "../src/features/images/lib/image-metadata.ts";
@@ -465,9 +465,12 @@ test("Prompt S/R counts a negative-prompt match only where some cell's CFG engag
   const ctx = sdxl({ prompt: "a fox", negativePrompt: "red eyes", guidance: 1 });
   const off = planCompare([{ axisId: "prompt_sr", text: "red, blue" }], ctx);
   assert.equal(off.ok, false);
-  assert.match(off.ok ? "" : off.error, /did not find "red" in the prompt, or in a negative prompt any cell uses/);
+  assert.match(off.ok ? "" : off.error, /did not find "red" in cell "red"/);
   // A CFG axis that raises guidance over the threshold engages it for those cells.
-  const withCfg = planCompare([{ axisId: "prompt_sr", text: "red, blue" }, { axisId: "guidance", text: "1, 7" }], ctx);
+  // Per cell: a CFG 1 cell would not use the negative prompt, so its substitution would do nothing.
+  const mixed = planCompare([{ axisId: "prompt_sr", text: "red, blue" }, { axisId: "guidance", text: "1, 7" }], ctx);
+  assert.match(mixed.ok ? "" : mixed.error, /did not find "red" in cell "red, CFG: 1"/);
+  const withCfg = planCompare([{ axisId: "prompt_sr", text: "red, blue" }, { axisId: "guidance", text: "3, 7" }], ctx);
   assert.ok(withCfg.ok);
   const req = buildCellRequest(withCfg.ok ? withCfg.plan : (null as never), 3, base({ prompt: "a fox", negative_prompt: undefined, guidance: 1 }), ctx, {
     base: 1,
@@ -560,4 +563,58 @@ test("grid cells are decoded and drawn one at a time; missing and failed cells k
   const panel = readSrc("features/images/compare/compare-panel.tsx");
   assert.doesNotMatch(panel, /Promise\.all/);
   assert.match(panel, /resizeWidth: rect\.w/);
+});
+
+test("Prompt S/R is validated per cell after the earlier axes' substitutions, in X, Y, Z order", () => {
+  const ctx = sdxl({ prompt: "red fox" });
+  // X=blue removes "red" before Y runs, so the Y=green cells would be mislabelled duplicates.
+  const removed = planCompare([{ axisId: "prompt_sr", text: "red, blue" }, { axisId: "prompt_sr", text: "red, green" }], ctx);
+  assert.match(removed.ok ? "" : removed.error, /Y: Prompt S\/R did not find "red" in cell "blue, red"/);
+  // X introduces Y's term in every cell: accepted, and the chain applies in order.
+  const added = plan([{ axisId: "prompt_sr", text: "fox, fox cub" }, { axisId: "prompt_sr", text: "fox, wolf" }], ctx);
+  const req = (i: number) => buildCellRequest(added, i, base({ prompt: "red fox" }), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false }).prompt;
+  assert.deepEqual([0, 1, 2, 3].map(req), ["red fox", "red fox cub", "red wolf", "red wolf cub"]);
+});
+
+test("numbers reject whitespace inside a literal; a space after a sign is A1111 syntax", () => {
+  for (const text of ["1 2", "1 e2", "2. 5", "1 0-20"]) {
+    assert.equal(parseAxisValues(text, "float").ok, false, text);
+    assert.equal(parseAxisValues(text, "int").ok, false, text);
+  }
+  assert.deepEqual(values(" 12 , - 3, 1 - 3", "int"), [12, -3, 1, 2, 3]);
+  assert.deepEqual(values("1e2, + 0.5", "float"), [100, 0.5]);
+});
+
+test("grid parameters: LoRA tags at the first cell's weights, negative prompt when any cell engages it", () => {
+  const ctx = sdxl({
+    loraCapable: true,
+    loras: [
+      { id: "krea/Krea-2-LoRA-retro", weight: 0.8, label: "retro" },
+      { id: "hub:odd/id", weight: 1, label: "odd" },
+    ],
+    prompt: "a fox",
+    negativePrompt: "blurry",
+    guidance: 1,
+  });
+  const p = plan([{ axisId: "guidance", text: "1, 7" }, { axisId: "steps", text: "4, 8" }], ctx);
+  const first = buildCellRequest(p, p.order[0], base({ prompt: "a fox", negative_prompt: undefined, guidance: 1, loras: [{ id: "krea/Krea-2-LoRA-retro", weight: 0.8 }, { id: "hub:odd/id", weight: 1 }] }), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false });
+  assert.equal(first.negative_prompt, undefined, "the first cell runs at CFG 1 without the negative prompt");
+  const info = gridParameters(p, ctx, first, { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false });
+  const lines = info.split("\n");
+  assert.equal(lines[0], "a fox <lora:krea/Krea-2-LoRA-retro:0.8>");
+  assert.equal(lines[1], "Negative prompt: blurry");
+  assert.match(lines[2], /LoRAs: "hub:odd\/id: 1"/);
+  // No cell engages it: not recorded.
+  const flat = plan([{ axisId: "steps", text: "4, 8" }], ctx);
+  assert.doesNotMatch(gridParameters(flat, ctx, first, { steps: 4, guidance: 1, width: 64, height: 64, model: "m", keepRandomSeeds: false }), /Negative prompt/);
+});
+
+test("a lost response keeps the seed the compare cell was sent for Reuse last seed", () => {
+  const p = plan([{ axisId: "seed", text: "11, 12" }]);
+  const run = createCompareRun(p, sdxl(), { keepRandomSeeds: false, seedFieldEmpty: false });
+  run.request(1, base(), 5);
+  assert.equal(run.sentSeed(1), 12);
+  assert.equal(run.sentSeed(0), undefined);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /setSessionSeed\(compare\?\.sentSeed\(i\) \?\? runBaseSeed\)/);
 });
