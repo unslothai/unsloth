@@ -185,11 +185,17 @@ def _has_fbgemm_rowwise():
 
 
 def _scale_mul(x, s, dtype):
-    # bf16 keeps its historical expression. Other dtypes multiply in fp32 and round once: an fp16
-    # scale goes subnormal below 6.1e-5 and overflows above 65504, zeroing or inf-ing the weight.
-    if dtype == torch.bfloat16:
+    # fp16: an fp16 scale goes subnormal below 6.1e-5 and overflows above 65504, zeroing or inf-ing
+    # the weight, so multiply by the fp32 scale and round once. fp8 values are exact in fp16, and an
+    # fp16 out= makes TensorIterator compute in fp32 per element without fp32 temporaries. Dynamo
+    # refuses a strided out=; under compile Inductor fuses the fp32 expression instead (same bits).
+    # Other dtypes keep their dtype-native expression.
+    if dtype != torch.float16:
         return x.to(dtype) * s.to(dtype)
-    return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
+    if torch.compiler.is_compiling():
+        return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
+    x16 = x.to(dtype)
+    return torch.mul(x16, s.to(torch.float32), out = torch.empty_like(x16))
 
 
 def weight_dequant(

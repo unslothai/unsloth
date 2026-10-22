@@ -45,6 +45,16 @@ def test_fp16_scalar_and_row_scales_round_once(F, layout, value, scale):
     assert torch.equal(out, ref)
 
 
+def test_fp16_transposed_view_keeps_layout(F):
+    torch.manual_seed(2)
+    w = torch.randn(48, 32) * torch.linspace(1e-4, 1.0, 48)[:, None]
+    s = (w.abs().amax(1, keepdim = True) / 448).float()
+    q = (w / s).to(torch.float8_e4m3fn)
+    out = F.weight_dequant(q.t(), s, torch.float16)
+    assert out.shape == (32, 48) and out.stride() == q.t().stride()
+    assert torch.equal(out, (q.double() * s.double()).half().t())
+
+
 def test_fp16_rowwise_small_amax_error(F):
     torch.manual_seed(0)
     w = torch.randn(64, 256) * 0.001 / 4
@@ -56,12 +66,15 @@ def test_fp16_rowwise_small_amax_error(F):
     assert torch.equal(out, ref.half())
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float64])
 @pytest.mark.parametrize("layout", ["tensor", "row", "row_t"])
-def test_bf16_fp32_unchanged(F, dtype, layout):
+def test_other_dtypes_keep_native_expression(F, dtype, layout):
     torch.manual_seed(1)
     w = torch.randn(32, 48) * torch.linspace(1e-4, 1.0, 32)[:, None]
-    s = (w.abs().amax(1, keepdim = True) / 448).float()
+    # fp64 must not pass through an fp32 scale: give it bits fp32 cannot hold.
+    s = (w.abs().amax(1, keepdim = True) / 448).to(torch.float64 if dtype == torch.float64 else torch.float32)
+    if dtype == torch.float64:
+        s = s * (1 + 2**-40)
     q = (w / s).to(torch.float8_e4m3fn)
     if layout == "tensor":
         s = s.amax().reshape(())
