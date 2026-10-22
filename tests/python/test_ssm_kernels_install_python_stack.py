@@ -59,9 +59,11 @@ class _Kernels:
         self,
         installed: dict,
         torch_imports = True,
+        extension_free = (),
     ):
         self.installed = dict(installed)
         self.torch_imports = torch_imports
+        self.extension_free = set(extension_free)
         self.probes: list[str] = []
         self.removed: list[str] = []
 
@@ -111,6 +113,9 @@ def _run_stale_check(monkeypatch, host: _Kernels, **flags):
     monkeypatch.setattr(ips, "IS_MACOS", flags.get("macos", False))
     monkeypatch.setattr(ips, "_installed_distribution_version", host.version)
     monkeypatch.setattr(ips, "_uninstall_distribution", host.uninstall)
+    monkeypatch.setattr(
+        ips, "_is_extension_free_wheel", lambda d: d in host.extension_free, raising = False
+    )
     monkeypatch.setattr(ips, "_count_install_action", lambda: None)
     monkeypatch.setattr(ips, "kernel_install_lock", flags.get("lock", _free_lock))
     warnings = []
@@ -230,3 +235,42 @@ def test_an_inconclusive_re_probe_under_the_lock_keeps_the_kernel(monkeypatch):
     warnings = _run_stale_check(monkeypatch, host, lock = _lock_then_hang)
     assert host.removed == []
     assert any("kept it" in message for message in warnings)
+
+
+def test_the_extension_free_mamba_ssm_wheel_is_kept(monkeypatch):
+    # #14160 installs it for Mamba-2 hybrids; selective_scan_cuda is missing by design.
+    host = _Kernels({"causal-conv1d": False, "mamba-ssm": False}, extension_free = {"mamba-ssm"})
+    warnings = _run_stale_check(monkeypatch, host)
+    assert host.removed == ["causal-conv1d"]
+    assert not any("selective_scan_cuda" in code for code in host.probes)
+    assert any("extension-free mamba_ssm" in w for w in warnings)
+
+
+def test_a_stale_compiled_mamba_ssm_is_still_removed(monkeypatch):
+    host = _Kernels({"mamba-ssm": False})
+    _run_stale_check(monkeypatch, host)
+    assert host.removed == ["mamba-ssm"]
+
+
+class _Distribution:
+    def __init__(self, wheel):
+        self.wheel = wheel
+
+    def read_text(self, name):
+        return self.wheel if name == "WHEEL" else None
+
+
+@pytest.mark.parametrize(
+    "distribution, wheel, expected",
+    [
+        ("mamba-ssm", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n", True),
+        ("mamba-ssm", "Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: cp313-cp313-linux_x86_64\n", False),
+        ("mamba-ssm", None, False),
+        ("causal-conv1d", "Tag: py3-none-any\n", False),
+    ],
+)
+def test_the_extension_free_wheel_is_read_from_its_wheel_tag(monkeypatch, distribution, wheel, expected):
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _Distribution(wheel))
+    assert ips._is_extension_free_wheel(distribution) is expected
