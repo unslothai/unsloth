@@ -189,7 +189,13 @@ class TestTheRetryPricesItsOwnWeights:
 class _CpuPlacedBackend(_Backend):
     """Prices a GPU launch's 12 GiB model into 16 GiB of VRAM, a CPU-placed one onto the host."""
 
-    def _planned_host_weights_mib(self, cmd, detected_gpus, env = None, **kwargs) -> int:
+    def _planned_host_weights_mib(
+        self,
+        cmd,
+        detected_gpus,
+        env = None,
+        **kwargs,
+    ) -> int:
         return 12 * 1024 if kwargs.get("child_has_no_gpu") else 0
 
 
