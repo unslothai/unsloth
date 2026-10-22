@@ -2853,16 +2853,20 @@ def run_server(
         server_header = False,
         http = uvicorn_http_protocol(),
     )
-    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees the real https origin.
-    # forwarded_allow_ips="*" is safe in Colab's single-user sandbox but too lax for local/standalone.
-    if _IS_COLAB:
-        config_kwargs["proxy_headers"] = True
-        config_kwargs["forwarded_allow_ips"] = "*"
+    # uvicorn's proxy-header rewriting stays on only where forwarded headers are trusted: Colab's reverse
+    # proxy (forwarded_allow_ips="*", fine in its single-user sandbox) and UNSLOTH_STUDIO_TRUST_FORWARDED.
+    # Elsewhere it would let any loopback peer (a same-host proxy relaying the caller's X-Forwarded-For)
+    # choose request.client, so Studio runs as a direct server and rewrites only requests relayed by the
+    # Cloudflare tunnel it manages itself. See utils/forwarded_headers.py.
+    from utils.forwarded_headers import uvicorn_forwarded_kwargs, wrap_direct_server
+
+    config_kwargs.update(uvicorn_forwarded_kwargs(is_colab = _IS_COLAB))
+    served_app = app if config_kwargs["proxy_headers"] else wrap_direct_server(app, app.state)
     if tls is not None:
         from utils.studio_tls import StudioTLSConfig
-        config = StudioTLSConfig(app, tls = tls, **config_kwargs)
+        config = StudioTLSConfig(served_app, tls = tls, **config_kwargs)
     else:
-        config = uvicorn.Config(app, **config_kwargs)
+        config = uvicorn.Config(served_app, **config_kwargs)
     app.state.studio_tls = tls
     app.state.loopback_http_port = None
     _server = _ReadyServer(config)

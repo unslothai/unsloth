@@ -502,15 +502,18 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
         return _full_scope_transport_allowed(request, app_state)
     if scope != KEYLESS_SCOPE_INFERENCE:
         return False
+    from utils.client_ip import names_a_forwarded_client
     from utils.lan_access_settings import request_is_loopback, request_on_lan_access
 
+    # A peer that marks the request as relayed is a proxy on the LAN or on this host, carrying a caller
+    # it cannot vouch for: neither the LAN nor the loopback grant covers it.
+    if names_a_forwarded_client(request):
+        return False
     if request_on_lan_access(request):
         return True
     if _public_tunnel_active(app_state):
         return False
-    from utils.client_ip import names_a_forwarded_client
-
-    return request_is_loopback(request) and not names_a_forwarded_client(request)
+    return request_is_loopback(request)
 
 
 def keyless_request_allowed(request: Any) -> bool:

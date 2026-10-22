@@ -9,12 +9,17 @@ Trust model, in order:
      one the trusted proxy appended. The leftmost entry is client-controlled and
      spoofable, so this assumes a proxy that appends (or overwrites) the header;
      only enable the env var behind such a proxy.
-  2. If the socket peer is loopback, honor ``CF-Connecting-IP``. Unsloth's managed
-     Cloudflare tunnel terminates at 127.0.0.1, so every tunneled visitor would
-     otherwise collapse onto the same socket peer (the local cloudflared process)
-     and share one rate-limit bucket. ``CF-Connecting-IP`` is set by Cloudflare's
-     edge and can't be forged by a tunneled client.
-  3. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
+  2. If the socket peer is loopback and the request came through the Cloudflare
+     tunnel Unsloth itself manages (published in ``app.state.cloudflare_url``, Host
+     naming that tunnel), honor ``CF-Connecting-IP``. That tunnel terminates at
+     loopback, so every tunneled visitor would otherwise collapse onto the local
+     cloudflared process and share one rate-limit bucket. ``CF-Connecting-IP`` is
+     set by Cloudflare's edge and can't be forged by a tunneled client. With no
+     managed tunnel the header is the text of whatever relayed the request.
+  3. A loopback peer that still names a forwarded client (another same-host proxy
+     or tunnel) gets ``relayed:<peer>``: one bucket per relay, and never mistaken
+     for a local caller by the reachability checks that read this value.
+  4. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
      dodge a per-IP limit.
 """
 
@@ -22,12 +27,18 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from urllib.parse import urlparse
 
 _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
 
 
 def _trust_forwarded_for() -> bool:
     return os.environ.get(_TRUST_FORWARDED_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def trust_forwarded_headers() -> bool:
+    """Whether the operator opted in to forwarded headers (Unsloth behind their own reverse proxy)."""
+    return _trust_forwarded_for()
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -65,10 +76,57 @@ def client_ip(request) -> str:
             if normalized:
                 return normalized
     if _is_loopback(peer):
-        cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
-        if cf:
-            return cf
+        if request_from_managed_tunnel(getattr(request, "scope", None), _request_app_state(request)):
+            cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
+            if cf:
+                return cf
+        if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+            return f"relayed:{peer}"
     return peer or "_unknown"
+
+
+def _request_app_state(request):
+    try:
+        return request.app.state
+    except Exception:
+        return None
+
+
+def _managed_tunnel_hostname(app_state) -> str | None:
+    """Hostname of the Cloudflare tunnel Unsloth started and published, or None when none is live."""
+    url = getattr(app_state, "cloudflare_url", None) if app_state is not None else None
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return None
+    return host.lower().rstrip(".") if host else None
+
+
+def request_from_managed_tunnel(scope, app_state) -> bool:
+    """Whether an ASGI request carries the marks of Unsloth's own Cloudflare tunnel: a live published
+    tunnel, exactly one valid ``CF-Connecting-IP`` and a Host naming that tunnel. The caller still has to
+    check that the socket peer is loopback (the local cloudflared process)."""
+    expected = _managed_tunnel_hostname(app_state)
+    if not expected or not isinstance(scope, dict):
+        return False
+    cf_values = []
+    host_values = []
+    for name, value in scope.get("headers") or ():
+        if name == b"cf-connecting-ip":
+            cf_values.append(value)
+        elif name == b"host":
+            host_values.append(value)
+    if len(cf_values) != 1 or len(host_values) != 1:
+        return False
+    try:
+        if _normalize_addr(cf_values[0].decode("latin-1")) is None:
+            return False
+        request_host = urlparse("//" + host_values[0].decode("latin-1")).hostname
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return bool(request_host) and request_host.lower().rstrip(".") == expected
 
 
 def _is_loopback_ip(host: str | None) -> bool:
