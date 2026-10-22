@@ -58,6 +58,45 @@ def test_cpu_load_reports_child_rss():
     process.assert_called_once_with(4242)
 
 
+class _CountingLines(list):
+    copies = 0
+
+    def __iter__(self):
+        type(self).copies += 1
+        return super().__iter__()
+
+
+def test_buffer_scan_runs_once_per_healthy_process():
+    backend = _backend(_Alive())
+    backend._child_gpu_physical_ids = (1, 3)
+    backend._healthy = True
+    _CountingLines.copies = 0
+    backend._stdout_lines = _CountingLines(
+        ["noise"] * 20000
+        + [
+            "load_tensors: CUDA0 model buffer size = 2048.0 MiB",
+            "load_tensors: CUDA1 model buffer size = 1024.0 MiB",
+        ]
+    )
+    for _ in range(5):
+        assert backend.reclaimable_gpu_memory_gb() == {1: 2.0, 3: 1.0}
+    assert _CountingLines.copies == 1
+    # A new process (reload) is scanned afresh.
+    backend._process = _Alive()
+    backend._stdout_lines = _CountingLines(["load_tensors: CUDA0 model buffer size = 512.0 MiB"])
+    assert backend.reclaimable_gpu_memory_gb() == {1: 0.5}
+
+
+def test_buffer_scan_is_not_memoised_while_loading():
+    backend = _backend(_Alive())
+    backend._child_gpu_physical_ids = (0,)
+    backend._healthy = False
+    backend._stdout_lines = ["load_tensors: CUDA0 model buffer size = 1024.0 MiB"]
+    assert backend.reclaimable_gpu_memory_gb() == {0: 1.0}
+    backend._stdout_lines.append("load_tensors: CUDA0 model buffer size = 1024.0 MiB")
+    assert backend.reclaimable_gpu_memory_gb() == {0: 2.0}
+
+
 def test_unreadable_child_is_none_not_an_error():
     psutil = pytest.importorskip("psutil")
     backend = _backend(_Alive())

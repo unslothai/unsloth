@@ -8895,18 +8895,28 @@ class LlamaCppBackend:
         physical_ids = list(getattr(self, "_child_gpu_physical_ids", None) or ())
         if not physical_ids:
             return None
-        reported: dict[int, float] = {}
+        # The buffer lines are startup output, so once healthy the answer is fixed per process; the status poll
+        # would otherwise rescan up to _STDOUT_TRIM_AT lines on the event loop every few seconds.
+        ids = tuple(physical_ids)
+        cached = getattr(self, "_reclaimable_gpu_cache", None)
+        if cached is not None and cached[0] is process and cached[1] == ids:
+            return dict(cached[2]) if cached[2] else None
+        healthy = bool(getattr(self, "_healthy", False))
+        reported: Optional[dict[int, float]] = {}
         for line in list(self._stdout_lines):
             match = _GPU_MODEL_BUFFER_RE.search(line)
             if match is None:
                 continue
             ordinal = int(match.group(1))
             if ordinal >= len(physical_ids):
-                return None
+                reported = None
+                break
             physical = int(physical_ids[ordinal])
             reported[physical] = reported.get(physical, 0.0) + float(match.group(2)) / 1024.0
         if self._process is not process or process.poll() is not None:
             return None
+        if healthy:
+            self._reclaimable_gpu_cache = (process, ids, dict(reported) if reported else None)
         return reported or None
 
     @property
