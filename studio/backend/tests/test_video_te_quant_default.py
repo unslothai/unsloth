@@ -537,16 +537,24 @@ def test_wan_int8_budget_covers_the_measured_file():
     assert tpq.te_int8_convrot_budget_scale("qwen-image-2.1") == tpq.TE_INT8_CONVROT_BUDGET_SCALE
 
 
-def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies():
+def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_LTX25_TE_INT8", raising = False)
     fam = types.SimpleNamespace(name = "ltx-2.5", bf16_components_gb = (40.0, 23.9))
     hosted = tpq.te_prequant_budget_scale(
-        fam, te_quant_mode = None, target = None, base = "Lightricks/LTX-2.5-Diffusers"
+        fam, te_quant_mode = "int8", target = None, base = "Lightricks/LTX-2.5-Diffusers"
     )
     assert hosted < 1.0
+    # Unset keeps the bf16 encoder (int8 is opt-in), so its budget is the dense one.
+    assert (
+        tpq.te_prequant_budget_scale(
+            fam, te_quant_mode = None, target = None, base = "Lightricks/LTX-2.5-Diffusers"
+        )
+        == 1.0
+    )
     # A custom pack quantizes the dense encoder at load: its peak is the dense one.
     assert (
         tpq.te_prequant_budget_scale(
-            fam, te_quant_mode = None, target = None, base = "someone/ltx25-pack"
+            fam, te_quant_mode = "int8", target = None, base = "someone/ltx25-pack"
         )
         == 1.0
     )

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5's hosted int8 ConvRot Gemma 4 encoder: the default, its planning, its load and its fallback."""
+"""LTX-2.5's hosted int8 ConvRot Gemma 4 encoder: when a load takes it, its planning, its load and its fallback."""
 
 from __future__ import annotations
 
@@ -63,41 +63,55 @@ class _TinyGemma(nn.Module):
 BASE = "Lightricks/LTX-2.5-Diffusers"
 
 
-def test_unset_request_resolves_to_the_hosted_file(monkeypatch):
+def test_unset_request_keeps_the_dense_encoder(monkeypatch):
+    # int8 is opt-in for LTX-2.5: an unset request stages no hosted file and keeps the dense text_encoder/ shards.
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
-    for mode in (None, "auto", "int8"):
-        source = v25.ltx25_te_prequant_sources(mode, BASE)["text_encoder"]
-        assert (source.kind, source.location, source.filename) == (
-            "repo",
-            v25.LTX25_TE_HOSTED_REPO,
-            v25.LTX25_TE_HOSTED_FILE,
-        )
-    # none / off pin the bf16 encoder: no hosted file, the dense shards stay in the plan.
-    assert v25.ltx25_te_prequant_sources("none", BASE) == {}
-    assert v25.ltx25_te_prequant_sources("off", BASE) == {}
-    # Only the base it was cut from, and never the single-file release (its encoder file carries the projections).
-    assert v25.ltx25_te_prequant_sources(None, "someone/ltx-2.5-finetune") == {}
-    # Exact identity: a custom pack that only shares the folder name keeps its own encoder weights.
-    assert v25.ltx25_te_prequant_sources(None, "/packs/custom/LTX-2.5-Diffusers") == {}
-    assert v25.ltx25_te_prequant_sources(None, "someone/LTX-2.5-Diffusers") == {}
-    cached = "/hf/hub/models--Lightricks--LTX-2.5-Diffusers/snapshots/abc123"
-    assert (
-        v25.ltx25_te_prequant_sources(None, cached)["text_encoder"].location
-        == v25.LTX25_TE_HOSTED_REPO
-    )
-    assert v25.ltx25_te_prequant_sources(None, v25.LTX25_SINGLE_FILE_REPO) == {}
-    assert v25.ltx25_te_prequant_sources("fp8", BASE) == {}
+    for mode in (None, "auto", ""):
+        assert v25.ltx25_te_prequant_sources(mode, BASE) == {}
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
     assert v25.ltx25_te_prequant_sources(None, BASE) == {}
 
 
-def test_the_video_planner_stages_the_hosted_file():
+def test_int8_request_resolves_to_the_hosted_file(monkeypatch):
+    monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
+    source = v25.ltx25_te_prequant_sources("int8", BASE)["text_encoder"]
+    assert (source.kind, source.location, source.filename) == (
+        "repo",
+        v25.LTX25_TE_HOSTED_REPO,
+        v25.LTX25_TE_HOSTED_FILE,
+    )
+    # The opt-in makes an unset request int8, and then it takes the hosted file too.
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
+    for mode in (None, "auto"):
+        assert v25.ltx25_te_prequant_sources(mode, BASE)["text_encoder"].filename == v25.LTX25_TE_HOSTED_FILE
+    monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
+    # none / off pin the bf16 encoder: no hosted file, the dense shards stay in the plan.
+    assert v25.ltx25_te_prequant_sources("none", BASE) == {}
+    assert v25.ltx25_te_prequant_sources("off", BASE) == {}
+    # Only the base it was cut from, and never the single-file release (its encoder file carries the projections).
+    assert v25.ltx25_te_prequant_sources("int8", "someone/ltx-2.5-finetune") == {}
+    # Exact identity: a custom pack that only shares the folder name keeps its own encoder weights.
+    assert v25.ltx25_te_prequant_sources("int8", "/packs/custom/LTX-2.5-Diffusers") == {}
+    assert v25.ltx25_te_prequant_sources("int8", "someone/LTX-2.5-Diffusers") == {}
+    cached = "/hf/hub/models--Lightricks--LTX-2.5-Diffusers/snapshots/abc123"
+    assert (
+        v25.ltx25_te_prequant_sources("int8", cached)["text_encoder"].location
+        == v25.LTX25_TE_HOSTED_REPO
+    )
+    assert v25.ltx25_te_prequant_sources("int8", v25.LTX25_SINGLE_FILE_REPO) == {}
+    assert v25.ltx25_te_prequant_sources("fp8", BASE) == {}
+
+
+def test_the_video_planner_stages_the_hosted_file(monkeypatch):
     from core.inference.video import VideoBackend
     from core.inference.video_families import detect_video_family
 
+    monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
     fam = detect_video_family(BASE)
-    sources = VideoBackend._te_prequant_sources(fam, None, base = BASE)
+    sources = VideoBackend._te_prequant_sources(fam, "int8", base = BASE)
     assert sources["text_encoder"].filename == v25.LTX25_TE_HOSTED_FILE
+    # Unset stages nothing: no Hub fetch of the hosted file, the dense encoder is pulled as before.
+    assert VideoBackend._te_prequant_sources(fam, None, base = BASE) == {}
     assert VideoBackend._te_prequant_sources(fam, "none", base = BASE) == {}
 
 
