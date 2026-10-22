@@ -445,11 +445,14 @@ def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
     if not nvfp4_diffusion_enabled():
         return False
     try:
-        from .diffusion_nvfp4_gate import nvfp4_gate_backends
+        from .diffusion_nvfp4_gate import nvfp4_gate_backends, warn_flashinfer_mismatch_once
         from .diffusion_nvfp4_ops import select_nvfp4_backend
-        return str(select_nvfp4_backend(device)).strip().lower() in nvfp4_gate_backends(
-            family, base_repo
-        )
+
+        backend = str(select_nvfp4_backend(device)).strip().lower()
+        if backend not in nvfp4_gate_backends(family, base_repo):
+            return False
+        # Auto takes a gated head only on a flashinfer whose kernels the record covers; an explicit pick still loads.
+        return backend != "flashinfer" or warn_flashinfer_mismatch_once(family, base_repo) is None
     except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe keeps the deny
         return False
 
@@ -474,8 +477,18 @@ def _family_denied(
     if scheme not in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ()):
         return False
     if scheme == TQ_NVFP4 and _nvfp4_gate_passed(family, base_repo):
+        _warn_nvfp4_flashinfer_mismatch(family, base_repo)
         return False
     return True
+
+
+def _warn_nvfp4_flashinfer_mismatch(family, base_repo) -> None:
+    """A lifted deny on a flashinfer the gate record does not cover still loads, with one warning."""
+    try:
+        from .diffusion_nvfp4_gate import warn_flashinfer_mismatch_once
+        warn_flashinfer_mismatch_once(family, base_repo)
+    except Exception:  # noqa: BLE001 -- a warning, never a load error
+        pass
 
 
 _TRAIN_DENY_NVFP4_REASON = (
