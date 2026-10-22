@@ -80,27 +80,75 @@ def train_on_responses_only(*args, **kwargs):
     return _train_on_responses_only(*args, **kwargs)
 
 
-def _unsloth_trainer_classes():
-    from trl import SFTConfig, SFTTrainer
-
-    class UnslothTrainingArguments(SFTConfig):
-        def __init__(
-            self,
-            *args,
-            embedding_learning_rate = None,
-            **kwargs,
-        ):
-            self.embedding_learning_rate = embedding_learning_rate
-            super().__init__(*args, **kwargs)
-
-    class UnslothTrainer(SFTTrainer):
-        pass
-
-    return UnslothTrainer, UnslothTrainingArguments
+from trl import SFTConfig as _SFTConfig, SFTTrainer as _SFTTrainer
 
 
-UnslothTrainer, UnslothTrainingArguments = _unsloth_trainer_classes()
-del _unsloth_trainer_classes
+class UnslothTrainingArguments(_SFTConfig):
+    def __init__(
+        self,
+        *args,
+        embedding_learning_rate = None,
+        **kwargs,
+    ):
+        self.embedding_learning_rate = embedding_learning_rate
+        super().__init__(*args, **kwargs)
+
+
+class UnslothTrainer(_SFTTrainer):
+    def create_optimizer(self, *args, **kwargs):
+        embedding_lr = getattr(self.args, "embedding_learning_rate", None)
+        if embedding_lr is None or self.optimizer is not None:
+            return super().create_optimizer(*args, **kwargs)
+        # Same split as the GPU UnslothTrainer: trained embed_tokens / lm_head copies get their own lr.
+        model = self.model
+        decay = set(self.get_decay_parameter_names(model))
+        optimizer_cls, optimizer_kwargs = _SFTTrainer.get_optimizer_cls_and_kwargs(self.args, model)
+        groups = {}
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            is_embedding = name.endswith("modules_to_save.default.weight")
+            key = (is_embedding, name in decay)
+            groups.setdefault(key, []).append(param)
+        self.optimizer = optimizer_cls(
+            [
+                {
+                    "params": params,
+                    "lr": embedding_lr if is_embedding else self.args.learning_rate,
+                    "weight_decay": self.args.weight_decay if decays else 0.0,
+                }
+                for (is_embedding, decays), params in groups.items()
+            ],
+            **optimizer_kwargs,
+        )
+        return self.optimizer
+
+
+class UnslothVisionDataCollator:
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Unsloth: vision / audio models are not supported on the CPU backend yet."
+        )
+
+
+def _install_cpu_trainer_module():
+    # `from unsloth.trainer import ...` would otherwise load unsloth/trainer.py and the GPU kernel stack.
+    import sys
+    import types
+    import importlib.machinery
+
+    module_name = __name__.rsplit(".", 1)[0] + ".trainer"
+    trainer = types.ModuleType(module_name)
+    trainer.__package__ = module_name.rsplit(".", 1)[0]
+    trainer.__spec__ = importlib.machinery.ModuleSpec(module_name, loader = None)
+    trainer.UnslothTrainer = UnslothTrainer
+    trainer.UnslothTrainingArguments = UnslothTrainingArguments
+    trainer.UnslothVisionDataCollator = UnslothVisionDataCollator
+    sys.modules[module_name] = trainer
+
+
+_install_cpu_trainer_module()
+del _install_cpu_trainer_module
 
 __all__ = [
     "FastLanguageModel",
@@ -116,6 +164,7 @@ __all__ = [
     "train_on_responses_only",
     "UnslothTrainer",
     "UnslothTrainingArguments",
+    "UnslothVisionDataCollator",
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
     "DEVICE_COUNT",

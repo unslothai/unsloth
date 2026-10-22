@@ -22,7 +22,6 @@ _GPU_ONLY = (
     "unsloth._gpu_init",
     "unsloth.models",
     "unsloth.kernels",
-    "unsloth.trainer",
     "unsloth_zoo.temporary_patches",
     "unsloth_zoo.compiler",
     "unsloth_zoo.fused_losses",
@@ -33,18 +32,23 @@ _CPU_ONLY = ("unsloth._cpu_init", "unsloth_zoo.cpu")
 _PROBE = r"""
 import json, sys
 import unsloth
+if unsloth.DEVICE_TYPE == "cpu":
+    from unsloth.trainer import UnslothTrainer
 mods = sorted(sys.modules)
 print("PROBE " + json.dumps({
     "device_type": getattr(unsloth, "DEVICE_TYPE", None),
     "fast": [c.__name__ for c in unsloth.FastLanguageModel.__mro__],
     "modules": mods,
+    "trainer_file": getattr(sys.modules.get("unsloth.trainer"), "__file__", None),
 }))
 """
 
 
 def _import_unsloth(env_update):
     env = {
-        k: v for k, v in os.environ.items() if k not in ("UNSLOTH_ALLOW_CPU", "UNSLOTH_FORCE_CPU")
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_ALLOW_CPU", "UNSLOTH_FORCE_CPU", "UNSLOTH_DISABLE_CPU_FALLBACK")
     }
     env.update(env_update)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(_ROOT), env.get("PYTHONPATH")]))
@@ -85,6 +89,9 @@ def test_no_accelerator_loads_the_cpu_backend():
     assert "FastCPUModel" in probe["fast"]
     assert _loaded(probe["modules"], _GPU_ONLY) == []
     assert _loaded(probe["modules"], _CPU_ONLY)
+    assert (
+        probe["trainer_file"] is None
+    ), "unsloth.trainer must be the CPU shim, not unsloth/trainer.py"
 
 
 def test_gpu_host_never_loads_the_cpu_backend():
