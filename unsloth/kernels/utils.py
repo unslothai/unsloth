@@ -1521,6 +1521,9 @@ def _bnb_gemm_4bit_device_ok(device):
 
 def _bnb_gemm_4bit_ok(X, W, quant_state):
     global _BNB_GEMM_4BIT, _BNB_GEMM_4BIT_DTYPES
+    # Before the lazy setup: dynamo cannot trace torch.cuda.device_count().
+    if _is_compiling() or torch.is_grad_enabled():
+        return False
     if _BNB_GEMM_4BIT is None:
         if os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1":
             _BNB_GEMM_4BIT_DTYPES = (torch.float16, torch.bfloat16)
@@ -1548,8 +1551,6 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         and quant_state.shape[-1] % quant_state.blocksize == 0
         # matmul_4bit raises for any other nested blocksize.
         and (not quant_state.nested or quant_state.state2.blocksize == 256)
-        and not torch.is_grad_enabled()
-        and not _is_compiling()
     )
 
 

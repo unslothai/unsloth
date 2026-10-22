@@ -8,6 +8,8 @@ Reuses the harness in test_export_gguf_discovery.py; the converter itself is stu
 
 from __future__ import annotations
 
+import weakref
+
 import json
 import sys
 from pathlib import Path
@@ -419,3 +421,36 @@ def test_existing_gguf_without_tokenizer_config_fails_before_converting(monkeypa
     else:
         raise AssertionError("expected a RuntimeError")
     assert calls == []
+
+
+@pytest.mark.parametrize("pruned", [True, False])
+def test_q4nx_folder_carries_the_current_reap_report(monkeypatch, tmp_path, pruned):
+    # The NPU folder is deployed on its own, so its pruning provenance travels with it; a stale
+    # report from an earlier pruned conversion never survives an unpruned one.
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "core.export.reap", Path(__file__).resolve().parents[1] / "core/export/reap.py"
+    )
+    reap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reap)
+    monkeypatch.setitem(sys.modules, "core.export.reap", reap)
+    model = _Model()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    export_mod, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, model)
+    backend.current_tokenizer = _Tokenizer()
+    backend._reap_key = (0.5, 512, None) if pruned else None
+    backend._reap_model = weakref.ref(model)
+    _fake_converter(export_mod, monkeypatch, [])
+    q4nx = save_dir / "npu-q4nx"
+    q4nx.mkdir(parents = True)
+    (q4nx / "reap_report.json").write_text('{"kept_experts": {"old": [1]}}')
+
+    success, message, _ = backend.export_gguf(str(save_dir), ["q4_1"], npu_q4nx = True)
+
+    assert success is True, message
+    report = q4nx / "reap_report.json"
+    assert report.is_file() is pruned
+    if pruned:
+        assert json.loads(report.read_text())["kept_experts"] == {"model.layers.0.mlp": [0, 2]}
