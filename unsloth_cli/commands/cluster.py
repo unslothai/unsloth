@@ -7,6 +7,7 @@ them. Every link is mutual TLS from the pairing; ggml-rpc-server never listens b
 from __future__ import annotations
 
 import asyncio
+import errno
 import signal
 import re
 import socket
@@ -162,7 +163,7 @@ def worker(
     if me is None:
         _fail(
             "This machine is not paired yet. On the master run `unsloth cluster pair`, then run "
-            "the `unsloth cluster join ...` command it prints here."
+            "`unsloth cluster join` here and paste the token it prints."
         )
     binary = _rpc_server_binary()
     if not binary:
@@ -248,13 +249,22 @@ def worker(
             await agent.stop()
 
     try:
+        # Ctrl-C raises out of run(); SIGTERM / SIGHUP cancel serve_forever, which returns.
         asyncio.run(serve())
+        _say("Worker stopped.")
     except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
+        _say("Worker stopped.")
     except RuntimeError as exc:
-        _fail(str(exc))
+        _fail(_sentence(str(exc)))
     except OSError as exc:
-        _fail(f"Could not listen on port {port}: {exc}. Pick another with --port.")
+        if exc.errno == errno.EADDRINUSE:
+            _fail(
+                f"Could not listen on port {port}: it is already in use (is another `unsloth worker` "
+                "running?). Stop that, or pick another port with --port."
+            )
+        if exc.errno in (errno.EACCES, errno.EADDRNOTAVAIL):
+            _fail(f"Could not listen on port {port}: {exc}. Pick another with --port.")
+        _fail(f"Worker stopped: {exc}")
     finally:
         if announcer is not None:
             announcer.stop()
@@ -296,6 +306,7 @@ def pair(
         _say(f"    {token}")
         _say("")
         _say(f"(or pipe it to `unsloth cluster join --token-stdin`). It works once, for {ttl}.")
+        _say("Waiting for the worker to join (Ctrl-C to cancel)...")
         try:
             return await window.wait(seconds)
         finally:
@@ -308,10 +319,17 @@ def pair(
     except KeyboardInterrupt:
         _fail("Pairing cancelled; the token no longer works.")
     except PairingError as exc:
-        _fail(f"Pairing failed: {exc}. Run `unsloth cluster pair` again for a new token.")
+        _fail(
+            f"Pairing failed: {_clause(str(exc))}. Run `unsloth cluster pair` again for a new token."
+        )
     except OSError as exc:
         _fail(f"Could not open the pairing port: {exc}. Pick another with --port.")
-    _say(f"Paired {peer.name} ({peer.node_id[:12]}). Start `unsloth worker` on it to serve.")
+    _say(
+        _printable(
+            f"Paired {peer.name} ({peer.node_id[:12]}). Start `unsloth worker` on it to serve; "
+            "`unsloth cluster list` shows whether it is ready."
+        )
+    )
 
 
 @cluster_app.command("join")
@@ -330,7 +348,12 @@ def join(
 ):
     """Pair this machine to a master as a worker."""
     _link(crypto = True)
-    from studio.cluster_link.pairing import PairingUnconfirmed, join as join_cluster
+    from studio.cluster_link.pairing import PairingError, PairingUnconfirmed, join as join_cluster
+
+    try:
+        from studio.cluster_link.tokens import TokenError
+    except ImportError:
+        TokenError = PairingError
 
     # Only stdin or a hidden prompt: a token in argv is readable by every local user while join runs.
     if token_stdin:
@@ -344,10 +367,23 @@ def join(
         me = asyncio.run(join_cluster(token, name = name or socket.gethostname(), **kwargs))
     except PairingUnconfirmed as exc:
         _fail(_redact(str(exc), token))
+    except TokenError as exc:
+        _fail(
+            f"That is not a usable pairing token ({_redact(str(exc), token)}). Copy the whole token "
+            "`unsloth cluster pair` printed on the master; it starts with `unsloth-pair-`."
+        )
+    except PairingError as exc:
+        message = _clause(_redact(str(exc), token))
+        if message.startswith("could not reach the master"):
+            message += (
+                ". Is `unsloth cluster pair` still running there, and can this machine reach it "
+                "on the LAN?"
+            )
+        _fail(f"Pairing failed: {message}.")
     except Exception as exc:
         # The token must never appear in output: report only the kind of failure.
         _fail(f"Pairing failed: {type(exc).__name__}: {_redact(str(exc), token)}")
-    _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here.")
+    _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here to serve the master.")
 
 
 # One announcement round: workers announce every 5 s, jittered up to 1.2x, plus margin.
@@ -363,6 +399,33 @@ def _redact(text: str, token: str) -> str:
     return text.replace(token, "<token>") if token else text
 
 
+def _clause(text: str) -> str:
+    """An exception message to splice into a sentence: no trailing period."""
+    return str(text).strip().rstrip(".")
+
+
+def _sentence(text: str) -> str:
+    text = str(text).strip()
+    return text[:1].upper() + text[1:] if text else text
+
+
+def _unreachable_reason(st: Any) -> str:
+    """Why a worker did not answer, short: the raw socket error repeats the id and address."""
+    if not isinstance(st, dict):
+        return "not found on the LAN"
+    raw = str(st.get("error") or "")
+    low = raw.lower()
+    if "errno 111" in low or "connection refused" in low or "connect call failed" in low:
+        return "not running: start `unsloth worker` there"
+    if "timeout" in low or "timed out" in low:
+        return "timed out"
+    if "certificate" in low or "ssl" in low or "tls" in low:
+        return f"TLS refused: {raw}; re-pair it if it was reset"
+    if "no route" in low or "unreachable" in low or "errno 113" in low:
+        return "no route to it on the network"
+    return raw or "no answer"
+
+
 @cluster_app.command("list")
 def list_workers(
     check: bool = typer.Option(True, "--check/--no-check", help = "Ask each worker for its status."),
@@ -371,7 +434,15 @@ def list_workers(
     identity = _link(crypto = True)
     master = identity.master_identity(create = False)
     if not master:
-        _fail("This machine is not a master: no worker has been paired to it.")
+        me = identity.worker_identity()
+        if me is not None:
+            _say(
+                f"This machine is a worker ({me.node_id[:12]}); run `unsloth cluster list` on its "
+                "master to see the cluster."
+            )
+            return
+        _say("No workers paired. Add one with `unsloth cluster pair`.")
+        return
     registry = _registry(identity)
     workers = [p for p in registry.workers() if not getattr(p, "removed", False)]
     if not workers:
@@ -443,8 +514,7 @@ def list_workers(
             where, st, discovered = found.get(peer.node_id, ("address unknown", None, False))
             line = _printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}")
             if not answered(st):
-                why = st.get("error") if isinstance(st, dict) else "not found"
-                line += f"  unreachable ({why})"
+                line += _printable(f"  unreachable ({_unreachable_reason(st)})")
             else:
                 state = "busy" if st.get("busy") else ("ready" if st.get("rpc_up") else "rpc down")
                 devices = ", ".join(str(d) for d in st.get("devices") or [])
@@ -491,7 +561,7 @@ def remove(target: str = typer.Argument(..., help = "Worker name or id (prefix).
     """Revoke a worker: it can no longer serve this master, even if it comes back."""
     identity = _link()
     if not identity.master_identity(create = False):
-        _fail("This machine is not a master.")
+        _fail("No workers are paired to this machine, so there is nothing to remove.")
     registry = _registry(identity)
     peer = _find_worker(registry, target)
     # Mutations persist only inside a transaction (reload, change, save under the lock).
@@ -504,8 +574,9 @@ def remove(target: str = typer.Argument(..., help = "Worker name or id (prefix).
 
 @cluster_app.command("leave")
 def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for confirmation.")):
-    """Forget this machine's cluster identity: a worker leaves its master; a master with no paired
-    workers is reset (e.g. after a `cluster pair` nobody joined)."""
+    """Forget this machine's cluster identity (a worker leaves; an empty master is reset).
+
+    A master with no paired workers is reset too, e.g. after a `cluster pair` nobody joined."""
     identity = _link()
     if identity.worker_identity() is None:
         if identity.master_identity(create = False) is None:
