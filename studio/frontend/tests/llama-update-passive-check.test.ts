@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings remounts its Engines section on every open, so its update check must not force GitHub lookups.
-
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type * as HookModule from "../src/hooks/use-llama-update-check.ts";
