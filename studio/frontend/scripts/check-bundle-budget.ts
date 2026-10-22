@@ -374,6 +374,15 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // Flows (node editor, story and world players): +10,578 B raw / +5,429 B transfer (6,892,462 -> 6,903,040 B
   // raw, 2,076,639 -> 2,082,068 B transfer against 588e1c4ffe, one machine and build, Node 24, 98 -> 110
   // chunks). Measured in steps: the sidebar row, routes, root keep-alive and nav strings alone are +3.5 KB
@@ -381,9 +390,9 @@ export const BUDGET = {
   // toast, router hooks, SSE helpers, the native file drop the import dialog needs on desktop, a few lucide
   // glyphs) into their own startup chunks so the lazy Flows chunks can share them. The Flows code itself
   // stays lazy; its Hugeicons glyphs are local copies so they are not hoisted into the startup
-  // HugeiconsIcon chunk (+26 KB raw otherwise). Raised by that growth.
-  transferBytes: 2_082_324,
-  rawBytes: 6_903_794,
+  // HugeiconsIcon chunk (+26 KB raw otherwise). Raised by that growth on top of the above (re-measured after merging main).
+  transferBytes: 2_086_913,
+  rawBytes: 6_920_098,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -679,6 +679,8 @@ export const en = {
       "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
+    unifiedTightFit: "Tight fit",
+    unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -2769,6 +2771,10 @@ export const en = {
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
+      showReplyTimes: "Reply times",
+      showReplyTimesDescription: "Show when each reply finished, below the reply.",
+      showReplyTimesKeywords:
+        "timestamp time clock date hour when finished arrived reply response message",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
@@ -3131,7 +3137,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
@@ -3176,6 +3182,7 @@ export const en = {
       relativeNever: "never",
       relativeJustNow: "just now",
       expired: "expired",
+      expiredStatus: "Expired",
       today: "today",
       created: "Created {value}",
       used: "Used {value}",
@@ -4751,5 +4758,46 @@ export const en = {
     cantRun: "Could not run",
     failed: "Error {status}",
     invalidJson: "The request body is not valid JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Loaded models",
+      countOne: "{count} model loaded",
+      countMany: "{count} models loaded",
+      pillLabel: "{count}. Show details, or drag to move",
+      dragToMove: "Drag to move",
+      dragHandleLabel: "Drag to move",
+      collapse: "Collapse",
+      collapseLabel: "Collapse loaded models",
+      close: "Close",
+      closeLabel: "Close loaded models",
+      backOnNextLoad: "Back on the next model load",
+      ejectToFree: "Eject to free memory",
+      ejectLabel: "Eject {model}",
+      openTarget: "Open {target}",
+      rowLabel: "{model}. Open {target}",
+      loading: "Loading",
+      ejecting: "Ejecting",
+      stillInMemory: "Still in memory",
+      alsoServing: "Also serving",
+      noneLoaded: "No models loaded",
+      noneLoadedDetail: "Models you load will show here.",
+      otherAccount: "In use by another account",
+      otherAccountDetail: "Memory is held by a model you cannot see",
+      toastStillResident:
+        "\"{model}\" was loaded while ejecting, so it is still using memory. Eject again to release it.",
+      toastUnverified:
+        "{model} was asked to unload, but its runtime did not confirm. Check the card in a moment.",
+      toastAlreadyFree: "{model} was no longer loaded.",
+      toastReplaced:
+        "{model} is no longer loaded. \"{resident}\" took its place and was left alone.",
+      toastEjected: "Ejected {model}",
+      toastFailed: "Failed to eject {model}",
+    },
+    monitor: {
+      dragHandleLabel:
+        "Move the live monitor. Arrow keys nudge it, double-click resets it.",
+      reconnecting: "Reconnecting...",
+    },
   },
 } as const;

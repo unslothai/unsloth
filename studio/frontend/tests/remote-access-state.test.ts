@@ -10,6 +10,7 @@ import {
   normalizeRemoteAccessStatus,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
+  remoteAccessErrorMessage,
   remoteAccessPollDelay,
   remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
@@ -334,4 +335,24 @@ test("a self-origin stop settles on off, not a permanent stopping", () => {
   }
   assert.equal(shown.state, "off");
   assert.equal(expecting, true);
+});
+
+test("every connector error the backend reports gets a next step", () => {
+  // Mirrors the allowlist in utils/remote_access_settings.py.
+  for (const error of [
+    "cloudflared is unavailable",
+    "cloudflared did not produce a URL",
+    "Cloudflare URL was not reachable",
+    "cloudflared did not register a connection",
+    "cloudflared exited",
+    "cloudflared could not be stopped",
+  ]) {
+    const message = remoteAccessErrorMessage(error);
+    assert.ok(message && message !== error, error);
+  }
+  assert.equal(remoteAccessErrorMessage(null), null);
+  assert.equal(
+    remoteAccessErrorMessage("Cloudflare tunnel failed"),
+    "Cloudflare tunnel failed",
+  );
 });

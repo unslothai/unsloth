@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { toast } from "@/lib/toast";
-import { generateAudio, runAudio } from "../api";
+import { generateAudio, runAudio, runSpeechOnConnection } from "../api";
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import {
   audioOptionLabel,
@@ -58,6 +58,7 @@ import type { AudioWorkflowId } from "../workflows";
 import { reportAudioFailure } from "../audio-failure-actions";
 import type { AudioGallery } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
+import type { SpeakConnection } from "./use-speak-connection";
 
 type TtsWorkflow = "speak" | "music";
 type TtsDraftField = "prompt" | "instructions";
@@ -90,7 +91,8 @@ export function useSpeechGeneration({
   setSelectedId,
   pendingTranscribeRelease,
   replayQueuedTtsPick,
-}: { workflow: TtsWorkflow } & Pick<
+  connection,
+}: { workflow: TtsWorkflow; connection: SpeakConnection | null } & Pick<
   AudioHostState,
   | "status"
   | "busyRef"
@@ -339,7 +341,7 @@ export function useSpeechGeneration({
       return;
     }
     const instructions = audioInstructions.trim();
-    if (musicNeedsDescription && !instructions) {
+    if (!connection && musicNeedsDescription && !instructions) {
       updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
@@ -348,17 +350,16 @@ export function useSpeechGeneration({
       );
       return;
     }
-    if (toolRequest.error) {
+    if (!connection && toolRequest.error) {
       updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       toast.error(toolRequest.error);
       return;
     }
-    const missingOptions = missingRequiredAudioOptions(
-      advancedOptionSpecs,
-      audioOptionValues,
-    );
+    const missingOptions = connection
+      ? []
+      : missingRequiredAudioOptions(advancedOptionSpecs, audioOptionValues);
     if (missingOptions.length > 0) {
       updateGenerationPhase(null);
       busyRef.current = null;
@@ -380,24 +381,38 @@ export function useSpeechGeneration({
       toolRequest.patch.language ?? (mossLocalGeneration ? audioLanguage : "")
     ).trim();
     saveLastPrompt(ttsDraftKey("prompt", workflow), prompt);
-    if (savedVoice) {
+    if (savedVoice || connection) {
       const voiceController = new AbortController();
       generateAbort.current = voiceController;
       updateGenerationPhase("generating");
       try {
-        const response = await runAudio(
-          {
-            workflow: "speak",
-            text,
-            instructions:
-              instructionsKind !== null && instructions ? instructions : null,
-            language: language || null,
-            inputs: { reference: savedVoice },
-            options: requestOptions,
-            speed: toolRequest.patch.speed ?? null,
-          },
-          voiceController.signal,
-        );
+        const response = connection
+          ? await runSpeechOnConnection(
+              {
+                text,
+                providerId: connection.providerId,
+                model: connection.model,
+                voice: connection.voice.trim() || "alloy",
+                instructions: instructions || null,
+                speed: connection.speed,
+              },
+              voiceController.signal,
+            )
+          : await runAudio(
+              {
+                workflow: "speak",
+                text,
+                instructions:
+                  instructionsKind !== null && instructions
+                    ? instructions
+                    : null,
+                language: language || null,
+                inputs: { reference: savedVoice },
+                options: requestOptions,
+                speed: toolRequest.patch.speed ?? null,
+              },
+              voiceController.signal,
+            );
         updateGenerationPhase("finishing");
         await showRunResult({
           response,
@@ -533,6 +548,7 @@ export function useSpeechGeneration({
     refreshStatus,
     replayQueuedTtsPick,
     selectClip,
+    connection,
   ]);
 
   // Only unmount aborts: RootLayout keeps this page mounted so leaving the tab does not cancel synthesis.
