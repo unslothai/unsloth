@@ -430,3 +430,36 @@ def test_a_split_that_leaves_the_last_card_out_keeps_the_graph_on_the_used_one(t
     used, idle = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "1,0"]))
     assert used >= 1024 + 3 * 1024
     assert idle < 2048
+
+
+def _three_block_drafter(backend):
+    read = backend._draft_backend_for
+
+    def three_blocks(path):
+        db = read(path)
+        db._n_layers = 3
+        return db
+
+    backend._draft_backend_for = three_blocks
+
+
+def test_the_graph_follows_the_targets_output_layer_not_the_drafters(tmp_path, _discrete):
+    """DSpark borrows the target's output tensor: with one target block and a 3:2 split the
+    target's output layer (index 1 of 2 units = 0.5 < 0.6) is on card 0, so the graph is too."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    backend._mtp_draft_compute_bytes = lambda *a, **k: 3 * _GIB
+    _three_block_drafter(backend)
+    backend._n_layers = 1
+    used, idle = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
+    assert used >= 1024 + 3 * 1024 + 4 * 1024
+    assert idle < 2048
+
+
+def test_a_row_split_shares_the_drafter_by_weight_not_whole_layers(tmp_path, _discrete):
+    """--split-mode row cuts every block across the cards, so equal cards split it in half."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    _three_block_drafter(backend)
+    first, second = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--split-mode", "row"]))
+    assert abs(first - second) <= 512

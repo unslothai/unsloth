@@ -27976,6 +27976,22 @@ class LlamaCppBackend:
                                 )
                                 return v if v is not None else 0
 
+                    # An explicit draft micro-batch, capped by the batch (and below by the
+                    # context) as llama_context caps it: every planning gate prices it, not
+                    # only the spawn reprice.
+                    _planned_draft_ub = _draft_n_ubatch(extra_args, os.environ)
+                    if _planned_draft_ub:
+                        _planned_draft_ub = min(
+                            _planned_draft_ub,
+                            _named_batch_sizes(
+                                extra_args,
+                                os.environ,
+                                _emitted_n_batch(n_batch, n_parallel),
+                                n_ubatch,
+                            )[0]
+                            & 0xFFFFFFFF,
+                        )
+
                     def _mtp_bytes(
                         ctx: int,
                         slots: Optional[int] = None,
@@ -27986,6 +28002,8 @@ class LlamaCppBackend:
                         # fit re-prices it per candidate.
                         if mtp_overhead_fn is None:
                             return 0
+                        if ubatch is None and _planned_draft_ub:
+                            ubatch = min(_planned_draft_ub, ctx) if ctx > 0 else _planned_draft_ub
                         if slots is None:
                             if ubatch:
                                 return mtp_overhead_fn(ctx, _n_ubatch = ubatch)
@@ -33877,27 +33895,41 @@ class LlamaCppBackend:
                                         _weights = _ts_w
                                 if _weights:
                                     _layers = _sidecar_draft_layers or 0
-                                    if _layers > 0:
+                                    _cum = list(
+                                        itertools.accumulate(w / sum(_weights) for w in _weights)
+                                    )
+                                    _row_split = _extra_args_split_mode(run_cmd, env) in (
+                                        "row",
+                                        "tensor",
+                                    )
+                                    if _layers > 0 and not _row_split:
                                         # llama.cpp's own layer split: block il goes to the
                                         # first device whose cumulative share exceeds
                                         # il / (n_layer + 1), the output layer counted too.
-                                        _cum = list(
-                                            itertools.accumulate(
-                                                w / sum(_weights) for w in _weights
-                                            )
-                                        )
                                         _counts = [0] * len(_weights)
                                         for _il in range(_layers):
                                             _dev = bisect.bisect_right(_cum, _il / (_layers + 1))
                                             _counts[min(_dev, len(_weights) - 1)] += 1
                                         _spawn_shares = [c / _layers for c in _counts]
-                                        # The output layer is index n_layer of the same split.
+                                    else:
+                                        # A row / tensor split cuts every block across the
+                                        # cards by the weights, so no whole-layer rounding.
+                                        _spawn_shares = [w / sum(_weights) for w in _weights]
+                                    # The graph's logits run over the TARGET's output tensor
+                                    # (DSpark / DFlash borrow it): the card the target's split
+                                    # puts its layer n_layer on, the main card under a row split.
+                                    # Unread target: the drafter's own count, same split.
+                                    _t_layers = int(getattr(self, "_n_layers", 0) or 0) or _layers
+                                    if _row_split:
                                         _spawn_output_dev = min(
-                                            bisect.bisect_right(_cum, _layers / (_layers + 1)),
+                                            max(0, self._effective_main_gpu(run_cmd, env) or 0),
                                             len(_weights) - 1,
                                         )
-                                    else:
-                                        _spawn_shares = [w / sum(_weights) for w in _weights]
+                                    elif _t_layers > 0:
+                                        _spawn_output_dev = min(
+                                            bisect.bisect_right(_cum, _t_layers / (_t_layers + 1)),
+                                            len(_weights) - 1,
+                                        )
                         if (
                             _sidecar_fit_reserve_eligible_mib
                             and _spawn_shares is not None
