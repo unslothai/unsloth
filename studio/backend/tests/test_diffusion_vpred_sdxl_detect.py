@@ -312,8 +312,6 @@ def test_apply_rebuilds_a_real_scheduler(tmp_path):
     assert eps.scheduler.config.prediction_type == "epsilon"
 
 
-# ---- review follow-ups -------------------------------------------------------------------------
-
 SDXL_DIFFUSERS_UNET_ONLY_KEYS = [
     "conv_in.weight",
     "time_embedding.linear_1.weight",
@@ -426,8 +424,6 @@ def test_the_load_route_passes_user_initiated_to_the_prefetch():
     assert "user_initiated" in passed
 
 
-# ---- review round 2 ----------------------------------------------------------------------------
-
 FLUX1_DEV_KEYS = [
     "transformer_blocks.0.attn.to_q.weight",
     "single_transformer_blocks.0.attn.to_q.weight",
@@ -452,9 +448,6 @@ def test_a_transformer_family_index_is_not_evidence_for_an_unnamed_pick(hub_cach
         "someone/neutral-pipe", "model_index.json", payload = {"_class_name": "FluxPipeline"}
     )
     assert detect_family_for_pick("someone/neutral-pipe") is None
-
-
-# ---- review round 3 ----------------------------------------------------------------------------
 
 
 def test_the_anonymous_token_sentinel_reaches_every_hub_call(hub_cache, monkeypatch):
@@ -533,9 +526,6 @@ def test_root_single_file_extensions_match_case_insensitively(tmp_path):
         "rescale_betas_zero_snr": True,
         "timestep_spacing": "trailing",
     }
-
-
-# ---- review round 4 ----------------------------------------------------------------------------
 
 
 def test_a_staged_pipeline_snapshot_reads_the_root_markers_off_the_hub(tmp_path, monkeypatch):
@@ -632,9 +622,6 @@ def test_a_refresh_keeps_the_last_verdict_visible(hub_cache, monkeypatch):
     assert during == ["sdxl"]
     # A failed refresh keeps the last good read rather than forgetting it.
     assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
-
-
-# ---- review round 5 ----------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("given, sent", [(False, False), ("  hf_x  ", "hf_x"), ("", None)])
