@@ -1,17 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// An optimistic "Loading" row is only ever retired by the terminal lifecycle
-// event, and nothing listens for that while the indicator is disabled. So a
-// load in flight when the pref goes off leaves a pending entry that survives
-// into the next enable, and `withPendingLoads` will keep rendering it: it
-// yields only to a polled row for the same runtime, and a load that failed or
-// was since unloaded has none. The result is a loading row no refresh can
-// remove.
-//
-// The behaviour half is asserted against `withPendingLoads` directly; the
-// wiring half by reading the source, since the node suite has no DOM to mount
-// the hook into.
+// Pending rows are only retired by a lifecycle event, which is not heard while disabled.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -30,7 +20,6 @@ test("a stale pending entry outlives every poll, so it must not survive a disabl
   const pending = new Map<LoadedModelSource, string | null>([
     ["image", "unsloth/flux"],
   ]);
-  // What the poll reports after the load failed: this runtime holds nothing.
   const polled: LoadedModelEntry[] = [
     {
       id: "chat:qwen",
@@ -46,7 +35,6 @@ test("a stale pending entry outlives every poll, so it must not survive a disabl
   assert.equal(image.length, 1);
   assert.equal(image[0].loading, true);
 
-  // Only an empty pending map clears it; no status refresh can.
   assert.deepEqual(withPendingLoads(polled, new Map()), polled);
 });
 
@@ -64,8 +52,7 @@ test("the hook drops pending loads once recording is turned off", () => {
 });
 
 test("the clear runs once per transition, not on every render", () => {
-  // Adjusting state during render only terminates if it is guarded by a change
-  // in the value it tracks; an unguarded setPending would re-render forever.
+  // Render-time setState must be guarded by a change, or it re-renders forever.
   assert.match(
     SOURCE,
     /const \[wasTracking, setWasTracking\] = useState\(track\);\s*if \(wasTracking !== track\) \{\s*setWasTracking\(track\);/,
@@ -74,8 +61,7 @@ test("the clear runs once per transition, not on every render", () => {
 });
 
 test("pending rows are cleared when recording stops, not when it starts", () => {
-  // Clearing on the way back in would race the subscription: a load started
-  // from another tab could be announced and then wiped.
+  // Clearing on re-enable would race a load announced from another tab.
   const guard = SOURCE.slice(
     SOURCE.indexOf("if (wasTracking !== track)"),
     SOURCE.indexOf("// The load call announces itself"),
@@ -84,10 +70,7 @@ test("pending rows are cleared when recording stops, not when it starts", () => 
   assert.match(guard, /!track &&/);
 });
 
-// A replacement load is the case the source-only suppression got wrong. The
-// backend keeps the old pipeline in _state and frees it only at the commit,
-// after the whole download, so /images/status reports the OLD model for
-// minutes while the announcement names the new one.
+// /images/status reports the old model until the replacement commits.
 test("a replacement load shows alongside the model it is replacing", () => {
   const resident: LoadedModelEntry[] = [
     {
@@ -125,8 +108,7 @@ test("the resident row wins once the replacement has committed", () => {
 });
 
 test("a status loading row still suppresses the announcement", () => {
-  // Chat and dictation report their own loading rows, and the backend may spell
-  // the name differently, so those must not double up.
+  // Chat and dictation report their own loading rows.
   const loadingRow: LoadedModelEntry[] = [
     {
       id: "chat:models/qwen3-0.6b.gguf",
@@ -157,13 +139,7 @@ test("an unnamed announcement defers to any row for its runtime", () => {
   assert.deepEqual(withPendingLoads(resident, pending), resident);
 });
 
-// Closing the card means "not now", so the next load reopens it. That only
-// works if the announcement is still being RECORDED while the card is closed:
-// the indicator clears the dismissal from its own subscription, but the rows
-// come from this hook's, and gating that one on `enabled` lost the very event
-// that was meant to bring the card back. Chat and dictation would have limped
-// on, since the poll synthesises their loading rows; images and video have no
-// such fallback, so the card stayed hidden for the whole load.
+// Recording must continue while the card is closed, or images/video loads cannot reopen it.
 test("recording is gated on the preference, not on whether the card shows", () => {
   const SOURCE = readSrc("features/loaded-models/use-loaded-models.ts");
   assert.match(
@@ -181,9 +157,7 @@ test("recording is gated on the preference, not on whether the card shows", () =
   const INDICATOR = readSrc(
     "features/loaded-models/loaded-models-indicator.tsx",
   );
-  // Dismissal must not stop the recording, or the card cannot reopen for the
-  // load. Reachability must, since it carries the auth gate: tracking on the
-  // preference alone polled four protected endpoints every 5s on /login.
+  // Reachability carries the auth gate; dismissal must not stop recording.
   assert.match(
     INDICATOR,
     /useLoadedModels\(\s*enabled,\s*showIndicator && reachable,\s*\)/,

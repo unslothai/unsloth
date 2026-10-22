@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-file support Unsloth registers for transformer classes diffusers has not.
-
-Without it, every GGUF load of Qwen-Image-2.1 on a CUDA, ROCm or XPU host died before reading a
-byte with "FromOriginalModelMixin is currently only compatible with ...", because a GPU backend
-routes GGUFs to diffusers and diffusers had no single-file entry for the class.
-"""
+"""Single-file entries diffusers lacks, needed for Qwen-Image-2.1 GGUF loads on GPU backends."""
 
 from __future__ import annotations
 
@@ -29,11 +24,7 @@ def _sfm():
 
 
 def test_the_fused_mlp_splits_gate_first_and_the_prefix_goes():
-    """The one layout difference between an sd.cpp 2.1 file and diffusers, and its order.
-
-    Gate first, proj second is what the upstream bf16 weights say: both halves of the fused tensor
-    are bit-identical to their diffusers tensors that way round, and off by up to 1.08 the other.
-    """
+    """Fused gate_up splits gate first: upstream bf16 weights match diffusers only in that order."""
     gate = torch.arange(0, 6 * 4, dtype = torch.float32).reshape(6, 4)
     proj = -torch.arange(0, 6 * 4, dtype = torch.float32).reshape(6, 4)
     checkpoint = {
@@ -122,9 +113,7 @@ def test_registration_fills_the_gap_and_the_real_call_stops_refusing(monkeypatch
     entry = sfm.SINGLE_FILE_LOADABLE_CLASSES[CLASS]
     assert entry["checkpoint_mapping_fn"] is studio._qwen_image_21_checkpoint_to_diffusers
     assert entry["default_subfolder"] == "transformer"
-    # And diffusers' own lookup now resolves the class, which is the check that raised.
     assert sfm._get_single_file_loadable_mapping_class(getattr(diffusers, CLASS)) == CLASS
-    # Idempotent.
     assert studio._register_unregistered_single_file_classes() == ()
 
 

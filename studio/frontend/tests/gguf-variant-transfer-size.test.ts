@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A partial row used to print the variant total next to its resume button, so continuing a
-// sharded download that was most of the way there still read "56 GB" and looked like the whole
-// model coming down again.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -30,7 +26,6 @@ test("a partial is priced by what is left, not by the variant total", () => {
 });
 
 test("a one-file quant still prices the whole thing, and says so", () => {
-  // Nothing to keep: the interrupted file restarts, so "left" is the full size.
   const variant = {
     size_bytes: 18 * GB,
     download_size_bytes: 18 * GB,
@@ -77,7 +72,6 @@ test("a partial with nothing left reads as zero rather than the total", () => {
 });
 
 test("the menu is ranked by the footprint the rows are badged by", () => {
-  // Ranking on the weights while badging the total put a "partial" row above "fits".
   const resources = { gpuGb: 16, systemRamGb: 32 };
   const main = 12_789_199_648;
   const row = (over: { download_size_bytes?: number }) => ({

@@ -34,7 +34,6 @@ def test_windows_path():
 
 def test_directory_path_uses_basename():
     assert public_model_id("/opt/models/MyModelDir") == "MyModelDir"
-    # A 3+ segment relative path is a local path, not an org/model repo id.
     assert public_model_id("a/b/c") == "c"
 
 
@@ -47,7 +46,6 @@ def test_hf_cache_snapshot_recovers_the_repo_id():
         "/snapshots/c1ac76e99d5513b141e8adde7288b85c3f9c32ec"
     )
     assert public_model_id(snapshot) == "unsloth/gemma-4-31B-it-GGUF"
-    # A file inside the snapshot resolves the same way, not to the file stem.
     assert public_model_id(snapshot + "/gemma-4-31B-it-UD-Q5_K_XL.gguf") == (
         "unsloth/gemma-4-31B-it-GGUF"
     )
@@ -56,7 +54,6 @@ def test_hf_cache_snapshot_recovers_the_repo_id():
 
 
 def test_relative_and_home_paths_are_sanitized():
-    # ./ ../ ~ prefixed paths are local and must not be echoed raw.
     assert public_model_id("./model.gguf") == "model"
     assert public_model_id("../models/foo.gguf") == "foo"
     assert public_model_id("~/models/baz.gguf") == "baz"
@@ -66,15 +63,14 @@ def test_relative_and_home_paths_are_sanitized():
 
 
 def test_dotted_repo_id_not_mistaken_for_relative_path():
-    # A leading dot that is not ./ or ../ is an ordinary clean name.
     assert public_model_id(".hidden-model") == ".hidden-model"
     assert public_model_id("org/.config") == "org/.config"
 
 
 def test_matches_clean_and_legacy():
     path = "/srv/models/Qwen3-Q4.gguf"
-    assert model_id_matches("Qwen3-Q4", path)  # clean public id
-    assert model_id_matches(path, path)  # legacy raw path
+    assert model_id_matches("Qwen3-Q4", path)
+    assert model_id_matches(path, path)
     assert not model_id_matches("other", path)
     assert not model_id_matches(None, path)
     assert not model_id_matches("x", None)
@@ -86,8 +82,7 @@ def test_display_model_name_uses_the_repo_leaf_not_the_snapshot_sha():
         "/snapshots/57326b941c4603e24d1a5e71c22520c66e086eb8"
     )
     assert display_model_name(posix) == "DeepSeek-V4-Flash-0731-GGUF"
-    # Reported case: a Windows cache path has no "/", so a raw rsplit labels the
-    # model with the whole home directory.
+    # A Windows cache path has no "/", so a raw rsplit labels it with the home dir.
     windows = (
         "C:\\Users\\An\\.cache\\huggingface\\hub"
         "\\models--unsloth--DeepSeek-V4-Flash-0731-GGUF"
@@ -107,8 +102,6 @@ def test_display_model_name_leaves_ordinary_ids_alone():
 def test_display_model_name_keeps_gguf_on_hub_repo_ids():
     # A real Hub repo: the suffix is part of the leaf, not an extension to strip.
     assert display_model_name("lex-au/Orpheus-3b-FT-Q8_0.gguf") == "Orpheus-3b-FT-Q8_0.gguf"
-    # A file inside a repo (>= 2 slashes) is still a file reference.
     assert display_model_name("lex-au/Orpheus-3b-FT/Q8_0.gguf") == "Q8_0"
-    # An anchored one-slash id is a path, not a repo id.
     assert display_model_name("/srv/Qwen3-Q4.gguf") == "Qwen3-Q4"
     assert display_model_name("C:\\models\\Qwen3-Q4.gguf") == "Qwen3-Q4"

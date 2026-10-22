@@ -371,9 +371,12 @@ export const BUDGET = {
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer. Raised by that.
-  transferBytes: 2_078_266,
-  rawBytes: 6_898_730,
+  transferBytes: 2_078_968,
+  rawBytes: 6_900_622,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

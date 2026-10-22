@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux NPU detection over a fake /sys tree.
-
-The values are the ones the AMD DevLab Strix Halo runner reported (amdxdna 2.25 DKMS,
-firmware 1.1.2.65)."""
+"""Linux NPU detection over a fake /sys tree, with real amdxdna 2.25 and firmware 1.1.2.65 values."""
 
 from __future__ import annotations
 

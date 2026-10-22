@@ -33,7 +33,6 @@ function fireWindowEvent(type: string): void {
   }
 }
 
-/** What another tab writing the shared preference delivers to this one. */
 function fireStorageEvent(key: string | null, newValue: string | null): void {
   for (const listener of windowListeners.get("storage") ?? []) {
     listener({ key, newValue, storageArea: null } as unknown as Event);
@@ -249,8 +248,7 @@ test("a catalog timeout preserves the preference and finishes later", async () =
 
   assert.equal(await initialized, "en");
   assert.equal(localeStore.getLocale(), "en");
-  // Personalization sync reads this preference. The temporary English render
-  // must not turn into a server-side language change.
+  // The temporary English render must not become a server-side language change.
   assert.equal(localeStore.getLocalePreference(), "de");
   assert.equal(localeStore.getPendingLocalePreference(), null);
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "de");
@@ -329,16 +327,12 @@ test("hydration adopts a preference whose catalog failed, rendering English", as
     adoptOnFailure: true,
   });
 
-  // The preference hydration applies is already the server's stored truth, so
-  // refusing to adopt it would leave the local preference disagreeing with the
-  // server and the next outbound save would push the stale value back over it.
+  // Hydration's preference is the server's truth; refusing it would push a stale value back.
   assert.equal(result, "failed");
   assert.equal(localeStore.getLocalePreference(), "de");
   assert.equal(localeStore.getLocale(), "en");
   assert.equal(localeStore.getPendingLocalePreference(), null);
-  // Not persisted: storage records choices that worked, and writing this one
-  // would reproduce the failure on every later load with nothing to tell it
-  // apart from a deliberate pick.
+  // Not persisted: storage records only choices that worked.
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), undefined);
 });
 
@@ -377,8 +371,7 @@ test("a synchronous loader throw leaves an in-flight request pending", async () 
   const slow = localeStore.setLocale("fr", { loadMessages: () => loading });
   assert.equal(localeStore.getPendingLocalePreference(), "fr");
 
-  // This request never becomes the pending one, so clearing the marker on its
-  // way out would blank the spinner the slow request is still relying on.
+  // This request never becomes pending, so it must not clear the slow request's spinner marker.
   const thrown = await localeStore.setLocale("hi", {
     loadMessages: () => {
       throw new Error("sync boom");
@@ -396,8 +389,6 @@ test("a cross-tab language change is adopted even when its catalog fails", async
   await localeStore.setLocale("en", { loadMessages: () => undefined });
   const unsubscribe = localeStore.subscribeLocale(() => undefined);
   let failLoad!: (error: Error) => void;
-  // The real in-flight map, so the store's own listener deduplicates onto this
-  // load rather than reaching the network: the handler takes no loader.
   const load = messagesModule.loadLocaleMessages(
     "ru",
     () =>
@@ -408,23 +399,17 @@ test("a cross-tab language change is adopted even when its catalog fails", async
   load?.catch(() => undefined);
 
   try {
-    // The other tab picked Russian: it wrote the shared value first, and this
-    // event is only the notification that it did.
     store.set(localeStore.LOCALE_STORAGE_KEY, "ru");
     fireStorageEvent(localeStore.LOCALE_STORAGE_KEY, "ru");
     failLoad(new Error("chunk 404"));
     await load?.catch(() => undefined);
     await new Promise((resolve) => setImmediate(resolve));
 
-    // English is all this tab can render, but the preference is the one the
-    // user chose. Keeping the replaced one would leave this tab disagreeing
-    // with storage until a reload, and the next personalization save would
-    // upload that stale language over the other tab's choice.
+    // Keep the user's choice even though only English renders, or the next save uploads a stale one.
     assert.equal(localeStore.getLocalePreference(), "ru");
     assert.equal(localeStore.getLocale(), "en");
     assert.equal(localeStore.getPendingLocalePreference(), null);
     assert.equal(localeStore.getLocaleCatalogFailed(), true);
-    // Storage is where this came from, and nothing about it worked here.
     assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ru");
   } finally {
     unsubscribe();
@@ -432,8 +417,6 @@ test("a cross-tab language change is adopted even when its catalog fails", async
   }
 });
 
-// The real component, with only its presentation imports faked, so these assert
-// against the value the shipped Select is actually given.
 const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
   new URL(
     "../src/features/settings/components/language-select.tsx",
@@ -449,8 +432,6 @@ const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
       SelectValue: "SelectValue",
     },
     "@/components/ui/spinner": { Spinner: "Spinner" },
-    // The store getters are what the module's hooks return, read here without a
-    // renderer so the test drives the same locale state the other tests do.
     "@/i18n": {
       AUTO_LOCALE: localeStore.AUTO_LOCALE,
       LOCALES: messagesModule.LOCALES,
@@ -465,21 +446,15 @@ const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
   },
 );
 
-/** The value the language menu currently shows. */
 function shownLanguage(): unknown {
   return LanguageSelect().props.value;
 }
 
-/**
- * Radix's controlled Select only calls onValueChange when the picked value differs
- * from the one it holds (useControllableState: `if (value !== prop) onChange(value)`),
- * so whatever it shows is the one language the user cannot pick.
- */
+/** Radix's controlled Select only fires onValueChange for a value differing from the shown one. */
 function canPick(value: string): boolean {
   return shownLanguage() !== value;
 }
 
-/** The first element of this type anywhere under the rendered tree. */
 function findStub(node: unknown, type: string): StubElement | null {
   if (Array.isArray(node)) {
     for (const child of node) {
@@ -494,7 +469,6 @@ function findStub(node: unknown, type: string): StubElement | null {
   return findStub(element.props?.children, type);
 }
 
-/** The label the trigger shows, which is the placeholder when nothing is named. */
 function shownLabel(): unknown {
   return findStub(LanguageSelect(), "SelectValue")?.props.placeholder;
 }
@@ -510,15 +484,10 @@ test("the language menu shows the language in effect after a catalog failure", a
   assert.equal(result, "failed");
   assert.equal(localeStore.getLocalePreference(), "de");
   assert.equal(localeStore.getLocale(), "en");
-  // Naming the adopted-but-failed language here would make it the value the
-  // Select already holds, and picking it again would then fire nothing, so a
-  // transient chunk failure would strand the user in English for good. Naming
-  // English instead only moves that on to English, which is the one the user
-  // needs to pick to stop retrying German and keep the language they can read.
+  // Naming the failed language would make re-picking it fire nothing, stranding the user in English.
   assert.equal(shownLanguage(), "");
   assert.ok(canPick("de"));
   assert.ok(canPick("en"));
-  // Still the language in effect on the trigger, only as the placeholder.
   assert.equal(shownLabel(), "English");
 });
 
@@ -535,10 +504,6 @@ test("accepting the fallback after a catalog failure is a real choice", async ()
   );
   assert.equal(localeStore.getLocalePreference(), "de");
 
-  // What the user does when they would rather keep English than keep waiting
-  // for a chunk that will not load: pick English. If the menu were already
-  // holding "en" this would fire nothing, leaving German as the preference
-  // their profile keeps and every session keeps failing to load.
   assert.ok(canPick("en"));
   assert.equal(
     await localeStore.setLocale("en", { loadMessages: () => undefined }),
@@ -593,29 +558,22 @@ test("auto detection stays retryable when its detected catalog fails", async () 
   navigatorState.language = "de-DE";
   navigatorState.languages = ["de-DE"];
   try {
-    // What hydration issues: adopt the stored preference even when its catalog
-    // never arrives, so the local value does not drift from the server's.
+    // Hydration adopts the stored preference even when its catalog never arrives.
     const result = await localeStore.setLocale("auto", {
       loadMessages: () => Promise.reject(new Error("chunk 404")),
       adoptOnFailure: true,
     });
 
     assert.equal(result, "failed");
-    // Auto resolved to German, German never loaded, so English is in effect
-    // while the preference is still, correctly, auto.
     assert.equal(localeStore.getLocalePreference(), "auto");
     assert.equal(localeStore.getLocale(), "en");
 
-    // Naming auto here would make Auto-detect the value the Select already
-    // holds, so re-picking it would fire nothing and the failed detection
-    // could never be retried; naming English would do the same to pinning
-    // English, which is the other thing a user does with a failed detection.
+    // Naming auto or English would make re-picking that value fire nothing, blocking a retry.
     assert.equal(shownLanguage(), "");
     assert.equal(shownLabel(), "English");
     assert.ok(canPick("auto"));
     assert.ok(canPick("en"));
 
-    // And the retry that buys, once the chunk is reachable again.
     assert.equal(
       await localeStore.setLocale("auto", {
         loadMessages: () => Promise.resolve(),
@@ -637,8 +595,6 @@ test("a refreshed auto whose new catalog fails is still retryable", async () => 
   navigatorState.language = "de-DE";
   navigatorState.languages = ["de-DE"];
   try {
-    // The shape handleLanguageChange issues on a browser language change:
-    // re-apply the standing auto preference, without adopting on failure.
     const result = await localeStore.setLocale("auto", {
       loadMessages: () => Promise.reject(new Error("chunk 404")),
     });
@@ -662,9 +618,6 @@ test("a rejected pick leaves a working auto preference named", async () => {
     "applied",
   );
 
-  // Rejected, so the standing preference never moved and auto is still serving
-  // its own catalog. The menu has to keep naming auto here, or a failed pick of
-  // an unrelated language would be enough to hide it.
   assert.equal(
     await localeStore.setLocale("ru", {
       loadMessages: () => Promise.reject(new Error("chunk 404")),
@@ -676,7 +629,6 @@ test("a rejected pick leaves a working auto preference named", async () => {
   assert.equal(shownLanguage(), "auto");
 });
 
-/** The result, or "pending" when the request is still holding its caller. */
 function settledWithin(request: unknown): Promise<unknown> {
   return Promise.race([
     request,
@@ -685,9 +637,7 @@ function settledWithin(request: unknown): Promise<unknown> {
 }
 
 test("a catalog that never settles does not hold the caller forever", async () => {
-  // Accepted, but neither completing nor rejecting: a stalled CDN, proxy or
-  // service worker. Nothing about this request will ever wake the awaiting
-  // hydration, so the store has to.
+  // A stalled CDN, proxy or service worker never settles, so the store's own timeout must wake hydration.
   const outcome = await settledWithin(
     localeStore.setLocale("hi", {
       loadMessages: () => new Promise<void>(() => {}),
@@ -697,7 +647,6 @@ test("a catalog that never settles does not hold the caller forever", async () =
   );
 
   assert.equal(outcome, "failed");
-  // Adopted on the fallback catalog, exactly as a rejection would leave it.
   assert.equal(localeStore.getLocalePreference(), "hi");
   assert.equal(localeStore.getLocale(), "en");
   assert.equal(localeStore.getPendingLocalePreference(), null);
@@ -733,11 +682,7 @@ test("a catalog that arrives after the timeout still commits", async () => {
 test("a pick that names no bound of its own is still bounded", async () => {
   await localeStore.setLocale("en", { loadMessages: () => undefined });
 
-  // What the language menu issues: no timeoutMs, so the store's own bound is
-  // all that stands between a stalled catalog and a spinner that never stops.
-  // A stalled load also stays in the in-flight map, so re-picking that language
-  // is handed the same never-settling promise, and reloading the app is the
-  // only way out of it.
+  // The menu passes no timeoutMs, and a stalled load stays in the in-flight map for re-picks.
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const selected = localeStore.setLocale("ko", {
@@ -753,8 +698,6 @@ test("a pick that names no bound of its own is still bounded", async () => {
     mock.timers.reset();
   }
 
-  // A rejected pick, so the language that was working is still the one in
-  // effect and is still the one the menu names.
   assert.equal(localeStore.getLocale(), "en");
   assert.equal(localeStore.getLocalePreference(), "en");
   assert.equal(localeStore.getLocaleCatalogFailed(), false);
@@ -763,8 +706,6 @@ test("a pick that names no bound of its own is still bounded", async () => {
 test("a timed out catalog is evicted so the next pick asks for it again", async () => {
   await localeStore.setLocale("en", { loadMessages: () => undefined });
 
-  // The real in-flight map, with an import that is accepted and then never
-  // settles: a stalled CDN, proxy or service worker.
   let requests = 0;
   const stalled = () => {
     requests += 1;
@@ -780,7 +721,6 @@ test("a timed out catalog is evicted so the next pick asks for it again", async 
     mock.timers.tick(localeStore.LOCALE_SELECTION_TIMEOUT_MS);
     assert.equal(await first, "failed");
 
-    // What the user does next: pick the language again once the network is back.
     const retry = localeStore.setLocale("pt-BR", { loadMessages });
     mock.timers.tick(localeStore.LOCALE_SELECTION_TIMEOUT_MS);
     assert.equal(await retry, "failed");
@@ -799,8 +739,6 @@ test("a timed out catalog is evicted so the next pick asks for it again", async 
 test("a timed out startup catalog is evicted so the first pick asks for it again", async () => {
   store.set(localeStore.LOCALE_STORAGE_KEY, "hi");
 
-  // The real in-flight map, with an import that is accepted and then never
-  // settles: a stalled CDN, proxy or service worker.
   let requests = 0;
   const stalled = () => {
     requests += 1;
@@ -816,8 +754,6 @@ test("a timed out startup catalog is evicted so the first pick asks for it again
     mock.timers.tick(localeStore.LOCALE_INITIALIZATION_TIMEOUT_MS);
     assert.equal(await initialized, "en");
 
-    // What the user does next: the saved language is on the fallback catalog,
-    // so they pick it again from the menu once the network is back.
     const picked = localeStore.setLocale("hi", { loadMessages });
     mock.timers.tick(localeStore.LOCALE_SELECTION_TIMEOUT_MS);
     assert.equal(await picked, "failed");

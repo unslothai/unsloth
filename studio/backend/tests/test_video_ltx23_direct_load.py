@@ -56,7 +56,6 @@ def test_read_keeps_only_the_requested_tensors(tmp_path):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
 @pytest.mark.parametrize("buffers, threads", [(1, 1), (2, 3), (16, 8)])
 def test_read_matches_the_safetensors_loader_on_cuda(tmp_path, buffers, threads):
-    # Tiny chunks and a small ring make every slot get reused many times while uploads are in flight.
     path = tmp_path / "ltx.safetensors"
     want = _write_checkpoint(path)
     got = video_ltx2.read_safetensors_to_device(
@@ -130,7 +129,6 @@ def test_direct_loaded_modules_go_back_to_the_host_only_when_the_plan_moved_on(m
     from core.inference import video as video_mod
 
     monkeypatch.setattr(video_mod, "_video_plan_label", lambda plan: plan.offload_policy)
-    # Still resident: nothing moves.
     pipe = _Pipe()
     video_mod._return_direct_loaded_modules(pipe, _plan("none"))
     assert pipe.moved == []
@@ -139,14 +137,12 @@ def test_direct_loaded_modules_go_back_to_the_host_only_when_the_plan_moved_on(m
         pipe, _plan("group", stream_transformer = False, stream_text_encoders = False)
     )
     assert pipe.moved == []
-    # The DiT is offloaded now: the whole pipeline returns to the host, where offload starts from.
     pipe = _Pipe()
     video_mod._return_direct_loaded_modules(pipe, _plan("group", stream_transformer = True))
     assert pipe.moved == ["cpu"]
     pipe = _Pipe()
     video_mod._return_direct_loaded_modules(pipe, _plan("model"))
     assert pipe.moved == ["cpu"]
-    # The DiT stays but the encoders stream: only an encoder already on a device goes back (here: on the host).
     pipe = _Pipe()
     calls = []
     pipe.text_encoder.to = lambda device: calls.append(device)
