@@ -3014,6 +3014,7 @@ class InferenceOrchestrator:
                     reply_returns = calls_tools,
                 ),
                 count_tokens = _count,
+                cancel_check = lambda: bool(cancel_event is not None and cancel_event.is_set()),
             )
             fitted = recall["conversation"]
             truncation = {**truncation, **recall["counts"]}
