@@ -814,7 +814,8 @@ def _side_lora_layers(pipe: Any) -> list:
             lora_b = getattr(module, "lora_B", None)
             if not isinstance(scaling, dict) or lora_b is None or not hasattr(module, "set_scale"):
                 continue
-            out.extend((module, adapter) for adapter in scaling if adapter in lora_b)
+            # Every scaled adapter, an Embedding's (factors in lora_embedding_A/B, not lora_B) included.
+            out.extend((module, adapter) for adapter in scaling)
     return out
 
 
@@ -851,8 +852,12 @@ def _pin_baked_lora_scales(pipe: Any, target_device: Any) -> int:
             if not isinstance(scaling, dict) or lora_b is None:
                 continue
             for adapter, value in scaling.items():
-                if adapter not in lora_b or isinstance(value, torch.Tensor):
+                if isinstance(value, torch.Tensor):
                     continue
+                if adapter not in lora_b:
+                    # A scale with no lora_B entry (a PEFT Embedding keeps lora_embedding_A/B): pinning the rest
+                    # would skip set_adapters and leave this one at its bake-time weight, so keep the float path.
+                    return 0
                 weight = lora_b[adapter].weight
                 if weight.device.type != want:
                     return 0

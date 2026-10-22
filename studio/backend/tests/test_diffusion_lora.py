@@ -717,3 +717,51 @@ def test_pinned_lora_change_also_sets_the_text_encoder_scales(monkeypatch):
     assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
     b._apply_loras(state, [("a", 0.5)], threading.Event())
     assert te.scaling == {"a": 1.0, "b": 0.0}  # 0.5 * alpha / r, and the omitted adapter off
+
+
+def _peft_embedding(name = "a"):
+    import torch
+    from peft import LoraConfig
+    from peft.tuners.lora.layer import Embedding
+
+    config = LoraConfig(r = 2, lora_alpha = 4, lora_dropout = 0.0, init_lora_weights = False)
+    return Embedding(
+        torch.nn.Embedding(10, 8),
+        name,
+        config = config,
+        r = 2,
+        lora_alpha = 4,
+        init_lora_weights = False,
+    )
+
+
+def test_pin_declines_a_denoiser_lora_it_cannot_pin(monkeypatch):
+    # A PEFT Embedding keeps its factors in lora_embedding_A/B, not lora_B. Pinning only the Linear would make a
+    # weight change skip set_adapters and leave the embedding at its bake-time scale: decline, keep floats.
+    import torch
+
+    from core.inference import diffusion as diff
+
+    pipe, layer = _peft_two_adapter_pipe()
+    emb = _peft_embedding()
+    pipe.transformer = torch.nn.Sequential(layer, emb)
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 0
+    assert not getattr(pipe, diff._PINNED_LORA_SCALES_ATTR, None)
+    assert all(not isinstance(v, torch.Tensor) for v in layer.scaling.values())
+    assert diff._set_pinned_lora_scales(pipe, {"a": 0.5}) is False
+
+
+def test_pinned_lora_change_also_sets_a_text_encoder_embedding_scale(monkeypatch):
+    # The side layers include a text encoder's PEFT Embedding (no lora_B entry), so its scale follows the change.
+    import torch
+
+    from core.inference import diffusion as diff
+
+    pipe, _layer = _peft_two_adapter_pipe()
+    emb = _peft_embedding()
+    pipe.components = {"transformer": pipe.transformer, "text_encoder": torch.nn.Sequential(emb)}
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 2
+    assert diff._set_pinned_lora_scales(pipe, {"a": 0.5}) is True
+    assert emb.scaling == {"a": 1.0}  # 0.5 * alpha / r
