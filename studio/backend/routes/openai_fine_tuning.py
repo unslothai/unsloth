@@ -617,7 +617,6 @@ async def _start_queued(entry: _Queued) -> bool:
 
 
 async def _drain_once() -> None:
-    """Start the head of the queue if the GPU is free."""
     if not _QUEUE:
         return
     entry = _QUEUE[0]
@@ -661,7 +660,6 @@ def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: b
 
 
 def _own_alias(job_id: str) -> Optional[_Queued]:
-    """This account's job that has not started."""
     entry = _ALIASES.get(job_id)
     return entry if entry is not None and entry.account.account_id == current_account_id() else None
 
@@ -716,7 +714,6 @@ async def create_fine_tuning_job(
                 request, current_subject = current_subject, via_api_key = via_api_key
             )
         except HTTPException as exc:
-            # A chat request in flight or an install clears by itself: queue rather than refuse.
             if not (_transient(exc) or _training_busy()):
                 raise
             return _for_caller(
