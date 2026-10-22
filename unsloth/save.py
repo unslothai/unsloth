@@ -6833,11 +6833,10 @@ def _unsloth_save_torchao_with_attached_config(
 
 @contextmanager
 def _torchao_hf_quantizer_attached(model):
-    """Attach a torchao HfQuantizer to a model quantized in place by `_convert_torchao_model` for the save.
+    """Attach a torchao HfQuantizer for the save of a model quantized in place.
 
-    Without one, transformers 5 treats the torchao tensor subclasses as plain tensors: it fails in its tied-weight
-    storage check and could not write them to safetensors anyway. The quantizer flattens them as it does for a
-    model loaded with a TorchAoConfig. 4.x pickles them with safe_serialization = False and needs nothing."""
+    transformers 5 otherwise treats the torchao tensor subclasses as plain tensors and fails its tied-weight
+    storage check; 4.x pickles them with safe_serialization = False and needs nothing."""
     if getattr(model, "hf_quantizer", None) is not None or Version(
         importlib_version("transformers")
     ) < Version("5.0.0"):
