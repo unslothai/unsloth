@@ -60,7 +60,7 @@ export function refreshScanFolders(): Promise<ScanFolderInfo[]> {
   setState({ loading: true });
   const request = listScanFolders()
     .then((folders) => {
-      // A mutation landed meanwhile, so this list may predate it: read it again rather than drop it.
+      // May predate a mutation that landed meanwhile: reread rather than drop it.
       superseded = seq !== mutationSeq;
       if (!superseded) setState({ folders, loaded: true, error: null });
       return state.folders;
@@ -140,8 +140,7 @@ export function useScanFolders(enabled = true): ScanFoldersState {
     getScanFoldersState,
     getScanFoldersState,
   );
-  // Read on every open: a folder's health changes without an inventory bump (a scan finishing,
-  // a permission fixed outside Studio).
+  // Read on every open: health changes without an inventory bump (a scan finishing, a fix outside Studio).
   useEffect(() => {
     if (!enabled) return;
     revalidateScanFolders();

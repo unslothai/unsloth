@@ -1112,8 +1112,7 @@ async def _scan_source(label: str, scanner, path: Path) -> List[LocalModelInfo]:
         return []
 
 
-# A thread per scan, under a budget: a folder on a hung mount must not outlast the UI's 30 s timeout or
-# park inference's threads, and a fixed pool would let a few stuck folders starve every healthy one.
+# A thread per scan under a budget: a fixed pool lets a few hung mounts starve every healthy folder.
 _CUSTOM_FOLDER_SCAN_TIMEOUT_S = 10.0
 _custom_folder_scans: dict[str, tuple[float, concurrent.futures.Future]] = {}
 _custom_folder_scans_lock = threading.Lock()
