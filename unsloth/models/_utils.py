@@ -7601,16 +7601,48 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
                 name, buffer, persistent = name not in src._non_persistent_buffers_set
             )
     for name, value in vars(src).items():
-        if name.startswith("_") or name in vars(dst) or isinstance(value, torch.nn.Module):
+        # An instance `forward` is a runtime wrapper (Accelerate's hook) bound to src: copying it runs src, not dst.
+        if (
+            name.startswith("_")
+            or name == "forward"
+            or name in vars(dst)
+            or isinstance(value, torch.nn.Module)
+        ):
             continue
         setattr(dst, name, value)
+    _move_dispatch_hook(dst, src)
+
+
+def _move_dispatch_hook(dst: torch.nn.Module, src: torch.nn.Module) -> None:
+    """Re-attach src's Accelerate device hook to dst, so a split model still aligns devices at dst's own forward."""
+    hook = getattr(src, "_hf_hook", None)
+    if hook is None or hasattr(dst, "_hf_hook") or getattr(hook, "offload", False):
+        return  # offload hooks own the weights map; they are not rebuilt here
+    try:
+        from accelerate.hooks import add_hook_to_module
+
+        add_hook_to_module(dst, hook)
+    except Exception as exc:
+        warnings.warn(
+            f"Unsloth: could not re-attach a dispatch hook to the fake quantized embedding "
+            f"({type(exc).__name__}: {exc}).",
+            RuntimeWarning,
+            stacklevel = 3,
+        )
+
+
+class _PlainEmbeddingLookup(torch.nn.Embedding):
+    """Sits between an Embedding subclass and FakeQuantizedEmbedding: super().forward() is a plain lookup of the
+    (already fake quantized) weight."""
+
+    forward = torch.nn.Embedding.forward
 
 
 _FAKE_QUANTIZED_EMBEDDING_CLASSES = {}
 
 
 def _fake_quantized_embedding_class(original_cls):
-    """FakeQuantizedEmbedding that keeps original_cls.forward: its super().forward() is the fake-quantized lookup."""
+    """FakeQuantizedEmbedding that keeps original_cls.forward, run on the fake quantized weight."""
     from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
 
     cls = _FAKE_QUANTIZED_EMBEDDING_CLASSES.get(original_cls)
@@ -7628,13 +7660,25 @@ def _fake_quantized_embedding_class(original_cls):
         # Pickle by the original class, so a fresh process (torch.load, spawn workers) rebuilds this one.
         return (_rebuild_fake_quantized_embedding, (original_cls,), self.__getstate__())
 
+    def forward(self, *args, **kwargs):
+        # Fake quantize the weight the original forward reads, whether it calls super().forward() (transformers'
+        # Gemma3) or F.embedding(self.weight) directly (unsloth_zoo's float32 Gemma3 / Gemma4 patch).
+        fake_quantizer = self.weight_fake_quantizer
+        if fake_quantizer is None:
+            return original_cls.forward(self, *args, **kwargs)
+        from torch.nn.utils.stateless import _reparametrize_module
+
+        with _reparametrize_module(self, {"weight": fake_quantizer(self.weight)}):
+            return original_cls.forward(self, *args, **kwargs)
+
     name = "_FakeQuantized_" + re.sub(
         r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"
     )
     cls = type(
         name,
-        (original_cls, FakeQuantizedEmbedding),
+        (original_cls, _PlainEmbeddingLookup, FakeQuantizedEmbedding),
         {
+            "forward": forward,
             "to_embedding": to_embedding,
             "__reduce_ex__": __reduce_ex__,
             "__module__": __name__,

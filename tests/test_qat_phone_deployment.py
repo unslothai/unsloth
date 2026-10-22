@@ -270,3 +270,79 @@ def test_builtin_recipe_flag_only_for_scheme_names():
     custom = _int8_embedding_config()
     model = _prepare_model_for_qat(_tiny_gemma3(), custom)
     assert not getattr(model._torchao_config, "_unsloth_builtin_recipe", False)
+
+
+def _count_fake_quant_calls(emb):
+    calls = []
+    emb.weight_fake_quantizer.register_forward_hook(lambda *args: calls.append(1))
+    return calls
+
+
+def _expected_fake_quantized_lookup(emb, ids):
+    # FakeQuantizedEmbedding's own lookup, then Gemma3's float32 embed_scale multiply.
+    with torch.no_grad():
+        w = emb.weight_fake_quantizer(emb.weight)
+        return torch.nn.functional.embedding(ids, w).float() * emb.embed_scale
+
+
+def _direct_weight_forward(self, input_ids):
+    # unsloth_zoo's UNSLOTH_FORCE_FLOAT32 Gemma3 / Gemma4 embedding forward: reads self.weight, no super().
+    embeds = torch.nn.functional.embedding(input_ids, weight = self.weight, padding_idx = self.padding_idx)
+    return embeds.to(torch.float32) * self.embed_scale
+
+
+@pytest.mark.parametrize("forward", ["upstream", "direct_weight"])
+def test_gemma3_embedding_forward_is_fake_quantized_once(forward, monkeypatch):
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3TextScaledWordEmbedding
+
+    if forward == "direct_weight":
+        monkeypatch.setattr(Gemma3TextScaledWordEmbedding, "forward", _direct_weight_forward)
+    model = _tiny_gemma3()
+    ids = torch.randint(0, model.config.vocab_size, (2, 12))
+    with torch.no_grad():
+        unquantized = model.get_input_embeddings()(ids).float()
+    model = _prepare_model_for_qat(model, "int8-int4")
+    emb = model.get_input_embeddings()
+    calls = _count_fake_quant_calls(emb)
+    with torch.no_grad():
+        out = emb(ids).float()
+    assert len(calls) == 1
+    assert not torch.equal(out, unquantized)
+    torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
+    # The swapped-in weight is scoped to the call.
+    assert isinstance(emb.weight, torch.nn.Parameter)
+
+
+def test_accelerate_hooked_embedding_runs_fake_quantized_forward():
+    accelerate_hooks = pytest.importorskip("accelerate.hooks")
+
+    model = _tiny_gemma3()
+    original = model.get_input_embeddings()
+    ids = torch.randint(0, model.config.vocab_size, (2, 12))
+    with torch.no_grad():
+        unquantized = original(ids).float()
+    accelerate_hooks.add_hook_to_module(
+        original, accelerate_hooks.AlignDevicesHook(execution_device = "cpu", io_same_device = True)
+    )
+    model = _prepare_model_for_qat(model, "int8-int4")
+    emb = model.get_input_embeddings()
+    assert emb is not original
+    # The hook moved onto the replacement and wraps its forward, not the old module's.
+    assert hasattr(emb, "_hf_hook")
+    assert getattr(emb.forward, "args", ()) != (original,)
+    calls = _count_fake_quant_calls(emb)
+    with torch.no_grad():
+        out = emb(ids).float()
+    assert len(calls) == 1
+    assert not torch.equal(out, unquantized)
+    torch.testing.assert_close(out, _expected_fake_quantized_lookup(emb, ids))
+
+
+def test_fake_quantized_embedding_forward_compiles_fullgraph():
+    model = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
+    emb = model.get_input_embeddings()
+    ids = torch.randint(0, model.config.vocab_size, (2, 12))
+    torch._dynamo.reset()
+    compiled = torch.compile(emb, backend = "eager", fullgraph = True)
+    with torch.no_grad():
+        torch.testing.assert_close(compiled(ids), emb(ids))
