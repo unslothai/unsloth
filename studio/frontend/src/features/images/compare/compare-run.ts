@@ -35,13 +35,17 @@ export interface CompareRunState extends CompareRun {
 export function createCompareRun(
   plan: CompareGridPlan,
   ctx: CompareContext,
-  options: { keepRandomSeeds: boolean; seedFieldEmpty: boolean; rng?: () => number },
+  // `variationSeed`: the form's typed Variation seed (null = the field is empty), used even when the form's strength
+  // is 0 because a Var. strength axis supplies it.
+  options: { keepRandomSeeds: boolean; seedFieldEmpty: boolean; rng?: () => number; variationSeed?: number | null },
 ): CompareRunState {
   const results: Array<GalleryImage | null> = Array.from({ length: plan.cellCount }, () => null);
   const requests: Array<DiffusionGenerateRequest | null> = Array.from({ length: plan.cellCount }, () => null);
-  // One variation seed per run, drawn up front; "Keep -1 for seeds" with an empty seed box keeps it random too.
+  // One variation seed per run: the typed one, else drawn up front; "Keep -1 for seeds" with an empty seed box keeps
+  // it random per cell too.
   const variation =
-    options.keepRandomSeeds && options.seedFieldEmpty ? undefined : Math.floor((options.rng ?? Math.random)() * 2 ** 32);
+    options.variationSeed ??
+    (options.keepRandomSeeds && options.seedFieldEmpty ? undefined : Math.floor((options.rng ?? Math.random)() * 2 ** 32));
   return {
     plan,
     results,

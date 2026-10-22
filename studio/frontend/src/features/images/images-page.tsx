@@ -7066,6 +7066,7 @@ export function ImagesPage({
                     context={compareContext}
                     busy={busy !== null || compareRun !== null || !imagePresets.hydrated}
                     seedFieldEmpty={!seed.trim()}
+                    variationSeed={sdCaps?.variation_seed ? parseVariationSeed(sdChoice.variationSeed) : null}
                     modelName={status?.repo_id ?? null}
                     width={width}
                     height={height}

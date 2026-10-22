@@ -45,6 +45,8 @@ export function splitAxisList(text: string): string[] {
   let field = "";
   let quoted = false;
   let atStart = true;
+  // csv.reader yields no field for a blank line, so a trailing newline adds no empty item.
+  let lineHasField = false;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (quoted) {
@@ -61,21 +63,24 @@ export function splitAxisList(text: string): string[] {
       continue;
     }
     if (ch === '"' && atStart) {
+      lineHasField = true;
       quoted = true;
       atStart = false;
       continue;
     }
     if (ch === "," || ch === "\n" || ch === "\r") {
-      out.push(field.trim());
+      if (ch === ",") lineHasField = true;
+      if (ch === "," || lineHasField || field.trim()) out.push(field.trim());
       field = "";
       atStart = true;
+      if (ch !== ",") lineHasField = false;
       continue;
     }
     if (atStart && (ch === " " || ch === "\t")) continue;
     atStart = false;
     field += ch;
   }
-  out.push(field.trim());
+  if (lineHasField || field.trim()) out.push(field.trim());
   return out;
 }
 
@@ -94,10 +99,17 @@ function inclusiveRange(start: number, end: number, step: number): number[] | nu
   return Array.from({ length: count }, (_, i) => start + step * i);
 }
 
-/** Parse one axis's text into typed values. `str` axes keep each list item as typed (no range expansion). */
-export function parseAxisValues(text: string, type: AxisValueType): ParsedValues {
+/** Parse one axis's text into typed values. `str` axes keep each list item as typed (no range expansion); empty
+ *  items are dropped unless `keepEmpty`. */
+export function parseAxisValues(text: string, type: AxisValueType, options: { keepEmpty?: boolean } = {}): ParsedValues {
   const items = splitAxisList(text);
   if (type === "str") {
+    // Prompt S/R keeps an empty replacement (A1111 csv_string_to_list_strip drops nothing): `red, ""` compares the
+    // prompt with the search text removed. Its first value is what it searches for, so that one cannot be empty.
+    if (options.keepEmpty) {
+      if (items.length === 0 || !items[0]) return { ok: false, error: items.some(Boolean) ? "The first value (searched for) is empty" : "No values" };
+      return { ok: true, values: items };
+    }
     const values = items.filter((v) => v.length > 0);
     return values.length ? { ok: true, values } : { ok: false, error: "No values" };
   }

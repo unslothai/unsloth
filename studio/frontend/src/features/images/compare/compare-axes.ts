@@ -325,7 +325,7 @@ export function planCompare(
       return { ok: false, error: `${seen.get(def.id)} and ${AXIS_NAMES[a]} are both ${def.label}` };
     }
     seen.set(def.id, AXIS_NAMES[a]);
-    const parsed = parseAxisValues(input.text, def.type);
+    const parsed = parseAxisValues(input.text, def.type, { keepEmpty: def.id === "prompt_sr" });
     if (!parsed.ok) return { ok: false, error: `${AXIS_NAMES[a]} (${def.label}): ${parsed.error}` };
     const values: Value[] = [];
     for (const raw of parsed.values) {
@@ -481,7 +481,8 @@ export function buildCellRequest(
   }
   // A strength with no variation seed draws a random one per request: fix one for the run (A1111 fix_seed on the
   // subseed), so a Var. strength axis compares strengths over one noise source.
-  if (req.variation_strength && req.variation_seed === undefined && seeds.variation !== undefined) {
+  // Strength 0 cells get it too (the backend ignores it there), so the grid's recipe still shares one seed.
+  if (typeof req.variation_strength === "number" && req.variation_seed === undefined && seeds.variation !== undefined) {
     req.variation_seed = seeds.variation;
   }
   return req;

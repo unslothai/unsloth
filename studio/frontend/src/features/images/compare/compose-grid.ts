@@ -102,19 +102,31 @@ function layoutAt(input: GridLayoutInput, cellWidth: number, cellHeight: number,
   return { width, height, scale, fontSize, lineHeight, cellWidth, cellHeight, cells, colText, rowText, title };
 }
 
-/** Cells shrink (never grow) until the whole grid fits a browser canvas and the pixel budget. */
-export function gridLayout(input: GridLayoutInput, measure: MeasureText): GridLayout {
-  const full = layoutAt(input, input.cellWidth, input.cellHeight, measure, 1);
-  const scale = Math.min(
+const fitScale = (layout: GridLayout): number =>
+  Math.min(
     1,
-    MAX_CANVAS_SIDE / full.width,
-    MAX_CANVAS_SIDE / full.height,
-    Math.sqrt(MAX_CANVAS_PIXELS / (full.width * full.height)),
+    MAX_CANVAS_SIDE / layout.width,
+    MAX_CANVAS_SIDE / layout.height,
+    Math.sqrt(MAX_CANVAS_PIXELS / (layout.width * layout.height)),
   );
-  if (scale >= 1) return full;
-  // A little under, so the re-derived label bands cannot push it back over.
-  const s = scale * 0.98;
-  return layoutAt(input, Math.floor(input.cellWidth * s), Math.floor(input.cellHeight * s), measure, s);
+
+/** Cells shrink (never grow) until the whole grid fits a browser canvas and the pixel budget. Narrower cells rewrap
+ *  their labels onto more lines, so each shrunk layout is checked again until it fits. */
+export function gridLayout(input: GridLayoutInput, measure: MeasureText): GridLayout {
+  let layout = layoutAt(input, input.cellWidth, input.cellHeight, measure, 1);
+  let s = 1;
+  for (let i = 0; i < 40 && fitScale(layout) < 1; i++) {
+    // A little under, so the re-derived label bands are less likely to push it back over.
+    s *= fitScale(layout) * 0.98;
+    layout = layoutAt(
+      input,
+      Math.max(1, Math.floor(input.cellWidth * s)),
+      Math.max(1, Math.floor(input.cellHeight * s)),
+      measure,
+      s,
+    );
+  }
+  return layout;
 }
 
 const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';

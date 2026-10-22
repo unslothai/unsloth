@@ -802,3 +802,89 @@ test("the SD controls axes reach the backend's request fields, the form's variat
   assert.match(page, /baseVariationSeed !== null \? \(baseVariationSeed \+ \(compare \? 0 : i \* batchSize\)\) % 2 \*\* 32 : null/);
   assert.match(page, /const compareSdControls = sdCaps;/);
 });
+
+test("variation seed table: a Var. strength sweep shares one seed across every cell, 0 included", () => {
+  const sdControls = { clip_skip: null, cfg_rescale: null, variation_seed: true, vary_strength: 0.2 } as never;
+  const ctx = sdxl({ sdControls });
+  const p = plan([{ axisId: "variation_strength", text: "0, 0.3, 0.6" }], ctx);
+  // [typed Variation seed, Keep -1 for seeds, seed box empty, expected per-cell variation seeds]
+  const rows: Array<[number | null, boolean, boolean, Array<number | undefined>]> = [
+    [1234, false, false, [1234, 1234, 1234]], // typed with the form's strength at 0: the typed seed, not a fresh draw
+    [1234, true, true, [1234, 1234, 1234]], // typed wins over Keep -1 too
+    [null, false, false, [2 ** 30, 2 ** 30, 2 ** 30]], // empty: one draw for the run
+    [null, true, true, [undefined, undefined, undefined]], // Keep -1 and an empty seed box: random per cell
+  ];
+  for (const [typed, keepRandomSeeds, seedFieldEmpty, expected] of rows) {
+    const run = createCompareRun(p, ctx, { keepRandomSeeds, seedFieldEmpty, rng: () => 0.25, variationSeed: typed });
+    const reqs = p.order.map((_, i) => run.request(i, base(), 7));
+    const label = `typed ${typed}, keep ${keepRandomSeeds}, empty ${seedFieldEmpty}`;
+    assert.deepEqual(reqs.map((r) => (r as unknown as Record<string, unknown>).variation_seed), expected, label);
+    const fields = Object.fromEntries(gridRecipeFields(p, run.requests, { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
+    assert.equal(fields["Variation seed"], expected[0], label);
+  }
+  const panel = readSrc("features/images/compare/compare-panel.tsx");
+  assert.match(panel, /variationSeed: props\.variationSeed,/);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /variationSeed=\{sdCaps\?\.variation_seed \? parseVariationSeed\(sdChoice\.variationSeed\) : null\}/);
+});
+
+test("canvas table: the final, reflowed layout fits the side and pixel limits", () => {
+  const long = Array.from({ length: 400 }, (_, i) => `word${i}`).join(" ");
+  const wordy = Array.from({ length: 1000 }, (_, i) => `${"x".repeat(11)}${i % 10}`).join(" ");
+  // [cols, rows, cell side, column label, row label]
+  const rows: Array<[number, number, number, string, string]> = [
+    [8, 8, 2752, "", ""],
+    [1, 64, 2752, long, ""],
+    // Narrower cells rewrap labels onto more lines: one shrink pass leaves this at 97x19218 (over the side limit).
+    [1, 64, 512, wordy, ""],
+    [64, 1, 512, wordy, ""],
+    [64, 1, 2752, "", long],
+    [8, 8, 2752, long, long],
+    [2, 2, 512, "a", "b"], // under the limits: unscaled
+  ];
+  for (const [cols, rows_, side, col, row] of rows) {
+    const layout = gridLayout(
+      {
+        cols,
+        rows: rows_,
+        cellWidth: side,
+        cellHeight: side,
+        colLabels: Array(cols).fill(col),
+        rowLabels: Array(rows_).fill(row),
+        title: "",
+        legend: true,
+        margin: 0,
+      },
+      measure,
+    );
+    const label = `${cols}x${rows_} ${col ? "col label" : ""} ${row ? "row label" : ""}`;
+    assert.ok(layout.width <= MAX_CANVAS_SIDE && layout.height <= MAX_CANVAS_SIDE, `${label}: ${layout.width}x${layout.height}`);
+    assert.ok(layout.width * layout.height <= MAX_CANVAS_PIXELS, label);
+    assert.equal(layout.cells.length, cols * rows_);
+  }
+});
+
+test("Prompt S/R table: empty replacements kept, an empty search value refused, other text axes drop empties", () => {
+  // [input, Prompt S/R values or an error pattern]
+  const rows: Array<[string, string[] | RegExp]> = [
+    ['red, ""', ["red", ""]],
+    ["red,", ["red", ""]],
+    ['red, "", blue', ["red", "", "blue"]],
+    ["red\nblue\n", ["red", "blue"]], // a trailing newline is a blank line, not an empty value
+    ['"", red', /first value/],
+    ["", /No values/],
+  ];
+  for (const [text, expected] of rows) {
+    const parsed = parseAxisValues(text, "str", { keepEmpty: true });
+    if (expected instanceof RegExp) assert.match(parsed.ok ? "" : parsed.error, expected, text);
+    else assert.deepEqual(parsed.ok ? parsed.values : parsed.error, expected, text);
+  }
+  assert.deepEqual(values('euler, ""', "str"), ["euler"]);
+  // End to end: the empty cell removes the searched text from the prompt.
+  const ctx = sdxl({ prompt: "a red fox" });
+  const p = plan([{ axisId: "prompt_sr", text: 'red, ""' }], ctx);
+  assert.deepEqual(
+    [0, 1].map((i) => buildCellRequest(p, i, base({ prompt: "a red fox" }), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false }).prompt),
+    ["a red fox", "a  fox"],
+  );
+});

@@ -41,6 +41,8 @@ export interface ComparePanelProps {
   context: CompareContext;
   busy: boolean;
   seedFieldEmpty: boolean;
+  // The form's typed Variation seed, null when empty or the model has none.
+  variationSeed: number | null;
   modelName: string | null;
   width: number;
   height: number;
@@ -174,7 +176,11 @@ export default function ComparePanel(props: ComparePanelProps) {
       toast.error(result.error);
       return;
     }
-    const state = createCompareRun(result.plan, context, { keepRandomSeeds: keepRandom, seedFieldEmpty: props.seedFieldEmpty });
+    const state = createCompareRun(result.plan, context, {
+      keepRandomSeeds: keepRandom,
+      seedFieldEmpty: props.seedFieldEmpty,
+      variationSeed: props.variationSeed,
+    });
     const tracked: CompareRunState = {
       ...state,
       onImages(i, images) {
