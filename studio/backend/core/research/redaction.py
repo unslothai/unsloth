@@ -17,7 +17,7 @@ import re
 from urllib.parse import quote, quote_plus
 
 
-# Escaped in untrusted evidence so gathered content cannot close a prompt block early.
+# Any occurrence inside untrusted evidence is escaped so gathered content cannot close a prompt block early.
 _PROMPT_DELIMITER_TAGS = re.compile(
     r"</?\s*(?:untrusted_web_evidence|untrusted_evidence|source_catalog"
     r"|document_source_catalog|conversation_context_json|research_question"
@@ -140,6 +140,7 @@ _QUERY_CREDENTIAL_SUFFIXES = (
     "token",
 )
 _QUERY_PUBLIC_ASSIGNMENT_SUFFIXES = ("designtoken", "cancellationtoken")
+# Bearer tokens carry no key=value label; the length floor keeps ordinary prose ("bearer of bad news") from matching.
 _QUERY_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _QUERY_EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _QUERY_PRIVATE_ID = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
@@ -189,6 +190,7 @@ def _redact_nonpublic_ip(match: "re.Match[str]") -> str:
 
 
 def _redact_nonpublic_ipv6(match: "re.Match[str]") -> str:
+    # Strip brackets and any zone id before validating; redact non-global addresses.
     candidate = match.group(0).strip("[]").split("%", 1)[0]
     try:
         return " " if not ipaddress.ip_address(candidate).is_global else match.group(0)
@@ -197,7 +199,7 @@ def _redact_nonpublic_ipv6(match: "re.Match[str]") -> str:
 
 
 def _escape_link_destination(url: str) -> str:
-    # Escape an unbalanced ')' so a source URL cannot close the citation and inject a link.
+    # Escape an unbalanced ")" so a source URL cannot close the citation and inject a link.
     out: list[str] = []
     depth = 0
     for char in url:

@@ -31,11 +31,13 @@ _EVENT_FLUSH_SECONDS = 1 / 60
 # Reading pauses past this many events behind a running commit, so a wedged database cannot buffer a generation.
 _MAX_PENDING_EVENTS = 4096
 _SHUTDOWN_GRACE_SECONDS = 10.0
+# Post-cancel budget, shorter than the grace period: the run is abandoned, only prompt return matters
 _SHUTDOWN_CANCEL_SECONDS = 5.0
 # Desktop force-kills the backend after five seconds.
 _SWEEP_SHUTDOWN_SECONDS = 0.5
-# A century: clear of any real lease, far below where integer milliseconds overflow.
+# Durable runs set cancel_on_disconnect=False, so reaping keys on progress, not connectedness. A century: clear of real leases, far below ms overflow.
 _MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
+# Admission keep-alive cap: a day means the queue never reports; 3x still fits _MAX_ENV_SECONDS
 _MAX_ADMISSION_INTERVAL_SECONDS = 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
@@ -78,6 +80,7 @@ def _background_request(
         "query_string": b"",
         "headers": [
             (b"x-unsloth-generation-run", run_id.encode("ascii", "ignore")),
+            # Durable runs replay their event log to the UI, which needs the Unsloth control frames (see routes.inference).
             (b"x-unsloth-events", b"1"),
             *(
                 (name.encode("latin-1"), value.encode("latin-1"))
@@ -145,7 +148,7 @@ def _env_seconds(name: str, default: float) -> float:
         )
         return default
     if value > _MAX_ENV_SECONDS:
-        # Past ~1.8e305 the multiply to milliseconds overflows.
+        # Past ~1.8e305 the multiply to ms overflows and every sweep raises; clamp rather than reject, since huge already meant never reap.
         logger.warning(
             "chat_generation_lease_env_clamped",
             variable = name,
@@ -163,6 +166,7 @@ async def _sweep_in_daemon_thread(fn, /, *args, **kwargs):
     future = loop.create_future()
 
     def _settle(setter, value):
+        # Loop may already be closed: this daemon thread can outlive the shutdown that abandoned it
         try:
             loop.call_soon_threadsafe(lambda: future.done() or setter(value))
         except RuntimeError:
@@ -215,6 +219,7 @@ class ChatGenerationLeaseSweeper:
                 "UNSLOTH_STUDIO_CHAT_RUN_LEASE_SWEEP_INTERVAL_S", _LEASE_SWEEP_INTERVAL_SECONDS
             ),
         )
+        # 0 disables the sweep entirely, matching UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S.
         configured = max(
             0.0,
             timeout_s
@@ -225,6 +230,7 @@ class ChatGenerationLeaseSweeper:
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
+    # Generous grace for a settled producer to unwind; cancelling mid-teardown is worse
     _FORCE_CANCEL_GRACE_S = 30.0
 
     @property
@@ -250,12 +256,14 @@ class ChatGenerationLeaseSweeper:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # A failed sweep (locked DB, torn-down home in tests) must not retire the watchdog for process life
                 logger.warning("chat_generation_lease_sweep_failed", error = repr(exc))
 
     async def sweep_once(self) -> list[str]:
         if not self.enabled:
             return []
         settled: list[tuple[Any, str]] = []
+        # Deactivated accounts too: their wedged producer never sees the cancel event.
         for account in sweepable_job_accounts():
             settled.extend(
                 (account, run_id)
@@ -279,12 +287,14 @@ class ChatGenerationLeaseSweeper:
             if supervisor is None:
                 continue
             if _run_id_held_by_another_account(account, run_id):
+                # Another account started a live run under this id; the slot is theirs.
                 logger.warning(
                     "chat_generation_lease_cancel_skipped",
                     run_id = run_id,
                     reason = "another account holds the live registration for this id",
                 )
                 continue
+            # Settled row, but a wedged producer still holds its slot; cancel it inside the owner's namespace
             try:
                 run_as(account, supervisor.cancel, run_id)
             except Exception as exc:
@@ -310,6 +320,7 @@ class ChatGenerationLeaseSweeper:
         if task is None or task.done():
             return
         if account is not None and _run_id_held_by_another_account(account, run_id):
+            # The slot changed hands during the grace period.
             return
         logger.warning(
             "chat_generation_run_force_cancelled",
@@ -325,7 +336,7 @@ class ChatGenerationLeaseSweeper:
         task, self._task = self._task, None
         if task is None:
             return
-        # asyncio.wait, never wait_for(gather(...)); see ChatGenerationSupervisor.stop.
+        # Short wait, not the producer grace: a sweep parked on the writer lock would use up the Desktop exit budget. asyncio.wait, never wait_for(gather(...)).
         _done, pending = await asyncio.wait({task}, timeout = _SWEEP_SHUTDOWN_SECONDS)
         if not pending:
             return
@@ -351,8 +362,11 @@ def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
 
 # Pinned by a test against the constant in routes.
 _ADMISSION_WAIT_MARKER = ": admission-wait"
+# Renew unconditionally: wait renewals are rate limited and the lease equals the first-token timeout
 _ADMISSION_DONE_MARKER = ": admission-done"
+# A server-side tool still running. Rate limited like the wait marker.
 _TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
+# Prefill advancing while prompt_progress is dropped; renews the lease like the tool heartbeat.
 _PREFILL_PROGRESS_MARKER = ": prefill-progress"
 
 
@@ -365,7 +379,7 @@ def _minimum_lease_seconds() -> float:
         interval = float(llama_admission_config_from_env().keepalive_interval_s)
     except Exception:
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
-    # `inf` passes the upstream parser and would make the lease infinite.
+    # inf passes the upstream parser and makes the lease infinite; an oversized finite cadence stretches it past any horizon.
     if not math.isfinite(interval) or interval > _MAX_ADMISSION_INTERVAL_SECONDS:
         logger.warning(
             "chat_generation_admission_cadence_ignored",
@@ -399,11 +413,11 @@ def _clamped_lease_timeout(configured: float) -> float:
 
 
 def _renew_interval_seconds() -> float:
-    """Derived from the lease, not fixed: a fixed 30s would renew after a shorter lease had expired."""
+    """Derived from the lease, not a fixed 30s that renews after a shorter lease expired; a quarter gives 3 renewals, floor 0.25s avoids write per second."""
     lease = _applied_lease_timeout(
         _env_seconds("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS)
     )
-    if lease <= 0.0:
+    if lease <= 0.0:  # sweeping disabled, so cadence only controls write volume
         return 30.0
     # The floor must stay under the lease.
     return min(30.0, max(0.25, lease / 4.0))
@@ -439,12 +453,10 @@ class ChatGenerationSupervisor:
                 pass
             return True
         cancel_event = threading.Event()
-        # Read by state.tool_approvals.wait_tool_decision: a parked approval waits for the returning
-        # session. Bounded by UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S per wait and by the lease sweeper,
-        # which sets this event once progress ages past the lease.
+        # Read by wait_tool_decision. The UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S ceiling ends one wait, not the run; the lease sweeper bounds a stalled producer.
         cancel_event.durable = True
         cancel_event.durable_run_id = run_id
-        # The id alone is not unique across accounts.
+        # Same scope ActiveGeneration captures below: the id alone is not unique across accounts.
         cancel_event.durable_account_id = current_account_id() or ""
         # Parking makes no progress, so without renewal the sweeper caps an attended approval at the lease.
         cancel_event.renew_lease = lambda: db.touch_progress(run_id)
@@ -517,13 +529,14 @@ class ChatGenerationSupervisor:
             if task is not None and not task.done():
                 task.cancel()
         active_generations.cancel_run(run_id)
+        # Inference cancel registry closes the gap where registration is imminent but not yet observed here
         from routes.inference import _cancel_by_cancel_id_or_stash
 
         _cancel_by_cancel_id_or_stash(run_id)
 
     async def stop(self) -> None:
         self._stopping = True
-        # Before the runs, so the sweeper cannot settle a run as stalled while shutdown settles it.
+        # before the runs, so the sweeper cannot settle a run as stalled while shutdown is settling it as interrupted
         sweeper = getattr(getattr(self.app, "state", None), "chat_generation_lease_sweeper", None)
         if sweeper is not None:
             await sweeper.stop()
@@ -549,7 +562,7 @@ class ChatGenerationSupervisor:
                 ", ".join(stuck),
             )
 
-    # Total time, not a count: the interval derives from the lease.
+    # Total time, not a count: the interval derives from the lease. Capped so a preparation that never returns cannot keep its lease alive forever.
     _PREPARE_RENEW_MAX_SECONDS = 2 * 60 * 60
 
     @contextlib.asynccontextmanager
@@ -578,6 +591,7 @@ class ChatGenerationSupervisor:
         interval = _renew_interval_seconds()
         for _ in range(max(1, int(self._PREPARE_RENEW_MAX_SECONDS / interval))):
             await asyncio.sleep(interval)
+            # Skip a contended stamp, not the rest, or a healthy long load is reaped when stamps age out
             await self._try_touch_progress(run_id)
 
     async def _produce(
@@ -610,6 +624,7 @@ class ChatGenerationSupervisor:
         last_flush = -math.inf
         finish_reason: str | None = None
         error: str | None = None
+        # Sent on its own chunk, since the finish chunk still reads `stop`.
         quote_cut = False
         saw_done = False
         worker_token: str | None = None
@@ -692,6 +707,7 @@ class ChatGenerationSupervisor:
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
                 payload = ChatCompletionRequest.model_validate(request_payload)
+                # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease
                 response = await produce_openai_chat_completions(
                     payload,
                     _background_request(

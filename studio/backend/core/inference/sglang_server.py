@@ -56,7 +56,7 @@ if torchao_utils is not None:
     torchao_utils.apply_torchao_config_to_model = _apply_torchao_config
 
 if __name__ == "__main__":
-    # Key arrives via env so it never shows in the process list.
+    # Key arrives via env, never ps; the argv append only changes the interpreter copy, not /proc/pid/cmdline.
     key = os.environ.pop("UNSLOTH_ENGINE_API_KEY", None)
     if key:
         sys.argv += ["--api-key", key]

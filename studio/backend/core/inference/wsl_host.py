@@ -113,8 +113,7 @@ appendWindowsPath=false
 root=/mnt/
 """
 
-# The engine exits when Studio closes stdin, so vLLM never outlives it.
-# fd 3: a non-interactive sh gives background jobs /dev/null as stdin.
+# Engine runs in its own process group, exits when Studio closes stdin, so vLLM never outlives it; fd 3 copies stdin since background jobs get /dev/null.
 RUNNER = """#!/bin/sh
 exec 3<&0
 setsid "$@" </dev/null &
@@ -167,6 +166,8 @@ def host_dir() -> Path:
 
 def distro_name() -> str:
     from utils.paths.storage_roots import studio_root
+
+    # One distro per Studio home, so two installs never drive the same guest.
     return "Unsloth-Engines-" + hashlib.sha256(str(studio_root()).encode()).hexdigest()[:8]
 
 
@@ -303,6 +304,7 @@ def wsl_state() -> str:
     if state.get("state") == "restart_required":
         if state.get("boot") == boot_id():
             return "restart_required"
+        # Restarted and WSL still does not start: something the user must fix.
         return "blocked: " + (blocker(output) or output.strip()[-300:] or "WSL did not start.")
     return "missing"
 
@@ -534,6 +536,7 @@ def ensure_distro(
         if code and distro_name() in registered_distros():
             raise RuntimeError("Could not reset the WSL environment. " + output.strip()[-500:])
         target = host_dir() / "distro"
+        # An import interrupted before registration leaves its VHD behind and --import refuses it.
         shutil.rmtree(target, ignore_errors = True)
         target.mkdir(parents = True, exist_ok = True)
         code, output = run(
@@ -577,7 +580,7 @@ def prepare(
     cancel = None,
     platform = "cuda",
 ) -> None:
-    """Everything before the engine's own packages. Raises ``Waiting`` for a user step."""
+    """Everything before the engine's own packages; raises Waiting for a user step; vLLM and SGLang share one download, prompt and distro import."""
     with _PREPARE_LOCK:
         _prepare(progress, cancel, platform)
 

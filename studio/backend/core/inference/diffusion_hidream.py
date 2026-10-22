@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 
 HIDREAM_FAMILY_NAME = "hidream-i1"
 
+# Open mirror of the gated meta-llama/Meta-Llama-3.1-8B-Instruct the pipeline expects.
 HIDREAM_LLAMA_REPO = "unsloth/Meta-Llama-3.1-8B-Instruct"
 HIDREAM_LLAMA_BF16_BYTES = 16_060_556_376
 
@@ -36,7 +37,7 @@ def hidream_te4_kwargs(
     target: Any = None,
     local_files_only: bool = False,
 ) -> dict[str, Any]:
-    """TE4 is handled here as the generic pass skips it; local_files_only raises instead of downloading."""
+    """Returns {text_encoder_4, tokenizer_4} kwargs; TE4 is fp8-cast only under layerwise fp8; local_files_only raises instead of downloading."""
     import torch  # noqa: F401 -- dtype values are torch dtypes; import keeps parity with callers
     from transformers import AutoTokenizer, LlamaForCausalLM
 

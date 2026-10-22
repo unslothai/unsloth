@@ -29,7 +29,7 @@ def sentencepiece_should_be_disabled():
 
 
 def disable_sentencepiece_on_windows():
-    """Sets a None sys.modules sentinel so import fails as if uninstalled, and the DLL is never loaded."""
+    """Sets a None sys.modules sentinel so import fails as if uninstalled; must run before transformers is imported, and the DLL is never loaded."""
     if not sentencepiece_should_be_disabled():
         return False
     if "sentencepiece" in sys.modules:

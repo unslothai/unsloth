@@ -36,7 +36,7 @@ from typing import Any, Optional
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
 _MIN_TRITON = (3, 2)
-# torch._int_mm needs M > 16; smaller M keeps the stock path.
+# torch._int_mm needs more than 16 rows; torchao's own safe_int_mm handles the rest, so small M keeps the stock path.
 _MIN_ROWS = 17
 _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_dq_gelu_quant"
@@ -47,13 +47,18 @@ _SWIGLU_ATTR = "_unsloth_i8_swiglu"
 _LOCK = threading.Lock()
 # Read by the traced forwards: dynamo must not trace into the lru_cache'd registration.
 _OP_HANDLE: Any = None
+# set once the act quant kernel matched torchao bit for bit on a device; None = torchao's quant
 _ACTQ_HANDLE: Any = None
+# device indices whose own probe passed; the kernel never runs on a device that failed or was never probed
 _ACTQ_DEVICES: frozenset = frozenset()
+# UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
 _LINEAR_OFF = False
+# torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
 _MARK = "_unsloth_i8_fused_prev"
 _NO_PREV = object()
+# diffusion_int8_gemm's marker: int8_linear leaves those Linears to their fused-dequant GEMM forward
 _I8_GEMM_MARK = "_unsloth_i8_gemm_prev"
 
 
@@ -99,11 +104,12 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _rbf16(x):
+        # Round-to-nearest-even to bf16, kept in fp32 (one cvt; faster here than the integer-op form).
         return x.to(tl.bfloat16).to(tl.float32)
 
     @triton.jit
     def _gelu_tanh(y):
-        # ATen GELU(tanh) op for op (else not bf16-equal); *_rn stops ptxas FMA-fusing on sm_100.
+        # ATen's GELU(tanh) op for op (y / (1 + exp(-2u)) is NOT bf16-equal); *_rn: ptxas FMA-fuses f32x2 on sm_100.
         cube = tl.extra.cuda.libdevice.mul_rn(tl.extra.cuda.libdevice.mul_rn(y, y), y)
         inner = 0.7978845608028654 * tl.extra.cuda.libdevice.add_rn(
             y, tl.extra.cuda.libdevice.mul_rn(0.044715, cube)
@@ -125,7 +131,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         FP32_SCALE: tl.constexpr,
         PIN_RN: tl.constexpr,
     ):
-        # torchao Int8Tensor epilogue order; FINAL_ROUND=False leaves the last rounding to the caller.
+        # Epilogue as torchao: (int32 * x_scale) to bf16, * w_scale, + bias, then bf16; FINAL_ROUND=False defers the last round (it commutes with row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
         if FP32_SCALE:
             c = c.to(tl.float32)
@@ -136,6 +142,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         w = tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
             tl.float32
         )
+        # PIN_RN (sm_100+): ptxas fuses packed f32x2 mul + add into an FMA even with fp fusion off; elsewhere it costs.
         if PIN_RN:
             y = tl.extra.cuda.libdevice.mul_rn(y, w)
         else:
@@ -234,6 +241,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 acc = tl.maximum(acc, tl.where(m, tl.abs(g), 0.0))
             amax = tl.max(acc, axis = 0)
         if HAS_PREFIX:
+            # FluxSingleTransformerBlock: the bf16 attention output sits in front of the GELU branch in the row.
             b_idx = row // S
             s_idx = row % S
             pbase = p_ptr + b_idx * p_sb + s_idx * p_ss
@@ -266,6 +274,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 qi = tl.extra.cuda.libdevice.nearbyint(p)
                 qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
                 tl.store(qrow + j, qi.to(tl.int8), mask = m)
+        # pass 2: rebuild (the int32 row is mostly still in L2) and quantize.
         for k in range(0, N, CHUNK):
             offs = k + base
             m = offs < N
@@ -296,6 +305,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _silu(y):
+        # ATen: x / (1 + exp(-x)) in fp32
         return y / (1.0 + tl.exp(-y))
 
     @triton.jit
@@ -424,7 +434,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         ONE_PASS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
     ):
-        # Matches torchao from_hp PerRow: <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps fp32
+        # Matches torchao from_hp PerRow: torchao <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps them fp32; q = clamp(rint, -128, 127).
         row = tl.program_id(0).to(tl.int64)
         offs = tl.arange(0, BLOCK)
         xrow = x_ptr + row * stride_x
@@ -1049,7 +1059,7 @@ def _resolve_intmm() -> Any:
 
 def _int_mm(a: Any, weight: Any) -> Any:
     module = _INTMM_MODULE
-    if module is None:
+    if module is None:  # a direct call before any install (tests): resolve eagerly
         module = _resolve_intmm()
         if module is None:
             raise ImportError("torchao ships no safe_int_mm in any known module")
@@ -1232,7 +1242,7 @@ def _torchao_epilogue(c: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> An
 
 
 def int8_linear(module: Any, x: Any) -> Any:
-    """Skips torchao 0.17's zero-point correction, which is a no-op for symmetric int8 activations."""
+    """Skips the torchao 0.17 zero-point correction (a no-op for symmetric int8 activations); LoRA, legacy, small-M, CPU and other cases stay module(x)."""
     from torch import nn
 
     from .diffusion_convrot import is_rotated_linear
@@ -1532,6 +1542,7 @@ def install(
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
     global _ACTQ_HANDLE, _ACTQ_DEVICES, _LINEAR_OFF
     if int8_fused_disabled():
+        # process-global: a previous load's probe must not outlive the kill switch
         _ACTQ_HANDLE = None
         _ACTQ_DEVICES = frozenset()
         _LINEAR_OFF = True
@@ -1828,6 +1839,7 @@ def uninstall(transformer: Any = None) -> None:
     """Restore the stock forwards under ``transformer`` (a dropped transformer needs nothing: the patch is per instance)."""
     if transformer is None:
         return
+    # A deferred install still pending (weights not yet on the GPU) must not fire at the next forward.
     cancel_first_call(transformer, "int8_fused")
     with _LOCK:
         for module in transformer.modules():

@@ -31,6 +31,7 @@ def _strip_think_tags(text: str) -> str:
     if stripped:
         return stripped
 
+    # Everything was inside <think> tags: return the last block's inner content.
     matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
     if matches:
         return matches[-1].strip()
@@ -56,7 +57,7 @@ def precache_helper_gguf():
         )
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        # Unsloth disables bars server-wide, so only re-enable them if they were on.
+        # Remember whether bars were already off: Unsloth turns them off for the whole server, so enabling them unconditionally on the way out would undo that for every later in-process download.
         _bars_were_off = bool(are_progress_bars_disabled())
         disable_progress_bars()
         logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
@@ -152,6 +153,7 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
                 pass
 
 
+# ─── Public API ───────────────────────────────────────────────────────
 def llm_generate_vlm_instruction(
     column_names: list[str],
     samples: list[dict],
@@ -299,6 +301,7 @@ def llm_generate_dataset_warning(
     return warning
 
 
+# ─── Dataset Conversion Advisor ──────────────────────────────────────
 def _parse_json_response(text: str) -> Optional[dict]:
     """Parse JSON from LLM response, handling markdown fences and noise."""
     if not text:
@@ -318,6 +321,7 @@ def _parse_json_response(text: str) -> Optional[dict]:
     except json.JSONDecodeError:
         pass
 
+    # Greedy match for the outermost {...}.
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if match:
         try:
@@ -530,6 +534,7 @@ def _run_multi_pass_advisor(
             logger.warning(f"Advisor Pass 1 failed to produce JSON: {raw1[:200]}")
             return None
 
+        # Already conversational: skip passes 2-3.
         if pass1.get("is_conversational") and not pass1.get("needs_conversion"):
             return {
                 "success": True,
@@ -632,6 +637,7 @@ def _run_multi_pass_advisor(
         column_roles = pass2.get("column_roles", {})
         label_map = pass2.get("label_mapping") or {}
 
+        # Must have at least one user AND one assistant.
         roles_present = set(column_roles.values())
         if "user" not in roles_present or "assistant" not in roles_present:
             logger.warning(f"Pass 2 sanity fail: missing user or assistant role: {column_roles}")
@@ -686,6 +692,7 @@ def _run_multi_pass_advisor(
             )
 
             if raw3:
+                # Pass 3 returns raw text, not JSON.
                 cleaned = raw3.strip().strip('"').strip("'").strip()
                 if len(cleaned) >= 20 and cleaned.lower() not in ("null", "none", ""):
                     sys_prompt = cleaned
@@ -740,7 +747,7 @@ def llm_conversion_advisor(
     model_name: Optional[str] = None,
     model_type: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Full conversion advisor: fetch the HF card, then run the multi-pass LLM analysis, falling back to simple llm_classify_columns() if that fails. Returns a result dict (success, suggested_mapping, system_prompt, label_mapping, dataset_type, is_conversational, user_notification, ...) or None."""
+    """Fetch the HF dataset card only when the name looks like a HF dataset (has a slash)."""
     dataset_card = None
     dataset_metadata = None
     if dataset_name and "/" in dataset_name:

@@ -19,7 +19,7 @@ from utils.hf_dataset_options import (
 from utils.training_runs import normalize_project_name
 
 
-# Rejects "++512" and Unicode digits that pass str.isdigit().
+# ASCII integer, optional single sign. Rejects "++512" and Unicode digits that pass str.isdigit().
 _INT_RE = re.compile(r"[+-]?[0-9]+")
 _HF_DATASET_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?")
 TRAINING_REQUEST_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
@@ -29,12 +29,15 @@ _MAX_BATCH_SIZE = 4096
 _MAX_GRAD_ACCUM = 4096
 _MAX_STEPS = 1_000_000
 _MAX_EPOCHS = 1000
+# 2M is a sanity cap; host RAM runs out long before this.
 _MAX_SEQ_LENGTH = 2_000_000
 _MAX_LR_VALUE = 1.0
 _MAX_LORA_R = 16_384
 _MAX_LORA_ALPHA = 32_768
 _MIN_VISION_IMAGE_SIZE = 256
+# 2048 is the highest most llms stay stable at
 _MAX_VISION_IMAGE_SIZE = 2048
+# Caps .skip(n) on streaming datasets so an absurd index cannot iterate effectively forever.
 _MAX_DATASET_SLICE_INDEX = 1_000_000_000
 
 
@@ -64,6 +67,7 @@ class S3Config(BaseModel):
 
     @model_validator(mode = "after")
     def _check_credentials(self) -> "S3Config":
+        # Require either IAM role auth or a full key pair so credentials are never half-configured.
         if not self.use_iam_role and not (self.access_key_id and self.secret_access_key):
             raise ValueError(
                 "s3_config requires either use_iam_role=True or both "
@@ -146,6 +150,7 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+    # The same identity the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_name")(_resolve_inventory_handle)
     project_name: Optional[str] = Field(
         None,
@@ -214,6 +219,7 @@ class TrainingStartRequest(BaseModel):
     local_eval_datasets: List[str] = Field(
         default_factory = list, description = "List of local eval dataset paths"
     )
+    # The history detail references these, and Resume replays that payload.
     _resolve_the_dataset_handles = field_validator("local_datasets", "local_eval_datasets")(
         _resolve_inventory_handles
     )
@@ -272,7 +278,7 @@ class TrainingStartRequest(BaseModel):
     @field_validator("eval_steps", mode = "before")
     @classmethod
     def _normalize_eval_steps(cls, value: Any) -> Any:
-        # float is not strict: `true` would arrive as 1.0 (every step).
+        # float is not strict, so `"eval_steps": true` would arrive as 1.0, a cadence of every step.
         if isinstance(value, bool):
             raise ValueError("eval_steps must be a number, not a boolean")
         # JSON 1e309 coerces to inf; store as disabled so config_json has no `Infinity`.
@@ -280,6 +286,7 @@ class TrainingStartRequest(BaseModel):
             if not math.isfinite(float(value)):
                 return 0.0
         except OverflowError:
+            # float() refuses a JSON int too large to represent: same unusable cadence as inf.
             return 0.0
         except (TypeError, ValueError):
             pass
@@ -288,6 +295,7 @@ class TrainingStartRequest(BaseModel):
     # After-validators run in definition order; keep these order-independent.
     @model_validator(mode = "after")
     def _validate_dataset_slice(self) -> "TrainingStartRequest":
+        # start == end is intentionally allowed (a deliberate single-row slice); the trainer warns.
         if (
             self.dataset_slice_start is not None
             and self.dataset_slice_end is not None
@@ -367,6 +375,7 @@ class TrainingStartRequest(BaseModel):
     @field_validator("learning_rate", mode = "before")
     @classmethod
     def _check_learning_rate(cls, v):
+        # Stringify because downstream call sites float() it themselves.
         lr = _parse_lr(v)
         return str(lr)
 
@@ -420,7 +429,7 @@ class TrainingStartRequest(BaseModel):
     @field_validator("vision_image_size", mode = "before")
     @classmethod
     def _check_vision_image_size(cls, v: Any) -> Optional[int]:
-        # mode="before" sees bools (not 1/0) for a precise error.
+        # mode="before" sees True/False as bool (not 1/0) for a precise error.
         if v is None:
             return v
         if isinstance(v, bool):
@@ -432,6 +441,7 @@ class TrainingStartRequest(BaseModel):
         elif isinstance(v, float) and v.is_integer():
             coerced = int(v)
         else:
+            # numpy ints / Integral subclasses, without a hard numpy import.
             try:
                 import numbers
                 if isinstance(v, numbers.Integral):
@@ -662,6 +672,7 @@ class TrainingStartRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(
         None, description = "Saved training output directory to resume from"
     )
+    # The history detail hands out a handle for the resumable directory; Resume sends it back.
     _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
         _resolve_inventory_handle
     )
@@ -687,6 +698,7 @@ class TrainingStartRequest(BaseModel):
     @field_validator("target_modules", mode = "before")
     @classmethod
     def _normalize_target_modules(cls, value: Any) -> Any:
+        # Sanitized non-LoRA history stores the unused value as null; treat it as an omitted list.
         return [] if value is None else value
 
     @model_validator(mode = "after")
@@ -706,6 +718,7 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
+        # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
         return self
@@ -726,6 +739,7 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
+        # Direct API, YAML or CLI callers bypass the frontend, so reject variant flag conflicts early.
         active = [
             name
             for name, enabled in (
@@ -893,12 +907,13 @@ class TrainingRunSummary(BaseModel):
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
+    # Why resume is unavailable when the reason is the recorded resource provenance rather than the checkpoint itself.
     resume_blocked_reason: Optional[str] = None
     resumed_later: bool = False
     artifacts_available: bool = False
     has_preview_model: bool = False
     preview_ref: Optional[str] = None
-    # HMAC capability token for the `/p/{preview_ref}` share link (`?k=`).
+    # HMAC capability token for the `/p/{preview_ref}` share link, appended as `?k=`; None when not previewable.
     preview_sig: Optional[str] = None
 
 
@@ -966,6 +981,7 @@ class DiffusionTrainingStartRequest(BaseModel):
     _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    # Resume replays the stored config, whose `output_dir` answers as a handle.
     _resolve_the_output_handle = field_validator("output_dir")(_resolve_inventory_handle)
     model_family: Optional[str] = Field(
         None,
@@ -987,7 +1003,7 @@ class DiffusionTrainingStartRequest(BaseModel):
             "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
         ),
     )
-    # Upper bound too: JSON 1e309 becomes inf and passes gt-only.
+    # Upper bound too: JSON 1e309 becomes inf and passes gt-only; values >= 1.0 diverge, and an inf rate would evict residents.
     learning_rate: float = Field(1e-4, gt = 0, lt = 1.0)
     train_batch_size: int = Field(1, ge = 1, le = 64)
     gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
@@ -995,6 +1011,7 @@ class DiffusionTrainingStartRequest(BaseModel):
     lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
     # lt 1: dropout p=1.0 zeroes the LoRA branch and saves an untrained adapter.
     lora_dropout: float = Field(0.0, ge = 0.0, lt = 1.0)
+    # Mirrors DiffusionLoraConfig knobs so set values are not silently dropped; defaults are SDXL's.
     lora_target_modules: List[str] = Field(
         default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
         description = "U-Net modules to attach LoRA to",
@@ -1006,7 +1023,7 @@ class DiffusionTrainingStartRequest(BaseModel):
         allow_inf_nan = False,
         description = "Gradient clipping max-norm; 0 disables clipping",
     )
-    # Bounded to what torch.manual_seed accepts.
+    # Bounded to what torch.manual_seed accepts: an out-of-range value passes preflight, evicts residents, then dies in the trainer.
     seed: int = Field(42, ge = -(2**63), le = 2**64 - 1)
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
     # Finite: inf gamma collapses min-SNR weights to 1.0.
@@ -1073,6 +1090,7 @@ class DiffusionTrainingStartRequest(BaseModel):
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
         ),
     )
+    # DiT-only lever: undeclared, model_dump() silently dropped it. Defaults match DiffusionLoraConfig.
     ema_decay: float = Field(
         0.0, ge = 0.0, lt = 1.0, description = "EMA of the LoRA weights; 0 disables it"
     )
@@ -1134,6 +1152,7 @@ class DiffusionTrainingStartRequest(BaseModel):
             "checkpoint at step 11 with train_steps=500 trains steps 12..500."
         ),
     )
+    # Diffusion Resume replays `checkpoint_path` or the output dir; both answer as references.
     _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
         _resolve_inventory_handle
     )
@@ -1167,6 +1186,7 @@ class DiffusionMetricHistory(BaseModel):
     loss: List[float] = Field(default_factory = list)
     lr: List[Optional[float]] = Field(default_factory = list)
     grad_norm: List[Optional[float]] = Field(default_factory = list)
+    # Null for all families but MiniMax-H3; the chart uses that to decide whether to draw split curves.
     video_loss: List[Optional[float]] = Field(default_factory = list)
     audio_loss: List[Optional[float]] = Field(default_factory = list)
 
@@ -1192,25 +1212,32 @@ class DiffusionTrainingStatusResponse(BaseModel):
     loss: Optional[float] = None
     avg_loss: Optional[float] = None
     learning_rate: Optional[float] = None
+    # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts).
     grad_norm: Optional[float] = None
+    # The combined loss can hold steady while one modality degrades, so these are reported apart.
     video_loss: Optional[float] = None
     audio_loss: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
+    # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
     ema_path: Optional[str] = None
+    # Catalog mirror path plus the family and base model, so the UI can deploy the adapter.
     catalog_path: Optional[str] = None
     family: Optional[str] = None
     base_model: Optional[str] = None
+    # Live throughput + peak VRAM (from the trainer's progress events).
     samples_per_second: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # Newest bundle and step, why it could not be written (Resume tooltip), and where a resume started.
     checkpoint_path: Optional[str] = None
     checkpoint_step: Optional[int] = None
     resume_blocked_reason: Optional[str] = None
     resumed_from_step: Optional[int] = None
     started_at: Optional[float] = None
     updated_at: Optional[float] = None
+    # Bounded step/loss/lr history for the live loss + LR charts.
     metric_history: Optional[DiffusionMetricHistory] = None
     samples: List[DiffusionSampleImage] = Field(default_factory = list)
 
@@ -1228,17 +1255,21 @@ class DiffusionTrainingRunSummary(BaseModel):
     step: int = 0
     total_steps: int = 0
     avg_loss: Optional[float] = None
+    # Whether this run left an adapter on disk (full completion or stop-and-save).
     saved: bool = False
     catalog_path: Optional[str] = None
     instance_prompt: Optional[str] = None
     started_at: Optional[float] = None
     ended_at: Optional[float] = None
+    # The run's adapter directory, which is also what a Resume replays as resume_from_checkpoint.
     output_dir: Optional[str] = None
     # Re-derived from disk at read time, so deleting checkpoints removes the action.
     can_resume: bool = False
     checkpoint_step: Optional[int] = None
+    # The exact bundle a resume would continue, not whatever is newest in a folder two runs share.
     checkpoint_path: Optional[str] = None
     resume_blocked_reason: Optional[str] = None
+    # Lineage: the run this one continued, and the step it picked up from.
     resumed_from_job_id: Optional[str] = None
     resumed_from_step: Optional[int] = None
 
@@ -1267,6 +1298,7 @@ class DiffusionDatasetSummary(BaseModel):
     name: str
     path: str
     image_count: int
+    # Clips for video-trained families; default 0 keeps older payloads and image-only callers valid.
     clip_count: int = 0
     caption_count: int
 
@@ -1280,10 +1312,12 @@ class DiffusionTrainableFamily(BaseModel):
     base_repos: List[str] = Field(default_factory = list)
     defaults: dict = Field(default_factory = dict)
     vram_note: str = ""
+    # vram_note's facts as fields. Empty when this host cannot train the family.
     params: str = ""
     qlora_vram_gb: Optional[int] = None
     gated: bool = False
     note: str = ""
+    # base_precision modes this machine supports; empty means no selector, e.g. SDXL.
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
@@ -1335,6 +1369,7 @@ class DiffusionDatasetImageRecord(BaseModel):
     filename: str
     caption: Optional[str] = None
     caption_source: Literal["sidecar", "metadata", "none"] = "none"
+    # Clips are listed but have no pixel dimensions and the labeling grid skips them; default is image.
     kind: Literal["image", "clip"] = "image"
     width: int
     height: int

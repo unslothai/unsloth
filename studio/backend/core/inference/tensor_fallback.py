@@ -28,7 +28,7 @@ async def load_with_tensor_fallback(
     label: str = "",
     cancelled: Optional[Callable[[], bool]] = None,
 ) -> bool:
-    """Retry a failed tensor-split load as forced --split-mode layer; a user cancel is not retried."""
+    """Retry failed tensor-split load as --split-mode layer; a hard crash counts as failure, a user cancel is not retried, LLAMA_ARG_SPLIT_MODE=tensor is covered."""
     tensor_requested = _effective_tensor_parallel(extra_args, requested_tensor)
     try:
         success = await attempt_load(requested_tensor, extra_args)

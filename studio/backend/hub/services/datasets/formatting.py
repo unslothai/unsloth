@@ -129,6 +129,7 @@ def _serialize_binary_value(data):
 
 
 def _is_sample_sequence(samples) -> bool:
+    # A list from the JSON path or a numpy array straight from the decoder; never text, bytes or a nested cell.
     return hasattr(samples, "__len__") and not isinstance(
         samples, (str, bytes, bytearray, memoryview, dict)
     )
@@ -167,6 +168,7 @@ def _serialize_preview_value(value):
         pass
 
     if isinstance(value, dict):
+        # Undecoded HF Image/Audio cells are {"bytes": b"...", "path": ...}.
         raw = value.get("bytes")
         if isinstance(raw, (bytes, bytearray, memoryview)) and not (
             value.keys() - {"bytes", "path"}
@@ -237,7 +239,7 @@ def _select_tier1_repo_file(
     train_split: str,
     allow_unlabeled_fallback: bool = False,
 ) -> Optional[str]:
-    # "._train.parquet" (AppleDouble) would sort first.
+    # "._train.parquet" sorts first and would be handed to the single-file preview load.
     data_files = sorted(
         f
         for f in drop_shadowed_appledouble_names(list(files))
@@ -333,7 +335,7 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
-    # Read first, gate the answer: reading local disk is not the leak, returning it is.
+    # Media task from name and path hints alone, for a GGUF header that settles nothing; cloud files must never be opened, and callers differ on unrecognised names.
     if not _cached_preview_visible(request):
         return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
@@ -606,6 +608,7 @@ def check_format_response(
         preview_samples = None
         if not result["requires_manual_mapping"]:
             if result.get("suggested_mapping"):
+                # Heuristic-detected: show raw data so columns match the response (stripping happens at training).
                 preview_samples = _serialize_preview_rows(preview_slice)
             else:
                 try:
@@ -656,6 +659,7 @@ def check_format_response(
         scrubbed = modelscope_missing(e, request.dataset_name) or download_registry.scrub_secrets(
             str(e), hf_token = hf_token
         )
+        # Missing/gated/bad-token and malformed names are client errors, not 500s.
         status = hf_error_status(e)
         if (
             status is None
@@ -664,6 +668,7 @@ def check_format_response(
         ):
             status, scrubbed = 400, "Invalid dataset name"
         elif status is None and isinstance(e, FileNotFoundError):
+            # datasets raises DatasetNotFoundError (FileNotFoundError) for missing/gated.
             status = 404
         elif status is None and isinstance(e, ValueError):
             status = 400

@@ -64,7 +64,7 @@ def _string_literal(node) -> Optional[str]:
 
 @lru_cache(maxsize = 1)
 def _bad_mappings() -> Optional[dict]:
-    """None means the corrections could not be read, not an empty table; callers redirect nothing."""
+    """None means corrections could not be read, not an empty table; callers redirect nothing, since an uncorrected lookup can name a repo that does not exist."""
     try:
         models_dir = _unsloth_models_dir()
         if models_dir is None:
@@ -92,7 +92,7 @@ def _bad_mappings() -> Optional[dict]:
 
 
 def mirror_lookup_available() -> bool:
-    """Distinguishes a None from unsloth_public_mirror: no public copy, or tables that could not be read."""
+    """Tells a None from unsloth_public_mirror apart: no public copy, or unreadable tables; callers that refuse on None would refuse every gated model."""
     return _mapper_tables() is not None and _bad_mappings() is not None
 
 
@@ -116,7 +116,7 @@ def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) 
         mirror = None if lower.endswith("-bnb-4bit") else float_to_int.get(lower)
     else:
         mirror = int_to_float.get(lower) or map_to_unsloth_16bit.get(lower)
-    # get_model_name applies BAD_MAPPINGS to the input when tables resolve nothing.
+    # get_model_name applies BAD_MAPPINGS to the input when tables resolve nothing; else a 4-bit name resolves to a nonexistent -bnb-4bit repo
     corrections = _bad_mappings()
     if corrections is None:
         return None

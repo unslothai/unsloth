@@ -29,6 +29,7 @@ from hub.services.models.common import (
 
 logger = get_logger(__name__)
 
+# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf.
 _SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 
 
@@ -38,7 +39,7 @@ def staged_model_id(path: Path) -> str:
 
 
 def staged_gguf_files(hermes_dir: Path) -> List[Path]:
-    """Flat glob, not a walk, so assets/ is skipped; a split counts only when every part is on disk."""
+    """Flat glob, not a walk, so assets/ is skipped; continuation parts are never rows of their own."""
     try:
         files = sorted(p for p in hermes_dir.glob("*.gguf") if p.is_file())
     except OSError as exc:

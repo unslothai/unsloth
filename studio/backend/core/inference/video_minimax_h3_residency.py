@@ -16,12 +16,13 @@ H3_DIT_RESIDENT_ENV = "UNSLOTH_H3_DIT_RESIDENT"
 
 # Decimal GB each H3 render phase needs on top of the resident set (B200 peaks).
 H3_STREAM_WINDOW_GB = 1.5
+#   per million pixel-frames
 H3_ACTIVATION_GB_PER_MPIXEL_FRAME = 0.08
-# Fraction of activations: 1-2 GB MLP buffers fragment the allocator (OOM at 1344x768x124 without).
+#   fraction of the activations: 1-2 GB MLP buffers fragment the caching allocator (OOM at 1344x768x124 without it)
 H3_FRAGMENTATION_FRACTION = 0.5
 H3_VAE_DECODE_GB = 6.0
 H3_PHASE_OVERHEAD_GB = 1.8
-# Top-level group: 0.81 GB int8.
+#   top-level group: 0.81 GB int8
 H3_TOP_LEVEL_GB = 1.0
 
 
@@ -337,7 +338,7 @@ def _is_original_forward(fn: Any, module: Any) -> bool:
 
 
 def compile_blocks_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
-    """Compile each block's forward, not _call_impl, so hook state never enters compiled guards."""
+    """Compile each streamed block's forward, not _call_impl, so hook state stays out of guards; UNSLOTH_H3_COMPILE_BELOW_HOOKS=0 keeps old placement."""
     if str(os.environ.get(H3_COMPILE_BELOW_HOOKS_ENV, "")).strip().lower() in (
         "0",
         "off",
@@ -383,7 +384,7 @@ H3_TOP_GROUP_PIN_ENV = "UNSLOTH_H3_TOP_GROUP_PIN"
 
 
 def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
-    """diffusers builds the top group without a stream, so each forward uploads it from pageable memory."""
+    """diffusers builds top group without a stream, so each forward uploads it from pageable memory; UNSLOTH_H3_TOP_GROUP_PIN=0 keeps diffusers' group."""
     if str(os.environ.get(H3_TOP_GROUP_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
         return False
     from .video_minimax_h3_te import h3_te_pin_allowed
@@ -428,6 +429,7 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
         top.stream = stream
         top.low_cpu_mem_usage = False
         top.record_stream = True
+        # Blocking: nothing prefetches the top-level group.
         top.non_blocking = False
         with pinned_arena_for_group_offload():
             top.cpu_param_dict = top._init_cpu_param_dict()
@@ -505,7 +507,7 @@ def install_h3_stream_prefetch(
 
     if _pinned_memory_capped():
         depth = 1  # each in-flight group is pinned on the fly; diffusers' own path holds two near a ~1 GiB cap
-    # Prefetcher refuses replaced onload_: lift the wrappers (torchao int8), install, rewrap.
+    # Prefetcher refuses replaced onload_: lift the outside-inference_mode wrappers (torchao int8 cannot be re-pointed inside), install, then rewrap.
     groups = _all_offload_groups(transformer)
     # A top-level group the H3 pin left unstreamed (kill switch, host refusal) keeps its wrapper, so the generic
     # top-group adoption cannot pin it.
@@ -524,6 +526,7 @@ def install_h3_stream_prefetch(
         prefetcher = module_prefetcher(transformer)
         for group in groups:
             if getattr(group, "_unsloth_prefetcher", None) is prefetcher:
+                # owns() compares the instance onload_ with this
                 group._unsloth_prefetch_onload = group.__dict__.get("onload_")
         if prefetcher is not None:
             # (depth + 1) x the 0.8 GB top-level group would leave no block ahead once that group streams (12 GB).
@@ -531,6 +534,7 @@ def install_h3_stream_prefetch(
                 group_payload_bytes(top) if top is not None else 0,
                 [group_payload_bytes(g) for g in blocks],
             )
+            # end() puts groups copied ahead but never run back on the host copy; kick() queues copies
             for name in ("end", "kick"):
                 setattr(prefetcher, name, _outside_inference_mode(getattr(prefetcher, name)))
     return covered
@@ -577,7 +581,7 @@ def install_pinned_swap(
     logger: Any = None,
     label: str = "component",
 ) -> bool:
-    """Stock rotation uploads from pageable memory on every park; device moves use a pinned host copy."""
+    """Stock rotation uploads from pageable memory and copies back every park; device moves use pinned host copy; UNSLOTH_H3_VAE_PINNED_SWAP=0 keeps stock moves."""
     if str(os.environ.get(H3_VAE_PINNED_SWAP_ENV, "")).strip().lower() in (
         "0",
         "off",

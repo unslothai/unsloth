@@ -53,7 +53,7 @@ def _swap_self_pipe(loop) -> bool:
     old_ssock, old_csock = loop._ssock, loop._csock
     loop._self_reading_future = None
     loop._ssock, loop._csock = ssock, csock
-    # Follow the main-thread wakeup fd only if it still names our old socket.
+    # Follow the main-thread signal wakeup fd only if it still names our old socket.
     if threading.current_thread() is threading.main_thread():
         try:
             previous = signal.set_wakeup_fd(csock.fileno())
@@ -95,6 +95,7 @@ def install_proactor_self_pipe_guard() -> bool:
                 "Event loop self-pipe was closed from outside (often a network filter after sleep); rebuilding it"
             )
         if not _swap_self_pipe(self):
+            # f stays current, so the retry lands back here and tries the swap again.
             self.call_later(_REBUILD_BACKOFF_SECONDS, self._loop_self_reading, f)
             return None
         if quick_repeat:

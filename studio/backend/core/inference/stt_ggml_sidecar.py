@@ -123,11 +123,12 @@ def resolve_ggml_model_id(model: Optional[str]) -> str:
 
 
 def _managed_whisper_cpp_dir() -> Path:
-    """Mirrors managed_node_dir so managed runtimes share one parent directory; falls back to ~/.unsloth."""
+    """UNSLOTH_HOME/whisper.cpp if set, else STUDIO_HOME/whisper.cpp in custom mode, else ~/.unsloth/whisper.cpp; mirrors managed_node_dir."""
     legacy = Path.home() / ".unsloth" / "whisper.cpp"
     try:
         from utils.paths.storage_roots import studio_root, unsloth_home
 
+        # setup.sh installs whisper.cpp at <master root>, beside studio/. No env var bridges it.
         master = unsloth_home()
         if master is not None:
             return master / "whisper.cpp"
@@ -198,7 +199,7 @@ def _whisper_install_marker(binary: str) -> Optional[dict]:
 
 
 def slim_runtime_intact(binary: str) -> bool:
-    """All linked runtime files must be present; a broken slim install reads as engine-unavailable."""
+    """All linked runtime files must be present; legacy markers lacking linked_libraries use per-OS ggml name globs; broken slim reads as unavailable, never a crash."""
     lookup = lookup_marker(binary)
     marker = lookup.marker
     if lookup.invalid or marker is None:
@@ -242,11 +243,10 @@ def slim_runtime_intact(binary: str) -> bool:
             for name in runtime_dirs
         )
     if intact and marker.get("backend") == "rocm":
-        # hipBLASLt ships no catalog for RDNA2 (gfx1030), so only rocblas is required; any other
-        # name means stale wiring. Windows overlays wire no catalogs.
+        # hipBLASLt has no RDNA2 (gfx1030) catalog, so only rocblas is required (backend links librocblas directly); other names are stale wiring. Windows wires none.
         known_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
         required_runtime_dirs = set() if sys.platform == "win32" else {"rocblas"}
-        # Pin a version floor so an installer bump does not strand installs.
+        # Pin a version floor, not one version: wiring from version 2 on records linked_runtime_directories; an installer bump must not strand installs.
         wiring_version = marker.get("runtime_wiring_version")
         intact = (
             isinstance(wiring_version, int)
@@ -263,8 +263,7 @@ def slim_runtime_intact(binary: str) -> bool:
     return intact
 
 
-# Set when inference fails on a runtime that otherwise looks healthy (e.g. ROCm missing
-# Tensile libs); only inference can prove that. Cleared on success.
+# Set when inference fails on a runtime that looks healthy (ROCm missing Tensile libs); cleared on success. Process lifetime: a reinstall restarts Unsloth.
 _runtime_inference_failure: Optional[str] = None
 _runtime_failure_lock = threading.Lock()
 
@@ -303,6 +302,7 @@ def is_available() -> bool:
     try:
         import av  # noqa: F401
     except Exception:
+        # No PyAV means every transcription 501s on decode.
         return False
     return True
 
@@ -322,14 +322,14 @@ def ensure_engine_available() -> str:
     return binary
 
 
-# Module-level aliases keep patch points for tests; mirrors llama's binary_env().
+# Child env: binary dir first, secrets scrubbed, WSL2 ROCm system HIP libs before the bundle HIP (it cannot drive /dev/dxg). Aliases keep test patch points.
 
 _wsl_system_rocm_lib_dirs = wsl_system_rocm_lib_dirs
 _dedupe_existing_dirs = dedupe_existing_dirs
 
 
 def _whisper_server_child_env(binary: str) -> dict[str, str]:
-    """Scrubs secrets and points the home vars at a scratch dir so the binary cannot read token caches."""
+    """Scrubs secrets and points home vars at a scratch dir so the binary cannot read token caches; WSL2 ROCm system HIP libs go first."""
     binary = str(Path(binary).resolve())
     env = scrub_env(os.environ)
     isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
@@ -354,6 +354,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
             from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
 
             marker = _whisper_install_marker(binary)
+            # Slim bundles hardlink CUDA from their paired llama.cpp install; its marker holds the runtime.
             linked_from = marker.get("linked_from") if isinstance(marker, dict) else None
             paired_marker = (
                 read_llama_install_marker(linked_from)
@@ -378,6 +379,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     return env
 
 
+# Model file download: single files, deliberately outside the Model Hub flow.
 def _cached_model_path(
     model_id: str,
     *,
@@ -404,6 +406,7 @@ def _cached_model_path(
         except Exception:
             return None
 
+    # Explicit revisions keep verification on the downloaded commit.
     if revision is not None:
         return cached_at(revision)
 
@@ -459,6 +462,7 @@ class _GgmlDownloadState:
                 self._hub_cache,
                 self._revision,
             )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
@@ -594,7 +598,7 @@ class _GgmlDownloadState:
                 self._total_bytes = total_bytes
                 self._etag = etag
                 self._revision = revision
-            # Out of process so cancel() can terminate it; hf_hub_download in a thread is uninterruptible.
+            # out of process so cancel() can terminate it; a thread blocked in hf_hub_download could not be interrupted
             from core.inference.stt_download_worker import (
                 reap_download,
                 spawn_download,
@@ -618,7 +622,7 @@ class _GgmlDownloadState:
                 if self._cancelled:
                     terminate_download(process)
                 self._process = process
-            # reap_download() drops the adopted PID so terminate_all cannot signal a reused PID.
+            # Use reap_download(), not communicate(): only it drops the adopted PID, so terminate_all cannot signal a reused PID.
             stderr = reap_download(process)
             with self._lock:
                 if self._process is process:
@@ -735,17 +739,18 @@ class GgmlSttSidecar:
         # Secret route prefix: a web page that finds the loopback port cannot reach whisper-server.
         self._route = ""
         self._model_id: Optional[str] = None
+        # --no-gpu at the user's request, tracked because it varies per request.
         self._forced_cpu = False
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
-        # Read without the lock by training admission.
+        # Set while whisper-server starts, so training admission can count the accelerator memory it is about to bind. Read without the lock.
         self._loading = False
-        # Set under _lock but read without it: cancel_pending_load() runs while load() holds the lock.
+        # Set under _lock, read without it: cancel_pending_load() runs during load(); the event is the source of truth, terminate is best-effort.
         self._load_cancel_event: Optional[threading.Event] = None
         self._load_owner_cancel_event: Optional[threading.Event] = None
         self._starting_process: Optional[subprocess.Popen] = None
-        # Set before the updater waits for _lock, kept set while it replaces the install tree.
+        # set before the updater waits for _lock and kept set while it atomically replaces the managed install tree
         self._update_in_progress = False
 
     @property
@@ -849,8 +854,7 @@ class GgmlSttSidecar:
 
     @contextmanager
     def update_maintenance(self) -> Iterator[bool]:
-        """Publishes the flag before waiting on the lock, so no load can start against a half-
-        swapped tree."""
+        """Publishes the flag before waiting on the lock so no load starts on a half-swapped tree; the lock stays held across the install, as Windows relocks the exe."""
         self._update_in_progress = True
         try:
             with self._lock:
@@ -891,6 +895,7 @@ class GgmlSttSidecar:
         return True
 
     def wait_for_load_to_settle(self) -> None:
+        # load() holds _lock through startup and cancel cleanup, so this waits until the server is reaped.
         with self._lock:
             pass
 
@@ -966,8 +971,10 @@ class GgmlSttSidecar:
                     raise SttLoadCancelledError("GGUF STT model loading was cancelled.")
                 # Decided under the loading flag: training reads is_loading() without this lock.
                 if force_cpu:
+                    # Tracked, so the reuse check above restarts on a change.
                     command.append("--no-gpu")
                 elif _training_active():
+                    # Stays off the GPU during training, so dictation cannot reclaim the VRAM training just freed.
                     command.append("--no-gpu")
                 elif marker is not None and marker.get("backend") == "cpu":
                     # Slim wiring links every ggml backend, so a cpu install still grabs the GPU without this.
@@ -978,7 +985,7 @@ class GgmlSttSidecar:
                     port,
                 )
                 self._release_locked()
-                # Release as late as possible; whisper-server binds the port right after.
+                # release the reservation as late as possible: whisper-server binds the port moments after this close
                 reservation.close()
                 # No shutdown step stops this sidecar, so refuse to spawn once shutdown has begun.
                 if is_process_shutting_down():
@@ -990,12 +997,14 @@ class GgmlSttSidecar:
                     stdout = subprocess.DEVNULL,
                     stderr = subprocess.DEVNULL,
                     stdin = subprocess.DEVNULL,
+                    # Co-located GPU libs on the loader path (WSL system HIP first); secrets scrubbed from child env.
                     env = _whisper_server_child_env(binary),
+                    # Die with Unsloth (Linux PDEATHSIG, Windows job) so a crash cannot orphan the model server.
                     **child_popen_kwargs(),
                 )
                 with self._load_state_lock:
                     self._starting_process = process
-                adopt_pid(process.pid)
+                adopt_pid(process.pid)  # terminate_all backstop for graceful exits
                 # Recheck after adopt_pid: shutdown may have started between the gate and the record.
                 if is_process_shutting_down():
                     if process.poll() is None:
@@ -1096,6 +1105,7 @@ class GgmlSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by STT model '{model_id}'."
             )
+        # Reject a missing model before decoding, so a long clip does not burn CPU just to 409.
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
@@ -1140,6 +1150,7 @@ class GgmlSttSidecar:
         fields = {
             "temperature": "0.0",
             "response_format": "json",
+            # Match the Transformers sidecar: 5-way beam search, greedy for fast.
             "beam_size": "1" if fast else "5",
             "language": lang or "auto",
         }
@@ -1202,7 +1213,9 @@ class GgmlSttSidecar:
         text = payload.get("text")
         if not isinstance(text, str):
             raise SttAudioDecodeError("Could not decode the audio.")
+        # It served a transcription, so whatever failed earlier was transient.
         clear_runtime_inference_failure()
+        # whisper.cpp joins segments with newlines; dictation wants one line.
         return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
 
 

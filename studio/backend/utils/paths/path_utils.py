@@ -12,7 +12,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Opening a cloud placeholder recalls it; these attributes are readable without opening.
+# Opening a cloud placeholder for data recalls it; these attributes are available through ``stat_result.st_file_attributes`` on Windows without reading file contents.
 _WINDOWS_CONTENT_RECALL_ATTRIBUTES = 0x00001000 | 0x00040000 | 0x00400000
 
 
@@ -41,7 +41,7 @@ def is_appledouble_name(path: str) -> bool:
 def has_appledouble_magic(path: Path) -> bool:
     """The four bytes ``file(1)`` reads to report "AppleDouble encoded Macintosh file"."""
     try:
-        # Opening a FIFO blocks, so only regular files are checked.
+        # Directory scans reach here with whatever the volume holds, and opening a FIFO blocks until someone writes to it. Only a regular file can carry the magic anyway.
         if not path.is_file():
             return False
         with open(path, "rb") as handle:
@@ -72,7 +72,7 @@ def _shadowed_name(path: str) -> str:
 
 
 def drop_shadowed_appledouble_names(
-    # Optional[...] not PEP 604: no future annotations here and the floor is 3.9 (test gated).
+    # Optional[...] rather than a PEP 604 union: this module has no `from __future__ import annotations`, so annotations are evaluated at import and PEP 604 is a TypeError on the declared 3.9 floor. tests/test_python39_compatibility.py gates it.
     files: list[str],
     *,
     subject_key: Optional[Callable[[str], object]] = None,
@@ -83,6 +83,7 @@ def drop_shadowed_appledouble_names(
     return [f for f in files if not (is_appledouble_name(f) and key(_shadowed_name(f)) in present)]
 
 
+# Per-process cache to avoid repeated cache-dir scans for the same identifier.
 _CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
 
 _CACHE_CASE_RESOLUTION_STATS: dict[str, int] = {
@@ -116,6 +117,7 @@ def normalize_path(path: str) -> str:
         return path
 
     if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
+        # Map to /mnt/<drive>/ only under WSL; native Windows keeps the drive letter.
         if _IS_WSL:
             drive = path[0].lower()
             rest = path[3:].replace("\\", "/")
@@ -154,7 +156,7 @@ def _looks_windows_shaped(path: str) -> bool:
 
 
 def host_normalize_path(path: str) -> str:
-    """Separators change only for Windows-shaped paths: a POSIX backslash is a legal filename character."""
+    """Separators change only for Windows-shaped paths: a POSIX backslash is a legal filename character, and rewriting it would lose that directory."""
     if not path:
         return path
 
@@ -176,6 +178,7 @@ def is_local_path(path: str) -> bool:
     if not path:
         return False
 
+    # Exists on disk → local (covers relative paths like "outputs/foo").
     try:
         if Path(normalize_path(path)).expanduser().exists():
             return True
@@ -240,6 +243,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
         return model_name
 
+    # Revalidate memoized entries on disk to avoid stale results.
     if use_memo:
         cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
         if cached is not None:
@@ -247,6 +251,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             if cached_path.is_dir():
                 _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
                 return cached
+            # Stale entry -- drop it and re-scan below
             _CACHE_CASE_RESOLUTION_MEMO.pop(model_name, None)
 
     expected_lower = expected_dir.lower()
@@ -265,6 +270,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             candidates.append(repo_part.replace("--", "/"))
 
         if candidates:
+            # Deterministic tie-break if multiple case variants coexist
             resolved = sorted(candidates)[0]
             if len(candidates) > 1:
                 _CACHE_CASE_RESOLUTION_STATS["tie_breaks"] += 1
@@ -311,7 +317,7 @@ def is_path_within(
     allow_root: bool = False,
     pathmod = os.path,
 ) -> bool:
-    """Uses commonpath, not a prefix test, so a sibling folder sharing a name prefix is not inside."""
+    """Whether resolved path is inside resolved root, via commonpath: a sibling sharing a name prefix (ab beside a) is not inside; other drives are not."""
     candidate, base = _comparable_path(path, pathmod), _comparable_path(root, pathmod)
     try:
         common = pathmod.commonpath([candidate, base])
@@ -365,7 +371,7 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
 
 
 def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
-    """Raises FileNotFoundError when gone, rather than letting Linux reveal the parent folder."""
+    """Raises FileNotFoundError when gone, rather than revealing the parent folder; expect_dir refuses symlinks and non-dirs, and is off by default."""
     import stat as stat_module
     import subprocess
 
@@ -380,6 +386,7 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     else:
         if not path.exists():
             raise FileNotFoundError(str(path))
+        # Decided ONCE and then only read; each branch used to re-stat.
         is_dir = path.is_dir()
         is_file = not is_dir and path.is_file()
         if not is_dir and not is_file:
@@ -397,7 +404,7 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
     elif not _wsl_reveal_in_explorer(path, is_file):
-        # No cross-desktop select-file standard on Linux; open the directory.
+        # No cross-desktop "select file" standard on Linux; open the directory.
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
 
 
@@ -622,7 +629,7 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
 
 
 def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
-    """Refuses extensions outside DEFAULT_APP_OPEN_EXTENSIONS and symlinks, and opens a staged name."""
+    """Refuses extensions outside DEFAULT_APP_OPEN_EXTENSIONS (PermissionError) and symlinks; the opener gets a staged name, never path itself."""
     import stat as stat_module
     import subprocess
 
@@ -654,7 +661,7 @@ def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
         subprocess.Popen(["xdg-open", target])
 
 
-# macOS _PC_CASE_SENSITIVE, which Python has no name for.
+# pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.
 _PC_CASE_SENSITIVE = 11
 
 

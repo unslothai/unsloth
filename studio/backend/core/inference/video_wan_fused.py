@@ -23,15 +23,18 @@ WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
 WAN_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_wan"
 _CLASS = "WanTransformerBlock"
-# _digest(WanTransformerBlock.forward): same in diffusers 0.36.0, 0.37.0, 0.40.0 and main.
+# ``_digest(WanTransformerBlock.forward)``: identical in diffusers 0.36.0, 0.37.0, 0.40.0 and main (80c7ed26).
 _FINGERPRINTS = frozenset({"69aa0565fb00eeae"})
 # _digest(WanAttnProcessor.__call__): diffusers 0.37.0+; 0.36.0 keeps stock attention.
 _ATTN_FINGERPRINTS = frozenset({"6c5a5095338dfe67"})
 
 _LOCK = threading.Lock()
 _STATE: dict = {}
+# (device index, temb rank, has norm2 affine) -> True once the fused block matched the stock block bit for bit
 _VERIFIED: dict = {}
+# keys whose self-check ran out of memory once (a second OOM caches stock)
 _VERIFY_OOM: set = set()
+# fused block calls since install (engagement evidence for tests and the A/B harness)
 _COUNTS = {"fused": 0, "stock": 0}
 
 
@@ -113,6 +116,7 @@ def _kernels() -> Optional[dict]:
     def _gate_residual(
         X, A, T, TBL, OUT, D, L, stb, stl, stk, sbk, K_GATE: tl.constexpr, BLOCK: tl.constexpr
     ):
+        # out = fp16(x.float() + a.float() * (tbl[gate] + temb[gate]))
         row = tl.program_id(0).to(tl.int64)  # int64 temb offset, as in _modnorm
         col = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
         mask = col < D
@@ -170,6 +174,7 @@ def _kernels() -> Optional[dict]:
         return (rows, triton.cdiv(d, block))
 
     def _temb_strides(temb: Any) -> tuple:
+        # [B, L, 6, D] (Wan2.2-TI2V per-token) or [B, 6, D] (one modulation per sample: L stride 0)
         if temb.dim() == 4:
             return temb.stride(0), temb.stride(1), temb.stride(2)
         return temb.stride(0), 0, temb.stride(1)
@@ -452,6 +457,7 @@ def _fused_block(
     k = _kernels()
     table = block.scale_shift_table
     x = hidden_states
+    # 1. self-attention: norm1 + (shift, scale) = chunks 0, 1; gate = chunk 2
     mean, rstd = _stats(x, block.norm1.eps)
     n = k["modnorm"](x, mean, rstd, temb, table, 0, 1)
     attn = _self_attention(block.attn1, n, rotary_emb) if rotary_emb is not None else None
@@ -461,6 +467,7 @@ def _fused_block(
     if attn is None:
         raise _Fallback()
     x = k["gate_residual"](x, attn, temb, table, 2)
+    # 2. cross-attention: norm2 (affine FP32LayerNorm, or Identity), plain fp16 residual add
     norm2 = block.norm2
     if isinstance(norm2, torch.nn.Identity):
         n = x
@@ -471,6 +478,7 @@ def _fused_block(
     x = x + attn
     if x.dtype is not torch.float16 or not x.is_contiguous():
         raise _Fallback()
+    # 3. feed-forward: norm3 + (c_shift, c_scale) = chunks 3, 4; c_gate = chunk 5
     mean, rstd = _stats(x, block.norm3.eps)
     n = k["modnorm"](x, mean, rstd, temb, table, 3, 4)
     ff = block.ffn(n)
@@ -549,6 +557,7 @@ def _make_forward(stock: Callable) -> Callable:
         except torch.OutOfMemoryError:
             raise
         except Exception as exc:  # noqa: BLE001
+            # JIT / launch failure on a specialization the self-check missed: stock for this key, not a failed render
             _VERIFIED[key] = False
             logger = _STATE.get("logger")
             if logger is not None:
@@ -620,6 +629,7 @@ def install(
         _STATE["forward"] = stock
         _STATE["cls"] = cls
         _STATE["module"] = mod
+        # the rotary rides along only while WanAttnProcessor.__call__ is the version reproduced in _self_attention
         proc_cls = getattr(mod, "WanAttnProcessor", None)
         if (
             proc_cls is not None

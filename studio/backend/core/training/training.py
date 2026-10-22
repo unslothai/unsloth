@@ -70,6 +70,7 @@ def _env_int(name: str, default: int) -> int:
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
+# Generous: is_run_finished already unwedges the UI, and a post-run wandb sync can legitimately take a while.
 _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
 # Also bounded by the stop watchdog above: raising this past _STOP_TIMEOUT_S only waits longer
 # for a worker that gets force-terminated at the watchdog's cap anyway.
@@ -367,6 +368,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
             config[key] = values.get(key)
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
+    # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
     config["device_backend"] = device_backend
     return config
 
@@ -435,6 +437,7 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
     repo_id = canonical_model_repo_id(model_name)
     metadata_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_METADATA)
     weight_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_WEIGHTS)
+    # Pass 1 needs metadata and weights, so a partial snapshot never displaces a complete sibling.
     passes: tuple[dict[str, Any], ...] = (
         {"required_groups": (metadata_names, weight_names)},
         {"metadata_filenames": metadata_names},
@@ -719,6 +722,7 @@ class TrainingProgress:
     # BlockSwap.stats() from the last logged step, for the live offload panel.
     offload: Optional[dict] = None
     output_dir: Optional[str] = None
+    # Run summary has no step loss so the progress filter drops it, yet holds the only full elapsed time.
     is_run_summary: bool = False
     # Drafter phase after the fine-tune: {strategy, step, total_steps, loss, top1, state}. Kept apart
     # from the SFT fields so its step counter never lands in the SFT loss history.
@@ -860,6 +864,7 @@ class _MLXTrainerAdapter:
         random_state: int = 3407,
     ) -> bool:
         if use_gradient_checkpointing is _UNSET:
+            # This entry overrides load_model's, so default to the mode recorded there.
             use_gradient_checkpointing = self._model_config.get("gradient_checkpointing", "unsloth")
         self._peft_config = {
             "use_lora": bool(use_lora),
@@ -1201,16 +1206,19 @@ class TrainingBackend:
             self._clear_account_result,
         )
         self._proc: Optional[mp.Process] = None
+        # True from the sidecar-swap handshake until the worker is recorded (startup counts as active).
         self._spawn_in_progress: bool = False
         self._new_job_spawn_id: Optional[str] = None
         self._event_queue: Any = None
         self._stop_queue: Any = None
         self._pump_thread: Optional[threading.Thread] = None
+        # True while a pump thread should run; left True after an abnormal death so a crash is spotted.
         self._pump_running: bool = False
         self._lock = threading.Lock()
         self._provenance_lock = threading.Lock()
         self._run_intent_lock = threading.RLock()
 
+        # The watched proc is tracked so a new run always gets its own watchdog.
         self._stop_watchdog: Optional[threading.Thread] = None
         self._stop_watchdog_proc: Optional[mp.Process] = None
         self._complete_seen = threading.Event()
@@ -1220,8 +1228,10 @@ class TrainingBackend:
         self._cancel_requested = False  # True only for stop(save=False)
         self._cancel_cleanup_output_dir: Optional[str] = None
 
+        # Throttled training-status logging to the server log (not one line/step).
         self._last_progress_log_ts: float = 0.0
         self._last_progress_log_step: int = -1
+        # Previous line's (elapsed_seconds, num_tokens); next line reports throughput over that interval.
         self._last_progress_log_elapsed: Optional[float] = None
         self._last_progress_log_tokens: Optional[int] = None
 
@@ -1254,6 +1264,7 @@ class TrainingBackend:
         self._db_config: Optional[dict] = None
         self._db_started_at: Optional[str] = None
 
+        # Xet -> HTTP model-load fallback state (config kept for the respawn).
         self._last_full_config: Optional[dict] = None
         self._in_model_load: bool = False
         self._model_download_repo_id: Optional[str] = None
@@ -1738,6 +1749,7 @@ class TrainingBackend:
                 logger.warning("Training subprocess already running")
                 return False
 
+        # Join prior pump thread, refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
@@ -1825,6 +1837,7 @@ class TrainingBackend:
                 try:
                     before_spawn()
                 except Exception as exc:
+                    # Best effort, except a resident that still holds the GPUs.
                     if getattr(exc, "blocks_training", False):
                         raise
                     logger.warning("before_spawn hook failed; continuing", exc_info = True)
@@ -1943,6 +1956,7 @@ class TrainingBackend:
             self._progress = TrainingProgress(
                 is_training = True, status_message = "Initializing training..."
             )
+            # Reset the throttle so the new run logs its first step even within 30s of a prior run.
             self._last_progress_log_ts = 0.0
             self._last_progress_log_step = -1
             self._last_progress_log_elapsed = None
@@ -2214,6 +2228,7 @@ class TrainingBackend:
         if superseded or not target_proc.is_alive():
             return
         if complete_at is None:
+            # Backstop fired pre-completion: a save may still be in progress.
             logger.warning(
                 "Stop watchdog: absolute timeout with no completion signal; "
                 "force-terminating a possibly-mid-save worker: %s",
@@ -2459,6 +2474,7 @@ class TrainingBackend:
             logger.warning("Training model-load stalled on Xet; respawning over HTTP: %s", msg)
         else:
             logger.error("Training download stalled with no further fallback: %s", msg)
+        # Terminate either way so the pump loop proceeds (respawn or finalize).
         if proc is not None and proc.is_alive():
             proc.terminate()
         if not recover:
@@ -2655,6 +2671,7 @@ class TrainingBackend:
         with self._lock:
             if not self._pump_running:
                 return False
+            # A restarted pump needs the worker handle and queue; their absence means nothing to recover.
             if self._proc is None or self._event_queue is None:
                 return False
             if self._pump_thread is not None and self._pump_thread.is_alive():
@@ -2686,6 +2703,7 @@ class TrainingBackend:
             return self._run_finished_locked()
 
     def is_training_active(self) -> bool:
+        # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded.
         if getattr(self, "_new_job_spawn_id", None) is not None or getattr(
             self, "_spawn_in_progress", False
         ):
@@ -2705,6 +2723,7 @@ class TrainingBackend:
             if p.is_completed or p.error:
                 return False
 
+            # Infer activity from the status message.
             status_lower = (p.status_message or "").lower()
             if any(
                 k in status_lower
@@ -2839,6 +2858,7 @@ class TrainingBackend:
             return kwargs
         from utils.native_path_leases import STDERR_MIRROR_KWARG
 
+        # Popped by run_without_native_path_secret. It must not reach run_training_process.
         return {**kwargs, STDERR_MIRROR_KWARG: capture.path}
 
     def _unexpected_exit_message(self, proc) -> str:
@@ -2875,6 +2895,7 @@ class TrainingBackend:
             try:
                 event = self._read_queue(self._event_queue, timeout_sec = 0.25)
             except Exception:
+                # If a read keeps raising after the worker died, finalize instead of spinning.
                 logger.exception("Training event pump: queue read failed; continuing")
                 if self._proc is not None and self._proc.is_alive():
                     time.sleep(0.1)
@@ -2893,6 +2914,7 @@ class TrainingBackend:
             if proc.is_alive():
                 continue
 
+            # Worker exited. Drain the backlog and finalize, guarded so a failing DB write can't strand.
             try:
                 for e in self._drain_queue(self._event_queue):
                     self._safe_handle_event(e)
@@ -2970,6 +2992,7 @@ class TrainingBackend:
                 False,
             )
         )
+        # Block only when no valid current-step checkpoint actually landed.
         if stopped and not cancel and not self._has_current_resume_checkpoint(output_dir, step):
             status = "error"
             error = "Stop and Save ended before a valid current-step checkpoint was written."
@@ -3034,6 +3057,7 @@ class TrainingBackend:
             self._handle_resource_provenance_event(event)
             return
 
+        # Model-load lifecycle + stall recovery (no DB metrics); handled first.
         if etype == "model_load_started":
             with self._lock:
                 self._in_model_load = True
@@ -3056,6 +3080,7 @@ class TrainingBackend:
             if etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
+                # loss/lr sanitized below.
                 _raw_loss = event.get("loss")
                 _raw_lr = event.get("learning_rate")
                 try:
@@ -3084,6 +3109,7 @@ class TrainingBackend:
                 if _safe_loss is not None:
                     self._progress.loss = _safe_loss
                 elif _loss_is_nonfinite:
+                    # Clear stale finite loss so the API doesn't keep reporting the last good value during NaN.
                     self._progress.loss = None
                 if _safe_lr is not None:
                     self._progress.learning_rate = _safe_lr
@@ -3162,6 +3188,7 @@ class TrainingBackend:
                     }
                 )
 
+                # Pick the DB action to run after releasing the lock.
                 if not self._db_run_created and self.current_job_id and self._db_config:
                     db_action = "create_run"
                     db_action_kwargs = {
@@ -3260,6 +3287,7 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                # Nothing left to save: drop an in-flight watchdog to its grace, not the save backstop.
                 self._complete_seen.set()
                 if self._cancel_requested:
                     self._output_dir = self._progress.output_dir = None
@@ -3328,6 +3356,7 @@ class TrainingBackend:
             self._log_training_progress()
 
     def _persist_output_dir(self) -> None:
+        # Re-queue the claimed batch at the front so it retries on the next flush.
         if account_is_retired():
             return
         with self._lock:
@@ -3361,6 +3390,7 @@ class TrainingBackend:
         now = time.monotonic()
         if prev >= 0 and step > prev and not is_final and (now - self._last_progress_log_ts) < 30.0:
             return
+        # Interval throughput since the previous logged line, structured instead of HF tqdm and raw stdout.
         elapsed = p.elapsed_seconds
         tokens = p.num_tokens
         s_per_step = tok_per_s = None
@@ -3524,6 +3554,7 @@ class TrainingBackend:
             target = run_id if run_id is not None else self.current_job_id
             if not self._metric_buffer or not target or not self._db_run_created:
                 return
+            # Cap buffer to bound memory growth.
             if len(self._metric_buffer) > 500:
                 logger.warning(
                     "Metric buffer exceeded 500 entries (%d) — trimming oldest",
@@ -3543,6 +3574,7 @@ class TrainingBackend:
             insert_metrics_batch(target, batch)
             update_run_progress(id = target, step = step, loss = loss, duration_seconds = duration)
         except Exception:
+            # Re-queue the claimed batch at the front so it retries on the next flush.
             with self._lock:
                 self._metric_buffer[:0] = batch
             logger.warning("Failed to flush metrics to DB", exc_info = True)
@@ -3577,6 +3609,7 @@ class TrainingBackend:
         progress: TrainingProgress,
         theme: str = "light",
     ) -> "Optional[plt.Figure]":
+        """Theme-aware training loss plot; returns None when matplotlib is unavailable (loaded lazily)."""
         plt = _load_pyplot()
         if plt is None:
             return None

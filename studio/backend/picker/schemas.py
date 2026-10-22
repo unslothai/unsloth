@@ -10,7 +10,7 @@ MAX_CHAT_TEMPLATE_BYTES = 65_536
 
 
 def chat_template_byte_length(value: str) -> Optional[int]:
-    """UTF-8 byte length, or None for unpaired surrogates, which JSON accepts but cannot encode."""
+    """UTF-8 byte length, or None for unpaired surrogates (JSON accepts, cannot encode); callers treat None as reject."""
     try:
         return len(value.encode("utf-8"))
     except UnicodeEncodeError:

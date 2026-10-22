@@ -73,7 +73,7 @@ _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
 # urlopen's timeout bounds each read, not the transfer, so the transfer gets its own budget.
 _FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
-# Worst case: the budget plus one blocking read (deadline is only checked between reads).
+# Set when no refresh is in flight; concurrent callers wait on it for the running fetch rather than reporting no answer (see _get_snapshot).
 _FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
 _READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -90,10 +90,10 @@ _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
-# Set when no refresh is in flight; concurrent callers wait on it for the running fetch.
+# Derived from the worst case of the refresh so tuning cannot shrink the backstop below it; giving up early reads as no upgrade needed at the Start button.
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
-# Derived from the refresh's own worst case so tuning cannot shrink the backstop below it.
+# Body, or None if still running at deadline; read1 returns what has arrived, since resp.read() has no bound against a drip-fed body.
 _REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
 _INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_ATTEMPT_SECONDS + 5.0
 
@@ -111,13 +111,15 @@ def _cache_file() -> Path:
     return _studio_root() / "cache" / _CACHE_FILE_NAME
 
 
+# Sentinel for HTTP 404 (absent at ref), distinct from transient failures.
 _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
 def _read_within(resp, deadline: float) -> str | None:
-    """read1 returns what has arrived, so the deadline is checked during a drip-fed body."""
+    """GET url, bounded budget, one retry; None on failure; _FETCH_MISSING on 404 without retrying, so absent is told apart from a transient error."""
     read1 = getattr(resp, "read1", None)
     if read1 is None:
+        # A file-like that hands back the whole body in one go has nothing to dribble.
         return resp.read().decode("utf-8", "replace")
     chunks: list[bytes] = []
     while True:
@@ -130,7 +132,7 @@ def _read_within(resp, deadline: float) -> str | None:
 
 
 def _fetch_text(url: str) -> str | None:
-    """Returns _FETCH_MISSING on a 404 without retrying, so absent is told apart from a transient error."""
+    """Transient fetch or parse failure in either file fails the lookup, so a partial map is never cached; a 404 is skipped; an empty result is a failure."""
     import urllib.error
     import urllib.request
 
@@ -171,7 +173,7 @@ def _fetch_latest_pypi_version() -> str | None:
 
 
 def _fetch_remote_model_types(ref: str) -> frozenset[str] | None:
-    """A transient failure in either file fails the lookup, so a partial map is never cached."""
+    """None on failure; PyPI version and tagged mapping required; main is best-effort, and main_checked False marks dev-only as unknown, not unsupported."""
     keys: set[str] = set()
     fetched_any = False
     for name in _AUTO_FILES:
@@ -240,7 +242,7 @@ def _snapshot_is_fresh(snapshot: dict | None) -> bool:
 
 
 def _refresh_snapshot() -> dict | None:
-    """PyPI version and tagged mapping are required; a missing main mapping sets main_checked to False."""
+    """Concurrent callers wait on the in-flight fetch, since an empty answer would let Start proceed; the network refresh runs outside the lock."""
     version = _fetch_latest_pypi_version()
     if version is None:
         return None
@@ -281,7 +283,7 @@ def _get_snapshot() -> dict | None:
             _is_fetching = True
             _fetch_done = done = threading.Event()
     if in_flight is not None:
-        # Wait for completion, not a clock: an expiry would read as "no upgrade needed".
+        # Mirrors unsloth_zoo _remap_unsloth_bnb_hub_id_for_mlx: unsloth/ bnb Hub ids only, never local paths; MLX quantizes those, so transformers never sees them.
         while not in_flight.wait(_INFLIGHT_WAIT_SECONDS):
             with _lock:
                 if not _is_fetching or _fetch_done is not in_flight:
@@ -333,7 +335,7 @@ def _is_bitsandbytes_config(cfg: dict | None) -> bool:
 
 
 def _mlx_swaps_bnb_repo_for_its_base(model_name: str) -> bool:
-    """True for an unsloth/ bnb Hub id, which MLX swaps for its base repo; local paths are not swapped."""
+    """On MLX an upgrade cannot help, except third-party or local bnb repos: mlx-lm cannot read bnb, so transformers builds them (unsloth bnb-4bit swap to base)."""
     if not isinstance(model_name, str) or not model_name.startswith("unsloth/"):
         return False
     if os.path.exists(model_name):
@@ -344,8 +346,7 @@ def _mlx_swaps_bnb_repo_for_its_base(model_name: str) -> bool:
 def _architecture_cannot_come_from_transformers(
     model_name: str = "", cfg: dict | None = None
 ) -> bool:
-    """On MLX an upgrade cannot help, except for third-party or local bnb repos, which transformers
-    builds"""
+    """Whether newest transformers ships model_type: dict of pypi_version, supported_in_pypi, supported_in_main; None if unavailable (caller keeps current behavior)."""
     try:
         from utils.hardware import DeviceType, get_device
         if get_device() != DeviceType.MLX:
@@ -358,7 +359,7 @@ def _architecture_cannot_come_from_transformers(
 
 
 def latest_transformers_supports(model_type: str) -> dict | None:
-    """Returns None when offline, disabled or failing, so the caller keeps current behavior."""
+    """Fires only when model_type is in no installed overlay or tier table (load would fail); never raises; off via UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS."""
     if not isinstance(model_type, str) or not model_type:
         return None
     if _disabled() or _env_offline():
@@ -374,6 +375,7 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     }
 
 
+# model_types the hardcoded tier tables already route; never remote-check these.
 def _hardcoded_model_types() -> frozenset[str]:
     return frozenset(
         _TRANSFORMERS_530_MODEL_TYPES
@@ -416,7 +418,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         candidates = _model_types_from_config(cfg)
         if not candidates:
             return None
-        # Without a readable base mapping every type looks new; bail out.
+        # Without a readable base mapping every type looks brand new; bail out.
         if not _config_model_types("default"):
             return None
         missing = [
@@ -460,7 +462,9 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
 
 # Sidecars install --no-deps: unmet shadowable deps become --target pins, others block.
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
+# Provided by the sidecar recipe; checked against its pin, not the base env.
 _SIDECAR_PROVIDED = {"huggingface-hub": "1.8.0", "hf-xet": "1.4.2"}
+# CLI-only; never imported at runtime in Unsloth's workers.
 _IGNORED_DEPS = frozenset({"typer"})
 
 
@@ -561,7 +565,7 @@ def _resolve_exact_version(name: str, specifier) -> str | None:
 
 
 def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
-    """Unknown requires_dist blocks the install: an unverified sidecar could crash the workers."""
+    """Only current PyPI latest, so clients cannot pin a version; before_swap runs after staging, before live swap; reserved = caller holds the swap reservation."""
     reqs = _fetch_main_requires() if ".dev" in version else _fetch_requires_dist(version)
     if reqs is None:
         return (), ["dependency metadata for this release (could not be fetched from PyPI; retry)"]
@@ -639,7 +643,7 @@ def install_latest_transformers(
     before_swap = None,
     reserved: bool = False,
 ) -> dict:
-    """Accepts only the current PyPI latest version, so a client cannot pin an arbitrary package."""
+    """Re-verify against a live snapshot (a release may land within the TTL); fall back to the cached one on fetch failure."""
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
 
     if not reserved and not try_begin_sidecar_swap():

@@ -562,7 +562,7 @@ def load_cached_hf_dataset(
         )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
-        # Advisory: a failure must not discard a loaded dataset.
+        # Advisory flag: a purged entry, read-only home or full disk must not discard a loaded dataset.
         try:
             mark_app_processed_dataset_cache_complete(app_cache)
         except UnsafeDatasetCachePathError:

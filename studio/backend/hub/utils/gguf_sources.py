@@ -93,6 +93,7 @@ class CachedGgufSource:
     variant: "GgufVariantInfo"
     snapshot: Path
     has_vision: bool
+    # Incomplete per its manifest, marker or shards; kept for resume, merged as partial, not loadable.
     incomplete: bool = False
 
     @property
@@ -109,6 +110,7 @@ def cached_gguf_sources(repo_id: str, *, scoped_ready = None) -> dict[str, Cache
     sources = {}
     partials: dict[str, CachedGgufSource] = {}
     for snapshot in gguf_cache_snapshots(repo_id):
+        # Media GGUFs have a separate download/load pipeline and retain their existing scope.
         if _gguf_path_task(snapshot, (repo_id,)) not in CHAT_GGUF_TASKS:
             continue
         variants, has_vision = list_local_gguf_variants(str(snapshot))

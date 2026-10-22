@@ -32,9 +32,10 @@ DEFAULT_ADMIN_USERNAME = "unsloth"
 # Keep in sync with models/auth.py ChangePasswordRequest and the unsloth_cli mirror.
 MIN_PASSWORD_LENGTH = 8
 
-# Plaintext, deleted on first password change.
+# Plaintext bootstrap password file, deleted on first password change.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
+# In-process cache to avoid re-reading the file on every HTML serve.
 _bootstrap_password: Optional[str] = None
 
 
@@ -71,7 +72,7 @@ def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
     if raw != password.encode("utf-8"):
         return
 
-    # O_BINARY: Windows text mode would turn LF back into CRLF.
+    # O_BINARY: Windows text mode turns the LF back into CRLF, the bug being fixed.
     fd = os.open(
         _BOOTSTRAP_PW_PATH,
         os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0),
@@ -92,7 +93,7 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
     if not _BOOTSTRAP_PW_PATH.is_file():
         return None
 
-    # An unreadable file means no bootstrap password; no caller handles a raise.
+    # An unreadable file must mean "no bootstrap password"; no caller handles a raise.
     try:
         raw = _BOOTSTRAP_PW_PATH.read_bytes()
         password = raw.decode("utf-8").strip()
@@ -129,6 +130,7 @@ def generate_bootstrap_password() -> str:
         options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
     )
 
+    # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
     _persist_bootstrap_password(_bootstrap_password)
 
@@ -157,7 +159,7 @@ def clear_bootstrap_password() -> None:
         try:
             _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
         except OSError as e:
-            # Truncate when removal fails, else stale plaintext is re-seeded if auth.db is recreated.
+            # Truncate when removal fails: stale plaintext would otherwise be re-seeded if auth.db is recreated.
             try:
                 _BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
                 cleared = True
@@ -171,6 +173,7 @@ def clear_bootstrap_password() -> None:
                     "cleared its contents so the old bootstrap password cannot be reused."
                 )
             else:
+                # Stale plaintext is still on disk and would be reused if auth.db is reset.
                 message = (
                     f"Warning: could not delete or clear {_BOOTSTRAP_PW_PATH.name} ({e}); "
                     "its old bootstrap password is still on disk. Remove it manually to "
@@ -752,7 +755,7 @@ def issue_account_setup_code(
         username = validate_account_username(username)
     code = secrets.token_urlsafe(32)
     salt, pwd_hash = hash_password(code)
-    # Before the transaction: first-run salt creation opens its own connection.
+    # Before the transaction: a first-run salt creation opens its own connection.
     code_hash = _hash_setup_code(code)
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(minutes = 60)).isoformat()
@@ -807,7 +810,7 @@ def authenticate_account_login(
     from auth.hashing import equalize_login_work, verify_password
 
     def miss():
-        # Equalize timing with a wrong-password check.
+        # A miss without a hash to check costs what a wrong password costs.
         equalize_login_work(password)
         return None
 
@@ -823,11 +826,12 @@ def authenticate_account_login(
         if row is None or not row["is_active"]:
             return miss()
         if row["must_change_password"]:
+            # The setup-code hash is the PBKDF2 round a miss would otherwise spend.
             if not row["setup_code_hash"] or not hmac.compare_digest(
                 row["setup_code_hash"], _hash_setup_code(password)
             ):
                 return None
-            # Compare-and-swap on expiry, activity and generation so no code is spent twice.
+            # Compare-and-swap on expiry, activity and generation: no code is spent twice.
             with conn:
                 cursor = conn.execute(
                     f"""UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL
@@ -1003,7 +1007,7 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
     return salt
 
 
-# In auth.db so a port squatter cannot forge a proof; separate from the JWT secret.
+# Identity-challenge secret lives in auth.db so a port squatter cannot forge a proof; separate from the JWT secret.
 _IDENTITY_SECRET_DB_KEY = "studio_identity_secret"
 _identity_secret_cache: Optional[bytes] = None
 
@@ -1085,7 +1089,7 @@ def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     return hmac.new(get_or_create_identity_secret(), msg, hashlib.sha256).hexdigest()
 
 
-# Rotating this revokes every shared preview link without touching logins.
+# Dedicated secret so rotating it revokes every shared preview link without touching logins.
 _PREVIEW_LINK_SECRET_DB_KEY = "preview_link_secret"
 _preview_link_secret_cache: Optional[bytes] = None
 
@@ -1178,6 +1182,7 @@ def _hash_setup_code(code: str) -> str:
 
 # Keyed by a salted HMAC; revocation/expiry are still enforced by the SQLite read.
 _api_key_hash_cache: dict[str, str] = {}
+# Whether each memoized key was minted internally; set once, since minting decides it.
 _api_key_internal_cache: dict[str, bool] = {}
 _API_KEY_HASH_CACHE_MAX = 4096
 _api_key_hash_cache_lock = threading.Lock()
@@ -1384,7 +1389,7 @@ def update_password(
     expect_password_hash: Optional[str] = None,
     preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
-    """Mint tokens with the returned JWT secret; re-reading could pick up a reset made after commit."""
+    """Mint with the returned JWT secret; revoke refresh tokens in the same transaction as the update."""
     from .hashing import hash_password
 
     salt, pwd_hash = hash_password(new_password)
@@ -1927,7 +1932,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
         row = cur.fetchone()
         if row is None:
             return None
-        # Memoize real keys to skip the KDF; bounded, cleared on overflow.
+        # Real key: memoize so later requests skip the KDF. Bounded; clear on overflow.
         if cached_hash is None:
             with _api_key_hash_cache_lock:
                 if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:

@@ -16,7 +16,7 @@ from utils.prebuilt import freshness_flow as _flow
 
 logger = structlog.get_logger(__name__)
 
-# Matches Unsloth's typical llama.cpp release cadence.
+# 3 days matches Unsloth's typical llama.cpp release cadence.
 STALENESS_THRESHOLD_DAYS = 3
 
 _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
@@ -24,6 +24,7 @@ _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
 _release_failed_at: dict[str, float] = {}
+# Newest-release asset sizes (name -> bytes), memoized like the tag (24h TTL).
 _assets_memo: dict[str, tuple[float, dict[str, int]]] = {}
 
 
@@ -104,11 +105,12 @@ def update_download_size_bytes(
     installed_asset = marker.get("asset")
     if not isinstance(installed_asset, str):
         return None
-    # Accept fork "app-*" and upstream "ubuntu-*"/"win-*" assets ("windows" before "win").
+    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the upstream ggml-org "ubuntu-*"/"win-*" prebuilts ("windows" before "win").
     m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
     if not m:
         return None
     suffix = m.group(1)
+    # Upstream ubuntu/win assets live in the marker's binary_repo.
     repos = [repo]
     binary_repo = marker.get("binary_repo")
     if isinstance(binary_repo, str) and binary_repo and binary_repo != repo:
@@ -120,6 +122,7 @@ def update_download_size_bytes(
             continue
         if want in assets:
             return assets[want]
+        # Tag formatting can vary (mix suffixes); fall back to the platform suffix.
         for name, size in assets.items():
             if name.endswith(suffix):
                 return size
@@ -150,7 +153,7 @@ def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
         return True
     if lb != ib:
         return lb > ib
-    # Offer a same-base mix, but never a bare base over a mix install.
+    # Same base build, different tags: offer a mix (latest carries a suffix), but never offer a bare base over a mix install at the same base.
     return latest != f"b{lb}"
 
 

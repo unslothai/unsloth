@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 MAX_FRAME_PIXELS = 640 * 360
 # llama-server's --video-fps default; higher rates only add bytes mtmd drops.
 MAX_FRAME_RATE = 4
-# `fps` starts half an interval in, so clips under ~0.5s give NO frames at 1 fps.
+# fps starts half an interval in, so clips under ~0.5s give NO frames at 1 fps; one whole second leaves user-rate headroom.
 MIN_SAMPLED_SECONDS = 1.0
 _PROBE_TIMEOUT_S = 30
 _SHRINK_TIMEOUT_S = 300
@@ -67,6 +67,7 @@ def _frame_geometry(
     )
     if result.returncode != 0:
         return None, None, None
+    # A build answering -of json with a non-object must fall back, not raise AttributeError past except.
     payload = json.loads(result.stdout or b"{}")
     if not isinstance(payload, dict):
         return None, None, None
@@ -129,6 +130,7 @@ def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
         try:
             end = max(end, float(packet.get("pts_time")) + span)
         except (TypeError, ValueError):
+            # Annex B has no timestamps, only durations, so summing is the only option for a raw stream.
             continue
     return (end or total) or None
 
@@ -167,7 +169,7 @@ def _filter_chain(
     oversized: bool,
     sampled_fps: Optional[float] = None,
 ) -> str:
-    """Pad, then rate cap (downwards only, as fps duplicates frames), then scale; order matters."""
+    """Pad, then rate cap, then scale; order matters since the cap also emits nothing on tiny clips, leaving tpad no frame; cap only goes down."""
     ceiling = _rate_ceiling(sampled_fps)
     chain = []
     if duration is not None and 0 < duration < MIN_SAMPLED_SECONDS:
@@ -209,6 +211,7 @@ def shrink_video_for_llama(
             too_short = duration is not None and 0 < duration < MIN_SAMPLED_SECONDS
             if not oversized and not too_short:
                 return video_b64
+            # Keeping the decoded copy alive just to log its length costs 64 MiB.
             raw_bytes = len(raw)
             del raw
             shrunk = Path(tmp) / "shrunk.mkv"
@@ -232,6 +235,7 @@ def shrink_video_for_llama(
                     _filter_chain(max_pixels, rate, duration, oversized, sampled_fps),
                     "-c:v",
                     "mpeg4",
+                    # mpeg4 is widely supported but can outgrow low-bitrate sources; -fs caps output at the upload limit.
                     "-q:v",
                     "5",
                     "-fs",

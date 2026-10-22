@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN to recover a unique match.
 MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
 
@@ -59,9 +60,7 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
 
 
 def _locate(page_words: list, needle: list[str]) -> list[int] | None:
-    """Matched word indices for the best anchor, or None. Tries the full anchor
-    then shorter prefixes, taking the first that matches exactly once; else the
-    first hit if still ambiguous."""
+    """Skip punctuation-only words so they never break a phrase."""
     tokens: list[str] = []
     idx_map: list[int] = []
     for j, w in enumerate(page_words):

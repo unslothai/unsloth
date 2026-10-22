@@ -177,6 +177,7 @@ def _patterns_for_split(
                 return _as_pattern_list(paths)
         return []
     if isinstance(data_files, list):
+        # Scan every entry; a split may be declared more than once, and stopping early drops the rest.
         patterns: list[str] = []
         for entry in data_files:
             if isinstance(entry, str):
@@ -239,6 +240,7 @@ def _config_scope(configs: list[dict[str, Any]], subset: str | None) -> str:
 def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str, Any] | None:
     """With no subset, pick the config flagged default, else the only config, whatever its name."""
     if subset:
+        # Exact name beats a case-folded match (card may carry Foo and foo); no config_name means default.
         names = [(c, str(c.get("config_name") or DEFAULT_CONFIG)) for c in configs]
         return next(
             (c for c, name in names if name == subset),
@@ -249,6 +251,7 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
         return flagged
     if len(configs) == 1:
         return configs[0]
+    # Exactly `default`: Default and DEFAULT are configs to be asked for.
     return next(
         (c for c in configs if str(c.get("config_name") or DEFAULT_CONFIG) == DEFAULT_CONFIG),
         None,
@@ -263,6 +266,7 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
         char = pattern[i]
         if char == "*" and pattern[i + 1 : i + 2] == "*":
             if pattern[i + 2 : i + 3] == "/":
+                # Whole folders, or none: `data/**/train.*` is not `data/nottrain.x`.
                 parts.append("(?:[^/]+/)*")
                 i += 3
             else:
@@ -311,7 +315,7 @@ def _ignored_by_the_loader(path: str, pattern: str) -> bool:
 
 
 def _hidden_to_the_loader(path: str, pattern: str) -> bool:
-    """Loader skips hidden and dunder parts unless the pattern names them; **/* never reaches .backup/."""
+    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them; data/__train.json is read."""
     for prefix, parts in ((".", "parts"), ("__", "parent_parts")):
         in_path = _marked_parts(path, prefix, parts)
         in_pattern = _marked_parts(pattern, prefix, parts)
@@ -359,7 +363,7 @@ def _common_parent(paths: list[str]) -> str:
 
 
 def _label_in_name(name: str, label: str) -> bool:
-    """Labels can carry separators (sample-10BT), so match the label in place rather than by tokens."""
+    """Match the label in place, not by tokens, so sample-10BT survives; digits count as separators: train1 is train, training is not."""
     return re.search(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})", name) is not None
 
 
@@ -394,6 +398,7 @@ def _split_rank(path: str, split_lower: str) -> int:
     labels = _split_labels(split_lower)
     if _split_folder(lowered, labels):
         return 0
+    # Only the final extension comes off: questions.train.parquet keeps its split.
     stem = Path(lowered).stem
     if any(_label_in_name(stem, label) for label in labels):
         return 1
@@ -405,6 +410,7 @@ def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> l
     if not subset:
         return data_files
     subset_lower = subset.lower()
+    # Exact folder match first: a repo may hold Foo/ beside foo/, which folding would merge into one.
     in_folder = [f for f in data_files if subset in f.split("/")[:-1]] or [
         f for f in data_files if subset_lower in f.lower().split("/")[:-1]
     ]
@@ -454,10 +460,13 @@ def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
         if stem_lower.startswith((f"{label}-", f"{label}_", f"{label}.")):
             candidates.append(f"{stem[: len(label) + 1]}*{suffix}")
         if stem_lower == label or stem_lower.endswith((f"_{label}", f"-{label}")):
+            # Keep the star: train.jsonl may be sharded beside train_2.jsonl.
             candidates.append(f"{stem}*{suffix}")
         at = stem_lower.find(label)
         if at >= 0:
             candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
+    # Last and narrowest: the whole name, which keeps train-main off
+    # train-socratic.
     candidates.append(f"{stem}*{suffix}")
     return list(dict.fromkeys(candidates))
 
@@ -487,12 +496,13 @@ def _dominant_suffix(paths: list[str]) -> str:
     window = sorted(paths)[:_MAX_MODULE_INFERENCE_FILES]
     voting = [p for p in window if Path(p).name.lower() not in _METADATA_FILENAMES] or window
     for path in voting:
-        # Votes counted like `load.infer_module_for_data_files_list`.
+        # Each suffix in the name votes once, as load.infer_module_for_data_files_list counts: a.csv.parquet votes csv too; .json does not vote for .jsonl.
         for part in Path(path).name.lower().split(".")[1:]:
             counts[f".{part}"] = counts.get(f".{part}", 0) + 1
     if not counts:
         return ""
 
+    # Widen only if the builder extension wins alone; skip a winner no file ends in (matches nothing).
     for winner in sorted(counts, key = lambda s: (counts[s], _ext_rank(s)), reverse = True):
         group = _builder_exts(winner)
         named = next((Path(p).suffix for p in paths if Path(p).suffix.lower() in group), "")
@@ -501,6 +511,7 @@ def _dominant_suffix(paths: list[str]) -> str:
     return ""
 
 
+# Extensions one builder reads: `datasets` loads .json and .jsonl with the same one.
 _BUILDER_EXTS = ((".json", ".jsonl"),)
 
 
@@ -525,6 +536,7 @@ def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str
         return suffix
     stem = os.path.commonprefix(sorted(used))
     matcher = re.compile(rf"{re.escape(stem)}[^/]*\Z", re.IGNORECASE)
+    # Checks only what the pattern reaches: it is anchored at the declared files' shared folder.
     scope = _common_parent(paths)
     prefix = f"{scope}/" if scope else ""
     if any(
@@ -555,7 +567,7 @@ def _staged_split_files(
     labels: tuple[str, ...],
     scope: str = "",
 ) -> set[str]:
-    """Sharded names come first: a train-named file outside the sharded layout is not in the split."""
+    """Sharded names come first: once one is there, a train-named file elsewhere is not in the split; strip the scope first, since sharded names start at data/."""
     prefix = f"{scope}/" if scope else ""
     inside = [path[len(prefix) :] for path in data_files if path.startswith(prefix)]
     grouped = _sharded_splits([PurePosixPath(path) for path in inside])
@@ -595,8 +607,10 @@ def _widened_declared_pattern(
     base = f"{parent}/**" if parent else "**"
     prefix = f"{parent}/" if parent else ""
     wanted = set(declared_files)
+    # Split label may be in file names or folders; a validation set may be dev-*.parquet.
     candidates = [f"{base}/*{label}*{suffix}" for label in _split_labels(split_lower)]
     candidates += [f"{prefix}**/*{label}*/**/*{suffix}" for label in _split_labels(split_lower)]
+    # Unlabelled declared files may share a name that neighbouring splits lack, e.g. data/part-a.
     shared_name = _common_name_prefix(declared_files)
     if shared_name:
         candidates.append(f"{prefix}{shared_name}*{suffix}")
@@ -606,14 +620,17 @@ def _widened_declared_pattern(
     finals = _name_finals(declared_files)
     if initials:
         candidates.append(f"{prefix}**/[{initials}]*{suffix}")
+    # Names may share a first letter yet end differently; a class at each end separates them.
     if finals:
         candidates.append(f"{prefix}**/*[{finals}]{suffix}")
     if initials and finals:
         candidates.append(f"{prefix}**/[{initials}]*[{finals}]{suffix}")
+    # Files no glob can gather fall back to their own names, which read only what the card declared.
     candidates += sorted(wanted)
     for candidate in candidates:
         if set(_files_under_patterns([candidate], data_files)) == wanted:
             return candidate
+    # No glob selects exactly these files; a card refuses that, while a guess falls back to the folder.
     return f"{base}/*{suffix}" if fallback_glob else ""
 
 
@@ -627,12 +644,14 @@ def _resolve_seed_hf_path(
 ) -> str | None:
     declared = _declared_split_patterns(configs or [], split, subset)
     declared_files = _files_under_patterns(declared, data_files, as_the_loader_would = True)
+    # The card's own mapping beats any folder-name guess, as long as it resolves to files that exist.
     if declared_files:
         suffix = _dominant_suffix(declared_files)
         declared_files = _of_suffix(declared_files, suffix)
         exact = suffix
         suffix = _extension_glob(declared_files, suffix, repo_files or data_files)
         if suffix == exact and len({Path(f).suffix.lower() for f in declared_files}) > 1:
+            # A card putting both builder extensions in one split is refused, since no glob takes just the two.
             return None
         pattern = ""
         if len(declared) == 1:
@@ -643,6 +662,7 @@ def _resolve_seed_hf_path(
         # Unrepresentable mappings are refused (422), never approximated.
         return f"datasets/{dataset_name}/{pattern}" if pattern else None
 
+    # No card means the subset is just a label; narrow first so the pattern cannot span other configs.
     folder = _config_scope(configs or [], subset)
     scoped = _in_subset(
         [f for f in data_files if f.startswith(f"{folder}/")] or data_files
@@ -653,6 +673,7 @@ def _resolve_seed_hf_path(
     )
     split_lower = split.lower()
     labels = _split_labels(split_lower)
+    # Sharded names come first and stop the search, whatever else is labelled.
     staged = _staged_split_files(scoped, labels, folder)
     selected = _select_best_file(sorted(staged) or scoped, split)
     if not selected:
@@ -669,6 +690,7 @@ def _resolve_seed_hf_path(
         base = f"{base}/{parent}"
 
     if _split_folder(selected.lower(), labels):
+        # train_a and train_b are one split, so rooting at either drops half.
         folders = staged or {f for f in scoped if _split_rank(f, split_lower) == 0}
         root = _common_parent(sorted(folders | {selected}))
         if root != parent:
@@ -679,13 +701,16 @@ def _resolve_seed_hf_path(
                     f"**/{label}{_SEP}*/**/*{ext}",
                     f"**/*{_SEP}{label}/**/*{ext}",
                     f"**/*{_SEP}{label}{_SEP}*/**/*{ext}",
+                    # train/ beside sets/train_a/ needs a looser pattern, taken only where the listing confirms it.
                     f"**/{label}*/**/*{ext}",
                     f"**/*{label}*/**/*{ext}",
                 ):
                     if _pattern_fits_the_split(data_files, folders, root, shape):
                         return f"{_anchor(dataset_name, root)}/{shape}"
     else:
+        # The files this request is for: in the chosen subset, and of this split.
         wanted = staged or {f for f in scoped if _split_rank(f, split_lower) <= 1}
+        # Sibling-folder shards anchor at their shared parent, since the loader reads them as one split.
         spread = any(Path(f).parent.as_posix() != parent for f in wanted)
         root = _common_parent(sorted(wanted | {selected})) if spread else parent
         stem = Path(selected).name[: -len(suffix)]
@@ -693,6 +718,7 @@ def _resolve_seed_hf_path(
             pattern = f"**/{candidate}" if spread else candidate
             if _pattern_fits_the_split(data_files, wanted, root, pattern):
                 return f"{_anchor(dataset_name, root)}/{pattern}"
+        # Widen only if every neighbour is labelled, since an unlabelled file may belong to this split.
         prefix = f"{root}/" if root and root != "." else ""
         neighbours = [f for f in data_files if f.startswith(prefix) and f not in wanted]
         if len(wanted) > 1 and all(_carries_another_split(f, split_lower) for f in neighbours):
@@ -733,7 +759,7 @@ def _load_preview_rows(
     undecoded = _images_undecoded(features) if features else None
     if undecoded is None or undecoded == features:
         return [row for row in islice(streamed_ds, preview_size)]
-    # Local image paths stay dicts so they are checked against the account before opening.
+    # Image cells, nested ones too, stay dicts so a local path is checked against the account before it is opened; Hub images decode here.
     tokens = getattr(streamed_ds, "_token_per_repo_id", None)
     return [
         _decode_hub_images(undecoded, row, tokens)
@@ -841,7 +867,7 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
     ext = path.suffix.lower()
     try:
         if ext == ".csv":
-            # Keep text as written: inference turns 007 into 7 and NA into missing.
+            # Keep text as written: inference made 007 -> 7, 3 -> 3.0, NA/None -> missing.
             csv_options = {
                 "encoding": "utf-8-sig",
                 "dtype": str,
@@ -1027,7 +1053,9 @@ def inspect_seed_dataset(
         data_files,
         as_the_loader_would = True,
     )
+    # Same format the resolved path reads, or the preview rows come from a file the recipe never opens.
     declared_files = _of_suffix(declared_files, _dominant_suffix(declared_files))
+    # A folder-only config declares no files; its name may differ, so the fallback previews that folder.
     folder = _config_scope(configs, subset)
     in_folder = [f for f in data_files if f.startswith(f"{folder}/")] if folder else []
     selected_file = _select_best_file(declared_files or in_folder or data_files, split, subset)
@@ -1195,7 +1223,7 @@ def _require_unstructured_ext(filename: str) -> str:
 
 
 def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
-    """Read a desktop drop only via its signed lease, re-verified and size-checked before reading."""
+    """Read a desktop drop only via its signed lease, re-verified and size-checked; read stops one byte past the budget in case the file grew."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -1235,7 +1263,7 @@ async def upload_unstructured_file(
     _validate_safe_id(block_id, "block_id")
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
-    # Reads 0 without creating the dir.
+    # Reads 0 for a block with no dir yet, without creating it, so an upload about to be refused leaves no directory behind.
     budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
 
     # Tauri drops arrive as a signed path; isinstance since an unfilled Form param is truthy.
@@ -1244,7 +1272,7 @@ async def upload_unstructured_file(
         original_filename, content = _read_native_drop(lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
-        # Before the read, so a rejected upload is never pulled into memory.
+        # Before the read: a rejected 500 MB upload must not be pulled into memory first.
         _require_unstructured_ext(original_filename)
         limit = max(0, min(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES, budget))
         content = await file.read(limit + 1)
@@ -1340,7 +1368,7 @@ async def upload_unstructured_file(
         )
 
     except BaseException:
-        # Includes cancellation, which kills the OCR worker before its input is removed.
+        # Cancellation kills the OCR worker before its input can be removed.
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
         raise
@@ -1463,6 +1491,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
+    # Legacy single-file path is .txt/.md only; PDF/DOCX use multi-file upload
     _LEGACY_UNSTRUCTURED_EXTS = {".txt", ".md"}
     if seed_source_type == "unstructured":
         if ext not in _LEGACY_UNSTRUCTURED_EXTS:

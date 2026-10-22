@@ -164,7 +164,7 @@ class LoRAEMA:
 
 
 def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: str) -> str:
-    """Temporarily swaps EMA shadows into the live LoRA params so export uses the same diffusers path."""
+    """Temporarily swaps EMA shadows into the live LoRA params for the diffusers export path, then restores the trained weights."""
     from peft.utils import get_peft_model_state_dict
 
     ema_dir = Path(out_dir) / "ema"
@@ -229,7 +229,7 @@ _CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
 
 
 def source_revision(ref: Any) -> str:
-    """A repo id or path is not a version; the marker tracks content so stale cache is not reused."""
+    """A repo id or path is not a version; the marker tracks content so stale cache is not reused; it must never load the encoders."""
     import os  # noqa: PLC0415 - keep the module import list light for the subprocess
     try:
         name = str(ref or "").strip()
@@ -354,6 +354,7 @@ class PersistentConditioningCache:
 
 BUCKET_DIVISOR = 64
 
+# Widest bucket aspect ratio; more extreme images clamp to it, as is common for panoramas.
 MAX_BUCKET_RATIO = 2.0
 
 

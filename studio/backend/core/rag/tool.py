@@ -133,8 +133,10 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 "page": None,
                 "text": text,
                 "turn": int(ordinal) + 1 if ordinal is not None else None,
+                # createdAt breaks _conversation_order ties: pre-ordinal rows have turn None; ordinals aren't UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
+                # Insertion order is the final tie-breaker: coarse clocks give archive rows equal timestamps.
                 "documentRowid": _row_value(r, "document_rowid"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }

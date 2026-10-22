@@ -146,6 +146,7 @@ class JobManager:
     def _clear_account_result(self):
         self._job = None
         self._events.clear()
+        # Old subscribers retain their private queues but never receive a successor's events.
         self._subs.clear()
 
     @owned_job()
@@ -506,6 +507,7 @@ class JobManager:
             except queue.Empty:
                 return events
             except Exception:
+                # Return what we have so the run still finalizes rather than wedging "active".
                 logger.exception(
                     "Data-recipe job pump: queue drain failed; finalizing with drained events"
                 )
@@ -537,6 +539,7 @@ class JobManager:
             try:
                 event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
             except Exception:
+                # Only retry while the worker is alive; otherwise finalize instead of spinning forever.
                 logger.exception("Data-recipe job pump: queue read failed; continuing")
                 if proc.is_alive():
                     time.sleep(0.1)

@@ -680,6 +680,7 @@ class LemonadeNpuBackend:
                 if line.startswith("event:"):
                     event = line[len("event:") :].strip() or "progress"
                     continue
+                # A plain JSON body instead of a stream: lemond's HTTP 200 error answer.
                 raw = line[len("data:") :] if line.startswith("data:") else line
                 if not line.startswith("data:") and not line.startswith("{"):
                     continue
@@ -720,6 +721,7 @@ class LemonadeNpuBackend:
     ) -> NpuModel:
         """Load a downloaded model onto the NPU and return it once lemond reports it resident."""
         with self._lock:
+            # Cleared before the load is published, so a cancel that sees it is never wiped.
             with self._commit_lock:
                 self._load_cancelled.clear()
                 self._loading = model_id
@@ -770,6 +772,7 @@ class LemonadeNpuBackend:
             finally:
                 self._loading = None
                 if replaced and not loaded and self._server is not None:
+                    # lemond may still hold the previous model, which Studio no longer records.
                     self._server.stop()
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:

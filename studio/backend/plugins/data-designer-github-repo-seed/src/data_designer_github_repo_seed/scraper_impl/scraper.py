@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+# Allow running as a module or script
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
@@ -48,7 +49,7 @@ class RepoScraper:
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
-        # light uses trimmed GraphQL queries to stay under GitHub's node-count ceiling.
+        # light=True uses trimmed GraphQL queries so PR pages can be larger without hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
         if not self.repo_dir.resolve().is_relative_to(base_dir.resolve()):
@@ -110,6 +111,7 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
+        # Light queries skip heavy fields, so 50/page is safe; trial_limit keeps limit=1 from a full page.
         page_cap = 50 if self.light else 15
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -214,7 +216,7 @@ class RepoScraper:
             return 0
         total_new = 0
         page = 0
-        # Page caps keep under GitHub's node-count ceiling.
+        # Heavy PR query caps at 3 per page, light at 25, for the node-count ceiling; clamp by trial_limit so limit=1 fetches one page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -358,6 +360,7 @@ class RepoScraper:
                 f["_owner"] = self.owner
                 f["_repo"] = self.name
                 f["_prNumber"] = number
+                # files have no id; synthesize one
                 f["_syntheticId"] = f"{self.owner}/{self.name}#{number}:{f.get('path')}"
                 self.writers[out_key].write(f)
             info = ff.get("pageInfo") or {}
@@ -416,6 +419,7 @@ class RepoScraper:
                 num = d["number"]
                 if d.get("comments", {}).get("pageInfo", {}).get("hasNextPage"):
                     self._paginate_discussion_comments(num, d["comments"]["pageInfo"]["endCursor"])
+                # paginate replies per comment if needed
                 for c in d.get("comments", {}).get("nodes", []) or []:
                     if c.get("replies", {}).get("pageInfo", {}).get("hasNextPage"):
                         self._paginate_discussion_replies(
@@ -625,6 +629,7 @@ def main():
         json.dumps(rl.get("resources", {}), default = str)[:400],
     )
 
+    # Start HF uploader in background if requested
     uploader = None
     if args.hf_upload_interval > 0:
         from hf_uploader import HFUploader

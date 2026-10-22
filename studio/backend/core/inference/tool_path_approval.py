@@ -111,11 +111,13 @@ _SYSTEM_READ_SILENT_ROOTS = (
     # Runtime state (pid files, sockets). /run/secrets and /run/credentials are covered by the credential check that
     # runs first. Mirrors tool_confinement._SYSTEM_READ_ROOTS.
     "/run",
-    # On macOS the REAL location is /private/var/run, not /var/run.
+    # Older name of /run; on macOS the real location is /private/var/run, which /etc/resolv.conf links into, so resolved paths must stay silent.
     "/var/run",
+    # macOS
     "/System",
     "/Library",
     "/Applications",
+    # Windows
     "C:\\Windows",
     "C:\\Program Files",
     "C:\\Program Files (x86)",
@@ -142,6 +144,7 @@ _WRITABLE_RUNTIME_SUBTREES = tuple(
 )
 
 
+# Write-silent devices like `2> /dev/null`; the rest of /dev is read-silent but not write-silent.
 _WRITE_SILENT_DEVICE_NODES = (
     "/dev/null",
     "/dev/zero",
@@ -224,7 +227,7 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         well_known_model_dirs,
     )
 
-    # Only output subdirectories, never the studio home: it holds studio.db and auth/.
+    # Only output subdirectories, never the studio home: it holds studio.db and auth/, and shared_sandbox_root is that same dir by default.
     write_roots = _silent_root_list(
         (
             sandbox_root,
@@ -244,6 +247,7 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         _silent_root_list(
             (
                 lambda: _SYSTEM_READ_SILENT_ROOTS,
+                # The interpreter, its stdlib and site-packages: a tool reads these to introspect its own environment.
                 lambda: (
                     sys.prefix,
                     sys.base_prefix,
@@ -253,6 +257,7 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
                     os.environ.get("VIRTUAL_ENV", ""),
                     _SANDBOX_SITE_DIR,
                 ),
+                # Model folders and LM Studio/Ollama dirs hold weights, not documents; reading them is the point.
                 _scan_folder_roots,
                 well_known_model_dirs,
             )
@@ -333,6 +338,7 @@ def _scan_folder_roots() -> "tuple[str, ...]":
 # Env vars that relocate a root are part of the cache key so a repoint takes effect at once.
 _SILENT_ROOT_ENV_KEYS = (
     "UNSLOTH_STUDIO_HOME",
+    # Key on every root-moving env var, incl. the alias: one of a pair left old roots live until TTL.
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_PROJECTS_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -375,6 +381,7 @@ def _looks_absolute(text: str) -> bool:
         return False
     if text[0] == "/":
         return True
+    # A local `file:` URI is an absolute path spelled with a scheme, so operand scanners must keep it.
     if text[:5].lower() == "file:":
         uri_path = _file_uri_path(text)
         return bool(uri_path) and _looks_absolute(uri_path)
@@ -394,6 +401,7 @@ _WIN_DRIVE_RELATIVE_RE = re.compile(r"^[A-Za-z]:(?![\\/:])[^:\s]+$")
 
 # Kernel links under /proc that reach outside it; shell PID spellings name the same links.
 _PROC_ID_RE = r"(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)"
+# Task-level `/proc/<pid>/task/<tid>/root` reaches the process-level link; match it too.
 _PROC_MAGIC_LINK_RE = re.compile(
     rf"/proc/{_PROC_ID_RE}/(?:task/{_PROC_ID_RE}/)?(?:root|cwd|fd)(?:/|$)"
 )
@@ -446,15 +454,18 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     text = text.strip()
     if len(text) > _MAX_PATH_SCAN_CHARS:
         return True
-    # \x02 marks a pathlib .parent escaping its root (see _folded_path): ask.
+    # \x02 marks a pathlib .parent escaping its root: always ask, never treat it as unresolved marker.
     if "\x02" in text:
         return True
+    # \x00 is a segment the folder could not resolve, which is not a decidable path.
     if "\x00" in text:
         return False
+    # A `file:` URI names the same file the bare path does, so it is classified as that path.
     uri_path = _file_uri_path(text)
     if uri_path is not None:
         return _path_needs_approval(uri_path, writing = writing)
     if not _looks_absolute(text):
+        # Relative: resolves inside the session workdir. Only the credential/traversal scan applies.
         return bool(_references_sensitive_path(text) or _glob_token_sensitive(text))
     try:
         candidate = _normalized_fs_text(text)
@@ -520,6 +531,7 @@ _CREDENTIAL_BASENAMES = frozenset(
 )
 
 
+# Files under a read-silent system root that _SENSITIVE_PATH_RE does not name.
 _CREDENTIAL_PATH_SUFFIXES = (
     "/etc/gshadow",
     "/etc/gshadow-",
@@ -538,6 +550,7 @@ def _credential_under_silent_root(candidate: str) -> bool:
     unified = candidate.replace("\\", "/")
     if any(unified.endswith(suffix) for suffix in _CREDENTIAL_PATH_SUFFIXES):
         return True
+    # Studio's own identity database and key material live under <studio home>/auth.
     return "/auth/" in unified + "/"
 
 
@@ -560,9 +573,10 @@ _PATH_READ_COMMANDS = frozenset(
 )
 
 
+# Commands whose file operands are CREATED or OVERWRITTEN.
 _PATH_WRITE_COMMANDS = frozenset(
     {
-        # The first operand is a mode/owner, skipped through `_PATH_ARG_SKIP`.
+        # A permission change modifies file metadata, so it is a write; its first operand is a mode or owner.
         "chmod",
         "chown",
         "chgrp",
@@ -572,6 +586,7 @@ _PATH_WRITE_COMMANDS = frozenset(
         "truncate",
         "shred",
         "zip",
+        # Each of these replaces its operand with the compressed or decompressed file.
         "gzip",
         "gunzip",
         "bzip2",
@@ -586,6 +601,7 @@ _STDOUT_COMPRESSORS = frozenset({"gzip", "gunzip", "bzip2", "bunzip2", "xz", "un
 _STDOUT_FLAGS = frozenset({"-c", "--stdout", "--to-stdout"})
 
 
+# Copy-like commands: the LAST operand is the destination (a write), the earlier ones are sources (reads).
 _PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
 
 
@@ -634,7 +650,7 @@ _PATH_ARG_SKIP = {
 }
 
 
-# GNU tar recognises the legacy option word only as the very first argument.
+# Tar alone skips its legacy option word, only as first argument; grep and sed skip unconditionally.
 _PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
 
 
@@ -644,6 +660,7 @@ _ARCHIVE_CREATE_LONG_FLAGS = frozenset(
 )
 
 
+# The short spellings of the same three: create, append, update. All write the archive.
 _ARCHIVE_WRITE_SHORT_MODES = ("c", "r", "u", "A")
 # `7z`: the first word is the command; tar-style mode letters mean nothing here.
 _SEVENZIP_WRITE_COMMANDS = frozenset({"a", "u", "d", "rn"})
@@ -677,6 +694,7 @@ _PY_MODULE_OPEN_RECEIVERS = frozenset(
 
 # Module receivers put paths in the arguments: `os.rename(src, dst)` vs `Path(src).rename(dst)`.
 _PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
+    # pandas, like numpy, carries paths in arguments: `pd.read_csv(path)` has no path receiver.
     {
         "shutil",
         "pathlib",
@@ -720,6 +738,7 @@ def _test_command_operands(args) -> "list[str]":
     return paths
 
 
+# Commands turning piped input into arguments, so paths arrive from the pipeline, not operands.
 _PATH_FORWARDING_COMMANDS = frozenset({"xargs", "parallel"})
 
 
@@ -744,6 +763,7 @@ def _classified_terminal_commands() -> frozenset:
 _PATH_FLAG_SPECS = {
     "cp": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
     "mv": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
+    # `iconv -o, --output=FILE` writes the converted text there; the rest name encodings, not paths.
     "iconv": {
         "-o": "write",
         "--output": "write",
@@ -757,12 +777,14 @@ _PATH_FLAG_SPECS = {
         "-f": "read",
         "--file": "read",
         "--makefile": "read",
+        # `-C DIR` is where make RUNS, and a recipe writes there (`make -C /models clean`).
         "-C": "write",
         "--directory": "write",
         "-j": "skip",
         "--jobs": "skip",
         "-l": "skip",
     },
+    # `-o <file>` for gcc truncates that file; positionals are source files and stay flag-only.
     "gcc": {"-o": "write"},
     "g++": {"-o": "write"},
     "cc": {"-o": "write"},
@@ -782,6 +804,7 @@ _PATH_FLAG_SPECS = {
         "-o": "write",
         "--output": "write",
         "--files0-from": "read",
+        # `sort --help`: "get random bytes from FILE", read whenever -R is in play.
         "--random-source": "read",
         "-t": "skip",
         "--field-separator": "skip",
@@ -818,6 +841,7 @@ _PATH_FLAG_SPECS = {
         "--directory": "extract_dir",
         "-T": "read",
         "--files-from": "read",
+        # tar `--add-file=FILE` is a read like `-T`; unmodelled, the whole token was dropped unseen.
         "--add-file": "read",
         "-X": "read",
         "--exclude-from": "read",
@@ -846,7 +870,7 @@ _PATH_FLAG_SPECS = {
         "-U": "skip",
         "--unified": "skip",
     },
-    # `git -C <path>` runs the command in that directory.
+    # git -C runs the command in that dir, so a read there has no operand; only the flag spec catches it.
     "git": {
         "-C": "read",
         "--git-dir": "read",
@@ -855,6 +879,7 @@ _PATH_FLAG_SPECS = {
         "--add-file": "read",
         "--output": "write",
         "-o": "write",
+        # `git clone --separate-git-dir <gitdir>` writes outside the sandbox; other operands stay relative.
         "--separate-git-dir": "write",
         "-c": "skip",
         "--exec-path": "skip",
@@ -862,6 +887,7 @@ _PATH_FLAG_SPECS = {
     },
     # Only the `file:` scheme reaches the gate; http(s) URLs are not paths.
     "curl": {
+        # curl `-K`/`--config <file>` and the attached `--config=` spelling read a config file.
         "-K": "read",
         "--config": "read",
         "-o": "write",
@@ -887,8 +913,10 @@ _PATH_FLAG_SPECS = {
     "wget": {
         "-O": "write",
         "--output-document": "write",
+        # `-P, --directory-prefix=PREFIX` (`wget --help`): both spellings save under that prefix.
         "-P": "write",
         "--directory-prefix": "write",
+        # wget `-o`/`--output-file` and `-a`/`--append-output` write their log file wherever pointed.
         "-o": "write",
         "--output-file": "write",
         "-a": "write",
@@ -896,7 +924,7 @@ _PATH_FLAG_SPECS = {
         "--header": "skip",
     },
     "zip": {"-x": "skip", "-i": "skip"},
-    # `-d` is the extraction target; the archive itself is a positional read.
+    # unzip stays all-writes (so unzip -l asks): a read of read-silent /usr is judged by write roots.
     "unzip": {"-d": "write", "-x": "skip", "-O": "skip", "-P": "skip"},
     "cut": {
         "-d": "skip",
@@ -928,6 +956,7 @@ _PATH_FLAG_SPECS = {
         "-regex": "skip",
         "-newer": "read",
     },
+    # `fd --help`: `--ignore-file <path>` adds a custom ignore file, which it reads.
     "fd": {
         "--base-directory": "read",
         "--search-path": "read",
@@ -989,15 +1018,18 @@ _WRAPPER_VALUE_FLAGS = frozenset(
 )
 
 
+# Wrappers whose first bare operand belongs to the wrapper (`timeout 5 cat x`).
 _WRAPPER_LEADING_VALUE_COMMANDS = frozenset({"timeout", "nice", "ionice", "stdbuf"})
 
 
 _WRAPPER_LEADING_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 
 
+# A token has to carry one of these before it can spell an absolute path in any supported syntax.
 _PATH_HINT_RE = re.compile(r"[/~\\:]")
 
 
+# `sed -i` rewrites its operands in place, unlike a plain sed.
 _SED_INPLACE_FLAGS = ("-i", "--in-place")
 # A short option that consumes the rest of its token as a value, so `perl -Ilib` is not an `-i`.
 _SHORT_OPTION_VALUE_CHARS = "eflI"
@@ -1022,9 +1054,11 @@ _REDIR_WRITE_RE = re.compile(r"^\d*(?:>>?\|?|&>>?)$")
 _REDIR_READ_RE = re.compile(r"^\d*<$")
 
 
+# The here-document and here-string forms, matched only to skip the word that follows them.
 _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 
 
+# A whole token that is a NAME=value prefix, as opposed to _SHELL_ASSIGN_RE which finds them inside a command string.
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
@@ -1205,6 +1239,7 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             continue
         prefix = _REDIR_PREFIX_RE.match(token)
         if prefix:
+            # `<<END` and `<<<data` carry their word in the same token, and neither is opened.
             if _REDIR_HEREDOC_RE.match(prefix.group(0)):
                 continue
             target = token[prefix.end() :]
@@ -1368,6 +1403,7 @@ def _split_attached_redirections(tokens, text = None) -> "list[str]":
         prefix = _REDIR_PREFIX_RE.match(token)
         tail = token[prefix.end() :] if prefix else token
         if prefix and "<" not in tail and ">" not in tail:
+            # A single leading redirection with attached target (`>out.txt`) is handled upstream; keep it whole.
             out.append(token)
             continue
         # Several redirections in one token (`</dev/null>/media/x`) must be split.
@@ -1412,6 +1448,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 index += 1
                 continue
             if candidate.startswith("-") and candidate != "-":
+                # A wrapper flag that takes a separate value consumes the token after it.
                 index += 1
                 takes_value = _WRAPPER_VALUE_FLAGS_BY_CMD.get(base)
                 if (
@@ -1421,6 +1458,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 ):
                     index += 1
                 continue
+            # `timeout 5 cat x`: a bare duration is the wrapper's own operand, not the command.
             if base in _WRAPPER_LEADING_VALUE_COMMANDS and _WRAPPER_LEADING_DURATION_RE.match(
                 candidate
             ):
@@ -1466,6 +1504,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             for arg in args
         )
     ):
+        # The operand is still opened, just not modified, so it becomes a READ rather than nothing.
         write_cmd = False
         read_cmd = True
     dest_last = command in _PATH_DEST_LAST_COMMANDS
@@ -1486,6 +1525,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         target = next((arg for arg in after if not arg.startswith("-")), None)
         return launched + ([(target, True)] if target else [])
     if command in ("7z", "7za", "7zr"):
+        # `7z a out.7z src`: the archive is the first positional after the command word.
         creating = bool(args) and args[0].lower() in _SEVENZIP_WRITE_COMMANDS
         archive_from_flag = False
         return launched + _seven_zip_operands(args, creating)
@@ -1495,13 +1535,16 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             for index, arg in enumerate(args)
             if not arg.startswith("--") and (index == 0 or arg.startswith("-"))
         )
+        # Long spellings carry the same mode: `tar --create --file=/models/out.tar` was misread as a READ.
         or any(arg.split("=", 1)[0] in _ARCHIVE_CREATE_LONG_FLAGS for arg in args)
     )
+    # Whether the archive came from `-f`/`--file` rather than from the first positional.
     archive_from_flag = command in _PATH_ARCHIVE_COMMANDS and any(
         arg.split("=", 1)[0] in ("-f", "--file")
         or (arg.startswith("-") and not arg.startswith("--") and "f" in arg.lstrip("-"))
         for arg in args
     )
+    # `install -d` / `mkdir -p` style: every positional is a directory being CREATED.
     directory_mode = command == "install" and any(
         arg == "-d"
         or arg == "--directory"
@@ -1549,9 +1592,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             skip = 0
         positionals.append(arg)
     for position, arg in enumerate(positionals):
+        # `key=value` forms (dd if=..., --output=...) carry the path on the right.
         if "=" in arg and not _looks_absolute(arg):
             arg = arg.split("=", 1)[1]
         if dest_last:
+            # `install -d` creates every operand, so there is no source to distinguish.
             writing = (
                 directory_mode
                 or command in _PATH_SOURCE_MUTATING_COMMANDS
@@ -1651,7 +1696,7 @@ def _shell_words(text: str) -> "list[str]":
         return []
     try:
         words = shlex.split(text)
-    except ValueError:
+    except ValueError:  # unbalanced quotes: the raw words are the best available reading
         words = text.split()
     return words or [text]
 
@@ -1671,6 +1716,7 @@ def _seven_zip_operands(args, creating: bool) -> "list[tuple[str, bool]]":
     return operands
 
 
+# Commands whose presence after a `cd` means something under the new directory is written.
 _DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
 
 
@@ -1695,6 +1741,7 @@ def _command_base_writes(base: str) -> bool:
 
 
 _EXTRA_WRITE_COMMANDS = frozenset("rm rmdir touch truncate dd shred sed perl".split())
+# `xargs -n 1 cmd`: these carry their value in the NEXT token, which is not the wrapped command.
 _FORWARDING_VALUE_FLAGS = frozenset("-a -d -E -e -I -i -L -l -n -P -s".split())
 
 
@@ -1714,6 +1761,7 @@ def _forwarded_command_writes(tokens) -> bool:
     return False
 
 
+# An interpreter whose `-c` payload is a command line or a snippet of its own.
 _INLINE_CODE_COMMANDS = frozenset("python python2 python3 sh bash zsh dash ksh".split())
 
 
@@ -1864,6 +1912,7 @@ def _lex_keeping_backslashes(text: str) -> "list[str] | None":
     return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
 
+# A token can only carry an absolute path if it holds a separator, a tilde or a drive colon.
 _ABSOLUTE_HINT_RE = re.compile(r"[/~\\]|^[A-Za-z]:")
 
 
@@ -1888,7 +1937,7 @@ _PY_INSTANCE_READ_CTORS = {
 }
 
 
-# Descending readers; a pattern rooted at `/` reaches the whole host.
+# io.open_code reads like open; stat and predicate helpers leak existence; glob at / reaches all.
 _PY_RECURSIVE_READ_CALLS = frozenset("walk rglob glob iglob".split())
 
 
@@ -1905,6 +1954,7 @@ _PY_PATH_READ_CALLS = frozenset(
 )
 
 
+# Callables whose first argument (or receiver) names a file being CREATED, OVERWRITTEN or REMOVED.
 _PY_PATH_WRITE_CALLS = frozenset(
     {
         # make_archive creates base_name + ext; its source dirs are read via _PY_PATH_KWARGS_BY_CALL.
@@ -1960,6 +2010,7 @@ _PY_SERIALIZE_SECOND_ARG_MODULES = frozenset(
 )
 
 
+# Writers whose first argument is CONTENT, not a path (the path is the receiver).
 _PY_PATH_CONTENT_FIRST_CALLS = frozenset({"write_text", "write_bytes", "write"})
 
 
@@ -1979,12 +2030,15 @@ _PY_PATH_DEST_KWARGS = frozenset(
         "out",
         "save_directory",
         "f",
+        # `shutil.unpack_archive(a, extract_dir = d)` writes the members under `d`.
         "extract_dir",
     }
 )
 
 
+# Spawning a child hands the path to a process this scan does not see, so its argv is screened wholesale.
 _PY_PATH_SUBPROCESS_CALLS = frozenset(
+    # `os.popen(cmd)` shells out like `os.system`; the handle it returns does not decide path access.
     {
         "run",
         "Popen",
@@ -2007,6 +2061,7 @@ _PY_PATH_MOVE_CALLS = frozenset({"move", "rename", "renames", "replace"})
 _PY_PATH_LINK_CALLS = frozenset({"link", "symlink"})
 
 
+# Archive members are written UNDER the destination these take, so it is a write of a whole tree.
 _PY_PATH_EXTRACT_CALLS = frozenset({"extract", "extractall"})
 
 
@@ -2024,11 +2079,13 @@ _PY_PATH_DEST_SECOND_CALLS = frozenset(
         "replace",
         "link",
         "symlink",
+        # `shutil.unpack_archive` reads the archive and CREATES members under the destination, like a copy.
         "unpack_archive",
     }
 )
 
 
+# Keyword arguments that carry a path on these callables.
 _PY_PATH_KWARGS = (
     "path",
     "file",
@@ -2057,6 +2114,7 @@ _PY_PATH_KWARGS = (
 # Path parameters only these callables use; elsewhere the same keyword may not be a path.
 _PY_PATH_KWARGS_BY_CALL = {
     "read": ("filenames",),
+    # Pillow's `Image.open(fp = ...)`, and the stdlib spellings that name the file differently.
     "open": ("fp",),
     "imread": ("fname",),
     "load": ("file",),
@@ -2065,7 +2123,9 @@ _PY_PATH_KWARGS_BY_CALL = {
     "listdir": ("path",),
     "scandir": ("path",),
     "walk": ("top",),
+    # `pandas.read_excel(io = ...)`: `io` is the documented name of its first parameter.
     "read_excel": ("io",),
+    # `shutil.make_archive`: the first argument is a write; root_dir and base_dir are reads.
     "make_archive": ("root_dir", "base_dir"),
 }
 
@@ -2088,7 +2148,7 @@ _PY_ALIASABLE_PATH_CALLS = (
 
 
 def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict:
-    """Maps local names to real functions for every modelled path call; a name assigned twice is dropped."""
+    """Names map to real functions; twice-bound names drop; sock.open, self.open are never builtin open."""
     aliases: dict = {}
     assigned: dict = {}
     seen_twice: "set[str]" = set()
@@ -2098,6 +2158,7 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
                 if entry.asname and entry.name in _PY_ALIASABLE_PATH_CALLS:
                     aliases[entry.asname] = entry.name
             continue
+        # `reader: object = open` binds exactly what the unannotated form does.
         if isinstance(node, ast.AnnAssign):
             if node.value is None or not isinstance(node.target, ast.Name):
                 continue
@@ -2118,6 +2179,7 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
                 continue
             # A rebinding does not undo earlier calls: keep the first modelled binding (fail closed).
             if target.id in seen_twice:
+                # A first binding that was not itself modelled leaves room for a later one.
                 if real and real != target.id:
                     assigned.setdefault(target.id, real)
                 continue
@@ -2188,7 +2250,7 @@ def _chained_instance_reader_methods(receiver, module_aliases: "dict | None" = N
     return _PY_INSTANCE_READ_CTORS.get(name, frozenset())
 
 
-# `ZipFile.write(src)` / `TarFile.add(src)` read a file from disk, unlike `f.write(data)`.
+# ZipFile.write and TarFile.add read from disk, unlike f.write(data); GzipFile and BZ2File stay out.
 _PY_ARCHIVE_SOURCE_CALLS = frozenset({"write", "add"})
 _PY_ARCHIVE_MEMBER_CTORS = frozenset({"ZipFile", "TarFile"})
 
@@ -2217,6 +2279,7 @@ def _is_archive_ctor_call(
         receiver = func.value
         base = receiver.id if isinstance(receiver, ast.Name) else ""
         base = (module_aliases or {}).get(base, base)
+        # `tarfile.open` / `zipfile.ZipFile` are the documented constructors.
         return func.attr in _PY_ARCHIVE_MEMBER_CTORS or (
             func.attr == "open" and base in ("tarfile", "zipfile")
         )
@@ -2264,6 +2327,7 @@ def _python_instance_reader_names(tree) -> dict:
                     ctors[entry.asname] = _PY_INSTANCE_READ_CTORS[entry.name]
     names: dict = {}
     for node in _tree_nodes(tree):
+        # `cfg: ConfigParser = ConfigParser()` binds exactly what the unannotated form binds.
         if isinstance(node, ast.AnnAssign) and node.value is not None:
             if not isinstance(node.target, ast.Name):
                 continue
@@ -2403,7 +2467,7 @@ def _python_path_bindings(
                 folded = _folded_path(bound, bindings, ctors, joins)
             except Exception:  # noqa: BLE001 - folding is best effort
                 continue
-            # Substitute alternate bindings of dependencies one at a time (linear, not cartesian).
+            # A derived name may hold other paths; fold one alternate at a time or an outside path is missed.
             derived: "list[str]" = []
             if extra:
                 for used in {n.id for n in ast.walk(bound) if isinstance(n, ast.Name)}:
@@ -2415,6 +2479,7 @@ def _python_path_bindings(
                         if isinstance(other, str) and other and "\x00" not in other:
                             derived.append(other)
             if not isinstance(folded, str) or not folded or "\x00" in folded:
+                # The primary fold failed, but a rebound dependency can still make it resolvable.
                 for candidate in _capped_alternates(derived):
                     extra.setdefault(target.id, []).append(candidate)
                 continue
@@ -2425,11 +2490,13 @@ def _python_path_bindings(
             for candidate in _capped_alternates(derived):
                 if candidate != bindings.get(target.id):
                     extra.setdefault(target.id, []).append(candidate)
+    # Rebindings ride along under a private key so `add` can test every value a name ever held.
     if extra:
         bindings[_REBOUND_PATHS_KEY] = extra
     return bindings
 
 
+# Private key inside the bindings map holding `name -> [other paths it was bound to]`.
 _REBOUND_PATHS_KEY = "\x00__rebound__"
 
 
@@ -2437,6 +2504,8 @@ _REBOUND_PATHS_KEY = "\x00__rebound__"
 _MAX_REBOUND_ALTERNATES = 8
 
 
+# Rebound names substituted into one compound expression, bounding the work on a snippet that
+# assembles a path from many variables each bound several times.
 _MAX_REBOUND_NAMES = 3
 
 
@@ -2642,6 +2711,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     def add(node, writing: bool) -> None:
         if node is None:
             return
+        # `open(p := "/media/x")` passes the assigned VALUE to the call, so fold through the walrus.
         if isinstance(node, ast.NamedExpr):
             node = node.value
         # Only literal sequences are unpacked, so nothing dynamic is guessed.
@@ -2688,6 +2758,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if isinstance(func, ast.Attribute):
             name = func.attr
         elif isinstance(func, ast.Name):
+            # `from io import open as fopen` leaves a plain Name in no table; resolve it back.
             name = function_aliases.get(func.id, func.id)
         else:
             continue
@@ -2703,6 +2774,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         module_receiver = is_method and receiver_name in _PY_MODULE_PATH_RECEIVERS
         writing_default = name in _PY_PATH_WRITE_CALLS
         if name in _PY_MODULE_OPEN_CTORS and receiver_name in _PY_MODULE_OPEN_RECEIVERS:
+            # `io.FileIO(p)` opens like `io.open(p)`: the mode sits in the same spot, so the same write check.
             add(first, _open_call_writes(node, mode_index = 1))
         elif name in ("open", "fdopen"):
             # The mode decides read vs write; as a method the mode is the first argument. Module functions
@@ -2719,6 +2791,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             writing_default = writing
             add(func.value if path_is_receiver else first, writing)
         elif name in _PY_PATH_ARCHIVE_CTORS:
+            # ZipFile(name) reads, ZipFile(name, "w") writes -- the same mode position as open().
             writing = _open_call_writes(node, mode_index = 1)
             writing_default = writing
             add(first, writing)
@@ -2759,6 +2832,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 or _is_archive_ctor_call(func.value, module_aliases)
             )
         ):
+            # The member being added comes FROM the filesystem.
             add(first, False)
         elif name in _PY_PATH_CONTENT_FIRST_CALLS:
             # The first argument is data, not a path; only the receiver is.
@@ -2771,6 +2845,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             name in instance_readers.get(receiver_name, ())
             or name in _chained_instance_reader_methods(func.value, module_aliases)
         ):
+            # Covers `cfg.read(p)`, chained `ConfigParser().read(p)`, and the list form `cfg.read([a, b])`.
             for element in _sequence_elements(first, containers):
                 add(element, False)
         elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()) or (
@@ -2788,7 +2863,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             for element in _sequence_elements(given, containers):
                 add(element, False)
         elif name in ("connect", "Connection") and receiver_name in ("sqlite3", "apsw"):
-            # A connection creates the file if missing, so it is a write unless the URI says otherwise.
+            # Missing file is created: a write unless URI says so. Keyword database (sqlite3), filename (apsw).
             given = first
             if given is None:
                 given = next(
@@ -2820,6 +2895,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 add(node.args[position], False)
         for keyword in _call_keywords(node):
             if keyword.arg in _PY_PATH_KWARGS_BY_CALL.get(name, ()):
+                # Per-callable kwarg names read per call; `ConfigParser.read(filenames=...)` also takes a sequence.
                 for element in _sequence_elements(keyword.value, containers):
                     add(element, False)
             elif keyword.arg in _PY_PATH_DEST_KWARGS:
@@ -2846,9 +2922,9 @@ def _python_reaches_outside_sandbox(tree, code = None) -> bool:
 def _open_call_writes(node, *, mode_index: int) -> bool:
     """mode_index is 1 for open(file, mode) and 0 for Path(p).open(mode); a wrong one hides writes."""
     if _has_kwarg_splat(node):
-        return True
+        return True  # **{"mode": "w"} could request a write
     if any(isinstance(a, ast.Starred) for a in node.args):
-        return True
+        return True  # *("f", "w") could splat a write mode into the positionals
     mode = node.args[mode_index] if len(node.args) > mode_index else None
     for kw in node.keywords or []:
         if kw.arg == "mode":

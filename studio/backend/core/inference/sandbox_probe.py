@@ -338,7 +338,7 @@ def _probe_base() -> str:
     """A scratch root short enough for the fd-passing control's AF_UNIX address."""
     # Private roots FIRST: TMPDIR may sit under a read-only bind and fail the negative read control.
     roots: list[str | None] = [root for root in ("/tmp", "/var/tmp") if os.path.isdir(root)]
-    roots.append(None)
+    roots.append(None)  # None = the platform default
     fallback = None
     for root in roots:
         try:
@@ -416,6 +416,7 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
                 _refresh_in_background(backend, key)
                 return available, reason
 
+            # Background probes are off: re-probe here.
     with _cache_lock:
         generation = _generation
     available, reason = _run_probe(backend, backend_name, ToolLaunchPlan)

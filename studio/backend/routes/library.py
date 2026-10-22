@@ -98,6 +98,7 @@ def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
     for item in items:
         item = {**item, "id": _for_caller(item["id"], via_api_key)}
         base = (item.get("model") or {}).get("baseModel")
+        # A fine-tune of a local model names that folder; a Hub repo id is kept.
         if isinstance(base, str) and os.path.isabs(base):
             item["model"] = {**item["model"], "baseModel": cache_reference(base)}
         made_with = (item.get("audio") or {}).get("model")
@@ -126,7 +127,7 @@ class ItemRef(_ItemIdModel):
 
 
 class ItemDelete(ItemRef):
-    # Delete only the file listed, never one made at its path since.
+    # The file a sandbox item was listed as, so a delete never takes one made at its path since.
     fingerprint: Optional[str] = Field(default = None, max_length = 256)
 
 
@@ -218,6 +219,7 @@ def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subje
 
 @router.post("/items/opened")
 def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
+    # Mark only items still present; a late open after delete leaves no row for a later same-path file.
     if not library.mark_opened(body.id):
         raise HTTPException(status_code = 404, detail = "Item not found")
     return {"ok": True}
@@ -291,6 +293,7 @@ def _reveal(path) -> None:
     from utils.paths.file_manager import file_manager_kind
     from utils.paths.path_utils import reveal_in_file_manager
 
+    # The UI hides Reveal on such a host; a direct call must not open a window nobody sees.
     if file_manager_kind() is None:
         raise HTTPException(status_code = 503, detail = "No file manager is available on this machine")
     try:
@@ -449,7 +452,7 @@ _RANGE_RE = re.compile(r"\s*bytes\s*=\s*([0-9]*)-([0-9]*)\s*", re.IGNORECASE)
 
 
 def _byte_range(request: Request, size: int) -> Optional[tuple[int, int]]:
-    """(first, last) inclusive, or None for the whole file; a range past the end is unsatisfiable."""
+    """(first, last) inclusive, or None: other units, multi-range, malformed or If-Range are ignored"""
     match = _RANGE_RE.fullmatch(request.headers.get("range") or "")
     if not match or request.headers.get("if-range") or match.groups() == ("", ""):
         return None
@@ -534,6 +537,8 @@ async def get_locations(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> dict:
     from hub.utils.host_paths import redact_inventory_host_paths
+
+    # Settings > Library shows these to a signed-in user; an API key only gets redacted references.
     locations = await run_in_threadpool(library.locations)
     return redact_inventory_host_paths({"locations": locations}, via_api_key = via_api_key)
 
@@ -657,7 +662,7 @@ async def upload_files(
             for item_id in ids:
                 library_db.update_entry(item_id, folder_id = folderId, move = True)
     except BaseException as exc:
-        # All or nothing, and spent grants are returned, or a retry is refused as a replay.
+        # All or nothing, so a retry never duplicates files; spent grants return, else retry is refused
         for record in records:
             await run_in_threadpool(library.delete_item, f"upload:{record['id']}")
         _release_leases(consumed)
@@ -683,6 +688,7 @@ def get_upload_file(upload_id: str, current_subject: str = Depends(get_current_s
     if record is None or path is None or not path.is_file():
         raise HTTPException(status_code = 404, detail = "File not found")
     content_type = _inline_type(record["contentType"])
+    # A note is saved through another URL, so the browser must ask again rather than reuse this.
     headers = {"Cache-Control": "private, no-cache", **_NOSNIFF}
     if content_type:
         return FileResponse(path, media_type = content_type, headers = headers)

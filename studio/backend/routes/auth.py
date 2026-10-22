@@ -94,6 +94,7 @@ def _cli_is_inside(prefix: str) -> bool:
         spec = importlib.util.find_spec("unsloth_cli")
         origin = getattr(spec, "origin", None)
         if not origin:
+            # A namespace package, or nothing found.
             return False
         return Path(origin).resolve().is_relative_to(Path(prefix).resolve())
     except (ImportError, OSError, ValueError, AttributeError):
@@ -108,8 +109,7 @@ def _reset_password_command_on_path() -> str:
 
 
 def _reset_password_command() -> str:
-    """Windows names unsloth.cmd, never unsloth.exe, which AppControl may deny; -I only inside the
-    prefix."""
+    """Shell command for the password hint. Windows names unsloth.cmd, never unsloth.exe, which AppControl may deny; -I only inside prefix."""
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
         if os.name == "nt":
@@ -139,7 +139,9 @@ _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
 # On overflow, reclaim expired buckets, then use sharded overflow rather than evict a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
+# Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
 _LAST_IP_PRUNE = 0.0
+# Overflow shards for per-IP failures with no bucket; when full, a new IP evicts the lowest count.
 _LOGIN_IP_OVERFLOW_SHARDS = 256
 _LOGIN_IP_OVERFLOW_MAX = 64
 _LOGIN_IP_OVERFLOW: list[dict] = [dict() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
@@ -161,6 +163,7 @@ def _overflow_record(ip: str, now: float) -> int:
             entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
         return entry[0]
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
+        # Make room by dropping the lowest-count entry.
         del shard[min(shard, key = lambda k: shard[k][0])]
     shard[ip] = [1, now]
     return 1
@@ -186,10 +189,11 @@ def _overflow_take(ip: str, now: float) -> tuple[int, float]:
     entry = _overflow_shard(ip).pop(ip, None)
     if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
         return 0, now
+    # Clamp the carried count so migration allocates at most _LOGIN_IP_MAX_FAILS deque entries.
     return min(entry[0], _LOGIN_IP_MAX_FAILS), entry[1]
 
 
-# Leading NUL is not a real username; folds unknown users into one slot.
+# Leading NUL is not a real username; folds unknown users into one slot so attacker names cannot blow up the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
 # Own slot: sharing /login's would let anyone lock out every account via the tunnel.
 _DESKTOP_LOGIN_USER = "\x00desktop-login"
@@ -211,11 +215,13 @@ def _normalize_forwarded_addr(value: str) -> str:
     if not value or value.lower() == "unknown":
         return ""
     if value.startswith("["):
+        # Bracketed IPv6, optionally with port.
         end = value.find("]")
         if end <= 0:
             return ""
         host = value[1:end]
     elif value.count(":") == 1:
+        # IPv4:port. Bare IPv6 has multiple colons → else branch.
         head, _, tail = value.rpartition(":")
         host = head if tail.isdigit() and head else value
     else:
@@ -308,13 +314,14 @@ def _record_login_failure(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
+        # At the cap, a new IP reclaims expired buckets (rate-limited) so a spray cannot reset hot ones.
         ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             if now - _LAST_IP_PRUNE >= 1.0:
                 _prune_stale_ip_buckets(now)
                 _LAST_IP_PRUNE = now
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
-            # Every bucket is hot: count in the overflow shard rather than evict a live bucket.
+            # Every bucket is hot: count in the overflow shard, never evict a live bucket, since that would reset its IP counter.
             ip_fails = _overflow_record(ip, now)
         else:
             if ip_bucket is None:
@@ -333,6 +340,7 @@ def _record_login_failure(key: tuple[str, str]) -> int:
             _prune_bucket(account_bucket, now)
             account_bucket.append(now)
             return len(account_bucket)
+        # Both dicts at cap (sustained spray): fall back to the per-IP count.
         return ip_fails
 
 
@@ -350,6 +358,7 @@ def _login_blocked(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
+        # Honor the IP's overflow shard regardless of current dict capacity
         ip_blocked = max(
             _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
             _overflow_blocked(ip, now),
@@ -362,6 +371,7 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         _LOGIN_IP_BUCKETS.pop(ip, None)
+        # Successful login clears only this IP's throttle and overflow entry, not a shard-mate's.
         _overflow_shard(ip).pop(ip, None)
 
 
@@ -401,6 +411,7 @@ def auth_status() -> AuthStatusResponse:
         if storage.is_initialized()
         else True
     )
+    # Only while the default password stands: that is what the deadline fires on.
     from auth.policy import installation_has_managed_accounts, login_mode
 
     return AuthStatusResponse(
@@ -441,14 +452,14 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
-            # IP not in the body: behind a proxy it misleads or leaks.
+            # IP not interpolated into the body: behind a proxy/NAT it is misleading or an info leak.
             detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
     record = storage.get_user_and_secret(username)
     if record is None:
-        # Per-name buckets: a shared unknown bucket is an existence oracle.
+        # Per-name buckets as for real accounts: a shared unknown bucket is an existence oracle.
         hashing.equalize_login_work(payload.password)
         _record_login_failure(key)
         raise HTTPException(
@@ -473,6 +484,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
+    # Issue against the credential version just verified.
     access_token = create_access_token(subject = username, secret = jwt_secret)
     refresh_token = create_refresh_token(subject = username, secret = jwt_secret)
     return Token(
@@ -506,13 +518,7 @@ async def logout(
 # Sync def: PBKDF2 + SQLite would block the event loop.
 @router.post("/desktop-login", response_model = Token)
 def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
-    """Exchange a local desktop secret for normal admin-subject tokens. Per-IP rate-limited.
-
-    Throttled because the route takes no credential and the KDF runs before an attacker-chosen
-    secret can be rejected, so without it one unauthenticated request buys unbounded work. On its
-    own account bucket, contributing to the shared per-IP aggregate exactly as /login does.
-    """
-    # Before reading the bucket: the desktop shell probes with an invalid secret, expects 401.
+    """Before reading the bucket: the shell probes with an invalid secret every tick and needs 401, since any other status reads as unmanageable."""
     if not storage.desktop_secret_is_well_formed(payload.secret):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -536,7 +542,7 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
             detail = "Desktop authentication failed",
         )
     username, jwt_secret = verified
-    # Safe to clear the aggregate: the suffixed key is this route's own, not /login's.
+    # Safe to clear the aggregate: the suffixed key belongs to this route alone, so clearing cannot hand out a fresh guessing budget.
     _clear_login_bucket(key)
     # Shell-owned backends never use the seeded password; terminal-started ones keep the web autofill.
     if getattr(request.app.state, "desktop_owned", False):

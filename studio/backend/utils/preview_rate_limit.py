@@ -15,6 +15,7 @@ import threading
 import time
 from collections import deque
 
+# Window / ceiling for preview chat-completions per client IP.
 _WINDOW_SECONDS = 60.0
 _MAX_REQUESTS = 20
 # Bound memory on a public surface (many distinct IPs).

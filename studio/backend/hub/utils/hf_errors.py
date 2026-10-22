@@ -38,6 +38,7 @@ def modelscope_missing(error: object, repo: Optional[str] = None) -> Optional[st
 
 
 def hf_error_status(exc: Exception) -> Optional[int]:
+    # Client-side HF errors should surface as the status they mean, not a generic 500.
     name = type(exc).__name__
     if name in (
         "RepositoryNotFoundError",
@@ -52,6 +53,7 @@ def hf_error_status(exc: Exception) -> Optional[int]:
         return 403
     if name == "HFValidationError":
         return 400
+    # HfHubHTTPError subclasses carry the upstream response status.
     code = getattr(getattr(exc, "response", None), "status_code", None)
     if isinstance(code, int) and 400 <= code < 500:
         return code

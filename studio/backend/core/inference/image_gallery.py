@@ -31,9 +31,11 @@ from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
 
+# PNG text-chunk key holding our structured recipe JSON.
 _META_KEY = "unsloth"
+# Absent on PNGs written before it existed.
 RECIPE_SCHEMA_VERSION = 1
-# Restrict ids to safe chars so a crafted id cannot escape the directory.
+# Image ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
@@ -102,7 +104,7 @@ def _params_text(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# zlib level 6 costs ~0.4 s per 1024x1024 PNG; level 1 ~0.1 s, ~10% larger.
+# Pillow's default zlib level 6 costs ~0.4 s per 1024x1024 PNG on the request path; level 1 ~0.1 s, ~10% larger, lossless.
 PNG_COMPRESS_LEVEL_ENV = "UNSLOTH_IMAGE_PNG_COMPRESS_LEVEL"
 _DEFAULT_PNG_COMPRESS_LEVEL = 1
 
@@ -182,6 +184,7 @@ def _record(
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
+    # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     if flags is None:
         flags = gallery_flags.read(gallery_dir())
     return {
@@ -189,6 +192,7 @@ def _record(
         "id": image_id,
         "url": f"/api/inference/images/gallery/{image_id}/file",
         **gallery_flags.flags_for(flags, image_id),
+        # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
             flags, image_id, _mtime(gallery_dir() / f"{image_id}.png")
         ),
@@ -279,12 +283,13 @@ def list_images(
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """Pinned first, newest by mtime; the valid filter runs before paging so has_more stays accurate."""
+    """Pinned first, then mtime; archived selects a shelf, never widens; valid filter runs before paging."""
     try:
         paths = list(gallery_dir().glob("*.png"))
     except OSError:
         return []
     flags = gallery_flags.read(gallery_dir())
+    # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
         key = lambda p: (
@@ -325,7 +330,7 @@ def set_flags(
             return None
         gallery_flags.set_flags_locked(gallery_dir(), image_id, pinned = pinned, archived = archived)
         meta = _read_meta(path)
-    if meta is None:
+    if meta is None:  # raced a delete between the guard and the read
         return None
     return _record(image_id, meta)
 
@@ -341,6 +346,7 @@ def move(image_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
         flags = gallery_flags.read(gallery_dir())
         if gallery_flags.is_archived(flags, image_id):
             return None
+        # Full shelf in listing order, so neighbours past the client's loaded window are known.
         try:
             paths = [
                 p
@@ -359,16 +365,17 @@ def move(image_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
         )
         gallery_flags.place_locked(gallery_dir(), image_id, keyed, after_id = after_id)
         meta = _read_meta(path)
-    if meta is None:
+    if meta is None:  # raced a delete between the guard and the read
         return None
     return _record(image_id, meta)
 
 
 def delete(image_id: str) -> bool:
     path = image_path(image_id)
-    # A foreign PNG is invisible to list_images, so a guessed id must not destroy it.
+    # a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it
     if path is None or _read_meta(path, strict_io = True) is None:
         if _ID_RE.fullmatch(image_id):
+            # Only prune absent files, preserving foreign files and symlinks.
             try:
                 (gallery_dir() / f"{image_id}.png").lstat()
             except FileNotFoundError:
@@ -381,18 +388,20 @@ def delete(image_id: str) -> bool:
         removed = False
     except OSError as exc:
         logger.warning("image_gallery.delete_failed: %s", exc)
+        # Propagate I/O failures instead of reporting a missing image.
         raise
+    # drop the flags with the file, so the id cannot hand out a stale pin and the store cannot grow forever
     gallery_flags.forget(gallery_dir(), [image_id])
     return removed
 
 
 def clear(include_archived: bool = False) -> int:
-    """Spares archived images unless include_archived; raises FlagsUnavailable if flags are unreadable."""
+    """Owned PNGs only; archived spared unless include_archived; fails closed if flags unreadable."""
     removed = 0
     directory = gallery_dir()
     # Hold the flag lock across read-then-delete, or an archive landing mid-loop gets deleted.
     with gallery_flags.exclusive(directory):
-        # Read flags BEFORE listing: nothing is unlinked if the store is untrusted.
+        # read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted
         flags = {} if include_archived else gallery_flags.read_trusted(directory)
         try:
             paths = list(directory.glob("*.png"))

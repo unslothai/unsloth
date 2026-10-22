@@ -93,7 +93,7 @@ _HIDDEN_RESPONSE_HEADERS = frozenset(
     "set-cookie set-cookie2 connection keep-alive proxy-connection te trailer transfer-encoding upgrade".split()
 )
 
-# Bounded quoted values keep tag stripping linear on hostile pages.
+# Quoted values are bounded and a bare "<" ends a tag, so stripping stays linear on hostile pages.
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
 _BASE_TAG_RE = re.compile(r"<base\b" + _TAG_BODY, re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)

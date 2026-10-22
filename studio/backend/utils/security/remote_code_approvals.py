@@ -32,6 +32,7 @@ logger = get_logger(__name__)
 _SCHEMA_VERSION = 1
 _lock = threading.RLock()
 
+# Re-exported so the gate can compare a stored approval's ruleset to the live one.
 SCANNER_VERSION = SCAN_RULES_VERSION
 
 
@@ -111,7 +112,7 @@ def _save(data: dict) -> None:
 
 @contextlib.contextmanager
 def _file_lock():
-    """Cross-process lock around the store's read-modify-write; a no-op when OS locking is unavailable."""
+    """Cross-process lock around the read-modify-write, since two processes could clobber an entry written by the other; a no-op when OS locking is unavailable."""
     path = _store_path()
     try:
         storage_roots.ensure_dir(path.parent)

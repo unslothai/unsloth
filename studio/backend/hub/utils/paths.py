@@ -138,6 +138,7 @@ def is_valid_gguf_variant(variant: str) -> bool:
     return all(segment not in ("", ".", "..") for segment in normalized.split("/"))
 
 
+# Bounded LRU memo for resolve_cached_repo_id_case so long-lived processes cannot grow it unbounded.
 _CACHE_CASE_RESOLUTION_MEMO_MAX = 512
 _CACHE_CASE_RESOLUTION_MEMO: "OrderedDict[tuple[str, str], str]" = OrderedDict()
 _CACHE_CASE_RESOLUTION_LOCK = threading.Lock()
@@ -303,6 +304,7 @@ def resolve_cached_repo_id_case(
                     continue
                 if entry.name.lower() != expected_lower:
                     continue
+                # Lowercased full-name match proves the prefix; case-sensitive startswith rejects Models--Org--Repo.
                 repo_part = entry.name[len(prefix) :]
                 if not repo_part:
                     continue

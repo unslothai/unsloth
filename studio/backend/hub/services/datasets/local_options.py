@@ -224,6 +224,7 @@ def _snapshot_metadata_file(snapshot: Path, name: str) -> Optional[Path]:
     return path if 0 < size <= _MAX_METADATA_BYTES else None
 
 
+# DatasetCard.load raises on front matter datasets cannot parse, so nothing in the snapshot is loadable.
 _UNPARSABLE_METADATA = object()
 
 
@@ -240,10 +241,13 @@ def _read_card_metadata(path: Path) -> Any:
         except YAMLError:
             return _UNPARSABLE_METADATA
         if payload is None:
+            # Empty, comment-only or null front matter, which RepoCard reads as an empty card rather than refusing.
             return {}
     except StopIteration:
+        # Front matter that never closes is not front matter at all.
         return None
     except UnicodeError:
+        # DatasetCard.load reads the card as utf-8 and raises, so nothing here loads.
         return _UNPARSABLE_METADATA
     except (ImportError, OSError, ValueError):
         return None
@@ -255,6 +259,7 @@ def _read_card_metadata(path: Path) -> Any:
 
 # Past this the result depends on traversal order.
 _MAX_SNAPSHOT_DATA_FILES = 200_000
+# Ignored by basename before inference, so a metadata-only cache is empty, not a bogus train split.
 _IGNORED_DATA_FILENAMES = frozenset(
     {
         "README.md",
@@ -265,14 +270,15 @@ _IGNORED_DATA_FILENAMES = frozenset(
         "dummy_data.zip",
     }
 )
+# What fsspec can decompress in an Unsloth install, as suffixes that sit after the real one.
 _COMPRESSION_EXTENSIONS = frozenset({".gz", ".gzip", ".bz2", ".xz", ".zip"})
-# Codecs an Unsloth install lacks ("Compression type not supported").
+# Codecs an Unsloth install lacks: datasets raises on them, leaving dead splits in the picker.
 _UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4", ".lzma"})
 # datasets picks one builder for all splits, so mixed formats are not offerable.
 _MODULE_EXTENSIONS = {
     "arrow": ".arrow",
     "csv": ".csv",
-    # tsv carries sep="\t", so it is not csv.
+    # datasets compares the whole builder result, and tsv carries sep="\t", so it is not csv.
     "csv+tab": ".tsv",
     "json": ".json .jsonl .ndjson",
     "parquet": ".parquet .geoparquet .gpq",
@@ -281,6 +287,7 @@ _MODULE_EXTENSIONS = {
     "xml": ".xml",
     "hdf5": ".h5 .hdf5",
 }
+# datasets registers only the folder builders in both letter cases, so only their extensions match case-insensitively.
 _FOLDER_EXTENSIONS = frozenset(
     ".apng .blp .bmp .bufr .bw .cur .dcx .dds .dib .emf .eps .fit .fits .flc .fli .ftc .ftu "
     ".gbr .gif .grib .icb .icns .ico .iim .im .j2c .j2k .jfif .jp2 .jpc .jpe .jpeg .jpf "
@@ -294,18 +301,21 @@ _FOLDER_EXTENSIONS = frozenset(
 _EXTENSION_MODULES = {
     extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
 }
-# datasets infers a split's module from its first 200 sorted files.
+# datasets infers a split's module from its first 200 files, in resolved (sorted) order.
 _MAX_MODULE_INFERENCE_FILES = 200
+# Ties follow datasets' tie-break, then extension; any other builder means nothing trainable.
 _TRAINABLE_MODULES = frozenset({"csv", "json", "parquet"})
 _ROW_PROBE_BYTES = 8192
 _EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
+# Folder-builder metadata loses every tie-break, so it never decides a split's builder.
 _METADATA_FILENAMES = frozenset({"metadata.csv", "metadata.jsonl", "metadata.parquet"})
+# datasets' split keywords, in the order it resolves them.
 _SPLIT_KEYWORDS = {
     "train": ("train", "training"),
     "validation": ("validation", "valid", "dev", "val"),
     "test": ("test", "testing", "eval", "evaluation"),
 }
-# "sep" is NON_WORDS_CHARS and * never crosses a directory.
+# Its keyword globs as regexes: "sep" is NON_WORDS_CHARS and * never crosses a directory.
 _SEP = "[-._ 0-9]"
 _FILENAME_KEYWORD_PATTERNS = (
     r"(?:.*/)?{keyword}%s[^/]*" % _SEP,
@@ -317,6 +327,7 @@ _DIR_NAME_KEYWORD_PATTERNS = (
     r"(?:.*/)?[^/]*%s{keyword}/.*" % _SEP,
     r"(?:.*/)?[^/]*%s{keyword}%s[^/]*/.*" % (_SEP, _SEP),
 )
+# data/{split}-NNNNN-of-NNNNN*.*, where a * matches nothing as happily as something.
 _SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]*)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]*$")
 # A shard name outside datasets' split grammar makes the snapshot unloadable.
 _SHARD_SPLIT_RE = re.compile(r"^\w+(\.\w+)*$")
@@ -380,14 +391,17 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
         except ValueError:
             dirnames[:] = []
             continue
+        # datasets hides dot and __ directories from its own patterns.
         dirnames[:] = [name for name in dirnames if not name.startswith((".", "__"))]
         for filename in filenames:
             if filename in _IGNORED_DATA_FILENAMES or filename.startswith("."):
                 continue
+            # resolve_pattern keeps a link only if its target is a file, so datasets never sees a dangling one.
             if not (base / filename).is_file():
                 continue
             # Files with no builder are kept: a split of only those is one datasets refuses.
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
+                # Past _MAX_SNAPSHOT_DATA_FILES it is a traversal-order prefix, not comparable to the loader.
                 return None
             found.append(PurePosixPath((relative / filename).as_posix()))
     found.sort(key = lambda path: path.as_posix())
@@ -403,6 +417,7 @@ def _sharded_splits(files: list[PurePosixPath]) -> Optional[dict[str, list[PureP
             continue
         split = matched.group("split")
         if _SHARD_SPLIT_RE.fullmatch(split) is None:
+            # datasets raises on the name rather than moving on to the next stage.
             return None
         grouped.setdefault(split, []).append(path)
     return grouped
@@ -443,6 +458,7 @@ def _one_module(grouped: dict[str, list[PurePosixPath]]) -> Optional[str]:
         for path in entries[:_MAX_MODULE_INFERENCE_FILES]:
             suffix = _data_suffix(path.name)
             module = _file_module(path.name)
+            # Folder metadata is counted last whatever it is, so it never wins on its own.
             if module is not None and path.name not in _METADATA_FILENAMES:
                 counts[(module, suffix or "")] = counts.get((module, suffix or ""), 0) + 1
         if not counts:
@@ -477,6 +493,7 @@ def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Opt
         resolved = resolved_dataset_snapshot_file(snapshot, path.as_posix())
         if resolved is None or _blocked_by_compression(path.name, module):
             return None
+        # Datasets reads only files its builder claims, so a stray file from another builder is skipped.
         if _file_module(path.name) != module or not _trainable_name(path.name):
             continue
         if _empty_payload(resolved):
@@ -499,6 +516,7 @@ def _rowless(path: Path, name: str, module: str) -> bool:
     if module not in {"csv", "json"} or (
         suffixes and suffixes[-1].lower() in _COMPRESSION_EXTENSIONS | _UNREADABLE_COMPRESSION
     ):
+        # Compressed bytes say nothing about the rows inside without decompressing them.
         return False
     try:
         with path.open("rb") as handle:
@@ -506,7 +524,9 @@ def _rowless(path: Path, name: str, module: str) -> bool:
     except OSError:
         return True
     if module == "json":
+        # A canonical empty container parses fine and yields no row.
         return head.strip() in (b"", b"[]", b"{}")
+    # A header with no row under it. Anything longer than the probe has one.
     return len(head) < _ROW_PROBE_BYTES and len([x for x in head.splitlines() if x.strip()]) < 2
 
 
@@ -581,6 +601,7 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
     except (ImportError, OSError, UnicodeError, ValueError):
         return True
     if not isinstance(payload, dict):
+        # DatasetCardData updates a dict from it, which raises on anything else.
         return bool(payload)
     # Only configs count: datasets 4.3.0 builds no config from dataset_info.
     return bool(payload.get("configs"))
@@ -601,6 +622,7 @@ def _malformed_info(payload: Any) -> bool:
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
 
+    # Unreadable README or standalone yaml still declares configs, so inference must not step in.
     declared = _unreadable_metadata(snapshot, "README.md") or _declares_configs(
         snapshot, ".huggingface.yaml"
     )
@@ -608,14 +630,16 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     if readme is not None:
         card_data = _read_card_metadata(readme)
         if card_data is _UNPARSABLE_METADATA:
+            # datasets raises out of DatasetCard.load, so no option here would ever start.
             return options
         if isinstance(card_data, dict):
-            # datasets merges the standalone YAML into the card.
+            # datasets merges the standalone YAML into the card, so a README declaring nothing does not undo it.
             declared = declared or bool(card_data.get("configs"))
             _add_config_options(options, card_data.get("configs"))
             named = len(options)
             info = card_data.get("dataset_info")
             _add_dataset_info_options(options, info)
+            # dataset_info with only a feature schema names no config, so inference still has to run.
             declared = (
                 declared or len(options) > named or _malformed_info(info) or _declares_splits(info)
             )
@@ -623,19 +647,21 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
         if metadata is None:
-            # datasets json.loads dataset_infos.json unconditionally, so a bad one raises.
+            # dataset_infos.json is always parsed, so a bad one raises before any split, inferred or not.
             declared = declared or (
                 filename == "dataset_infos.json" and _metadata_present(snapshot, filename)
             )
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
         if filename == "dataset_infos.json":
+            # datasets json.loads this file while resolving configs, so unparsable JSON raises before any split.
             declared = declared or payload is None
             _add_dataset_info_options(options, payload)
         else:
             _add_info_options(options, payload)
 
     if not options and not declared:
+        # Nothing declared: the loader still resolves files by pattern, so the picker infers the same splits.
         options.update(_inferred_snapshot_options(snapshot))
     return options
 
@@ -664,7 +690,7 @@ def local_dataset_options(request: LocalDatasetOptionsRequest) -> LocalDatasetOp
         return LocalDatasetOptionsResponse(cache_available = False, splits = [])
 
     if not request.local_path:
-        # The lookup spans the shared cache; a hit is not authorization.
+        # The lookup spans the shared cache; a hit there is not authorization.
         from hub.services.models import account_access
         if not account_access.model_visible(repo_id, repo_type = "dataset"):
             return LocalDatasetOptionsResponse(cache_available = False, splits = [])
@@ -711,7 +737,7 @@ def hub_dataset_options(
     refuse_unauthorized_dataset_preview(hf_token, repo_id)
     try:
         with recording_a_request_token_fetch(hf_token, repo_id, "dataset"):
-            # Pinned: on "main" datasets queries datasets-server (100 s timeout).
+            # Pinned: on "main", datasets asks a datasets-server for exported infos (100 s timeout).
             sha = (
                 HfApi().dataset_info(repo_id, token = hf_token, timeout = _HUB_INFO_TIMEOUT_SECONDS).sha
             )
@@ -727,7 +753,7 @@ def hub_dataset_options(
             status = 404 if isinstance(exc, FileNotFoundError) else 400
         raise HTTPException(status_code = status, detail = detail) from exc
 
-    # Builder configs only: card configs may have no files.
+    # Builder configs only: card metadata can name configs with no files, which training rejects.
     options: set[tuple[str, str]] = set()
     for config in module.builder_configs_parameters.builder_configs or []:
         _add_info_options(

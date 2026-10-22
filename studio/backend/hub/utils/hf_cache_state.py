@@ -39,8 +39,10 @@ def incomplete_blob_hash(name: str) -> Optional[str]:
     return process_unique.group("blob_hash") if process_unique else stem
 
 
+# The last huggingface_hub line whose partials a later attempt can append to.
 _LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
 
+# huggingface_hub writes to a partial continuously, so anything still advancing has a live writer, possibly a client in another process no registry here can see.
 ABANDONED_PARTIAL_SECONDS = 120
 
 
@@ -67,6 +69,7 @@ def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
         try:
             return can_restore_partials(hub_cache)
         except _ProbeUnavailable:
+            # Nothing was shown, so nothing is promised -- and nothing is remembered either.
             return False
     except Exception:  # noqa: BLE001 - no restoration is just the stock answer
         from loggers import get_logger
@@ -98,6 +101,7 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
     lock_path = entry.parent / ".locks" / entry.name / f"{blob_hash}.lock"
     # hf creates the lock file before locking, so no file means no writer.
     if not lock_path.exists():
+        # hf creates the lock file before taking the lock, so no file means no writer; it is also the answer for a SoftFileLock, whose file IS the lock.
         return False
     try:
         from filelock import FileLock, Timeout
@@ -109,7 +113,7 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
     except Timeout:
         return True
     except Exception:  # noqa: BLE001 - deliberately broad, see below
-        # NotImplementedError (no flock) must not escape: a wrong "free" deletes a live file.
+        # A filesystem without flock raises NotImplementedError, which upstream answers by retrying as a SoftFileLock; retrying is pointless for a PROBE, since we only reach here because the file exists. What matters is that the exception does not escape: a wrong "free" deletes a live writer's file.
         return True
 
 
@@ -125,7 +129,7 @@ def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
     try:
         return stat_module.S_ISDIR(os.stat(path).st_mode)
     except (FileNotFoundError, NotADirectoryError):
-        return False
+        return False  # genuinely not a directory here; that IS the answer
     except (OSError, ValueError) as exc:
         if scan_errors is not None:
             scan_errors.append(exc)
@@ -170,6 +174,7 @@ def hf_cache_roots(scan_errors: Optional[list] = None) -> list[Path]:
         try:
             key = str(path.resolve())
         except OSError as exc:
+            # A root that stats but will not resolve is a root we could not read, not one that is gone: dropping it silently let the progress scan answer "measured, no cache", which retires a download whose files may be intact.
             if scan_errors is not None:
                 scan_errors.append(exc)
             return
@@ -220,7 +225,7 @@ def blob_bytes_present(path: Path) -> int:
     blocks = getattr(st, "st_blocks", None)
     if blocks is not None and blocks > 0:
         return min(blocks * 512, st.st_size)
-    # A zero st_blocks may be a preallocated partial or a mount not reporting blocks; confirm.
+    # A present zero is not a missing field: a parallel writer that sets the partial to its final length before its first chunk lands sits exactly here, and a mount that never populates st_blocks looks the same, so confirm the emptiness directly before believing st_size.
     if blocks == 0 and _holds_no_data(path):
         return 0
     if sys.platform == "win32":
@@ -365,6 +370,7 @@ def validated_repo_cache_path(
         return None
 
 
+# repo_folder_name builds these; cached private datasets and spaces hold readable bytes like models.
 _CACHE_REPO_TYPES = ("model", "dataset", "space")
 
 
@@ -378,6 +384,7 @@ def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
     resolved_roots: Optional[list] = None
 
     def roots() -> list:
+        # Resolve lazily, once: ordinary local paths match no prefix, so eager stat calls are wasted.
         nonlocal resolved_roots
         if resolved_roots is None:
             resolved_roots = []
@@ -470,6 +477,7 @@ def latest_snapshot_from_cache_path(
     try:
 
         def has_metadata(path: Path) -> bool:
+            # required_groups is an AND of ORs: "loadable" means metadata alone or weights alone is not enough.
             for group in required_groups:
                 if not any((path / name).is_file() for name in group):
                     return False
@@ -603,6 +611,7 @@ def preferred_repo_cache_dirs(
     active_root: Optional[Path] = None,
     scan_errors: Optional[list] = None,
 ) -> list[Path]:
+    # iter_active_repo_cache_dirs already matches case-insensitively, so the canonical name below is only ever a placeholder for a repo dir that is not there yet.
     active_entries = list(
         iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root, scan_errors = scan_errors)
     )
@@ -610,6 +619,7 @@ def preferred_repo_cache_dirs(
         return active_entries
     # A running job writes only to the active root; never read a previous cache's copy.
     if force_active:
+        # A running or cancelling job writes into the active root and nowhere else, so its progress may only be read from there: hf_cache_root returns None for a root not yet created, and falling through would read a previous cache's completed copy as this run's progress.
         root = hf_cache_root(root = active_root) or active_root or _configured_hub_cache()
         if root is not None:
             canonical = repo_cache_dir_name(repo_type, repo_id)
@@ -618,6 +628,7 @@ def preferred_repo_cache_dirs(
 
 
 def _configured_hub_cache() -> Optional[Path]:
+    # Path()-wrapped: the setting is typed Path, but a caller handing back a str would turn `root / name` into a TypeError that surfaces as an empty progress reading.
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
         configured = get_hf_cache_paths().hub_cache
@@ -763,6 +774,7 @@ def with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...
         from utils.security import security_load_subdirs
         subdirs = security_load_subdirs(model_name, local_files_only = True)
     except Exception:
+        # Degrading to root-only is fail-closed at every caller, but a real cache permission or corruption fault then reaches the user as "your cached model isn't cached" with no clue why.
         from loggers import get_logger
         get_logger(__name__).debug(
             "Load-subdir detection failed for %s; using root only.",

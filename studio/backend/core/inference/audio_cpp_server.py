@@ -49,11 +49,13 @@ logger = get_logger(__name__)
 BINARY_NAME = "audiocpp_server.exe" if sys.platform == "win32" else "audiocpp_server"
 INSTALL_RECORD = "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json"
 
+# Model load happens before the server answers, and a multi-GB music model can take a while from a cold disk.
 _SERVER_START_TIMEOUT_SECONDS = 600.0
 _PROBE_TIMEOUT_SECONDS = 2.0
+# A streamed answer is copied to its file in blocks this size; an error body is read up to the cap.
 _SINK_CHUNK_BYTES = 1 << 20
 _ERROR_BODY_BYTES = 64 * 1024
-# CUDA graph replay wedges these transducers mid-request.
+# CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
 _NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
 _GPU_HOST_THREADS = 8
 
@@ -121,6 +123,7 @@ def _is_runnable(p: Path) -> bool:
     try:
         return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
     except OSError:
+        # An unreadable install dir reads as engine-unavailable, never a 500.
         return False
 
 
@@ -207,9 +210,10 @@ _ESPEAK_DATA_NAMES = ("espeak-ng-data.bin", "espeak-ng-data.gguf", "espeak-ng-da
 
 
 def binary_has_espeak(binary: Optional[str]) -> bool:
-    """Upstream bundles lack eSpeak-ng data, so Kokoro, Piper, KittenTTS and Inflect cannot run on them."""
+    """True when the build ships eSpeak-ng data beside the server; upstream bundles lack it, so Kokoro, Piper, KittenTTS and Inflect cannot run"""
     if not binary:
         return False
+    # Check espeak data files, not the install record: removed data would pass preflight, fail at launch
     bin_dir = Path(binary).parent
     return any((bin_dir / name).exists() for name in _ESPEAK_DATA_NAMES)
 
@@ -369,11 +373,12 @@ def child_env(binary: str) -> dict[str, str]:
     """Secrets scrubbed, home repointed at a scratch dir, co-located libs first on the loader path."""
     binary = str(Path(binary).resolve())
     env = scrub_env(os.environ)
-    # Per user: eSpeak extracts data here, so a shared path lets another account plant it.
+    # Per user and outside the install dir: eSpeak extracts data here, so a shared path lets another account plant it.
     isolate_home(env, str(_child_home_dir()))
     bin_dir = str(Path(binary).parent)
     runtime_dirs: list[str] = []
     if read_install_record(binary).get("backend") == "cuda" or not read_install_record(binary):
+        # No-cudart CUDA bundles use torch's CUDA runtime dirs, after the bundle dir so co-located DLLs win
         try:
             from utils.prebuilt.runtime_libs import python_runtime_dirs
             runtime_dirs = python_runtime_dirs()
@@ -547,6 +552,7 @@ class AudioCppServer:
             "backend": backend,
             "lazy_load": False,
             "max_loaded_models": 1,
+            # Music generation can take minutes; the owner bounds its own wait and cancels.
             "busy_timeout_ms": 0,
             "models": [entry],
         }
@@ -590,6 +596,7 @@ class AudioCppServer:
                     **child_popen_kwargs(),
                 )
         except OSError as exc:
+            # A corrupt, quarantined or wrong-architecture binary: report it like any other runtime failure.
             shutil.rmtree(config_dir, ignore_errors = True)
             raise AudioCppUnavailableError(
                 f"The audio runtime could not be started: {exc}"
@@ -623,6 +630,7 @@ class AudioCppServer:
             return ""
         tail = data[-limit:]
         if len(data) > limit:
+            # The cut can split a path or token; drop that partial first line (or word, or all of it).
             parts = tail.split(b"\n", 1) if b"\n" in tail else tail.split(None, 1)
             tail = parts[1] if len(parts) == 2 else b""
         return tail.decode("utf-8", "replace").strip()
@@ -820,7 +828,7 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                # A killed server can sit in GPU teardown well past 10 s (Seed-VC took ~54 s).
+                # A killed server can sit in GPU teardown well past 10 s (Seed-VC took about 54 s); the music reload restarts it mid-session and must not fail on that
                 try:
                     process.wait(timeout = 120)
                 except subprocess.TimeoutExpired:

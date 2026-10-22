@@ -137,7 +137,7 @@ _TERMINAL = ("completed", "cancelled", "error")
 
 
 def upsert_execution(execution: dict) -> bool:
-    """Stale snapshots from two tabs tracking one run are accepted but never replace newer state."""
+    """Returns False when the recipe is missing or the id belongs to another recipe; stale snapshots are accepted but never replace newer state."""
     conn = get_connection()
     try:
         cur = conn.execute(

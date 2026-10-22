@@ -23,7 +23,7 @@ def prune_log_dir(
     keep: int = DEFAULT_KEEP,
     protect: Optional[Path] = None,
 ) -> None:
-    """The protected log counts toward keep and is never deleted; call after opening it, not before."""
+    """Protected log counts toward keep and is never deleted; open it before pruning. Only regular files count; one unreadable entry skips itself, not the directory."""
     if keep < 0:
         return
 
@@ -49,10 +49,11 @@ def prune_log_dir(
                 saw_protected = True
                 continue
         except OSError:
+            # Dangling symlink, vanished file, or an unreadable directory.
             continue
         entries.append((stat.st_mtime, path))
 
-    # The protected file occupies one slot.
+    # The protected file occupies one of the slots, so the total stays at `keep`.
     room = keep - 1 if saw_protected else keep
     entries.sort(key = lambda item: item[0])
     if room > 0:

@@ -13,6 +13,7 @@ from typing import Optional
 from auth.storage import get_or_create_preview_link_secret
 from utils.account_context import OWNER, AccountContext, current_account
 
+# Versioned so the token format can evolve without silently honoring old shapes.
 _PREVIEW_TOKEN_VERSION = "v1"
 _ACCOUNT_TOKEN_VERSION = "v2"
 _ACCOUNT_SEPARATOR = "."

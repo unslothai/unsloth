@@ -282,7 +282,7 @@ def _build_sdxl_latent_cache(
 
 
 def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
-    """Draws fresh noise each step from the cached A and B, as an in-loop latent_dist.sample() would."""
+    """Draws fresh noise per step from cached A and B in fp32 like latent_dist.sample(), casts to weight_dtype after; scale is folded into the cache."""
     import torch
 
     parts_a, parts_b, tid_rows = [], [], []
@@ -325,7 +325,7 @@ def run_diffusion_lora_training(
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    # diffusers hard-codes _tqdm_active = True; this is the earliest point to silence it.
+    # diffusers hard-codes _tqdm_active = True and reads no env var, so call this before the pipeline load.
     try:
         from loggers.config import quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
@@ -336,6 +336,7 @@ def run_diffusion_lora_training(
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
 
+    # A stop signal may be truthy or a dict with save=False; save_on_stop records that for export.
     save_on_stop = True
 
     def _check_stop() -> bool:
@@ -356,8 +357,10 @@ def run_diffusion_lora_training(
         precision = "fp16"
     weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[precision]
 
+    # Wraps the whole body so every return restores the TF32 / cudnn.benchmark flags.
     snap = _apply_perf_flags(cfg, device)
     try:
+        # Preflight the base model against the same trust gate as inference, before any fetch.
         _assert_trusted_base_model(cfg.base_model)
 
         pairs = discover_image_caption_pairs(
@@ -390,6 +393,7 @@ def run_diffusion_lora_training(
             )
         _emit(on_event, "model_load_started", num_images = len(pairs))
 
+        # Honour a stop requested before the (slow) base model load.
         if _check_stop():
             out_dir = Path(cfg.output_dir).expanduser()
             _emit(
@@ -399,6 +403,7 @@ def run_diffusion_lora_training(
                 lora_path = None,
                 stopped = True,
                 steps_run = 0,
+                # A stop with save=false discards the run at any point, or the resume fallback re-offers the source.
                 discarded = not save_on_stop,
             )
             return str(out_dir)
@@ -411,7 +416,7 @@ def run_diffusion_lora_training(
         text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
         noise_scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
 
-        # The SDXL VAE overflows fp16, so keep it fp32.
+        # Freeze the base; only the LoRA trains. The SDXL VAE overflows fp16, so keep it fp32.
         for m in (unet, vae, *text_encoders):
             m.requires_grad_(False)
         vae.to(device, dtype = torch.float32)
@@ -490,6 +495,7 @@ def run_diffusion_lora_training(
         use_cache = cfg.cache_latents and os.environ.get(
             "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
         ) not in ("1", "true")
+        # Over the host-memory budget; keep the VAE resident and encode in-loop.
         latent_cache = None
         canvases, crop_room = plan_image_canvases(cfg, [p for p, _ in pairs])
         if use_cache:
@@ -523,6 +529,7 @@ def run_diffusion_lora_training(
                     lora_path = None,
                     stopped = True,
                     steps_run = 0,
+                    # A discard is a discard however early the stop lands.
                     discarded = not save_on_stop,
                 )
                 return str(out_dir)
@@ -547,6 +554,7 @@ def run_diffusion_lora_training(
         _emit(on_event, "model_load_completed", compiled = compiled)
         # Identity was built before the load; resolve the revision now the base is on disk.
         identity = with_resolved_revision(identity, cfg.base_model)
+        # Env override and over-budget fallback disable the cache; the paths draw crops from different RNGs.
         identity = with_cache_mode(identity, latent_cache is not None)
 
         # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
@@ -590,11 +598,13 @@ def run_diffusion_lora_training(
         out_dir = Path(cfg.output_dir).expanduser()
         # Foreign bundles in a reused output_dir must be cleared or they outrank this run.
         resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
+        # The bundles already here when this run started, so a discard removes only what this run wrote.
         preexisting_checkpoints = snapshot_checkpoints(out_dir)
 
         unet.train()
         stopped = False
         micro = 0
+        # Carried over so avg_loss stays an average over the whole run, not just since the resume.
         running_loss = restored.running_loss if restored is not None else 0.0
         peak_gb = 0.0
         t_start = time.time()
@@ -621,6 +631,7 @@ def run_diffusion_lora_training(
                 # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them
                 # before this run produced anything, so cancelling a retrain destroyed the thing being retrained.
                 discard_existing = False,
+                # A branched resume must not prune the higher-numbered checkpoints it did not write.
                 preexisting = preexisting_checkpoints,
             )
 
@@ -717,6 +728,7 @@ def run_diffusion_lora_training(
             for _ in range(cfg.gradient_accumulation_steps):
                 idx, img_paths, captions = _next_batch()
                 if latent_cache is not None:
+                    # Scale folded into the cache; the sampler draws fp32 and casts to weight_dtype.
                     latents, batch_time_ids = _sample_sdxl_cached_latents(
                         latent_cache, idx, variant_rng, device, weight_dtype
                     )
@@ -734,6 +746,7 @@ def run_diffusion_lora_training(
                     pixel_values = torch.stack([t for t, _ in loaded]).to(
                         device, dtype = torch.float32
                     )
+                    # Per-sample SDXL micro-conditioning from the actual crop (original size + offset).
                     batch_time_ids = torch.tensor(
                         [tid for _, tid in loaded], device = device, dtype = weight_dtype
                     )
@@ -789,6 +802,7 @@ def run_diffusion_lora_training(
             grad_norm = None
             scaler.unscale_(optimizer)
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
+                # Returned value is the total PRE-clip norm, reported to the UI chart.
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
                 if not math.isfinite(grad_norm):
                     grad_norm = None
@@ -853,11 +867,12 @@ def run_diffusion_lora_training(
                 stopped = True
                 break
 
+        # Export the LoRA in diffusers format, unless cancelled with save disabled.
         lora_path: Optional[str] = None
         catalog_path: Optional[str] = None
         if not (stopped and not save_on_stop):
             out_dir.mkdir(parents = True, exist_ok = True)
-            # Write the bundle before the adapter export so a failed export still leaves it.
+            # Write the bundle BEFORE the adapter export: if that export then fails, the run still comes back.
             if stopped and done > 0:
                 _save_checkpoint(done)
             unet_lora = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
@@ -868,7 +883,7 @@ def run_diffusion_lora_training(
                 weight_name = DEFAULT_LORA_FILENAME,
             )
             lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
-            # ``done``, not cfg.train_steps: a stop at 11/500 must not advertise 500.
+            # Mirror into loras/diffusion for the Images picker (scan skips subdirs); use done, not cfg.train_steps, so a stop at 11/500 does not advertise 500.
             catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
             if not stopped:
                 # Retire this run's own bundles so a later resume does not roll back to them.
@@ -885,6 +900,7 @@ def run_diffusion_lora_training(
             try:
                 out_dir.rmdir()
             except OSError:
+                # Not ours to remove if anything else is in it (an earlier run's adapter).
                 pass
         _emit(
             on_event,
@@ -897,6 +913,7 @@ def run_diffusion_lora_training(
             stopped = stopped,
             steps_run = done if cfg.train_steps else 0,
             resumed_from_step = resumed or None,
+            # A discarded run's own periodic checkpoints must not keep offering to continue it.
             discarded = bool(stopped and not save_on_stop),
         )
         return str(out_dir)
@@ -920,6 +937,7 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         event_queue.put(ev)
 
     def should_stop() -> Any:
+        # Drain the queue and return the last stop message (True or a dict with save=False); else False.
         got: Any = None
         saw = False
         try:
@@ -931,11 +949,12 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         return got if saw else False
 
     try:
+        # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
         trainer(cfg, on_event = on_event, should_stop = should_stop)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the parent as an error event
-        # Emit both keys: the diffusion service reads ``message``, the generic worker ``error``.
+        # Emit both keys: the diffusion service reads ``message``, the generic worker reads ``error``.
         event_queue.put(
             {"type": "error", "message": str(exc), "error": str(exc), "ts": time.time()}
         )

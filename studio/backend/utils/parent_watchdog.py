@@ -26,7 +26,7 @@ def _fire(on_parent_exit: Callable[[], None]) -> None:
 
 
 def _watch_unix(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
-    # Reparenting (parent != owner pid) is the death signal: immune to pid reuse and reaping.
+    # Reparenting (getppid differs from owner pid) is the death signal: unlike a kill-0 probe it is immune to reaping and pid reuse; check before first wait.
     while True:
         if os.getppid() != parent_pid:
             _fire(on_parent_exit)
@@ -52,9 +52,11 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
     WAIT_OBJECT_0 = 0
     handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
     if not handle:
+        # A same-user owner is always openable.
         _fire(on_parent_exit)
         return
     try:
+        # Bounded waits so a stop request is honored.
         while not stop.is_set():
             if kernel32.WaitForSingleObject(handle, int(poll_seconds * 1000)) == WAIT_OBJECT_0:
                 _fire(on_parent_exit)
@@ -63,7 +65,7 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
         kernel32.CloseHandle(handle)
 
 
-# Returns the stop event, or None if the parent was already gone (callback fires at once).
+# Watches parent_pid (the spawning app pid if passed, else the direct parent); returns the stop event, or None if already gone (callback fires at once).
 def start_parent_watchdog(
     on_parent_exit: Callable[[], None],
     parent_pid: Optional[int] = None,

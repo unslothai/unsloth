@@ -25,6 +25,7 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 
+# Text-encoder flags per family, in supply order; keyed by DiffusionFamily.name, not sd.cpp.
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "z-image": ("--llm",),
     "flux.2-klein": ("--llm",),
@@ -361,8 +362,9 @@ CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
 # Negative --max-vram auto-detects free VRAM per device; segments on its own.
 GRAPH_CUT_VRAM_FLAGS: tuple[str, ...] = ("--max-vram", "-1")
-# Upstream honours --stream-layers only under --offload-to-cpu.
+# Upstream honours --stream-layers only under --offload-to-cpu (diffusion params on CPU); otherwise it warns and ignores the flag.
 GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
+# The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
 # The committed "-1" is a placeholder (live server signatures compare on it); a launch swaps it for an explicit GiB
@@ -523,7 +525,7 @@ def is_device_oom_text(text: Optional[str]) -> bool:
 def device_backend_flags(
     device_name: Optional[str], offload: Optional[list[str]] = None
 ) -> list[str]:
-    """Pins only modules the offload policy left on GPU; a later device flag would undo --clip-on-cpu."""
+    """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu."""
     if not device_name:
         return []
     flags = offload or []
@@ -533,7 +535,7 @@ def device_backend_flags(
 
 
 def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
-    """sd.cpp concatenates repeated --backend values, so a CPU restart must strip the device pin first."""
+    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload."""
     out: list[str] = []
     skip = False
     for flag in flags:
@@ -581,6 +583,7 @@ def offload_flags(
         flags.append("--diffusion-fa")
     if tile:
         flags.append("--vae-tiling")
+    # Stable order, de-duplicated (a forced flag can coincide with a policy one).
     seen: set[str] = set()
     out: list[str] = []
     for f in flags:
@@ -606,6 +609,7 @@ def build_sd_cpp_command(
         raise ValueError("diffusion_model path is required")
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
+    # A --mask without --init-img is invalid (inpaint needs a source image), so reject it here.
     if params.mask and not params.init_img:
         raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 
@@ -640,6 +644,7 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
+    # Unset dims are omitted for image-conditioned runs so sd.cpp derives size; txt2img defaults to 1024.
     if params.width is not None or params.height is not None:
         w = int(params.width) if params.width is not None else 1024
         h = int(params.height) if params.height is not None else 1024
@@ -714,6 +719,7 @@ def build_sd_cpp_video_command(
     cmd += ["--llm", files.llm]
     if files.llm_vision:
         cmd += ["--llm_vision", files.llm_vision]
+    # Reject incompatible partitions before loading the model.
     if (params.init_img or params.end_img) and (
         params.ref_images or params.ref_videos or params.ref_audios
     ):
@@ -968,7 +974,7 @@ def build_vid_gen_request(
     ref_images_b64: Optional[list[str]] = None,
     output_compression: int = 90,
 ) -> dict:
-    """Writes AVI, which needs no WebM build; ``--rng cpu`` is a server flag, so it is passed at spawn."""
+    """POST body equal to build_sd_cpp_video_command (same pixels per seed); writes AVI, which needs no WebM build; --rng cpu is a server flag passed at spawn."""
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
     if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:

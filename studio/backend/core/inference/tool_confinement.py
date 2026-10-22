@@ -61,7 +61,7 @@ _SYSTEM_READ_ROOTS = (
     "/proc",
     "/sys",
 )
-# Pseudo-devices plus accelerator nodes; the rest of /dev (ptys, shm, block devices) stays out.
+# Pseudo-devices plus accelerator nodes; the rest of /dev stays out: other session ptys, same-UID shm, and block devices.
 _DEVICE_NODES = ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty")
 _ACCELERATOR_NODES = (
     "/dev/nvidiactl",
@@ -256,6 +256,7 @@ def _grant_excluding(
     for name in children:
         child = os.path.join(path, name)
         if not os.path.exists(child):
+            # A dangling link cannot carry a rule.
             continue
         if os.path.islink(child):
             # A link opens as its target, so one near a protected root would grant that tree.
@@ -548,6 +549,7 @@ def macos_profile(
         # Network, mach, sysctl and shm grants filtered exactly as the owner's profile filters them.
         *_macos_system_rules(writable_roots),
         "(allow file-read-metadata)",
+        # Pseudo-devices only; the rest of /dev (other sessions' ttys, disks) stays denied.
         '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random")'
         ' (literal "/dev/urandom") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
         '(allow file-ioctl (literal "/dev/tty") (literal "/dev/dtracehelper"))',

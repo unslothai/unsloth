@@ -28,6 +28,7 @@ from utils.account_context import current_account_id
 # Keyed by handle: a tool continuation can register before the previous leg unregisters.
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
+# Disabled or retired accounts: a generation registering late for one starts cancelled.
 _FENCED: set[str] = set()
 
 

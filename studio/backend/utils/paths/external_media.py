@@ -28,6 +28,7 @@ def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
         if rest[:4].lower() == "unc\\":
             path = "\\\\" + rest[4:]
         else:
+            # A device volume root is just the volume specifier (C:, Volume{GUID}) with no further component; a deeper path is an ordinary folder.
             core = rest.rstrip("\\/")
             return "\\" not in core and "/" not in core
     if _pathmod.dirname(path) != path:
@@ -163,6 +164,7 @@ def linux_media_mount_roots(
         try:
             if not child.is_dir():
                 continue
+            # The current user's folder is the parent of their mounts, not a volume.
             volume_dirs = list(child.iterdir()) if user and child.name == user else [child]
         except (OSError, RuntimeError, ValueError):
             continue
@@ -248,7 +250,7 @@ def _active_windows_drive_bitmask() -> int:
         return 0
 
 
-# A disconnected mapped drive can block isdir for tens of seconds; bound each probe.
+# A disconnected mapped drive stays set in the GetLogicalDrives bitmask, so ``os.path.isdir`` on it can block for tens of seconds. Bound each drive probe so one stale mapping cannot stall a whole folder-browser request.
 _DRIVE_PROBE_TIMEOUT_S = 2.0
 _probes_lock = threading.Lock()
 _probes_started: dict[str, float] = {}
@@ -285,7 +287,7 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
     for thread in threads:
         thread.join(max(0.0, deadline - time.monotonic()))
 
-    # Iterate the input, not results.items(): a timed-out probe may still insert keys.
+    # Iterate the fixed input, not results.items(): a probe that timed out is still alive and may insert its key here, which would raise "dictionary changed size during iteration". results.get() is an atomic read.
     return {path for path in paths if results.get(path)}
 
 
@@ -315,5 +317,6 @@ def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -
         seen.add(key)
         candidates.append(root_text)
 
+    # Bounded concurrent probe: an active bitmask bit can still be a disconnected mapping whose os.path.isdir blocks, so probe all at once.
     readable = _readable_dirs_within(candidates, _DRIVE_PROBE_TIMEOUT_S)
     return [Path(root_text) for root_text in candidates if root_text in readable]

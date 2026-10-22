@@ -20,33 +20,36 @@ from typing import Any, Optional
 
 # Loose on purpose: some rows never produce a step (eval split, train_on_responses_only drops).
 MAX_STEPS_ROW_SLACK = 4
+# Below this a subset is small enough to skew a run for no meaningful saving.
 MIN_MAX_STEPS_ROWS = 1024
 # Env, not torch.distributed: this module is torch-free and runs before any process group.
 WORLD_SIZE_ENV_VARS = (
-    "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed; not set by any MPI
-    "LOCAL_WORLD_SIZE",
-    "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend
+    "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed. NOT set by any MPI
+    "LOCAL_WORLD_SIZE",  # torchrun's --nproc-per-node; it sets WORLD_SIZE too
+    "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend, which is CUDA-only
     "OMPI_COMM_WORLD_SIZE",
     "PMI_SIZE",  # MPICH and Intel MPI via Hydra; srun only under --mpi=pmi2
-    "PMIX_SIZE",
-    "MPI_WORLD_SIZE",
-    "MV2_COMM_WORLD_SIZE",  # MVAPICH2, only under mpirun_rsh
+    "PMIX_SIZE",  # nothing sets this: PMIx answers job size through PMIx_Get
+    "MPI_WORLD_SIZE",  # likewise undocumented in every MPI checked
+    "MV2_COMM_WORLD_SIZE",  # MVAPICH2, and only under its mpirun_rsh launcher
 )
 # mlx.launch ring and JACCL backends export a path to a JSON list with one entry per rank.
 WORLD_SIZE_ENV_FILES = (
-    "MLX_HOSTFILE",
-    "MLX_IBV_DEVICES",
+    "MLX_HOSTFILE",  # ring backend: a path to [["ip:port", ...], ...], one per rank
+    "MLX_IBV_DEVICES",  # jaccl backend: a path to the N x N RDMA matrix, one row per rank
 )
+# Read a bounded prefix so a wrong path cannot load a huge file; a truncated read is discarded.
 MAX_WORLD_SIZE_FILE_BYTES = 1 << 20
-# Its absence means the checkpoint predates the bound.
+# Its absence is the signal that a checkpoint predates the bound.
 ROW_BOUND_MARKER_FILE = "unsloth_row_bound.json"
+# transformers writes checkpoint-<global_step> and nothing else under that prefix.
 _CHECKPOINT_DIR_RE = re.compile(r"^checkpoint-\d+$")
 
 
 def _int_or(value: Any, default: int) -> int:
     """Coerce a config value to an int; a row bound must never be what raises."""
     try:
-        # OverflowError: json accepts Infinity.
+        # OverflowError: json accepts Infinity, so a config or request can carry one.
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return default
@@ -65,7 +68,7 @@ def _seed_int(value: Any, default: int) -> int:
 
 
 def world_size_from_rank_files(environ: Any = None) -> int:
-    """Only regular files are opened: opening a fifo named by a variable could block a run forever."""
+    """Never raises; reads only regular files (a fifo could hang); ranks must match the CLI count."""
     source = os.environ if environ is None else environ
     sizes = [1]
     for name in WORLD_SIZE_ENV_FILES:
@@ -98,7 +101,7 @@ def world_size_from_env(environ: Any = None) -> int:
 
 
 def world_size_env_report(environ: Any = None) -> str:
-    """Lists launcher variables that are set; a stale one makes a single-machine run look multi-rank."""
+    """Never raises; lists set launcher variables, since a stale one makes one machine look multi-rank."""
     source = os.environ if environ is None else environ
     parts = []
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
@@ -160,6 +163,7 @@ def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
         return None
     head, tail = os.path.split(path)
     if _CHECKPOINT_DIR_RE.match(tail):
+        # A bare "checkpoint-30" splits to an empty head; its run dir is the cwd.
         return head or os.curdir
     return path
 
@@ -169,7 +173,7 @@ def record_row_bound(
     max_train_rows: Optional[int],
     seed: Any = 3407,
 ) -> bool:
-    """Written via temp file and os.replace, so a full disk mid-rewrite cannot leave an empty marker."""
+    """Best effort: never fails the run; returns success; temp file and os.replace keep a valid marker."""
     run_dir = run_dir_for_checkpoint(output_dir)
     if not run_dir:
         return False
@@ -205,7 +209,7 @@ def row_bound_for_resume(
     max_train_rows: Optional[int],
     seed: Any = 3407,
 ) -> tuple[Optional[int], int]:
-    """A resume with no readable marker gets no bound, as both trainers resume by batch index."""
+    """Resume reuses the rows and seed of the marked run; no readable marker means no bound (batch index)."""
     fallback_seed = _seed_int(seed, 3407)
     if not checkpoint_path:
         return max_train_rows, fallback_seed
@@ -237,6 +241,7 @@ def bound_dataset_rows(
     try:
         total_rows = len(dataset)
     except TypeError:
+        # No __len__ means streaming, which is bounded lazily instead.
         return dataset
     if total_rows <= max_train_rows:
         return dataset

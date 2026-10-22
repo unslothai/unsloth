@@ -75,7 +75,7 @@ def dflash_repo_preference_key(
     weight_name: Optional[str] = None,
     other_weight_names: Iterable[str] = (),
 ) -> tuple[int, int, int, str]:
-    """Demotes sidecars for another family below those for this weight, but keeps them as a fallback"""
+    """Ranks sidecars against this weight: its family first, then unnamed, then another family (demoted, not dropped), so model B never gets the drafter of model A."""
     precision, sort_name = dflash_preference_key(name)
     if weight_name is not None and _drafter_matches_weight(name, weight_name, kind = "dflash"):
         return 0, _drafter_stem_rank(name, kind = "dflash"), precision, sort_name

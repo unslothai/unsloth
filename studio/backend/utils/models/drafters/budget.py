@@ -22,7 +22,7 @@ def dflash_budget_bytes(
     *,
     require_full_sizes: bool = False,
 ) -> int:
-    """Safe over-estimate of the DFlash sidecar a load may land on: largest candidate, whole shard sets."""
+    """Over-estimate of the DFlash sidecar: largest candidate, whole shard sets; target_bytes drops ordinary weights; require_full_sizes drops partly sized families."""
 
     def _family(name: str, size: int) -> tuple[int, bool]:
         shards = list(extra_shards(sizes, name))

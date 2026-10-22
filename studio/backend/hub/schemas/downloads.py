@@ -88,8 +88,10 @@ class DownloadStartResponse(BaseModel):
     job_key: str
     state: str
     accepted: bool
+    # True when this start attached to a job already running rather than starting one.
     attached: bool = False
     generation: int
+    # The transport the job is really on, which can differ from the one the client asked for.
     transport: Optional[str] = None
     # Set when a job fell back from Xet to HTTP: cancelling leaves a restart-only partial.
     cancel_transport: Optional[str] = None
@@ -139,7 +141,7 @@ class TransportCapabilities(BaseModel):
     xet: TransportCapability
     auto_resolves_to: Literal["xet", "http"] = "xet"
     auto_reason: Optional[str] = None
-    # False when huggingface_hub refetches interrupted files from zero.
+    # False when huggingface_hub refetches interrupted files from zero; no transport can byte-resume, so the UI must not label one.
     partials_resumable: bool = True
 
 
@@ -228,8 +230,10 @@ class DatasetDownloadStartResponse(BaseModel):
     repo_id: str
     state: str
     accepted: bool
+    # Attached to a job already running, rather than starting one (see above).
     attached: bool = False
     generation: int
+    # The transport the job is really on, and its cancel marker (see above).
     transport: Optional[str] = None
     cancel_transport: Optional[str] = None
 

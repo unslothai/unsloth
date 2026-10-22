@@ -85,6 +85,7 @@ ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 # absent class could not have produced a loadable checkpoint here anyway. Adding a scheme means adding its
 # constructors here; forgetting warns and falls back to dense-quantise, never a silent unpickle.
 _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
+    # int8: AffineQuantizedTensor + its plain layout, wrapped for dynamic activation quant
     ("torchao.dtypes.affine_quantized_tensor", "AffineQuantizedTensor"),
     ("torchao.dtypes.uintx.plain_layout", "PlainAQTTensorImpl"),
     ("torchao.dtypes.utils", "PlainLayout"),
@@ -92,6 +93,7 @@ _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.quantization.quant_api", "_int8_symm_per_token_reduced_range_quant"),
     ("torchao.quantization.quant_primitives", "ZeroPointDomain"),
     ("torchao.quantization.quant_primitives", "MappingType"),
+    # fp8: the newer tensor subclass, its per-row granularity and its kernel/mm options.
     ("torchao.quantization", "Float8Tensor"),
     ("torchao.quantization.quantize_.workflows.float8.float8_tensor", "Float8Tensor"),
     (
@@ -129,8 +131,10 @@ def _prequant_safe_globals() -> list:
 
 _SAFE_GLOBALS_LOCK = _threading.Lock()
 _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
+# Filled in by the registration: which of the names above this install actually resolved.
 _RESOLVED_SAFE_GLOBALS: set = set()
 
+# Globals each scheme's checkpoints name, read via pickletools; unused names are not required.
 _FP8_REQUIRED_GLOBALS: frozenset = frozenset(
     {
         "torchao.quantization.Float8Tensor",
@@ -186,7 +190,7 @@ def _tuple_safe_globals_supported() -> bool:
 
 
 def _register_prequant_safe_globals() -> bool:
-    """Adds the allowlist once, never removes it: overlapping loads would race a context manager's exit."""
+    """Adds the allowlist once and never removes it (overlapping loads race a context-manager exit); also widens other weights_only loads in-process."""
     global _SAFE_GLOBALS_REGISTERED
 
     if _SAFE_GLOBALS_REGISTERED is not None:
@@ -205,11 +209,13 @@ def _register_prequant_safe_globals() -> bool:
             if add is not None and not is_stubbed("torchao") and _tuple_safe_globals_supported():
                 pairs = _prequant_safe_globals()
                 resolved = {name for _obj, name in pairs}
+                # Resolving some globals is not enough: every artifact needs TorchVersion plus one torchao class.
                 if "torch.torch_version.TorchVersion" in resolved and any(
                     name.startswith("torchao.") for name in resolved
                 ):
                     add(pairs)
                     _RESOLVED_SAFE_GLOBALS.update(resolved)
+                    # Calls _get_user_allowed_globals so unsupported forms fail here, not mid-load after planning.
                     try:
                         torch._weights_only_unpickler._get_user_allowed_globals()
                     except AttributeError:  # noqa: BLE001 -- private; absence is not a failure
@@ -224,7 +230,7 @@ def _register_prequant_safe_globals() -> bool:
 def restricted_prequant_load_supported(
     scheme: Optional[str] = None, filename: Optional[str] = None
 ) -> bool:
-    """Per scheme, since torchao retires int8 constructors ahead of fp8; safetensors needs no allowlist."""
+    """Per scheme (torchao retires int8 constructors before fp8); with a safetensors filename, answer for that file, which needs no allowlist."""
     from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
 
     if is_safetensors_checkpoint(filename):
@@ -243,7 +249,7 @@ def restricted_prequant_load_supported(
 
 
 def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
-    """Always weights_only=True: a pickle naming any global would run code, so a mutated file must fail."""
+    """Always weights_only=True: a pickle naming any global runs code; a torch that cannot take the allowlist is refused, never reopened unrestricted."""
     import torch
 
     if not _register_prequant_safe_globals():
@@ -289,6 +295,7 @@ def _install_fp8_unit_scale() -> None:
         pass
 
 
+# 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
 _PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
 
 
@@ -338,7 +345,7 @@ def _allowed_prequant_roots() -> list:
     for part in raw.split(os.pathsep):
         part = part.strip()
         if not part or part.lower() in _PREQUANT_TOGGLE_TOKENS:
-            continue
+            continue  # a bare on/off value is not a directory
         try:
             roots.append(os.path.realpath(os.path.expanduser(part)))
         except Exception:  # noqa: BLE001 - a bad entry is simply not allowlisted
@@ -378,7 +385,7 @@ def local_prequant_path_ready(path: str) -> bool:
     return os.path.isfile(os.path.expanduser(path))
 
 
-# Operator mirror checked before the Hub; names come only from family tables, never a request.
+# Operator mirror <root>/<owner>/<repo>/<filename>, os.pathsep roots, checked before the Hub; names from family tables only; escaping paths ignored.
 PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
 
 
@@ -431,6 +438,7 @@ def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any)
     return None
 
 
+# Set to 1 to always download the safetensors container even when its pickle twin is already cached.
 PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
 
 _PICKLE_SUFFIXES = (".pt", ".pth")
@@ -598,13 +606,14 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """A cached .pt or .pth moves ahead of its uncached safetensors twin, so users do not re-download."""
+    """Same-stem cached .pt/.pth moves ahead of its uncached safetensors twin; the twin stays behind it as 404 fallback; PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
     if not repo_id or len(out) < 2:
         return out
     try:
+        # only the roots the caller's download will reuse, else it re-fetches the pickle it was promised
         roots = tuple(roots) if roots is not None else _twin_cache_roots(cache_dir)
 
         def _cached(name: str) -> bool:
@@ -744,6 +753,7 @@ def hub_name_known_absent(
             hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
         except Exception:  # noqa: BLE001 - a malformed cache entry says nothing
             continue
+        # str = cached path, None = never asked, anything else = the .no_exist sentinel
         if hit is not None and not isinstance(hit, str):
             return True
     return False
@@ -893,6 +903,7 @@ def resolve_prequant_source(
 
         repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
         preferred = family_prequant_filename(fam, scheme, task = task)
+        # Name resolved without a task, which decides whether a fallback is safe; skipped if no task.
         agnostic = family_prequant_filename(fam, scheme) if task else preferred
     except Exception:  # noqa: BLE001 - a bad family object must not break the load
         repo_id = None
@@ -908,7 +919,7 @@ def resolve_prequant_source(
                 filename = preferred,
                 declared_filenames = (preferred,),
             )
-        # Dedup in order, so declared names matching the derived chain are not requested twice.
+        # Declared name first, then derived chain (safetensors ahead); dedup in order. Declared names are default-repo files; variant repos derive their own.
         variant_repo = _is_variant_prequant_repo(fam, repo_id)
         if variant_repo and preferred:
             declared = (prequant_repo_filename(repo_id, scheme, ".safetensors"),)
@@ -999,8 +1010,7 @@ _LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
 
 
 def local_prequant_scheme(path: str) -> Optional[str]:
-    """Reads the recorded scheme of a local checkpoint, so auto never accepts an override baked for
-    another."""
+    """Reads the recorded scheme under the allowlisted weights_only load, so auto never accepts an override baked for another scheme."""
     import os
 
     try:
@@ -1064,6 +1074,7 @@ def hosted_nvfp4_repo_ids() -> frozenset:
     return frozenset(repos)
 
 
+# Root only: a diffusers pipeline keeps its weights in component folders.
 _PREQUANT_PROBE_SUFFIXES = (".safetensors", ".pt", ".pth")
 _PREQUANT_PROBE_LIMIT = 16
 
@@ -1498,7 +1509,7 @@ def _verify_packed_fingerprint(
     logger: Any = None,
     path: Any = None,
 ) -> bool:
-    """A mismatched fingerprint drops to dense, while a missing block passes; clean results are cached."""
+    """Mismatch drops to dense; missing or uncomputable block passes; clean results cached per file, keyed on size and mtime so changes recheck."""
     block = (metadata or {}).get("fingerprint")
     block = block if isinstance(block, dict) else {}
     canonical = bool(block.get(CANONICAL_FINGERPRINT_KEY))
@@ -1893,6 +1904,7 @@ def usable_prequant_source(
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is None:
         return None
+    # getattr: planners pass lightweight stand-ins; a missing attribute must not cause a dense fallback.
     candidates = (
         [src.location]
         if getattr(src, "kind", None) == "path"
@@ -1906,6 +1918,7 @@ def usable_prequant_source(
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
         declared = set(getattr(src, "declared_filenames", ()) or ())
+        # Cache probe uses only READABLE names: a cached legacy pickle proves nothing about safetensors.
         if (
             not any(n in declared for n in readable)
             and cached_checkpoint_path(src, cache_dir = cache_dir, names = readable, online = False)
@@ -1952,7 +1965,7 @@ def cached_checkpoint_path(
     names: Optional[Sequence[str]] = None,
     online: Optional[bool] = None,
 ) -> Optional[str]:
-    """Searches every candidate name in preference order; a name this install cannot open is never a hit."""
+    """Searches both cache roots (live pin, then import-time constant) and every candidate name in preference order; an unopenable name is never a hit."""
     roots = (cache_dir, None) if cache_dir else (None,)
     wanted = set(names) if names is not None else None
 
@@ -2021,6 +2034,7 @@ def _cached_in_root(
         hit = try_to_load_from_cache(source.location, name, cache_dir = root)
     except Exception:  # noqa: BLE001 - a malformed cache entry is not a hit
         return None
+    # a str is the cached path; a miss is None and a known-absent file is a sentinel object
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
 
 
@@ -2035,7 +2049,7 @@ def prequant_checkpoint_cached(
 
 
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
-    """Rewrites loaded fp8 weights to the plain-torch kernel; AUTO picks mslk, which lacks a fake impl."""
+    """Rewrites fp8 weights to plain-torch kernel: AUTO picks mslk, which lacks a fake impl; weights stay bit-identical, so checkpoint sha256 still holds."""
     try:
         from torchao.quantization.quantize_.common.kernel_preference import KernelPreference
     except Exception:  # noqa: BLE001 -- enum moved or absent: leave the checkpoint as saved
@@ -2095,9 +2109,10 @@ def load_prequantized_transformer(
     placement_device: Optional[str] = None,
     family: Optional[str] = None,
 ) -> Optional[Any]:
-    """Returns the placed transformer or None on any problem, so the caller falls back to dense quantise."""
+    """Returns the placed transformer or None on any problem (caller falls back to dense); a declared activation rotation is always applied, else wrong pixels."""
     _LAST_FAILURE.text = None
     try:
+        # Local request paths are arbitrary weights: always read weights_only, even when allowlisted.
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
                 logger,
@@ -2235,8 +2250,7 @@ def load_prequantized_transformer(
                     prepare_model(transformer, metadata)
                 transformer.load_state_dict(state_dict, strict = True, assign = True)
 
-            # Online half of the rotation; applied here so no load route can skip it, after
-            # load_state_dict.
+            # Online half of the rotation, applied here so no route skips it: after load_state_dict (meta retry rebuilds), before small-M padding reparents Linears.
             from .diffusion_convrot import (
                 apply_activation_rotation,
                 declares_rotation,
@@ -2272,6 +2286,7 @@ def load_prequantized_transformer(
                 dtype = getattr(
                     torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
                 )
+                # a host-placed module still computes on ``device``
                 warm_rotation_cache(
                     transformer,
                     on.device if on is not None and placement_device is None else device,
@@ -2300,6 +2315,7 @@ def load_prequantized_transformer(
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         try:
+            # Records the file that really loaded, since the provenance label cannot tell primary from fallback.
             transformer._unsloth_prequant_path = path
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
@@ -2360,7 +2376,7 @@ def _download_checkpoint_name(
                     cache_dir = None,
                     local_files_only = local_files_only,
                 )
-            except LocalEntryNotFoundError:
+            except LocalEntryNotFoundError:  # offline with the copy right there: use it
                 return elsewhere
             except EntryNotFoundError:
                 if not propagate_missing:
@@ -2386,7 +2402,7 @@ def _resolve_checkpoint_path(
     scheme: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Applies the same scheme filter as the download plan, else a two-container repo fetches both."""
+    """Same scheme filter as the plan, else a two-container repo fetches both; local-only must not fetch."""
     if source.kind == "path":
         import os
 
@@ -2399,6 +2415,7 @@ def _resolve_checkpoint_path(
         all_names = list(names)
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
+            # Empty filter means it should never have been offered; returning None would hide the refusal.
             names = readable or names
         if not names:
             return None
@@ -2414,7 +2431,7 @@ def _resolve_checkpoint_path(
             readable = lambda n: restricted_prequant_load_supported(scheme, n),
             cache_dir = cache_dir,
             logger = logger,
-            roots = tuple(dict.fromkeys((cache_dir, None))),
+            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
         )
         for index, name in enumerate(names):
             last = index == len(names) - 1
@@ -2789,7 +2806,7 @@ def _validate_checkpoint(
             )
     ckpt_base = meta.get("base_model_id")
     if base:
-        # Wrong-base keys can load strict=True; the builder always records base_model_id.
+        # Wrong-base keys can load strict=True, so refuse a checkpoint that omits base_model_id.
         if not ckpt_base:
             _warn(
                 logger,
@@ -2816,6 +2833,8 @@ def _validate_checkpoint(
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
+
+        # Excludes depend on scheme and family; an artifact with older tokens is re-quantised, not loaded.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
         if not isinstance(ckpt_excludes, (list, tuple)) or not set(expected) <= set(ckpt_excludes):
             _warn(
@@ -2828,6 +2847,7 @@ def _validate_checkpoint(
                 ),
             )
             return False
+    # Verify recorded require_bf16 so a _REQUIRE_BF16_SCHEMES change can't load old-filter checkpoints.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
         from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES
@@ -2877,6 +2897,7 @@ def _validate_checkpoint(
                 "diffusion.prequant: checkpoint records no component; accepting it for %r",
                 component,
             )
+    # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it.
     if fast_accum is not None:
         ckpt_fa = meta.get("fast_accum")
         if ckpt_fa is not None and bool(ckpt_fa) != bool(fast_accum):
@@ -3077,6 +3098,7 @@ def stream_prequantized_module(
         install_group_offload_hooks_eager()
         use_stream = onload.type == "cuda" and _weights_pinnable(module)
         if onload.type == "cuda" and not use_stream:
+            # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
             from .prequant_legacy_int8 import convert_legacy_int8_weights
             converted = convert_legacy_int8_weights(module)
             if converted:
@@ -3126,6 +3148,7 @@ def stream_prequantized_module(
     except Exception as exc:
         _remove_group_offload_hooks(module)
         raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
+    # Only a full up-front pin keeps a second host copy; lazy pinning holds one group at a time.
     mode = (
         ("stream_lazy" if kwargs.get("low_cpu_mem_usage") else "stream") if use_stream else "sync"
     )
@@ -3211,6 +3234,7 @@ def prequant_unreadable_reason(
         readable = [
             n for n in candidate_filenames_of(src) if restricted_prequant_load_supported(scheme, n)
         ]
+        # A derived safetensors name is a guess, as in usable_prequant_source: only a declared or cached one counts.
         if readable and all(is_safetensors_checkpoint(n) for n in readable):
             declared = set(getattr(src, "declared_filenames", ()) or ())
             if (

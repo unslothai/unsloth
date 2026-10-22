@@ -25,12 +25,12 @@ _SETTING = "library.locations"
 _lock = threading.Lock()
 # Keyed by the owner's database. Entries are {path, mount} plus bare/moving_from/moving_mount.
 _cache: dict[str, dict[str, dict]] = {}
-# Bumped by each write so a load that read before it never caches stale data.
+# Bumped by each write, so a load that read the database before one never caches what it read.
 _generation = 0
 # Resolving the db path walks the filesystem; it only moves with these variables.
 _HOME_VARIABLES = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME")
 _db_keys: dict[tuple, str] = {}
-# Set by core.library: finishes a move a crash left behind.
+# Set by core.library: finishes the move of a kind whose `moving_from` a crash left behind.
 resume_move: Optional[Callable[[str], None]] = None
 
 
@@ -99,6 +99,7 @@ def _load() -> dict[str, dict]:
         isinstance(raw[kind], str) and not entry.get("bare") for kind, entry in chosen.items()
     )
     with _lock:
+        # Written meanwhile: what was read is older than what that write cached.
         if _generation != generation:
             return _cache.get(key, chosen)
         if learned:
@@ -169,7 +170,7 @@ def _source_available(entry: dict) -> bool:
 
 
 def _in_use(entry: dict) -> Optional[Path]:
-    """While a move waits for its drive, the folder it leaves stays in use even after the drive returns."""
+    """The folder an entry saves into: its own, or while a move waits for its drive, the folder it leaves, even after the drive returns."""
     source = entry.get("moving_from")
     standing_in = bool(source) and _source_available(entry) and Path(source).is_dir()
     if standing_in and entry.get("waiting"):

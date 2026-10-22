@@ -60,6 +60,7 @@ def _string_columns(dataset: Dataset) -> list[str]:
 
 
 def _text_columns(dataset: Dataset, string_cols: list[str]) -> list[str]:
+    # Every column of an uploaded CSV is text; skip one pandas would have typed, like an id.
     typed = typed_csv_columns(dataset)
     return [col for col in string_cols if col not in typed] or string_cols
 
@@ -92,6 +93,7 @@ def _drop_invalid_text_rows(
     split_scope: str,
     allow_empty: bool = False,
 ) -> tuple[Dataset, list[RawTextNotice]]:
+    # Drops rows whose 'text' is null, non-string or blank before tokenizing; also works when streaming.
     filtered_dataset = dataset.filter(
         lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip())
     )
@@ -112,6 +114,7 @@ def _drop_invalid_text_rows(
     if not dropped_rows:
         return filtered_dataset, []
 
+    # An empty eval split falls through to the trainer, which warns and skips evaluation.
     if len(filtered_dataset) == 0 and not allow_empty:
         raise ValueError(
             f"{mode_title} training requires at least one non-blank string 'text' value "
@@ -154,6 +157,7 @@ def prepare_raw_text_dataset(
             )
 
         text_cols = _text_columns(dataset, string_cols)
+        # An eval split reuses the train split's column: per-split word counts can disagree.
         if text_column in string_cols:
             renamed_col = text_column
         else:

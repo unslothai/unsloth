@@ -33,6 +33,7 @@ _INDEX_TTL_S = 5.0
 _index_lock = threading.Lock()
 _index: dict[tuple[str, str], tuple[float, dict[str, "MediaModelPick"]]] = {}
 
+# the video family whose partitions are a load-time choice, not a property of the files
 _H3_FAMILY = "minimax-h3"
 
 
@@ -44,6 +45,7 @@ class MediaModelPick:
     model_path: str
     gguf_filename: Optional[str] = None
     model_kind: Optional[str] = None
+    # true when a sibling build publishes the same quant token, so identity cannot be proven
     ambiguous: bool = False
 
 
@@ -101,6 +103,7 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
 
     root = Path(load_path)
     if not root.is_dir():
+        # Cached repo id skips containment but needs a whole split set; uncached is the download guard's.
         cached = _cached_repo_file(load_path, filename)
         return True if cached is None else bool(colocated_split_shards(cached)[1])
     from core.inference.diffusion_families import resolve_local_gguf_child
@@ -109,6 +112,7 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
         child = resolve_local_gguf_child(root, filename)
     except Exception:  # noqa: BLE001 -- whatever the loader refuses, the index does not advertise
         return False
+    # a split checkpoint opens its siblings implicitly, so an incomplete set fails at load time
     return bool(colocated_split_shards(child)[1])
 
 
@@ -260,6 +264,7 @@ def _loadable_directory(load_dir: Path) -> bool:
             return True
     except OSError:
         return False
+    # A sole checkpoint loads as single_file, so the gguf containment check refuses a snapshot symlink.
     sole = resolve_local_single_file(str(load_dir))
     return sole is not None and _loader_can_open(str(load_dir), sole)
 
@@ -276,6 +281,7 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
         return index
     for info in candidates:
         try:
+            # a cancelled or incomplete pull still lists, and loading it fails predictably
             if getattr(info, "partial", False):
                 continue
             if _local_model_task(info) != task:
@@ -283,6 +289,7 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             keys = _name_keys(info)
             if not keys:
                 continue
+            # an hf cache repo keeps its weights, and its model_index.json, under snapshots/<sha>
             on_disk = Path(info.path).expanduser()
             load_dir = _resolve_load_dir(on_disk)
             if _add_gguf_picks(index, info, keys, on_disk, load_dir):
@@ -323,6 +330,7 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
         if len(files) < 2:
             continue
         partitions = [_partition_of(pick) for pick in picks]
+        # every member an H3 build with a partition of its own: status tells them apart
         if all(partitions) and len(set(partitions)) == len(files):
             continue
         collides.add(key)
@@ -351,6 +359,7 @@ def _cached_index(task: str) -> dict[str, MediaModelPick]:
             return hit[1]
     built = _mark_ambiguous_builds(_build_index(task))
     with _index_lock:
+        # stamped after the scan, so one slower than the ttl is not already expired
         _index[key] = (time.monotonic(), built)
     return built
 
@@ -459,6 +468,7 @@ def expected_partition(pick: MediaModelPick) -> Optional[str]:
     if name.startswith("minimax_h3_"):
         return h3_transformer_task(name)
     try:
+        # keyed on the family: a modular pipeline resolves to a directory, not a bundle repo id
         for needle in (pick.model_id, pick.model_path):
             fam = detect_video_family(needle) if needle else None
             if fam is not None and getattr(fam, "name", "") == _H3_FAMILY:

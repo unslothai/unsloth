@@ -16,6 +16,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
         "display_name": "ChatGPT / Codex subscription",
         "base_url": "https://chatgpt.com/backend-api",
+        # Only seeds the picker; /codex/models is the truth once connected.
         "default_models": [
             "gpt-5.4",
             "gpt-5.4-mini",
@@ -64,11 +65,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # OpenAI-run server tools on /v1/responses, cloud base URL only (_stream_openai_responses rechecks).
         "hosted_tools": ("web_search", "code_execution", "image_generation"),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Denylist, not allowlist: new families must appear. Bar is "servable on /v1/responses",
-        # the only OpenAI transport. Feature words match mid-id; bases stay ^-anchored.
+        # Denylist: new families must appear. Bar is servable on /v1/responses. Feature words match mid-id since OpenAI qualifies variants; bases stay anchored.
         "model_id_denylist": re.compile(
             r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
             r"transcribe|translate|instruct|sora)\b"
@@ -113,6 +114,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # Anthropic's own server tools, appended by `_stream_anthropic`.
         "hosted_tools": ("web_search", "web_fetch", "code_execution"),
         "auth_header": "x-api-key",
         "auth_prefix": "",
@@ -148,7 +150,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # Gemini grounding (googleSearch, codeExecution) and Nano Banana images, wired in _stream_gemini.
         "hosted_tools": ("web_search", "code_execution", "image_generation"),
+        # Native API takes the bare key on `x-goog-api-key`.
         "auth_header": "x-goog-api-key",
         "auth_prefix": "",
         "openai_compatible": False,
@@ -157,6 +161,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "API key from https://aistudio.google.com/apikey. "
             "See https://ai.google.dev/gemini-api/docs for endpoint shapes."
         ),
+        # Shut down and auto-aliased to gemini-3.1-pro-preview; deny the old id so users see one card.
         "model_id_deny_exact": ("gemini-3-pro-preview",),
         # `-preview` optional on image ids so a GA rollover does not drop them.
         "model_id_allowlist": re.compile(
@@ -236,6 +241,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # `$web_search` builtin_function, driven by `_stream_kimi_web_search`.
         "hosted_tools": ("web_search",),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
@@ -327,6 +333,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "huggingface": {
         "display_name": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",
+        # Seed defaults before the live /v1/models call; the remote list (model_list_mode) wins.
         "default_models": [
             "openai/gpt-oss-120b",
             "deepseek-ai/DeepSeek-V3",
@@ -345,14 +352,18 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "returns the cross-provider chat catalog. See "
             "https://huggingface.co/docs/inference-providers/index."
         ),
+        # Remote for live availability; loadModels() keeps defaults visible if the remote call fails.
         "model_list_mode": "remote",
+        # Limit to first-party org repos; the raw list is full of community fine-tunes and mirrors.
         "model_id_allowlist": re.compile(
             r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|mistralai|zai-org)/"
         ),
+        # Cap matches at N, as the server does not sort; default_models keeps flagship ids on top.
         "model_id_limit": 15,
     },
     "vllm": {
         "display_name": "vLLM",
+        # User-supplied via provider_base_url; falls back to the payload base_url when the entry has none.
         "base_url": "",
         "default_models": [],
         "supports_streaming": True,
@@ -361,13 +372,15 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # vLLM's /v1/responses re-templates messages and 400s on strict-alternation templates.
+        # Force /v1/chat/completions: vLLM /v1/responses re-templates messages and 400s on strict-alternation templates.
         "notes": "Self-hosted vLLM server. Always routed to /v1/chat/completions.",
         "supports_chat_template_kwargs": True,
+        # Surfaced via the frontend's CUSTOM_PROVIDER_PRESETS, not the dropdown.
         "hidden": True,
     },
     "custom": {
         "display_name": "Custom",
+        # User-supplied via provider_base_url.
         "base_url": "",
         "default_models": [],
         "supports_streaming": True,
@@ -382,6 +395,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ),
         # A strict gateway 400s on unknown keys; a base_url says nothing about what serves it.
         "body_omit": ("top_k", "min_p", "repetition_penalty"),
+        # Surfaced by the frontend's generic Custom option, not the dropdown.
         "hidden": True,
     },
     "ollama": {
@@ -440,6 +454,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
+        # Curated picker list (locked, not live /models).
         "default_models": [
             "openrouter/free",
             "openai/gpt-4o",
@@ -464,6 +479,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
+        # The router's universal web plugin (`plugins: [{id: "web"}]`).
         "hosted_tools": ("web_search",),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
@@ -535,7 +551,7 @@ def provider_model_runs_local_tools(provider_type: str | None, model: str | None
     if not provider_runs_local_tools(provider_type):
         return False
     if provider_type == "gemini" and isinstance(model, str):
-        # Kept in step with _stream_gemini.
+        # Same test _stream_gemini applies, kept in step with it deliberately.
         model_lc = model.lower()
         if "-image" in model_lc or "nano-banana" in model_lc:
             return False
@@ -565,7 +581,7 @@ LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
 
 
 def hosted_only_tools(provider_type: str | None, enabled_tools: Any) -> list[str]:
-    """Hosted tools with no local version are forwarded, except code_execution when its local twin is on."""
+    """Hosted tools with no local version are forwarded, or they silently vanish while their toggle stays on; code_execution is dropped when its local twin is on."""
     if not isinstance(enabled_tools, list):
         return []
     hosted = provider_hosted_tools(provider_type)
@@ -609,9 +625,10 @@ _METADATA_IPS = frozenset(
 # Matched as a network so names like 169.254.gateway.example.com are not mistaken.
 _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 
-# Opt-in: loopback/LAN endpoints (Ollama, llama.cpp, vLLM) are the normal case.
+# Opt-in via UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS: refuse provider URLs resolving to non-public addresses; loopback and LAN are the normal case.
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
+# Named in one place: a managed account meets this refusal from save, send and recipe alike.
 MANAGED_PRIVATE_URL_HINT = (
     " The installation owner can allow private and LAN addresses in Settings > Accounts."
 )
@@ -674,7 +691,7 @@ _DNS_CACHE_MAX_ENTRIES = 512
 # Only answers are cached; failures and timeouts are cheap to repeat and wrong to remember.
 _dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 _dns_cache_lock = threading.Lock()
-# Timed-out lookups are abandoned, not cancelled; cap threads in flight.
+# Timed-out lookups are abandoned, not cancelled; rotating hostnames would pile threads past the cache, so the in-flight count is capped.
 _DNS_MAX_IN_FLIGHT = 32
 _dns_in_flight = threading.BoundedSemaphore(_DNS_MAX_IN_FLIGHT)
 
@@ -734,6 +751,7 @@ def _transport_host(hostname: str) -> str:
         import idna
         return idna.encode(hostname.lower()).decode("ascii")
     except Exception:
+        # httpx raises InvalidURL for this name, so returning the name as written is as good as any answer.
         return hostname
 
 
@@ -779,6 +797,7 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
         resolved.extend(str(info[4][0]) for info in infos)
         answered = True
 
+    # Daemon thread so a silent resolver cannot block shutdown; timeouts count as lookup failures.
     thread = threading.Thread(target = _resolve, daemon = True)
     thread.start()
     thread.join(_DNS_TIMEOUT_SECONDS)
@@ -803,6 +822,7 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
     if not hostname or hostname in _REGISTRY_HOSTNAMES:
         return False
     try:
+        # Literals were already classified by _metadata_host; no lookup needed.
         ipaddress.ip_address(_canonical_host(hostname))
         return False
     except ValueError:
@@ -878,7 +898,7 @@ METADATA_REFUSED_REASON = "Cloud metadata endpoints cannot be used as a provider
 
 
 def provider_address_excluding_metadata(url: str) -> str:
-    """Re-resolves instead of trusting the save-time check: a name may later answer the metadata IP."""
+    """Re-resolves, returns one address, refuses only metadata IPs (callers allowed private addresses), since a name may later answer 169.254.169.254."""
     import socket
 
     parts = urlsplit(url)
@@ -901,7 +921,7 @@ def provider_address_excluding_metadata(url: str) -> str:
         addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
     if not addresses:
         raise ValueError("Provider base URL hostname could not be resolved.")
-    # Literals: all of 169.254.0.0/16 is metadata; DNS answers there may be mDNS/self-assigned.
+    # Same split as the validator, so a saved URL dials: literals refuse all of 169.254.0.0/16; DNS answers get the narrower metadata-address check.
     refuses = _metadata_host if literal else _metadata_address
     if any(refuses(str(ip)) for ip in addresses):
         raise ValueError(METADATA_REFUSED_REASON)
@@ -950,7 +970,7 @@ def validate_provider_base_url(base_url: str) -> str:
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):
         raise ValueError("Provider base URL must use http or https.")
-    # Checks read the parsed hostname, so http://api.openai.com@169.254.169.254/ is caught.
+    # Userinfo stays allowed for gateways behind basic auth; checks read the parsed hostname, so http://api.openai.com@169.254.169.254/ is caught.
     if not hostname:
         raise ValueError("Provider base URL must contain a hostname.")
 
@@ -971,6 +991,7 @@ def validate_provider_base_url(base_url: str) -> str:
         and not _public_registry_hostname(hostname)
         and not _managed_private_urls_allowed()
     ):
+        # Caller-controlled egress: the owner's loopback and LAN, unless the owner opened them.
         _reject_non_public(hostname, port, scheme, managed_public_only_reason())
 
     path = parts.path.rstrip("/")
@@ -983,7 +1004,7 @@ def validate_provider_base_url(base_url: str) -> str:
 def list_available_providers(
     include_hidden: bool = False, include_oauth: bool = False
 ) -> list[dict[str, Any]]:
-    """Hidden rows need include_hidden; OAuth rows are opt-in too, and either flag opts them in."""
+    """Hidden rows need include_hidden (old cached bundles would duplicate presets); OAuth rows are opt-in too (pre-OAuth bundles break); either flag opts in."""
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
         if (info.get("hidden") and not include_hidden) or info.get("managed"):

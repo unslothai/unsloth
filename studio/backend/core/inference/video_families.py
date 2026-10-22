@@ -29,7 +29,7 @@ from .family_profile import AutoPrefer, ConvRotSpec, FamilyProfile, UntiledVae
 # num_frames ceiling; VideoGenerateRequest imports it for its `le` so gate and bound cannot drift.
 MAX_VIDEO_NUM_FRAMES = 1024
 
-# Routes match these EXACTLY to return 409 instead of 500.
+# Runtime->route contract: routes match these EXACTLY for a 409 instead of a 500.
 VIDEO_NOT_LOADED_MSG = "No video model is loaded."
 VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
@@ -226,9 +226,13 @@ class VideoFamily:
     pipeline_class: str
     transformer_class: str
     base_repo: str
+    # Pipeline kwarg carrying the guidance value.
     cfg_kwarg: str = "guidance_scale"
+    # The pipe attribute holding the denoiser (all current video families are DiTs).
     denoiser_attr: str = "transformer"
+    # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
+    # Synced audio (LTX-2): export muxes the track; size estimates count the audio VAE + vocoder.
     has_audio: bool = False
     # One or two sentences on how this family reads prompts; None when it has no quirks.
     prompt_hint: Optional[str] = None
@@ -238,28 +242,36 @@ class VideoFamily:
     cfg2_kwarg: Optional[str] = None
     # HunyuanVideo-1.5: __call__ takes no guidance kwarg; CFG is set on ``guider`` per request.
     guidance_via_guider: bool = False
+    # Generation defaults + shape. A valid frame count is k*frame_step + frame_offset.
     default_steps: int = 40
     default_guidance: float = 4.0
     default_num_frames: int = 121
     default_fps: int = 24
     frame_step: int = 8
+    # Offset in the temporal lattice. Existing pipelines use k*step+1; MiniMax-H3 uses 17k+5.
     frame_offset: int = 1
     min_num_frames: int = 1
     max_num_frames: Optional[int] = None
     snap_frames_up: bool = False
     # Width/height must be divisible by this (LTX-2's pipeline rejects non-/32).
     resolution_multiple: int = 32
+    # (width, height) UI presets, landscape first; the first is the default.
     resolution_presets: tuple[tuple[int, int], ...] = ((768, 512),)
+    # Clip lengths offered by the UI. Most families use short previews; H3 is trained for 5-15 seconds.
     duration_presets: tuple[float, ...] = (1.0, 2.0, 3.0, 5.0)
     # Component bf16-RESIDENT sizes in decimal GB (denoiser(s), text encoder, VAE + audio).
     bf16_components_gb: Optional[tuple[float, float, float]] = None
+    # true when the DiT compiles cleanly with regional torch.compile (declares _repeated_blocks)
     supports_torch_compile: bool = True
     # CUDA-graph capture: only for one forward per step, no CFG and no step cache.
     supports_cuda_graph: bool = False
+    # Opt-in to the capture when the denoiser is offloaded: the replay then records the onloads too (set from an A/B).
     offload_cuda_graph: bool = False
+    # Status text when the family declines the capture (the measured reason), instead of "family opts out".
     cuda_graph_decline: Optional[str] = None
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
+    # "native" = measured accurate in plain float16 on fp16-only cards; None = promote (unmeasured).
     fp16_guard: Optional[str] = None
     # Wan VAE decodes in float32 (bf16 causes banding / black frames).
     vae_force_fp32: bool = False
@@ -291,19 +303,23 @@ class VideoFamily:
     # semantics as DiffusionFamily.prequant_repos, so the shared diffusion_prequant resolver reads this table through
     # plain attribute access.
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
-    # Resident GB of a hosted denoiser when _QUANT_STEADY_FACTOR is wrong (H3 is also pruned).
+    # Hosted denoiser resident GB where _QUANT_STEADY_FACTOR is wrong; else a fitting load is refused.
     prequant_resident_gb: Optional[float] = None
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # (base_repo, scheme, repo_id) keyed on lowercased base id: a prequant only loads on its own base.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # (scheme, filename) overrides the derived name, which stays as fallback; task rows get none.
+    # Overrides the derived name; keep that fallback so old installs still resolve; task rows get none.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
-    # Tasks with a separate denoiser partition, served ONLY by their own (scheme, task, filename) row.
+    # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
+    # Modular workflow loaded instead of a DiffusionPipeline; its routing blocks are not pruned.
     modular_workflow: Optional[str] = None
+    # Released video and audio sigma shifts, when configurable.
     default_flow_shift: Optional[float] = None
+    # ComfyUI's static sigma shift (None = shipped); unlike default_flow_shift, no user control.
     comfy_flow_shift: Optional[float] = None
     default_audio_flow_shift: Optional[float] = None
+    # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
     # False for a keyframe family that takes a first frame only (LTX-2.5); MiniMax-H3 takes both.
     accepts_last_frame: bool = True
@@ -318,6 +334,7 @@ class VideoFamily:
     unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
+    # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
     # True when Unsloth can TRAIN a LoRA on this family (every such name must resolve through get_trainer).
     trainable: bool = False
@@ -327,12 +344,12 @@ class VideoFamily:
     profile: FamilyProfile = field(default_factory = FamilyProfile)
 
 
-# ComfyUI default 864x480: multiples of 32, inside the trained 1:4..4:1 range.
+# 864x480 (ComfyUI default): multiples of 32 in 1:4..4:1; UNSLOTH_VIDEO_H3_480P=0 withdraws it.
 def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
     flag = os.environ.get("UNSLOTH_VIDEO_H3_480P", "1").strip().lower()
     if flag in ("0", "false", "no", "off"):
         return ()
-    return ((864, 480), (480, 864))
+    return ((864, 480), (480, 864))  # fastest
 
 
 # LTX-Video 0.9.x matches ltx-2's "ltx-video"/"ltxv" tokens but is another architecture; names of LTX-2 itself pass.
@@ -459,6 +476,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         max_num_frames = 345,
         snap_frames_up = True,
         resolution_multiple = 32,
+        # Model-card ratios use H3's canvas rule; legacy 1024 square and 16:9 tiers kept for compatibility.
         resolution_presets = (
             (1344, 768),
             (1536, 672),
@@ -466,13 +484,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             (1024, 1024),
             (768, 1024),
             (768, 1344),
-            (960, 544),
-            (544, 960),
+            (960, 544),  # faster
+            (544, 960),  # faster
         )
         + _h3_480p_presets(),
         duration_presets = (5.0, 10.0, 14.4),
+        # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
-        # Regionally compilable; dynamic=True traces once across caption lengths.
+        # Regionally compilable; dynamic=True traces once. Engage only when resident (slower under offload).
         supports_torch_compile = True,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
@@ -483,17 +502,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             "(27 per step at 16 GB), which a graph cannot record"
         ),
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
-        # Hosted prequant denoisers are the only way to run H3 quantized (modular from_pretrained).
+        # Only way to run H3 quantized (no dense module to quantise); file <Model>-<SCHEME>.pt at repo root.
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
-        # ConvRot INT8 (v2 tag) ships under its own name so older installs keep the plain one.
+        # ConvRot INT8 gets own name for old installs; ref2va needs own file (the task alone separates).
         prequant_filenames = (
             ("int8", "MiniMax-H3-INT8-ConvRot.pt"),
             ("int8", "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
             ("fp8", "ref2va", "MiniMax-H3-Ref2VA-FP8.pt"),
         ),
-        # No ref2va row means a ref2va pick is refused, not served the keyframe checkpoint.
+        # Equal to H3_TASK_REFERENCES (literal avoids importing the H3 module); no ref2va row means refused.
         prequant_partition_tasks = ("ref2va",),
-        # Both FP8 and INT8 schemes are ~20.3 GB resident against the 66.3 GB dense denoiser.
+        # Both schemes are ~20.3 GB resident against the 66.3 GB dense denoiser; see the field.
         prequant_resident_gb = 20.3,
         modular_workflow = "fl2va",
         default_flow_shift = 12.0,
@@ -600,10 +619,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_fps = 24,
         frame_step = 8,
         resolution_multiple = 32,
+        # 768x512 native default; 1216x704 the card's quality target; 704x1216 vertical.
         resolution_presets = ((768, 512), (1216, 704), (704, 1216), (512, 768)),
         # Gemma3 TE counted at bf16 resident (~24.4), not its fp32 hub size.
         bf16_components_gb = (37.8, 24.4, 5.5),
         gguf_repo = "unsloth/LTX-2.3-GGUF",
+        # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
         # fp8 by default. ComfyUI's LTX-2 / LTX-2.3 workflow templates (video_ltx2_t2v.json, video_ltx2_3_t2v.json) load
         # gemma_3_12B_it_fp4_mixed; the hosted layerwise fp8 file is the nearest scheme we serve.
@@ -652,12 +673,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_fps = 24,
         frame_step = 4,
         resolution_multiple = 32,
-        # TI2V-5B is 720P-only: upstream SUPPORTED_SIZES is exactly 704x1280 / 1280x704.
+        # 720P-only (upstream SUPPORTED_SIZES is exactly these two); first entry is the loader default.
         resolution_presets = ((1280, 704), (704, 1280)),
         # bf16-RESIDENT; transformer + VAE ship fp32 on disk, VAE stays fp32.
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
         cudnn_benchmark = False,
+        # Streamed: faster than eager with bit-identical latents; two replays per step (CFG), one graph per shape.
         offload_cuda_graph = True,
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
@@ -704,15 +726,18 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # "wan2.2_t2v": ComfyUI's expert files (wan2.2_t2v_high_noise_14B_*.safetensors), paired at load.
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan2.2_t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
+        # is_moe drives dual-DiT optimisations; cfg2_kwarg names transformer_2's guidance kwarg.
         transformer2_class = "WanTransformer3DModel",
         is_moe = True,
         cfg2_kwarg = "guidance_scale_2",
         default_steps = 20,
         default_guidance = 3.5,
+        # 81 frames at 16 fps ~5s (81 = 4*20 + 1), the A14B card's default clip.
         default_num_frames = 81,
-        default_fps = 16,
+        default_fps = 16,  # A14B runs at 16 fps (vs TI2V-5B's 24)
         frame_step = 4,
         resolution_multiple = 16,
+        # 480p + 720p presets. A14B's VAE is 8x so multiple 16 renders 720 exactly (TI2V-5B's 16x VAE floors it to 704).
         resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
         # bf16-RESIDENT: each expert ~28.6 GB bf16 (ships fp32), ~57.2 for both.
         bf16_components_gb = (57.2, 11.4, 0.5),
@@ -814,10 +839,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_guidance = 6.0,
         default_num_frames = 121,
         default_fps = 24,
+        # HV15 VAE compresses 16x spatial / 4x temporal, patch-1, so sizes snap /16, frames 4k+1
         frame_step = 4,
         resolution_multiple = 16,
         # Every entry is a real bucket of the 480p tier (generate_crop_size_list(base_size=640)).
         resolution_presets = ((832, 480), (480, 832), (640, 640)),
+        # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
         # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
         # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
@@ -828,6 +855,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
         offload_cuda_graph = True,
     ),
     # 720p t2v repack: own family so 720p loads default to 720p sizes; full-path alias wins.
@@ -856,6 +884,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_fps = 24,
         frame_step = 4,
         resolution_multiple = 16,
+        # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
         # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
@@ -1048,7 +1077,7 @@ def video_family_prequant_repo(
     scheme: str,
     base_repo: Optional[str] = None,
 ) -> Optional[str]:
-    """Hosted pre-quantized denoiser repo for a scheme, base-specific first; malformed rows are skipped."""
+    """Base-specific repo first, then family default; pure; malformed rows skipped, never raised (500)."""
     if nvfp4_blocked(scheme):
         return None
     base = _prequant_base_key(base_repo)
@@ -1108,7 +1137,7 @@ def video_family_prequant_available(
     task: Optional[str] = None,
     base_repo: Optional[str] = None,
 ) -> bool:
-    """True when a hosted denoiser covers (scheme, task); partition tasks need their own row."""
+    """True when a hosted denoiser covers (scheme, task); partition tasks need own row. Never raises."""
     if video_family_prequant_repo(fam, scheme, base_repo) is None:
         return False
     wanted = (task or "").strip().lower()
@@ -1248,13 +1277,14 @@ def validate_video_request_shape(
             # Computed from the lattice: snap_num_frames floors for some families and ceils for others.
             below = offset + max(0, (count - offset) // step) * step
             above = below + step
-            # Only suggest points within the request model's `le` and the family range.
+            # Suggest only loadable points (within le and family range); else a second, differently shaped 422.
             loadable = [n for n in (below, above) if floor <= n <= ceiling]
             if len(loadable) == 2:
                 nearest = f"the nearest supported counts are {loadable[0]} and {loadable[1]}"
             elif len(loadable) == 1:
                 nearest = f"the nearest supported count is {loadable[0]}"
             else:
+                # The request is outside the family's whole range; point at the range instead.
                 nearest = f"supported counts run from {floor} to {ceiling}"
             raise VideoShapeError(
                 f"{count} is not a supported frame count for {fam.name}. Its VAE compresses time by "
@@ -1433,7 +1463,7 @@ def validate_video_reference_conditioning(
     reference_image_size: Optional[str] = None,
     engine: Optional[str] = None,
 ) -> None:
-    """Reject references the checkpoint cannot take; the ref2va partition has no text-only denoiser."""
+    """ref2va has no text-only denoiser; pass engine so unservable references refuse before eviction."""
     from .video_minimax_h3 import H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX, H3_TASK_REFERENCES
 
     if not has_references:

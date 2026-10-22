@@ -321,7 +321,7 @@ def xet_health(**kwargs: Any) -> Any:
 
 
 def xet_health_is_forced(health: Any) -> bool:
-    """True for an env-var override verdict, so the free-RAM gate stands down when Xet is forced on."""
+    """True only for an env override stamped source=forced (e.g. UNSLOTH_FORCE_XET), so the free-RAM gate stands down; unreadable answers False."""
     return health is not None and str(getattr(health, "source", "")) == "forced"
 
 
@@ -351,7 +351,7 @@ def xet_env_overrides() -> "dict[str, str]":
 
 
 def apply_xet_env(env: dict, cache_dir: "Optional[str]" = None) -> "Optional[dict[str, str]]":
-    """Zoo sizes HF_XET_* in env in place, from total RAM, so clamp_to_available_ram must follow."""
+    """Zoo sizes HF_XET_* in env in place from total RAM, so clamp_to_available_ram must follow; returns what it wrote, or None when the zoo has no opinion."""
     module = _load_optional("unsloth_zoo.hf_xet_tuning")
     if module is None or not hasattr(module, "apply_xet_env"):
         return None
@@ -370,6 +370,7 @@ def apply_xet_env(env: dict, cache_dir: "Optional[str]" = None) -> "Optional[dic
 
 # Share of available RAM a download may use for buffers.
 _AVAILABLE_RAM_SHARE = 4
+# Integer arithmetic converges in 1-2 passes; the bound only guards a future non-monotonic zoo.
 _CLAMP_MAX_PASSES = 3
 _BUFFER_LIMIT_KEY = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
 
@@ -387,11 +388,11 @@ _budget_lock = threading.RLock()
 # token -> [bytes, pid or None, monotonic stamp]
 _budget_reservations: "dict[int, list]" = {}
 _budget_token_seq = 0
-# Never bound to a pid means the spawn died between sizing and Popen.
+# A reservation never bound to a pid means the spawn died between sizing and Popen.
 _UNBOUND_RESERVATION_TTL = 60.0
-# Backstop against pid reuse keeping a dead reservation alive.
+# Backstop against pid reuse keeping a dead reservation alive; no download worker outlives this.
 _BOUND_RESERVATION_TTL = 12 * 60 * 60.0
-# Set by the sizing call, consumed by the spawn that follows it on the same thread.
+# Set by the sizing call, consumed by the spawn that follows it on the SAME thread.
 _pending_reservation = threading.local()
 
 
@@ -483,7 +484,7 @@ def clamp_to_available_ram(
     cache_dir: "Optional[str]" = None,
     module: Any = None,
 ) -> "dict[str, str]":
-    """Shrinks zoo-written HF_XET_* budgets to free RAM; user-set keys and unreadable RAM are left as is."""
+    """Shrinks zoo-written HF_XET_* budgets to free RAM; user-set keys survive (HF_XET_HIGH_PERFORMANCE drops the caps); bind_worker_budget ties reservation to pid."""
     if module is None:
         module = _load_optional("unsloth_zoo.hf_xet_tuning")
     overrides = getattr(module, "xet_env_overrides", None)
@@ -500,12 +501,12 @@ def clamp_to_available_ram(
             return sized
         floor = int(getattr(module, "_MIN_BUFFER_LIMIT", 1_000_000_000))
         limit = int(sized[_BUFFER_LIMIT_KEY])
-        # Reading the ledger and reserving against it must be one atomic decision.
+        # Reading the ledger and reserving against it is ONE decision.
         with _budget_lock:
             unclaimed = max(0, available - _live_reserved_locked())
             budget = max(floor, unclaimed // _AVAILABLE_RAM_SHARE)
             if limit <= budget:
-                # Reserve even unclamped, or parallel workers each promise a full budget.
+                # Still reserved: four unclamped workers would otherwise promise four full budgets.
                 _reserve_worker_budget(limit)
                 return sized
 
@@ -528,6 +529,7 @@ def clamp_to_available_ram(
                 new_limit = int(candidate[_BUFFER_LIMIT_KEY])
                 if new_limit <= budget:
                     break
+                # Monotonic in total RAM, so scaling by the overshoot converges.
                 synthetic = max(floor, synthetic * budget // new_limit)
 
             # Reduce-only: never raise a value; derived numbers are monotonic in RAM.
@@ -579,7 +581,7 @@ def available_ram_bytes() -> "tuple[Optional[int], int]":
 
 
 def free_ram_pressure_reason() -> "Optional[str]":
-    """Tests the zoo's Xet RAM floor against free RAM, minus unresident worker promises; None keeps Xet."""
+    """Tests the Xet RAM floor of the zoo against free RAM minus unresident promises; None keeps Xet. Capabilities probe and resolve_auto_use_xet must agree."""
     try:
         available, floor = available_ram_bytes()
         if available is not None:
@@ -628,7 +630,7 @@ class _DegradedDownloadStallError(RuntimeError):
 
 
 def _degraded_get_hf_download_state(*args: Any, **kwargs: Any) -> None:
-    return None
+    return None  # unmeasurable -> the (absent) watchdog never fires
 
 
 def _degraded_start_watchdog(
@@ -675,6 +677,7 @@ def _degraded_hf_hub_download_with_xet_fallback(
     cancel_event: "Optional[threading.Event]" = None,
     **_ignored: Any,
 ) -> str:
+    # Keep the cancellation contract: do not start or return a download once cancelled.
     if _degraded_cancelled(cancel_event):
         raise RuntimeError("Cancelled")
 
@@ -727,15 +730,14 @@ def _degraded_snapshot_download_with_xet_fallback(
     return path
 
 
-# Resolved lazily via PEP 562 so only these names trigger the heavy load.
+# Resolved lazily via PEP 562 so only these names trigger the heavy load; DownloadStallError identity matters for except clauses.
 _DEGRADED_ATTRS = {
     "DownloadStallError": _DegradedDownloadStallError,
     "get_hf_download_state": _degraded_get_hf_download_state,
 }
 
 
-# Nonzero while a loader set UNSLOTH_ZOO_DISABLE_GPU_INIT (only if it introduced the value);
-# utf8_child_env then strips it from children.
+# Nonzero while a loader sets UNSLOTH_ZOO_DISABLE_GPU_INIT; utf8_child_env strips it from children, since zoo injects triton and bitsandbytes stubs when set.
 _gpu_init_override_depth = 0
 
 
@@ -763,7 +765,7 @@ def _supported_kwargs(fn: Any, kwargs: "dict[str, Any]") -> "dict[str, Any]":
 
 
 def start_watchdog(**kwargs: Any) -> Any:
-    """Drops kwargs the installed zoo lacks; passing one raises TypeError and the watchdog never starts."""
+    """Drops kwargs the zoo lacks: passing one raises TypeError into the except clause, so the watchdog never starts and stalled Xet is never retried over HTTP."""
     impl = _shared.start_watchdog if _load_shared() else _degraded_start_watchdog
     return impl(**_supported_kwargs(impl, kwargs))
 
@@ -874,7 +876,7 @@ def hf_hub_download_with_xet_fallback(
     local_files_only: bool = False,
     gguf_header_delta: bool = False,
 ) -> str:
-    """local_files_only bypasses the fallback so an older zoo cannot drop it and start a download."""
+    """local_files_only skips the fallback (an old zoo could drop it into a download); reuse_other_cache_root avoids re-downloads and 401s; gguf_header_delta opt-in."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -895,7 +897,7 @@ def hf_hub_download_with_xet_fallback(
         except Exception:  # noqa: BLE001 - a cache we cannot read just keeps the live root
             pass
     if local_files_only:
-        # force_download is not forwarded: hub rejects the pair.
+        # Straight to huggingface_hub after the root switch so an offline caller reaches the import-time root; force_download is not forwarded, hub rejects the pair.
         from huggingface_hub import hf_hub_download
 
         if cancel_event is not None and cancel_event.is_set():

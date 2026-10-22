@@ -20,6 +20,7 @@ frees the host RAM the same weights occupy there, which is just as much the user
 
 from __future__ import annotations
 
+# Resident media models are shared, so every account refreshes the same global activity clock.
 import asyncio
 import contextlib
 import os
@@ -46,8 +47,11 @@ class _Tracker:
         # Requests blocked on the gate but not yet counted in _inflight (see llama_keepwarm).
         self._pending = 0
         self._last_active = time.monotonic()
+        # The model identity the last tick saw, so a fresh load counts as activity.
         self.seen: Any = None
+        # Whether the last tick saw work in flight; the tick that sees it end starts the TTL then.
         self.was_busy = False
+        # A job no poll sampled as busy still dates the TTL from its completion record.
         self.completed: Any = None
 
     def note_pending(self) -> None:
@@ -154,10 +158,12 @@ def other_request_count(
 # Load routes count since a load registers with the backend only part way through its POST.
 # test_media_keepwarm asserts each is a real mounted route.
 _TRACKED_PATHS = {
+    # studio_router, mounted at /api/inference only.
     "/api/inference/images/generate": DIFFUSION,
     "/api/inference/images/load": DIFFUSION,
     "/api/inference/video/generate": VIDEO,
     "/api/inference/video/load": VIDEO,
+    # The OpenAI-compatible route is on inference_router, mounted at both prefixes.
     "/api/inference/images/generations": DIFFUSION,
     "/v1/images/generations": DIFFUSION,
     "/api/inference/videos": VIDEO,
@@ -276,9 +282,11 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         status = await asyncio.to_thread(backend.status)
         identity = _identity(status)
         busy, completed = await asyncio.to_thread(_probe, backend)
+        # A job wholly between polls shows only as an unseen record; its TTL errs toward keeping the model.
         finished = completed is not None and completed != tracker.completed
         tracker.completed = completed
         if busy:
+            # Work in flight is activity: the TTL restarts when it ends, and the backend is never torn down.
             tracker.note_activity()
             tracker.seen = identity
             tracker.was_busy = True
@@ -314,7 +322,7 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         if not tracker.is_idle(ttl):
             return
         await asyncio.to_thread(backend.unload)
-        # Drop ownership under the arbiter lock so a re-registered same-owner load keeps it
+        # Drop ownership only if nothing came back, under the arbiter lock; a re-registered load keeps it
         await asyncio.to_thread(
             release_if,
             tracker.owner,

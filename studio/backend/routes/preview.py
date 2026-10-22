@@ -39,6 +39,7 @@ router = APIRouter()
 # Public bearer link: cap generation so one call cannot hold the serialized GPU.
 _PREVIEW_MAX_OUTPUT_TOKENS = 1024
 
+# One model loads at a time, so serialize load+generate.
 _preview_lock = asyncio.Lock()
 
 
@@ -63,7 +64,7 @@ def _verify_or_404(run: str, checkpoint: str | None, request: Request):
     return account
 
 
-# No credential on public routes: the capability decides whose outputs the ref resolves in.
+# The public routes carry no credential, so the capability decides whose outputs the ref resolves in.
 async def _latest_account(run: str, request: Request):
     account = _verify_or_404(run, None, request)
     token = bind_account(account)
@@ -159,6 +160,7 @@ async def _serve_chat(
 ):
     path = _resolve_or_4xx(run, checkpoint)
     _reject_unsupported_content_parts(payload)
+    # A checkpoint cannot read a clip: refuse before the load the refusal would otherwise follow.
     if _request_has_video(payload):
         raise HTTPException(
             status_code = 400,
@@ -253,6 +255,7 @@ def _models_response(run: str, checkpoint: str | None):
     }
 
 
+# GET routes only stat the checkpoint dir (no GPU), so they are token-gated but not rate-limited.
 @router.get("/{run}/v1/models", dependencies = [Depends(_latest_account)])
 async def preview_models_latest(run: str, request: Request):
     return _models_response(run, None)
@@ -263,7 +266,7 @@ async def preview_models_checkpoint(run: str, checkpoint: str, request: Request)
     return _models_response(run, checkpoint)
 
 
-# Serve logo and fonts here too: the SPA static mount is absent in --api-only (Tauri).
+# Serve logo/fonts here too: the SPA static mount is absent in --api-only (Tauri).
 _FRONTEND_DIST = (Path(__file__).resolve().parents[2] / "frontend" / "dist").resolve()
 _PREVIEW_ASSET_MEDIA_TYPES = {
     ".png": "image/png",
@@ -281,6 +284,7 @@ async def preview_asset(asset_path: str):
     return FileResponse(target, media_type = media_type)
 
 
+# Self-contained public page; only the title is interpolated.
 _PREVIEW_PAGE_HTML = (
     Path(__file__).resolve().parent.parent / "assets" / "preview_page.html"
 ).read_text(encoding = "utf-8")

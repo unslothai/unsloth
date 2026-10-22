@@ -218,7 +218,7 @@ def _trusted_terminal_path_dirs(plan) -> list[str]:
 
 
 def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
-    # Resolve the interpreter's base_prefix first: uv's junction can be retargeted on upgrade.
+    # Resolve base_prefix first: uv junction can be retargeted on upgrade. Never broaden grants to the profile or drive root; reject reparse points in inputs
     base_prefix = os.path.realpath(sys.base_prefix)
     roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, base_prefix, *extra]
     roots.extend(site.getsitepackages())
@@ -293,7 +293,7 @@ def is_cmd_argv(argv) -> bool:
 
 
 def cmd_command_line(cmd_path: str, payload: str) -> str:
-    """Quotes for cmd: /s strips only the outer quote pair, and list2cmdline's escapes break paths."""
+    """Quotes for cmd: /s strips only the outer pair, and list2cmdline escapes break paths, so a denied read looks like a command that never ran"""
     if "\0" in payload:
         raise MxcPolicyError("the Terminal command contains a NUL character")
     if "\n" in payload or "\r" in payload:
@@ -313,7 +313,7 @@ def host_spawn_args(argv):
     try:
         return cmd_command_line(_system_cmd(), argv[-1])
     except MxcPolicyError:
-        return argv
+        return argv  # a multi-line or oversized command keeps today's argv behaviour on the host
 
 
 def _system_cmd() -> str:
@@ -446,7 +446,7 @@ def build_launch_request(
     runtime_roots = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
     readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
     _reject_grants_over_dacl_journal([workdir, *readonly])
-    # Read fresh: a grant on a stale cached 'on' would outlive another process's opt-out
+    # Tier 3 walks every readonly tree per launch, so a one-time grant skips it. Read fresh: a grant on a stale cached on would outlive another process opt-out
     mxc_read_grants.refresh_saved_switches()
     if dacl_fallback_enabled():
         mxc_read_grants.ensure(runtime_roots)
@@ -463,7 +463,7 @@ def build_launch_request(
         cwd_alias = _checked_cwd_alias(cwd_alias, workdir_identity)
     run_id = run_id or uuid.uuid4().hex
     workload_env = _with_session_packages(dict(plan.env), workdir)
-    # MXC's ProcessContainer validator requires LOCALAPPDATA; point it inside the session
+    # MXC ProcessContainer validator requires LOCALAPPDATA; point it inside the session, not at the real profile
     workload_env.setdefault("LOCALAPPDATA", workdir)
     ui_policy = _studio_ui_policy()
     config = {
@@ -473,6 +473,7 @@ def build_launch_request(
         "lifecycle": {"destroyOnExit": True, "preservePolicy": False},
         "process": {
             "commandLine": command_line,
+            # Grants, scans and identities stay on the canonical workdir; only the workload starts in the alias.
             "cwd": cwd_alias or workdir,
             "env": [f"{key}={value}" for key, value in sorted(workload_env.items())],
             "timeout": 0

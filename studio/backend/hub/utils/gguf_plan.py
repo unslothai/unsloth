@@ -80,7 +80,7 @@ def is_main_gguf_variant_path(path: str, variant: str) -> bool:
         and not is_mmproj_filename(path)
         and not is_mtp_drafter_path(path)
         and not is_imatrix_filename(path)
-        # The endian predicate reads a quant TOKEN, so pass the label, not the qualified key.
+        # The endian predicate reads a quant TOKEN, so hand it the label: given the qualified key it cannot see a parent-only quant and drops the file, leaving the plan with no main files.
         and not is_big_endian_gguf_path(path, extract_quant_label(path))
         and gguf_variant_key(path).lower() == variant.lower()
     )
@@ -118,9 +118,10 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     gguf_names = [name for sibling in siblings if (name := _gguf_rfilename(sibling))]
 
     def _complete(name: str) -> bool:
-        # Match detect_mtp_file's launchability gate so a half-published family steps aside.
+        # Match detect_mtp_file launchability gate; a half-published family must step aside before ranking.
         return split_listing_is_complete(gguf_names, name)
 
+    # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
             s
@@ -226,7 +227,7 @@ def dflash_plan_files(
     *,
     max_bytes: int = 0,
 ) -> tuple[ExpectedFile, ...]:
-    """Plans the whole DFlash shard family, since the loader refuses a split set with missing shards."""
+    """Whole DFlash shard family; bounded by max_bytes, and an unknown size stays out."""
     from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
 
     families: dict[str, list[ExpectedFile]] = {}
@@ -346,7 +347,7 @@ def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVar
 
 
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
-    # '._' sidecars sort first and would win the family grouping.
+    # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
     siblings = drop_shadowed_appledouble_siblings(list(siblings))
     package_plans = _audio_cpp_package_plans(siblings)
     if package_plans is not None:
@@ -368,14 +369,17 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         name = _gguf_rfilename(sibling)
         if name is None:
             continue
+        # Keep companions out of the quant grouping so a drafter never lands in a variant's main files: the root mtp-*.gguf carries a quant label. An imatrix leaves entirely rather than joining companions_expected, since no variant needs llama-quantize's calibration data downloaded.
         if is_mmproj_filename(name) or is_mtp_drafter_path(name) or is_imatrix_filename(name):
             continue
         quant = gguf_variant_key(name).lower()
+        # The endian predicate reads a quant TOKEN, so a qualified key would make it misread the path and drop the file from every plan.
         if is_big_endian_gguf_path(name, extract_quant_label(name)):
             continue
         main.setdefault(quant, []).append(sibling)
 
     plans: dict[str, GgufVariantPlan] = {}
+    # Every weight in the listing, so the ranking can tell a sidecar naming a neighbouring family from one naming this variant's.
     all_weight_names = [
         name.rsplit("/", 1)[-1]
         for quant_siblings in main.values()
@@ -388,6 +392,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
+        # Per variant, unlike mmproj and the MTP drafter: ranked against the weight being fetched, and against the family plan_from_expected_files KEEPS, or a two-family variant key pairs the wrong sidecar.
         kept_main = _one_shard_family(main_expected)
         target_weight_name = (
             min(file.path for file in kept_main).rsplit("/", 1)[-1] if kept_main else None
@@ -424,7 +429,7 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     exact = plans.get(wanted)
     if exact is not None:
         return exact
-    # PATH-qualified keys only: an H3 bare quant names both partitions.
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, and picking either would load a different task.
     matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
     return plans[matches[0]] if len(matches) == 1 else None
 
@@ -501,10 +506,11 @@ def plan_from_expected_files(
     ):
         return _precision_folder_plan(expected)
     main_files = _one_shard_family(all_main)
-    # A discarded family must leave the plan entirely or the worker fetches then deletes it.
+    # A discarded family has to leave the plan ENTIRELY: target_filenames, required_hashes and download_size_bytes are what the worker fetches, so leaving the copy there downloaded it, then reclaim deleted it as not-ours (absent from main_hashes) and the job fetched it again.
     kept = {file.path for file in main_files}
     expected = tuple(file for file in expected if file not in all_main or file.path in kept)
     companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
+    # companion_files also holds the MTP drafter, so keep an mmproj-only view for the manifest-resume fallback.
     mmproj_files = tuple(file for file in companion_files if is_mmproj_filename(file.path))
     main_hashes = frozenset(file.sha256 for file in main_files if file.sha256)
     companion_hashes = frozenset(file.sha256 for file in companion_files if file.sha256)

@@ -43,6 +43,7 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
+# Debian multiarch dirs are built into ld.so's default search path, no ldconfig needed.
 _MULTIARCH_LIB_GLOBS: tuple[str, ...] = ("/lib/*-linux-gnu*", "/usr/lib/*-linux-gnu*")
 
 
@@ -157,7 +158,7 @@ _VENDORED_CUDA_ROOTS: tuple[tuple[Path, str], ...] = (
 def vendored_cuda_runtime_dirs(
     marker: object, *, roots: Optional[Iterable[tuple[Path, str]]] = None
 ) -> list[str]:
-    """Callers append these last so the vendored runtime never displaces the one the build picked."""
+    """Vendored dirs with libcudart and libcublas for the runtime_line major; empty when the loader already has them; callers append these last."""
     if not sys.platform.startswith("linux"):
         return []
     runtime_line = marker.get("runtime_line") if isinstance(marker, dict) else None

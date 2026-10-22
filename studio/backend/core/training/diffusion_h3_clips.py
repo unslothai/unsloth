@@ -24,12 +24,15 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
 
-# Mirrored from diffusers.modular_pipelines.minimax_h3; asserted against the live components.
+# Mirrored from diffusers.modular_pipelines.minimax_h3 because the trainer cannot import it; asserted against the live components so a move is caught.
 H3_FPS = 24
+# Video VAE chunks hold 17 pixel frames and keep 5 latent frames each, plus a 2-frame head.
 H3_FRAMES_PER_CHUNK = 17
 H3_LATENTS_PER_CHUNK = 5
 H3_SPATIAL_COMPRESSION = 16
+# The transformer's (t, h, w) patch. Only the spatial half is > 1.
 H3_PATCH_T, H3_PATCH_H, H3_PATCH_W = 1, 2, 2
+# Canvas must be whole 2x2 patches after 16x VAE compression, so the multiple is 16 * patch width.
 H3_CANVAS_MULTIPLE = H3_SPATIAL_COMPRESSION * H3_PATCH_W
 H3_AUDIO_SAMPLING_RATE = 32000
 H3_AUDIO_LATENTS_PER_SECOND = 40
@@ -40,16 +43,18 @@ _MAX_AUDIO_PAD_FRACTION = 0.01
 _SILENT_AUDIO_PEAK = 1e-4
 H3_AUDIO_LATENT_CHANNELS = 32
 H3_VIDEO_LATENT_CHANNELS = 24
+# Per-row modality tags, which index the transformer's AdaLN table.
 H3_VIDEO_TAG, H3_TEXT_TAG, H3_AUDIO_TAG = 0, 1, 2
+# The canvas the released checkpoint generates on.
 H3_CANVAS_SHORT_EDGE = 768
 H3_CANVAS_MAX_PIXELS = 768 * 1344
 H3_MIN_ASPECT_RATIO = 1 / 4
 H3_MAX_ASPECT_RATIO = 4
+# ImageNet, the video VAE's pixel convention.
 H3_PIXEL_MEAN = (0.485, 0.456, 0.406)
 H3_PIXEL_STD = (0.229, 0.224, 0.225)
 
-# ONE VAE chunk: the packed sequence is quadratic, and short clips at native canvas keep
-# spatial statistics on distribution.
+# ONE VAE chunk, far below the 5 s floor: attention is quadratic, short native-canvas clips keep spatial stats; the 22-frame rotary grid is a prefix.
 H3_TRAIN_NUM_FRAMES = H3_FRAMES_PER_CHUNK + H3_LATENTS_PER_CHUNK
 
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
@@ -108,7 +113,7 @@ def h3_train_canvas(
     short_edge: int = H3_CANVAS_SHORT_EDGE,
     max_pixels: Optional[int] = None,
 ) -> tuple[int, int]:
-    """Mirrors resolve_canvas_size without importing diffusers, so a dataset can be sized early."""
+    """Mirrors resolve_canvas_size without diffusers, returning (width, height) where the pipeline returns (height, width); area cap scales with resolution."""
     if aspect_width <= 0 or aspect_height <= 0:
         raise ValueError(f"The aspect ratio must be positive, got {aspect_width}:{aspect_height}.")
     ratio = aspect_width / aspect_height
@@ -118,6 +123,7 @@ def h3_train_canvas(
             f"{aspect_width:g}x{aspect_height:g} ({ratio:.2f}:1). Crop it first."
         )
     if max_pixels is None:
+        # The released cap, rescaled to the requested short edge: (1344/768) * short_edge^2.
         max_pixels = int(H3_CANVAS_MAX_PIXELS * (short_edge / H3_CANVAS_SHORT_EDGE) ** 2)
     if ratio >= 1.0:
         width, height = short_edge * ratio, float(short_edge)
@@ -212,7 +218,7 @@ def decode_clip(
     height: int,
     on_note: Optional[Callable[[str], None]] = None,
 ) -> tuple[Any, Any]:
-    """Refuses a clip with no audio track, since silence would teach the model to stop making sound."""
+    """Decode to (frames, waveform) at 24 fps; only the first num_frames train. No audio track is refused: silence would teach the model to stop sounding."""
     import av
     import numpy as np
     from PIL import Image
@@ -228,6 +234,7 @@ def decode_clip(
             )
         stream = container.streams.video[0]
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS) or float(H3_FPS)
+        # Best effort: an unknown duration means no note, never a failed decode.
         source_duration_s = 0.0
         try:
             if stream.duration is not None and stream.time_base is not None:
@@ -271,7 +278,7 @@ def decode_clip(
 
 
 def display_rotation_degrees(frame: Any, stream: Any) -> int:
-    """PyAV ignores the display matrix, so a portrait phone clip would be cached sideways."""
+    """PyAV ignores the display matrix, so portrait phone clips cache sideways; returns 0 when unset or PyAV is too old, and never raises."""
     import math
     import struct
 
@@ -282,11 +289,12 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
         if entry is not None:
             raw = bytes(entry)
             if len(raw) >= 36:
-                # Native byte order: the matrix is an in-memory int32[9].
+                # Native byte order: the matrix is an in-memory int32[9], not a serialised field.
                 matrix = struct.unpack("=9i", raw[:36])
     except Exception:  # noqa: BLE001 -- no side-data API, or no matrix on this frame
         matrix = None
     if matrix is None:
+        # Legacy MOV/MP4 tag, still what older files carry.
         try:
             tag = (stream.metadata or {}).get("rotate")
             return int(float(tag)) % 360 if tag is not None else 0
@@ -302,6 +310,7 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
     except Exception:  # noqa: BLE001 -- a degenerate matrix means "no rotation", not a failure
         return 0
     theta = int(-round(degrees)) % 360
+    # Only the four square turns; anything else cannot be applied without resampling, and no camera writes one.
     return theta if theta in (90, 180, 270) else 0
 
 
@@ -362,6 +371,7 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
                 f"soundtrack runs its full length."
             )
         samples = np.pad(samples, ((0, missing), (0, 0)))
+    # A muted track passes every check above and comes back all zeros.
     if float(np.max(np.abs(samples))) <= _SILENT_AUDIO_PEAK:
         raise ValueError(
             f"{Path(path).name} has a soundtrack that is silent all the way through. "

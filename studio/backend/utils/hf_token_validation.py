@@ -152,7 +152,7 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
     if not normalized:
         return TokenValidationResult(status = "invalid")
     account_id = current_account_id()
-    # Per endpoint: a token one Hub rejects may be valid on another. ModelScope has no whoami.
+    # Per endpoint: a token one Hub rejects may be another's. The ModelScope adapter has no whoami.
     endpoint = hugging_face_endpoint() if active_source() == MODELSCOPE else HfApi().endpoint
     token_fingerprint = (account_id, _fingerprint(normalized), endpoint.rstrip("/"))
     account_rate_key = (account_id, rate_key)

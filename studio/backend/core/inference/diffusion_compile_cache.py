@@ -87,6 +87,7 @@ _MANIFEST_NAME = "manifest.json"
 _BUNDLE_NAME = "cache.bin"
 _BUNDLE_PREFIX = "bundle-"
 _BUNDLE_SUFFIX = ".bin"
+# What _atomic_write names its in-progress file, as a suffix: ".<final name>.<random>.tmp".
 _TEMP_SUFFIX = ".tmp"
 _FORMAT_VERSION = 1
 
@@ -135,6 +136,7 @@ def _save_enabled(mode: str) -> bool:
         return False
     if mode == "on":
         return True
+    # Loaded artifacts equal on-disk ones, so nothing to save; a new static-compile shape re-dirties via register_shape, and mode "on" keeps saving
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
@@ -200,9 +202,10 @@ def legacy_cache_root() -> Optional[Path]:
     """Read-only pre-relocation root for reads; never a write root, so an upgrade does not pin home."""
     if os.environ.get(_ENV_DIR) or _portable_mode():
         return None
+    # Equal when storage_roots is unavailable and the default IS the legacy root.
     if _LEGACY_ROOT == _default_root():
         return None
-    # Path.exists raises for EACCES/EIO before 3.14; treat as a miss.
+    # Instance-level wrap of pipe.encode_prompt: dies with the pipe, never mutates the class; no-op (False) if env knob unset, no encode_prompt, or setup fails.
     try:
         if not _LEGACY_ROOT.exists():
             return None
@@ -459,6 +462,7 @@ def model_fingerprint(
         from .diffusion_regional_compile import verified_repeated_blocks
         blocks = list(verified_repeated_blocks(type(transformer).__name__))
     if quant is not None and transformer is not None:
+        # Native layers compile to a different graph than torchao under the same scheme name.
         from .diffusion_native_quant import native_quant_signature
         quant = native_quant_signature(transformer) or quant
     fp = {
@@ -468,7 +472,7 @@ def model_fingerprint(
         "dtype": str(dtype),
         "quant": str(quant) if quant is not None else "none",
         "attention_backend": str(attention_backend) if attention_backend is not None else "default",
-        # A False vae_decode is left out of the key so pre-flag bundles still match.
+        # A False vae_decode is what every load keyed before the flag existed, so it is left out of the key.
         "compile_kwargs": {
             k: compile_kwargs[k]
             for k in sorted(compile_kwargs)
@@ -492,11 +496,12 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Inductor keys graphs on dynamic_scale_rblock.
+    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
     from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
 
     if reduction_blocks_pinned():
         fp["inductor"] = {"dynamic_scale_rblock": False}
+        # Only for a family whose compile pins the reduction-config filter, so every other bundle keeps its key.
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
     return fp
@@ -586,6 +591,7 @@ def begin(
         mode = mode,
     )
 
+    # Same reason as restore(): the previous load's save reads the inductor dir that is about to be repointed.
     if not wait_for_saves():
         _warn(
             logger,
@@ -637,11 +643,14 @@ def begin(
     if pair_present:
         ctx.hit = _try_load(ctx, logger)
     if not ctx.hit:
+        # An install that predates the relocation may still hold this key under the old root.
         ctx.hit = _load_from_legacy(ctx, logger)
     if not ctx.hit:
         _info(logger, f"compile-cache: no bundle for key {key} (will compile locally)")
     elif mode != "on":
+        # The manifest is the commit point here too, so it decides which legacy bundle is live; a pre-content-addressing one names cache.bin
         ctx.saved = True
+    # A hit never saves, so an over-budget cache would otherwise never shrink.
     if _save_enabled(mode):
         _evict_soon(logger)
     return ctx
@@ -654,6 +663,7 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
         return False
     ldir = root / ctx.key
     manifest_path = ldir / _MANIFEST_NAME
+    # Named as the copied manifest names it, not ctx.bundle unless the pair predates content addressing; published like begin() so ctx names the live bundle
     published = _read_manifest(manifest_path)
     if published is None:
         return False
@@ -662,15 +672,17 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
         if not bundle.exists():
             return False
     except OSError:
+        # Same reason as legacy_cache_root: a pair we cannot even stat is a miss.
         return False
     if not _try_load(ctx, logger, bundle = bundle, manifest_path = manifest_path):
         return False
     if _save_enabled(ctx.mode):
         try:
             ctx.dir.mkdir(parents = True, exist_ok = True)
+            # The bundle THIS manifest pairs with; content-addressed, so a save writes a file no reader uses and the previous pair stays whole until the manifest commits
             migrated = _manifest_bundle(ctx.dir, published)
             _atomic_copy(bundle, migrated)
-            # Bundle first: a manifest without one reads as a miss.
+            # Bundle first: a manifest without one reads as a miss, not an unservable hit.
             _atomic_copy(manifest_path, ctx.manifest_path)
             ctx.bundle = migrated
             _info(logger, f"compile-cache: migrated legacy bundle for key {ctx.key}")
@@ -730,6 +742,7 @@ def _try_load(
         _warn(logger, "compile-cache: manifest is not an object; ignoring")
         return False
 
+    # Exact-match guard (defence in depth: torch also validates internally on load).
     if manifest.get("env") != ctx.env_fp or manifest.get("model") != ctx.model_fp:
         _warn(logger, "compile-cache: fingerprint mismatch; falling back to local compile")
         return False
@@ -827,6 +840,7 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
                 path.unlink()
                 removed.append(name)
             except OSError:
+                # Another process got there first, or it is busy on Windows. Next save tries again.
                 continue
     except Exception as exc:  # noqa: BLE001 - housekeeping must never fail a save
         _warn(logger, f"compile-cache: could not collect superseded bundles: {exc}")
@@ -917,9 +931,11 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
             "created": time.time(),
             "bytes": len(data),
             "sha256": digest,
+            # A shape registered while this ran is not in the bundle just written, so leave the context dirty for the save its register_shape queued
             "bundle": bundle.name,
             "env": ctx.env_fp,
             "model": ctx.model_fp,
+            # Static-compile shape coverage (register_shape); unused by dynamic compiles.
             "shapes": shapes,
         }
         # Bundle then manifest: the manifest is the single commit point.
@@ -933,6 +949,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         _collect_superseded(ctx.dir, logger)
         evict(logger = logger)
         with _dirty_lock:
+            # Per-slot layout codes for _flatten/_unflatten (leading int64 tensor): -1 None, -2 a bare tensor, n >= 0 a list of n tensors
             if ctx.dirty_seq == seq:
                 ctx.saved = True
         _info(logger, f"compile-cache: saved bundle ({len(data)} bytes) for key {ctx.key}")
@@ -1044,7 +1061,7 @@ def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
         pass
 
 
-# Refcounted: a reload overlaps its predecessor's teardown.
+# Refcounted: a reload of the same model overlaps its predecessor's teardown.
 _live_lock = threading.Lock()
 _live_dirs: dict[str, int] = {}
 

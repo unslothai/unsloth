@@ -35,8 +35,10 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# Exception messages can embed whole request bodies, so their length is capped.
 _MAX_EXC_CHARS = _env_int("UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS", 16384)
 _EXC_TAIL_CHARS = 2048
+# The middleware logs the same exception twice, rendered as a traceback and as str(exc), so bound both.
 _MAX_ERROR_CHARS = 2048
 
 
@@ -66,6 +68,7 @@ def truncate_exception(event_dict: dict) -> dict:
     error = event_dict.get("error")
     if isinstance(error, str):
         event_dict["error"] = _truncate_middle(error, message_cap, _EXC_TAIL_CHARS)
+    # f-string log calls put the exception into the event, a third copy that can carry the payload.
     event = event_dict.get("event")
     if isinstance(event, str):
         event_dict["event"] = _truncate_middle(event, message_cap, _EXC_TAIL_CHARS)
@@ -165,6 +168,7 @@ def _cap_echoed_lines(lines: list[str], limit: int) -> str:
     used = 0
     for line in reversed(lines[len(head) :]):
         if used + len(line) + 1 > tail_budget:
+            # Truncate the boundary line rather than drop it; a traceback's last line holds the reason.
             room = tail_budget - used - 1
             if room > 0:
                 tail.append(line[:room])
@@ -174,6 +178,7 @@ def _cap_echoed_lines(lines: list[str], limit: int) -> str:
     tail.reverse()
     if not head and not tail:
         head = [lines[0][:head_budget]]
+    # A cut boundary line counts as kept, so say "cut" rather than claim zero lines went.
     dropped = len(lines) - len(head) - len(tail)
     what = f"{dropped} lines omitted" if dropped else "cut here"
     notice = (
@@ -201,11 +206,13 @@ def with_readable_traceback(renderer):
     return _render
 
 
+# Set with HF_HUB_DISABLE_PROGRESS_BARS only if Unsloth chose it, to tell it from the operator's.
 _PROGRESS_BARS_DEFAULTED = "UNSLOTH_STUDIO_PROGRESS_BARS_DEFAULTED"
 
 # huggingface_hub's ENV_VARS_TRUE_VALUES, so 'off'/'no' mean keep the bars.
 _ENV_TRUE = frozenset({"1", "on", "yes", "true"})
 
+# Latched once bars are restored, so quiet_third_party_progress_bars() cannot flip back.
 _BARS_RESTORED = False
 
 
@@ -250,6 +257,7 @@ class _NullStream:
 def _silence_datasets_bar_output() -> None:
     """Drop only the datasets bar output; the bar stays in tqdm._instances for the chat template poller."""
     if "datasets" not in sys.modules:
+        # Operator asked to keep them; leave every library alone.
         return
     try:
         from datasets.utils.tqdm import tqdm as bar_cls
@@ -332,6 +340,7 @@ def quiet_third_party_progress_bars() -> None:
         # Marks the value as ours rather than the operator's; inherited by child processes.
         os.environ[_PROGRESS_BARS_DEFAULTED] = "1"
     elif not _env_is_true(os.environ["HF_HUB_DISABLE_PROGRESS_BARS"]):
+        # Operator asked to keep them; leave every library alone.
         return
 
     # Only touch Hub if already imported, else it caches the base env copy before sidecar sys.path.
@@ -409,6 +418,7 @@ class LogConfig:
 
         structlog.configure(
             processors = [
+                # Ordered to control output field order.
                 structlog.processors.TimeStamper(fmt = "iso"),
                 structlog.processors.add_log_level,
                 structlog.contextvars.merge_contextvars,
@@ -416,6 +426,7 @@ class LogConfig:
                 filter_sensitive_data,
                 # After redaction: truncating first could leave half a path the redactor misses.
                 _truncate_exception_processor,
+                # Flatten the extra field into the main dict.
                 lambda logger, method_name, event_dict: {
                     "timestamp": event_dict.get("timestamp"),
                     "level": event_dict.get("level"),
@@ -428,6 +439,7 @@ class LogConfig:
                     },
                 },
                 (
+                    # Preserve order; the wrapper adds the human-readable traceback copy.
                     with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
                     if env == "production"
                     else structlog.dev.ConsoleRenderer()
@@ -438,9 +450,11 @@ class LogConfig:
             cache_logger_on_first_use = True,
         )
 
+        # Silence third-party tqdm bars; they carry no signal and corrupt JSON records.
         if quiet_progress_bars:
             quiet_third_party_progress_bars()
 
+        # Drop transformers' cosmetic "`torch_dtype` is deprecated" warning_once (see filter).
         _dtype_filter = _DropTorchDtypeDeprecation()
         for _name in (
             "transformers.configuration_utils",

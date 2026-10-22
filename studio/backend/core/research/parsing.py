@@ -17,7 +17,9 @@ from typing import Any
 from core.inference.web_access_policy import check_url_access
 from core.research.redaction import _sanitize_public_query
 
+# Completed "title": "..." pairs in a partially streamed planner response.
 _STREAMED_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# One more than the plan-step cap, since the plan's own title matches too.
 _MAX_PREVIEW_LABELS = 31
 # Allow a list or quote container marker before the fence.
 _MARKDOWN_FENCE = re.compile(r"^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|>[ \t]?)*(`{3,}|~{3,})")
@@ -123,6 +125,7 @@ def _normalize_synthesis_audit(
                 item.get("documentCitations"),
                 allowed_document_citations,
             )
+            # A claim is supported only when the audit maps it to web or document evidence gathered in this run.
             if claim and (urls or document_citations):
                 supported_claims.append(
                     {
@@ -294,6 +297,7 @@ def _report_after_boundary(text: str, boundary: str) -> str | None:
         # CommonMark: a tab is four columns, so one tab opens an indented code block.
         prefix = content[: len(content) - len(content.lstrip(" \t"))]
         indentation = len(prefix.expandtabs(4))
+        # splitlines breaks on more whitespace than rstrip does; a stray form would hide the boundary.
         if indentation <= 3 and content[len(prefix) :].strip().strip("`").strip() == boundary:
             boundary_line = index
     if boundary_line is None:

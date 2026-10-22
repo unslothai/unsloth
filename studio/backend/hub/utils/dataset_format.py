@@ -75,6 +75,7 @@ def detect_custom_format_heuristic(dataset):
         "template",
         "task",
     ]
+    # Only pair today: "text" inside "context".
     role_words = assistant_words + user_words + system_words
     metadata_exact_match = {
         "id",
@@ -833,6 +834,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
+# Aliases standardize_data_formats accepts; keys are normalised, so use _normalize_role_alias.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",
@@ -865,6 +867,7 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
         normalized = _normalize_role_alias(role)
         messages.append(
             {
+                # Unknown alias shown as written; blank falls back to "user", as before.
                 "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
                 "content": "" if content is None else content,
             }

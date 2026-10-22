@@ -39,7 +39,7 @@ from utils.s3_runtime import ensure_boto3
 
 logger = logging.getLogger(__name__)
 
-# Must match UnslothTrainer._loader_for_files.
+# Extensions the local-file loader (UnslothTrainer._loader_for_files) understands.
 SUPPORTED_EXTENSIONS = (".parquet", ".json", ".jsonl", ".csv")
 _JSON_EXTENSIONS = (".json", ".jsonl")
 _IGNORED_METADATA_FILENAMES = {
@@ -93,6 +93,7 @@ def _build_s3_client(s3_config: dict):
             aws_access_key_id = access_key_id,
             aws_secret_access_key = secret_access_key,
         )
+    # IAM role / instance profile / ambient credentials
     return boto3.client("s3", region_name = region)
 
 
@@ -282,7 +283,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
     try:
         data = None if manifest_path.lower().endswith(".jsonl") else json.loads(text)
     except json.JSONDecodeError:
-        data = None
+        data = None  # JSON Lines in a .json file
     if data is None:
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
         for row in rows:
@@ -292,7 +293,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
     if not isinstance(data, list):
-        return
+        return  # column-oriented JSON
     for row in data:
         _rewrite_row(row, resolve)
     with open(manifest_path, "w", encoding = "utf-8") as f:

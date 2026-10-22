@@ -35,6 +35,7 @@ def is_speech_gguf_architecture(architecture: Optional[str]) -> bool:
     return any(marker in normalized for marker in _VOCODER_MARKERS)
 
 
+# general.architecture of every audio.cpp GGUF; only audiocpp_server reads them, not llama.cpp.
 AUDIO_CPP_GGUF_ARCHITECTURE = "audiocpp"
 
 

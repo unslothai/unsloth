@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 _installed = False
 _ORIGINAL_ENCODE = None
+# The read-and-patch below must happen once.
 _install_lock = threading.Lock()
 
 
@@ -25,6 +26,7 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
     from datasets import config
     from datasets.utils.py_utils import string_to_dict
 
+    # A chained URL ("zip://inner::https://outer") names its host in the last segment.
     source_url = path.split("::")[-1]
     pattern = (
         config.HUB_DATASETS_URL
@@ -37,6 +39,7 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
         # Older `datasets` raise here instead of returning None.
         fields = None
     if fields is None:
+        # Not a Hub URL, so no repo id to key on. One entry is unambiguous and is the shape every caller in this codebase passes; more than one is not guessable.
         values = list(token_per_repo_id.values())
         return values[0] if len(values) == 1 else None
     return token_per_repo_id.get(fields["repo_id"])
@@ -72,9 +75,10 @@ def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[A
     with _av_open(av, source) as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
+        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
         try:
             if stream_index is None:
-                # Default-disposition track wins, like torchcodec; PyAV < 13 lacks `best`.
+                # av_find_best_stream, which torchcodec uses: the default-disposition track wins over the first. PyAV < 13 has no wrapper, so take the first audio track there.
                 best = getattr(container.streams, "best", None)
                 stream = best("audio") if best is not None else container.streams.audio[0]
             else:
@@ -107,7 +111,7 @@ def _read_mono(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, i
     import soundfile as sf
 
     if stream_index not in (None, 0):
-        # libsndfile only knows single-stream files.
+        # libsndfile only knows single-stream files, so an explicit other stream is PyAV's alone.
         return _decode_with_av(source, stream_index)
     try:
         array, rate = sf.read(source, dtype = "float32", always_2d = False)
@@ -212,12 +216,12 @@ def ensure_audio_decoding() -> bool:
         from datasets.features.audio import Audio
     except ImportError:
         return False
-    # `datasets` < 4 decodes via soundfile and has no TORCHCODEC_AVAILABLE.
+    # `datasets` < 4 (pyproject still allows >=3.4.1) decodes through soundfile itself and defines no TORCHCODEC_AVAILABLE, so the read below raised AttributeError at the unguarded call site. Nothing to install there, so say so.
     if not hasattr(config, "TORCHCODEC_AVAILABLE"):
         return True
     if config.TORCHCODEC_AVAILABLE and not _installed:
         try:
-            # find_spec passes even when torchcodec's native libraries cannot load.
+            # config only ran find_spec, and an installed torchcodec whose native libraries cannot dlopen still passes that. The API process never imports unsloth, so disable_torchcodec_if_broken has not corrected the flag here.
             from datasets.features._torchcodec import AudioDecoder  # noqa: F401
         except Exception as exc:  # noqa: BLE001  a damaged wheel can raise anything at import; every shape means unusable
             logger.info("torchcodec is installed but unusable (%s)", exc)
@@ -227,7 +231,7 @@ def ensure_audio_decoding() -> bool:
     if _installed:
         return True
     try:
-        # librosa too: trainers resample, which needs it.
+        # librosa too: every trainer path casts to a target rate, so a decoder that cannot resample would raise from inside `datasets` exactly where this returns False.
         import librosa  # noqa: F401
         import soundfile  # noqa: F401
     except (ImportError, OSError) as exc:
@@ -235,7 +239,7 @@ def ensure_audio_decoding() -> bool:
         return False
     global _ORIGINAL_ENCODE
     with _install_lock:
-        # Re-check under the lock.
+        # Re-check under the lock: the loser of the race must not re-capture.
         if _installed:
             return True
         _ORIGINAL_ENCODE = Audio.encode_example

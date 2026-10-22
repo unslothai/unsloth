@@ -48,7 +48,9 @@ from core.inference.diffusion_families import (
 
 # FLUX.2 tensor table sits in the first ~15 KiB; this is only a buffer ceiling.
 _GGUF_HEADER_BYTES = 256 * 1024
+# Published by the worker once it has something interruptible and read on timeout; a one-element list, not a nonlocal, so the assignment is visible
 _HEADER_TIMEOUT_SECONDS = 15
+# How long to wait for an interrupted read to notice before leaving it to the GC.
 _ABANDON_GRACE_SECONDS = 0.5
 
 # Memoises misses too; token fingerprint and file identity keep a stale None from sticking.
@@ -87,6 +89,7 @@ def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
             return str(local_root)
         if local_root.exists():
             return str(resolve_local_gguf_child(local_root, gguf_filename))
+    # OSError/RuntimeError: invalid path characters, or an unresolvable '~' -> a remote id.
     except (OSError, RuntimeError, ValueError):
         return None
     try:
@@ -134,7 +137,7 @@ def _read_local_header(path: str) -> bytes:
     try:
         with open(path, "rb") as handle:
             return handle.read(_GGUF_HEADER_BYTES)
-    # open() raises ValueError on an embedded NUL.
+    # ValueError: open() rejects an embedded NUL rather than raising OSError.
     except (OSError, ValueError):
         return b""
 
@@ -195,6 +198,7 @@ def _read_gguf_header(
     max_bytes = _GGUF_HEADER_BYTES if max_bytes is None else max_bytes
     timeout_seconds = _HEADER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     buffer = bytearray()
+    # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear the copy; it can only lose a chunk arriving too late
     holder: list[Any] = [None]
 
     def _fetch() -> None:
@@ -229,6 +233,7 @@ def _read_gguf_header(
         _interrupt_read(holder[0])
         worker.join(_ABANDON_GRACE_SECONDS)
     watchdog.cancel()
+    # Same prefix parse as remote; the full loader memory-maps every tensor, so use it only when the prefix says nothing, e.g. a header past the cap
     return bytes(buffer[:max_bytes])
 
 
@@ -253,6 +258,7 @@ def flux2_inner_dim_for_pick(
     if local is None and not allow_network:
         return None
     if local is not None:
+        # Crude eviction (the whole cache is cleared at the bound): it only bounds a session's picks, and a re-probe costs one range request
         inner_dim = gguf_flux2_inner_dim_from_header(_read_local_header(local))
         if inner_dim is None:
             inner_dim = gguf_flux2_inner_dim(local)
@@ -261,6 +267,7 @@ def flux2_inner_dim_for_pick(
             _shared_gguf_header(repo_id, gguf_filename, token, local)
         )
     with _CACHE_LOCK:
+        # Cheapest first: a base outside the size table (local path, unshipped repo) has nothing to compare against, so it must not cost a round trip
         if len(_INNER_DIM_CACHE) >= _INNER_DIM_CACHE_MAX:
             _INNER_DIM_CACHE.clear()
         _INNER_DIM_CACHE[key] = inner_dim
@@ -292,6 +299,7 @@ def flux2_pick_mismatch(
     if not gguf_filename or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return None
     want = flux2_base_inner_dim(base_repo)
+    # An empty prefix is a failed read; the two probes disagreeing on that is not worth a sticky miss, so each memoises its own no-verdict
     if want is None:
         return None
     got = flux2_inner_dim_for_pick(repo_id, gguf_filename, hf_token)
@@ -337,6 +345,7 @@ def _shared_gguf_header(
                 return prefix
             del _HEADER_PREFIX_CACHE[key]
     prefix = _read_gguf_header(repo_id, gguf_filename, token)
+    # A cache-only caller cannot make the HEAD revalidation, so it does not memoise this answer; a later caller that can reach the Hub still revalidates
     if not prefix:
         return prefix
     with _CACHE_LOCK:
@@ -347,7 +356,7 @@ def _shared_gguf_header(
 
 
 def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
-    """``general.architecture`` out of a header prefix, or None when it says nothing."""
+    """Magic, version and the two counts: anything shorter is not a GGUF at all."""
     if len(prefix) < 24:
         return None
     try:
@@ -377,6 +386,7 @@ def _revalidated_speech_arch(
     if cached is None:
         return arch
     if not allow_network:
+        # Memo or local header only, as the size pairing does; nothing is memoised, so a later caller that can wait still gets a real answer
         return arch
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:
@@ -394,6 +404,7 @@ def _speech_probe_architecture(
 ) -> Optional[str]:
     """Memo keyed on token fingerprint and file identity, so a failed probe is not reused across tokens."""
     token = normalize_token(hf_token)
+    # Resolved BEFORE the memo is consulted, because the file's identity is part of the key.
     local = _local_gguf_path(repo_id, gguf_filename)
     key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
     with _CACHE_LOCK:
@@ -404,6 +415,7 @@ def _speech_probe_architecture(
                 return arch
             del _SPEECH_ARCH_CACHE[key]
     if local is None and not allow_network:
+        # Inside the memo, so a republished checkpoint is caught either way and the HEAD is spent once per cached copy, not on every pick
         return None
     prefix = (
         _read_local_header(local)
@@ -411,6 +423,7 @@ def _speech_probe_architecture(
         else _shared_gguf_header(repo_id, gguf_filename, token, local)
     )
     arch = _arch_from_prefix(prefix, gguf_filename)
+    # Permanent only for a true on-device file (no revision to fall behind); a cached Hub snapshot must age out or it asks the Hub once per file per process
     arch = _revalidated_speech_arch(repo_id, gguf_filename, token, local, arch, allow_network)
     # Skipped revision check is half an answer: do not memoise.
     if not allow_network and _snapshot_revision(local) is not None:
@@ -418,6 +431,7 @@ def _speech_probe_architecture(
     with _CACHE_LOCK:
         if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
             _SPEECH_ARCH_CACHE.clear()
+        # auto saves by default (without a saved bundle no user gets a warm restart); the SAVE env var overrides: "0" load-only, "1" on
         permanent = local is not None and _snapshot_revision(local) is None
         _SPEECH_ARCH_CACHE[key] = (
             arch,

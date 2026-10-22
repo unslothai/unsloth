@@ -379,10 +379,11 @@ def configure_lan_access(
     resolved_loopback = bool(app_state.lan_access_launch_addresses) and all(
         _normalized_ip(address).is_loopback for address in app_state.lan_access_launch_addresses
     )
-    # An unresolved hostname is never trusted for keyless LAN admission.
+    # An unresolved hostname is launch-managed but never trusted for keyless LAN admission: request_on_lan_access requires its resolved address set.
     app_state.lan_access_launch_managed = (
         app_state.lan_access_wildcard_bind or not resolved_loopback
     )
+    # --secure forces the loopback bind precisely so the raw port is never exposed
     app_state.lan_access_secure_launch = bool(secure)
     app_state.lan_access_is_colab = bool(is_colab)
     app_state.lan_access_frontend_served = bool(frontend_served)
@@ -512,6 +513,7 @@ def _has_keyless_lan_url(urls: list[str]) -> bool:
         if not parsed.hostname:
             continue
         try:
+            # urlparse already strips the IPv6 brackets and lowercases; parse the remaining literal without normalising it.
             address = ipaddress.ip_address(parsed.hostname)
         except ValueError:
             continue
@@ -642,7 +644,7 @@ def stop_lan_access(app) -> dict:
     status = lan_access_status(app)
     if status["managed_by"] == "launch":
         raise RuntimeError("launch_managed")
-    # An unconfirmed stop leaves the host reachable, so keep the trust flag.
+    # a stop that could not confirm the port is closed leaves the host reachable, and lan_access keeps the trust flag with the listener state it describes.
     if stop_lan_listener():
         clear_lan_listener_error()
     return lan_access_status(app)
@@ -655,6 +657,7 @@ def maybe_auto_start_lan_access(app) -> bool:
     try:
         start_lan_access(app)
     except Exception as exc:
+        # an optional preference must never take the whole server down with it
         logger.info("LAN access auto-start skipped: %s", exc)
         return False
     return True

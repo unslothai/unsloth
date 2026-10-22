@@ -25,7 +25,7 @@ from typing import Any, Callable, Optional
 _ENV = "UNSLOTH_DIFFUSION_BG_COMPILE"
 _MAX_SAMPLES = 4
 
-# Not thread-locals: diffusion_render_thread.run copies context onto the render thread.
+# ContextVars, not thread-locals: diffusion_render_thread.run copies the caller's context onto the render thread.
 _FORCE_EAGER: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_force_eager", default = False
 )
@@ -124,6 +124,7 @@ class BackgroundCompile:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._closed = threading.Event()
+        # recording -> compiling -> done | failed
         self.state = "recording"
         self.error: Optional[str] = None
         self.compile_s: Optional[float] = None
@@ -185,7 +186,7 @@ class BackgroundCompile:
             live: list = []
             spec = _flatten((args, kwargs), live)
             if _capture_armed(module):
-                # Dynamo guards on inference-ness.
+                # Like the capture's static buffers (made outside inference mode): dynamo guards on inference-ness.
                 with torch.inference_mode(False):
                     clones = [torch.empty_like(t) for t in live]
                 for dst, src in zip(clones, live):
@@ -250,8 +251,9 @@ class BackgroundCompile:
                 self._remove_hook()
                 return False
             if not self.samples:
+                # The generation never reached the denoiser (cancelled / failed early): keep recording.
                 return False
-            # The compiled trace must not contain the hook.
+            # Before the thread starts: the compiled trace must not contain the hook.
             self._remove_hook()
             self.state = "compiling"
             self._thread = threading.Thread(
@@ -286,7 +288,7 @@ class BackgroundCompile:
 
             from . import diffusion_compile_config
 
-            # torch 2.12+ keeps compile config per context.
+            # torch 2.12+ keeps compile config per context: a fresh thread would compile without the recorded knobs.
             diffusion_compile_config.apply()
             _flatten, _rebuild, graph_key = _cuda_graph_helpers()
             for spec, clones, inference, grad, device in list(self.samples):
@@ -340,6 +342,7 @@ class BackgroundCompile:
             thread.join(timeout)
         if self.pending():
             self._finish("failed", "closed")
+        # Unload uninstalls the CUDA-graph layer by identity: the gate in front of it goes first.
         self._remove_gate()
         self.module = None
 

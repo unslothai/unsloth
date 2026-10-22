@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Deque, Optional
 
 
-# slots needs 3.10+; this package supports 3.9.
+# slots=True halves per-instance memory but needs 3.10+, and this package supports 3.9; gate it.
 _SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
@@ -41,17 +41,19 @@ _LEGACY_ENV = {
 }
 
 DEFAULT_ADMISSION_ENABLED = True
+# None: a queued request waits for its slot indefinitely rather than timing out.
 DEFAULT_ADMISSION_QUEUE_TIMEOUT_S = None
 DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S = 5.0
+# None: no absolute cap, the wait line is sized from the pool instead.
 DEFAULT_ADMISSION_MAX_QUEUE = None
 # Wait line = 16 x serving slots; purely a memory guard, waiting is never timed out.
 DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
-# Floor so a 1-slot backend keeps its previous queue depth.
+# Floor so a 1-slot backend keeps its old depth instead of 16, which would reject queued callers.
 DEFAULT_ADMISSION_MIN_QUEUE = 64
 # --kv-unified allocates ONE n_ctx cache but reports n_ctx to every slot, so slot-only
 # admission overcommits; llama.cpp kills every colliding task.
 DEFAULT_ADMISSION_KV_BUDGET = True
-# Bounded because a reparker holds the wait line shut for every other caller. See recost_waiting.
+# Generous: legit waits are bounded by the longest round; a cap stops a reparker holding the line.
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
 
@@ -62,15 +64,15 @@ def _executor_workers() -> int:
 
 
 def _executor_reserve(workers: int) -> int:
-    """Scales with the pool, since a flat reserve would leave a 5-worker executor with no budget."""
+    """Scales with the pool; keeps generation and teardown threads clear of parked approvals."""
     return max(2, workers // 8)
 
 
 def _max_parked(capacity: int) -> int:
-    """Holders parked on prompts get only spare executor threads, floored at two so two prompts fit."""
+    """Prompt-parked holders get spare threads only, floored at two; zero if --parallel fills the pool."""
     workers = _executor_workers()
     spare = workers - _executor_reserve(workers) - max(0, capacity)
-    # Floor at two: one park cannot cover the two simultaneous prompts #7455 needs.
+    # Quarter of the executor, floored at two but capped at spare; one park cannot cover two prompts.
     return max(0, min(max(2, workers // 4), spare))
 
 
@@ -115,8 +117,7 @@ class LlamaAdmissionConfig:
     kv_budget: bool = DEFAULT_ADMISSION_KV_BUDGET
 
     def queue_limit(self, capacity: int) -> Optional[int]:
-        """The default per-slot line is floored, so a 1-slot backend is not shallower than before
-        scaling."""
+        """Max waiters: explicit max_queue wins, else the floored per-slot line; None or <=0 is unbounded."""
         if self.max_queue is not None:
             return self.max_queue if self.max_queue > 0 else None
         if not self.queue_per_slot or self.queue_per_slot <= 0:
@@ -204,8 +205,7 @@ def _positive_float_env(name: str, default: float) -> float:
 
 
 def _queue_limits_from_env() -> tuple[Optional[int], Optional[int], Optional[int]]:
-    """The floor applies only to the default multiplier; an explicit QUEUE_PER_SLOT is exact."""
-    # Explicit means it parsed: a typo falls back to the default multiplier and its floor.
+    """Floor only for the default multiplier; explicit QUEUE_PER_SLOT is exact; MAX_QUEUE=0 is unbounded."""
     raw_per_slot = _raw_env(ADMISSION_QUEUE_PER_SLOT_ENV)
     try:
         per_slot = int((raw_per_slot or "").strip())
@@ -287,13 +287,12 @@ class LlamaAdmissionLease:
         return self._slot
 
     def park(self) -> bool:
-        """Gives the slot back during an approval wait; tokens stay committed, and False means it
-        was kept."""
+        """Releases the slot during an approval wait; tokens stay committed. False means it was kept."""
         queue = self._queue
         with self._release_lock:
             if queue is None or self._released or self._parked:
                 return False
-            # Under the lease lock; nothing takes the queue lock then a lease lock, so no deadlock.
+            # Under the lease lock so the decision and handover cannot split; lock order avoids deadlock.
             park_id = queue.try_park(self._slot, tokens = self._tokens)
             if park_id is None:
                 return False
@@ -354,7 +353,7 @@ class LlamaAdmissionLease:
         poll_s: float = 0.02,
         timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
     ) -> None:
-        """Waits for room rather than resuming over capacity, since park gave the slot to a waiter."""
+        """Waits for room rather than resuming over capacity; gives up if the caller is cancelled."""
         queue = self._queue
         if queue is None or not self._parked:
             return
@@ -410,9 +409,9 @@ class LlamaAdmissionLease:
         timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
         allow_yield: bool = True,
     ) -> bool:
-        """Waits for cache room; call only between rounds, and allow_yield only where idle cells
-        come back."""
+        """Waits for cache room; call between rounds; allow_yield needs --cache-idle-slots; False on timeout."""
         want = max(0, int(tokens or 0))
+        # Cheap path first: growth that already fits never touches the wait line.
         if self.recost(want):
             return True
         if not allow_yield:
@@ -451,6 +450,7 @@ class LlamaAdmissionLease:
         """Restores the held figure unconditionally; try_recost could refuse it on a full cache."""
         with self._release_lock:
             if self._released:
+                # release() already gave back the 0 held while parked
                 queue.abandon_repark()
                 return False
             self._tokens = held
@@ -514,7 +514,7 @@ class LlamaAdmissionReservation:
         return self._lease
 
     async def wait(self, timeout_s: float) -> Optional[LlamaAdmissionLease]:
-        """A timeout keeps the reservation queued; any exit that abandons it for good must call cancel()."""
+        """Timeout keeps the reservation queued; abandoning it for good must call cancel() or leak the slot."""
         lease = self.lease_nowait()
         if lease is not None:
             return lease
@@ -608,13 +608,14 @@ class LlamaAdmissionQueue:
         self._reparking = 0
 
     def _resize_pool_locked(self, capacity: int) -> None:
+        # Slots past a shrunk capacity retire when their holder releases them.
         if capacity == self._capacity:
             return
         self._capacity = capacity
         self._free = [slot for slot in range(capacity) if not self._in_use >> slot & 1]
 
     def _fits_against_locked(self, committed: int, tokens: int) -> bool:
-        """The empty-cache escape tests committed tokens, not held slots: a parked lease still holds KV."""
+        """Empty-cache escape tests commit tokens, not slots; admits a caller when nothing holds KV."""
         if self._budget <= 0 or tokens <= 0:
             return True
         if committed <= 0:
@@ -642,7 +643,7 @@ class LlamaAdmissionQueue:
         tokens: int = 0,
         reserved_tokens: int = 0,
     ) -> bool:
-        # Count every held slot against the ceiling; reserved holds slots back for resuming holders.
+        # Count every held slot against the ceiling; slots above a shrunk capacity still occupy the backend.
         if not (bool(self._free) and (self._held + reserved) < self._capacity):
             return False
         # With --kv-unified every slot reports full n_ctx, so also check the token budget.
@@ -695,6 +696,7 @@ class LlamaAdmissionQueue:
                     len(self._unpark_tickets), cost, self._reserved_tokens_locked()
                 )
                 if slot is not None:
+                    # No snapshot per admit: callers use snapshot_now() instead, avoiding hot-path allocation.
                     return LlamaAdmissionReservation(
                         queue = self,
                         lease = LlamaAdmissionLease(self, slot, cost),
@@ -717,6 +719,7 @@ class LlamaAdmissionQueue:
             )
 
     def _release_slot_locked(self, slot: Optional[int]) -> None:
+        # A slot id at or past a shrunk capacity retires instead of returning.
         if slot is None or not self._in_use >> slot & 1:
             return
         self._in_use &= ~(1 << slot)
@@ -743,6 +746,7 @@ class LlamaAdmissionQueue:
             if self._budget <= 0:
                 return True
             if tokens_to <= tokens_from:
+                # Shrinking always applies, and may let a waiter in.
                 self._committed = max(0, self._committed - (tokens_from - tokens_to))
                 self._grant_waiters_locked()
                 return True
@@ -786,7 +790,7 @@ class LlamaAdmissionQueue:
         *,
         tokens: int = 0,
     ) -> Optional[int]:
-        """Parked tokens stay committed; recording them lets reclaim_would_admit see what erasing frees."""
+        """Parked tokens stay committed so reclaim_would_admit knows what erasing frees; None keeps the slot."""
         if not _claim_park(_max_parked(_live_capacity(self))):
             return None
         with self._lock:

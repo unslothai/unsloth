@@ -18,19 +18,21 @@ _REASON_INVALID_HASH_STATUS = (
 )
 _REASON_INVALID_HASH_WINERROR = "Windows could not verify the digital signature of the image"
 
+# NTSTATUS refusals: SAC facility, INVALID_IMAGE_HASH, FAIL_FAST_EXCEPTION.
 _BLOCK_STATUS_CODES = {
     0xC0E90002: _REASON_SAC_OR_POLICY,
     0xC0000428: _REASON_INVALID_HASH_STATUS,
     0xC0000602: "the image was refused by a code integrity fail-fast",
 }
 
+# winerror equivalents; CI_BLOCKED is from unslothai/unsloth#6648.
 _BLOCK_WINERRORS = {
     577: _REASON_INVALID_HASH_WINERROR,
     1260: _REASON_ADMIN_POLICY,
     4551: "code integrity blocked the image",
 }
 
-# 0xC0E90002 is SAC or WDAC, so only 1260 and AppLocker wording prove admin.
+# 0xC0E90002 is SAC or WDAC, so only 1260 and the AppLocker wording prove admin.
 _ADMIN_POLICY_REASONS = frozenset({_REASON_ADMIN_POLICY})
 _SMART_APP_CONTROL_REASONS = frozenset({_REASON_SMART_APP_CONTROL})
 
@@ -61,6 +63,7 @@ def code_integrity_block_reason(error: object) -> str | None:
         reason = _BLOCK_WINERRORS.get(winerror)
         if reason is not None:
             return reason
+        # winerror also carries the raw NTSTATUS on some launch failures.
         reason = _BLOCK_STATUS_CODES.get(winerror & 0xFFFFFFFF)
         if reason is not None:
             return reason
@@ -69,6 +72,7 @@ def code_integrity_block_reason(error: object) -> str | None:
     if isinstance(error, int):
         returncode = error
     if isinstance(returncode, int):
+        # A negative return code is the same status read as signed.
         reason = _BLOCK_STATUS_CODES.get(returncode & 0xFFFFFFFF)
         if reason is not None:
             return reason

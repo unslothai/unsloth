@@ -24,9 +24,10 @@ _MIB = 1024 * 1024
 _STREAM_MIN_MIB = 512
 _HOST_RESERVE_MIN_MIB = 3072
 _HOST_RESERVE_FRACTION = 0.10
-# fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``).
+# fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
 _INT8_MIN_ELEMENTS = 1 << 22
+# DiT denoisers the route stores as int8; a UNet (mostly convs) converts dense like any other non-encoder component
 INT8_DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer")
 
 
@@ -74,8 +75,8 @@ def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[
 class StoredComponent:
     name: str
     mib: int
-    dtype: str
-    # stored MiB of ``_keep_in_fp32_modules`` tensors: converted to fp32 on the host
+    dtype: str  # dominant stored float dtype ("bfloat16", "float16", "float32", ...)
+    # stored MiB of ``_keep_in_fp32_modules`` tensors: they convert to fp32 on the host even on the route
     kept_fp32_mib: int = 0
 
 
@@ -96,7 +97,7 @@ def _keep_fp32_from_config(sub: Path) -> tuple[str, ...]:
 
 def _weight_files(sub: Path) -> list[Path]:
     files = sorted(sub.glob("*.safetensors"))
-    # ``model.fp16.safetensors`` is a variant from_pretrained does not read
+    # ``model.fp16.safetensors`` next to ``model.safetensors`` is a variant from_pretrained does not read
     plain = [f for f in files if "." not in f.name[: -len(".safetensors")]]
     return plain or files
 
@@ -170,6 +171,7 @@ class SmallHostDecision:
     total_mib: Optional[int] = None
     dense_host_mib: int = 0
     route_host_mib: int = 0
+    # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
 
@@ -203,6 +205,7 @@ def decide_small_host(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
+    # encoders stay memory-mapped except fp32-kept layers; a DiT lands as int8
     route = sum(
         c.mib // 2
         if n in INT8_DENOISER_NAMES
@@ -227,6 +230,7 @@ def decide_small_host(
             route,
         )
     if lora_active and not forced:
+        # the int8 denoiser cannot carry adapters
         return SmallHostDecision(
             False,
             f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available)",
@@ -274,6 +278,7 @@ def torch_dtype_map(decision: SmallHostDecision, compute_dtype: Any) -> Any:
 
 
 INT8_ACT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT"
+# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread); qwen-image-edit shares the DiT but is unmeasured.
 INT8_ACT_FAMILIES = frozenset({"qwen-image"})
 # torch._int_mm: rows M > 16, K and N multiples of 8.
 _INT8_ACT_MIN_ROWS = 17
@@ -374,6 +379,7 @@ def _int8_linear_class():
                 _INT8_ACT_COUNTS["dequant"] += 1
             scale = self.scale
             if scale.dtype == x.dtype:
+                # int8 * float promotes: cast + scale in one pass, bit-identical (int8 -> fp16/fp32 is exact).
                 w = torch.mul(self.qweight, scale)
             else:
                 w = self.qweight.to(x.dtype) * scale.to(x.dtype)
@@ -497,6 +503,7 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
         return torch.float32 if _kept(mname) else compute_dtype
 
     def _convert(sub: Any, want: Any) -> None:
+        # fp32 buffers (RoPE ``inv_freq``) stay fp32, as in the dense load
         for pname, p in list(sub.named_parameters(recurse = False)):
             if p.dtype == torch.bfloat16 and p.dtype != want:
                 p.data = p.data.to(want)
@@ -513,7 +520,7 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
     with torch.no_grad():
         for mname, sub in module.named_modules():
             want = _want(mname)
-            # kept-fp32 Linears convert now: T5 casts its input to wo.weight.dtype before the hook runs
+            # kept-fp32 Linears convert now: T5 casts its input to ``wo.weight.dtype`` before the hook runs
             if (
                 type(sub) in streamable
                 and not _kept(mname)
@@ -554,8 +561,10 @@ def engaged_on(pipe: Any) -> Optional[dict]:
 
 ENCODER_PREFETCH_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_PREFETCH"
 ENCODER_PREFETCH_ATTR = "_unsloth_encoder_prefetch"
+# Pinned staging ring: the only host bytes this adds.
 _STAGE_SLOT_BYTES = 32 * _MIB
 _STAGE_SLOTS = 4
+# Device bytes copied ahead: a few groups (T5-XXL MLP weight 80 MiB, Qwen2.5-VL 130 MiB).
 _PREFETCH_MAX_BYTES = 384 * _MIB
 _PREFETCH_MIN_BYTES = 128 * _MIB
 
@@ -598,13 +607,13 @@ class _EncoderPrefetcher:
         if dev.type == "cuda" and dev.index is None:
             dev = torch.device("cuda", torch.cuda.current_device())
         self.device = dev
-        self.stream = None
-        self.compute = None
-        self.order: list = []
+        self.stream = None  # side stream, created on the first copy
+        self.compute = None  # the stream the encoder runs on, read when a forward begins
+        self.order: list = []  # group ids in the last forward's onload order
         self.seen: list = []
         self.active = False
         self.cond = threading.Condition()
-        self.ready: dict = {}
+        self.ready: dict = {}  # id(group) -> (device tensors, event)
         self.inflight = 0
         self.budget = _PREFETCH_MIN_BYTES
         self.pos = 0
@@ -626,7 +635,7 @@ class _EncoderPrefetcher:
     def _ensure_stage(self) -> None:
         import torch
         if not self.stage:
-            # inference_mode is thread-local; the worker cannot write inference tensors from the forward thread.
+            # inference_mode is thread-local: the worker cannot write inference tensors made on the forward thread.
             with torch.inference_mode(False):
                 self.stage = [
                     torch.empty(_STAGE_SLOT_BYTES, dtype = torch.uint8, pin_memory = True)
@@ -692,7 +701,7 @@ class _EncoderPrefetcher:
         cur = torch.cuda.current_stream(self.device)
         cur.wait_event(done)
         if getattr(group, "stream", None) is not None:
-            # diffusers fences its own prefetch only in the next group's onload_, which this replaces.
+            # diffusers fences its own-stream prefetch only in the next group's onload_, which this replaces.
             cur.wait_stream(group.stream)
         for (t, _src), dev in zip(_group_tensors(group), moved):
             t.data = dev
@@ -705,6 +714,7 @@ class _EncoderPrefetcher:
                 torch.cuda.set_device(self.device)
             for gid in order:
                 with self.cond:
+                    # A group the forward onloads twice waits for its first copy to be taken.
                     while not self.stop and (
                         (self.inflight > 0 and self.inflight >= self.budget) or gid in self.ready
                     ):
@@ -753,7 +763,7 @@ class _EncoderPrefetcher:
             torch.cuda.current_stream(self.device) if self.device.type == "cuda" else None
         )
         if not self.order:
-            return
+            return  # first forward: synchronous copies, and it records the order
         try:
             free, _total = torch.cuda.mem_get_info(self.device)
             self.budget = max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, int(free) // 8))
@@ -795,7 +805,7 @@ class _EncoderPrefetcher:
                         self.inflight -= entry[2]
                         self.cond.notify_all()
             else:
-                # Off the recorded order: stop prefetching; the next forward re-records.
+                # Off the recorded order: stop prefetching for this forward; the next one re-records the order.
                 self._halt()
         if entry is None:
             moved, done, _n = self._copy_group(group)
@@ -835,7 +845,7 @@ def install_encoder_prefetch(
         if not groups:
             return 0
         pf = _EncoderPrefetcher(module, groups, device)
-        pf._ensure_stage()  # a failed pinned allocation keeps diffusers' onload, not a failed render
+        pf._ensure_stage()  # a pinned allocation failing here keeps diffusers' onload, not a failed render
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
         for group in groups:
 

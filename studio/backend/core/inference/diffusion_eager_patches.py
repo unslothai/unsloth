@@ -39,6 +39,7 @@ from .diffusion_patch_backend import apply_patch, revert_patch
 
 logger = logging.getLogger(__name__)
 
+# Kill-switch: UNSLOTH_DIFFUSION_EAGER_PATCHES=0 disables the patches (default on).
 _ENV_ENABLE = "UNSLOTH_DIFFUSION_EAGER_PATCHES"
 
 
@@ -63,9 +64,11 @@ except Exception:  # noqa: BLE001
     _NPU = False
 
 
+# Install/uninstall via the shared patch backend: the live original is fingerprinted so a changed forward stays unpatched, and stashed for exact restore
 def _adaln_continuous_forward(self, x, conditioning_embedding):
     emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
     scale, shift = torch.chunk(emb, 2, dim = 1)
+    # original: self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
     return torch.addcmul(shift[:, None, :], self.norm(x), 1 + scale[:, None, :])
 
 
@@ -81,6 +84,7 @@ def _adaln_zero_forward(
         emb = self.emb(timestep, class_labels, hidden_dtype = hidden_dtype)
     emb = self.linear(self.silu(emb))
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim = 1)
+    # original: self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
     x = torch.addcmul(shift_msa[:, None], self.norm(x), 1 + scale_msa[:, None])
     return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
@@ -96,6 +100,7 @@ def _adaln_zero_single_forward(
     return x, gate_msa
 
 
+# Filled at install with the ORIGINAL RMSNorm.forward, for the fast path's fallback.
 _orig_rmsnorm_forward: Optional[Callable] = None
 
 
@@ -107,10 +112,12 @@ def _rmsnorm_forward(self, hidden_states):
     if weight is None:
         return F.rms_norm(hidden_states, self.dim, None, self.eps)
     if weight.dtype in (torch.float16, torch.bfloat16) and hidden_states.dtype == weight.dtype:
+        # Common DiT path (bf16 acts + bf16 weight): F.rms_norm matches diffusers bit-for-bit.
         return F.rms_norm(hidden_states, self.dim, weight, self.eps)
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 
 
+# True for families needing multiple denoisers no single file carries (Ideogram 4), so only a full pipeline load is valid
 def _specs():
     return [
         (_AdaLayerNormContinuous, _adaln_continuous_forward),
@@ -120,6 +127,7 @@ def _specs():
     ]
 
 
+# Classes whose `forward` we successfully patched, so uninstall reverts exactly those.
 _patched: list[type] = []
 
 
@@ -134,7 +142,7 @@ def install_compile_safe_patches() -> int:
     for cls, new_fn in _specs():
         if cls is None:
             continue
-        # torch < 2.4 has no F.rms_norm.
+        # torch < 2.4 has no F.rms_norm: leave the original rather than install an AttributeError.
         if cls is _RMSNorm and not hasattr(F, "rms_norm"):
             logger.info("eager-patch: skipping RMSNorm (this torch has no F.rms_norm)")
             continue

@@ -25,7 +25,7 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
-# Renders a single turn byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
+# Renders a single-turn conversation byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
 STUDIO_ALPACA_CHAT_TEMPLATE = (
     "{{ bos_token }}"
     "{% if messages[0]['role'] == 'system' %}"
@@ -48,6 +48,7 @@ STUDIO_ALPACA_CHAT_TEMPLATE = (
 
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
+# Rows per batch for error-column scans/filters, so neither pass materialises the whole column.
 _ERROR_SCAN_BATCH = 10_000
 
 _TEMPLATE_PROBE_ROWS = 8
@@ -128,6 +129,7 @@ def get_tokenizer_chat_template(tokenizer, model_name):
         if has_chat_template:
             logger.info(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
         else:
+            # Base model with no chat template: apply default ChatML.
             logger.info(f"📝 No chat template found — applying default ChatML template (base model)")
             try:
                 tokenizer = get_chat_template(
@@ -156,6 +158,7 @@ def get_training_chat_template(tokenizer, model_name, final_format):
             chat_template = "alpaca",
             **_chat_template_kwargs(),
         )
+        # Unsloth's "alpaca" template words the preamble differently and has no Input section.
         _set_chat_template(tokenizer, STUDIO_ALPACA_CHAT_TEMPLATE)
         logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
     except Exception as e:
@@ -490,6 +493,7 @@ def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
         chosen = (model_name, getattr(tokenizer, "chat_template", None))
         setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
     except Exception:
+        # Wrappers that reject new attributes cannot retain the choice across splits.
         pass
     return tokenizer, note
 
@@ -564,7 +568,7 @@ def apply_chat_template_to_dataset(
             "errors": errors,
         }
 
-    # A processor keeps eos_token on its inner tokenizer.
+    # A processor (Gemma 3 on the text path) keeps eos_token on its inner tokenizer.
     eos_token = (
         getattr(tokenizer, 'eos_token', None)
         or getattr(getattr(tokenizer, 'tokenizer', None), 'eos_token', None)
@@ -573,6 +577,7 @@ def apply_chat_template_to_dataset(
     if not eos_token and (add_eos_token or final_format == "alpaca"):
         warnings.append("Tokenizer has no eos_token, so EOS was not appended")
 
+    # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
         if custom_format_mapping is None and auto_detect_mapping:
             if not dataset_info.get("auto_detection_attempted", False):
@@ -607,6 +612,7 @@ def apply_chat_template_to_dataset(
                 conversations = []
                 num_examples = len(examples[list(examples.keys())[0]])
 
+                # Preserve unmapped columns only if auto-detected.
                 preserved_columns = {}
                 if not is_user_provided:
                     all_columns = set(examples.keys())
@@ -626,8 +632,10 @@ def apply_chat_template_to_dataset(
                                 content = examples[col_name][i]
 
                                 if is_user_provided:
+                                    # User-mapped: include even if empty.
                                     convo.append({"role": role, "content": cell_text(content)})
                                 else:
+                                    # Auto-detected: skip empty.
                                     text = cell_text(content)
                                     if text.strip():
                                         convo.append({"role": role, "content": text})
@@ -640,7 +648,7 @@ def apply_chat_template_to_dataset(
                 return result
 
             try:
-                # Streaming IterableDataset.map() rejects num_proc/desc.
+                # Mirror the other call sites: omit eager-only kwargs (num_proc/desc) for streaming IterableDatasets, whose .map() rejects them.
                 custom_map_kwargs = {"batched": True, "batch_size": batch_size}
                 if not is_streaming_dataset(dataset):
                     custom_map_kwargs["desc"] = "Applying custom ChatML mapping"
@@ -658,6 +666,7 @@ def apply_chat_template_to_dataset(
                     "errors": errors
                 }
 
+    # ALPACA FORMAT
     if final_format == "alpaca":
 
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
@@ -723,6 +732,7 @@ def apply_chat_template_to_dataset(
                 "errors": errors
             }
 
+    # CHATML FORMATS
     elif final_format in ["chatml_messages", "chatml_conversations"]:
 
         if not is_standardized:
@@ -900,6 +910,7 @@ def apply_chat_template_to_dataset(
                 "errors": errors
             }
 
+    # UNKNOWN FORMAT
     else:
         errors.append(
             f"Cannot apply chat template to format: {final_format}. "

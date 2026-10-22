@@ -1,3 +1,4 @@
+# Model defaults for unsloth/bge-m3, based on BGE_M3.py embedding notebook
 training:
   max_seq_length: 512
   num_epochs: 0

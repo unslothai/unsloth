@@ -88,7 +88,7 @@ def _public_mcp_address(url: str) -> str:
 
 
 def validate_mcp_address(url: str) -> None:
-    # Decisions is answered in process; with a local model no request leaves this machine.
+    # Studio's own Decisions server is answered in process; with a local model no request leaves this machine.
     if not _managed_mcp_restricted() or (is_studio_decisions(url) and _local_decisions()):
         return
     if is_stdio(url):
@@ -171,7 +171,7 @@ def _split_windows_command_line(address: str) -> list[str]:
             backslashes = 0
             i += 1
             continue
-        # list2cmdline (MS C runtime) splits only on space and tab.
+        # list2cmdline splits only on space and tab; other Unicode or control whitespace is argument data and must not be split.
         if ch in (" ", "\t") and not in_quotes:
             if backslashes:
                 current.extend("\\" * backslashes)
@@ -251,7 +251,7 @@ def _session_log_id(url: str) -> str:
 
 
 def stdio_mcp_enabled() -> bool:
-    """stdio MCP spawns local processes outside the sandbox, so it is gated to the user's own machine."""
+    """Stdio MCP spawns local processes outside the sandbox: loopback only via UNSLOTH_STUDIO_ALLOW_STDIO_MCP; Colab and network binds off unless set."""
     if _managed_mcp_restricted():
         return False
     if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
@@ -387,7 +387,7 @@ def _oauth(
 
 
 async def clear_oauth_tokens_async(url: str) -> None:
-    """fastmcp keys tokens by URL, so re-registering a URL would reuse the old account's token."""
+    """Must clear tokens on delete, URL change or OAuth disable: fastmcp keys them by URL, so a re-register reuses the old token; errors must not 500."""
     try:
         await _oauth(url).token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
@@ -565,6 +565,7 @@ def _client(
         return Client(decisions_mcp)
 
     if is_stdio(url):
+        # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
         if not stdio_mcp_enabled():
             raise PermissionError("stdio MCP servers are disabled on this host")
         from fastmcp.client.transports import StdioTransport
@@ -706,10 +707,10 @@ def _transport_dead(session) -> bool:
 
 
 def _needs_idle_recheck(session, idle_for: float, remaining: Optional[float]) -> bool:
-    """Idle HTTP sessions are re-proved, since a server may drop one silently; stdio is exempt."""
+    """Idle HTTP sessions are re-proved since a server may drop one silently; stdio is exempt; skipped when the budget is too small to afford the probe."""
     if is_stdio(session.url):
         return False
-    # Negative = this borrower just connected it; the handshake is proof enough.
+    # Negative means this borrower connected the session itself, so the handshake it just completed is proof enough.
     if idle_for < 0.0 or idle_for < _HTTP_IDLE_RECHECK:
         return False
     return remaining is None or remaining > _SESSION_LIVENESS_TIMEOUT * 2
@@ -721,12 +722,13 @@ def _session_responsive(
     cancel_event = None,
     timeout_is_fatal: bool = True,
 ) -> bool:
-    """Silence from a dirty session condemns it; an idle one is retired only on a definite failure."""
+    """Silence condemns a dirty session; an idle one retires only on definite failure; probe is one raw tools/list page, not ping or auto-paginating list_tools."""
     client = session.client
     if client is None:
         return False
     window = _SESSION_LIVENESS_TIMEOUT if budget is None else min(_SESSION_LIVENESS_TIMEOUT, budget)
     if window <= 0:
+        # No budget left to ask in; that is not evidence either way.
         return not timeout_is_fatal
     probe = getattr(client, "list_tools_mcp", None) or client.list_tools
     try:
@@ -754,6 +756,7 @@ class _SessionClosed(Exception):
 
 
 def _abort_future(future) -> None:
+    # Let the cancelled coroutine unwind before its loop is stopped.
     future.cancel()
     try:
         future.result(1.0)
@@ -810,6 +813,7 @@ class _McpSession:
             return client
 
         future = asyncio.run_coroutine_threadsafe(_open(), self.loop)
+        # timeout=None is no connect deadline; else _connect_window() caps stdio at its cold-start limit.
         window = _connect_window(self.url, timeout)
         deadline = None if window is None else time.monotonic() + window
         while True:
@@ -821,7 +825,7 @@ class _McpSession:
                 return
             except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
                 if future.done():
-                    raise
+                    raise  # the connect itself failed fast; don't wait out the window
                 if deadline is not None and time.monotonic() >= deadline:
                     _abort_future(future)
                     raise _ConnectTimeout(window)
@@ -851,10 +855,11 @@ class _McpSession:
                 try:
                     return future.result(0.25)
                 except concurrent.futures.CancelledError:
+                    # Only close() cancels in-flight tasks (in _shutdown).
                     raise _SessionClosed
                 except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
                     if future.done():
-                        raise
+                        raise  # the call's own timeout; the session stays usable
                     if self.closed.is_set():
                         future.cancel()
                         raise _SessionClosed
@@ -865,6 +870,7 @@ class _McpSession:
             self.last_used = time.monotonic()
 
     def close(self) -> None:
+        # Setting `closed` first also unblocks run() waiters (they poll it).
         with self._close_lock:
             if self.closed.is_set():
                 return
@@ -879,6 +885,7 @@ class _McpSession:
                 client, self.client = self.client, None
                 if client is not None:
                     await client.__aexit__(None, None, None)
+                # Cancel in-flight calls so they unwind before loop.stop; closed has already released run() waiters.
                 for task in asyncio.all_tasks():
                     if task is not asyncio.current_task():
                         task.cancel()
@@ -917,9 +924,12 @@ class _McpKeyLock:
 _mcp_key_locks: dict[tuple, _McpKeyLock] = {}
 _mcp_sessions_lock = threading.Lock()
 _mcp_reaper_started = False
+# Sessions discarded while somebody else was mid-call, closed by one worker off the request path. See _close_detached.
 _mcp_cleanup_lock = threading.Lock()
 _mcp_cleanup_queue: list = []
+# Depth past which an evicting caller closes the overflow itself. See _close_detached.
 _MAX_PENDING_CLOSES = 8
+# How wide close_mcp_sessions fans out. See _close_all.
 _MAX_CLOSE_THREADS = 16
 _mcp_cleanup_worker: Optional[threading.Thread] = None
 # Bumped on every close so an in-flight connect discards its session instead of publishing it.
@@ -1010,7 +1020,7 @@ def _get_session(
     config_check,
     use_oauth: bool = False,
 ) -> tuple[_McpSession, float]:
-    """Key-lock wait and connect share one absolute deadline, so slow startups cannot stack timeouts."""
+    """Key-lock wait and connect share one absolute deadline so slow startups cannot stack timeouts; only the borrower may act on its idle gap."""
     global _mcp_reaper_started
     key = _session_key(url, headers, scope)
     with _mcp_sessions_lock:
@@ -1021,6 +1031,7 @@ def _get_session(
     try:
         # Poll so a same-scope call can be cancelled while queued behind a slow startup.
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        # Key-lock wait is bounded like the connect behind it, so HTTP is not cut off at the stdio cap.
         window = _connect_window(url, remaining)
         lock_deadline = None if window is None else time.monotonic() + window
         while not key_lock.lock.acquire(timeout = 0.05):
@@ -1061,7 +1072,7 @@ def _get_session(
                     closed_while_connecting = _mcp_close_generation(url, headers) != generation
                     if not closed_while_connecting:
                         session.in_flight = 1
-                        evicted = _evict_lru_locked()
+                        evicted = _evict_lru_locked()  # bound the cache (LRU idle)
                         _mcp_sessions[key] = session
                         if not _mcp_reaper_started:
                             _mcp_reaper_started = True
@@ -1090,7 +1101,7 @@ def _release_session(session: _McpSession, defer_close: bool = False) -> None:
         session.in_flight = max(0, session.in_flight - 1)
         session.last_used = time.monotonic()
         close_now = session.defunct and session.in_flight == 0
-        # Insert-time eviction only trims idle sessions; reclaim overshoot here (per account cap).
+        # Re-enforce the cap once a burst idles; never evict the session just used; the cap is per account, so a call never closes sessions of another account.
         account_id = getattr(session, "account_id", None) or current_account_id()
         mine = {
             k: s
@@ -1196,6 +1207,7 @@ def close_mcp_sessions(
     pending, worker = _drain_cleanup_queue()
     _close_all(sessions + pending)
     if worker is not None and worker is not threading.current_thread():
+        # Draining does not recall a popped session, so the join waits for that one close and no longer.
         worker.join(_SESSION_CLOSE_TIMEOUT + 5.0)
 
 
@@ -1223,13 +1235,14 @@ def _close_all(sessions: list) -> None:
     threads = [threading.Thread(target = _drain, name = "mcp-close", daemon = True) for _ in range(width)]
     for thread in threads:
         thread.start()
+    # Each worker closes several sessions in turn, so the join budget scales with the rounds.
     rounds = -(-len(sessions) // width)
     for thread in threads:
         thread.join(rounds * (_SESSION_CLOSE_TIMEOUT + 5.0))
 
 
 def _close_detached(sessions: list) -> None:
-    """One worker, not a thread per session; past _MAX_PENDING_CLOSES the caller closes the overflow."""
+    """One worker, not a thread per session, so closes cannot spawn unbounded threads; past _MAX_PENDING_CLOSES the caller closes the overflow as backpressure."""
     global _mcp_cleanup_worker
     if not sessions:
         return
@@ -1250,7 +1263,7 @@ def _cleanup_worker() -> None:
     while True:
         with _mcp_cleanup_lock:
             if not _mcp_cleanup_queue:
-                _mcp_cleanup_worker = None
+                _mcp_cleanup_worker = None  # _close_detached starts the next one
                 return
             session = _mcp_cleanup_queue.pop(0)
         _close_quietly(session)
@@ -1414,8 +1427,10 @@ async def list_tools_async(
 # Probe only on cache miss, off the chat send's critical path. Successful probes cached forever.
 _tool_cache: dict[str | tuple[str, str], list[dict]] = {}
 
+# Failed server's re-probe cooloff (monotonic time); cleared on a good probe or eviction.
 _probe_cooloff_until: dict[str | tuple[str, str], float] = {}
 
+# Coordinate off-loop token-count snapshots with row and schema-cache mutations.
 _mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
     WeakKeyDictionary()
 )
@@ -1538,6 +1553,7 @@ def _ui_envelope(result: Any, ui_resource_uri: str, seed: list) -> str:
         ]
     line = _json_within(payload, MAX_UI_STRUCTURED_CHARS)
     if line is None:
+        # Shed structuredContent, then content, then _meta: the view still gets its template.
         reduced = {"resourceUri": ui_resource_uri, "structuredContentOmitted": True}
         keys = [k for k in ("content", "_meta") if k in payload]
         for kept in (keys, keys[:1], keys[1:]):
@@ -1580,6 +1596,7 @@ def _block_text(block: Any) -> Optional[str]:
 
 
 def _block_link(block: Any) -> Optional[str]:
+    # keep host-generated link text from suppressing structured_content
     uri = getattr(block, "uri", None)
     if uri and getattr(block, "type", None) == "resource_link":
         name = getattr(block, "name", None)
@@ -1619,6 +1636,7 @@ def _uri_mime(uri: Any) -> Optional[str]:
 def _image_mime(mime: Any) -> Optional[str]:
     if not isinstance(mime, str):
         return None
+    # media type names are case-insensitive; data urls need only the essence
     essence = mime.partition(";")[0].strip().lower()
     if essence.startswith("image/"):
         resolved = essence
@@ -1637,6 +1655,7 @@ def _resource_mime(obj: Any) -> Any:
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
+    # embedded resources keep binary data on resource.blob
     data = getattr(block, "data", None)
     mime = _resource_mime(block)
     if not data:
@@ -1678,6 +1697,7 @@ def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
 
 
 _MIRRORED = object()
+# fields MCP defines on image/audio and embedded resource blocks; anything else is the tool's own
 _MEDIA_FIELDS = frozenset({"type", "data", "mimeType", "mime_type", "annotations", "_meta"})
 _RESOURCE_BLOCK_FIELDS = frozenset({"type", "resource", "annotations", "_meta"})
 _RESOURCE_FIELDS = frozenset({"uri", "blob", "mimeType", "mime_type", "_meta"})
@@ -1688,6 +1708,7 @@ def _is_payload(value: Any, payloads: set[str]) -> bool:
 
 
 def _mirrored_extras(value: dict, payloads: set[str]) -> Optional[dict]:
+    # the tool's own fields on a content block copied from result.content; None if it is not one
     kind = value.get("type")
     if kind in ("image", "audio") and _is_payload(value.get("data"), payloads):
         return {k: v for k, v in value.items() if k not in _MEDIA_FIELDS}
@@ -1706,6 +1727,7 @@ def _mirrored_extras(value: dict, payloads: set[str]) -> Optional[dict]:
 
 
 def _strip_payloads(value: Any, payloads: set[str]) -> Any:
+    # drop mirrored payloads and the MCP fields of the blocks carrying them, then containers left empty
     if isinstance(value, str):
         return _MIRRORED if value in payloads else value
     if isinstance(value, dict):
@@ -1777,6 +1799,7 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             if data:
                 payloads.add(data)
     body = "\n".join(parts)
+    # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
@@ -1844,6 +1867,7 @@ async def _race_tool_call(
         for t in (call_task, watch_task):
             if not t.done():
                 t.cancel()
+        # Cancelled calls unwind within the caller's remaining budget, or the session is left dirty.
         left = _unwind_budget(unwind_timeout, timeout, time.monotonic() - started)
         if left:
             await asyncio.wait({call_task, watch_task}, timeout = left)
@@ -1868,6 +1892,7 @@ def _call_session_tool(
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
+    # One deadline spans key-lock wait, connect, call-lock wait and the call, like the one-shot path.
     deadline = None if timeout is None else time.monotonic() + timeout
 
     def _remaining() -> Optional[float]:
@@ -1886,6 +1911,7 @@ def _call_session_tool(
     if ephemeral:
         scope = f"request-{uuid.uuid4().hex}"
     key = _session_key(url, headers, scope)
+    # Attempt 0 may reconnect once if the cached session died before dispatch; attempt 1 is fresh.
     for attempt in (0, 1):
         session, idle_for = _get_session(
             url, headers, scope, deadline, cancel_event, config_check, use_oauth
@@ -1902,6 +1928,7 @@ def _call_session_tool(
                         raise asyncio.TimeoutError
                 locked = True
         except BaseException:
+            # Never touched the transport: keep the session for its borrower.
             _release_session(session)
             if ephemeral:
                 _drop_session(key, session)
@@ -1911,9 +1938,11 @@ def _call_session_tool(
         try:
             # Re-check after waiting on the call lock: session may be retired, invalidated or dead.
             if session.closed.is_set():
+                # Intentional close (server update/delete/shutdown): don't retry on stale config.
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
             elif session.defunct:
+                # A same-scope timeout retired this session; switch to a fresh one rather than reuse it.
                 discard_session = True
                 if attempt == 0:
                     retry = True
@@ -1942,15 +1971,18 @@ def _call_session_tool(
                     raise RuntimeError("MCP server is not responding")
             else:
                 rem = _remaining()
+                # raise_on_error=False for the same reason as the one-shot path.
                 coro = _race_tool_call(
                     dispatch(session.client)
                     if dispatch is not None
                     else session.client.call_tool(name, args, raise_on_error = False),
                     rem,
                     cancel_event,
+                    # Only a cached session is worth waiting on.
                     0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
                 out = session.run(coro, rem)
+                # A completed round trip proves the transport better than a probe, so it resets the idle clock.
                 session.proved_at = time.monotonic()
                 return out
         except (_MCPCancelled, asyncio.TimeoutError):
@@ -1961,15 +1993,17 @@ def _call_session_tool(
             discard_session = True
             raise asyncio.TimeoutError
         except _SessionClosed:
+            # close_mcp_sessions() shut this session mid-call, so do not retry against the stale config.
             discard_session = True
             raise RuntimeError("MCP server was updated or removed during the call")
         except Exception as exc:
             if session.closed.is_set():
-                # An intentional close can surface as a transport error or AttributeError.
+                # Intentional close may look like a transport error or AttributeError; do not treat as crash
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
             # Protocol error = server alive, keep session. Transport error: evict but DO NOT replay.
             if _is_protocol_error(exc):
+                # A protocol error means the server replied, so keep the session but probe it before the next call.
                 session.dirty = True
             elif not _is_tool_error(exc):
                 discard_session = True
@@ -2003,6 +2037,7 @@ def call_tool_sync(
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth, **oauth) as client:
+            # Connecting (OAuth included) can outlast an edit or delete of the server row.
             if config_check is not None and not config_check():
                 raise RuntimeError("MCP server was updated or removed while connecting")
             # raise_on_error=False so an is_error result keeps its image content.
@@ -2018,6 +2053,7 @@ def call_tool_sync(
     except _MCPCancelled:
         return f"Error: MCP tool '{name}' cancelled"
     except _ConnectTimeout as exc:
+        # Report the window that expired: for stdio the cold-start cap, not the larger caller timeout.
         suffix = f" after {round(exc.window, 1):g}s" if exc.window is not None else ""
         return f"Error: MCP tool '{name}' timed out connecting{suffix}"
     except asyncio.TimeoutError:
@@ -2082,6 +2118,7 @@ def _ui_request_sync(
     """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
 
     async def _one_shot() -> Any:
+        # As the session branch: an edit during discovery must not reach the old endpoint.
         if config_check is not None and not config_check():
             raise RuntimeError("MCP server was updated or removed during the call")
         async with _client(url, headers, use_oauth, **oauth) as client:
@@ -2131,10 +2168,12 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"resource blob is not base64: {exc}") from exc
         try:
+            # Decoded for the host to render a template; the widget still gets the server's blob.
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = ""
     text = str(text)
+    # Every block for a widget's own multi-block read; a single block is the fields above.
     contents = []
     for item in items if len(items) > 1 else ():
         entry = {"uri": str(getattr(item, "uri", "") or uri)}
@@ -2154,6 +2193,7 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
     )
     if size > MAX_UI_RESOURCE_CHARS:
         raise ValueError(f"resource is {size} chars, over the {MAX_UI_RESOURCE_CHARS} limit")
+    # _meta.ui on the contents, not the tool: the template's CSP declaration.
     metas = (getattr(chosen, "meta", None), getattr(chosen, "_meta", None))
     ui = next((m["ui"] for m in metas if isinstance(m, dict) and isinstance(m.get("ui"), dict)), {})
     mime = str(_resource_mime(chosen) or "")

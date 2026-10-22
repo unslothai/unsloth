@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 from storage import sqlite_gate
 from utils.paths import rag_db_path, ensure_dir
 
-# Optional dep: this module is imported unconditionally, so the import must never crash it.
+# Optional dep: import must never crash this module (imported unconditionally).
 try:
     import sqlite_vec
     RAG_AVAILABLE = True
@@ -229,20 +229,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # Lazy upgrade for databases created before project sources existed.
     cols = {r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
     if "project_id" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN project_id TEXT")
     # NULL = legacy (assumed current); dedupe re-ingests when the embedder changes.
     if "embedding_model" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN embedding_model TEXT")
+    # Folder ownership makes crash cleanup unambiguous without changing retrieval.
     if "linked_folder_id" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
-    # NULL for older archives, which fall back to counting role labels.
+    # NULL for everything else and for older archives, which fall back to counting role labels in the rendered text.
     if "archive_messages" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_messages INTEGER")
-    # Not backfilled: created_at cannot recover order within a compaction epoch.
+    # NULL for older archives falls back to created_at ordering; not backfilled, since created_at cannot recover order within a compaction epoch.
     if "archive_ordinal" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_ordinal INTEGER")
     chunk_cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)").fetchall()}
@@ -272,6 +274,7 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
     the metadata connection, which skips _ensure_schema so that scope retirement keeps working when
     the vector extension cannot load."""
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
+    # the queued follow-up request; it replaced a flag that only recorded rebuilds
     if job_cols and "successor_kind" not in job_cols:
         conn.execute("ALTER TABLE linked_folder_sync_jobs ADD COLUMN successor_kind TEXT")
         if "rebuild_requested" in job_cols:
@@ -279,6 +282,7 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
                 "UPDATE linked_folder_sync_jobs SET successor_kind='rebuild' "
                 "WHERE rebuild_requested=1"
             )
+    # vanished paths already granted their one grace pass before removal
     folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
     if folder_cols and "withheld_paths" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
@@ -451,7 +455,7 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                 "SELECT status FROM documents WHERE id=?", (row["document_id"],)
             ).fetchone()
             if doc is not None and doc["status"] == "completed":
-                # Indexed before the crash but job row not retired: mark completed and keep chunks.
+                # Indexed before the crash but job row not retired: mark completed and keep chunks, so a searchable document is not shown as a failed ingestion.
                 conn.execute(
                     "UPDATE ingestion_jobs SET status='completed', stage='done', "
                     "progress=1.0, error=NULL WHERE id=?",

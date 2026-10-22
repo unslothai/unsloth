@@ -22,12 +22,12 @@ KEYLESS_SCOPE_FULL = "full"
 KEYLESS_SCOPES = (KEYLESS_SCOPE_OFF, KEYLESS_SCOPE_INFERENCE, KEYLESS_SCOPE_FULL)
 DEFAULT_KEYLESS_API_ACCESS_SCOPE = KEYLESS_SCOPE_OFF
 APPROVED_DUMMY_BEARERS = frozenset(
-    # hermes-agent substitutes no-key-required because the OpenAI SDK refuses an empty key.
+    # ``no-key-required`` is what hermes-agent substitutes when no key is configured, because the OpenAI SDK refuses an empty one (hermes_cli/runtime_provider_backends.py).
     {"not-needed", "lm-studio", "ollama", "no-key-required"}
 )
 KEYLESS_ADMISSION_STATE_KEY = "keyless_api_admitted"
 
-# /v1 also aliases side-effect routes, so match by method and path.
+# Named by method and normalized path: /v1 also aliases model loading, media, sandbox, validation, and streaming side-effect routes.
 _INFERENCE_ROUTES = frozenset(
     {
         ("POST", "/v1/chat/completions"),
@@ -41,7 +41,7 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/api/inference/loaded-models"),
         ("POST", "/v1/responses"),
         ("POST", "/v1/systemone"),
-        # Keyless clients read a 401 on /props as an auth wall and stop.
+        # Discovery probes, read-only. A keyless client that may list models and chat but gets 401 on /props reads that as an auth wall in front of the whole surface and stops, which is the opposite of what the scope grants.
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
@@ -78,10 +78,10 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return None
 
 
-# Each read opens a sqlite connection, so cache briefly.
+# each read opens its own sqlite connection (~0.5ms), so hold the answer for a moment
 _SETTINGS_CACHE_TTL_S = 1.0
 _cached_settings: Optional[tuple[float, str, bool]] = None
-# Bumped by every write so a stale refresh does not publish.
+# bumped by every write, so a refresh can tell whether its read still describes the db
 _settings_generation = 0
 _cache_lock = threading.Lock()
 _write_lock = threading.Lock()
@@ -102,7 +102,7 @@ def _read_settings_from_db() -> tuple[str, bool]:
     from storage.studio_db import get_app_settings
 
     keys = [KEYLESS_API_ACCESS_SETTING_KEY, KEYLESS_API_TOOLS_SETTING_KEY]
-    # The cache is installation-wide, so always read the owner's settings.
+    # The cache is installation-wide, so a managed account's private settings must never be published as the authentication policy.
     values = get_app_settings(keys) if is_owner_context() else run_as(OWNER, get_app_settings, keys)
     scope = _coerce_scope(values.get(KEYLESS_API_ACCESS_SETTING_KEY))
     tools = _coerce_bool(values.get(KEYLESS_API_TOOLS_SETTING_KEY))
@@ -236,6 +236,7 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
                 allow_tools = _read_settings_from_db()[1] if tools is None else _coerce_bool(tools)
             if allow_tools is None:
                 raise ValueError("Keyless tool access must be true or false.")
+            # tools are meaningless without a scope, and leaving them ticked would surprise whoever turns keyless back on later
             allow_tools = allow_tools and scope != KEYLESS_SCOPE_OFF
 
             from storage.studio_db import upsert_app_settings
@@ -337,7 +338,7 @@ def scope_covers(
         return False
     if (normalized_method, normalized) in _INFERENCE_ROUTES:
         return True
-    # One dynamic GET template; an empty id and non-GET aliases stay denied.
+    # The router intentionally exposes one dynamic retrieval template. Its method is still explicit; an empty id and every non-GET alias remain denied.
     return normalized_method == "GET" and normalized.startswith("/v1/models/")
 
 
@@ -455,7 +456,7 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
         if separator and not _port_suffix_is_numeric(":" + suffix):
             return False
         literal = literal.lower()
-        # Exactly `localhost`: WebKit sends no Sec-Fetch-* for `localhost.`.
+        # Exactly `localhost`, no trailing root-label dot. Measured on WebKit 26.5, a page dialling `http://localhost.:<port>` sends no `Sec-Fetch-*` while Chromium 151 and Firefox 153 send `cross-site`. No client spells it.
         if literal == "localhost":
             return True
         try:
@@ -623,7 +624,7 @@ def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = N
         return True
     if len(authorization) != 1:
         return False
-    # Use the same parser as the dependency so both agree on keyless shapes.
+    # The same parser the dependency uses, not a second hand-rolled split: they disagreed on `bearer  not-needed`, making a shape keyless to every route but not-keyless to the middleware that clamps the tool grant.
     from fastapi.security.utils import get_authorization_scheme_param
 
     if is_empty_bearer(authorization[0]):

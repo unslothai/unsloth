@@ -24,13 +24,14 @@ logger = logging.getLogger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
 
+# Set by src-tauri on every CLI child it owns (process.rs, DESKTOP_MANAGED_ENV).
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
 # The CLI's guard ran in a different environment, so its verdict is not reused here.
 ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
 HSA_OVERRIDE_ENV = "HSA_OVERRIDE_GFX_VERSION"
 
-# AMD/ROCm only: a wider list would change GUI launches on other stacks.
+# AMD/ROCm only: a wider list would change a GUI launch on someone else's stack.
 ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "HSA_OVERRIDE_GFX_VERSION",
     "PYTORCH_ROCM_ARCH",
@@ -40,15 +41,18 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "ROCM_HOME",
     "HIP_PATH",
     "HIP_PLATFORM",
+    # CK was being attempted on an arch it was not built for (#9926).
     "USE_CK",
     "TORCH_BLAS_PREFER_HIPBLASLT",
     "MIOPEN_USER_DB_PATH",
     "MIOPEN_CUSTOM_CACHE_DIR",
     "MIOPEN_FIND_MODE",
+    # Preserve shell overrides, including an explicit opt-out (0).
     "MIOPEN_SEARCH_CUTOFF",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "GPU_DEVICE_ORDINAL",
+    # DXG_DETECTION: main.py sets it for WSL, a host that set it by hand wins.
     "HSA_ENABLE_SDMA",
     "HSA_ENABLE_DXG_DETECTION",
     "HSA_XNACK",
@@ -136,7 +140,7 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
             return {}
 
     out: dict = {}
-    # surrogateescape, as os.environ does: replace would corrupt a path.
+    # surrogateescape, as os.environ does: `replace` corrupts a path.
     for record in raw.decode("utf-8", "surrogateescape").split("\0"):
         name, sep, value = record.partition("=")
         if sep and name:
@@ -208,6 +212,7 @@ def import_rocm_env_from_login_shell(
     environ = os.environ if environ is None else environ
     if str(environ.get(DISABLE_ENV_VAR, "")).strip() == "1":
         return {}
+    # Not a desktop launch: nothing was lost, so nothing is read.
     if str(environ.get(DESKTOP_MANAGED_ENV, "")).strip() != "1":
         return {}
     if not sys.platform.startswith("linux"):
@@ -244,10 +249,11 @@ def override_gfx_arch(value):
     """Kept in step with _hsa_override_gfx_arch in unsloth_cli and install.sh; a test checks parity."""
     if not isinstance(value, str) or not value:
         return None
-    # [0-9] rather than isdigit()/\d, which accept non-ASCII digits.
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
         return None
     major, minor, step = (int(part) for part in value.strip().split("."))
+    # Steppings are a single hex nibble; anything wider is not a real target.
     if not (0 <= step <= 15) or major <= 0 or minor > 9:
         return None
     return f"gfx{major}{minor}{step:x}"

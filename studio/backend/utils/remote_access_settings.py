@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 REMOTE_ACCESS_AUTO_START_KEY = "remote_access_auto_start"
 DEFAULT_REMOTE_ACCESS_AUTO_START = False
+# Longest a Stop waits for a live start worker to claim settings ownership.
 _STOP_OWNERSHIP_WAIT = 5.0
 
 _worker_lock = threading.Lock()
@@ -176,7 +177,7 @@ def remote_access_status(app_state) -> dict:
         starting = _worker_is_current(_start_worker, _start_worker_admission, current)
         stopping = _worker_is_current(_stop_worker, _stop_worker_admission, current)
         generation_advanced = stopping and _stop_worker_admission[1] != current[1]
-    # Only a stop worker that advanced the generation and left the tunnel off did the teardown.
+    # Only a stop worker that advanced the generation, left the tunnel off, and has nothing pending did the teardown.
     if generation_advanced and status["state"] == "off" and not status.get("stop_pending"):
         stopping = False
     if stopping:
@@ -218,6 +219,7 @@ def remote_access_status(app_state) -> dict:
         "Cloudflare URL was not reachable",
         "cloudflared did not register a connection",
         "cloudflared exited",
+        # Why Start is blocked: the connector's exit was never confirmed
         "cloudflared could not be stopped",
     }:
         error = "Cloudflare tunnel failed"

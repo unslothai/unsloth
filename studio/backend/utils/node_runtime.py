@@ -14,11 +14,11 @@ from pathlib import Path
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 _NODE_VERSION_PROBE_TIMEOUT_SECONDS = 10
-# Module-level so the Windows-only npx branch stays reachable from tests.
+# Module-level so the Windows-only npx branch below stays reachable from tests.
 _IS_WINDOWS = os.name == "nt"
 
 
-# Keep in sync with setup.sh decide_node_source / setup.ps1 Get-NodeDecision floors.
+# Keep in sync with the setup scripts' floors, decide_node_source (setup.sh) / Get-NodeDecision (setup.ps1): Vite 8 needs Node ^20.19 || >=22.12 || >=23, and both require npm >= 11 before accepting a system runtime.
 _NPM_MAJOR_FLOOR = 11
 
 
@@ -41,9 +41,10 @@ def managed_node_dir() -> Path:
     """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a parent with llama.cpp, ``UNSLOTH_HOME`` when set, else ``<STUDIO_HOME>`` in custom mode, else legacy ``~/.unsloth``."""
     legacy_node = Path.home() / ".unsloth" / "node"
     try:
-        # Lazy import so this module stays importable even if utils.paths cannot load.
+        # Lazy import (mirrors _find_llama_server_binary) so this module stays importable even if utils.paths cannot be loaded.
         from utils.paths.storage_roots import studio_root, unsloth_home
 
+        # setup.sh installs Node at <master root>/node, beside studio/.
         master = unsloth_home()
         if master is not None:
             return master / "node"
@@ -55,7 +56,7 @@ def managed_node_dir() -> Path:
             is_legacy = resolved == legacy_studio
         return legacy_node if is_legacy else (resolved / "node")
     except (ImportError, OSError, ValueError):
-        # Degraded env: still honor STUDIO_HOME, mirroring studio_root().
+        # Degraded env (utils.paths unavailable): still honor an explicit STUDIO_HOME override before the legacy default, mirroring studio_root().
         override = (
             os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
         ).strip()
@@ -85,7 +86,7 @@ def managed_node_bin_dir() -> Path | None:
         return None
 
 
-# Success-only memo: the installer may finish after the first probe.
+# Success-only memoization, like _resolved_node: the installer may finish after the first probe, so a negative verdict must not stick until restart.
 _managed_node_ok: bool = False
 _usable_node_cache: dict[tuple[str, str | None], bool] = {}
 
@@ -117,7 +118,7 @@ def _path_has_usable_node(
         return False
     launcher = npx if require_npx else npm
     if _IS_WINDOWS and launcher:
-        # npm.cmd/npx.cmd run the node.exe beside them, so validate that one.
+        # npm's generated npm.cmd and npx.cmd both run the node.exe beside them when there is one, so that is the runtime to validate, not whatever ``node`` resolves to first.
         sibling = os.path.join(os.path.dirname(launcher), "node.exe")
         try:
             if os.path.isfile(sibling):
@@ -126,7 +127,7 @@ def _path_has_usable_node(
             return False
     if not _probe_ok(node, _node_version_ok, path):
         return False
-    # npx -v prints the bundled npm's version, so it stands in for the npm floor check.
+    # The installers' npm floor still applies to an npx-only PATH: npx-cli.js hands off to the npm library beside it, so ``npx -v`` prints that npm's version and stands in for the missing npm launcher. Falling back to it keeps the floor instead of skipping it.
     floor_launcher = npm if require_npm else (npx if require_npx else None)
     return _probe_ok(floor_launcher, _npm_version_ok, path) if floor_launcher else True
 
@@ -176,16 +177,16 @@ def path_with_managed_node(
     bin_dir = managed_node_bin_dir()
     if bin_dir is None:
         return current
-    # Never shadow a runtime PATH already reaches (resolve_node_executable order).
+    # Never shadow a runtime the PATH already reaches (resolve_node_executable order).
     if _path_has_usable_node(current, require_npm = require_npm, require_npx = require_npx):
         return current
     if not managed_node_usable():
         return current
     bin_str = str(bin_dir)
-    # An empty component means cwd on POSIX; dropping it loses it.
+    # An empty component means the working directory on POSIX; dropping it loses it.
     entries = current.split(os.pathsep) if current else []
     normalized = os.path.normcase(os.path.normpath(bin_str))
-    # Move the managed dir up, ahead of any stale runtime already on PATH.
+    # Drop any existing occurrence rather than keep it: this runs only when PATH resolves no usable runtime, so a managed dir sitting behind a stale one must move up.
     kept = [
         entry
         for entry in entries
@@ -228,7 +229,7 @@ def _probe_version(
     return meets_floor(result.stdout)
 
 
-# Memoize only a confirmed good executable: the installer may finish later.
+# Memoize ONLY a confirmed version-adequate executable: the installer runs in a separate process and may finish after the first probe, so a negative result must not stick until a restart.
 _resolved_node: str | None = None
 
 
@@ -258,5 +259,5 @@ def resolve_node_executable() -> str | None:
         _resolved_node = str(managed)
         return _resolved_node
 
-    # Not cached so a later install is picked up.
+    # Last-resort system node (may be None), NOT cached so a later install is picked up.
     return system_node

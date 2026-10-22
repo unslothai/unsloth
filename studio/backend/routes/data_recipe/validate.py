@@ -28,7 +28,7 @@ from .jobs import _resolve_seed_endpoint
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Only UI sessions may supply stdio commands; Annotated so direct calls get False.
+# Only UI sessions may supply stdio commands, since this host would run them; Annotated so direct calls get False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _GITHUB_VALIDATE_NOTE = (
@@ -80,6 +80,7 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
 
 
 def _all_blocks_dropped_message(columns: list[Any]) -> str:
+    # Reword only: Data Designer's profiler also fails when no generated column is kept (#10836).
     names = [
         column.name
         for column in columns

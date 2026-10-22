@@ -28,6 +28,7 @@ _HASH_CHUNK = 8 * 1024 * 1024
 _DIGEST_CACHE_NAME = "file_digests.json"
 _DIGEST_CACHE_LIMIT = 2048
 _PATHS_INFO_BATCH = 100
+# Old snapshots a plan asks the Hub about; the rest stay counted (the plan is on the request path).
 _REMOTE_DIGEST_COMMITS = 3
 _digest_cache_lock = threading.Lock()
 
@@ -154,7 +155,7 @@ def cached_file_digest(
     if learned is None:
         _remember_digests({key: digest})
     else:
-        learned[key] = digest
+        learned[key] = digest  # the caller persists a whole pass in one write
     return digest, st.st_size
 
 
@@ -209,6 +210,7 @@ def _candidates(snapshots: Iterable[Path], rel_path: str, size: int) -> list[Pat
     seen: set[tuple[int, int]] = set()
     for snap in snapshots:
         candidate = snap / rel_path
+        # A symlink means the blob layout, which huggingface_hub already reuses.
         if not _is_regular_file(candidate):
             continue
         try:
@@ -252,6 +254,7 @@ def find_reusable_copies(
 
     matches: dict[str, Path] = {}
     hashed = 0
+    # Plan estimate only: the worker passes no remote_digests and hashes instead.
     if remote_digests is not None:
         asked = 0
         for snap in snapshots:
@@ -373,6 +376,7 @@ def reuse_unchanged_snapshot_files(
             digest = getattr(item, "sha256", None)
             if not expected_path_is_safe(path) or size <= 0 or digest_kind(digest) is None:
                 continue
+            # huggingface_hub links a finished blob only when the pointer is absent: none under a peer.
             if digest in protected_blob_hashes:
                 continue
             if _needs_reuse(repo_dir, target_root / path, digest):
@@ -391,7 +395,7 @@ def reuse_unchanged_snapshot_files(
 
         for path, src in matches.items():
             size, digest = pending[path]
-            # Rechecked: a peer may have started after launch.
+            # A peer may have started after launch.
             if blob_download_lock_held(repo_dir, digest):
                 continue
             how = _place(src, target_root / path, size)
@@ -492,6 +496,7 @@ def reusable_paths(
         ]
         if not local or remote_digests is None:
             return set()
+        # digest_revision names what the worker will fetch when commit_hash is only the local ref.
         target = remote_digests(digest_revision or commit, sorted(local)) or {}
         expected = {
             path: (int(sizes[path]), target[path])

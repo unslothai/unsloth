@@ -31,6 +31,7 @@ def content_to_text(content: Any) -> str:
                 if item:
                     parts.append(item)
             elif isinstance(item, dict):
+                # Skip non-text parts (image_url, input_audio, ...).
                 part_type = item.get("type")
                 if part_type is not None and part_type != "text":
                     continue

@@ -338,7 +338,7 @@
         if (e.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          // send(), not form.requestSubmit (unsupported on Safari < 16).
+          // send() (not form.requestSubmit, unsupported on Safari < 16) guards the btn.
           send();
         }
       });
@@ -375,6 +375,7 @@
           (detailText || "Something went wrong. Please try again.");
       }
       async function send() {
+        // One path for button + Enter; ignore while a request is in flight.
         if (btn.disabled) return;
         const content = input.value.trim();
         if (!content) return;
@@ -414,7 +415,7 @@
           if (!r.ok) {
             showError(body, r.status, await r.text());
             msgs.pop();
-            input.value = content;
+            input.value = content; // restore the prompt so the user can retry
             autosize();
             btn.disabled = false;
             return;
@@ -473,7 +474,7 @@
             input.focus();
             return;
           }
-          // Keep reasoning-only replies so role alternation is preserved.
+          // keep reasoning-only replies so the next prompt preserves role alternation.
           if (hasContent || hasReasoning) {
             const reply = { role: "assistant", content: acc };
             if (hasReasoning) reply.reasoning_content = reasoning;
@@ -485,6 +486,7 @@
             : "";
           if (!acc) body.textContent = "";
         } catch (err) {
+          // Keep any streamed text, flag the break, restore the prompt for retry.
           body.textContent = acc ? acc + "\n\n[connection lost]" : "Network error, please retry.";
           msgs.pop();
           input.value = content;

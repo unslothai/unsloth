@@ -41,6 +41,7 @@ _KEPT_UNDER_ALWAYS = frozenset({CHAT, DIFFUSION, VIDEO})
 _lock = threading.Lock()
 _owner: Optional[str] = None
 _owner_epoch = 0
+# Account whose load put the current owner on the GPU, so routes can refuse to evict it.
 _owner_account: Optional[str] = None
 _prior_account: Optional[str] = None
 # Every resident and the physical GPU ids it uses (None = unknown, treat as every GPU).
@@ -144,7 +145,7 @@ def _evict_chat() -> None:
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
-    # An in-flight safetensors load has no active_model_name yet, so the unload above misses it.
+    # In-flight loads lack active_model_name; cancel_load must drop the loading marker before teardown.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
@@ -179,6 +180,7 @@ def _commit_swap_kv(unloaded) -> None:
 
 
 def _evict_diffusion() -> None:
+    # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     # A launching upsampler warm start holds the engine's generation slot the unload waits on.

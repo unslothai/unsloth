@@ -13,8 +13,9 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CURRENT_DATE_PROMPT_SETTING_KEY = "include_current_date_in_prompt"
+# Lets callers recognise a prompt that already states a date, whoever put it there.
 CURRENT_DATE_PROMPT_PREFIX = "The current date is "
-# Leads the turn: a trailing sentence made small models answer about the date.
+# Leads the turn: a trailing sentence made small models answer about the date instead (PR #12096).
 CURRENT_DATE_UPDATE_PREFIX = "[Current date: "
 CURRENT_DATE_UPDATE_NOTE_RE = re.compile(
     rf"^\s*{re.escape(CURRENT_DATE_UPDATE_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\]\s*"
@@ -22,6 +23,7 @@ CURRENT_DATE_UPDATE_NOTE_RE = re.compile(
 CURRENT_DATE_PROMPT_LINE_RE = re.compile(
     rf"(?m)^{re.escape(CURRENT_DATE_PROMPT_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\.(?=\r?$)"
 )
+# default on: date-blind models answer from their training cutoff and search for stale material.
 DEFAULT_CURRENT_DATE_PROMPT_ENABLED = True
 CURRENT_DATE_TIMEZONE_HEADER = "x-unsloth-timezone"
 CURRENT_DATE_TIMEZONE_OFFSET_HEADER = "x-unsloth-timezone-offset-minutes"
@@ -115,10 +117,12 @@ def current_date_prompt_line(today: date | None = None, request: Any = None) -> 
 
 _PROBE_SYSTEM = "UNSLOTH_DATE_PROBE_SYSTEM"
 _PROBE_USER = "UNSLOTH_DATE_PROBE_USER"
+# stand-ins for the tokenizer's control tokens, so a default that carries one can be told apart.
 _PROBE_SPECIAL_TOKENS = {
     f"{name}_token": f"UNSLOTH_DATE_PROBE_{name.upper()}"
     for name in ("bos", "eos", "pad", "unk", "sep", "cls", "mask")
 }
+# a catalog a tool request's branch can render, for probing the template it selects.
 PROBE_TOOLS = [
     {
         "type": "function",
@@ -168,6 +172,7 @@ def _render_probe(
             next(parser.stream)
             return parser.parse_statements(["name:endgeneration"], drop_needle = True)
 
+    # Match transformers' chat-template syntax; a generation block is transparent in this text-only probe.
     env = ImmutableSandboxedEnvironment(
         trim_blocks = True,
         lstrip_blocks = True,
@@ -175,6 +180,7 @@ def _render_probe(
     )
     env.filters["tojson"] = tojson
     env.globals["raise_exception"] = raise_exception
+    # the user's day, so a default that dates itself (or works out yesterday) is dated for them.
     env.globals["strftime_now"] = today.strftime
     return env.from_string(chat_template).render(
         messages = messages,
@@ -198,7 +204,7 @@ def template_system_turn(
     tools: bool = False,
     controls: tuple = (),
 ) -> tuple[bool, str | None]:
-    """None when no system turn reproduces the render, because the template rewrites what it is given."""
+    """Default is empty when the template has none or the probe cannot render; None when no system turn reproduces it."""
     if not chat_template:
         return True, ""
     catalog = PROBE_TOOLS if tools else None
@@ -238,13 +244,14 @@ def template_system_turn(
         if fixed and _is_whitespace_normalized_substring(bare[fixed:], without_system[fixed:]):
             return True, ""
         if len(bare) <= len(without_system) or not bare.startswith(head) or not bare.endswith(tail):
-            # The explicit-system branch changes more than the text, so do not replay it.
+            # Replaying it would silently replace the native default with the date, so the branch is non-replayable.
             return True, None
         default = bare[len(head) : len(bare) - len(tail)]
         try:
             replayed = render(default)
         except Exception:
             replayed = None
+        # replayed as text, a control token in the default would no longer be one.
         carries_token = any(token in default for token in _PROBE_SPECIAL_TOKENS.values())
         return True, (default.strip() if replayed == bare and not carries_token else None)
     return not renders_chat, ("" if not renders_chat else None)

@@ -10,7 +10,7 @@ imported directly from .export when needed.
 
 from .orchestrator import ExportOrchestrator, get_export_backend
 
-# Backward compat alias.
+# Expose ExportOrchestrator as ExportBackend for backward compat
 ExportBackend = ExportOrchestrator
 
 __all__ = [

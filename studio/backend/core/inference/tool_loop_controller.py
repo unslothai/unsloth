@@ -47,6 +47,7 @@ _CANONICAL_HEAL_ARG = {
 UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 
 
+# Anything that ends a JSON token. A tail free of all of them never finished arriving.
 _JSON_STRUCTURAL = frozenset(',:{}[]" \t\n\r')
 
 
@@ -55,6 +56,7 @@ def _reject_json_constant(name: str) -> Any:
     raise ValueError(f"{name} is not JSON")
 
 
+# Built once: `json.loads` with any keyword constructs a fresh decoder per call.
 _STRICT_JSON_DECODER = json.JSONDecoder(parse_constant = _reject_json_constant)
 
 
@@ -78,6 +80,7 @@ def _looks_like_broken_json(raw: str) -> bool:
         remainder = text[error.pos :]
         return bool(remainder) and not any(ch in _JSON_STRUCTURAL for ch in remainder)
     except (ValueError, RecursionError):
+        # Digit cap, recursion limit or NaN/Infinity: unreadable is as broken as cut off.
         return True
     return False
 
@@ -216,6 +219,7 @@ class ToolCallDecision:
 
     def tool_start_payload(self) -> dict[str, Any]:
         fragment = self.unparsed_fragment
+        # Use `raw` for unparsed arguments so the card shows the model's own text, not an internal sentinel.
         arguments = {"raw": fragment} if fragment is not None else self.arguments
         return {
             "tool_name": self.tool_name,
@@ -326,7 +330,7 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
 # "0"/"1" are left out: a native `0` arrives already typed, so they would mean two things
 _SCHEMA_TRUE_WORDS = frozenset({"true", "yes"})
 _SCHEMA_FALSE_WORDS = frozenset({"false", "no"})
-# RecursionError is not a ValueError: without it deep model output escapes as a 500.
+# not ValueErrors, so a decode-shaped except would let deep model output escape as a 500
 _DECODE_ERRORS = (ValueError, RecursionError)
 _LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
 
@@ -344,6 +348,7 @@ def _balanced(segment: str, opened: "list[str]") -> str:
             opened.append(_JSON_CLOSER[ch])
             kept.append(ch)
         elif ch in "]}":
+            # the commonest slip: a closer of the wrong kind becomes the right one
             if opened:
                 kept.append(opened.pop())
         else:
@@ -368,6 +373,7 @@ def _repair_json_value(text: str) -> Any:
         return None
 
 
+# Followed to find a declaration; `nullable` is OpenAPI 3.0's spelling of a type union.
 _READ_KEYWORDS = frozenset(
     {
         "type",
@@ -379,6 +385,7 @@ _READ_KEYWORDS = frozenset(
         "additionalProperties",
     }
 )
+# cannot move a declaration out of reach: annotations, and constraints that only reject
 _INERT_KEYWORDS = frozenset(
     {
         "title",
@@ -418,6 +425,7 @@ _INERT_KEYWORDS = frozenset(
     }
 )
 _UNION_KEYWORDS = frozenset({"anyOf", "oneOf"})
+# Matched exactly: an unknown type name is as unreadable as an unknown keyword.
 _JSON_SCHEMA_TYPES = frozenset(
     {
         "array",
@@ -479,6 +487,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     return chosen, rest[0] if rest else None, "null" in named
 
 
+# A schema is model-facing data, so its nesting is not trusted to be shallow.
 _MAX_SCHEMA_DEPTH = 8
 
 
@@ -573,6 +582,7 @@ def _coerce_by_property(value: Any, spec: Any, depth: int, repair: bool) -> Any:
         items = spec.get("items")
         prefix = items if isinstance(items, list) else spec.get("prefixItems")
         if isinstance(prefix, list):
+            # A schema per position: draft-07 tuple `items`, 2020-12 `prefixItems`.
             rest = spec.get("additionalItems") if isinstance(items, list) else items
             return [
                 _coerce_by_property(v, prefix[i] if i < len(prefix) else rest, depth + 1, repair)
@@ -644,6 +654,7 @@ def coerce_tool_arguments(
         )
     if isinstance(raw_args, str):
         try:
+            # NaN/Infinity would replay as JSON no provider parses.
             parsed = _STRICT_JSON_DECODER.decode(raw_args)
             if isinstance(parsed, Mapping):
                 return CoercedArguments(
@@ -662,7 +673,7 @@ def coerce_tool_arguments(
             )
             if key is not None:
                 return CoercedArguments({key: raw_args}, True)
-            # No single argument fits; do not invent one.
+            # No single argument fits; do not invent one, since an invented key gets blamed on the model as a type error.
             return CoercedArguments({UNPARSED_ARGUMENTS_KEY: raw_args}, False)
         return CoercedArguments({"raw": raw_args}, False)
     return CoercedArguments({}, False)
@@ -749,6 +760,7 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         kind = "image" if tool_name == "generate_image" else "video"
         return f"Generating {kind}: " + str(arguments.get("prompt") or "")[:60]
     if tool_name == "edit_file":
+        # The name, not the patch: the tool card below already shows the edit.
         path = str(arguments.get("path") or "").strip()
         name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
         return f"Editing: {name}" if name else "Editing file..."
@@ -947,7 +959,7 @@ _STUDIO_SECRET_MASK = "[redacted]"
 
 
 def redact_studio_credentials(text: str) -> str:
-    """Mask any Unsloth Studio credential in text bound for the model/provider."""
+    """Two substring scans run first: the regex alternation has no literal to anchor on, so most text skips it."""
     if "sk-unsloth-" not in text and "desktop-" not in text:
         return text
     return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
@@ -959,7 +971,7 @@ def strip_result_for_model(
     *,
     redact: bool = True,
 ) -> str:
-    """redact=False keeps the strip suffix-only for _split_frontend_suffix, which masking would break."""
+    """redact=False keeps the strip suffix-only for _split_frontend_suffix, which masking would break; the mask still applies later in model_message."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
@@ -1099,6 +1111,7 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
         self._workspace_ran: set[str] = set()
         self._workspace_novel = 0
         self._workspace_novel_at: dict[str, int] = {}

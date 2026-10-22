@@ -177,6 +177,8 @@ async def managed_tool_chat(
     )
     has_history = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     info = backend.models.get(backend.active_model_name, {})
+    # A catalog sent with tool_choice "none" and no tool turns cannot produce a call, so a model
+    # without a parser serves it as plain chat; one with a parser still renders the catalog.
     idle_catalog = payload.tool_choice == "none" and not has_history
     client_tools = None if idle_catalog and not info.get("supports_tools") else payload.tools
     if not (tools_on or mcp_on or client_tools or has_history):
@@ -228,6 +230,7 @@ async def managed_tool_chat(
     except ValueError as exc:
         raise reject(str(exc)) from exc
     engine = backend._managed_engine
+    # Serves config.identifier (a local path for directory loads); clients get the same public id.
     public = api._orchestrator_public_model_id(backend) or engine.model
     messages = engine.replay_reasoning(messages, payload.preserve_thinking)
     body = {

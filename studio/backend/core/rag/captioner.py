@@ -128,6 +128,7 @@ def _vision_complete(
             }
         ],
         "max_tokens": max_tokens,
+        # Deterministic by default: transcription must not randomly drop labels.
         "temperature": temperature,
         "stream": False,
         # Off: thinking models would spend the budget reasoning, returning "".

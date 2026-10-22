@@ -64,7 +64,7 @@ def reset_update_status_cache() -> None:
 
 
 def detect_install_source() -> str:
-    """Coarse install source without local paths; PEP 610 metadata wins, then a git-checkout check."""
+    """Coarse source, no local paths; PEP 610 local/vcs metadata wins; legacy installs are local only outside site-packages/dist-packages and in a Git checkout."""
     try:
         dist = distribution(PACKAGE_NAME)
     except PackageNotFoundError:
@@ -358,6 +358,7 @@ def _path_has_git_parent(path: Path) -> bool:
 
 
 def _repo_root_from_this_file() -> Path:
+    # update_status.py -> utils -> backend -> studio -> repo root
     try:
         return Path(__file__).resolve().parents[3]
     except IndexError:

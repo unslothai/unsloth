@@ -93,6 +93,7 @@ def canonical_api_model(model: object) -> str:
 
 
 def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
+    # One definition, in the module that owns the contended file.
     return is_sqlite_busy_error(exc)
 
 
@@ -160,9 +161,11 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
         except sqlite3.OperationalError as exc:
             if not _is_busy_error(exc) or attempt + 1 == _WRITE_RETRIES:
                 raise
+            # Worker is the only receipt writer, so a short bounded backoff lets others finish without stalling.
             _sleep_after_busy(min(0.01 * (2**attempt), _WORKER_BUSY_RETRY_SECONDS))
 
     if inserted:
+        # Lazy import avoids making profile aggregation part of schema startup.
         from storage.profile_stats_db import invalidate_profile_stats_cache
         invalidate_profile_stats_cache()
     return inserted

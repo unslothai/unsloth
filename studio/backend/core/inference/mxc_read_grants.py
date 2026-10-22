@@ -39,6 +39,7 @@ _CONTAINER_INHERIT = 0x2
 _INHERIT_ONLY = 0x8
 _INHERITED = 0x10
 _lock = threading.Lock()
+# Root-to-folder identity that passed the credential scan this process; a replaced folder rescans.
 _scanned: dict[str, dict[str, int] | None] = {}
 # Root -> folder identity whose grant Windows refused in this process; skipped until restart.
 _refused: dict[str, dict[str, int] | None] = {}
@@ -85,6 +86,7 @@ def _transaction():
                 f"another Unsloth process holds the MXC read-grant record: {exc}"
             ) from exc
         except OSError as exc:
+            # No lock file means no process can be granting through this record either.
             logger.warning("Could not lock the MXC read-grant record: %s", exc)
             yield None
             return
@@ -167,7 +169,7 @@ def _tree_problem(root: str, *, deep: bool) -> str | None:
                         return f"it holds a credential file ({entry.path})"
                     if _is_reparse(entry):
                         if _links_within(entry.path, real_root):
-                            continue
+                            continue  # e.g. setup-python's python3.exe -> python.exe; the target is scanned anyway
                         return f"it contains a reparse point ({entry.path})"
                     if deep and entry.is_dir(follow_symlinks = False):
                         pending.append(entry.path)
@@ -185,6 +187,7 @@ def ineligible_reason(root: str, *, deep: bool = True) -> str | None:
     if system_root and _within(root, system_root):
         return "inside the Windows directory"
     for protected in _protected_paths():
+        # Only a grant ABOVE protected state exposes it; a runtime folder below the Studio home is fine.
         if _within(protected, root):
             return f"it contains {protected}"
     return _tree_problem(root, deep = deep)
@@ -359,7 +362,7 @@ def _save_quietly(record: dict) -> None:
 
 
 def _pending_grant_has_no_explicit_aces(root: str, identity: dict) -> bool:
-    """Checks the whole tree, since an interrupted propagation can leave ACEs in children."""
+    """Checks the whole tree, since an interrupted propagation can leave ACEs in children; unknown ACLs or reparse points keep the record intact"""
     pending = [root]
     try:
         while pending:
@@ -427,6 +430,7 @@ def _ensure_root(record: dict, root: str) -> bool:
             )
             return False
         if current != entry.get("identity"):
+            # Another folder now sits at this path; Studio's claim is void and its ACL is not Studio's.
             record.pop(key)
             _save_quietly(record)
             entry, pending = None, False
@@ -435,6 +439,7 @@ def _ensure_root(record: dict, root: str) -> bool:
     if reason is not None:
         _scanned.pop(key, None)
         if entry is not None:
+            # A folder Studio granted gained a credential file or a link: take the grant back.
             outcome = _revoke_recorded_root(record, key)
             _save_quietly(record)
             if outcome == "failed":
@@ -490,6 +495,7 @@ def _ensure_root(record: dict, root: str) -> bool:
     ok, output = _grant(root)
     if ok:
         record[key] = {"state": "complete", "identity": identity}
+        # On a failed write the pending entry stays on disk, so the next launch redoes the grant.
         _save_quietly(record)
         logger.info("Granted ALL APPLICATION PACKAGES read access to %s once", root)
         return True
@@ -575,7 +581,7 @@ class WorkloadLease:
 
 
 def hold() -> WorkloadLease | None:
-    """Leases the grants for the launch's lifetime; raises if the lease cannot be recorded."""
+    """Leases grants from spawn to exit across processes; raises if unrecorded, since a launch that may skip the wxc-exec grant must not run unguarded"""
     if not _on_windows():
         return None
     path = _leases_dir() / f"{os.getpid()}-{uuid.uuid4().hex}"
@@ -592,7 +598,7 @@ def hold() -> WorkloadLease | None:
 
 
 def hold_if_needed() -> WorkloadLease | None:
-    """Leases every MXC launch or probe, so no revocation runs under it even when the switch is off."""
+    """Leases every MXC launch or probe, even with the switch off, so no revocation runs under it; only a launch needing grants refuses if unrecorded"""
     from . import mxc_policy
 
     refresh_saved_switches()
@@ -634,6 +640,7 @@ def revoke_recorded() -> tuple[str, ...]:
         transaction = _transaction()
         record = transaction.__enter__()
     except ReadGrantError as exc:
+        # Cleanup never blocks a launch; the entries stay and the next check retries.
         logger.warning("Deferring the MXC read-grant cleanup: %s", exc)
         return ()
     with contextlib.ExitStack() as stack:
@@ -649,5 +656,6 @@ def revoke_recorded() -> tuple[str, ...]:
         for key in list(record):
             if _revoke_recorded_root(record, key) == "revoked":
                 restored.append(key)
+        # A failed revoke keeps its entry, so the next launch or capability check retries it.
         _save_quietly(record)
     return tuple(restored)

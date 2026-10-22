@@ -18,16 +18,20 @@ TOP_K_DENSE = int(os.environ.get("RAG_TOP_K_DENSE", "30"))
 TOP_K_HYBRID = int(os.environ.get("RAG_TOP_K_HYBRID", "10"))
 RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
 
+# Whole-document context: a file under this budget is injected in full instead of top-K retrieval.
 THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
-# Only applies once the window evicts (opt-in via context_overflow="truncate_oldest").
+# Off: evicted turns are dropped, no recall reserve taken. Applies once the window evicts (opt-in: context_overflow truncate_oldest).
 CONVERSATION_ARCHIVE = os.environ.get("RAG_CONVERSATION_ARCHIVE", "1") == "1"
 CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K", "4"))
+# Sized to CONVERSATION_ARCHIVE_TOP_K * CHUNK_TOKENS with slack for the wrapper text.
 CONVERSATION_RECALL_RESERVE_TOKENS = int(
     os.environ.get("RAG_CONVERSATION_RECALL_RESERVE_TOKENS", "2048")
 )
+# Off restores the plain OR-of-every-token query other scopes use.
 CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") == "1"
+# Presentation only: neither ordering changes which turns are selected.
 CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
 # Automatic recall only; 0.0 since a weak match is often still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
@@ -75,28 +79,37 @@ _requested_exts = {
     if ext.strip().lstrip(".")
 }
 UPLOAD_EXTS = (_PARSEABLE_EXTS & _requested_exts) or set(_PARSEABLE_EXTS)
+# 0 disables the cap; bounds parse + vision work at ingest.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
+# Caps prevent an accidentally broad linked folder from becoming an unbounded ingestion queue.
 FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
 FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
 # Linked-folder plain-text files above this are logs/data dumps, not documents; 0 disables.
 FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 * 1024 * 1024)))
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
+# Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
 
+# Falls back to plain PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
 PDF_MARKDOWN = os.environ.get("RAG_PDF_MARKDOWN", "1") == "1"
 
+# Figure descriptions are opt-in; the chat toggle overrides this default.
 CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "0") == "1"
+# Total per-document tile budget (figure-bearing pages are tiled, see below).
 CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "24"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "60"))
+# Captions transcribe every label, and FIGURE_DPI keeps small box/axis labels legible when tiled.
 CAPTION_MAX_TOKENS = int(os.environ.get("RAG_CAPTION_MAX_TOKENS", "768"))
 FIGURE_DPI = int(os.environ.get("RAG_FIGURE_DPI", "200"))
+# Overlapping tile grid covers sub-figures and small labels without exact region detection.
 FIGURE_TILE_ROWS = int(os.environ.get("RAG_FIGURE_TILE_ROWS", "2"))
 FIGURE_TILE_COLS = int(os.environ.get("RAG_FIGURE_TILE_COLS", "2"))
 FIGURE_TILE_OVERLAP = float(os.environ.get("RAG_FIGURE_TILE_OVERLAP", "0.12"))
 FIGURE_FULLPAGE = os.environ.get("RAG_FIGURE_FULLPAGE", "1") == "1"
 CAPTION_MAX_PAGES = int(os.environ.get("RAG_CAPTION_MAX_PAGES", "4"))
 
+# OCR uses the loaded vision model, else local Tesseract data; MIN_CHARS: pages under it get OCR.
 OCR_SCANNED = os.environ.get("RAG_OCR_SCANNED", "1") == "1"
 OCR_MIN_CHARS = int(os.environ.get("RAG_OCR_MIN_CHARS", "16"))
 OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", "20"))
@@ -104,6 +117,7 @@ OCR_DPI = int(os.environ.get("RAG_OCR_DPI", "150"))
 OCR_TIMEOUT_S = float(os.environ.get("RAG_OCR_TIMEOUT_S", "60"))
 OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
 
+# Switching backends changes the vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 
 # The model name alone is not the embedding space: llama-server embeds through the GGUF companion and pools its own way.
@@ -145,7 +159,7 @@ def embedding_identity_model(identity: str | None) -> str | None:
 
 
 def embedding_identity_matches(stored: str | None, current: str) -> bool:
-    """Untagged rows match on the model name alone; dropping them would empty dense search."""
+    """Untagged rows match on the model name alone; dropping them would empty dense search. They are reported instead (store.count_untagged_documents)."""
     if stored is None:
         return True
     if embedding_identity_model(stored) is not None:
@@ -234,6 +248,7 @@ def effective_gguf_repo_for_embedding_model(model: str) -> str:
     return stored or gguf_repo_for_embedding_model(model)
 
 
+# F16 over Q8_0: faster (no per-block dequant at this size) and exact, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")
 EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 # "auto": llama-server offloads in its subprocess; sentence-transformers stays on CPU (CUDA ctx cost).
@@ -276,7 +291,7 @@ def embed_device_preference() -> str:
 
 
 def embed_device_requires_gpu() -> bool:
-    """Only the literal value gpu insists on the GPU; newer spellings like xpu opt in without insisting."""
+    """Only literal gpu makes a failed GPU start raise, not retry on CPU. Newer spellings like xpu opt in but do not insist, else RAG is lost on those hosts."""
     return (EMBED_DEVICE or "").lower() == "gpu"
 
 

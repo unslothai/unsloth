@@ -45,6 +45,7 @@ from typing import Any, Optional
 # Three modalities x six chunks; mirrors MINIMAX_H3_MODALITY_NUM, hardcoded to avoid diffusers.
 MINIMAX_H3_MODALITY_NUM = 3
 
+# Metadata keys the offline prequant builder bakes into a curve-form checkpoint.
 ADALN_FORM_KEY = "adaln_form"
 ADALN_CURVE_FORM = "curve"
 CURVE_DIM_KEY = "curve_dim"
@@ -69,11 +70,12 @@ def is_curve_checkpoint(metadata: Any) -> bool:
         return False
     if metadata.get(ADALN_FORM_KEY) != ADALN_CURVE_FORM:
         return False
+    # Both dimensions are required: without them the reshape would have to guess the basis rank.
     return bool(metadata.get(CURVE_DIM_KEY)) and bool(metadata.get(CURVE_GRID_KEY))
 
 
 def _curve_modulation_forward(self: Any, temb: Any) -> tuple:
-    """Curve-form adaLN, no SiLU; chunks cast to the stream dtype, as float32 breaks the first matmul."""
+    """Curve-form adaLN, no SiLU; cast chunks to stream dtype (float32 breaks matmul) while modality axis is explicit (torch 2.12-2.14 Inductor illegal access)."""
     temb = self.linear(temb.to(self.linear.weight.dtype))
     temb = temb.view(-1, MINIMAX_H3_MODALITY_NUM, 6 * self.hidden_size)
     out_dtype = getattr(self, "_unsloth_adaln_out_dtype", None)
@@ -111,6 +113,7 @@ def _build_curve_time_embedder(curve_grid: int, curve_dim: int) -> Any:
         def forward(self, timestep: Any) -> Any:
             table = self.table
             grid = table.shape[0]
+            # Out-of-range timesteps clamp to the curve's ends rather than extrapolating.
             pos = timestep.to(torch.float32).clamp(0.0, 1.0) * (grid - 1)
             i0 = pos.floor().long().clamp(max = grid - 2)
             return torch.lerp(table[i0], table[i0 + 1], (pos - i0).unsqueeze(1))

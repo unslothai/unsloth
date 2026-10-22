@@ -25,7 +25,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-_MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)
+_MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
 
 # Steady torchao-quantised size relative to bf16, measured on live loads.
 _QUANT_STEADY_FACTOR: dict[str, float] = {
@@ -71,13 +71,19 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.2-dev": (64.5, 48.0, 0.4),
     "qwen-image": (40.9, 16.6, 0.3),
     "qwen-image-edit": (40.9, 16.6, 0.3),
+    # Same DiT and Qwen2.5-VL 7B encoder; the RGBA VAE is 0.25 GB.
     "qwen-image-layered": (40.9, 16.6, 0.3),
+    # 17B MoE DiT (34.2 GB bf16) with four encoders: CLIP-L 0.5, CLIP-G 2.8, T5-XXL 9.5, plus Llama-3.1-8B (~16 GB) fetched from the open mirror at load
     "qwen-image-2.1": (14.2, 17.5, 1.4),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
+    # Ships fp32 (10.4 + 10.5 + 0.3 GB of shards); bf16-resident is half.
     "lumina-2": (5.2, 5.2, 0.2),
+    # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
     "hunyuanimage-2.1": (32.5, 16.3, 0.8),
+    # Two ~9.3B DiTs (Ideogram's dual-branch CFG), both resident, plus a Qwen3-VL encoder; the vendor stores float8, so sizes double at bf16
     "hidream-i1": (34.2, 28.8, 0.2),
+    # Same conversion as companions, of which this is the text-encoder half, so the planner's companions - text_encoders leaves just the VAE
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
@@ -96,6 +102,7 @@ _BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 
 DENOISER_SUBFOLDERS = ("transformer/", "unconditional_transformer/")
 
+# Download bytes per resident byte; unknown bases stay 1:1.
 _BASE_RESIDENT_FACTORS: dict = {
     "tongyi-mai/z-image-turbo": (2.0, 1.0),
     "tongyi-mai/z-image": (1.0, 1.0),
@@ -115,7 +122,7 @@ def resident_bytes_from_declared(
     extra_bf16_bytes: int = 0,
     dtype_scale: float = 1.0,
 ) -> Optional[int]:
-    """Prequant bytes add unchanged; unknown families are priced 1:1 with their download size."""
+    """Prequant bytes add unchanged; extra_bf16 widens when float32; unknown families priced 1:1."""
     denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
         _base_key(base_repo) if base_repo else "", (1.0, 1.0)
     )
@@ -262,6 +269,7 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
+        # force_dense: the loader skips the prequant shortcut (e.g. a LoRA bake), so the candidate is sized for the dense build
         text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
@@ -334,6 +342,7 @@ def resolve_dense_quant_candidate(
         return None
     prequant_available = False
     prequant_cached = False
+    # The dense path may download into the HF cache, which must not wedge a nearly full disk; size by what lands on disk: prequant or base repo
     if not force_dense:
         try:
             from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source
@@ -347,7 +356,7 @@ def resolve_dense_quant_candidate(
                 # Local overrides download nothing, so the space gate does not apply.
                 prequant_cached = True
             elif src is not None:
-                # Pin the active root; unpinned it searches only hub's import-time constant.
+                # Pin the active cache root, else a moved cache reads as uncached; import from utils (no cycle).
                 from utils.hf_cache_settings import active_hf_hub_cache
                 prequant_cached = prequant_checkpoint_cached(src, cache_dir = active_hf_hub_cache())
         except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
@@ -368,6 +377,7 @@ def resolve_dense_quant_candidate(
         )
     # A cached prequant downloads nothing, so skip the space gate.
     if estimate is not None and not (estimate.prequant and prequant_cached):
+        # Distinct unreplayed weight placements a block may see before giving up (address churn from streaming or disk offload); each costs one eager call
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant
@@ -387,7 +397,7 @@ def resolve_dense_quant_candidate(
     return estimate
 
 
-# Fail closed on a declined EXPLICIT precision; env var restores fallback.
+# Explicit precision fails closed; UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK restores fallback.
 _PRECISION_FALLBACK_ENV = "UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK"
 
 
@@ -417,10 +427,11 @@ def precision_refusal_message(
 
 # applied: honored or no ask; fell_back: explicit ask declined, something else engaged;
 # unsupported: the explicit ask cannot run on this host / model.
-RESOLVED_APPLIED = "applied"
-RESOLVED_FELL_BACK = "fell_back"
-RESOLVED_UNSUPPORTED = "unsupported"
+RESOLVED_APPLIED = "applied"  # the ask was honored (or there was no ask)
+RESOLVED_FELL_BACK = "fell_back"  # an explicit ask was declined and something ELSE engaged
+RESOLVED_UNSUPPORTED = "unsupported"  # an explicit ask cannot run on this host / model at all
 
+# Requests that mean "do not engage this control", so an "off" engagement HONORS them.
 _RESOLVED_OFF_VALUES = frozenset({"", "none", "off", "false", "0"})
 
 # memory_mode and attention_backend use different request/engaged vocabularies.
@@ -443,7 +454,7 @@ def _resolved_values_match(explicit: Any, engaged: Any) -> bool:
 
 
 def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    """Keeps requested and engaged values side by side, so a declined request stays visible in status."""
+    """Per-control record of requested vs engaged value from (explicit, engaged, reason[, status]) tuples."""
     record: dict[str, dict[str, Any]] = {}
     for name, entry in controls.items():
         explicit, engaged, reason = entry[0], entry[1], entry[2]
@@ -452,6 +463,7 @@ def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any
             isinstance(explicit, str) and explicit.strip().lower() in ("", "auto")
         )
         if left_to_backend:
+            # The backend chose it, so there is nothing to decline: this is the "Auto: X" badge.
             status = RESOLVED_APPLIED
         elif status is None:
             status = (

@@ -61,9 +61,10 @@ _MARK = "_unsloth_i8_gemm_prev"
 _NO_PREV = object()
 _LOCK = threading.Lock()
 _OP_HANDLE: Any = None
+# Engagement census; never read inside a traced region.
 _CALLS = [0]
 
-# (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages) per arch; absent = off.
+# (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages) per (major, minor), tuned on DiT shapes. Absent = off.
 _ARCH_CONFIG = {
     (8, 0): (
         128,
@@ -76,13 +77,16 @@ _ARCH_CONFIG = {
     (8, 9): (256, 128, 128, 8, 8, 3),  # L4
     (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000
 }
+# When the arch tile does not fit this part's shared memory.
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 
 # First match wins, bounds inclusive. No L4 rule on purpose: power-capped clocks lose end to end.
 # (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), M >= _SHAPE_MIN_M only.
 _SHAPE_TILES: dict = {
     (12, 0): (
+        # MiniMax-H3 fused QKV / FFN in
         (16384, 32768, 4096, 6144, (128, 128, 64, 32, 4, 4)),
+        # deep K: H3 out / FFN down, Qwen-Image-2.1 MLP out, Z-Image w2
         (1, 8192, 7168, 16384, (256, 128, 128, 8, 8, 3)),
     ),
 }
@@ -206,15 +210,16 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             a_ptrs += BLOCK_K
             w_ptrs += BLOCK_K
 
+        # torchao epilogue, every rounding kept: (int32 * xs) -> xs dtype, * ws -> ws dtype, -> bf16, + bias.
         xs = tl.load(xs_ptr + rm).to(tl.float32)
         ws = tl.load(ws_ptr + rn).to(tl.float32)
         if XS_FP32:
             y = acc.to(tl.float32)
         else:
-            # Triton folds acc.to(fp32).to(bf16) into one rounding; torchao rounds twice.
+            # int32 -> fp32 -> bf16 rounds twice; Triton folds ``acc.to(fp32).to(bf16)`` into one rounding.
             y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
         y = _rbf16(y * xs[:, None])
-        # *_rn: ptxas fuses f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
         y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
         if not WS_FP32:
             y = _rbf16(y)
@@ -227,7 +232,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     return types.SimpleNamespace(i8mm_dq = i8mm_dq)
 
 
+# device index -> probed tile (None = stock).
 _DEVICE_CFG: dict = {}
+# device index -> the per-shape rules whose tile passed the probe on that device.
 _DEVICE_TILES: dict = {}
 
 
@@ -236,7 +243,7 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     import torch
 
     m = a.shape[0]
-    if m < _MIN_ROWS:
+    if m < _MIN_ROWS:  # _int_mm's row floor: pad, then drop the pad rows (exact)
         a = torch.cat([a, a.new_zeros((_MIN_ROWS - m, a.shape[1]))])
     c = torch._int_mm(a, w.t())[:m]
     y = (c * xs.reshape(-1, 1)).to(torch.bfloat16)
@@ -320,7 +327,7 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
             if cfg != _DEVICE_CFG.get(index) and _DEVICE_TILES.get(index):
-                _DEVICE_TILES[index] = ()
+                _DEVICE_TILES[index] = ()  # drop the shape tiles, keep the probed default
                 return _run(a, w, xs, ws, bias)
             _DEVICE_CFG[index] = None
     return reference(a, w, xs, ws, bias)
@@ -401,7 +408,7 @@ def device_config(index: int) -> Optional[tuple]:
     return cfg
 
 
-# (M, N, K, bias, fp32 scales). Ragged N / K stay on multiples of 16: off-16 compiles the spilling variant.
+# (M, N, K, bias, fp32 scales). Ragged N / K stay on 16: an off-16 probe compiles the spilling variant (see ``_aligned``).
 _PROBE_SHAPES = (
     (257, 384, 512, False, False),
     (33, 208, 144, True, True),
@@ -573,9 +580,9 @@ def _linear_forward(self: Any, x: Any) -> Any:
     if rec is None or x.dtype != torch.bfloat16 or not x.is_cuda:
         return type(self).forward(self, x)
     kind, group, rotq, weight, fused = rec
-    if self.weight is not weight:
+    if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
         return type(self).forward(self, x)
-    # Payload off the live parameter: a cached alias goes stale or pins a copy.
+    # Payload off the live parameter, never a cached alias: a moved weight must not leave a stale device or pin a copy.
     if kind == "v1":
         impl = weight.original_weight_tensor.tensor_impl
         wq, ws = impl.int_data, impl.scale.reshape(-1)
@@ -593,6 +600,7 @@ def _linear_forward(self: Any, x: Any) -> Any:
     if q is not None:
         xq, xs = q
     elif not fused:
+        # rotation kernel not covering this call and no fused GEMM: the module's own stock forward
         return type(self).forward(self, x)
     else:
         if group is not None:
@@ -620,6 +628,7 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
         return None
     if _DEVICE_CFG.get(q.device.index) is None:
         return None
+    # The fused MLP already admitted this weight (symmetric, and its stock epilogue ignores the zero point too).
     parts = _v2_parts(weight, check_zero_point = False)
     if (
         parts is None
@@ -655,6 +664,7 @@ def _eligible(module: Any) -> Optional[tuple]:
 
     group = None
     if type(module) is not nn.Linear:
+        # any other subclass transforms its input in a way this forward would skip
         group = _rotation_group(module) if convrot_enabled() else None
         if group is None:
             return None
@@ -664,6 +674,7 @@ def _eligible(module: Any) -> Optional[tuple]:
 
     if bias is not None and bias.dtype != torch.bfloat16:
         return None
+    # v1: bf16 scales only; v2 also fp32 (prequant checkpoints). Off-grid K runs masked loads, far slower than cuBLAS.
     out_f, in_f = getattr(module, "out_features", 0), getattr(module, "in_features", 0)
     if in_f % _K_ALIGN or out_f % _N_ALIGN:
         return None
@@ -699,7 +710,7 @@ def install(
     offload_active: bool = False,
     device: Any = None,
 ) -> int:
-    """Idempotent; must run before the first compiled forward; a block-streamed denoiser needs device."""
+    """Idempotent, returns the candidate count; must run before the first compiled forward; block-streamed denoisers need device or keep stock path."""
     if int8_gemm_mode() == "off" or transformer is None:
         return 0
     if device is not None:
@@ -712,6 +723,7 @@ def install(
 
     if resident_cuda_device(transformer) is not None:
         return _finalize(transformer, logger)
+    # Weights not on the GPU yet: arch gate now (status never claims a stock arch), probe + swap at the first forward.
     try:
         import torch
 
@@ -737,7 +749,7 @@ def _finalize(
 ) -> int:
     count = _swap(transformer, logger, device = device)
     try:
-        transformer._unsloth_int8_gemm = count
+        transformer._unsloth_int8_gemm = count  # the deferred install recorded the candidate count
     except Exception:  # noqa: BLE001
         pass
     return count
@@ -816,6 +828,7 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
     gemm = device_config(index) is not None
     rotq = any(r[1] is not None for _, r in recs) and rotquant_device_config(index) is not None
     if not gemm:
+        # no fused GEMM here: only rotated Linears gain (one kernel instead of rotation GEMM + act quant)
         recs = [(m, r) for m, r in recs if r[1] is not None] if rotq else []
     if any(r[0] == "v1" for _, r in recs) and not _v1_act_quant_matches(index):
         recs = [(m, r) for m, r in recs if r[0] != "v1"]

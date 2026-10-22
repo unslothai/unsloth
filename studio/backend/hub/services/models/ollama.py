@@ -49,6 +49,7 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.model",
         "application/vnd.ollama.image.projector",
+        # License text does not affect model behavior and does not need to be carried into llama.cpp.
         "application/vnd.ollama.image.license",
     }
 )
@@ -156,7 +157,7 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
 
 
 def _ollama_links_roots(ollama_dir: Path) -> tuple[Path, ...]:
-    """Where *ollama_dir*'s ``.gguf`` links can live, best first: beside the blobs, then Unsloth's cache (read-only installs), then the temp dir (sandboxed installs)."""
+    """Hashed so two Ollama roots cannot collide. A cache path, not a security boundary."""
     try:
         digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except (OSError, RuntimeError):
@@ -212,7 +213,7 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         logger.debug("Could not resolve Ollama blob %s: %s", target, e)
         return None
 
-    # samefile, not size: `ollama pull` can swap a tag to a same-sized blob.
+    # samefile, not size: `ollama pull` can swap a tag to a same-sized blob, leaving a stale link.
     try:
         if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
             return str(link_path)
@@ -252,6 +253,7 @@ def _manifest_rel_path(tag_file: Path, manifests_root: Path) -> Optional[Path]:
     try:
         return tag_file.relative_to(manifests_root)
     except ValueError:
+        # ``manifests`` can be a symlink: a reference carries the canonical path, a scan its own.
         try:
             return Path(os.path.realpath(tag_file)).relative_to(os.path.realpath(manifests_root))
         except (OSError, ValueError):
@@ -514,7 +516,7 @@ def scan_ollama_dir(
                 continue
 
             lock = _materialization_lock(tag_file, ollama_dir) if materialize_links else None
-            # A load holds this tag; report it, never block.
+            # A load holds this tag; its lease keeps the link it made, so report that, never block.
             leased = lock is not None and not lock.acquire(blocking = False)
             try:
                 info = _ollama_model_info_from_manifest(
@@ -608,6 +610,7 @@ def _ollama_model_ref_info(ref: str) -> tuple[Path, dict, LocalModelInfo]:
         manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         raise ValueError(f"Could not read Ollama manifest: {e}") from e
+    # A manifest of JSON ``null`` is indistinguishable from passing none below, which re-reads.
     if not isinstance(manifest, dict):
         raise ValueError("Invalid Ollama manifest: top level must be a JSON object")
     info = _ollama_model_info_from_manifest(

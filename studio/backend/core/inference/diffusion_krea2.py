@@ -141,6 +141,7 @@ def _load_model_index(
     except OSError:
         pass
     if is_local_dir:
+        # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain dies with a bare AttributeError, so fail first with the fix
         raise FileNotFoundError(f"model_index.json not found in local model dir {repo_id}")
     from huggingface_hub import hf_hub_download
 
@@ -169,6 +170,7 @@ def load_krea2_pipeline(
     check_cancelled()
     import diffusers
 
+    # Read first: it is a few KB and configures the components, so a corrupt index fails before the encoder, VAE and 26 GB transformer are built
     if not hasattr(diffusers, "Krea2Pipeline"):
         from .diffusion_families import DIFFUSERS_UPDATE_REMEDY
         raise RuntimeError(
@@ -179,6 +181,7 @@ def load_krea2_pipeline(
 
     token = hf_token or None
     cache_dir = _live_cache_dir()
+    # Read first so a corrupt index fails before the encoder, VAE and 26 GB transformer are built.
     model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     check_cancelled()
     tokenizer = load_krea2_tokenizer(

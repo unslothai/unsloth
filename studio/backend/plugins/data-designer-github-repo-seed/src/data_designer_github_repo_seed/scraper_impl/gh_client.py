@@ -129,6 +129,7 @@ class GitHubClient:
         )
 
     def _check_rate_and_wait(self, kind: str) -> None:
+        # Reset remaining so we don't spin
         if kind == "graphql":
             remaining = self.graphql_remaining
             reset = self.graphql_reset
@@ -182,6 +183,7 @@ class GitHubClient:
                 if self._is_auth_failure(r):
                     self._raise_auth_error(r, "GraphQL")
                 if r.status_code == 403 or r.status_code == 429:
+                    # Secondary/abuse rate limit
                     retry_after = _retry_after_seconds(r.headers.get("Retry-After"))
                     if retry_after is not None:
                         log.warning("Secondary rate limit. Sleep %ds.", retry_after)
@@ -195,12 +197,14 @@ class GitHubClient:
                 r.raise_for_status()
                 data = r.json()
                 if "errors" in data and data["errors"]:
+                    # Allow partial data; retry on RATE_LIMITED
                     errs = data["errors"]
                     for e in errs:
                         if e.get("type") == "RATE_LIMITED":
                             self._sleep_until((self.graphql_reset or int(time.time()) + 60))
                             break
                     else:
+                        # No rate-limit error: log and return partial
                         log.warning("GraphQL errors: %s", json.dumps(errs)[:400])
                         return data
                     continue
@@ -256,6 +260,7 @@ class GitHubClient:
                         log.warning("Secondary rate limit on REST. Sleep %ds.", retry_after)
                         time.sleep(retry_after + 2)
                         continue
+                    # Primary rate limit
                     if self.rest_remaining == 0 and self.rest_reset:
                         self._sleep_until(self.rest_reset)
                         continue
@@ -286,6 +291,7 @@ class GitHubClient:
                 return
             items = r.json()
             if isinstance(items, dict):
+                # Some endpoints wrap the list in an "items" field
                 items = items.get("items", [])
             for it in items:
                 yield it

@@ -25,8 +25,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
+# GGUF types FastFlowLM's Q4NX packs directly; any other quant is dequantized and rounded again.
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
-# FLM hard-exits without tokenizer_config.json.
+# Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 # No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
 CONFIG_FILES = ("config.json", "generation_config.json")
@@ -119,6 +120,7 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
+    # Dies with its parent: a cancelled export's worker must not leave a converter holding a model.
     process = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
@@ -217,6 +219,7 @@ def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
     )
 
 
+# One conversion at a time: each holds a whole model in RAM, and retries must not interleave.
 _CONVERT_LOCK = threading.Lock()
 
 
@@ -230,7 +233,7 @@ def convert_existing_gguf(
     save_directory: Path,
     token = None,
 ) -> Path:
-    """Config and tokenizer files come from ``base_model``, the original non-GGUF Hub repo or folder."""
+    """Converts a GGUF on disk; config and tokenizer files come from base_model, the original non-GGUF Hub repo or local folder"""
     out_dir = Path(save_directory) / f"{gguf_path.stem}-q4nx"
     found = {
         name: _fetch_base_file(base_model, name, token)
@@ -241,6 +244,7 @@ def convert_existing_gguf(
     with _CONVERT_LOCK, staged_output(out_dir) as staging:
         convert_gguf_to_q4nx(str(gguf_path), staging)
         for name in TOKENIZER_FILES:
+            # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
             if found[name] is not None:
                 shutil.copyfile(found[name], staging / name)
         if found["chat_template.jinja"] is None:

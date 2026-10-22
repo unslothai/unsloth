@@ -161,7 +161,7 @@ def get_stored_auto_unload_idle_seconds() -> int:
     """The persisted idle-unload TTL, independent of whether auto-switch is on. The settings UI reads this so it can display and round-trip the saved value; toggling auto-switch off must not erase it. Falls back to the env override so the UI shows the startup default. The idle loop uses the gated reader below."""
     stored = _stored_idle_seconds()
     if stored is not None:
-        # Floor legacy values persisted before the minimum existed.
+        # Floor legacy values persisted before the minimum existed, so the UI displays the effective TTL and round-trips it cleanly.
         return _apply_idle_floor(stored)
     env = _env_idle_seconds()
     return env if env is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
@@ -192,9 +192,9 @@ def get_auto_unload_idle_seconds() -> int:
         return 0
     stored = _stored_idle_seconds()
     if stored is not None:
-        # Off reports 0 so the off state matches pre-feature behavior.
+        # An explicit UI/API value stays gated on auto-switch: off reports 0 so the off state is identical to pre-feature. Floored to cover values persisted before the minimum existed.
         return _apply_idle_floor(stored) if get_openai_auto_switch_enabled() else 0
-    # UNSLOTH_MODEL_IDLE_TTL enables idle-unload even with auto-switch off (headless deploys).
+    # No stored value: UNSLOTH_MODEL_IDLE_TTL is a standalone startup default that enables idle-unload even with auto-switch off (headless/container deploys).
     env = _env_idle_seconds()
     return env if env is not None else 0
 
@@ -335,8 +335,7 @@ def set_openai_auto_switch(
     )
 
 
-# Server-side twin of the UI per-model config; all fields optional. Mirrors _valid_cache_types
-# in core/inference/llama_cpp.py. Known gap: global GPU/spec fallbacks live in localStorage.
+# An override is the server-side twin of the UI's per-model config, mirrored on every save so an API load applies the same launch settings the picker would; every field is optional and absent means "app default". Mirrors _valid_cache_types in core/inference/llama_cpp.py. Legacy entries hold just {llama_extra_args, max_seq_length}, and a write replaces the fields it expresses, so the route carries `llama_extra_args` over. Known gap: the picker's global fallbacks for GPU memory mode and speculative decoding live in browser localStorage, so an API load following the global gets the default.
 VALID_KV_CACHE_DTYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
@@ -357,13 +356,13 @@ VALID_SPECULATIVE_TYPES = MLX_ONLY_SPEC_TYPES | frozenset(
         "draft-dflash",
         "ngram-mod",
         "ngram-simple",
-        # /load canonicalizes these to off; without them a saved disable became no override.
+        # /load canonicalizes these three to "off"; without them here _clean_str drops the field, so a saved disable became no override at all.
         "none",
         "disable",
         "disabled",
     }
 )
-# Mirrors DRAFT_N_MAX_SPEC_TYPES in the UI.
+# Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
     | MLX_ONLY_SPEC_TYPES
@@ -371,7 +370,7 @@ DRAFT_N_MAX_SPEC_TYPES = frozenset(
 DRAFTER_MODEL_SPEC_TYPES = DRAFT_N_MAX_SPEC_TYPES | {"auto", "default"}
 # Only these load a separate draft model, and so a draft context for the dtype to apply to. Mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI.
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
-# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. auto is not stored, so builds can redefine it.
+# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not stored: an entry holding it would pin what a build may redefine.
 VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
 # Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
 CTX_CHECKPOINTS_MAX = 256
@@ -385,7 +384,7 @@ VALID_MLX_KV_QUANT = frozenset({"8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", 
 PARALLEL_SLOTS_MIN = 1
 PARALLEL_SLOTS_MAX = 64
 
-# Mirrors BATCH_MIN/MAX in llama_server_args.py.
+# mirrors BATCH_MIN/MAX in llama_server_args.py, same reason as the slot bounds
 BATCH_SIZE_MIN = 1
 BATCH_SIZE_MAX = 65536
 
@@ -394,8 +393,7 @@ MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
 # Highest device index a gpu_ids entry may name; also bounds how many ids one entry holds.
 MAX_GPU_ID = 1024
 
-# Same ints are Vulkan ordinals or physical ids, so the kind travels with them.
-# Mirrors GpuIndexKind in hooks/gpu-selection.ts; absent kind is physical.
+# Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals under a Vulkan build and physical device ids elsewhere, so the namespace travels with the ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts, legacy rule included: an absent kind is "physical".
 VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
 LEGACY_GPU_INDEX_KIND = "physical"
 
@@ -406,7 +404,7 @@ def _mlx_kv_quant_of(entry: dict[str, Any]) -> Optional[str]:
     if "mlx_kv_quant" in entry:
         return _clean_str(entry["mlx_kv_quant"], VALID_MLX_KV_QUANT)
     bits = entry.get("mlx_kv_bits")
-    # A bad value drops the width, not the whole override.
+    # Only a number: a hand-edited string or a bool must drop the width, not abort the whole override.
     if isinstance(bits, bool) or not isinstance(bits, (int, float)):
         return None
     from core.inference.mlx_inference import encode_mlx_kv_quant
@@ -485,7 +483,7 @@ def normalize_model_override(
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
         entry["speculative_type"] = speculative_type
-        # Only modes with a configurable drafter depth; otherwise the loader ignores it.
+        # Only the modes that launch a drafter with a configurable depth (MTP, DSpark, DFlash); storing it otherwise shows an edit the loader ignores.
         if speculative_type in DRAFT_N_MAX_SPEC_TYPES:
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
@@ -531,7 +529,7 @@ def normalize_model_override(
     if load_mode:
         entry["load_mode"] = load_mode
 
-    # 0 and -1 are meaningful, so store on is-not-None.
+    # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on "is not None" rather than on truth, unlike the batch sizes above.
     ctx_checkpoints = _bounded_int(
         payload.get("ctx_checkpoints"), minimum = 0, maximum = CTX_CHECKPOINTS_MAX
     )
@@ -580,7 +578,7 @@ def normalize_model_override(
 
     gpu_ids = payload.get("gpu_ids")
     if isinstance(gpu_ids, (list, tuple)) and gpu_ids:
-        # Dedupe: resolve_requested_gpu_ids rejects repeats, so [0, 0] would 400 every later load.
+        # De-duplicate, preserving order: resolve_requested_gpu_ids rejects a repeat, so [0, 0] would 400 every later load. A set, not a scan, keeps a long array linear.
         cleaned_ids: list[int] = []
         seen_ids: set[int] = set()
         for gid in gpu_ids:
@@ -591,7 +589,7 @@ def normalize_model_override(
         if cleaned_ids:
             entry["gpu_ids"] = cleaned_ids
             index_kind = _clean_str(payload.get("gpu_index_kind"), VALID_GPU_INDEX_KINDS)
-            # Only when not legacy default, so existing rows stay byte-identical.
+            # Stored only when it is not the legacy default, so existing rows stay byte-identical.
             if index_kind and index_kind != LEGACY_GPU_INDEX_KIND:
                 entry["gpu_index_kind"] = index_kind
 
@@ -724,27 +722,27 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
                 kwargs["tensor_split"] = tensor_split
 
     if kwargs.get("llama_extra_args"):
-        # Imported, not mirrored: llama.cpp's last-wins parse would apply a stale shadowing flag.
+        # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
         from core.inference.llama_server_args import (
             matches_explicit_ctx_override,
             strip_shadowing_flags,
         )
 
-        # A matching -c/--ctx-size is the user's opt-in past the VRAM-fit target and survives.
+        # Context's load-time value is a VRAM-fit target. A MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold and survives, while stale and malformed flags are still stripped; /props then publishes what was really allocated.
         matching_explicit_ctx = matches_explicit_ctx_override(
             kwargs["llama_extra_args"], kwargs.get("max_seq_length")
         )
 
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],
-            # Strip only groups this override supplies; flags without a field still pass through.
+            # Only the groups this override actually supplies, as the route gates on its request's set fields: a flag with no first-class field behind it is the user's only way to set that knob and still passes through.
             strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
             strip_reasoning_budget = "reasoning_budget" in kwargs,
             strip_reasoning_budget_message = "reasoning_budget_message" in kwargs,
-            # Only when tensor_parallel is on, so an off toggle keeps a user's split mode.
+            # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,
             strip_ubatch = "n_ubatch" in kwargs,
@@ -762,7 +760,7 @@ def _looks_like_filesystem_path(model_id: str) -> bool:
     return len(model_id) >= 3 and model_id[1] == ":" and model_id[2] in ("\\", "/")
 
 
-# Must stay in step with features/hub/lib/model-identity.ts
+# The case-insensitive path shapes. Must stay in step with features/hub/lib/model-identity.ts
 _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _WSL_DRIVE_PATH = re.compile(r"^/mnt/[A-Za-z](?:/|$)")
 
@@ -784,6 +782,7 @@ def _fold_case_insensitive_path(model_id: str) -> Optional[str]:
     return trimmed.casefold()
 
 
+# A quant label may carry a bits-per-weight modifier ("IQ4_XS-3.53bpw").
 _BPW_SUFFIX = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw$", re.IGNORECASE)
 _MAX_QUANT_SUFFIX_LEN = 64
 
@@ -802,7 +801,7 @@ def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
         _BPW_SUFFIX.sub("", tail)
     ):
         return head, tail
-    # A quant-less .gguf is labelled by its lowercased stem; requiring it keeps colons out.
+    # A .gguf with no quant token is labelled by its stem, lowercased in storage while the scanner keeps filename casing. Requiring exactly that label keeps an ordinary colon out.
     if not head.lower().endswith(".gguf"):
         return None
     filename = head.replace("\\", "/").rsplit("/", 1)[-1]
@@ -823,7 +822,7 @@ def get_model_overrides() -> dict[str, dict]:
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None, current_account())
     if not isinstance(raw, dict):
         return {}
-    # Rows saved before engine defaults were dropped read as those fields unset.
+    # Rows saved before engine defaults were dropped read as those fields unset; a row holding nothing else counts as absent.
     cleaned = {}
     for key, entry in raw.items():
         if isinstance(entry, dict):
@@ -847,7 +846,7 @@ def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
     """Stored keys naming the same model as ``model_id``, by the folding rules. One rule, so a reader and a remover can never fold differently."""
     if not isinstance(model_id, str):
         return []
-    # POSIX paths are case-sensitive; Windows/UNC/WSL paths fold, as the browser does.
+    # POSIX paths are case-sensitive, so folding two casings would replay another model's settings. Windows drive, UNC and WSL paths do fold, and so does the browser before storing, so not folding them here strands them.
     if _looks_like_filesystem_path(model_id):
         folded = _fold_case_insensitive_path(model_id)
         if folded is not None:
@@ -855,7 +854,7 @@ def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
             def fold(key: str) -> Optional[str]:
                 return _fold_case_insensitive_path(key)
         else:
-            # POSIX stays case-sensitive, but the browser lowercases the quant suffix.
+            # POSIX: the path stays case-sensitive. The browser lowercases the quant, so "/models/Foo:q4_k_m" must be reachable from the scanner's "/models/Foo:Q4_K_M".
             folded = _fold_posix_path_variant(model_id)
 
             def fold(key: str) -> Optional[str]:

@@ -23,7 +23,7 @@ from utils.paths import studio_root, workspace_root
 
 
 MAX_SKILL_MD_BYTES = 512 * 1024
-# Keeps a full catalog of 2,000 skills to tens of MB on the listing route.
+# Per skill, expanded: keeps a full catalog of 2,000 skills to tens of MB on the listing route.
 MAX_SKILL_METADATA_BYTES = 16 * 1024
 MAX_SKILL_FILE_BYTES = 2 * 1024 * 1024
 MAX_SKILL_PAGE_CHARS = 8_000
@@ -182,13 +182,14 @@ def _write_new_skill_manifest(
             os.fsync(handle.fileno())
             revalidate(handle.fileno())
     except Exception:
-        # Windows refuses to unlink a file with an open handle.
+        # Closed before the cleanup: Windows refuses to unlink a file with an open handle.
         if descriptor is not None:
             os.close(descriptor)
             descriptor = None
         try:
             current = [os.stat(path, follow_symlinks = False) for path in directories]
             if all(map(os.path.samestat, expected, current)):
+                # Remove only the manifest this call created; another writer's file stays.
                 if created_status is not None and os.path.samestat(
                     os.stat(skill_file, follow_symlinks = False), created_status
                 ):
@@ -340,7 +341,7 @@ def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     lines = text.splitlines(keepends = True)
     if not lines or lines[0].strip() != "---":
         raise SkillError("SKILL.md must start with YAML frontmatter.")
-    # Exact match: an indented `---` inside a block scalar is YAML content.
+    # Exact match: an indented `---` inside a block scalar is YAML content, not the closer.
     closing = next(
         (index for index, line in enumerate(lines[1:], 1) if line.rstrip() == "---"), None
     )
@@ -483,11 +484,13 @@ def _default_enabled(source: str) -> bool:
 
 
 def _override_path() -> Path:
+    # The owner keeps the install-root file; a managed account has its own inside its workspace.
     root = studio_root() if is_owner_context() else workspace_root()
     return root / _OVERRIDES_NAME
 
 
 def _load_overrides() -> dict[str, bool]:
+    # A damaged toggle file counts as empty; the next toggle rewrites it.
     path = _override_path()
     try:
         payload = json.loads(path.read_text(encoding = "utf-8"))
@@ -551,6 +554,7 @@ def _candidate_dirs(root: Path) -> list[Path]:
             candidate.name.encode("utf-8")
         except UnicodeEncodeError:
             continue
+        # Stray files are skipped; links still go through validation so they are reported.
         try:
             if not candidate.is_dir() and not _is_linked_path(candidate):
                 continue
@@ -568,11 +572,13 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
     overrides = _load_overrides()
     found: list[tuple[dict, Optional[Path], Optional[os.stat_result]]] = []
     selected: dict[str, dict] = {}
+    # A linked Agents root makes every skill under it read-only, like a linked entry.
     agents_linked = _agents_root_linked(home)
     for source, root in _skill_roots(home):
         try:
             candidates = _candidate_dirs(root)
         except SkillError as exc:
+            # One unreadable or oversized root must not hide the other roots' skills.
             found.append(
                 (
                     {
@@ -732,6 +738,7 @@ def create_skill(
 
     base, root = _agents_base(home)
     if root is not None:
+        # A fresh account's workspace may not exist yet; its own private root is safe to make.
         base.mkdir(mode = 0o700, parents = True, exist_ok = True)
     with _LOCK:
         overrides = _load_overrides()
@@ -871,6 +878,7 @@ def delete_skill(name: str, *, home: Optional[Path] = None) -> dict:
             shutil.rmtree(skill_dir)
         except OSError as exc:
             raise SkillError(f"Could not delete skill '{record['name']}'.") from exc
+        # A stale disable would otherwise apply to the next skill made by hand under this name.
         overrides = _load_overrides()
         if overrides.pop(record["name"], None) is not None:
             try:
@@ -926,6 +934,7 @@ def _normalize_resource_path(resource: str) -> PurePosixPath:
         )
     ):
         raise SkillError("Skill resource path must stay inside the skill directory.")
+    # Rejected on every OS: a portable skill cannot carry a name Windows refuses.
     if any(part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_STEMS for part in path.parts):
         raise SkillError("Skill resource path cannot use a Windows reserved device name.")
     try:

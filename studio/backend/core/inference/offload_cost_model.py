@@ -44,13 +44,14 @@ GIB = float(1024**3)
 # Fit on 192-core B200 host: 5.544 ms/GiB, ~0 intercept, so spilling is linear
 REFERENCE_CONTIGUOUS_MS_PER_GIB = 5.544
 
+# reference host thread count the rate above was measured at
 REFERENCE_HOST_THREADS = 192
 
 # ms/GiB = a / threads + b, fit over 4..192 threads on one host (Amdahl, not power law)
 _THREAD_PARALLEL_MS_PER_GIB = 138.4
 _THREAD_SERIAL_MS_PER_GIB = 5.57
 
-# Cross-machine fit (12/48 vCPU) is steeper; take the more expensive of the two fits
+# Cross-machine fit (12/48 vCPU) is steeper; take the costlier of the two fits, since optimism quotes spills running several times slower
 _CROSS_HOST_PARALLEL_MS_PER_GIB = 278.2
 _CROSS_HOST_SERIAL_MS_PER_GIB = 1.03
 
@@ -63,9 +64,9 @@ class Access(str, Enum):
     CONTIGUOUS = "contiguous"
     #: lm_head: one tall matvec, parallelises worse than FFN blocks.
     SINGLE_MATVEC = "single_matvec"
-    #: MoE experts: 8-of-256 scattered small matmuls per layer per token.
+    # : MoE experts: 8-of-256 scattered small matmuls per layer per token.
     SCATTERED = "scattered"
-    #: The attention cache. By far the worst thing to move off the device.
+    # : The attention cache. By far the worst thing to move off the device.
     KV_CACHE = "kv_cache"
 
 

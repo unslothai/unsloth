@@ -30,7 +30,7 @@ from typing import Optional
 _STUB_SENTINEL = object()
 
 
-# isinstance() against a stub module raises TypeError; peft's lora/torchao.py needs False.
+# isinstance() against a stub module raises TypeError; peft's lora/torchao.py needs it to return False.
 class _StubTypeMeta(type):
     def __instancecheck__(cls, instance):
         return False
@@ -54,7 +54,7 @@ def _make_stub_type(name):
     return _StubTypeMeta(name, (), {})
 
 
-# Below every minimum: without dist-info, transformers 5 parses this.
+# Below every minimum: without dist-info, transformers 5 parses this ("N/A" raised).
 STUB_VERSION = "0.0.0"
 
 
@@ -73,6 +73,7 @@ def _make_mod_stub(mod_name):
     ):
         if attr.startswith("__"):
             raise AttributeError(attr)
+        # Return a stub CLASS (not module) so isinstance() returns False, not TypeError.
         child = _make_stub_type(f"{_n}.{attr}")
         setattr(_m, attr, child)
         return child
@@ -120,7 +121,7 @@ def _module_is_rocm(mod) -> bool:
     )
 
 
-# torch/version.py has hip = None on CUDA and a version string on ROCm.
+# torch/version.py is generated, always as ``hip: Optional[str] = None`` on CUDA, ``= '6.4.5...'`` on ROCm.
 _HIP_LINE_RE = re.compile(r"^hip\s*(?::[^=]*)?=\s*(.+?)\s*$", re.MULTILINE)
 
 
@@ -202,6 +203,7 @@ def install_torchao_windows_rocm_stub() -> None:
     """Must run before transformers or unsloth_zoo is imported; a no-op outside Windows ROCm."""
     if _is_windows_rocm():
         _ensure_finder()
+        # Seed torchao top-level + key submodules; the finder handles the rest.
         for _tao_name in (
             "torchao",
             "torchao.quantization",

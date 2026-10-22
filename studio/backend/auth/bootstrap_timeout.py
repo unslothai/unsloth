@@ -156,7 +156,7 @@ def enforce_bootstrap_password_deadline(
     print(message, file = sys.stderr, flush = True)
     try:
         trigger_shutdown()
-    except Exception as e:
+    except Exception as e:  # shutdown is best-effort; never raise from the timer
         if logger is not None:
             logger.warning("Bootstrap-timeout shutdown failed: %s", e)
     return True

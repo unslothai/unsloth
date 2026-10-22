@@ -205,6 +205,7 @@ class LemonadeServer:
         self._process = proc
         self.port = port
         self.api_key = api_key
+        # Shutdown may have swept children before this process was adopted.
         if is_process_shutting_down():
             self._kill_locked()
             raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")

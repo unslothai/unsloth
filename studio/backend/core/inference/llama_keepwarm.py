@@ -25,11 +25,13 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _inflight = 0
+# Subset of _inflight that is /p/ preview traffic.
 _preview_inflight = 0
 # Blocked on the unload gate, not yet in _inflight: the idle loop must not unload while one waits.
 _pending = 0
+# Subset of _pending that is /p/ preview traffic; the busy guard must tell it from real requests.
 _preview_pending = 0
-# Counted after FastAPI auth, so unauthenticated tracked requests cannot starve previews.
+# Counted after auth so anonymous calls cannot starve previews; busy guard uses this, not _inflight.
 _admitted_inference = 0
 # Bumped per preview swap; a non-preview request seeing it advance across the gate is rejected.
 _preview_swap_generation = 0
@@ -77,11 +79,12 @@ _INFERENCE_SUFFIXES = (
     "/embeddings",
     "/responses",
     "/generate/stream",
-    "/audio/generate",  # can outlive the idle TTL
+    "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
     "/audio/speech",
     # endswith avoids matching *-progress / */cancel.
     "/images/generate",
     "/images/generations",
+    # video runs as a background job, so this covers only the brief accept
     "/video/generate",
 )
 
@@ -93,11 +96,13 @@ _NON_LLM_SLOT_SUFFIXES = (
     "/images/generate",
     "/images/generations",
     "/video/generate",
+    # /videos runs only the video backend, so it is listed here or it would clear preview ownership.
     "/videos",
 )
 
 
 def _is_preview_path(path: str) -> bool:
+    # Public checkpoint preview delegates to the chat handler on the same backend, so protect it from idle unload.
     return path.startswith("/p/") and path.endswith("/v1/chat/completions")
 
 
@@ -126,7 +131,7 @@ def _note_unpending(is_preview: bool = False) -> None:
 
 
 def _note_start(is_preview: bool = False) -> None:
-    # Do not stamp _last_active: while _inflight > 0 the model is already protected.
+    # do not stamp _last_active here: while _inflight > 0 the model is already protected
     global _inflight, _pending, _preview_inflight, _preview_pending
     with _lock:
         _pending = max(0, _pending - 1)
@@ -290,12 +295,14 @@ def _claim_non_preview_slot() -> None:
     try:
         from routes.inference import _set_preview_resident
         _set_preview_resident(None)
-    except Exception as exc:
+    except Exception as exc:  # never let ownership bookkeeping break a response
         logger.debug("preview-slot claim on completion failed: %s", exc)
 
 
+# Set by a route that proved it will not touch llama.cpp, e.g. an external proxy; skips keep-warm.
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
+# Set after admission so the preview route tells real tracked requests from direct helper calls.
 _TRACKED_SCOPE_KEY = "_unsloth_keepwarm_tracked"
 
 # While queued a preview must be pending, not active, or it deadlocks on the lifecycle gate.
@@ -304,6 +311,7 @@ _PREVIEW_SERIALIZER_WAIT_SCOPE_KEY = "_unsloth_keepwarm_preview_serializer_wait"
 # Rejected in the route, not middleware, so untracked external-provider requests pass.
 _PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
 
+# Swap generation at entry lets admission reject pre-auth requests that span a preview swap.
 _SWAP_GEN_AT_ENTRY_KEY = "_unsloth_keepwarm_swap_gen_at_entry"
 
 # Claim keys off HTTP status, so a stream failing after 200 headers must flag this.
@@ -560,7 +568,7 @@ def _as_bytes(value) -> bytes:
 
 
 def _carries_bearer_credentials(scope, path: str = "") -> bool:
-    """Counts only requests with the credentials their route demands; unauthenticated stalls cannot pin."""
+    """Counts only requests with the credentials their route needs; unauthenticated stalls cannot pin it."""
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
 
     state = scope.get("state")
@@ -568,6 +576,7 @@ def _carries_bearer_credentials(scope, path: str = "") -> bool:
         return True
     headers = scope.get("headers")
     if headers is None:
+        # Real ASGI servers always set headers, so a scope with none is treated as carrying credentials.
         return True
     for name, value in headers:
         if _as_bytes(name).lower() != b"authorization":
@@ -594,6 +603,7 @@ class LlamaKeepWarmMiddleware:
 
         media_owner = media_keepwarm.owner_for_path(path)
         if media_owner is not None and not _carries_bearer_credentials(scope, path):
+            # Media without a bearer cannot hold it warm; /p/ chat is public, so a missing bearer proves nothing.
             media_owner = None
         chat_tracked = _is_inference_path(path)
         if not chat_tracked and media_owner is None:
@@ -628,6 +638,7 @@ class LlamaKeepWarmMiddleware:
             try:
                 await media_keepwarm.begin_request(media_owner)
             except BaseException:
+                # a client that disconnects while waiting on this gate never reaches _finish
                 if chat_tracked:
                     _note_untracked_end(is_preview)
                 raise
@@ -639,6 +650,7 @@ class LlamaKeepWarmMiddleware:
         completed = {"done": False}
 
         def _finish() -> None:
+            # A route that untracked itself already decremented; don't double-count.
             if ended["done"]:
                 return
             ended["done"] = True
@@ -656,12 +668,15 @@ class LlamaKeepWarmMiddleware:
                 and isinstance(code, int)
                 and 200 <= code < 300
                 and completed["done"]
+                # Both count endpoints (/messages/count_tokens, /chat/count_tokens).
                 and not path.endswith("count_tokens")
+                # Image/video generation runs on the diffusion/video engine, not the llama slot.
                 and not path.endswith(_NON_LLM_SLOT_SUFFIXES)
                 and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
                 and not scope.get(_UNTRACKED_SCOPE_KEY)
             ):
                 _claim_non_preview_slot()
+            # Balance note_admitted_inference in the finally so no exit path leaks it; before the early returns.
             if scope.get(_ADMITTED_SCOPE_KEY):
                 _note_admitted_end()
             if scope.get(_UNTRACKED_SCOPE_KEY):
@@ -679,6 +694,7 @@ class LlamaKeepWarmMiddleware:
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":
                 status["code"] = message.get("status")
+            # Terminal body frame marks a clean end of a (possibly streaming) response.
             is_terminal = message.get("type") == "http.response.body" and not message.get(
                 "more_body", False
             )
@@ -737,6 +753,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
+        # Image/video half of the tick has its own guard so neither side can cost the other an iteration.
         try:
             from core.inference.media_keepwarm import idle_unload_step
             await idle_unload_step()
@@ -762,9 +779,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     seen_model = current
                     if current is not None:
                         _note_activity()
-                        _set_last_unloaded(None)
+                        _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
-                    # Loaded from the UI, so keep it resident; only API-loaded models are freed.
+                    # loaded from the UI, so the user wants it resident; only models the API loaded are freed
                     continue
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
@@ -800,7 +817,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed)
+                    _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
@@ -816,6 +833,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     except Exception as exc:  # noqa: BLE001 - the unload already happened
                         logger.debug("Idle auto-unload: claim release failed: %s", exc)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
+                    # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)
                     seen_model = None
         except Exception as exc:

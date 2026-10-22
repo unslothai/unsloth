@@ -18,6 +18,7 @@ from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
+# "Not JSON we can walk", distinct from a payload that legitimately decodes to None.
 _UNPARSED = object()
 
 _THINK_OPEN = "<think>"
@@ -36,6 +37,7 @@ _ATEM_REASONING_RECIPIENT = "self"
 _ATEM_REPLY_RECIPIENT = "user"
 _ATEM_CLOSE = "<|eom|>"
 _ATEM_END_OF_TURN = "<|eot|>"
+# <|eom|> ends a block, <|eot|> ends the whole turn; either terminates the block in hand.
 _ATEM_BLOCK_ENDS = (_ATEM_CLOSE, _ATEM_END_OF_TURN)
 _ATEM_BLOCK_END_MAX_LEN = max(len(marker) for marker in _ATEM_BLOCK_ENDS)
 _ATEM_TEMPLATE_OPENER = "<|start|>assistant to=self<|message|>"
@@ -46,9 +48,11 @@ _ATEM_HEADER_RE = re.compile(
     r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]{1,%d})<\|message\|>"
     % _ATEM_RECIPIENT_MAX_LEN
 )
+# A partially streamed header tail: a recipient name, then a prefix of "<|message|>".
 _ATEM_PARTIAL_TAIL_RE = re.compile(
     r"[^<\s]*(?:<(?:\|(?:m(?:e(?:s(?:s(?:a(?:g(?:e(?:\|)?)?)?)?)?)?)?)?)?)?"
 )
+# Longest holdback, derived from the same bound so the two cannot drift apart.
 _ATEM_HEADER_MAX_LEN = len("<|start|>assistant to=") + _ATEM_RECIPIENT_MAX_LEN + len("<|message|>")
 # Call syntax from the response_template grammar the checkpoint ships.
 _ATEM_INVOKE_OPEN_RE = re.compile(r'<atem:invoke\b[^>]*?\bname="(?P<name>[^"]+)">')
@@ -57,8 +61,10 @@ _ATEM_PARAMETER_RE = re.compile(
     r'<atem:parameter\b[^>]*?\bname="(?P<key>[^"]+)"[^>]*?>(?P<value>.*?)</atem:parameter>',
     re.DOTALL,
 )
+# The template wraps calls in this; the grammar does not model it, so it is framing.
 _ATEM_CALLS_ENVELOPE = ("<atem:function_calls>", "</atem:function_calls>")
 _ATEM_TAG_START_RE = re.compile(r"</?atem:")
+# Every call-syntax tag, so a half-cut one is still recognised; names end at a word boundary
 _ATEM_NAME_CHARS = frozenset(string.ascii_letters + string.digits + "_-:")
 _ATEM_TAGS = (
     "<atem:function_calls>",
@@ -76,33 +82,34 @@ _CONTROL_MARKUP = re.compile(
     r"<(?="
     # Phi-4 Mini closes with "<|/tool|>" / "<|/tool_call|>".
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
-    # Kimi K2 / Moonshot section and call pairs (tool_call_parser.py).
+    # Kimi K2 / Moonshot wrap history in a section and begin/end call pairs; none is the short tool_call spelling, so a paste could fabricate a call.
     r"|tool_calls?(?:_section)?_(?:begin|end)|tool_call_argument_begin"
     r"|end(?:_of_(?:turn|text))?"
-    # Document boundaries: Llama BOS and the GPT-2-lineage EOS.
+    # Document boundaries from reserved vocabulary: a pasted copy is split back to the real token id and becomes a document break.
     r"|begin_of_text|endoftext"
     # Llama-4 headers, Phi-4 im_sep, Kimi K2 im_system / im_middle.
     r"|header_(?:start|end)|im_(?:start|end|sep|system|middle|user|assistant)"
     # DeepSeek-V4-Flash role boundaries (case-sensitive).
     r"|User|Assistant|System"
     r"|assistant|constrain|channel|message|eo[tm](?:_id)?|final"
-    # TML Inkling's call envelope.
+    # TML Inkling call envelope: longer than the message and end names above, so without it these pass through though the repo parses them as a call.
     r"|message_model|content_invoke_tool_json|end_message"
-    # Command-R / Aya.
+    # Command-R / Aya spell every delimiter in caps: <|START_OF_TURN_TOKEN|> etc.
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
     # Reserved media placeholders: an extra one is a hard ValueError in the processor.
     r"|image|audio|video|python_tag"
-    # Qwen 2.5 Coder FIM tokens.
+    # Qwen 2.5 Coder FIM tokens: its FIM prompt is built while interpolating chat content, the pipe-token twin of Codestral PREFIX/MIDDLE/SUFFIX.
     r"|fim_prefix|fim_suffix|fim_middle"
-    # Qwen2-VL / Qwen2.5-VL pad tokens.
+    # Qwen2-VL / Qwen2.5-VL pad tokens: a pasted one counts as media with no image behind it, so embeddings bind at the wrong prompt position.
     r"|vision_start|vision_end|vision_pad|image_pad|video_pad"
     r"|return|system|start|think|turn|user|call|\")\|?>"
     # The parser also accepts space and backslash-escaped spellings; name must start with a letter.
     r"|\uff5c[A-Za-z][A-Za-z\u2581_ \\]{0,39}\uff5c>"
-    # Bare-tag families. "<s>" / "</s>" (Llama-2 BOS/EOS) collide with HTML; accepted on purpose.
+    # Bare-tag families. <s> and </s> (Llama-2 BOS/EOS) collide with HTML; kept, since a live document boundary beats a space in a rare <s>.
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s|sop"
     r"|start_of_image|image_soft_token|audio_soft_token"
     r"|arg_key|arg_value|function|parameter|param)>"
+    # Opener halves carry "=value", so the attribute form needs its own alternative beside function=
     r"|(?:function|parameter)=|(?:function|param(?:eter)?)\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
@@ -113,34 +120,41 @@ _CONTROL_MARKUP = re.compile(
     r"|(?<=<)<(?=/?SYS>>)"
 )
 
-# Turn-boundary subset for replayed ASSISTANT content; its own think/channel/tool markup is kept.
+# Turn-boundary subset for replayed assistant content, which is client-controlled; its think, channel and tool markup stays since the template re-renders it.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)"
+    # Kimi role sentinels like <|im_user|> are boundaries, as im_system and im_middle already are
     r"|im_(?:start|end|sep|system|middle|user|assistant)"
     r"|User|Assistant|System"
     r"|end(?:_of_(?:turn|text))?|eo[tm](?:_id)?|header_(?:start|end)"
+    # Document boundaries are never assistant structure, so unlike think/tool markup they stay replayable
     r"|begin_of_text|endoftext"
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
+    # A replayed media placeholder has no processor media behind it and fails Gemma/mllama count checks
     r"|image|audio|video|python_tag"
+    # Qwen 2.5 Coder builds its fill-in-the-middle prompt from these three tokens (pipe-token form)
     r"|fim_prefix|fim_suffix|fim_middle"
+    # Qwen2-VL reserves these for its processor; a pasted one misbinds embeddings with no image
     r"|vision_start|vision_end|vision_pad|image_pad|video_pad"
     # Tool RESULT / CATALOG markup forges trusted context; tool CALL spellings are the assistant's own.
     r"|tool_response|tool"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
+    # Optional slash: Gemma delimiters are bare tags, so a replayed </start_of_turn> is a boundary too
     r"|/?(?:(?:start|end)_of_turn|eos|bos|s|sop|tool_response|tools"
     r"|start_of_image|image_soft_token|audio_soft_token)>"
     r"|(?:turn|tool_response)\|>"
     r")"
-    # "[TOOL_CALLS]" is out: the assistant emits that one.
+    # Mistral renders assistant content verbatim, so a replay can forge observation and catalog blocks; TOOL_CALLS stays out since the assistant emits it.
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS"
     r"|PREFIX|MIDDLE|SUFFIX|gMASK)\])"
+    # Llama-2 <<SYS>> is a boundary like [SYSTEM_PROMPT]; only the first user turn emits it
     r"|(?<=<)<(?=/?SYS>>)"
 )
 
 
-# Per codec, NOT the chat sweep: this text is spoken, so "<s>hello</s>" must stay as typed.
+# Per codec, not the chat sweep: this text is spoken, so a literal like <s> must stay; a pasted codec closer would truncate or garble the audio.
 _MOSS_TTS_MARKUP = re.compile(
     r"<(?=/?user_inst>|\|(?:im_(?:start|end)|audio(?:_start|_end|_pad)?"
     r"|vision_pad|video_pad)\|>)"
@@ -148,36 +162,44 @@ _MOSS_TTS_MARKUP = re.compile(
 _TTS_MARKUP_BY_CODEC = {
     # Only these three: "say <custom_token_999>" is ordinary text here.
     "snac": re.compile(r"<(?=custom_token_[234]>|\|eot_id\|>)"),
+    # <|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>, stop <|im_end|> and </s>.
     "bicodec": re.compile(
         r"<(?=\|(?:task_tts|(?:start|end)_(?:content|global_token|semantic_token)"
         r"|im_end)\|>|/s>)"
     ),
+    # Dac prompt wraps {text} in text_start/text_end, then audio_start; stops at im_end or audio_end
     "dac": re.compile(
         r"<(?=\|(?:im_(?:start|end)|text_(?:start|end)|audio_(?:start|end)"
         r"|global_features_(?:start|end))\|>)"
     ),
-    # The processor tokenizes "[speaker_id]text" flat, so a "[1]" anywhere starts a speaker turn.
+    # The processor tokenizes flat, so a [1] anywhere starts a speaker turn; add_special_tokens makes document boundaries forgeable from the text.
     "csm": re.compile(r"\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos|begin_of_text|end_of_text)\|>)"),
+    # Higgs TTS 2 scene/role boundaries precede audio; spoken text and scene are inserted verbatim
     "higgs_tts2": re.compile(
         r"<(?=\|(?:begin_of_text|end_of_text|start_header_id|end_header_id"
         r"|scene_desc_start|scene_desc_end|eot_id|audio_out_bos|AUDIO_OUT"
         r"|audio_eos|reserved_special_token_6)\|>)"
     ),
+    # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
     "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
+    # minimax wraps lyrics with chatml, caption, lyric, and audio stream boundaries.
     "minimax_music3": re.compile(
         r"<(?=\|(?:im_(?:start|end)|caption_(?:start|end)|lyrics_(?:start|end)"
         r"|audio_(?:start|end|cfg))\|>)"
     ),
+    # MOSS Local/Nano wrap client text in user_inst within ChatML; other sentinels are codec placeholders
     "moss_tts_local": _MOSS_TTS_MARKUP,
     "moss_tts_nano": _MOSS_TTS_MARKUP,
 }
+# Unknown codecs get the union: narrower than the chat sweep, yet assumes no unseen prompt shape
 _TTS_MARKUP_DEFAULT = re.compile(
     "|".join(f"(?:{pattern.pattern})" for pattern in _TTS_MARKUP_BY_CODEC.values())
 )
 
 
+# Delimiter-shaped: <...> or [...] without whitespace; plain added tokens like words are left alone
 _DELIMITER_SHAPED = re.compile(r"\A(?:<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\])\Z")
-# The bracket half excludes quotes and digits so Jinja's "messages[0]" indexing stays out.
+# Bracket half skips quotes and digits (Jinja indexing). Attribute arm matches MiniCPM-5 and MiniMax-M2 openers; without it client text can open a call.
 _TEMPLATE_DELIMITERS = re.compile(
     '<[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\s+[A-Za-z_][A-Za-z0-9_.\\-]{0,38}="[^"<>]{0,60}">'
     # Before the single-angle arm, which would match Llama-2's inner "<SYS>".
@@ -187,9 +209,11 @@ _TEMPLATE_DELIMITERS = re.compile(
 )
 # Comments never reach the prompt; gptoss mentions "<|final|>" only in one.
 _JINJA_COMMENT = re.compile(r"\{#.*?#\}", re.S)
+# Metadata sits within a block, never as an opener, so it cannot start or close anything alone
 _BLOCK_METADATA = frozenset({"[ARGS]", "[CALL_ID]", "[TOOL_CONTENT]"})
 # Phi-3 builds role sentinels by concatenation ("+" or "~"), so no literal appears.
 _DYNAMIC_PIPE_ROLE = re.compile(r"""['"]<\|['"]\s*[+~]|[+~]\s*['"]\|>['"]""")
+# Closed on purpose: broad <|word|> matches re-enable rewrites; closers alone leave live envelopes
 _CONCATENATED_OPENER = re.compile(r"""['"]<(/?[A-Za-z_][A-Za-z0-9_.\-]{0,30})=['"]\s*[+~]""")
 
 
@@ -205,6 +229,7 @@ _ROLE_NAMES = (
 )
 # The name is filled at render time: "<function=pay>" must break on a "<function=example>" template.
 _DYNAMIC_OPENER = re.compile(r"\A<(/?[A-Za-z_][A-Za-z0-9_.\-]{0,30})=[^\s<>]*>\Z")
+# The attribute spelling of the same thing: the value is the render-time name.
 _DYNAMIC_ATTR_OPENER = re.compile(
     r"\A<([A-Za-z_][A-Za-z0-9_.\-]{0,38})\s+([A-Za-z_][A-Za-z0-9_.\-]{0,38})=\"[^\"<>]{0,60}\">\Z"
 )
@@ -227,6 +252,7 @@ def _deepseek_opener_pattern():
         )
     except Exception:  # pragma: no cover - parser unavailable
         return None
+    # Outer-block alternation and fullwidth parser signals, incl. the per-call tool call begin token
     signals = [
         re.escape(signal)
         for signal in TOOL_XML_SIGNALS
@@ -243,6 +269,7 @@ def _marker_pattern_source(marker: str) -> str:
         deepseek = _deepseek_opener_pattern()
         if deepseek is not None and re.fullmatch(deepseek, marker):
             return deepseek
+        # Otherwise every separator position accepts the three spellings the parser accepts.
         name = fullwidth.group(1)
         parts = re.split("[\u2581_ ]", name)
         if len(parts) > 1:
@@ -252,6 +279,7 @@ def _marker_pattern_source(marker: str) -> str:
         return "<" + re.escape(dynamic.group(1)) + "=[^\\s<>]*>"
     attr = _DYNAMIC_ATTR_OPENER.match(marker)
     if attr:
+        # Whitespace is loose: a template's one space may stand for several a client sends, same envelope
         return "<" + re.escape(attr.group(1)) + "\\s+" + re.escape(attr.group(2)) + '="[^"<>]*">'
     return re.escape(marker)
 
@@ -292,6 +320,7 @@ class ModelMarkup:
         "markers",
         "rewrite_control",
         "rewrite_boundary",
+        # Named template this profile was chosen for; lets a caller spot the wrong profile after sanitizing
         "selected_with_tools",
     )
 
@@ -303,7 +332,7 @@ class ModelMarkup:
         self.markers = markers
         self.selected_with_tools = selected_with_tools
         self.control = _alternation(markers)
-        # A marker this module does not recognise is treated as a boundary.
+        # Unrecognised markers count as boundaries: a replayed assistant turn is client text, and a forged turn costs more than a spaced one.
         boundary = {
             marker
             for marker in markers
@@ -348,6 +377,7 @@ def model_markup(
     template and vocabulary could not be read."""
     markers: set = set()
     for token in tokens or ():
+        # Vocab is six figures, few are delimiters; the cheap first-character test runs before the regex
         if not isinstance(token, str) or not token or token[0] not in "<[":
             continue
         if not _DELIMITER_SHAPED.match(token):
@@ -369,12 +399,14 @@ def model_markup(
         for match in _TEMPLATE_DELIMITERS.finditer(body):
             marker = match.group(0)
             if marker.startswith("[") and _within(expressions, match.start()):
+                # A template emitting "{{ bos_token }}" never spells it in the text, and a partial vocabulary may not harvest it: resolve it from the tokenizer
                 continue
             if marker in _BLOCK_METADATA:
                 continue
             # Qwen's "<function-name>" placeholders are prose, not structure.
             if marker in known or _CONTROL_MARKUP.search(marker):
                 markers.add(marker)
+        # First choice: migrate an opener only between truly adjacent carriers, so no image or JSON part sits between them
         for name, value in (specials or {}).items():
             if not isinstance(value, str) or not value:
                 continue
@@ -406,7 +438,7 @@ def _spaced_out_markers(pattern, text: str) -> str:
 
 
 def neutralize_control_markup(text: str, markup: "ModelMarkup" = None) -> str:
-    """Spaces out the opener so it stops being a delimiter; a model profile breaks only its own markers."""
+    """Spaces out the opener so it is no delimiter; a plain space, since U+2060 can fall back to byte junk. A model profile breaks only its own markers."""
     if markup is not None:
         return _spaced_out_markers(markup.control, text) if markup.control else text
     return _spaced_out(_CONTROL_MARKUP, text)
@@ -469,7 +501,7 @@ def _neutralize_leaves(
     rewrite,
     warn_on_key_collision: bool = False,
 ):
-    """Iterative, not recursive, so a deep client schema cannot exhaust the stack and fail with a 500."""
+    """Iterative so a deep client schema cannot exhaust the stack (500). A colliding rewritten key keeps the last value; keeping it raw would restore markup."""
     if isinstance(value, str):
         return rewrite(value)
     if not isinstance(value, (dict, list)):
@@ -560,7 +592,7 @@ def _redistribute_swept(
     # A break at a carrier's start is trimmed by some renderers, so the opener walks into the next carrier.
     for index in range(len(pieces) - 1):
         if contiguous is not None and not contiguous[index]:
-            continue
+            continue  # a media or JSON part sits here; nothing crosses it.
         while pieces[index] and inserted[index + 1] and inserted[index + 1][0]:
             pieces[index + 1].insert(0, pieces[index].pop())
             inserted[index + 1].insert(0, inserted[index].pop())
@@ -617,15 +649,17 @@ def _neutralize_content_parts(
             continue
         # Keep each carrier's own text: Llama-3.1 serializes the list in order.
         run = [texts[index] for index in carriers]
+        # A trimming renderer could re-form a marker split across a non-text part; moving the opener across it beats collapsing all text into one carrier
         redistributed = _redistribute_swept(
             run,
             rewrite,
             [carriers[i + 1] == carriers[i] + 1 for i in range(len(carriers) - 1)],
         )
         if redistributed is None:
+            # Same guard for arguments that arrived already decoded: they skip json.loads, so its depth limit never bounds them
             redistributed = _redistribute_swept(run, rewrite)
         if redistributed is None:
-            # Last resort; unreachable today for every known marker.
+            # Last resort, unreachable for every known marker; kept because collapsing is safer than a marker surviving a renderer that trims parts.
             redistributed = [rewrite(trimmed)] + [""] * (len(carriers) - 1)
         for index, text in zip(carriers, redistributed):
             part = parts[index]
@@ -672,6 +706,7 @@ def _neutralized_arguments(arguments, markup = None):
                 return json.dumps(safe, ensure_ascii = True)
             return None
     new_arguments = _neutralize_argument_leaves(arguments, markup)
+    # Concatenated into the header by a recipient-addressed template, so markup here forged a whole system turn; never holds delimiters
     return new_arguments if _differs(new_arguments, arguments) else None
 
 
@@ -728,7 +763,7 @@ def _neutralize_replayed_tool_call(
     id_map: dict = None,
     markup = None,
 ) -> list:
-    """Sweeps both nested and flat call shapes, because templates select between them by truthiness."""
+    """Sweeps nested and flat call shapes, since templates pick between them by truthiness; the rewrite is identity on dispatchable names."""
 
     def _field_updates(source: dict) -> dict:
         updates: dict = {}
@@ -770,6 +805,7 @@ def _neutralize_replayed_tool_call(
             continue
         merged = {**call, **flat_updates, **id_updates}
         if nested_updates:
+            # No "function" object is invented for a call that never had one.
             merged["function"] = {**function, **nested_updates}
         out.append(merged)
     return out
@@ -820,7 +856,7 @@ def neutralize_control_markup_in_messages(
         else:
             rewrite = markup.rewrite_boundary if assistant else markup.rewrite_control
         if cache is not None:
-            # Keyed by the bound rewrite, so two models cannot share an entry.
+            # Keyed by the bound rewrite, so two models in one process cannot share an entry.
             rewrite = _memoized(rewrite, cache)
         updates: dict = {}
         dropped_keys: set = set()
@@ -855,6 +891,7 @@ def neutralize_control_markup_in_messages(
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
+        # Gemma-4 legacy tool_responses goes through format_tool_response_block, which renders every leaf: markup closes <|tool_response> and opens a turn
         recipient = msg.get("recipient")
         if isinstance(recipient, str) and recipient:
             new_recipient = neutralize_control_markup(recipient, markup)
@@ -867,6 +904,7 @@ def neutralize_control_markup_in_messages(
                 new_value = neutralize_control_markup(value, markup)
                 if new_value != value:
                     updates[field] = new_value
+        # Llama-3.1 serializes mapping content with tojson and /generate/stream takes raw dicts, so object values reach the prompt as live structure
         tool_responses = msg.get("tool_responses")
         # Gemma-4 renders tool_responses regardless of role: assistant-only like tool_calls.
         if tool_responses is not None and role not in _ASSISTANT_ROLES:
@@ -889,6 +927,7 @@ def neutralize_control_markup_in_messages(
             if isinstance(content, str):
                 new_content = rewrite(content)
             elif isinstance(content, dict):
+                # Keyed by property name (dependentSchemas, dependentRequired) and list-valued too (dependentRequired values, draft-07 dependencies): checked both ways
                 new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
                 # Nothing resolves media inside a tool result; Llama-3.1 serializes it with tojson.
@@ -925,8 +964,7 @@ def neutralize_tool_descriptions(
     cache: dict = None,
     markup = None,
 ):
-    """Drops a tool whose function.name carries markup, since rewriting that name would break dispatch."""
-    # Keyed on the serialized catalog so in-place mutation cannot make the cache stale.
+    """Neutralizes the tool catalog: every declaration string is prompt text, so markup can forge a system turn; a markup name drops the tool."""
     key = None
     if cache is not None:
         try:
@@ -945,7 +983,7 @@ def neutralize_tool_descriptions(
             continue
         function = tool.get("function")
         target = function if isinstance(function, dict) and function else tool
-        # Both spellings: an entry may carry an empty "function" alongside a flat "name".
+        # Both spellings: an empty function can sit beside a flat name, and the identity that dispatches must be checked, not just the nested one.
         name = target.get("name")
         unsafe_name = next(
             (
@@ -964,6 +1002,7 @@ def neutralize_tool_descriptions(
             )
             changed = True
             continue
+        # Both levels: OpenAI nests the schema under "function", MCP carries "input_schema" on the entry itself.
         unsafe = _unsafe_schema_identifier(_schema_roots(tool) + _schema_roots(target), markup)
         if unsafe is not None:
             logger.warning(
@@ -994,9 +1033,11 @@ _SCHEMA_KEYED_IDENTIFIERS = frozenset(
         "patternProperties",
         "$defs",
         "definitions",
+        # Under format assertion or a custom validator the MCP server checks format, so rewriting it targets a different contract, as for pattern
         "dependentSchemas",
         "dependentRequired",
         "dependencies",
+        # Keyed by vocabulary URI, so its keys are identifiers like a property name.
         "$vocabulary",
     }
 )
@@ -1009,16 +1050,20 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "required",
         "pattern",
         "default",
+        # OpenAPI discriminator holds only propertyName and an identifier mapping, so every leaf is machine-valued; the server resolves the original, not the rewrite
         "format",
-        # "contentSchema" stays out: the recursive scan already reads its subschema.
+        # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
         "contentMediaType",
+        # OpenAPI xml holds only name, namespace, prefix and two booleans, all identifiers with no prose, so a rewrite advertises names the server never emits
         "discriminator",
+        # Gemma-4 emits a response declaration from function.response, and a JSON-serializing template exposes the rest of it
         "xml",
         # References are resolved, not read; "$ref" can also name an external URI.
         "$ref",
         "$id",
         "$anchor",
+        # The dialect a validator resolves the whole schema against.
         "$schema",
         "$dynamicRef",
         "$dynamicAnchor",
@@ -1062,6 +1107,7 @@ _SCHEMA_ROOT_KEYS = (
     "outputSchema",
     "output_schema",
     "returns",
+    # Scan every leaf: enum and const can hold any value, e.g. "enum": [["<s>"]] or "const": {"tag": "</think>"}, which must be reproduced exactly
     "response",
 )
 
@@ -1106,6 +1152,7 @@ def _unsafe_schema_identifier(value, markup = None):
                             stack.append(value)
                     continue
                 elif key in _SCHEMA_VALUED_IDENTIFIERS:
+                    # An entry may hold an empty function mapping beside the flat name that dispatches; nested-only reads forwarded a dropped tool's tool_choice unchanged
                     unsafe = _first_unsafe_leaf(item, markup)
                     if unsafe is not None:
                         return unsafe
@@ -1140,6 +1187,7 @@ def catalog_tool_names(tools) -> set:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
+        # The Jinja variable HF passes the tool schema in; a template that never reads it cannot put a tool in the prompt, whatever the caller asked
         nested = function.get("name") if isinstance(function, dict) else None
         for name in (nested, tool.get("name")):
             if isinstance(name, str):
@@ -1207,7 +1255,7 @@ def _is_processor(obj) -> bool:
 
 
 def chat_render_target(processor, tokenizer = None):
-    """The object a render uses: the nested tokenizer when a processor cannot render a chat itself."""
+    """Object a render uses: the nested tokenizer if a processor cannot render a chat. Profiling must match it or it misses the tool_use template."""
     if processor is None:
         return tokenizer
     if (
@@ -1219,6 +1267,7 @@ def chat_render_target(processor, tokenizer = None):
     return processor
 
 
+# Matches tool_calls access and role comparisons, not the bare word: a literal "{{ 'tool_calls are unsupported' }}" must not count as tool use
 _TOOLS_VARIABLE = re.compile(r"\btools\b")
 # Only what Jinja evaluates counts: "{{ 'no tools available' }}" is not a tools read.
 _JINJA_CODE = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
@@ -1226,12 +1275,14 @@ _JINJA_CODE = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
 _JINJA_STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", re.S)
 
 
-# DeepSeek-R1 renders tool_calls and tool outputs without ever reading the tools variable.
+# Replayed tool_calls and tool outputs count as tool use without a tools read (DeepSeek-R1); this pattern keeps string literals as mapping keys.
 _TOOL_TURN = re.compile(
+    # Covers both "message['role'] == 'tool'" and "message.role == 'tool'"; the closing quote and bracket sit between the name and the comparison
     r"\.tool_calls\b"
     r"|\[\s*['\"]tool_calls['\"]\s*\]"
     r"|['\"]tool_calls['\"]\s+in\b"
     r"|\btool_calls\s+in\b"
+    # Include special tokens: native render resolves "{{ bos_token }}" via markup_for_tokenizer; without them a catalog kept a tool the render then dropped
     r"|role['\"\]\s]*==\s*['\"]tool['\"]"
     r"|['\"]tool['\"]\s*==[\s\['\"]*role"
 )
@@ -1311,6 +1362,7 @@ def _evaluated_spans(template: str) -> tuple:
                 break
             cursor += 1
         if not closed:
+            # An unterminated block is text, not code, so nothing in it is rewritten.
             break
         tag = template[index + 2 : cursor].strip().strip("-").strip()
         if closer == "%}" and tag == "raw":
@@ -1360,7 +1412,7 @@ def _template_reads_tools(
     prefer_tool_use: bool = True,
     require_tools_variable: bool = False,
 ) -> bool:
-    """A replayed tool call counts too, unless require_tools_variable is set, which needs a tools read."""
+    """Replayed tool calls count too, unless require_tools_variable is set: a round-trip-only template would promote calls for tools the model never saw."""
     bodies = _selected_template_strings_from_value(value, tools, prefer_tool_use = prefer_tool_use)
     if not bodies:
         # Unreadable, not proven silent: emptying the catalog would disable healing broadly.
@@ -1371,14 +1423,14 @@ def _template_reads_tools(
 
 
 def _accepts_tools_kwarg(target) -> bool:
-    """Checks the signature, not a probe render, which needs messages and could fail for other reasons."""
+    """False only when the signature provably rejects tools=. A probe render needs messages and could fail for unrelated reasons."""
     apply = getattr(target, "apply_chat_template", None)
     if apply is None:
         return True
     try:
         parameters = inspect.signature(apply).parameters
     except (TypeError, ValueError):
-        return True
+        return True  # not introspectable, so not proven to reject
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
         return True
     return "tools" in parameters
@@ -1390,7 +1442,7 @@ def _renders_tool_schema(
     tools,
     template_is_processor: bool = False,
 ) -> bool:
-    """A processor is held to the stricter test, since its render has no native-template fallback."""
+    """True unless the template provably cannot advertise tools. A processor gets the stricter test since its render has no native-template fallback."""
     if tools and not _accepts_tools_kwarg(target):
         return False
     value = template or getattr(target, "chat_template", None)
@@ -1472,6 +1524,7 @@ def renderable_tool_catalog(
         return safe if active_renders_tools else _unadvertised()
     if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
         return _unadvertised()
+    # Only a generated opener carries the protocol newline; a prompt-supplied opener is already consumed, so a streamed newline is content
     native = model_markup(
         native_tpl,
         _vocabulary_of(tokenizer),
@@ -1646,6 +1699,7 @@ def _atem_header_can_extend(tail: str) -> bool:
             return True
         if tail.startswith(prefix):
             rest = tail[len(prefix) :]
+            # A recipient name, optionally followed by a partial "<|message|>".
             if _ATEM_PARTIAL_TAIL_RE.fullmatch(rest):
                 return True
     return False
@@ -1761,12 +1815,12 @@ def _atem_block_pieces(block: str, *, complete: bool) -> Optional[list[tuple[boo
     saw_call = False
     for opening in _ATEM_INVOKE_OPEN_RE.finditer(block):
         if opening.start() < cursor:
-            continue
+            continue  # an opener quoted inside a call already taken
         saw_call = True
         pieces.append((False, _atem_surrounding_text(block[cursor : opening.start()])))
         end = block.find(_ATEM_INVOKE_CLOSE, opening.end())
         if end < 0:
-            return pieces
+            return pieces  # the rest of the block is a call still being written
         body = block[opening.end() : end]
         parameters = list(_ATEM_PARAMETER_RE.finditer(body))
         if len(parameters) != body.count("<atem:parameter") or "<atem:invoke" in body:
@@ -1811,8 +1865,9 @@ class ReasoningChannelNormalizer:
         self._buffer = ""
         self._in_reasoning = in_reasoning
         self._reasoning_done = False
+        # Chars of a held tool block already searched for a terminator, so a long argument is scanned once rather than once per delta
         self._skip_opening_newline = False
-        # A prompt-supplied opener never reaches the stream, so <think> is owed to the first text delta.
+        # A prompt-supplied opener never reaches the stream, so <think> is owed to the first delta carrying text.
         self._pending_open = in_reasoning
 
     def feed(self, text: str) -> str:
@@ -1860,6 +1915,7 @@ class ReasoningChannelNormalizer:
         is still owed its close."""
         output = self.drain()
         if self._in_reasoning:
+            # Nothing generated: no block at all, rather than a close with no opener.
             if not self._pending_open:
                 output += _THINK_CLOSE
             self._pending_open = False
@@ -1899,6 +1955,7 @@ class RecipientChannelNormalizer:
         self._passthrough = False
         self._skip_opening_newline = False
         self._between_blocks = True
+        # No call in the block: keep its body, but the block's close is not the turn's end, so keep normalizing the next header
         self._tool_scanned = 0
 
     def feed(self, text: str) -> str:
@@ -1914,8 +1971,9 @@ class RecipientChannelNormalizer:
             if self._tool_header is not None:
                 index, length = _find_atem_block_end(self._buffer, self._tool_scanned)
                 if index < 0:
+                    # Everything but a possible split terminator has been ruled out.
                     self._tool_scanned = max(0, len(self._buffer) - _ATEM_BLOCK_END_MAX_LEN + 1)
-                    break
+                    break  # a call is rewritten only once it is whole
                 block = self._buffer[:index]
                 self._buffer = self._buffer[index + length :]
                 self._tool_header = None
@@ -1925,10 +1983,12 @@ class RecipientChannelNormalizer:
                 if pieces is not None:
                     output.append("".join(text for _, text in pieces))
                     continue
+                # A reply is content, but the turn can continue after it, so follow it to its close rather than giving up on the rest
                 output.append(_atem_surrounding_text(block))
                 continue
 
             if self._in_reply:
+                # A terminator with no block open is framing, since the streamer keeps special tokens and continue_final_message resumes inside a block
                 index, length = _find_atem_block_end(self._buffer)
                 if index < 0:
                     stable, self._buffer = _split_partial_atem_block_end(self._buffer)
@@ -1963,7 +2023,7 @@ class RecipientChannelNormalizer:
                 self._between_blocks = True
                 continue
 
-            # Whitespace between blocks is framing; emitted, it splits one reasoning pass in the UI.
+            # Whitespace between blocks is framing; stripped only while nothing was emitted since the last block, so off-protocol spaces survive chunking.
             if self._between_blocks:
                 stripped = self._buffer.lstrip()
                 if stripped != self._buffer:
@@ -1974,6 +2034,7 @@ class RecipientChannelNormalizer:
             match = _ATEM_HEADER_RE.search(self._buffer)
             block_end, end_len = _find_atem_block_end(self._buffer)
             if block_end >= 0 and (match is None or block_end < match.start()):
+                # No terminator arrived, so unlike feed() there is no complete block to hand on: keep the model's written text and drop the rest
                 output.append(self._buffer[:block_end])
                 self._buffer = self._buffer[block_end + end_len :]
                 self._between_blocks = True
@@ -2022,6 +2083,7 @@ class RecipientChannelNormalizer:
         output = self._buffer
         self._buffer = ""
         if self._tool_header is not None:
+            # feed() held this back in case it became framing; the stream ended first, so drop it rather than show the control markup
             pieces = _atem_block_pieces(output, complete = False)
             if pieces is None:
                 output = _atem_surrounding_text(output, complete = False)
@@ -2029,6 +2091,7 @@ class RecipientChannelNormalizer:
                 output = "".join(t for is_call, t in pieces if keep_calls or not is_call)
             self._tool_header = None
         elif output:
+            # A tokenizer property can raise on a partially loaded model; a missing special is one fewer marker, never a failed request
             held = _atem_partial_framing_len(output)
             output = output[: len(output) - held] if held else output
         if not self._in_reasoning:
@@ -2181,6 +2244,7 @@ def _split_parallel_tool_calls(messages: list) -> list:
             i += 1
             continue
 
+        # Tool results right after this message answer its calls.
         j = i + 1
         pending: list = []
         while (
@@ -2258,7 +2322,9 @@ def _special_token_strings(tokenizer) -> dict:
         try:
             value = getattr(tokenizer, name, None)
         except Exception:
+            # An explicit template is what this request renders with, so profile it: the load-time one left the authorization catalog a step behind the prompt
             continue
+        # AddedToken rather than str on some tokenizers, and its str() is the content.
         if value is not None and not isinstance(value, str):
             value = getattr(value, "content", None)
         if isinstance(value, str) and value:
@@ -2278,17 +2344,20 @@ def markup_for_tokenizer(
         return None
     try:
         cached = _MARKUP_BY_TOKENIZER.get(tokenizer)
-    except TypeError:
+    except TypeError:  # not weak-referenceable
         cached = None
     # Vision models: chat_template on the processor, vocabulary on the inner tokenizer.
     inner = getattr(tokenizer, "tokenizer", tokenizer)
+    # A processor always renders "default", so its profile does not vary with tools; the cache must not key identical entries under different selectors
     if not template:
         template = getattr(tokenizer, "chat_template", None)
     if not template:
         template = getattr(inner, "chat_template", None)
-    # Keyed on template too: get_chat_template installs a mapped template on the SAME object later.
+    # Keyed on template too (a mapped template lands on the same object at generate time) and on tools presence, since named dicts emit different literals.
     is_processor = _is_processor(tokenizer)
+    # A named-template dict is unhashable, so the cache key is its sorted json.dumps; without it every call raised TypeError and rebuilt the profile
     selector = bool(tools) and not is_processor
+    # ProcessorMixin.apply_chat_template never picks "tool_use" implicitly (it renders "default"); tokenizer-rule profiling left its boundary unswept
     if not isinstance(template, str):
         try:
             template_key = json.dumps(template, sort_keys = True, default = str)
@@ -2304,6 +2373,7 @@ def markup_for_tokenizer(
         cached = None
     tokens = None
     tokens = _tokenizer_strings(inner)
+    # Anything not continuable, an empty partial included to match the route guard and render_prompt_with_boundary, renders as an ordinary new turn
     profile = model_markup(
         template,
         tokens,
@@ -2467,7 +2537,7 @@ def alternating_turns(messages: list) -> list:
             if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
                 continue
             text = content_to_text(message.get("content")).strip()
-            # Empty user turns are kept: an earlier recording or picture replays with no text.
+            # Kept even empty: an earlier recording or picture replays as a user turn with no text.
             if not text and message["role"] == "assistant":
                 continue
             turn = named_turn({"role": message["role"], "content": text}, message)
@@ -2500,6 +2570,7 @@ def messages_with_attached_image(
                 return message
             if isinstance(body, str) and body:
                 return {**message, "content": [{"type": "text", "text": body}]}
+            # exclude_none strips content from an assistant tool-call turn entirely.
             return {**message, "content": []}
 
         conversation = [_as_parts(m) for m in conversation]
@@ -2515,6 +2586,7 @@ def messages_with_attached_image(
                 ),
             },
         )
+    # Once per medium: a reverse scan would mark a nudge retry's correction, not the question.
     parts = [
         {"type": part_type}
         for part_type, wanted, counter in (
@@ -2554,7 +2626,7 @@ def messages_with_attached_image(
 
 
 def render_advertising_tools(render, tools):
-    """Compares two renders, since a template naming tools can still drop the schema without raising."""
+    """Compares two renders, since a template naming tools can drop the schema without raising. No-tools probe runs first so the last render is the real one."""
     if not tools:
         return render(None), False
     try:
@@ -2575,6 +2647,7 @@ def append_assistant_turn(
     """Merges into a resumed partial to keep role alternation and extra keys such as extra_content."""
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
     if prev_text is not None and isinstance(assistant_msg.get("content"), str):
+        # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
         added_reasoning = assistant_msg.get("reasoning_content")
@@ -2591,7 +2664,7 @@ def append_assistant_turn(
 
 
 def strip_open_reasoning_prefill(prefix: str) -> str:
-    """Drops only an unclosed opener the prompt ends on; a bare think tag in an earlier turn is kept."""
+    """Drops an unclosed think opener the prompt ends on, else a spliced answer resumes as reasoning; a bare think tag in an earlier turn is kept."""
     open_at = prefix.rfind(_THINK_OPEN)
     if open_at == -1 or open_at < prefix.rfind(_THINK_CLOSE):
         return prefix
@@ -2661,9 +2734,7 @@ def render_prompt_with_boundary(
 
 
 def neutralize_for_render(tokenizer, messages: list, tools: Optional[list]):
-    """Sweep the catalog and the messages for control markup, in the one correct order. Returns
-    ``(messages, tools, markup)``. One place because the sweep is order dependent: a call site
-    that re-derived it swept the messages against a profile the render would not select (#7066)."""
+    """Gated on the markers of the loaded model, so another family sentinel is left alone."""
     markup = markup_for_tokenizer(tokenizer, tools)
     tools = neutralize_tool_descriptions(tools, None, markup)
     # Sanitizing can empty the catalog and flip the selector, so re-profile first.
@@ -2682,7 +2753,7 @@ def apply_chat_template_for_generation(
     preserve_thinking: Optional[bool] = None,
     continue_final_message: bool = False,
 ) -> str:
-    """Tries the richest kwargs first, dropping one group per TypeError; template errors propagate."""
+    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn."""
     from core.inference.mcp_images import prepare_image_turn_boundaries
 
     for template in _selected_chat_template_strings(tokenizer, tools):
@@ -2718,6 +2789,7 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
+    # Pass tools: apply_chat_template_for_generation profiles with them, and omitting them here described a default template the request never rendered
     _continue_text = trailing_assistant_text(messages) if continue_final_message else None
     _continuing = bool(_continue_text)
     _resumes_thought = (
@@ -2853,14 +2925,15 @@ def resolve_native_chat_template(
     active_model_name,
     hf_token = None,
 ):
-    """None on fetch failure is retried rather than pinned; False means the repo has no native template."""
+    """Native chat template cached on model_info; None on failed fetch (retried), False if repo has none."""
     native_tpl = model_info.get("native_chat_template")
     if native_tpl is not None:
         return native_tpl
+    # A LoRA adapter's native template lives on the base model, not the adapter id.
     template_source = model_info.get("base_model") or active_model_name
     if not template_source:
         return None
-    # Reuse the load-time trust_remote_code; the stored flag already covers template_source.
+    # Reuse load-time trust_remote_code so a custom-code tokenizer repo can instantiate its class.
     trust_remote_code = bool(model_info.get("trust_remote_code", False))
     try:
         from transformers import AutoTokenizer
@@ -2892,7 +2965,7 @@ def render_native_template(
     hf_token: Optional[str] = None,
     return_metadata: bool = False,
 ):
-    """Loads the native template straight from the repo, reusing the load-time trust_remote_code consent."""
+    """Renders with the native repo template; None unless it emits tools, since overrides drop tools."""
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
     native_tpl = resolve_native_chat_template(model_info, active_model_name, hf_token)
@@ -2972,7 +3045,7 @@ def render_with_native_template_fallback(
     hf_token: Optional[str] = None,
     return_metadata: bool = False,
 ):
-    """Re-renders with the native template when an override drops tools, detected by comparing renders."""
+    """Returns the prompt, native-rendered when an override drops tools; return_metadata adds markers."""
     live_markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
 
     def _result(
@@ -2982,6 +3055,7 @@ def render_with_native_template_fallback(
     ):
         if return_metadata:
             if advertised is None and tools:
+                # Gemma 4 can emit native reasoning after an override rendered a marker-free prompt; keep no-tools thinking, but cached metadata must not describe tool prompts
                 advertised = neutralize_tool_descriptions(
                     tools, None, markup_for_tokenizer(tokenizer, tools)
                 )
@@ -2989,6 +3063,7 @@ def render_with_native_template_fallback(
         return prompt
 
     if not tools:
+        # Probe whether the live template dropped the schema; a tools-requiring template can raise here, and on any error keep the valid tools prompt
         markers = live_markers
         if markers is None:
             markers = detect_reasoning_channel_markers_from_model_info(
@@ -2997,6 +3072,7 @@ def render_with_native_template_fallback(
         return _result(formatted_prompt, markers)
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
+    # Assets live at <backend>/assets/chat_templates/; walk up three parents from this module to <backend>, as utils/inference/inference_config.py does
     try:
         probe_no_tools = apply_fn(
             tokenizer,
@@ -3015,7 +3091,7 @@ def render_with_native_template_fallback(
         )
         return _result(formatted_prompt)
     if formatted_prompt != probe_no_tools:
-        return _result(formatted_prompt)
+        return _result(formatted_prompt)  # template already emits the tools schema
     native_prompt = render_native_template(
         model_info = model_info,
         active_model_name = active_model_name,

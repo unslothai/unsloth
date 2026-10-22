@@ -52,7 +52,7 @@ INT8_V1_FACTS = {
     "layout": "PlainLayout",
 }
 
-# Same rule as prequant_safetensors._INERT_FIELD_VALUES.
+# Unknown fields carrying one of these are behaviourally absent (same rule as prequant_safetensors).
 _INERT = (False, None, 0)
 
 _DTYPES = ("bfloat16", "float16", "float32", "float8_e4m3fn", "float8_e5m2", "int8")
@@ -248,6 +248,7 @@ def _rebuild_int8(
         used.add(d)
 
     if v1 is not None and act_fields is not None and not reduce_range:
+        # Exactly the objects torchao <= 0.17 unpickles from the hosted .pt (see INT8_V1_FACTS).
         impl = v1["PlainAQTTensorImpl"](qdata, scale.reshape(n), None, v1["PlainLayout"]())
         aqt = v1["AffineQuantizedTensor"](
             impl,
@@ -293,6 +294,7 @@ def _rebuild_fp8(name: str, entry: dict, tensors: dict, used: set, api: dict) ->
             f"fp8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete"
         )
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
+    # As for int8: anything but a 2-D per-row or per-tensor weight is torchao's to read.
     if qdata.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2) or qdata.dim() != 2:
         raise _Unsupported(f"{name}: fp8 qdata {qdata.dtype} {tuple(qdata.shape)}")
     n, k = qdata.shape
@@ -346,7 +348,7 @@ def native_unflatten(
     *,
     path: str = "",
 ) -> Optional[dict]:
-    """Raises ValueError on an incomplete checkpoint, since torchao would fail later and less clearly."""
+    """Returns None with tensors untouched when the torchao reader must handle it; raises ValueError on an incomplete checkpoint, which torchao would fail later."""
     api = _torchao_api()
     if api is None:
         return None

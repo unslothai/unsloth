@@ -35,7 +35,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# llama-server's route table (tools/server/server.cpp) minus /props; bare paths only.
+# llama-server route table minus /props; bare paths only, so it cannot shadow /api/ or /v1/
 _ENGINE_PROBE_PATHS = frozenset(
     {
         "apply-template",
@@ -66,6 +66,7 @@ _ENGINE_PROBE_PATHS = frozenset(
     }
 )
 
+# /slots/:id_slot is the one dynamic entry in that table, and Studio calls it itself.
 _ENGINE_PROBE_PREFIXES = ("slots/",)
 
 # Forwarded to the resident llama-server (#11705). Slot save / restore stays denied: Studio owns slot persistence.
@@ -123,6 +124,7 @@ def _studio_version() -> str:
     """The version string, resolved once: get_studio_version() shells out to git twice
     on a source checkout, and uncached that lands on the event loop per probe."""
     try:
+        # Inside the guard: an ImportError here would 500 a probe about something else.
         from utils.studio_version import get_studio_version
         return get_studio_version()
     except Exception:  # noqa: BLE001 -- discovery must not 500 on a version lookup
@@ -135,7 +137,7 @@ def _loaded_public_model_id() -> Optional[str]:
     llama_backend = inf.get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         return inf._llama_public_model_id(llama_backend)
-    # peek, not get: the cold build waits on hardware detection.
+    # peek, not get: the orchestrator's cold build waits on hardware detection.
     orchestrator = inf._peek_inference_backend()
     if orchestrator is not None and getattr(orchestrator, "active_model_name", None):
         return inf._orchestrator_public_model_id(orchestrator)
@@ -150,6 +152,7 @@ def _server_props() -> dict:
     llama_loaded = bool(getattr(llama_backend, "is_loaded", False))
     props: dict[str, Any] = {}
     if llama_loaded:
+        # Documented not to raise, but a probe is the wrong place to find out it does.
         try:
             upstream = llama_backend._query_server_props()
         except Exception:  # noqa: BLE001
@@ -343,8 +346,7 @@ for _method, _path in sorted(_PASSTHROUGH_ROUTES):
 @router.get("/version", include_in_schema = False)
 @router.get("/version/", include_in_schema = False)
 async def studio_version(current_subject: str = Depends(get_current_subject)):
-    """Bare /version only: Ollama spells it /api/version, and answering there is part
-    of claiming to be Ollama."""
+    """Threaded like /props because the first call resolves the version."""
     return {"version": await asyncio.to_thread(_studio_version)}
 
 
@@ -567,11 +569,11 @@ async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# Else POST hits the GET-only catch-all and 405s. HEAD isn't admitted on GET routes;
-# OPTIONS is left for CORS preflight.
+# Else POST hits the GET-only catch-all and 405s. GET stays out so assets win; HEAD is not admitted
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 
+# Both forms of every path: no redirect rescues "POST /completion/"
 def _both_forms(path: str) -> tuple:
     return (path, path + "/")
 

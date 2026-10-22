@@ -90,7 +90,7 @@ def is_anthropic_path(path: str) -> bool:
     return path.startswith("/v1/messages")
 
 
-# Jev-compatible, not OpenAI: clients expect FastAPI's own 422 and {"detail": ...}.
+# Jev-compatible, not OpenAI: its clients expect FastAPI's own 422 and {"detail": ...} bodies.
 _NATIVE_ERROR_PATHS = frozenset({"/v1/systemone"})
 
 
@@ -142,8 +142,9 @@ def _summarize_validation_errors(errors) -> tuple:
     return summary, param
 
 
-# Bound echoed input: encoding binary raised and turned a 422 into a 500.
+# jsonable_encoder renders the offending "input" with o.decode(), which raises on binary and turned a 422 into a 500 whose traceback embedded the payload: one 531 KB upload logged 2.2 MB.
 _MAX_ECHOED_INPUT_CHARS = 200
+# A huge container of small values is as unbounded as one huge string (an array of 200k ints would have every element copied into the 422 body), so keep only enough to identify it.
 _MAX_ECHOED_ITEMS = 20
 _MAX_ECHOED_DEPTH = 4
 
@@ -151,13 +152,13 @@ _MAX_ECHOED_DEPTH = 4
 def _truncate_text(value: str) -> str:
     if len(value) > _MAX_ECHOED_INPUT_CHARS:
         value = value[:_MAX_ECHOED_INPUT_CHARS] + f"... (truncated, {len(value)} chars)"
-    # A lone surrogate cannot be UTF-8 encoded and would turn the 422 into a 500.
+    # A JSON body may legally contain a lone surrogate, which survives parsing but cannot be UTF-8 encoded; Starlette's JSONResponse encodes with ensure_ascii = False, so echoing one turns the 422 back into a 500.
     if _LONE_SURROGATE_RE.search(value):
         value = _LONE_SURROGATE_RE.sub(lambda m: f"\\u{ord(m.group()):04x}", value)
     return value
 
 
-# str() on a huge int raises above sys.get_int_max_str_digits().
+# Digits, not characters: str() on a very large int raises above sys.get_int_max_str_digits(), and json.dumps would emit every digit otherwise.
 _MAX_ECHOED_INT_DIGITS = 100
 _LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
@@ -165,6 +166,7 @@ _LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 def _summarize_int(value: int) -> object:
     if -(10**_MAX_ECHOED_INT_DIGITS) < value < 10**_MAX_ECHOED_INT_DIGITS:
         return value
+    # bit_length, not str(): str() is what raises above the digit limit.
     return f"<integer with about {value.bit_length() * 3 // 10} digits>"
 
 
@@ -177,11 +179,12 @@ def _summarize_error_input(value, depth: int = 0):
     if isinstance(value, int) and not isinstance(value, bool):
         return _summarize_int(value)
     if isinstance(value, float) and not math.isfinite(value):
-        # Starlette dumps with allow_nan = False, so echoing NaN would cause a 500.
+        # NaN and Infinity survive jsonable_encoder but Starlette's JSONResponse dumps with allow_nan = False, so echoing one turns the 422 into a 500.
         return repr(value)
     if isinstance(value, dict):
         if depth >= _MAX_ECHOED_DEPTH:
             return f"<dict with {len(value)} keys>"
+        # islice, not a slice of items(): a 10 MB object should not be materialized into a list just to keep the first 20 entries. A key can be arbitrarily long too, so it gets the same budget as a value.
         out = {
             _truncate_text(k) if isinstance(k, str) else k: _summarize_error_input(v, depth + 1)
             for k, v in islice(value.items(), _MAX_ECHOED_ITEMS)
@@ -199,6 +202,7 @@ def _summarize_error_input(value, depth: int = 0):
     return value
 
 
+# One error dictionary per rejected array element is normal for a route that validates each item, so the count itself is unbounded even when every entry is tiny.
 _MAX_ECHOED_ERRORS = 20
 
 
@@ -211,7 +215,7 @@ def safe_validation_errors(errors) -> list:
             safe.append(err)
             continue
         cleaned = dict(err)
-        # A typed mapping puts the user-controlled key into loc, so bound it too.
+        # A typed mapping puts the offending key straight into loc (CreateResearchRun has budgets: dict[str, int]), so loc is user-controlled and unbounded too.
         loc = cleaned.get("loc")
         if isinstance(loc, (list, tuple)):
             cleaned["loc"] = [
@@ -220,10 +224,10 @@ def safe_validation_errors(errors) -> list:
             ]
         if "input" in cleaned:
             cleaned["input"] = _summarize_error_input(cleaned["input"])
-        # Validators may quote the submitted value in msg, so bound it too.
+        # A validator that quotes the submitted value reaches "msg" too (models/training.py's _parse_lr raises f"... (got {v!r})"), so a megabyte-long learning_rate would come back in full even with "input" summarized.
         if isinstance(cleaned.get("msg"), str):
             cleaned["msg"] = _truncate_text(cleaned["msg"])
-        # ctx can carry the exception object, which is not JSON.
+        # ctx can carry the triggering exception object, which is not JSON either, and whose str() quotes the same value.
         ctx = cleaned.get("ctx")
         if isinstance(ctx, dict):
             cleaned["ctx"] = {
@@ -249,11 +253,13 @@ def install_api_error_handlers(app) -> None:
     async def _handle_validation_error(request, exc):
         path = request.url.path
         if wants_api_error_envelope(path):
+            # Same sanitizing as the 422 branch: /v1 builds its message from msg, and a validator that quotes the submitted value (models/inference.py embeds an unsupported block's type with btype!r) makes msg unbounded.
             summary, param = _summarize_validation_errors(safe_validation_errors(exc.errors()))
             return JSONResponse(
                 status_code = 400,
                 content = error_body_for_path(path, summary, status = 400, param = param),
             )
+        # Default FastAPI behavior for every other path, minus the raw input echo (see safe_validation_errors: encoding it raised and turned 422 into 500).
         return JSONResponse(
             status_code = 422,
             content = {"detail": jsonable_encoder(safe_validation_errors(exc.errors()))},
@@ -263,11 +269,12 @@ def install_api_error_handlers(app) -> None:
     async def _handle_http_exception(request, exc):
         path = request.url.path
         headers = getattr(exc, "headers", None)
-        # 204/304/1xx must not carry a body, as in FastAPI's default handler.
+        # Statuses like 204/304/1xx must not carry a body, mirroring FastAPI's default http_exception_handler, which returns a bodiless Response.
         if not is_body_allowed_for_status_code(exc.status_code):
             return Response(status_code = exc.status_code, headers = headers)
         if wants_api_error_envelope(path):
             detail = exc.detail
+            # Already a fully-formed envelope: pass through untouched.
             if isinstance(detail, dict) and ("error" in detail or detail.get("type") == "error"):
                 return JSONResponse(
                     status_code = exc.status_code,
@@ -296,6 +303,7 @@ def install_api_error_handlers(app) -> None:
                 ),
                 headers = headers,
             )
+        # Default FastAPI behavior for every other path.
         return JSONResponse(
             status_code = exc.status_code,
             content = {"detail": exc.detail},

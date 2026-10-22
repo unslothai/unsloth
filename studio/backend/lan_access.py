@@ -39,6 +39,7 @@ from utils.host_policy import set_lan_connector_active
 
 logger = get_logger(__name__)
 
+# local socket work either way, so exceeding these means the event loop is wedged
 _START_TIMEOUT = 10.0
 # kept under the ~5s Windows console-close budget run.py's shutdown path works to
 _STOP_TIMEOUT = 3.0
@@ -46,6 +47,7 @@ _STOP_TIMEOUT = 3.0
 # accepted LAN requests stay remote callers; on expiry the trust flag stays active
 _DRAIN_TIMEOUT = 300.0
 
+# networking mode rarely changes, but a failed wslinfo probe must eventually recover
 _WSL_MODE_CACHE_TTL = 60.0
 
 # uvicorn's own default, so a burst queues on the LAN socket as it does on loopback
@@ -99,6 +101,7 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
         if normalized not in addresses:
             addresses.append(normalized)
 
+    # a UDP connect only fixes the local end of the socket; nothing is sent to the target
     probe = None
     try:
         probe = socket.socket(socket_family, socket.SOCK_DGRAM)
@@ -110,6 +113,7 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
         if probe is not None:
             probe.close()
 
+    # Route probes and hostname lookup miss other adapters; an isolated LAN has no route at all.
     for address in _interface_addresses(ip_version):
         _add(address)
     return addresses
@@ -342,6 +346,7 @@ def start_lan_listener(
         try:
             future = asyncio.run_coroutine_threadsafe(serving, loop)
         except RuntimeError as exc:
+            # the loop can close between _server_loop validating it and this call
             serving.close()
             _fail_start(sockets, port, exc)
             raise RuntimeError(_error) from exc
@@ -412,6 +417,7 @@ def _clear_trust_after_drain(server) -> None:
         time.sleep(0.05)
     with _lock:
         if state is not None and state.connections:
+            # ownership is never given up: a request that never ended is still remote
             logger.warning("LAN access kept the trust flag on: connections did not drain")
             return
         _pending_drains -= 1
@@ -438,7 +444,7 @@ def stop_lan_listener() -> bool:
     try:
         server, loop, sockets = _server, _serve_loop, _sockets
         port = _port
-        # cleared before the wait so a request landing mid-teardown already reads as off
+        # closed before the wait so a request landing mid-teardown already reads as off
         _bound_addresses = ()
 
         if server is None:
@@ -450,6 +456,7 @@ def stop_lan_listener() -> bool:
             logger.info("LAN access stopping")
             return True
         if loop is None or loop.is_closed() or not loop.is_running():
+            # nothing is left to run uvicorn's shutdown, so release the sockets here
             _close_sockets(sockets)
             _release_listener_state()
             logger.info("LAN access stopped with its server loop")

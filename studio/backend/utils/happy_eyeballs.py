@@ -108,8 +108,8 @@ def happy_eyeballs_connection(
     ordered = _interleave(infos)
     delay = attempt_delay()
     exceptions: list = []
-    failed: dict = {}
-    pending: dict = {}  # every attempt gets the whole timeout
+    failed: dict = {}  # sockaddr -> its failure
+    pending: dict = {}  # socket -> (sockaddr, expiry); every attempt gets the whole timeout
     winner = None
 
     def _fail(sa, exc):
@@ -120,7 +120,7 @@ def happy_eyeballs_connection(
     try:
         index = 0
         next_due = 0.0
-        kick = True
+        kick = True  # a failed attempt lets the next one start at once (RFC 8305)
         while True:
             now = time.monotonic()
             for sock, (sa, expiry) in list(pending.items()):

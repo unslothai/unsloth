@@ -35,6 +35,7 @@ class ExtraSlot:
 
 slots: list[ExtraSlot] = []
 lock = threading.Lock()
+# (slot, model_path) while a load fills a slot of its own.
 loading: Optional[tuple[ExtraSlot, str]] = None
 # Out of routing, but their server would not stop: still priced for VRAM and retried by every drop.
 stuck: list[ExtraSlot] = []
@@ -222,6 +223,7 @@ def drop(slot: ExtraSlot) -> None:
         slot.orchestrator._cleanup()
         raise
     slot.orchestrator._cleanup()
+    # _cleanup does not report a worker that outlived its kill.
     if _worker_alive(slot.orchestrator):
         if slot not in stuck:
             stuck.append(slot)

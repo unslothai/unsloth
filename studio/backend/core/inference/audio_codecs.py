@@ -143,6 +143,7 @@ class AudioCodecManager:
         self._bicodec_code_dir = None
         self._dac_audio_codec = None
         self._outetts_code_dir = None
+        # Loaders reuse a resident codec, so later requests keep the first placement, not their own
         self._codec_devices: dict = {}
 
     def load_codec(
@@ -158,7 +159,7 @@ class AudioCodecManager:
         elif audio_type == "dac":
             self._load_dac(device, model_repo_path)
         elif audio_type == "csm":
-            pass
+            pass  # CSM decoding is built into the model (output_audio=True)
         else:
             raise ValueError(f"Unknown audio_type: {audio_type}")
 
@@ -172,6 +173,7 @@ class AudioCodecManager:
         from snac import SNAC
         from utils.hf_cache_settings import active_hf_hub_cache
 
+        # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
             SNAC.from_pretrained(
                 model_repo_path or SNAC_REPOSITORY,
@@ -197,6 +199,7 @@ class AudioCodecManager:
             spark_code_dir,
         ).BiCodecTokenizer
 
+        # BiCodecTokenizer needs the MODEL repo path (has BiCodec/ weights)
         tokenizer_path = model_repo_path or spark_code_dir
         self._bicodec_repo_path = tokenizer_path
         self._bicodec_tokenizer = BiCodecTokenizer(tokenizer_path, device)
@@ -233,11 +236,12 @@ class AudioCodecManager:
         logger.info("Loaded DAC audio codec")
 
     def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
-        """Orpheus emits 7 codes per frame, redistributed into 3 SNAC layers; output is 24000 Hz WAV."""
+        """Decodes the codes after the START_OF_SPEECH marker 128257, drops EOS 128258; 7 codes per frame into 3 SNAC layers; 24000 Hz WAV"""
         token_indices = (generated_ids == 128257).nonzero(as_tuple = True)
         if len(token_indices[1]) > 0:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
         else:
+            # Fall back to the entire output if the marker is missing
             logger.warning("No START_OF_SPEECH token (128257) found — using full generated output")
             cropped = generated_ids
         row = cropped[0]
@@ -250,7 +254,7 @@ class AudioCodecManager:
 
         codes = [t.item() - 128266 for t in row]
 
-        # Redistribute into 3 SNAC layers (7 codes per frame -> 1+2+4).
+        # Redistribute into 3 SNAC layers (7 codes per frame → 1+2+4)
         layer_1, layer_2, layer_3 = [], [], []
         for i in range(len(codes) // 7):
             layer_1.append(codes[7 * i])
@@ -292,6 +296,7 @@ class AudioCodecManager:
 
         semantic_ids = torch.tensor([int(t) for t in semantic_matches]).long().unsqueeze(0)
 
+        # Speaker encoder expects exactly 32 global tokens (token_num=32); pad with zeros or truncate.
         GLOBAL_TOKEN_NUM = 32
         if global_matches:
             raw = [int(t) for t in global_matches]
@@ -338,8 +343,7 @@ class AudioCodecManager:
         token_ids: Optional[list] = None,
         text: Optional[str] = None,
     ) -> Tuple[bytes, int]:
-        """device is only a preference: a codec already resident elsewhere decodes where it lives
-        instead."""
+        """device is only a preference; a resident codec decodes where it lives, since cross-device inputs fail for SNAC and DAC and BiCodec would take VRAM"""
         device = self._codec_devices.get(audio_type, device)
         if audio_type == "snac":
             if not token_ids:

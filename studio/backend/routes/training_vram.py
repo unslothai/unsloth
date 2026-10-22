@@ -202,6 +202,7 @@ def can_keep_chat_during_training(
             try:
                 resolved = resolve_requested_gpu_ids(gpu_ids)
             except ValueError:
+                # Invalid ids -> start_training will 400 first, so don't unload.
                 return True, {"mode": "explicit", "reason": "invalid_gpu_ids"}
 
             required_gb, est_meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
@@ -210,6 +211,7 @@ def can_keep_chat_during_training(
 
             free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
 
+            # A requested GPU missing from the device list contributes 0.
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
             ranked = sorted(free_vals, reverse = True)
             usable_gb = (
@@ -235,7 +237,7 @@ def can_keep_chat_during_training(
                 "min_free_gb": round(min_free_gb, 3),
             }
 
-        # Auto: the same call start_training makes later.
+        # Auto: same call start_training makes later; reuse its sizing metadata.
         _selected, meta = auto_select_gpu_ids(model_name, **est_kwargs)
         mode = meta.get("selection_mode")
         required_gb = meta.get("required_gb")
@@ -271,7 +273,7 @@ def can_load_chat_during_training(
     single_device_gpu: Optional[str] = None,
     post_handoff_free_gpu_vram_gb: Optional[Dict[int, float]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
-    """Default-denies any CUDA or XPU case it cannot size, so chat loads never OOM training."""
+    """Default-deny unsizable CUDA/XPU cases so chat loads never OOM training; use effective load_in_4bit."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -314,6 +316,7 @@ def can_load_chat_during_training(
                 "needed_gb": needed_gb,
             }
 
+        # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
         if not requested_gpu_ids and not is_gguf:
             _selected, meta = auto_select_gpu_ids(
                 model_name,
@@ -341,6 +344,7 @@ def can_load_chat_during_training(
                 "needed_gb": needed_gb,
             }
 
+        # Explicit GPUs, or GGUF: size directly and check live free VRAM.
         uses_vulkan_memory = vulkan_free_vram_gb is not None
         if is_gguf and uses_vulkan_memory:
             mode = "gguf_vulkan"
@@ -378,6 +382,7 @@ def can_load_chat_during_training(
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]
         elif requested_gpu_ids:
+            # Invalid ids -> load_model 400s first, so don't block; missing id = 0.
             try:
                 resolved = resolve_requested_gpu_ids(requested_gpu_ids)
             except ValueError:
@@ -415,6 +420,7 @@ def can_load_chat_during_training(
             info["per_gpu_needed_gb"] = round(per_gpu_needed_gb, 3)
         return aggregate_fits and per_gpu_fits, info
     except Exception as e:
+        # Never let a sizing failure load a chat model into a training OOM.
         logger.warning("Chat-load coexistence probe failed; will refuse: %s", e)
         return False, {"reason": "probe_error", "error": str(e)}
 
@@ -469,6 +475,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     try:
         from routes.inference import get_llama_cpp_backend
         llama = get_llama_cpp_backend()
+        # CPU-only GGUF holds no VRAM, so killing it can't help (see summarize).
         if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
             name = llama.model_identifier or "gguf"
             logger.info(
@@ -531,6 +538,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
             logger.info("Cancelling STT model load for training (%s)", reason)
             # The loader may still hold VRAM; wait for it to observe the cancel.
             sidecar.wait_for_load_to_settle()
+            # A load finishing after cancel leaves a resident model; unload it so training gets the memory back.
             if sidecar.loaded_model:
                 sidecar.unload()
             freed.append("stt:loading")
@@ -547,7 +555,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload Transformers STT model: %s", e)
 
-    # Both engines can hold memory at once.
+    # Check the GGUF sidecar even after a cancelled or failed Transformers unload; both engines can hold memory at once.
     try:
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         ggml = get_ggml_stt_sidecar()
@@ -578,6 +586,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         mtmd = get_mtmd_stt_sidecar()
         if mtmd.is_loading() and mtmd.cancel_pending_load():
             logger.info("Cancelling mtmd STT model load for training (%s)", reason)
+            # A starting llama-server is unreachable via unload(), so cancel and reap it, then wait.
             mtmd.wait_for_load_to_settle()
             if mtmd.loaded_model:
                 mtmd.unload()
@@ -602,6 +611,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         audiocpp = get_audio_cpp_stt_sidecar()
         if audiocpp.is_loading() and audiocpp.cancel_pending_load():
             logger.info("Cancelling audio.cpp STT model load for training (%s)", reason)
+            # audiocpp_server loads before answering, so a cancelled startup is reaped under the sidecar lock.
             audiocpp.wait_for_load_to_settle()
             if audiocpp.loaded_model:
                 audiocpp.unload()

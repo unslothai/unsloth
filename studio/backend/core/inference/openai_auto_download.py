@@ -37,14 +37,19 @@ from utils.account_context import current_account_id
 
 logger = get_logger(__name__)
 
+# Keep the Hub probe short so a slow Hub can't stall the request path.
 _MODEL_INFO_TIMEOUT_S = 8.0
-# Hub calls have no timeout of their own and run while holding the single-flight slot.
+# Hub calls take no timeout and run holding the single-flight slot, so an unresponsive Hub would pin it; the code probe fetches up to three configs
 _CODE_PROBE_TIMEOUT_S = 20.0
+# Headroom left free after the download, so filling the disk can't wedge the box.
 _DISK_RESERVE_BYTES = 5 * 1024**3
 _WATCH_POLL_S = 2.0
+# A stalled watcher must not pin the single-flight slot forever.
 _MAX_WATCH_S = 24 * 60 * 60
+# past the watch window the row is resolved, so poll only to see whether the worker is alive and still owns the slot
 _TIMED_OUT_POLL_S = 60.0
 _RETRY_AFTER_S = 30
+# Long enough for a Retry-After client to return; short enough that no stuck one holds the slot.
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
 # Probe the selected weight: speech GGUFs need not publish tokenizer sidecars.
@@ -66,6 +71,7 @@ class AutoDownloadRefusal:
 @dataclass
 class _Active:
     repo_id: str
+    # None while the Hub probe is still deciding which quant to fetch.
     variant: Optional[str] = None
     expected_bytes: int = 0
     monitor_id: Optional[str] = None
@@ -73,12 +79,14 @@ class _Active:
     # Held until a retry surfaces it, else the client restarts the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
+    # Who asked: another account's busy answer names no repo or quant.
     account_id: Optional[str] = None
 
 
 _lock = threading.Lock()
 _active: Optional[_Active] = None
 
+# Repos the Hub says are not servable, so a "vendor/model" miss doesn't re-probe every request.
 _NOT_SERVABLE_TTL_S = 10 * 60
 _NOT_SERVABLE_MAX = 256
 _cache_lock = threading.Lock()
@@ -161,7 +169,7 @@ def _endpoint() -> str:
 
 
 def _servable_key(repo_id: str, hf_token: Optional[str], endpoint: str) -> str:
-    """Keyed per credential, since a tokenless 404 says nothing about a caller that has one."""
+    """Keyed per credential, since a tokenless 404 says nothing about a caller that has one; digested, so no token is held"""
     import hashlib
 
     seen_as = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else "anon"
@@ -263,6 +271,7 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
 
     from hub.utils.gguf import drop_shadowed_appledouble_siblings
 
+    # Plans and advertised variants are derived separately, so both are filtered here.
     siblings = [
         sibling
         for sibling in drop_shadowed_appledouble_siblings(list(siblings or []))
@@ -391,6 +400,7 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
                     api_monitor.fail_open(active.monitor_id, "Download timed out")
                     timed_out = True
                     continue
+                # Only "running" has progress; the others are still in flight, so keep the slot.
                 if state == "running":
                     api_monitor.set_progress(
                         active.monitor_id,
@@ -406,9 +416,11 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
                 # No invalidate: finalize_worker_exit already refreshed the cache.
                 api_monitor.finish(active.monitor_id, status = "completed")
             elif state == "idle":
+                # The job vanished without a terminal state (worker killed).
                 api_monitor.fail_open(active.monitor_id, "Download did not complete")
             else:
                 api_monitor.fail_open(active.monitor_id, error or f"Download {state}")
+                # keep the slot so the next retry is told it failed instead of silently restarting the same download
                 active.error = error or f"Download {state}"
                 active.failed_at = time.monotonic()
                 return
@@ -434,7 +446,7 @@ def _downloading_refusal(label: str, percent: Optional[float]) -> AutoDownloadRe
 
 
 async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
-    """Any failure answers False, since refusing would strand ordinary traffic during a download."""
+    """Any failure answers False, since refusing would strand ordinary traffic; one Hub for the whole lookup, so its answer is filed under that Hub"""
     endpoint = _endpoint()
     if _is_not_servable(repo_id, hf_token, endpoint):
         return False
@@ -449,7 +461,7 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
         info = await asyncio.to_thread(_probe)
     except Exception:
         return False
-    # Same filter as admission: mmproj, MTP drafters and big-endian builds are not quants.
+    # Same filter as admission, not a bare .gguf test: otherwise an ordinary foreign label is held at model_download_busy for an unrelated download
     servable = bool(_gguf_variants(getattr(info, "siblings", None), repo_id))
     if not servable:
         _mark_not_servable(repo_id, hf_token, endpoint)
@@ -465,7 +477,7 @@ async def maybe_auto_download(
     subject: Optional[str] = None,
     via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
-    """Refuses incapable targets before any download; via_api_key marks the row as API-key traffic."""
+    """Refuses incapable targets before any download; via_api_key marks API-key traffic, since /v1 also serves the Unsloth chat on a JWT"""
     global _active
 
     repo_id, wanted_variant = split_model_ref(requested_model)
@@ -474,10 +486,12 @@ async def maybe_auto_download(
     if _is_not_servable(repo_id, hf_token) and not looks_like_quant(wanted_variant):
         return None
 
+    # settle the single-flight slot before the network, so retries during a download stay cheap
     busy: Optional[_Active] = None
     with _lock:
         current = _active
         if current is not None and current.failed_at:
+            # A held failure only owns the slot until someone is told about it.
             if current.repo_id != repo_id and time.monotonic() - current.failed_at > _FAILED_HOLD_S:
                 _active = current = None
         if current is not None and current.repo_id == repo_id:
@@ -509,6 +523,7 @@ async def maybe_auto_download(
 
     if adopted is not None:
         if adopted.variant is None:
+            # Still probing: no job yet, and a stale whole-repo error would free the probe's slot.
             return _downloading_refusal(adopted.repo_id, None)
         state, error = await _job_state(adopted.repo_id, adopted.variant)
         if state in ("running", "cancelling", "unknown"):
@@ -520,6 +535,7 @@ async def maybe_auto_download(
             )
         if state == "error" or adopted.error:
             error = error or adopted.error
+            # Surface once, then free the slot so a retry can start over.
             _release(adopted)
             return AutoDownloadRefusal(
                 status = 502,
@@ -633,7 +649,7 @@ async def _admit_and_start(
     # trust_remote_code gate: _config_has_auto_map is tri-state, so refuse on True and on None.
     from utils.security.consent import _config_has_auto_map
 
-    # _hub_token, not the raw token: None would fall back to the server's cached login.
+    # _hub_token, not the raw token: None falls back to the server cached login; a timeout defaults to None, which refuses, since unchecked is not cleared
     has_auto_map = await _bounded_probe(
         _config_has_auto_map,
         repo_id,
@@ -777,6 +793,7 @@ def preferred_quant(labels) -> Optional[str]:
     """The one ranking of which quant a bare id means, shared so every surface agrees."""
     from utils.models.model_config import _pick_best_gguf
 
+    # _pick_best_gguf ranks filenames, so feed "<LABEL>.gguf"
     synthetic: dict[str, str] = {}
     for name in labels:
         synthetic.setdefault(f"{name}.gguf", name)
@@ -791,7 +808,7 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     target = (wanted or "").strip().lower()
     if not target:
         return None
-    # Path-qualified keys only: an H3 root stem's bare quant is ambiguous.
+    # Path-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem with a bare quant is ambiguous and must miss
     matches = [
         name
         for key, name in lowered.items()
@@ -813,13 +830,14 @@ def _match_variant(
     manual load, matching what the local resolver does with the same tag.
     """
     if wanted:
-        # Exact match first: generic names like "llama-13b" are valid keys but not quant-shaped.
+        # Exact match first: generic names like llama-13b are valid keys but not quant-shaped, and defaulting past one fetches the wrong model
         lowered = {name.lower(): name for name in variants}
         exact = lowered.get(wanted.strip().lower())
         if exact is None:
-            # Same bare-quant fallback as the plan lookup, unambiguous only.
+            # Same bare-quant fallback as the plan lookup, made here too since admission rejects against this map first; unambiguous only
             exact = _bare_quant_alias(wanted, lowered)
         if exact is not None or looks_like_quant(wanted):
+            # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
     # A bare id means default_gguf_scope, the same scope every resolver applies (preferred_quant is order-sensitive).
     from hub.utils.gguf import default_gguf_scope
@@ -869,6 +887,7 @@ async def _dispatch(
             message = f"Could not start downloading '{requested_model}'.",
         )
 
+    # accepted=False means no worker launched, so report the conflict instead of taking the slot
     if isinstance(dispatched, dict) and not dispatched.get("accepted", True):
         _release(active)
         logger.info("auto-download: dispatch refused for %s (%s)", label, dispatched.get("state"))
@@ -890,6 +909,7 @@ async def _dispatch(
             active.monitor_id = monitor_id
             tracked = active
         else:
+            # Released underneath us: track the job we started, but never stomp a newer owner.
             tracked = _Active(
                 repo_id,
                 variant,

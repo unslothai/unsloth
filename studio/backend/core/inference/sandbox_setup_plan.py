@@ -68,6 +68,7 @@ _elevation_cache: "tuple[float, tuple[str | None, str | None]] | None" = None
 @dataclass(frozen = True)
 class SetupPlan:
     platform: str
+    # One of OPERATIONS; on Linux running it also needs linux_elevation().
     action: str | None = None
     elevation: str | None = None
     steps: tuple[tuple[str, ...], ...] = ()
@@ -256,7 +257,7 @@ def forget_elevation() -> None:
 
 def _linux_elevation() -> tuple[str | None, str | None]:
     if _running_as_root():
-        return "root", None
+        return "root", None  # e.g. a container: the pinned steps run as they are
     sudo = _trusted_tool("sudo")
     if sudo is not None and _sudo_without_password(sudo):
         return "sudo", sudo
@@ -295,6 +296,7 @@ def _linux_plan() -> SetupPlan:
     if state == "refused":
         return SetupPlan(platform = sys.platform, reason = reason)
     if state == "shadowed":
+        # Installing changes nothing: the system copy is there, PATH just finds another one first.
         return SetupPlan(
             platform = sys.platform,
             reason = (
@@ -320,6 +322,7 @@ def _linux_plan() -> SetupPlan:
         steps.extend(_apparmor_steps())
     if not steps:
         return SetupPlan(platform = sys.platform, reason = reason)
+    # The steps carry the command, so the row only needs to say what is wrong.
     return SetupPlan(
         platform = sys.platform,
         action = LINUX_INSTALL,
@@ -345,7 +348,7 @@ def windows_runtime_unsupported() -> str | None:
         return "arch"
     try:
         build = sys.getwindowsversion().build
-    except AttributeError:
+    except AttributeError:  # not Windows
         return None
     return "build" if build < MXC_MIN_WINDOWS_BUILD else None
 
@@ -481,6 +484,7 @@ def _windows_plan() -> SetupPlan:
     if not opted_in:
         parts.append("the Windows sandbox is not turned on yet")
     if installed and missing:
+        # Plain words; the MXC step names mean nothing to a user. Only the null device step repeats per boot.
         again = list(missing) == ["prepare-null-device"]
         parts.append(
             "this PC needs its administrator step again after the restart"

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HF_ENDPOINT = "https://huggingface.co"
 _DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co"
 
+# Reported when the configured value is not reachable by this client.
 DEFAULTS_BY_HEALTH_KEY = {
     "hf_endpoint": _DEFAULT_HF_ENDPOINT,
     "hf_datasets_server": _DEFAULT_DATASETS_SERVER,
@@ -37,6 +38,7 @@ DEFAULTS_BY_HEALTH_KEY = {
 _ds_mirror_warned = False
 # The CSP builder runs on every response, so each bad value is logged once.
 _rejected_warned: set[str] = set()
+# client_reachable_endpoint() runs per request, so each endpoint logs its fallback once, not per call.
 _unreachable_warned: set[str] = set()
 
 # Any of these would add CSP sources or directives rather than one origin.
@@ -101,7 +103,7 @@ def _check(candidate: str) -> tuple[str | None, str | None]:
         # Starlette headers are latin-1, so an IDN host in the CSP would 500 every response.
         reason = "contains non-ASCII characters; use the punycode (xn--) form of the host"
     elif (parts := _split(candidate)) is None:
-        # urlsplit raises on "https://[".
+        # urlsplit RAISES on "https://[", and _build_csp runs on every response.
         reason = "is not a parseable URL"
     else:
         if parts.scheme not in ("http", "https"):
@@ -113,18 +115,19 @@ def _check(candidate: str) -> tuple[str | None, str | None]:
         elif parts.query or parts.fragment:
             reason = "carries a query string or fragment"
         elif not _port_is_valid(parts):
+            # "javascript:alert(1)" becomes a fine URL with a nonsense port.
             reason = "has an invalid port"
         elif parts.netloc.endswith(":"):
             reason = "has an empty port"
         elif "*" in parts.netloc:
             reason = "contains a wildcard host"
         elif parts.scheme == "http" and not is_loopback_host(parts.hostname):
-            # Hub calls carry the user's token, so http off-box exposes it.
+            # Hub calls carry the user's token, so http off-box puts it on the wire.
             reason = (
                 "is plain HTTP to a non-loopback host, which would put the Hub token on the wire"
             )
         else:
-            # Scheme folded per RFC 3986 3.1; the frontend keys its cache on this string.
+            # Folded: RFC 3986 3.1, and the frontend keys its cache on this string.
             return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :]), None
     return None, reason
 
@@ -154,7 +157,7 @@ def is_private_host(hostname: str | None) -> bool:
 
 
 def endpoint_is_reachable_by(endpoint: str, client_host: str | None) -> bool:
-    """Loopback endpoints go only to loopback clients; private ones only to local clients, not remote."""
+    """Loopback only to loopback clients; private ones only to local clients, since off-LAN a private address is an unrelated service that gets the Hub token."""
     parts = _split(endpoint)
     if parts is None:
         return True
@@ -203,7 +206,7 @@ def _canonical(parts, folded: str) -> str:
 
 
 def normalize_hf_endpoint_env() -> None:
-    """Normalizes HF_ENDPOINT before huggingface_hub imports, which reads it raw and unvalidated."""
+    """Normalizes HF_ENDPOINT before huggingface_hub imports (it reads it raw); a rejected value such as a plain-HTTP mirror would still get the Hub token."""
     raw = os.environ.get("HF_ENDPOINT")
     if raw is None:
         return
@@ -213,13 +216,14 @@ def normalize_hf_endpoint_env() -> None:
         return
     endpoint = get_hf_endpoint()
     if endpoint == _DEFAULT_HF_ENDPOINT:
+        # Rejected, or the official host: either way, unset asks for the default.
         os.environ.pop("HF_ENDPOINT", None)
     else:
         os.environ["HF_ENDPOINT"] = endpoint
 
 
 def csp_connect_sources() -> tuple[str, ...]:
-    """Origins only, since a CSP host-source with a path matches exactly; saved-only endpoints stay out."""
+    """Origins only (a CSP host-source path matches exactly); saved-only endpoints stay out, since every client gets this policy and a private address must not show."""
     from utils.hub_settings import saved_only_endpoints
 
     hidden = saved_only_endpoints()
@@ -231,7 +235,7 @@ def csp_connect_sources() -> tuple[str, ...]:
 
 
 def csp_asset_sources() -> tuple[str, ...]:
-    """Only http origins: img-src and media-src already allow https, so an https mirror needs nothing."""
+    """Only http origins, which img-src and media-src do not already allow; a loopback HTTP mirror would otherwise block its avatars and README images."""
     return tuple(
         dict.fromkeys(source for source in csp_connect_sources() if source.startswith("http://"))
     )

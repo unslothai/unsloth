@@ -29,7 +29,7 @@ def exif_upright(image: Any) -> Any:
     if method is None:
         return image
     upright = image.transpose(method)
-    # Drop every source so a re-save cannot re-apply it.
+    # Drop the sources it could be read from again, so a re-save cannot re-apply it.
     for consumed in ("exif", "XML:com.adobe.xmp", "xmp", "Raw profile type exif"):
         upright.info.pop(consumed, None)
     return upright

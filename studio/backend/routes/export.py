@@ -64,7 +64,7 @@ logger = get_logger(__name__)
 
 
 async def _ensure_export_supported() -> None:
-    """Reject mutating exports server-side (400 if unsupported, 409 during a .venv_t5_latest install)."""
+    """Reject mutating exports server-side (400 if unsupported; 409 during a .venv_t5_latest install, else half-swapped sidecar). Read-only endpoints stay ungated."""
     from utils.transformers_latest import is_install_in_progress
 
     if is_install_in_progress():
@@ -75,6 +75,7 @@ async def _ensure_export_supported() -> None:
 
     from utils.hardware import export_capability
 
+    # Off-loop: detection is deferred past bind, so the first call can wait on a cold import.
     cap = await asyncio.to_thread(export_capability)
     if not cap.get("export_supported", True):
         raise HTTPException(
@@ -142,6 +143,7 @@ async def load_checkpoint(
         # Unset lets the backend pick 16-bit for a full fine-tune.
         load_in_4bit = request.load_in_4bit if "load_in_4bit" in request.model_fields_set else None
         backend = get_export_backend()
+        # Worker thread: it waits on a subprocess that can take minutes, so the loop stays free for SSE.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
@@ -153,6 +155,7 @@ async def load_checkpoint(
             trust_remote_code = request.trust_remote_code and not managed_remote_code_refused(),
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
+            # A supplied token cannot say whether it came from a session or an API key.
             allow_ambient = allow_ambient,
             subject = current_subject,
             op_id = request.op_id,
@@ -168,6 +171,7 @@ async def load_checkpoint(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
@@ -246,6 +250,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
     try:
         backend = get_export_backend()
         last_op = backend.get_last_op()
+        # Relativise the recovered path like the per-op POST response, so both routes show the same path.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
             if getattr(backend, "decision", None):
@@ -352,6 +357,7 @@ def _export_details(
         from utils.paths.storage_roots import exports_root
 
         path = Path(output_path)
+        # Outside exports_root, so return the full absolute path and users can find their files on another drive.
         if path.is_absolute():
             try:
                 path.resolve().relative_to(exports_root().resolve())
@@ -653,6 +659,7 @@ async def export_gguf(
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
+        # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
         imatrix_file = request.imatrix_path or (True if request.imatrix else None)
         success, message, output_path = await asyncio.to_thread(
             backend.export_gguf,
@@ -903,6 +910,7 @@ async def stream_export_logs(
     """
     backend = get_export_backend()
 
+    # Cursor: since, then Last-Event-ID, else the run-start snapshot, so a late SSE misses nothing.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:
@@ -917,6 +925,7 @@ async def stream_export_logs(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         nonlocal cursor
+        # Reconnect after 3 seconds if the connection drops mid-export.
         yield "retry: 3000\n\n"
 
         last_yield = time.monotonic()
@@ -953,6 +962,8 @@ async def stream_export_logs(
                         yield _format_sse("{}", event = "heartbeat")
                         last_yield = now
                     if not backend.is_export_active():
+                        # Let the reader thread drain trailing lines printed just
+                        # before the worker signalled done.
                         if idle_since is None:
                             idle_since = now
                         elif now - idle_since > 1.0:
@@ -967,6 +978,7 @@ async def stream_export_logs(
 
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
+            # Client disconnected mid-yield: end cleanly so StreamingResponse finalizes.
             return
         except Exception as exc:
             logger.error("Export log stream failed: %s", exc, exc_info = True)

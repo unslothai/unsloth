@@ -53,7 +53,7 @@ def is_quantized_linear(module: Any) -> bool:
 
 
 def activation_granularity_is_per_row(module: Any) -> Optional[bool]:
-    """Probes both torchao layouts; v1 uses the quantiser name, as granularity= sets the weight side."""
+    """Per-row check over both torchao layouts; None when unrecognised, so callers refuse, not assume."""
     for tensor in _weight_tensors(module):
         kwargs = getattr(tensor, "act_quant_kwargs", None)
         granularity = getattr(kwargs, "granularity", None)
@@ -88,6 +88,7 @@ class PadToMinM(nn.Module):
         super().__init__()
         self.inner = inner
         self.min_m = int(min_m)
+        # pad_to may exceed min_m for shape stability but never fall below it, or the floor is not cleared.
         self.pad_to = max(int(pad_to or min_m), self.min_m)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -103,6 +104,7 @@ class PadToMinM(nn.Module):
             rows = torch.arange((m + self.pad_to + abs(m - self.pad_to)) // 2, device = flat.device)
             out = self.inner(flat.index_select(0, torch.where(rows < m, rows, 0)))[:m]
         elif m < self.pad_to:
+            # Normalise everything below pad_to, not just below min_m, so one row count gives one inductor graph.
             flat = torch.cat([flat, flat[:1].expand(self.pad_to - m, -1)], dim = 0)
             out = self.inner(flat)[:m]
         else:
@@ -127,6 +129,7 @@ class PadToMinM(nn.Module):
         prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
         if destination is None:
+            # Top-level call (``wrapper.state_dict()``): let the inner module build the mapping.
             return self.inner.state_dict(prefix = prefix, keep_vars = keep_vars)
         self.inner.state_dict(destination = destination, prefix = prefix, keep_vars = keep_vars)
         return destination
@@ -164,6 +167,7 @@ class ZeroRowSafeLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
+            # The bias add broadcasts over zero elements, kept so the result matches F.linear's.
             out = x.new_zeros((*x.shape[:-1], self.inner.out_features))
             bias = getattr(self.inner, "bias", None)
             return out if bias is None else out + bias
@@ -261,6 +265,7 @@ def wrap_small_m_linears(
             parent = model.get_submodule(parent_name) if parent_name else model
             module = getattr(parent, leaf)
         except AttributeError:
+            # a family token matching nothing on this variant is not an error
             continue
         # Skips dense Linears and already-wrapped PadToMinM (not an nn.Linear), so no double pad.
         if not is_quantized_linear(module):

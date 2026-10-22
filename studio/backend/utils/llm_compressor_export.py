@@ -46,11 +46,11 @@ def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
     # Same pip-first choice as save.py's llm_compressor_manual_install_command.
     has_pip = importlib.util.find_spec("pip") is not None
 
-    # Ask for a provisionable shadow even if the workspace copy exists: export.py prefers it.
+    # Ask for a provisionable shadow even with a workspace copy: export.py prefers it, but the workspace copy cannot run models above its transformers ceiling.
     consent_kind = None
     install_summary = None
     blocked_reason = None
-    # export.py ignores the shadow once UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN is set.
+    # export.py ignores even a valid shadow once UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN is set.
     if shadow_valid and not shadow_disabled:
         ready = True
     elif not shadow_disabled and not offline:

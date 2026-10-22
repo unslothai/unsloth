@@ -19,7 +19,7 @@ inference stack.
 import os
 from typing import TYPE_CHECKING
 
-# Same ROCm AOTriton opt-in as main.py; without it gfx1151 runs SDPA in MATH.
+# Same ROCm AOTriton opt-in as main.py, for entries that skip main.py; read at first SDPA dispatch, setdefault keeps explicit 0; else gfx1151 runs MATH
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 __all__ = [
@@ -29,6 +29,7 @@ __all__ = [
     "LlamaCppBackend",
 ]
 
+# name -> (submodule, attribute); InferenceBackend aliases InferenceOrchestrator.
 _LAZY_ATTRS = {
     "InferenceOrchestrator": ("orchestrator", "InferenceOrchestrator"),
     "InferenceBackend": ("orchestrator", "InferenceOrchestrator"),

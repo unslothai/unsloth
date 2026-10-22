@@ -180,7 +180,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     account_path(grant.canonical_path)
-    # Path.name is one component, so a "\" in it is part of the name ("AC\DC.pdf").
+    # Path.name is one component, so a "\" in it is part of the name, as in "AC\DC.pdf".
     filename = _document_label(grant.canonical_path.name)
     try:
         with open(grant.canonical_path, "rb") as source:
@@ -559,6 +559,7 @@ def link_kb_folder(
     return _create_linked_folder("knowledge_base", kb_id, payload)
 
 
+# Stays sync for the reason above upload_kb_document.
 @router.post("/threads/{thread_id}/documents")
 def upload_thread_document(
     thread_id: str,
@@ -607,6 +608,7 @@ def _discard_document(document_id: str) -> None:
     _remove_stored_upload(document.get("stored_path"))
 
 
+# Stays sync for the reason above upload_kb_document.
 @router.post("/projects/{project_id}/documents")
 def upload_project_document(
     project_id: str,
@@ -938,6 +940,7 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     return _folder_job_view(row)
 
 
+# POST too, for the same reason as /jobs/{job_id}/events above.
 @router.post("/linked-folder-jobs/{job_id}/events")
 @router.get("/linked-folder-jobs/{job_id}/events", include_in_schema = False)
 def folder_job_events(
@@ -1012,6 +1015,7 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
 @router.post("/search")
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
+    # One connection for the whole request; the ownership check reads a single row.
     conn = _rag_connection()
     try:
         if payload.kb_id:
@@ -1168,6 +1172,6 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     return FileResponse(
         stored_path,
         media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
-        # Linked documents are named by a posix relative path, invalid in this header.
+        # linked documents are named by a posix relative path, invalid in this header
         filename = doc["filename"].rsplit("/", 1)[-1],
     )

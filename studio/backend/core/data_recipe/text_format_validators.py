@@ -13,7 +13,7 @@ from typing import Any
 JSON_VALIDATION_FN_MARKER = "unsloth_json_validator"
 MARKDOWN_VALIDATION_FN_MARKER = "unsloth_markdown_validator"
 
-# https://spec.commonmark.org/0.31.2/#fenced-code-blocks
+# CommonMark fenced code blocks: https://spec.commonmark.org/0.31.2/#fenced-code-blocks
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}(?=[^`]*$)|~{3,})")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
-# Spelled out to keep this module's imports stdlib only.
+# Spelled out, not imported from utils/worker_stderr.py, to keep this module's import graph stdlib only.
 STDERR_MIRROR_KWARG = "unsloth_stderr_mirror_path"
 _MAX_NATIVE_PATH_REDACTIONS = 100
 _MAX_NATIVE_PATH_LABELS = 10_000
@@ -132,7 +132,7 @@ def run_without_native_path_secret(
     except Exception:
         pass
     try:
-        # Clear the worker's daemon policy so HF prefetch can spawn.
+        # Clear the worker's daemon policy so HF prefetch can spawn (#9094).
         from utils.process_lifetime import allow_child_processes
         allow_child_processes()
     except Exception:

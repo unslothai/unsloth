@@ -31,12 +31,13 @@ from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
 
-# ids are file stems; safe chars only so a crafted id cannot escape the directory.
+# ids are file stems; restrict to safe chars so a crafted id cannot escape the directory
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def gallery_dir() -> Path:
     if is_owner_context():
+        # Settings > Library can move the owner's folder elsewhere.
         return location_dir("audio", studio_root() / "audio")
     return ensure_account_dir(account_path("audio"))
 
@@ -46,7 +47,7 @@ def save(
     meta: dict[str, Any],
     source_wav: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Stages the WAV and sidecar, renaming the WAV first, since the sidecar is the commit marker."""
+    """Stages the WAV and sidecar, WAV first since the sidecar is the commit marker; any failure removes every artifact, so no orphan WAV stays"""
     audio_id = uuid.uuid4().hex
     directory = gallery_dir()
     wav_path = directory / f"{audio_id}.wav"
@@ -83,7 +84,7 @@ def save_file(
     *,
     prune: bool = True,
 ) -> dict[str, Any]:
-    """Multi-file runs pass prune=False and prune once at the end, so a cap never splits a run."""
+    """Moves a WAV into the gallery with its sidecar, all or nothing; multi-file runs pass prune=False and prune once at the end"""
     audio_id = uuid.uuid4().hex
     directory = gallery_dir()
     wav_path = directory / f"{audio_id}.wav"
@@ -116,12 +117,13 @@ def save_file(
 _MAX_CLIPS_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_CLIPS"
 _DEFAULT_MAX_CLIPS = 2000
 
+# Count alone can't bound disk: 2000 max-length clips is tens of GB; whichever cap binds first wins
 _MAX_BYTES_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_BYTES"
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024 * 1024
 
 
 def _max_clips() -> int:
-    """Unset takes the default; 0 or a non-numeric value such as off disables pruning."""
+    """Unset alone takes the default; 0 or non-numeric such as off disables pruning; a set value is never reset, or kept clips get deleted"""
     return _env_limit(_MAX_CLIPS_ENV, _DEFAULT_MAX_CLIPS)
 
 
@@ -150,7 +152,7 @@ def _clip_bytes(audio_id: str) -> int:
 
 
 def _prune_to_cap() -> int:
-    """Best-effort; archived and pinned clips are exempt, and an unreadable flag store skips the prune."""
+    """Best-effort; only Unsloth-owned pairs are pruned, archived and pinned clips are exempt, and an unreadable flag store skips the prune"""
     cap = _max_clips()
     byte_cap = _max_bytes()
     if cap <= 0 and byte_cap <= 0:
@@ -158,11 +160,13 @@ def _prune_to_cap() -> int:
     directory = gallery_dir()
     removed = 0
     try:
-        # Select AND delete under one lock, as clear() does.
+        # Select AND delete under one lock, as clear() does; choosing victims from a snapshot lets an archive land and be deleted anyway.
         with gallery_flags.exclusive(directory, require_file_lock = True):
+            # By age, not display order: a clip dragged down is not older. Pinned clips are exempt.
             entries = [e for e in _list_audio_entries() if not e[0].get("pinned")]
             entries.sort(key = lambda e: _mtime(gallery_dir() / f"{e[0]['id']}.wav"), reverse = True)
 
+            # Newest first, so the cut point drops the oldest; the newest is always kept, never a silent failure
             keep = len(entries) if cap <= 0 else min(cap, len(entries))
             if byte_cap > 0:
                 running = 0
@@ -171,11 +175,12 @@ def _prune_to_cap() -> int:
                     if running > byte_cap and index > 0:
                         keep = index
                         break
+            # A run's clips (a separation's stems) go together: a kept clip keeps its siblings.
             kept_groups = {r["group_id"] for r, _ in entries[:keep] if r.get("group_id")}
             if keep >= len(entries):
                 return 0
 
-            # Re-read TRUSTED: read() reports "nothing archived" for a store it cannot parse.
+            # Re-read TRUSTED immediately before deleting: read() reports nothing archived for an unparseable store, which would drop kept clips.
             flags = gallery_flags.read_trusted(directory)
             victims = [
                 record["id"]
@@ -235,6 +240,7 @@ def _record(
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
         **gallery_flags.flags_for(flags, audio_id),
+        # The listing's own sort key, so a client re-sort agrees with it.
         "order_at": gallery_flags.order_rank(
             flags, audio_id, _mtime(gallery_dir() / f"{audio_id}.wav")
         ),
@@ -298,6 +304,7 @@ def _sources_in_use(directory: Path, leaving: set[str]) -> set[str]:
     return used & sources
 
 
+# Key-presence ownership test: a hand-dropped wav with a partial sidecar is neither counted as ours nor destroyed.
 _REQUIRED_META = (
     "prompt",
     "model",
@@ -317,6 +324,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
+    # a parseable dict is not enough: a foreign or different-schema sidecar lacks the required keys
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
@@ -348,6 +356,7 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+# (pin rank, order key, id), newest first; an unpinned clip's pin rank is -inf.
 GalleryCursor = tuple[float, float, str]
 
 
@@ -453,6 +462,7 @@ def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
         flags = gallery_flags.read(gallery_dir())
         if gallery_flags.is_archived(flags, audio_id):
             return None
+        # The whole shelf in listing order, so neighbours past the client's loaded window are known.
         try:
             paths = [
                 p for p in _clip_wavs(gallery_dir()) if not gallery_flags.is_archived(flags, p.stem)
@@ -538,8 +548,7 @@ def delete_group(group_id: str) -> int:
 
 
 def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:
-    """Archived clips are spared unless include_archived; an unreadable flag store raises
-    FlagsUnavailable."""
+    """Deletes only Unsloth-owned pairs; foreign and orphan WAVs are kept. Archived clips are spared unless include_archived is set."""
     removed = 0
     directory = gallery_dir()
     with gallery_flags.exclusive(directory, require_file_lock = not include_archived):

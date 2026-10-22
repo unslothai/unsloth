@@ -22,14 +22,14 @@ import ctypes
 import os
 import sys
 
-# ggml_backend_dev_type enum (ggml-backend.h): CPU=0, GPU=1, IGPU=2.
+# ggml_backend_dev_type enum (ggml-backend.h): CPU=0, GPU=1, IGPU=2, ...
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 # winbase.h
 _SEM_FAILCRITICALERRORS = 0x0001
 
 
 def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str], list[bool]]:
-    """Third list marks flags actually read: a DirectIO choice on an unread type buffers iGPU weights."""
+    """Per-device iGPU flags, names, and whether each was read; an unread type makes DirectIO buffer iGPU weights. All-False on failure; reg index = ordinal"""
     flags = [False] * count
     names = [""] * count
     known = [False] * count
@@ -47,9 +47,10 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str],
             return flags, names, known
         dev_count = base.ggml_backend_reg_dev_count(reg)
     except Exception:
+        # Best-effort: any failure degrades to "discrete"/"unnamed" so memory readings still get through
         return flags, names, known
 
-    # Outside the try above: a ggml-base without the description symbol must still read iGPU flags.
+    # Bound outside the type-detection try so a ggml-base lacking the description symbol still reads iGPU flags, else iGPU shared RAM counts as VRAM
     name_functions = []
     for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
         try:
@@ -78,6 +79,7 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str],
             except Exception:
                 continue
             if raw_name:
+                # Tabs/newlines would corrupt the line protocol; spaces are safe.
                 name = raw_name.decode("utf-8", errors = "replace")
                 names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
                 break
@@ -89,7 +91,7 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
-    # Localized device names would raise under cp1252 stdout and lose the inventory.
+    # Localized device names would raise under cp1252 stdout and lose the inventory; the reader decodes UTF-8 with the same error mode
     try:
         sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
     except Exception:
@@ -103,7 +105,7 @@ def main() -> int:
             _dll_dir = os.add_dll_directory(bindir)
         except Exception:
             pass
-        # Else a pre-1.1 vulkan-1.dll pops a modal "Entry point not found" box.
+        # Else a pre-1.1 vulkan-1.dll pops a modal "Entry point not found" box instead of failing CDLL (as ggml's dl_load_library).
         try:
             kernel32 = ctypes.WinDLL("kernel32")
             kernel32.SetErrorMode(kernel32.GetErrorMode() | _SEM_FAILCRITICALERRORS)

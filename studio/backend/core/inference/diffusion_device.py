@@ -170,7 +170,7 @@ def install_decoder_sync(
 
 
 VAE_BF16_DECODE_ENV = "UNSLOTH_VIDEO_VAE_BF16_DECODE"
-# RDNA3+ have bf16 WMMA; RDNA2 and older have no bf16 matrix path.
+# RDNA3 / RDNA3.5 / RDNA4: bf16 WMMA. Measured on gfx1151 (Strix Halo); RDNA2 and older have no bf16 matrix path.
 _ROCM_BF16_DECODE_ARCH_PREFIXES = ("gfx11", "gfx12")
 
 
@@ -234,6 +234,7 @@ def install_rocm_vae_bf16_decode(
     decode = getattr(vae, "decode", None)
     if not callable(decode) or getattr(decode, "_unsloth_bf16_decode", False):
         return None
+    # NVIDIA's fp16 decode (diffusion_speed) owns the decoder dtype and recasts it to fp32 on a non-finite output.
     if getattr(vae, "_unsloth_half_decode", False):
         return None
     import torch
@@ -258,7 +259,7 @@ def install_rocm_vae_bf16_decode(
         if isinstance(m, torch.nn.Module)
     ]
     if mode == "weights" and not parts:
-        mode = "autocast"
+        mode = "autocast"  # no separable decode half: cast nothing
 
     # The wrapped decode lives in a mutable slot (as the fp16 decode's does): a layer that must sit under this cast (a
     # compiled decode guard under the OOM scope) can be found and rewrapped in place.
@@ -266,6 +267,7 @@ def install_rocm_vae_bf16_decode(
     if mode == "weights":
         for part in parts:
             part.to(torch.bfloat16)
+            # A path that reaches the decoder without vae.decode (a custom tiled / untiled decode) still gets bf16.
             part.register_forward_pre_hook(_cast_float_args(torch, torch.bfloat16))
 
         def _bf16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
@@ -360,6 +362,7 @@ def resolve_selected_cuda_ordinals(gpu_ids: Optional[list[int]]) -> list[int]:
         raise ValueError(f"GPU selection is unavailable on this host: {exc}") from exc
     allowed = resolve_requested_gpu_ids(wanted)
     visible = get_parent_visible_gpu_ids()
+    # Patched forwards mirroring diffusers semantics with a fused fast path, e.g. addcmul(input, t1, t2) == input + t1 * t2
     ordinals = [visible.index(gpu_id) for gpu_id in allowed if gpu_id in visible]
     if not ordinals:
         raise ValueError(
@@ -702,6 +705,7 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
             supports_pinned_transfer = True,
+            # An overriding caller's "cuda:1" is a device choice to keep, not one to drop back to ordinal 0.
             ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
@@ -923,6 +927,7 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
+    # torch is None on the no-torch CPU fallback; leave dtype=None rather than crash.
     if dtype is None and torch is not None:
         dtype = torch.float32
     return DiffusionDeviceTarget(

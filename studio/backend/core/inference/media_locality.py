@@ -37,10 +37,13 @@ _EXTERNAL_ENCODER_FAMILIES = frozenset({"hidream-i1"})
 # encoder repos that always ship sharded, where a missing index means an interrupted download
 _SHARDED_ENCODER_REPOS = frozenset({"unsloth/Meta-Llama-3.1-8B-Instruct"})
 
+# what from_pretrained reads besides the weights, tiny next to them but still a download
 _ENCODER_METADATA_FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")
 
+# suffixes a weight-bearing pipeline component can satisfy from_pretrained with
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".msgpack", ".onnx")
 
+# any one of these is the vocabulary a tokenizer class builds itself from
 _TOKENIZER_ASSETS = (
     "tokenizer.json",
     "vocab.json",
@@ -163,6 +166,7 @@ def hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
         if root.exists():
             checkpoint = resolve_local_gguf_child(root, pick.gguf_filename)
         else:
+            # a cached repo id: the checkpoint is on disk all the same, and its header decides
             cached = _cached_snapshot_file(pick.model_path, pick.gguf_filename)
             if cached is None:
                 return False
@@ -175,6 +179,7 @@ def hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
     from core.inference.video_ltx2 import ltx23_extras_files
 
     extras = ltx23_extras_files(checkpoint)
+    # the exact three artifacts, since the repo also holds checkpoints that prove nothing here
     return bool(extras) and not cache_holds_files(LTX23_EXTRAS_REPO, list(extras))
 
 
@@ -282,8 +287,10 @@ def _pipeline_components_present(root: Path) -> bool:
         for component, entry in index.items():
             if component.startswith("_") or not isinstance(entry, (list, tuple)):
                 continue
+            # [null, null] marks a component this pipeline deliberately ships without.
             if len(entry) not in (2, 3) or not entry[1]:
                 continue
+            # A modular spec can name another repo this directory never holds, yet the load still pulls it.
             hosted = _hosted_source(entry[2]) if len(entry) == 3 else None
             if hosted is not None:
                 if not _hosted_component_cached(*hosted):
@@ -423,8 +430,10 @@ def _component_present(component: Path, variant: str = "") -> bool:
     if any(entry.name.endswith(".index.json") for entry in entries):
         # an index is proof only once it declares something; an empty weight_map declares nothing
         return _shards_declared(component)
+    # Weight-bearing components declare config.json; metadata-only ones use *_config.json instead.
     if (component / "config.json").is_file():
         return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in files)
+    # A tokenizer needs its vocabulary file, which name varies by class, so any known spelling answers.
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
     # a metadata-only component is its config: a scheduler or processor directory holding anything else at all (a stray
@@ -481,6 +490,7 @@ def missing_download_bytes(
         target = replace(target, model_path = repo)
         local_pipeline = False
     if owner == DIFFUSION:
+        # Applies to all image picks; single-file HiDream plans clean but assembly loads the encoder repo.
         external = _missing_external_encoder(target)
         if external is None or external:
             return external

@@ -465,6 +465,7 @@ def _pdf(
             page = doc[page_number]
             plain = page.get_text("text") or ""
             candidate = md[i] if md else ""
+            # Prefer Markdown; use PyMuPDF text if Markdown is empty, mangles RTL/Indic, or loses most text.
             if (
                 candidate
                 and not _markdown_corrupted(candidate)
@@ -473,12 +474,14 @@ def _pdf(
                 text = candidate
             else:
                 text = plain
+            # Scan detection uses the PDF, not Markdown: Markdown placeholders appear even without a text layer.
             images_on_page = page.get_image_info()
             needs_ocr = bool(images_on_page) and not plain.strip()
             for info in images_on_page:
                 image_rect = fitz.Rect(info["bbox"]) & page.rect
                 if image_rect.get_area() < page.rect.get_area() * 0.5:
                     continue
+                # A selectable header/footer does not make the scanned body readable.
                 body = fitz.Rect(
                     image_rect.x0,
                     image_rect.y0 + image_rect.height * 0.1,
@@ -725,6 +728,7 @@ _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
 _M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 _DOCX_MATH = frozenset((_M + "oMathPara", _M + "oMath"))
+# Runs not shown as body text; text boxes are read as blocks of their own.
 _DOCX_SKIP_RUNS_UNDER = frozenset(
     (_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent", _MC_FALLBACK)
 )
@@ -786,6 +790,7 @@ _DOCX_SYMBOL_FONTS = {
 
 
 def _docx_placeholder(element) -> bool:
+    # An unfilled content control holds Word's prompt ("Click or tap here to enter text."), not a value.
     if element.tag != _W + "sdt":
         return False
     flag = element.find(_W + "sdtPr/" + _W + "showingPlcHdr")
@@ -802,7 +807,7 @@ def _docx_inside(element, stop, tags) -> bool:
 
 
 def _docx_unwrap_table_controls(body) -> None:
-    # python-docx skips w:tr / w:tc wrapped in content controls.
+    # python-docx skips w:tr / w:tc wrapped in content controls (cover pages, repeating sections).
     for wrapper in list(body.iter(_W + "sdt", _W + "customXml")):
         parent = wrapper.getparent()
         if parent is None or parent.tag not in (_W + "tbl", _W + "tr"):
@@ -814,7 +819,7 @@ def _docx_unwrap_table_controls(body) -> None:
         for i, child in enumerate(
             [c for c in (content if content is not None else ()) if c.tag in keep]
         ):
-            if placeholder:
+            if placeholder:  # keep the cells so columns line up, drop the prompt text
                 for tc in child.iter(_W + "tc"):
                     for el in [e for e in tc if e.tag != _W + "tcPr"]:
                         tc.remove(el)
@@ -831,6 +836,7 @@ def _docx_blocks(element, parent):
         if child.tag == _W + "p":
             yield Paragraph(child, parent)
             for box in child.iter(_W + "txbxContent"):
+                # Nested boxes are read with their outer box; fallback copies repeat the real one.
                 if not _docx_inside(box, child, _DOCX_SKIP_RUNS_UNDER):
                     yield from _docx_blocks(box, parent)
         elif child.tag == _W + "tbl":
@@ -1181,6 +1187,7 @@ def _docx_table_rows(table) -> list[str]:
                 cells.append("")
                 continue
             seen.add(cell._tc)
+            # Text before a nested table is the aligned field; the table and anything after it flatten below.
             field: list[str] = []
             after_table = False
             for item in _docx_blocks(cell._tc, cell):
@@ -1191,7 +1198,7 @@ def _docx_table_rows(table) -> list[str]:
                     text = " ".join(_docx_paragraph_text(item).split())
                     if text:
                         (trailing if after_table else field).append(text)
-            cells.append(" ".join(field))
+            cells.append(" ".join(field))  # empty cells kept so columns line up
         cells.extend([""] * getattr(row, "grid_cols_after", 0))
         if any(c.strip() for c in cells):
             rows.append(" | ".join(cells))
@@ -1237,6 +1244,7 @@ def _docx(path: str) -> list[Page]:
     except Exception as exc:
         logger.warning("Could not number lists in %s: %s", os.path.basename(path), exc)
     label_notes = _docx_mark_notes(document)
+    # Walk body content in document order: paragraphs alone drop tables entirely.
     for block in _docx_blocks(document.element.body, document):
         if isinstance(block, Paragraph):
             text = _docx_paragraph_text(block)
@@ -1348,6 +1356,7 @@ def _docx_mark_notes(document):
         text = sentinel.sub(label, text)
         lines = [text] if text else []
         for k, (kind, label_of, bodies) in enumerate(kinds):
+            # Unreferenced notes stay; ones referenced only from deleted or moved text go.
             for note_id in bodies:
                 if note_id not in referenced[k]:
                     numbers[k].setdefault(note_id, len(numbers[k]) + 1)
@@ -1369,6 +1378,7 @@ _HIGH_RUN = re.compile(rb"[\x80-\xff]+")
 
 
 def _declared_charset(data: bytes) -> str | None:
+    # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
     from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
     return _sniff_meta_charset(data[:_META_CHARSET_SCAN_BYTES], "text/html")
 
@@ -1398,12 +1408,13 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     if declared and declared != "utf-8":
         return data.decode(declared, errors = "replace")
     text = data.decode("utf-8", errors = "replace")
-    # Ties stay UTF-8; cp1252 can form a stray valid sequence.
+    # Ties stay UTF-8 (truncated file); cp1252 can form a stray valid sequence ("à\xa0»").
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
     if non_ascii >= 2 * text.count("\ufffd"):
         return text
     high = len(data) - len(data.translate(None, _HIGH_BYTES))
     letters = len(data) - len(data.translate(None, _ASCII_LETTERS))
+    # A Latin-alphabet text never has half as many accented letters as plain ones; a few bytes say nothing.
     if high >= 8 and 2 * high > letters:
         from charset_normalizer import from_bytes
 
@@ -1422,6 +1433,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         match = results.best()
         if match is not None:
             guess = str(match)
+            # Ties are ambiguous; need high-byte words, not lone accents; unpaired CJK bytes mean katakana.
             tied = any(
                 other is not match
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
@@ -1469,7 +1481,7 @@ def parse(path: str, *, want_images: bool = False):
         # NUL never appears in source text; catches binaries under source extensions.
         if ext in config.SOURCE_TEXT_EXTS and "\x00" in raw:
             raise ValueError(f"unsupported binary content in text file: {os.path.basename(path)}")
-        # The chunker splits on \n\n, so normalize newlines.
+        # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".
         raw = raw.replace("\r\n", "\n").replace("\r", "\n")
         pages = _html(raw) if is_html else [_page(raw, None)]
         return (pages, []) if want_images else pages

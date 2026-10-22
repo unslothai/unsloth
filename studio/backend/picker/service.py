@@ -160,12 +160,14 @@ def _chat_template_from_jinja_file(
 
 
 def _chat_template_from_processor_payload(payload: object) -> Optional[str]:
+    # chat_template.json may be a bare string or a {name: template} map, not only tokenizer_config.
     if isinstance(payload, str):
         return payload if payload.strip() else None
     template = _chat_template_from_tokenizer_config(payload)  # type: ignore[arg-type]
     if template:
         return template
     if isinstance(payload, dict):
+        # Named-template map: prefer default, else the first non-empty entry, as tokenizer-config does.
         default = payload.get("default")
         if isinstance(default, str) and default.strip():
             return default
@@ -298,6 +300,7 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
             except ValueError:
                 return path.name
 
+        # Files this variant owns outright before ones its label merely also names.
         for owned in (True, False):
             for path in ggufs:
                 relative = _relative(path)
@@ -345,6 +348,7 @@ def read_default_chat_template(
                 logger.debug("Refused chat template read outside allowed folders: %s", name)
                 return None
             if name.lower().endswith(".gguf"):
+                # Prefer a sidecar next to the GGUF over its embedded template, matching tokenizer-first precedence.
                 sidecar = _chat_template_from_tokenizer_dir(target.parent, allow_roots)
                 if sidecar:
                     return sidecar
@@ -359,7 +363,7 @@ def read_default_chat_template(
 
     resolved = resolve_cached_repo_id_case(name)
 
-    # Walk locally first, then authorize: a denied caller is sent to the Hub.
+    # Walk locally, then authorize: the walk returns a raw template for a private repo without asking the Hub, so a denied caller goes there.
     cached_template = None
     try:
         # Precedence is per-snapshot: a sidecar must not override a newer revision.
@@ -374,7 +378,7 @@ def read_default_chat_template(
         return cached_template
 
     if hf_env_offline() and not cache_reads_authorized(hf_token, repo_id = resolved):
-        # Offline hf_hub_download serves the cache without checking the credential.
+        # Offline hf_hub_download serves the cache without checking the credential, so the fallback would return a template the walk refused.
         return None
 
     try:
@@ -383,8 +387,7 @@ def read_default_chat_template(
         _api = HfApi(token = hf_token)
 
         def _this_file_is_cached(rel: str) -> bool:
-            """Check the one file at this revision, not just the repo dir; a weights-only snapshot
-            must not pass."""
+            """Check THIS file at this revision, not the repo dir: a weights-only snapshot must not pass. Errors fail closed."""
             try:
                 from huggingface_hub import try_to_load_from_cache
 
@@ -399,13 +402,14 @@ def read_default_chat_template(
                 return True
 
         def _remote_worth_downloading(rel: str) -> bool:
-            # hf_hub_download returns the cached pointer for any failed head call, a 403 included.
+            # hf_hub_download returns the cached pointer for any failed head call, 403 included, so a successful metadata lookup proves nothing.
             if cached_read_refused(
                 hf_token,
                 repo_id = resolved,
                 is_cached = lambda: _this_file_is_cached(rel),
             ):
                 return False
+            # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
@@ -436,7 +440,7 @@ def read_default_chat_template(
             if not _remote_worth_downloading(rel):
                 return None
             try:
-                # Record only real fetches: a cached return does not prove the token's access.
+                # Record only real fetches (a cached return proves nothing about the token); record around the call, not before.
                 recording = (
                     recording_a_request_token_fetch(hf_token, resolved, "model")
                     if not _this_file_was_already_here(rel)
@@ -457,7 +461,7 @@ def read_default_chat_template(
             template = _download_text(rel)
             if not template or not template.strip():
                 continue
-            # An over-cap Jinja is dropped so the search falls through to tokenizer templates.
+            # Over-cap Jinja sidecar is dropped since it must fit the response cap; large JSON still extracts under the metadata cap.
             if len(template.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
                 continue
             return template

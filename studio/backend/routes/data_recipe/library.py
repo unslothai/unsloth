@@ -20,6 +20,7 @@ router = APIRouter(prefix = "/recipes")
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _ID = Field(min_length = 1, max_length = 128)
+# JS millisecond timestamps; also keeps values inside SQLite INTEGER.
 _TIME = Field(ge = 0, le = 2**53)
 _TIME_OPTIONAL = Field(default = None, ge = 0, le = 2**53)
 
@@ -35,10 +36,12 @@ class RecipeRecord(BaseModel):
 
 
 class SaveRecipeRequest(RecipeRecord):
+    # The updatedAt the client last read; omitted for a brand-new recipe.
     baseUpdatedAt: int | None = _TIME_OPTIONAL
 
 
 class ExecutionRecord(BaseModel):
+    # The run record is UI state with many optional fields; only the keys used for storage are typed.
     model_config = ConfigDict(extra = "allow")
     id: str = _ID
     recipeId: str = _ID

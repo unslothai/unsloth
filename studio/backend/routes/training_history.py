@@ -271,6 +271,7 @@ async def list_training_runs(
         result["runs"],
         sharing_on,
     )
+    # Persisted path is `model_name`, and this route answers days later with no handle in context.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(
@@ -292,7 +293,7 @@ async def get_training_run_detail(
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
 
     try:
-        # Older installs may have stored Infinity/NaN, which Starlette refuses to render.
+        # An older install may have stored `Infinity` / `NaN`, which Starlette refuses to render.
         config = drop_non_finite(json.loads(run.get("config_json", "{}")))
     except (json.JSONDecodeError, TypeError):
         logger.debug("Failed to parse config_json for run %s", run_id)
@@ -417,6 +418,7 @@ async def delete_training_run(
     try:
         delete_run(run_id)
     except Exception as delete_error:
+        # The artifacts are only staged, so the whole operation rolls back.
         if staged_original is not None and staged_path is not None:
             restored = await asyncio.to_thread(
                 _restore_staged_output_dir, staged_original, staged_path

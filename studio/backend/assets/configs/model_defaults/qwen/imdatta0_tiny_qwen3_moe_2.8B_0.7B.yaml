@@ -1,3 +1,4 @@
+# Dummy qwen3moe model to fit a T4 (TinyQwen3_MoE.py); includes gate_up_proj for MoE layers
 training:
   max_seq_length: 2048
   num_epochs: 0

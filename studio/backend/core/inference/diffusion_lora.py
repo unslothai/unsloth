@@ -31,7 +31,7 @@ from utils.paths.storage_roots import account_path
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
 from utils.paths.path_utils import is_appledouble_metadata
 
-# .pt is pickled, excluded for safety.
+# Accepted LoRA formats. safetensors + gguf only (.pt is pickled -> excluded for safety).
 _NATIVE_EXTS = (".safetensors", ".gguf")
 _DIFFUSERS_EXTS = (".safetensors",)
 _ALL_EXTS = (".safetensors", ".gguf")
@@ -51,9 +51,10 @@ class LoraCatalogEntry:
     display_name: str
     source: str
     fmt: str
+    # Compatible family names (empty = unknown, shown but not family-gated).
     families: tuple[str, ...] = ()
     repo_id: Optional[str] = None
-    weight_name: Optional[str] = None
+    weight_name: Optional[str] = None  # file within the repo (hub)
     local_path: Optional[str] = None
     size_bytes: int = 0
     weight_default: float = 1.0
@@ -67,12 +68,13 @@ class ResolvedLora:
     """A LoRA resolved to a concrete local file, ready to apply."""
 
     id: str
-    alias: str
+    alias: str  # sanitized stem for the <lora:ALIAS:w> tag / diffusers adapter name
     path: str
     fmt: str
     weight: float
 
 
+# Known-good diffusion LoRA catalog (single-file HF repos); any public HF LoRA repo id also works.
 def _krea2_lora(style: str, display_name: str) -> LoraCatalogEntry:
     """One official krea/Krea-2-LoRA-* style adapter (single ``{style}.safetensors``, trained on
     Krea-2-Raw for Krea-2-Turbo per Krea's guidance)."""
@@ -340,6 +342,7 @@ def list_loras(
     if family:
         fam = family.strip().lower()
         merged = [e for e in merged if not e.families or fam in {f.lower() for f in e.families}]
+    # Stable order: local first, then by display name.
     merged.sort(key = lambda e: (e.source != "local", e.display_name.lower()))
     return merged
 
@@ -457,6 +460,7 @@ def resolve_one(
         )
         return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
 
+    # Not in the catalog: allow a bare public HF repo id (owner/name[:weight_file]).
     if "/" in spec_id:
         repo_id, _, weight_name = spec_id.partition(":")
         weight_name = weight_name or None
@@ -495,6 +499,7 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
+    # Prefer a lora-hinting filename, else the first safetensors, else a gguf.
     for f in safes:
         if "lora" in f.lower():
             return f
@@ -524,7 +529,7 @@ def resolve_specs(
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> list[ResolvedLora]:
-    """Maps not-found and gated Hub errors to 400 but not base HfHubHTTPError, so a Hub 5xx stays a 500."""
+    """Maps not-found and gated Hub errors to 400 (URL scrubbed), not base HfHubHTTPError so a Hub 5xx stays 500; mid-download cancel is 409."""
     from huggingface_hub.errors import (
         EntryNotFoundError,
         GatedRepoError,
@@ -611,6 +616,7 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
 
 
 def _fmt_weight(w: float) -> str:
+    # Stable, compact float formatting (no trailing zeros): 1.0 -> "1", 0.75 -> "0.75".
     s = f"{w:.4f}".rstrip("0").rstrip(".")
     return s or "0"
 
@@ -629,6 +635,7 @@ _NATIVE_LORA_FAMILY_TOKENS = (
 # Adapters bake on the dense transformer BEFORE torchao quantize_ + compile: peft's
 # TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks.
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
+# Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
 
 
@@ -640,17 +647,17 @@ def supports_lora(
     transformer_quant: Optional[str],
     compiled: bool = False,
 ) -> bool:
-    """Adapters load before torch.compile; torchao int8/fp8 bake at load, so compile does not gate them."""
+    """Adapters bake before torch.compile for torchao int8/fp8; native sd_cpp is LoRA-capable families only, nvfp4/mxfp8 unsupported."""
     fam = (family or "").lower()
     if engine == "sd_cpp":
         return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
     quant = (transformer_quant or "").lower()
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
-        return True
+        return True  # load-time bake; adapters ride inside the compiled quantized build
     if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
         return False
     if model_kind == "gguf":
-        return False
+        return False  # GGUF diffusers transformer: use the native engine for LoRA
     if compiled:
-        return False
+        return False  # can't load an adapter onto an already-compiled transformer
     return True

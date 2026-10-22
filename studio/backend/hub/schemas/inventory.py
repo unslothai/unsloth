@@ -254,6 +254,7 @@ class LocalModelInfo(BaseModel):
         False,
         description = "Whether THIS partial can be continued byte for byte.",
     )
+    # Mirrors CachedModelRepo.companion_prefetch: the Hub merges both listings.
     companion_prefetch: bool = Field(
         False,
         description = (
@@ -301,7 +302,7 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
-    # Opaque, stable for the server's life, not reversible.
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
     cache_ref: Optional[str] = None
     last_modified: Optional[float] = None
     partial: bool = False
@@ -317,6 +318,7 @@ class CachedRepoBase(BaseModel):
     # Pickers drop rows without a task.
     task: Optional[str] = None
     audio_type: Optional[str] = None
+    # Audio page workflows the row serves, from the task first: audio.cpp music rows carry no audio_type.
     audio_workflows: Optional[List[str]] = None
 
     @model_validator(mode = "after")
@@ -350,8 +352,9 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
-    # Diffusion repo with no model_index.json: single-file checkpoint, not a pipeline load.
+    # Diffusion repo with no model_index.json is a single-file checkpoint; pickers must not offer it as a pipeline load unless curated.
     single_file: bool = False
+    # sd.cpp companion mirror is never picked but keeps a row, as tens of GB must be seen and deleted.
     companion: bool = False
     companion_prefetch: bool = False
     # Only flag keeping unrecognised pipelines out of chat; declared or response_model drops it.
@@ -426,6 +429,7 @@ class DeleteImpactResponse(BaseModel):
     cache_path: Optional[str] = Field(
         None, description = "Cache repository folder targeted by this delete"
     )
+    # Opaque stand-in for ``cache_path``, filled in by the host-path boundary for API-key callers.
     cache_ref: Optional[str] = None
 
     repo_id: str
@@ -449,6 +453,7 @@ class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
     cache_ref: Optional[str] = None
 
 

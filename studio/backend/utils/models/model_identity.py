@@ -73,7 +73,7 @@ def restore_hf_cache_repo_identity(
     *,
     expected_repo_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Restores the Hub repo id for an exact snapshot path; ordinary local models are left untouched."""
+    """Restores the Hub repo id for an exact snapshot path; loaded weights stay pinned, ordinary local models and custom fields untouched; returns the id if changed."""
     target_repo_id = _snapshot_repo_id(load_target)
     if not target_repo_id:
         return None
@@ -90,7 +90,7 @@ def restore_hf_cache_repo_identity(
         "_name_or_path",
         repo_id,
     )
-    # PreTrainedModel copies name_or_path onto the instance, and PEFT writes it to adapter_config.
+    # PreTrainedModel copies name_or_path onto the instance, so updating only the config leaves it stale; PEFT writes that slot to adapter_config.
     changed = _set_standard_identity(model, "name_or_path", repo_id) or changed
     changed = _set_standard_identity(model, "_hf_repo", repo_id) or changed
 

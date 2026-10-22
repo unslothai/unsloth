@@ -33,6 +33,7 @@ def get_colab_url(port: int = 8888) -> str:
     for attempt in range(3):
         try:
             url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
+            # Valid proxy URL is https:// and embeds the port.
             if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
                 return url.rstrip("/")
         except Exception as e:
@@ -147,7 +148,7 @@ def _colab_wants_cloudflare(cloudflare: "bool | None") -> bool:
 
 
 def _finalize_colab_admin_password() -> "tuple[str, str] | None":
-    """Later runs re-display the stored credentials, keeping the Cloudflare link usable."""
+    """Later runs re-display stored credentials; whoever can read this cell already controls the runtime."""
     if not _is_colab_runtime():
         return None
     try:
@@ -360,6 +361,7 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     except Exception as e:
         logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
         return None
+    # Success is logged by _show_and_embed; note only misses here.
     if not url:
         logger.info("Cloudflare tunnel did not produce a URL; using Colab proxy only.")
     return url
@@ -441,7 +443,7 @@ def _shareable_link_html(
     """
 
 
-# ~82vh on a 1080p screen.
+# Height for serve_kernel_port_as_iframe (~82vh on a 1080p screen, clamped).
 _COLAB_IFRAME_HEIGHT = 900
 
 
@@ -522,6 +524,7 @@ def _show_and_embed(
         cloudflare_url = cloudflare_url,
     )
 
+    # Fold the credentials into the link card rather than a second card below it.
     credentials_shown = False
     if cloudflare_url:
         try:
@@ -552,11 +555,11 @@ def _show_and_embed(
         except Exception as e:
             logger.info(f"Could not render Unsloth link card ({e}).")
 
-    # The in-cell proxy embed is often blank, so skip it when a tunnel works.
+    # On Colab with a working tunnel, skip the in-cell proxy embed (often blank).
     if _is_colab_runtime() and cloudflare_url:
         return
 
-    # Kernel helper needs only the port (works when eval_js failed).
+    # Real Colab: kernel helper needs only the port (works when eval_js failed).
     if _is_colab_runtime():
         if _embed_kernel_port_iframe(port):
             return
@@ -570,8 +573,10 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     logger.info("🦥 Starting Unsloth Studio...")
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
 
+    # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):
         logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
+        # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
             colab_login = _finalize_colab_admin_password() if use_cloudflare else None
             cf_url = start_cloudflare_tunnel(port) if use_cloudflare else None
@@ -602,7 +607,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
 
     logger.info("   Starting server...")
     try:
-        # This helper owns the tunnel, so pin it off here.
+        # cloudflare=False: this helper owns the tunnel (via start(cloudflare=...)), so pin it off.
         app = run_server(
             host = "0.0.0.0",
             port = port,
@@ -617,12 +622,12 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
         return
 
-    # run_server may auto-increment the port.
+    # run_server may auto-increment the port; read back the bound port for the proxy URL/iframe.
     actual_port: int = getattr(getattr(app, "state", None), "server_port", None) or port
 
     logger.info(f"   Server started on port {actual_port}!")
 
-    # ready_event can fire before bind, so poll health first.
+    # Poll health before showing the link: avoids the race where ready_event fires pre-bind.
     import urllib.request
 
     server_ready = False
@@ -641,6 +646,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         )
         return
 
+    # Server healthy: finalize Colab auth, open the tunnel, publish URL, tear down on interrupt.
     try:
         colab_login = _finalize_colab_admin_password() if use_cloudflare else None
         cf_url = start_cloudflare_tunnel(actual_port) if use_cloudflare else None
@@ -651,7 +657,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
             cloudflare_requested = use_cloudflare,
         )
 
-        # Keep the kernel alive so the daemon server thread runs.
+        # Keep kernel alive so the daemon server thread runs.
         for _ in range(10000):
             time.sleep(300)
             print("=", end = "", flush = True)

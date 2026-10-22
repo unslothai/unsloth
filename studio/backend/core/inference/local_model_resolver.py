@@ -38,8 +38,8 @@ logger = get_logger(__name__)
 class _LocalGgufEntry:
     loader_id: str
     load_path: str
-    variants: tuple[str, ...]
-    is_gguf: bool = True
+    variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
+    is_gguf: bool = True  # False routes the load to the inference orchestrator
     repo_level_companions: bool = False
     aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
     withheld: tuple[str, ...] = ()  # listed build keys that cannot be served (torn split sets)
@@ -73,15 +73,17 @@ def _publish(snapshot: tuple[float, dict[str, _LocalGgufEntry]]) -> None:
 
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
+# Downloaded repos not yet in the published index; the request path must not report them absent.
 _just_downloaded: set[str] = set()
 _warming = False
+# Invalidation during a warm asks for another pass so stale snapshots rebuild off the request path.
 _warm_pending = False
 _warm_accounts: dict[Optional[str], AccountContext] = {}
 _warm_active_account: Optional[AccountContext] = None
 _warm_retry_scopes: set[Optional[str]] = set()
 _last_scan_s = 0.0
 _managed_last_scan_s: dict[str, float] = {}
-# Rescan at most a tenth of the time, or a slow scan would run continuously
+# rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously
 _WARM_DUTY = 10.0
 
 
@@ -285,10 +287,11 @@ def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
 
 
 def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
-    """Maps legacy /v1/models labels to current ones; ambiguous ones are dropped rather than guessed."""
+    """Maps legacy /v1/models labels to current; ambiguous ones dropped; never raises, since one raise would drop the whole repo."""
     try:
         from utils.models.model_config import _extract_quant_label, _qualified_variant_name
 
+        # .lower() matches how _resolve_from_index folds the request
         current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
         seen: dict[str, Optional[str]] = {}
         for variant in variants:
@@ -300,6 +303,7 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
             key = str(legacy).lower()
             if not key or key in current:
                 continue
+            # None = ambiguous: a second file claimed it, so it names neither.
             seen[key] = None if key in seen else str(quant)
         return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
     except Exception:
@@ -341,6 +345,7 @@ def _local_gguf_entry(
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
 
+    # The lister every stored per-model setting is keyed by, so one file has one identity.
     from hub.utils.gguf import list_local_gguf_variants
     from utils.models.model_config import detect_gguf_model
 
@@ -350,7 +355,7 @@ def _local_gguf_entry(
     p = Path(path)
     try:
         if p.is_file():
-            # Reject mmproj projectors: the standalone-file pass does not filter them like the dir scan.
+            # Reject mmproj projectors: the standalone pass skips the filter the dir scan applies, so a switch could load one and evict the model.
             if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
@@ -419,7 +424,7 @@ def _local_gguf_entry(
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
-        # Head of that list is the largest quant; a bare id must mean what a plain load takes.
+        # Head is the largest quant; a bare id must mean what a plain load takes, since the largest can evict a model and then OOM.
         from core.inference.openai_auto_download import preferred_quant
 
         # preferred_quant is order-sensitive: rank only default_gguf_scope, or a sibling checkpoint can win.
@@ -514,7 +519,7 @@ def _host_serves_mlx() -> bool:
 
 
 def _host_has_a_non_gguf_backend() -> bool:
-    """Installed torch is not enough: the Transformers worker needs an NVIDIA, AMD or Intel device."""
+    """Installed torch is not enough: Transformers needs NVIDIA, AMD or Intel, else the load fails after the swap unloads the GGUF."""
     if _host_serves_mlx():
         return True
     try:
@@ -557,6 +562,7 @@ def _is_generative_chat_config(load_dir, config: dict) -> bool:
         return True
     if not any(name.endswith("ForConditionalGeneration") for name in names):
         return False
+    # Audio models declare no modality, so the classifier refuses them; chat uses transcription.
     if _model_type_is_audio(config.get("model_type")):
         return not _host_serves_mlx()
     # T5 and BART wear the suffix too, and udop-large shows modality cannot separate them.
@@ -564,6 +570,7 @@ def _is_generative_chat_config(load_dir, config: dict) -> bool:
         return False
     if not _config_declares_multimodality(config):
         return False
+    # The model picker's own classifier; its None means inconclusive, which must not qualify here.
     from hub.services.models.common import _local_transformers_can_chat
 
     return _local_transformers_can_chat(load_dir) is True
@@ -616,6 +623,7 @@ def _weights_are_servable(load_dir) -> bool:
         return False
     if any((load_dir / name).is_file() for name in _ADAPTER_MARKERS):
         return False
+    # Same marker as is_embedding_model, minus its memo, which would pin one scan's verdict.
     return not (load_dir / "modules.json").is_file()
 
 
@@ -628,7 +636,7 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
         candidate = config if name == "config.json" else _read_json(load_dir / name)
         if not isinstance(candidate, dict):
             continue
-        # model_file runs repo code too (MLX loaders exec_module it).
+        # model_file runs repo code and bypasses trust_remote_code (MLX loaders exec_module it).
         if candidate.get("auto_map") or candidate.get("model_file"):
             return False
     return _is_generative_chat_config(load_dir, config)
@@ -687,6 +695,7 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     path = getattr(info, "path", None)
     if not isinstance(path, str) or getattr(info, "partial", False):
         return None
+    # model-independent, so first: with no backend every row is withheld anyway.
     if not _host_has_a_non_gguf_backend():
         return None
     try:
@@ -701,6 +710,7 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         config = _read_json(load_dir / "config.json")
         if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
             return None
+        # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
     except Exception:
         return None
@@ -714,10 +724,12 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
         if getattr(info, "source", None) != "ollama":
             return None
+        # Raises when the tag's layers are gone or unsupported, withholding rather than advertising.
         try:
             ollama_model_ref_files(raw_id)
         except (OSError, ValueError):
             return None
+        # No quants: an Ollama tag names one file, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, raw_id, ())
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
@@ -727,6 +739,7 @@ def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
     from pathlib import Path
 
     path = getattr(info, "path", None)
+    # A link an earlier load materialized, rescanned: the manifest row already has those weights.
     if isinstance(path, str) and any(
         seg in (".studio_links", "ollama_links") for seg in Path(path).parts
     ):
@@ -803,12 +816,13 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             if rp in seen_hf:
                 return []
             seen_hf.add(rp)
-            # Only the active cache loads by repo id; no format classification on this request path.
+            # Only the active cache loads by repo id, so an inactive repo must not be indexed under one; no format classification on this request path.
             return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
 
+    # Guard each source separately so one bad root drops only that source, not the whole index.
     found: list = []
     try:
         found += _scan_models_dir(Path("./models").resolve())
@@ -876,16 +890,19 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         raw_id = getattr(info, "id", None)
         if not raw_id:
             continue
+        # Skip models hidden from pickers (validation probe, RAG embed); never an auto-switch target.
         if _is_hidden_model(
             raw_id,
             getattr(info, "model_id", None),
             getattr(info, "path", None),
         ):
             continue
+        # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)
         entry = _local_servable_entry(loader_id, info)
         if entry is None:
             continue
+        # Path-shaped ids name one exact revision, so index them only if that revision has complete weights.
         path_alias_entry = entry
         if entry.repo_level_companions and _is_abs_path_id(raw_id):
             from types import SimpleNamespace
@@ -904,6 +921,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         ):
             if key and alias_entry is not None:
                 index.setdefault(key.strip().lower(), alias_entry)
+        # Sibling revisions keep their own weights, so a pin survives a newer Hugging Face snapshot.
         if entry.is_gguf:
             for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):
                 index.setdefault(name.strip().lower(), sibling_entry)
@@ -966,6 +984,7 @@ def _snapshot_is_trusted(
 _generation = 0
 
 
+# Confirmed misses keyed by account and name, valid for the recorded invalidation generation.
 _misses: dict[tuple[Optional[str], str], int] = {}
 _MAX_MISSES = 256
 # Request bodies may be hundreds of MB; longer names are not retained.
@@ -999,6 +1018,7 @@ def invalidate_index(*, additions_only: bool = False) -> None:
             )
             return (stamp, retained)
 
+        # Every account's snapshot: what changed on disk is not scoped to whoever noticed.
         _scan = _invalidated(_scan, None)
         for account_id, snapshot in list(_managed_scans.items()):
             _managed_scans[account_id] = _invalidated(snapshot, account_id)
@@ -1017,12 +1037,14 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # `ts > 0`: within uptime < TTL an invalidated stamp would read as recent
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
+        # Request scans also set the background rescan interval.
         try:
             fresh = _build_index()
         finally:
             _record_scan_duration(time.monotonic() - now)
         # Stamp AFTER the scan: a slow scan could exceed the TTL and store an expired cache.
         _publish((time.monotonic(), fresh))
+        # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
         return fresh
 
@@ -1098,6 +1120,7 @@ def warm_index_soon() -> None:
                     _warm_active_account = None
                     _warming = _warm_pending = False
 
+    # Capture a real account context for the thread; queued scans rebind to their own account above.
     account_thread(target = _run, name = "local-model-index-warm", daemon = True).start()
 
 
@@ -1154,7 +1177,7 @@ def resolve_local_gguf(
     allow_scan: bool = True,
     include_companion_scope: bool = False,
 ) -> Optional[tuple]:
-    """Exact id wins first, then the last :VARIANT is split off; a suffix naming no quant means the repo."""
+    """Exact id wins, then the last :VARIANT is split off; allow_scan=False never rebuilds; a suffix naming no quant means the repo."""
     if not isinstance(requested, str) or not requested.strip():
         return None
     requested = requested.strip()
@@ -1298,7 +1321,7 @@ def local_gguf_withheld(requested: str) -> bool:
 
 
 def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:
-    """Reads the weights the load opens, so a rebuild cannot flip it; call off the event loop."""
+    """Reads the weights the load opens so a rebuild cannot flip it; falls back to the indexed entry, then True; call off the event loop."""
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -1325,7 +1348,7 @@ def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
     base, sep, variant = requested.strip().rpartition(":")
     from core.inference.openai_auto_download import looks_like_quant
 
-    # Split exactly like the resolver, or the two disagree.
+    # Split like the resolver: a tag naming no quant means the repo, so no missing quant is reported.
     if not sep or not looks_like_quant(variant):
         return MISS_MODEL_NOT_FOUND, ()
     try:

@@ -41,7 +41,7 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
         stem,
         flags = re.IGNORECASE,
     )
-    # -shared marks a borrowed head's form, not its family; strip it so the stem pairs with <model>-<quant>.
+    # A borrowed MTP head is published as mtp-<model>-shared-<quant>.gguf, so -shared marks the head's FORM, not the family. Left in, the stem is <model>-shared, which never prefixes <model>-<quant>, so the local scan could not pair the head the hub picker prefers. MTP only: no other kind borrows.
     if kind == "mtp":
         stem = re.sub(r"-shared$", "", stem)
     return stem
@@ -127,7 +127,7 @@ def split_listing_is_complete(names: Iterable[str], name: str) -> bool:
         r"^" + re.escape(stem) + r"-(\d{5})-of-" + re.escape(match.group(3)) + r"\.gguf$",
         re.IGNORECASE,
     )
-    # Count distinct indices in 1..total: a stray 00003-of-00002 must not make a pair look whole.
+    # Distinct indices inside 1..total, not a count: a mid-publication listing can hold 00001-of-00002 beside a stray 00003-of-00002, and counting would call that pair whole.
     seen = set()
     for other in names:
         if Path(other).parent != parent:

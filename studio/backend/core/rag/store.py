@@ -62,6 +62,7 @@ def _now() -> str:
 
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
+# Quotes mark a word being named rather than used; non-greedy and single-line so an unclosed quote spans nothing.
 _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")
 
 
@@ -82,6 +83,7 @@ was we were what when where which who why will with would you your
 """.split()
 )
 
+# A digit alone marks an identifier, since a purely numeric subject has no other shape.
 _HAS_DIGIT = re.compile(r"\d", re.UNICODE)
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
@@ -91,7 +93,7 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     if "_" in token:
         return True
     if _HAS_DIGIT.search(token):
-        # A bare number must be long to count as a name, else '2 sentences' filters on '2'.
+        # A bare number needs LENGTH to be a name, else "answer in 2 sentences" filters the archive on "2".
         return bool(_HAS_LETTER.search(token)) or len(token) >= 3
     return len(token) >= 3 and token.upper() in raw_tokens
 
@@ -104,6 +106,7 @@ def conversation_match_queries(query: str) -> list[str]:
     # All-caps queries disable the capitals rule: every word would pass it.
     raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
+    # Quoted words are the subject even if stopwords; quoted tokens stay out of identifiers.
     quoted = frozenset(
         token
         for match in _QUOTED.findall(query.lower())
@@ -123,7 +126,7 @@ def lexical_matching_ids(conn: sqlite3.Connection, chunk_ids, expression: str) -
     if not ids or not expression:
         return set()
     found: set = set()
-    # Chunked under SQLITE_MAX_VARIABLE_NUMBER (999 on older builds).
+    # Chunked to stay under SQLITE_MAX_VARIABLE_NUMBER, which is 999 on older builds.
     for start in range(0, len(ids), 500):
         batch = ids[start : start + 500]
         placeholders = ",".join("?" * len(batch))
@@ -340,8 +343,7 @@ def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str |
 def reusable_document_by_hash(
     conn: sqlite3.Connection, scope: str, sha256: str, ext: str, identity: str
 ) -> dict | None:
-    """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
-    copied. Extension must match (parsers branch on it) and so must the embedding identity."""
+    """rowid DESC uses idx_documents_hash (no sort over every copy) and is newest-first."""
     for row in conn.execute(
         "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
@@ -598,7 +600,7 @@ def _donor_vectors(conn: sqlite3.Connection, source: dict, chunk_ids) -> list:
     rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
     if rows is not None:
         return rows
-    # Chunk ids are '<doc id>:<index>' and ';' sorts right after ':'.
+    # One pass over the partition: chunk ids are "<document id>:<index>" and ';' sorts right after ':'.
     rows = conn.execute(
         "SELECT scope, chunk_id, embedding FROM chunks_vec "
         "WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
@@ -634,6 +636,7 @@ def copy_document_index(
         rows is None
         or len(rows) != len(chunk_ids)
         or {r["chunk_id"] for r in rows} != chunk_ids.keys()
+        # chunks_vec may have been recreated at another width since the prefetch.
         or (rows and len(rows[0]["embedding"]) != 4 * (rag_db.vec_table_dim(conn) or 0))
     ):
         rows = _donor_vectors(conn, source, chunk_ids)
@@ -678,6 +681,7 @@ def copy_documents(
         )
         chunk_ids.update(_copy_chunk_rows(conn, source["id"], document_id, scope))
     if chunk_ids and rag_db.vec_table_exists(conn):
+        # vec0 scans the whole partition for any chunk filter, so read each source scope once.
         for source_scope in {source["scope"] for source, _ in documents}:
             conn.executemany(
                 "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
@@ -714,7 +718,7 @@ def search_lexical(
     newest_first: bool = False,
     oldest_first: bool = False,
 ):
-    """BM25 search; newest_first breaks ties newest-first, since LIMIT k would return the oldest rows."""
+    """Ties newest-first; must match conversation_archive._conversation_order exactly (LIMIT k)."""
     mq = match_query if match_query is not None else _match_query(query)
     if not mq:
         return []
@@ -722,12 +726,13 @@ def search_lexical(
     if not scopes:
         return []
     placeholders = ",".join("?" * len(scopes))
-    # One snapshot for gate and read: WAL pins it at the first read.
+    # One snapshot for gate and read: a scope retired between them cannot add rows to unfiltered results.
     own_read_txn = not conn.in_transaction
-    # Must end: an open snapshot blocks WAL checkpointing.
+    # Read-only, but it has to end: an open snapshot blocks WAL checkpointing.
     if own_read_txn:
         conn.execute("BEGIN")
     try:
+        # Subqueries run before LIMIT; skip them unless a folder is linked (linked_folder_rows_exist).
         if oldest_first:
             # Mirrors _conversation_order; uses document rowid since re-embeds rewrite chunk rows.
             sql = (
@@ -739,6 +744,7 @@ def search_lexical(
                 f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
         elif newest_first:
+            # The mirror of the clause above, so the two halves cut the run at opposite ends.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -807,9 +813,11 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
         return []
     dim = rag_db.vec_table_dim(conn)
     if dim is not None and dim != len(vector):
-        # vec0 errors on MATCH against a table of another dimension.
+        # The stale table cannot answer new-model queries: vec0 errors on the MATCH.
         return []
+    # The pre-tag spelling of the same request, kept acceptable so an existing index keeps answering after an upgrade.
     untagged = config.embedding_identity_model(embedding_model) or embedding_model
+    # dict.fromkeys dedupes scopes: a repeated scope would double its fetch and hits in the merge.
     scopes = list(
         dict.fromkeys(
             s
@@ -856,7 +864,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
 
 # 4096 is vec0's own ceiling; raising this errors the query.
 _MAX_DENSE_FETCH = 4096
-# Kept under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
+# One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900
 
 

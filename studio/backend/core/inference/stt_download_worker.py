@@ -31,6 +31,7 @@ activate_native_tls()
 activate_happy_eyeballs()
 
 
+# How long a cancelled worker gets to exit on SIGTERM before it is killed.
 TERMINATE_GRACE_SECONDS = 15.0
 
 
@@ -57,7 +58,7 @@ def spawn_download(
     env["HF_HUB_DISABLE_XET"] = "1"
     # Parallel Range chunks leave sparse partials a resumed download cannot reuse.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    # None keeps the ambient login; False must be scrubbed from the child env.
+    # None keeps the ambient login; False must be scrubbed from the child env, or the child downloads a repo the caller only had to name.
     apply_token_to_child_env(env, hf_token)
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
@@ -72,7 +73,7 @@ def spawn_download(
         # Die with Unsloth so a detached worker cannot keep downloading after exit.
         **child_popen_kwargs(),
     )
-    adopt_pid(process.pid)
+    adopt_pid(process.pid)  # terminate_all backstop for graceful exits
     return process
 
 

@@ -119,7 +119,7 @@ def marker_backend(marker: Optional[Mapping[str, Any]]) -> Optional[str]:
 
 
 def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> str:
-    """Never None: auto means detect, and a value this build does not know is returned verbatim."""
+    """Never None: auto means detect; an unknown value is returned verbatim, since a newer Unsloth wrote it and must not be overwritten."""
     if not marker:
         return "auto"
     recorded = marker.get("backend_request")
@@ -137,7 +137,7 @@ def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> str:
 
 
 def marker_backend_was_chosen(marker: Optional[Mapping[str, Any]]) -> bool:
-    """Chosen unless plainly automatic or its request went unsatisfied; not simply request != auto."""
+    """Chosen unless plainly automatic or unsatisfied; not request != auto, since crash recovery must not swap a chosen Vulkan install for CPU."""
     if not marker:
         return False
     if marker.get("backend_request_unsatisfied"):

@@ -84,6 +84,6 @@ def uv_safe_path(path: object) -> str:
         tmp_dir = None
         return dst
     except Exception:
-        if tmp_dir is not None:
+        if tmp_dir is not None:  # don't leak the temp dir if the copy failed
             shutil.rmtree(tmp_dir, ignore_errors = True)
         return s

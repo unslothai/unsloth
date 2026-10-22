@@ -49,6 +49,7 @@ _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
 _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"
 
 
+# from_single_file config overrides on top of the base 2.0 transformer config.
 LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES: dict[str, Any] = {
     "gated_attn": True,
     "cross_attn_mod": True,
@@ -58,6 +59,7 @@ LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES: dict[str, Any] = {
     "perturbed_attn": True,
 }
 
+# Keys the 2.0-era converter doesn't know; renamed before from_single_file. Audio prefix first.
 _TRANSFORMER_PRERENAME = (
     ("audio_prompt_adaln_single.", "audio_prompt_adaln."),
     ("prompt_adaln_single.", "prompt_adaln."),
@@ -119,6 +121,7 @@ _VIDEO_VAE_RENAME = {
     "down_blocks.6": "down_blocks.3",
     "down_blocks.7": "down_blocks.3.downsamplers.0",
     "down_blocks.8": "mid_block",
+    # Decoder (2.3 adds up_blocks.7/8: a 4th decoder stage)
     "up_blocks.0": "mid_block",
     "up_blocks.1": "up_blocks.0.upsamplers.0",
     "up_blocks.2": "up_blocks.0",
@@ -178,6 +181,7 @@ _AUDIO_VAE_RENAME = {
     "per_channel_statistics.std-of-means": "latents_std",
 }
 
+# Same config as LTX-2.0 (upstream's comment); the weights are still 2.3-specific.
 _AUDIO_VAE_CONFIG: dict[str, Any] = {
     "base_channels": 128,
     "output_channels": 2,
@@ -544,6 +548,7 @@ def _copy_file_chunks(
             stream.synchronize()
     finally:
         try:
+            # A failed read leaves uploads queued from the staging ring.
             stream.synchronize()
         except Exception:  # noqa: BLE001
             pass
@@ -611,6 +616,7 @@ def _load_extras_file(
         hf_token,
         # Resolve extras under EITHER cache root, else re-pull what the planner skipped.
         reuse_other_cache_root = True,
+        # the switch's locality gate cleared these three artifacts by name
         local_files_only = local_files_only,
         gguf_header_delta = True,
     )
@@ -738,7 +744,7 @@ def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
     )
 
 
-# Upstream ltx_core DISTILLED_SIGMA_VALUES: the fixed 8-step curve the distilled DiT expects.
+# Upstream ltx_core DISTILLED_SIGMA_VALUES: fixed 8-step curve the distilled DiT expects; pass verbatim, base scheduler spacing never lands near it.
 LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
     1.0,
     0.99375,
@@ -776,11 +782,12 @@ def ltx2_distilled_guidance_kwargs(call_params: Any, guidance: Optional[float]) 
     step). Only kwargs the installed pipeline accepts, so older diffusers get the call they always did."""
     kwargs = {k: v for k, v in _LTX2_GUIDANCE_OFF.items() if k in call_params}
     if "audio_guidance_scale" in call_params:
+        # Pre-#14447: audio follows the video CFG.
         kwargs["audio_guidance_scale"] = float(guidance if guidance is not None else 1.0)
     return kwargs
 
 
-# Hosted 2.3 checkpoints were baked from this file only (not distilled-1.1 or dev DiTs).
+# Hosted 2.3 checkpoints were baked from this file only; distilled-1.1 and dev DiTs may not take them.
 LTX23_PREQUANT_BASE = "Lightricks/LTX-2.3"
 LTX23_PREQUANT_SOURCE_FILES = frozenset({"ltx-2.3-22b-distilled.safetensors"})
 # Resident size of LTX-2.3-FP8.pt (19,057,628,489 bytes); companions are priced separately.
@@ -927,6 +934,7 @@ def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
                 "video.ltx23_prequant: hashing %s once to confirm it is the official file", real
             )
             verified = ltx23_source_sha256(real) == LTX23_PREQUANT_SOURCE_SHA256
+            # Changed while being read: neither stored nor trusted.
             if _ltx23_stat_key(real.stat()) != key:
                 return False
             _ltx23_write_verdict(str(real), {**key, "verified": verified})
@@ -1285,6 +1293,7 @@ def load_ltx23_transformer(
         "subfolder": "transformer",
         "torch_dtype": torch_dtype,
         "token": hf_token,
+        # ``config`` is the BASE REPO, so the 2.0 transformer config is a hub read here.
         "local_files_only": local_files_only,
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
@@ -1608,6 +1617,7 @@ def _assemble_ltx23_pipeline(
         )
 
     if transformer_override is not None:
+        # Pre-built (hosted) DiT: the file contributes only connectors / VAEs / vocoder.
         transformer = transformer_override
         groups.pop("dit", None)
     else:

@@ -46,24 +46,26 @@ _METADATA_CACHE: Dict[_CacheKey, Optional[Dict[str, str]]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX_ENTRIES = 4096
 
-# Bool capability keys, keyed by (file key, wanted key). None = absent or unreadable.
+# Separate cache for single bool capability keys (e.g. clip.has_audio_encoder), keyed by (file cache key, wanted key). None = key absent / file unreadable.
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
 
 _TTS_AUDIO_TYPE_CACHE: Dict[_CacheKey, Optional[str]] = {}
 
-# None = unreadable, so callers can fail closed.
+# Whether the GGUF tensor table contains a sequence-classification head. None means the file could not be read or parsed, so callers can fail closed.
 _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
-# None = unreadable, so callers can fail open. Hot path: memory-estimate route.
+# Whether the GGUF tensor table lists one exact tensor name, keyed by (file cache key, tensor name). None = unreadable, so callers can fail open. Backs the MTP drafter launchability check, which the memory-estimate route asks on every settings change.
 _NAMED_TENSOR_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
-# (context_length, layer_count, moe_layer_count) for the staged UI. None = unreadable/not GGUF.
+# GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+# Read on its own: the only caller wants just this number, on every settings change.
 _N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
+# Cache the embedded speculative-head count separately for discovery, launch, and sizing.
 _NEXTN_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 _MROPE_SECTIONS_CACHE: Dict[_CacheKey, Optional[bool]] = {}
@@ -327,10 +329,10 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
         return None
     ctx = vals.get("context_length")
     block = vals.get("block_count")
-    # Treat 0/garbage as absent so the UI never builds a slider with max < min.
+    # A real context/layer count is positive; treat 0/garbage as absent so the UI never builds a slider with max < min.
     context_length = ctx if ctx and ctx > 0 else None
     layer_count = block if block and block > 0 else None
-    # Mirrors n_moe_layers in core/inference/llama_cpp.py.
+    # MoE layer count = block_count - leading dense layers, only when experts exist, else 0 (dense, slider hidden). Mirrors n_moe_layers in core/inference/llama_cpp.py.
     if not vals.get("expert_count") or not block:
         moe_layer_count: Optional[int] = 0
     else:
@@ -360,7 +362,7 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
 
 def _skip_gguf_value(f, vtype: int) -> bool:
     """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal on a regular file, so truncation is caught on the next read; return False only for unknown types or sanity-bound overflow."""
-    if vtype == 8:
+    if vtype == 8:  # STRING
         slen_bytes = f.read(8)
         if len(slen_bytes) < 8:
             return False
@@ -369,7 +371,7 @@ def _skip_gguf_value(f, vtype: int) -> bool:
             return False
         f.seek(slen, 1)
         return True
-    if vtype == 9:
+    if vtype == 9:  # ARRAY
         head = f.read(12)
         if len(head) < 12:
             return False
@@ -436,7 +438,7 @@ def _parse_gguf_has_classifier_head(path: str) -> Optional[bool]:
                 n_dimensions = struct.unpack("<I", ndim_bytes)[0]
                 if n_dimensions > 16:
                     return None
-                # dims (u64 each), ggml type (u32), data offset (u64)
+                # dimensions (u64 each), ggml type (u32), and data offset (u64)
                 trailer_size = n_dimensions * 8 + 4 + 8
                 if len(f.read(trailer_size)) < trailer_size:
                     return None
@@ -522,7 +524,7 @@ def _parse_gguf_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
                 n_dimensions = struct.unpack("<I", ndim_bytes)[0]
                 if n_dimensions > 16:
                     return None
-                # dims (u64 each), ggml type (u32), data offset (u64)
+                # dimensions (u64 each), ggml type (u32), and data offset (u64)
                 trailer_size = n_dimensions * 8 + 4 + 8
                 if len(f.read(trailer_size)) < trailer_size:
                     return None
@@ -558,7 +560,7 @@ def _gguf_shard_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
 
 
 def mtp_drafter_loads_standalone(path: str) -> bool:
-    """False for a head with neither token_embd.weight nor nextn_shared_target_tensors; fails open."""
+    """False for a head lacking both token_embd.weight and nextn_shared_target_tensors, checked across shards; it would fail at launch; fails open if unseen."""
     from utils.models.model_config import colocated_split_shards
 
     try:
@@ -609,7 +611,7 @@ def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
                         break
                     vtype = struct.unpack("<I", vt_bytes)[0]
 
-                    if key == wanted_key and vtype == 7:
+                    if key == wanted_key and vtype == 7:  # BOOL (1 byte)
                         bbyte = f.read(1)
                         if len(bbyte) < 1:
                             break
@@ -856,6 +858,7 @@ def _parse_gguf_marker_tokens_stream(f: BinaryIO) -> Optional[Tuple[list[str], b
             atype, alen = struct.unpack("<IQ", raw_header)
             if atype != 8 or alen > _MAX_GGUF_VOCAB_ENTRIES:
                 return None
+            # SNAC classification depends on the tokens at these exact IDs.
             snac_probe = dict.fromkeys(SNAC_PROBE_TOKEN_IDS, False)
             for index in range(alen):
                 raw_length = f.read(8)
@@ -983,7 +986,7 @@ def mmproj_accepts_image(path: str) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """general.architecture == clip wins over general.type, which older converters wrote as clip-vision."""
+    """True/False from general.type, None to fall back to filename; architecture clip wins, as older converters wrote general.type as clip-vision."""
     if not meta:
         return None
     if (meta.get("general.architecture") or "").lower() == "clip":
@@ -1184,7 +1187,7 @@ def pairing_score(
     return 0
 
 
-# Generic bert is absent: pooling is unrecoverable and cls.* tensors mean reranker.
+# GGUF ``general.architecture`` strings that intrinsically identify embedding models. Generic ``bert`` is deliberately absent: without pooling_type its required CLS/MEAN pooling cannot be recovered, and a ``cls.*`` tensor makes an encoder a reranker instead, so matches are gated on the tensor table.
 GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
     {
         "modern-bert",
@@ -1200,6 +1203,7 @@ GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
     }
 )
 
+# Name hints for model, file and intrinsic GGUF names whose architecture is not yet above.
 _EMBEDDING_NAME_HINTS: tuple[str, ...] = (
     "nomic-embed",
     "llama-embed",
@@ -1252,12 +1256,12 @@ def is_gguf_embedding_model(
 
     arch = (architecture or meta.get("general.architecture") or "").strip().lower()
     if arch == "bert":
-        # Without this llama-server defaults pooling to NONE and /v1/embeddings returns HTTP 400.
+        # A classifier head can prove that generic BERT is a reranker; llama-server otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
         return False
     if is_gguf_embedding_architecture(arch):
-        # cls.* tensors mark a reranker; an unreadable tensor table stays unclassified.
+        # Generic BERT-family architectures also back cross-encoder rerankers, and their standardized cls.* tensors are intrinsic evidence of that role; an unreadable tensor table stays unclassified rather than guessing.
         return _gguf_has_classifier_head(gguf_path) is False
     return any(_has_embedding_name_hint(value) for value in name_candidates)
 
 
-# Not re-exported: this package pulls in PyYAML, and llama_cpp needs it at import. Use utils.gguf_archs.
+# Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__, which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the verdict at import time. Import it from utils.gguf_archs.

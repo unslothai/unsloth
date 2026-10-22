@@ -66,6 +66,7 @@ def _to_ms(value: object) -> int:
     try:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
+        # Video and audio records keep ISO-8601 ("2026-09-25T10:00:00Z").
         try:
             return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
         except ValueError:
@@ -106,6 +107,7 @@ def _item(
     return {
         "id": item_id,
         "name": name,
+        # The source's own name, which a rename leaves alone, so the type never follows it.
         "fileName": name,
         "source": source,
         "contentType": content_type,
@@ -127,7 +129,7 @@ def _item(
 
 
 def _fingerprint(info: os.stat_result) -> str:
-    """Inode plus birth time keeps the id across in-place edits; Linux can reuse an inode for a new file."""
+    """Inode (file id on Windows) plus birth time where the OS keeps one, not device (remounts change it); on Linux a recreated file can pass for the old."""
     birth = getattr(info, "st_birthtime", None)
     if birth is None and os.name == "nt":
         birth = info.st_ctime
@@ -307,7 +309,7 @@ def write_upload_text(
         path = upload_path(upload_id)
         if library_db.get_upload(upload_id) is None:
             return False
-        # Old file kept on disk under a second name for rollback (uploads can be 512 MiB).
+        # Old file kept on disk under a second name for rollback (512 MiB uploads); in memory where links are unsupported.
         kept, previous = None, None
         if path.exists():
             kept = path.with_name(f".{upload_id}.{uuid.uuid4().hex}.tmp")
@@ -373,9 +375,10 @@ def _upload_items() -> list[dict]:
     try:
         _sweep_leftovers()
     except relocations.LocationUnavailable:
-        pass
+        pass  # Its drive is unplugged: the rows still list, and disk_usage reports it once.
     except OSError:
         logger.debug("library.leftover_sweep_failed", exc_info = True)
+    # Rows whose file is absent from the folder in use are kept, not listed or counted until restored.
     try:
         present = set(os.listdir(uploads_dir()))
     except OSError:
@@ -505,10 +508,10 @@ class _Gallery(NamedTuple):
     module: ModuleType
     records: Callable
     resolve: Callable
-    label: str
+    label: str  # what an item with no prompt is called
     extension: str
     content_type: str
-    folder: str
+    folder: str  # the project folder Add to project copies into
 
 
 _GALLERIES = {
@@ -544,6 +547,7 @@ def _gallery_items(kind: str) -> list[dict]:
     items = []
     for archived in (False, True):
         records = gallery.records(archived = archived)
+        # Looked up after the records, and only when some exist, so an unreadable folder lists nothing.
         root = gallery.module.gallery_dir() if records else None
         for record in records:
             # An Edit's hidden Original: deleting it here would break that Edit.
@@ -560,6 +564,7 @@ def _gallery_items(kind: str) -> list[dict]:
                     sidecar = path.with_suffix(".json").stat().st_size
                 except OSError:
                     pass
+                # A conversion keeps the recording it converted as {id}.source.wav beside its clip.
                 if sidecar is not None and kind == "audio":
                     try:
                         sidecar += path.with_name(f"{path.stem}.source.wav").stat().st_size
@@ -704,7 +709,7 @@ def _export_metadata(path: str, root: Path) -> Optional[dict]:
 
 
 def _model_run_id(path: str, origin: str, runs: dict[str, str]) -> Optional[str]:
-    """A folder with no metadata has no known origin; exports use the checkpoint their metadata records."""
+    """A folder with no metadata has no known origin. An export uses its recorded checkpoint, else its folder name (run/checkpoint, run-GGUF)."""
     from utils.paths.storage_roots import exports_root, outputs_root
 
     try:
@@ -892,8 +897,7 @@ def _sandbox_path(ref: str) -> str:
 
 
 def _open_regular(path: str) -> BinaryIO:
-    """Opened by descriptor; the path must still resolve to this same file, so a link swap is refused."""
-    # O_NONBLOCK: a FIFO swapped in for the file would otherwise hang here before the S_ISREG check.
+    """LookupError unless a regular file; O_NOFOLLOW where available, and the path must still resolve to this file, refusing swapped parent links too."""
     flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
@@ -1163,6 +1167,7 @@ class _Memo:
 
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
+# Bounded: sandboxes of chats and accounts nobody lists again would otherwise stay forever.
 _LISTING = _Memo(size = 1024)
 invalidate_listing = _LISTING.forget
 
@@ -1232,6 +1237,7 @@ def list_items() -> list[dict]:
         entry = overlay.get(item["id"])
         fingerprint = item.pop("_fingerprint", None)
         if fingerprint is not None:
+            # Sent back with a delete, so a stale card never deletes a file made at its path since.
             item["fingerprint"] = fingerprint
         if entry and fingerprint is not None and entry["fingerprint"] != fingerprint:
             if entry["fingerprint"] is None:
@@ -1323,7 +1329,7 @@ def safe_file_name(
     fallback: str = "file",
     item_id: Optional[str] = None,
 ) -> str:
-    """A file name every OS can hold: no Windows-refused chars, leading dot, or device name like CON."""
+    """Last path segment; no Windows-refused chars, leading/trailing dot or space, or CON-style device name. With item_id, hashed per item: re-adding is a no-op."""
     stem, ext = os.path.splitext(re.split(r"[\\/]", name or "")[-1])
     if not ext and stem.startswith("."):
         stem, ext = os.path.splitext(stem.lstrip("."))
@@ -1440,7 +1446,7 @@ def project_item(item_id: str) -> ItemFile:
 
 
 def local_path(item_id: str) -> Path:
-    """Model paths come from the id, so they must sit inside the outputs or exports root."""
+    """Same errors as open_item. Model paths come from the id, so they must sit inside the outputs or exports root."""
     kind, _, ref = item_id.partition(":")
     if kind == "upload":
         path = upload_path(ref)
@@ -1489,7 +1495,7 @@ _THUMBNAILS = _Memo(size = 256)
 
 
 def _attachment_media(ref: str) -> tuple[str, bytes]:
-    """Images are stored as data URLs but clips as raw base64, so the two need different decoding."""
+    """LookupError when it holds none. Images are stored as data URLs but clips as raw base64, so each needs its own decoding."""
     import urllib.parse
 
     from fastapi import HTTPException
@@ -1580,7 +1586,7 @@ def _decoded(mime_type: str, source: BinaryIO) -> bytes:
 
 
 def thumbnail(item_id: str) -> bytes:
-    """Remembered per file version, so an edit makes a new thumbnail instead of reusing the old one."""
+    """Remembered by file version, so an edit makes a new one. LookupError when gone or no picture; RuntimeError when it cannot be decoded."""
     kind, _, ref = item_id.partition(":")
     if kind == "attachment":
         with _THUMBNAIL_DECODES:
@@ -1637,7 +1643,7 @@ def _location_path(key: str) -> Path:
 
 
 def locations() -> list[dict]:
-    """available is false while a chosen drive is absent; device tells folders on one disk apart."""
+    """available is false while a chosen drive is absent, and disk and device are then null; device tells folders on one disk apart."""
     entries = []
     for key in _LOCATIONS:
         path = _location_path(key)
@@ -1651,7 +1657,7 @@ def locations() -> list[dict]:
                 "custom": relocations.chosen(key) is not None,
                 "available": available,
                 "disk": _disk(path) if available else None,
-                # A string: a device number can exceed JavaScript's exact integer range.
+                # A string: a device number can be wider than a JavaScript number is exact.
                 "device": None if device is None else str(device),
             }
         )
@@ -1659,7 +1665,7 @@ def locations() -> list[dict]:
 
 
 _OS_CLUTTER = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
-# Reentrant: the first read of the chosen folders can finish a move cut short.
+# Held for a whole move, so an upload lands in the folder the move leaves in use. Reentrant: the first read of the chosen folders can finish a move cut short.
 _move_lock = threading.RLock()
 
 
@@ -1728,7 +1734,7 @@ def _scratch_and_system_folders() -> list[str]:
             folders += ["/Applications", "/opt/homebrew"]
             folders += [str(home / "Library" / "Caches"), str(home / ".Trash")]
         elif str(home) != "/root":
-            folders.append("/root")
+            folders.append("/root")  # Another account's home, where this one cannot keep files.
     return [folder for folder in folders if folder]
 
 
@@ -1780,7 +1786,7 @@ def _is_empty(folder: Path) -> bool:
 
 
 def _prepare_target(target: Path, key: str, current: Path) -> Path:
-    """Uses target itself when empty, else a named folder inside it, reusing it if it is already current."""
+    """target itself when empty, else a named folder inside it, also at a drive's mount point so files stay together; reused if already current."""
     try:
         target.mkdir(exist_ok = True)
         if not target.is_dir():
@@ -1804,7 +1810,7 @@ def _prepare_target(target: Path, key: str, current: Path) -> Path:
 
 
 def _refuse_overlap(target: Path, key: str, final: bool) -> None:
-    """Refuses targets inside another kind's folder or a chat sandbox, since clearing a chat deletes it."""
+    """Refuses targets in another kind's folder, a chat sandbox (clearing deletes it), or the current folder; final must not hold them: moving into itself empties it."""
     current = _location_path(key)
     others = [_location_path(other) for other in _LOCATIONS if other != key]
     others.append(_SOURCE_ROOTS["sandbox"]())
@@ -1894,8 +1900,9 @@ def _renamed(entry: Path, dest: Path, log: _MoveLog) -> Optional[bool]:
 
 
 def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
-    """Never overwrites or deletes a file it did not bring; a clash keeps both, the moved one renamed."""
+    """Never overwrites or deletes a file it did not bring; clash keeps both, moved one renamed. Cross-drive: copy, remove original; if locked, copy goes instead."""
     if entry.name == _FLAGS_STORE and os.path.lexists(dest):
+        # Copied over before the switch and written there since: the one left behind is older.
         _unlink(entry)
         return
     kept = os.path.lexists(dest) and _same_bytes(entry, dest)
@@ -1979,7 +1986,7 @@ def _move_entry(entry: Path, dest: Path, log: _MoveLog) -> None:
     try:
         entry.rmdir()
     except OSError:
-        pass
+        pass  # A save still writing in it, left for the next pass.
 
 
 def _move_entries(
@@ -2010,7 +2017,7 @@ def _undo(log: _MoveLog) -> None:
         try:
             folder.rmdir()
         except OSError:
-            pass
+            pass  # Something was saved into it meanwhile; the stray pass takes that back.
 
 
 # Settle window for saves still writing to the old folder; stale leftovers do not count.
@@ -2062,7 +2069,7 @@ def _settle(
 
 
 def move_location(key: str, path: Optional[str]) -> Optional[str]:
-    """The switch is recorded before any file moves, so saves during the move land in the new folder."""
+    """Recorded before any file moves, so saves during the move land in the new folder. Owner only (caller checks); on failure the old folder stays in use."""
     if key not in relocations.MOVABLE:
         raise ValueError(
             "These files stay where they are: training and chats remember them by path."
@@ -2102,6 +2109,7 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         with gallery_flags.exclusive(current) if store.is_file() else contextlib.nullcontext():
             if store.is_file() and not os.path.lexists(target / _FLAGS_STORE):
                 shutil.copy2(store, target / _FLAGS_STORE)
+            # Recorded with the folder the files leave, so a crash part way is finished on restart.
             relocations.set_chosen(key, target, moving_from = current)
         log = _MoveLog()
         try:
@@ -2148,7 +2156,7 @@ def _finish_move(key: str, target: Path) -> None:
 
 
 def _resume_move(key: str) -> None:
-    """Finishes a move a crash interrupted: leftovers in the old folder merge into the chosen one."""
+    """Finishes a crash-interrupted move: leftovers merge into the chosen folder. Waits while either drive is absent; failures are logged and retried next start."""
     with _move_lock:
         source = relocations.moving_from(key)
         if source is None:
@@ -2226,6 +2234,7 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
     with _overlay_lock:
         deleted = _delete_item(item_id, fingerprint)
     if deleted and item_id.startswith("attachment:"):
+        # May have held the last reference to an original. Swept outside the lock.
         from core import chat_originals
         chat_originals.sweep()
     return deleted

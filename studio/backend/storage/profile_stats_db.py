@@ -34,9 +34,11 @@ logger = get_logger(__name__)
 
 # Gap that ends a session, so a thread reopened a week later is not a week-long chat.
 SESSION_GAP_SECONDS = 30 * 60
+# Cap on the daily activity series handed to the UI (the heatmap draws a year).
 MAX_DAILY_DAYS = 366
-# Widest real UTC offset is 14h.
+# Widest real UTC offset is 14h; anything beyond that is a bad client value.
 MAX_TZ_OFFSET_MINUTES = 14 * 60
+# Top-N lists returned to the client.
 TOP_MODELS = 8
 RECENT_RUNS = 5
 # TTL even with an unchanged fingerprint, so a mid-stream chat still refreshes.
@@ -113,7 +115,7 @@ def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
-    """Drops rows dated after today up front, so a skewed client clock cannot pad the longest streak."""
+    """Current streak survives an unused today; rows dated after today are dropped so a skewed client clock cannot pad the longest streak."""
     days = {day for day in days if day <= today}
     if not days:
         return {"current": 0, "longest": 0, "lastActiveDay": None}
@@ -222,7 +224,7 @@ def _fold_api_usage(
         total_tokens = _as_int(row["total_tokens"])
         fold.prompt_tokens += prompt_tokens
         fold.completion_tokens += completion_tokens
-        # Keep the provider's total even when it differs from input+output.
+        # Preserve the provider's authoritative total even when it differs from the input/output sum.
         fold.total_tokens += total_tokens
         fold.requests += 1
 
@@ -241,6 +243,7 @@ def _fold_api_usage(
                 model_id,
                 {"id": model_id, "label": _model_label(model_id), "messages": 0, "tokens": 0},
             )
+            # One terminal API request represents one model response in the combined leaderboard.
             model["messages"] += 1
             model["tokens"] += total_tokens
     return fold
@@ -279,6 +282,7 @@ def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
         key = (row["source_id"], _as_int(row["created_at"]), row["role"])
         thread_id = row["thread_id"]
         current = best.get(key)
+        # Any stable winner works; lowest id keeps the choice reproducible.
         if current is None or thread_id < current:
             best[key] = thread_id
     return best
@@ -353,6 +357,7 @@ def _fold_messages(
         # Compare-mode panes share a pair_id and show as one conversation.
         conversation_id = row["pair_id"] or thread_id
 
+        # A fork is its own visible conversation, so it counts toward the chat total as soon as it exists.
         fold.threads.add(conversation_id)
 
         # Forks clone ancestry with timestamps; skip clones while the original row still counts.
@@ -486,7 +491,7 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
 
 
 def _superseded(prefix: str = "r.") -> str:
-    """resume_blocked alone cannot tell a resumed run from a cancelled one, so a continuation must exist."""
+    """resume_blocked alone cannot tell resumed from cancelled, so a continuation must exist; prefix must qualify the outer row, not the EXISTS subquery."""
     return f"""
         {prefix}resume_blocked = 1
         AND EXISTS (
@@ -520,7 +525,7 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    # Only runs superseded by a resume (resume_blocked) are dropped; cancelled runs keep their work.
+    # Only runs superseded by a resume are dropped: resume claims keep output_dir while cancels clear it, so cancelled runs keep their work.
     steps = conn.execute(
         f"SELECT COALESCE(SUM(r.final_step), 0) FROM training_runs r WHERE NOT ({_superseded()})"
     ).fetchone()[0]
@@ -561,6 +566,7 @@ def _training_stats(conn) -> dict[str, Any]:
         "recent": [
             {
                 "id": item["id"],
+                # Renamed runs keep the user's name; else use the short model label, not the full repo id.
                 "name": _clean_str(item["display_name"]) or _model_label(item["model_name"] or ""),
                 "modelLabel": _model_label(item["model_name"] or ""),
                 "datasetLabel": _model_label(item["dataset_name"] or ""),

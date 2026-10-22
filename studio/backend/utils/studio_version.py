@@ -94,6 +94,7 @@ def _git_branch(repo_root: Path) -> str | None:
         return None
 
     branch = result.stdout.strip()
+    # "HEAD" means detached, e.g. a tag or commit checkout.
     if (
         not branch
         or branch == "HEAD"

@@ -32,6 +32,7 @@ async def run_lifespan_shutdown(
     try:
         future = loop.run_in_executor(None, ctx.run, terminate_downloads)
     except RuntimeError:
+        # Executor gone: run inline on the loop thread.
         try:
             ctx.run(terminate_downloads)
         except Exception as exc:
@@ -43,12 +44,12 @@ async def run_lifespan_shutdown(
             logger.warning("terminate_downloads failed at shutdown: %s", exc)
 
     try:
-        # Retire in-flight detection so it cannot publish over the reset.
+        # Retire any detection still inside the torch import, so it cannot publish over the reset.
         invalidate = getattr(hw_module, "invalidate_detection", None)
         if invalidate is not None:
             invalidate()
         hw_module.DEVICE = None
-        # Health reads a set event as DEVICE authoritative. getattr: tests inject a stub.
+        # Health reads a set event as DEVICE authoritative, so it must be cleared with DEVICE or a gone device is published. getattr: tests inject a stub.
         detection_complete = getattr(hw_module, "DETECTION_COMPLETE", None)
         if detection_complete is not None:
             detection_complete.clear()

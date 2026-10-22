@@ -77,13 +77,14 @@ _local_inventory_flights: dict[
 ] = {}
 
 
-# Past this cap, serve the freshest scan instead of retrying.
+# Retrying a superseded scan is only worth it while invalidations are occasional; past this the endpoint must answer.
 _LOCAL_INVENTORY_MAX_ATTEMPTS = 8
 
 
 class _LocalCacheChanged(RuntimeError):
     def __init__(self, response: LocalModelListResponse) -> None:
         super().__init__("local inventory sources changed during the scan")
+        # Carried so the attempt cap can serve the freshest scan it has instead of looping forever or answering with nothing.
         self.response = response
 
 
@@ -144,6 +145,7 @@ def _has_immediate_model_weight(
                 if entry.is_file() and _is_immediate_model_weight_file(entry):
                     return True
             except OSError:
+                # Skip individual children that are unreadable (permissions, broken symlinks) rather than failing the entire scan.
                 continue
     except OSError:
         return False
@@ -178,7 +180,7 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 _MAX_NESTED_SCAN_DEPTH = 8
 _MAX_NESTED_SCAN_DIRS = 500
 _MAX_NESTED_SCAN_ENTRIES = 20000
-# blobs: an Ollama store's content-addressed files.
+# blobs: an Ollama store's content-addressed files, never a model folder.
 _NESTED_SCAN_SKIP_NAMES = frozenset({"ollama_links", "node_modules", "__pycache__", "blobs"})
 
 
@@ -196,9 +198,7 @@ def is_loadable_model_dir(path: Path) -> bool:
 
 
 def nested_scan_roots(folder_path: Path) -> list[Path]:
-    """Sub-folders of a recursive scan folder to scan like the folder itself (#6371). Skips listed models, HF cache
-    repos, hidden folders, symlinks and junctions, so each model is reached once and the walk stays inside."""
-    # Same test _scan_models_dir uses to list the folder as one model.
+    """Same test as _scan_models_dir; loose GGUFs beside sub-folders are not one model."""
     if _is_model_directory_for_scan(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES):
         return []
     roots: list[Path] = []
@@ -574,7 +574,7 @@ def _scan_hf_cache(
     if not discovered:
         return []
     if variant_states is None:
-        # Reached when the guarded build already failed; degrade to per-repo reads.
+        # Reached precisely when the caller's own guarded build already failed, so leaving this bare handed the same exception back and undid that guard; degrade to the per-repo reads instead.
         try:
             variant_states = download_manifest.build_variant_state_index(
                 [("model", model_id, cache_dir) for _repo, model_id, _updated in discovered],
@@ -629,6 +629,7 @@ def _scan_hf_cache(
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
         load_path = repo_dir if active_cache else scan_path
+        # _apply_format_aware_partial below rewrites per row, so a hybrid repo's gguf row does not taint its safetensors row.
         rows = _classify_local_path(
             scan_path,
             "hf_cache",
@@ -657,6 +658,7 @@ def _scan_hf_cache(
                     )
                 ]
             else:
+                # The fallback row's model_format is "unknown", so either signal applies.
                 rows = [
                     _local_model_info(
                         scan_path = repo_dir,
@@ -697,7 +699,7 @@ def _scan_hf_cache(
             snapshot_partial_transport = snapshot_partial_transport,
             snapshot_partial_resumable = snapshot_partial_resumable,
         )
-        # Denoiser-less pipeline: partial so no picker loads it; flagged so Hub offers no Continue.
+        # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
         if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
             latest_snapshot := hf_cache_scan.latest_snapshot_dir(repo_dir)
         ):
@@ -825,6 +827,7 @@ def _scan_lmstudio_dir(
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
+    # A directory that is itself a model dir is not an LM Studio publisher structure, so return it as a single entry rather than descend.
     if _is_model_directory(lm_dir) or _is_diffusers_pipeline_dir(lm_dir):
         try:
             updated_at = lm_dir.stat().st_mtime
@@ -873,6 +876,7 @@ def _scan_lmstudio_dir(
                     found.extend(_apply_payload_partial(child, rows))
                 continue
 
+            # A child that is itself a model dir is surfaced directly, not as a publisher; a diffusers pipeline counts, or its component subdirs are walked as models.
             if _is_model_directory(child) or _is_diffusers_pipeline_dir(child):
                 try:
                     updated_at = child.stat().st_mtime
@@ -886,6 +890,7 @@ def _scan_lmstudio_dir(
                 found.extend(_apply_payload_partial(child, rows))
                 continue
 
+            # child is a publisher directory -- scan its sub-directories
             for model_dir in child.iterdir():
                 if _consume_visit():
                     exhausted = True
@@ -953,6 +958,7 @@ def _inventory_path_identity(raw_path: str) -> str:
         normalized = normalize_path(raw)
         return os.path.normcase(os.path.realpath(os.path.expanduser(normalized)))
     except (OSError, UnicodeError, ValueError):
+        # Keep malformed sources distinct until the worker's error boundary turns them into a 403 or a skip.
         return os.path.normcase(raw)
 
 
@@ -965,7 +971,7 @@ _IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA000
 
 
 def _is_link_component(path: Path) -> bool:
-    # is_symlink() is False for a Windows junction; read the reparse tag too.
+    # is_symlink() is False for a Windows junction (mklink /J needs no admin), so read the reparse tag too.
     try:
         st = os.lstat(path)
     except OSError:
@@ -998,7 +1004,7 @@ def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelI
 
 
 def _custom_alias_key(model: LocalModelInfo) -> str:
-    # Resolve only the scan root: links below it are distinct aliases.
+    # Resolve only the scan root: two registered roots reaching one folder are one alias, links below it are not.
     root = model._scan_root
     if not root:
         return model.path
@@ -1349,10 +1355,11 @@ async def _collect_models_from_default_sources(
                 short_path_for_log(folder_path),
                 scrub_paths(e),
             )
+            # Only an OS failure is something the user can fix, so only that is shown.
             if isinstance(e, OSError):
                 record_scan_failure(row_path, e)
             continue
-        # Off the loop: scandir on a stalled network mount blocks in the kernel.
+        # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         for model in custom_models:
             row = _promote_to_custom_source(model)
@@ -1506,7 +1513,7 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
                 "custom",
                 partial = model.partial,
                 requires_variant = model.capabilities.requires_variant,
-                # Carry the old can_chat verdict; rebuilding from format alone restored it wrongly.
+                # Rebuilding from the format alone restored can_chat on rows the classifier had ruled out; the format is unchanged here, so carrying the old verdict through is idempotent.
                 can_chat_override = model.capabilities.can_chat,
             ),
         }
@@ -1554,7 +1561,7 @@ def _merge_custom_rows_listed_natively(
     kept_custom: list[LocalModelInfo] = []
     for model in custom_models:
         twin = native.get((_inventory_physical_identity(model.path), model.model_format))
-        # A symlink below the scan root is a deliberate alias (#10605).
+        # A symlink below the scan root is a deliberate alias with its own settings (#10605), so it stays.
         if twin is None or _local_model_path_is_symlink(_custom_alias_key(model)):
             kept_custom.append(model)
         elif twin.source in ("lmstudio", "omlx") and model.capabilities.can_train:
@@ -1743,6 +1750,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     """Coalesce overlapping local inventory requests for the same models root."""
 
     def classify(response: LocalModelListResponse) -> LocalModelListResponse:
+        # Classified inside the shared worker so retrying waiters do not repeat GGUF metadata reads, and off the event loop, since classification reads GGUF headers.
         try:
             from hub.services.models import catalog_classification
 
@@ -1771,14 +1779,15 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
         classified = await asyncio.to_thread(classify, response)
-        # That hop is an await point; a mutation can land after the check.
+        # That hop is an await point of its own, so a mutation can land after the check above.
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
         return classified
 
+    # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[LocalModelListResponse] = None
     for _attempt in range(_LOCAL_INVENTORY_MAX_ATTEMPTS):
-        # Epoch first so any later change to sources lands in a later epoch.
+        # Epoch first: the sources and folders below are read after it, so any change to them lands in a later epoch and the post-scan check sees it.
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         custom_folders = await _load_custom_folders()
         sources = _local_inventory_sources()
@@ -1804,6 +1813,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         except _LocalCacheChanged as changed:
             superseded = changed.response
             continue
+    # Invalidations are outpacing the walk, so answer with the freshest scan instead of rescanning forever.
     logger.warning("Local inventory kept racing cache invalidations; serving the last scan")
     return await _account_local_response(await asyncio.to_thread(classify, superseded))
 
@@ -1811,7 +1821,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
 def get_models_folder_response() -> dict:
     """The directory where downloaded models are stored: the active HF hub cache (honors ``HF_HOME`` / ``HF_HUB_CACHE``), which the desktop app reveals in the OS file manager."""
     path = _resolve_hf_cache_dir()
-    # Create so 'Open folder' works before the first download (HF builds the cache lazily).
+    # Create it if missing so "Open folder" works before the first download: HF builds the cache lazily, and studio pre-creates only the default dir, not a user's explicit HF_HOME/HF_HUB_CACHE.
     try:
         path.mkdir(parents = True, exist_ok = True)
     except OSError as e:
@@ -1829,6 +1839,7 @@ def get_models_folder_response() -> dict:
 
 def get_scan_folders_response() -> dict:
     folders = list_scan_folders()
+    # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
     refresh_failed_scan_folders(folders)
     return {"folders": annotate_scan_folders(folders)}
 

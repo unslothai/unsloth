@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# Mirrors the route's cap.
+# Upper bound per call, mirroring the route cap; longer lists are a client error, not an OOM.
 MAX_BATCH_IMAGES = 32
 
 # JS safe-integer range so seeds round-trip through JSON recipes.
@@ -46,7 +46,7 @@ def resolve_batch_jobs(
     batch_size: int,
     draw_seed: Callable[[], int],
 ) -> tuple[list[tuple[str, int]], int]:
-    """Builds per-image (prompt, seed) jobs; prompts and seeds must match in length when both are given."""
+    """Builds (prompt, seed) jobs; seeds derive from the base unless given; bad input raises ValueError."""
     if prompts is not None:
         if not prompts or not all(isinstance(p, str) and p.strip() for p in prompts):
             raise ValueError("prompts must be a non-empty list of non-empty strings")

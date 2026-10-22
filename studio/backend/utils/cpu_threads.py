@@ -200,11 +200,11 @@ def _windows_commit_headroom() -> Optional[int]:
 
 
 def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> None:
-    """Must run before OpenMP or BLAS libraries import, since they initialize their pools on load."""
+    """Applies UNSLOTH_CPU_THREADS to CPU pools when set, else caps OpenBLAS; must run before OpenMP or BLAS imports."""
     environ = os.environ if env is None else env
     configured = environ.get("UNSLOTH_CPU_THREADS", "").strip()
     if not configured:
-        # OpenBLAS reads a blank value as 0 (one thread per core).
+        # OpenBLAS reads a blank value as 0 (one thread per core), so blank counts as unset.
         if not environ.get("OPENBLAS_NUM_THREADS", "").strip():
             value = str(default_openblas_threads())
             environ["OPENBLAS_NUM_THREADS"] = value

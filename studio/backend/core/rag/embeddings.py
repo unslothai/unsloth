@@ -37,6 +37,7 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
+# "false" silences the fast tokenizer's fork warning; encode() flips it only during a batch tokenize.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _lock = threading.Lock()
@@ -44,9 +45,11 @@ _lock = threading.Lock()
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
+# Table lookup: a GPU request with no GPU maps to cpu, not to a device string torch cannot open.
 _served_by = threading.local()
 
 
+# Unsloth device -> torch device string. Apple has no torch device -> CPU.
 _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 
 
@@ -68,6 +71,7 @@ def _device() -> str:
     """
     if config.embed_device_preference() != "gpu":
         return "cpu"
+    # Own lock, not _lock: _lock is held across model construction, making a probe wait out downloads.
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
@@ -121,6 +125,7 @@ def _load_dtype(device: str, name: str) -> str:
 
 
 _torchao_stub_done = False
+# Adapter-backed models log via the PEFT integration's own logger, not a descendant of the others.
 _stub_lock = threading.Lock()
 
 
@@ -265,6 +270,7 @@ class _CaptureLoadReport(logging.Filter):
     def __init__(self) -> None:
         super().__init__()
         self.reports: list[str] = []
+        # These filters sit on process-global loggers, so capture only what the thread that opened the context emits.
         self.thread_id = threading.get_ident()
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -299,6 +305,7 @@ class _CaptureLoadReport(logging.Filter):
 _LOAD_REPORT_LOGGERS = (
     "transformers.utils.loading_report",
     "transformers.modeling_utils",
+    # local_only loads from cache; the gate needs real offline or it rejects a scanned .bin-only repo.
     "transformers.integrations.peft",
 )
 
@@ -500,6 +507,7 @@ def _gate_st_custom_modules() -> None:
 
     setattr(import_module_class, _ST_GATE_MARKER, True)
     import_module_class.__wrapped__ = original_import
+    # Rebind every module that imported the function by name.
     for module in list(sys.modules.values()):
         if (
             getattr(module, "__name__", "").startswith("sentence_transformers")
@@ -561,12 +569,14 @@ def _get(model_name: str | None = None):
     account_path(model_name, reference = True)
     global _model, _name
     name = model_name or config.effective_embedding_model()
+    # Capture offline state once so the gate and the load agree.
     try:
         from utils.embedding_model_settings import get_stored_download_pending
         download_pending = get_stored_download_pending(name)
     except Exception:  # noqa: BLE001 - old/unavailable settings store
         download_pending = False
     offline = hf_env_offline()
+    # Must be ST-specific and complete: a hybrid GGUF or a first shard alone must not retire the marker.
     local_only = offline or download_pending
     with _lock:
         if _model is None or _name != name:
@@ -595,13 +605,16 @@ def _get(model_name: str | None = None):
                 # Load the cached snapshot path, not the repo id, so ST cannot fetch a newer revision.
                 load_target = str(st_source[1])
             if local_only:
+                # Loadable check and snapshot lookup share no lock; eviction between them still counts as pending.
                 if download_pending and st_source is None:
+                    # Local paths skip the Hub: offline-safe even on sentence-transformers predating local_files_only.
                     raise EmbeddingModelDownloadRequiredError(
                         f"Embedding model {name!r} is not downloaded yet. "
                         "Finish its Settings download before indexing documents."
                     )
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
+                    # Re-emit in finally: MISSING or MISMATCH lines matter most when the load raises.
                     load_target = str(snapshot)
                 elif download_pending:
                     raise EmbeddingModelDownloadRequiredError(
@@ -613,6 +626,7 @@ def _get(model_name: str | None = None):
             # Scan only after load_target is settled, so the scanned commit is the loaded one.
             _guard_model_security(load_target, offline, display = name)
             with _quiet_transformers_load() as report:
+                # Retire only after construction succeeds, or a failed load falls to llama-server with no marker.
                 try:
                     try:
                         _model = SentenceTransformer(load_target, **st_kwargs)
@@ -635,6 +649,7 @@ def _get(model_name: str | None = None):
             _name = name
             # Retire the marker only after construction succeeds.
             if download_pending:
+                # Admission and model lookup are one lease; lookup first lets unload clear globals mid-call.
                 try:
                     from utils.embedding_model_settings import clear_stored_download_pending
                     clear_stored_download_pending(name)
@@ -668,6 +683,7 @@ def _st_encode(
     """ST encode -> (N, dim) float32. Serialized (fast-tokenizer borrow check),
     under inference_mode when torch is present, with rayon enabled for the call."""
     with _compute_lock:
+        # ST encode failed after load: switch to llama-server so later encodes share one vector space.
         model = _get(model_name)
         # Affinity narrowed in Task Manager mid-index must reach this thread's pool (#14313).
         fit_threads_to_affinity()
@@ -682,6 +698,7 @@ def _st_encode(
                 )
         finally:
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # fp16 weights yield fp16 output; store float32 for sqlite-vec + stable cosine.
     if hasattr(out, "astype"):
         out = out.astype("float32", copy = False)
     return out
@@ -758,6 +775,7 @@ class _SentenceTransformersBackend:
         except (UnsafeEmbeddingModelError, EmbeddingModelDownloadRequiredError):
             raise
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
+            # Directory names prove nothing; only the filesystem shows that a dir holding safetensors is ST.
             fallback = _switch_to_llama_fallback(st_err, model_name)
             if fallback is None:
                 raise
@@ -846,6 +864,8 @@ def _model_names_gguf_repo(model: str | None) -> bool:
         return False
     try:
         from utils.paths import is_local_path
+
+        # Before the stored record: asks the filesystem, not a guess; RAG_EMBED_BACKEND still overrides.
         if is_local_path(model):
             return False
     except Exception:  # noqa: BLE001 - unparseable path is not a repo id either
@@ -880,6 +900,7 @@ def _plan_prefers_llama_server(model: str) -> bool:
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """Auto, but honouring the saved backend: an embedder with no GGUF stays on sentence-transformers."""
     model = model_name or config.effective_embedding_model()
+    # Ranks below the stored record since names only guess; a torn GGUF with usable safetensors is ST.
     if _model_is_local_gguf(model):
         return "llama-server"
     try:
@@ -891,6 +912,7 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
         key = stored.strip().lower()
         if key in _ST_ALIASES or key in _LLAMA_ALIASES:
             return key
+    # Failed ST wrapper is unpublished, but its module-level model would outlive a later llama unload.
     if _model_names_gguf_repo(model):
         return "llama-server"
     return _resident_hardware_choice()
@@ -1083,6 +1105,7 @@ def _switch_to_llama_fallback(err, model_name: str | None = None):
         old, _backend = _backend, fallback
         _forced_backends[failed_model] = "llama-server"
         _backend_key = _backend_cache_key(_raw_backend(), "llama-server")
+    # ST wrappers share one module-level model; the warmed replacement would lose it if cleared here.
     _dispose_replaced_backend(old, fallback)
     return fallback
 
@@ -1122,6 +1145,7 @@ def _dispose_replaced_backend(old, new = None) -> None:
     if old is None or old is new:
         return
     if isinstance(old, _SentenceTransformersBackend):
+        # No published backend doesn't mean nothing is loaded; False here stranded module-level weights.
         if not isinstance(new, _SentenceTransformersBackend):
             _release_st_model()
         return
@@ -1152,6 +1176,7 @@ def _get_backend(model_name: str | None = None):
         if key in _ST_ALIASES:
             new = _build_st_backend_or_fallback(model)
         elif key in _LLAMA_ALIASES:
+            # Imported lazily so the ST path never imports llama plumbing.
             from .embed_llama_server import LlamaServerBackend
             new = LlamaServerBackend()
         else:
@@ -1162,9 +1187,11 @@ def _get_backend(model_name: str | None = None):
         _backend = new
         _keep_hardware_choice(new)
         if key in _ST_ALIASES and _is_llama_backend(new):
+            # Pin the backend the warm probe actually fell back to, but let a different model retry ST.
             key = "llama-server"
             _forced_backends[model] = key
         _backend_key = _backend_cache_key(raw, key)
+    # A llama shutdown can wait for an in-flight encode, so keep that wait out of the global publication lock.
     _dispose_replaced_backend(old, new)
     return new
 
@@ -1183,10 +1210,12 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
     """Lock-free on purpose: the load locks are held across whole model loads, which would stall status."""
     backend = _backend
     if backend is None:
+        # _model_repo outlives the subprocess, so a repo match alone would call a dead server resident.
         if model_name is None:
             return _model is not None
         return _model is not None and _name == model_name
     if model_name is None:
+        # A llama backend whose process is gone is not resident, whichever model was asked about.
         if _is_llama_backend(backend):
             try:
                 return bool(backend._process_alive())
@@ -1197,6 +1226,7 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
         return _model is not None and _name == model_name
     if _is_llama_backend(backend):
         try:
+            # Unload is a fresh start: clearing _forced_backends lets the saved model pick its backend again.
             if not backend._process_alive():
                 return False
             return backend._model_repo == config.effective_gguf_repo_for_embedding_model(model_name)
@@ -1209,10 +1239,12 @@ def release_backend() -> bool:
     """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
     global _backend, _backend_key, _resident_hardware
     with _backend_lock:
+        # Nothing published yet a module-level model may remain; freeing it here prevents a permanent leak.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None
     if backend is None:
+        # Live servers keep spawn-time pooling; a stopped backend re-reads the file, so dedup must match.
         return _release_st_model()
     _dispose_replaced_backend(backend)
     return True
@@ -1242,6 +1274,7 @@ def _llama_pooling(name: str, served = None) -> str | None:
         from .embed_llama_server import LlamaServerBackend, _gguf_pooling
     except Exception:  # noqa: BLE001 - llama plumbing import must never block
         return None
+    # The file the running server loaded wins over a cache search: moving the HF cache leaves it serving the old path.
     backend = served if served is not None else _backend
     desired = config.effective_gguf_repo_for_embedding_model(name)
     if isinstance(backend, LlamaServerBackend):
@@ -1249,6 +1282,7 @@ def _llama_pooling(name: str, served = None) -> str | None:
     else:
         path, repo, captured, alive = None, None, None, False
     if path and repo == desired:
+        # AppleDouble files keep the extension, so a text parser would embed and cite them as chunks.
         if served is not None or alive:
             pooling = captured or _gguf_pooling(path)
         elif os.path.isfile(path):
@@ -1258,6 +1292,7 @@ def _llama_pooling(name: str, served = None) -> str | None:
     else:
         pooling = LlamaServerBackend.cached_pooling(name)
     if pooling is None:
+        # Nothing on disk to read, so match no stored row: pre-encode dedupe must not take forced-CLS vectors as current.
         return "unresolved"
     return None if pooling == "cls" else pooling
 
@@ -1409,6 +1444,7 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
             ):
                 raise
         with counter_lock:
+            # Another counting thread may already have replaced the retired counter.
             if state[0] is served_backend:
                 replacement = _get_backend(model_name)
                 if replacement is served_backend:

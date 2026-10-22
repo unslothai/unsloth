@@ -114,7 +114,7 @@ def add_scan_folder_endpoint(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Redacted even for a caller-named path: the normalised path leaks host layout.
+    # Redacted even for a caller-named path: the normalised path leaks host layout. Keep inside the try so argument errors are redacted.
     try:
         payload = local_inventory.add_scan_folder_response(body.path, body.recursive)
     except HTTPException as error:
@@ -163,7 +163,7 @@ async def get_gguf_variants(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # API-key callers only have `ref:` handles; resolve them, then redact repo_id on the way out.
+    # API-key callers pass ref: handles; resolve them or the lookup hits the active cache. Redact repo_id: a local listing echoes the input.
     return redact_host_paths(
         await gguf_variants.get_gguf_variants_response(
             resolve_host_path_reference(repo_id) or repo_id,
@@ -384,6 +384,7 @@ async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
+    # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
     only_if_orphan: bool = Body(False),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),

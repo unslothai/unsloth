@@ -54,6 +54,7 @@ def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None)
         for candidate in candidates:
             if not candidate.exists() or not candidate.is_file():
                 continue
+            # The cwd fallback is a different file from the one checked above.
             try:
                 account_path(candidate)
             except HTTPException:
@@ -169,7 +170,7 @@ def _allow_empty_prompt(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-# These stringify input before finalize, so a missing cell would render "None"/"nan".
+# Filters that stringify their input before finalize runs, so a missing cell would still render "None" / "nan".
 _STRINGIFYING_FILTERS = (
     "capitalize",
     "escape",
@@ -214,7 +215,7 @@ def _apply_data_designer_prompt_blank_patch() -> None:
     original_prepare = RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer
 
     def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
-        # Only patch envs this call creates, else filter wrappers nest per row.
+        # render() prepares on every record; only patch the env this call creates, else filter wrappers nest per row.
         already_prepared = self._template_prepared_in_multi_template_renderer(template_name)
         original_prepare(self, template_name, *args, **kwargs)
         if already_prepared:
@@ -455,7 +456,7 @@ def _apply_data_designer_sql_inline_config_patch() -> None:
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
-    """Managed endpoints need HTTPS unless the private switch is on; the cert binds the peer, not DNS."""
+    """Managed endpoints need HTTPS unless private switch is on; the metadata block holds even then."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
@@ -508,7 +509,7 @@ def install_public_egress_guard() -> None:
     resolve = socket.getaddrinfo
 
     def guarded_getaddrinfo(host, port, *args, **kwargs):
-        # Per lookup: a worker outlives the switch it started under.
+        # Per lookup, not captured at install: a worker outlives the switch it started under.
         private_allowed = get_managed_private_provider_urls_allowed()
         infos = resolve(host, port, *args, **kwargs)
         for info in infos:

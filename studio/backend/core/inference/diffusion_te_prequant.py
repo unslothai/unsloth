@@ -32,18 +32,20 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
 
+# Reuse the DiT module's operator allowlist for local paths: one env var, one policy.
 from .diffusion_prequant import (
     ALLOW_LOCAL_PREQUANT_PATH_ENV,
     _local_prequant_path_allowed,
     _same_base_model,
 )
 
-# Bump on an on-disk layout change so old/foreign artifacts are rejected.
+# torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected.
 TE_PREQUANT_FORMAT = "unsloth_prequant_text_encoder_state_dict_v1"
 
+# fp8: layerwise storage cast (families with te_prequant_repos). int8: ConvRot weight-only, TE_INT8_CONVROT_FILES only.
 TE_PREQUANT_SCHEMES = ("fp8", "int8")
 
-# Distinct tag so an fp8-only build refuses an int8 file.
+# Distinct from TE_PREQUANT_FORMAT so an fp8-only build refuses the file instead of loading int8 into bf16 Linears.
 TE_PREQUANT_FORMAT_INT8_CONVROT = "unsloth_prequant_text_encoder_int8_convrot_v1"
 
 # family -> {component: (repo_id, filename)}. ComfyUI's qwen3vl_8b_int8_convrot scheme: decoder projections int8 in the
@@ -206,6 +208,7 @@ _TE_INT8_HEADLESS_FAMILIES = frozenset(
 # The scheme the loaded FILE carried ("fp8" / "int8"), so quantize_text_encoders never re-casts an int8 encoder.
 TE_PREQUANT_SCHEME_ATTR = "_unsloth_te_prequant_scheme"
 
+# ``<root>/<owner>/<repo>/<filename>`` used before the Hub (os.pathsep-separated roots), as for the DiT pre-quants.
 TE_PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
 
 
@@ -265,6 +268,7 @@ def te_prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Opti
     return None
 
 
+# Components the pipeline-assembly injection covers; text_encoder_4 lives in diffusion_hidream.py.
 TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
 # Pre-cast fp8 size vs bf16; dense embeddings/norms keep it above 0.5.
@@ -533,8 +537,9 @@ def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:
         return False
 
 
-# Bases with VERIFIED byte-identical text-encoder weights share one hosted artifact.
+# Bases with VERIFIED byte-identical encoder weights share one artifact; any other base is refused.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
+    # Qwen-Image-2512 shares Qwen2.5-VL-7B's byte-identical shards; refusing it pulls 16.6 GB unused.
     frozenset(
         {
             "qwen/qwen-image",
@@ -647,6 +652,7 @@ class TePrequantSource:
     kind: str
     location: str
     filename: Optional[str] = None
+    # Ordered fallback names after ``filename`` if the repo lacks it; only the "repo" kind uses them.
     fallback_filenames: tuple = ()
     # The component the hosted FILE was built as, when another family loads the same bytes under a different slot
     # (HiDream's text_encoder_3 is FLUX.1's text_encoder_2). None = the component it is loaded into.
@@ -796,7 +802,7 @@ def resolve_te_prequant_source(
     if override:
         return TePrequantSource(kind = "path", location = override, filename = None)
     if scheme == "int8":
-        # int8 file first, then fp8 names in the same repo, before dense shards.
+        # int8 file first, then the fp8 names in the same repo, so a miss takes fp8 rather than the dense shards.
         hosted = family_te_int8_convrot(fam, component)
         if hosted is None:
             return None
@@ -1042,8 +1048,7 @@ def load_prequant_text_encoder(
 
         from .prequant_safetensors import is_safetensors_checkpoint, load_plain_prequant_safetensors
 
-        # Plain tensors: weights_only=True suffices. A torchao-subclass scheme needs a format bump.
-        # Dispatch on the requested extension, never on sniffing bytes.
+        # weights_only=True: no pickle runs; a torchao-subclass scheme needs a format bump and an allowlist.
         from .diffusion_text_encoder_trim import (
             LM_HEAD_KEY,
             class_trims_lm_head,
@@ -1060,7 +1065,7 @@ def load_prequant_text_encoder(
             ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
         else:
             ckpt = torch.load(path, weights_only = True, map_location = "cpu")
-        # An int8 request accepts its fp8 fallback; an fp8 request never accepts int8.
+        # By format tag: an int8 request accepts its fp8 fallback; an fp8 request never accepts an int8 file.
         file_scheme = (
             "int8"
             if isinstance(ckpt, dict) and ckpt.get("format") == TE_PREQUANT_FORMAT_INT8_CONVROT
@@ -1124,6 +1129,7 @@ def load_prequant_text_encoder(
                 )
             return encoder
         if trim and config_ties_lm_head(config):
+            # Tied: nothing to drop.
             trim = False
             if LM_HEAD_KEY in skip:
                 state_dict[LM_HEAD_KEY] = _read_safetensors_tensor(path, LM_HEAD_KEY)
@@ -1282,6 +1288,7 @@ def _te_prequant_pipe_kwargs(
             te_quant_mode = te_quant_mode,
             target = target,
         )
+        # Non-empty only for a hosted scheme (see te_prequant_sources' gate).
         mode = normalize_te_quant(te_quant_mode) or TE_QUANT_FP8
         injected: dict[str, Any] = {}
         for component, source in sources.items():
@@ -1314,7 +1321,7 @@ def _te_prequant_pipe_kwargs(
                 and te_quant_supported(target, TE_QUANT_FP8)
                 and _held_locally(source.location, source.filename, hf_token)
             ):
-                # int8 refused after the plan dropped dense shards: take the fp8 names.
+                # The int8 file resolved but was refused: the plan dropped the dense shards, so take the fp8 names.
                 encoder = load_prequant_text_encoder(
                     base,
                     component,
@@ -1538,7 +1545,7 @@ def _build_int8_convrot_encoder(
     quantized = sorted(k[: -len(scale_suffix)] for k in state_dict if k.endswith(scale_suffix))
     if not quantized:
         raise ValueError("no int8 ConvRot projections in this checkpoint")
-    # include_buffers=False: rotary inv_freq is built for real; params arrive via assign=True.
+    # include_buffers=False: rotary inv_freq buffers are built for real; parameters arrive via assign=True.
     with init_empty_weights(include_buffers = False):
         encoder = encoder_cls(config)
     # An encoder-only class (UMT5EncoderModel) has no head at all; one that has a head needs the trim, as the file
@@ -1703,7 +1710,7 @@ def _resolve_checkpoint_path(
             else (EntryNotFoundError,)
         )
         names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
-        # Mirror for every name before the Hub, so the order is the same with or without one.
+        # Mirror for every name before the Hub for any, so the order is the same with or without one.
         for name in names:
             mirrored = te_prequant_mirror_path(source.location, name)
             if mirrored is not None:
@@ -1711,6 +1718,7 @@ def _resolve_checkpoint_path(
         last: Optional[Exception] = None
         from .diffusion_prequant import _first_mirrored
 
+        # The operator's mirror answers before the Hub is asked for any name (and so also offline).
         mirrored = _first_mirrored(source.location, names, te_candidate_is_readable)
         if mirrored is not None:
             return mirrored
@@ -1722,7 +1730,7 @@ def _resolve_checkpoint_path(
             readable = te_candidate_is_readable,
             cache_dir = cache_dir,
             logger = logger,
-            roots = tuple(dict.fromkeys((cache_dir, None))),
+            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
         )
         from .diffusion_prequant import _download_checkpoint_name, explain_container_choice
 
@@ -1751,6 +1759,7 @@ def _resolve_checkpoint_path(
                     unreachable = sys.exc_info()[1]
                     for cached_name in names[names.index(name) + 1 :]:
                         try:
+                            # Both cache roots, as for any other name.
                             return _download_checkpoint_name(
                                 source,
                                 cached_name,

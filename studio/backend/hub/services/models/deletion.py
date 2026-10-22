@@ -16,7 +16,7 @@ from typing import Optional
 try:
     from huggingface_hub.utils._shared_blobs import shared_blob_target, sweep_shared_blob
 
-    # Private hf_hub API; if the signature changed, fall back to plain unlink.
+    # Private huggingface_hub API: a release that keeps the names but changes the arguments would raise TypeError mid-delete, after the snapshot links are gone, so fall back to the plain unlink instead.
     inspect.signature(shared_blob_target).bind(Path(), Path())
     inspect.signature(sweep_shared_blob).bind(Path(), cache_dir = Path())
 except (ImportError, TypeError, ValueError):
@@ -101,7 +101,7 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
 def _unlink_variant_blob(blob: Path, cache_dir: Optional[Path]) -> int:
     shared_target = None
     if shared_blob_target is not None:
-        # hf_hub matches paths lexically; try the blob's own root form first (symlinks, 8.3 names).
+        # huggingface_hub matches paths lexically, so try the cache root in the blob's own form first: a resolved root misses a symlinked cache or a Windows 8.3 short name and would leak the payload.
         for root in dict.fromkeys(
             r for r in (blob.parent.parent.parent, cache_dir) if r is not None
         ):
@@ -862,14 +862,15 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     if status.get("loaded") and status.get("repo_id"):
         if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
             return "Unload the model before deleting"
-    # sd.cpp re-reads companion files every generation; refuse those too.
+    # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers only the main GGUF, so refuse the companions too.
     for lid in getattr(engine, "loaded_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
-    # Deleting during a download would pull blobs from under the fetch.
+    # A downloading repo still reports loaded=False, but deleting would pull blobs from under the in-flight fetch.
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
+    # Cancelled but not yet unwound: deleting here yanks blobs from under a live Hub call.
     for lid in getattr(engine, "draining_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is still releasing this repo; wait for it to finish"
@@ -877,7 +878,7 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
 
 
 def any_model_load_blocks_cache_clear() -> Optional[str]:
-    """Any loaded model blocks a clear; unreachable backends are ignored, a raising backend fails closed."""
+    """Any loaded model blocks a clear (sd.cpp rereads companion files); a raising backend fails closed."""
     try:
         from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
@@ -912,7 +913,7 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
     try:
         from core.inference.orchestrator import peek_inference_backend
 
-        # Peek, never construct: constructing imports torch.
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
         engine = peek_inference_backend()
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"Inference backend unavailable during the cache-clear guard: {exc}")
@@ -967,11 +968,12 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
         return None
     status = backend.status()
     if status.get("loaded"):
+        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE and text encoders, so refuse it too.
         for key in ("repo_id", "base_repo"):
             held = status.get(key)
             if held and _loaded_id_matches_repo(str(held), repo_id):
                 return "Unload the model before deleting"
-    # Native H3 re-reads encoder and VAEs from separate companion repos.
+    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are neither of the two ids above, so refuse those as well.
     for lid in getattr(backend, "loaded_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
@@ -1076,6 +1078,7 @@ async def delete_cached_model_response(
         )
     guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
 
+    # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
         if _llama_cpp_blocks_delete(guard_id, variant) or (
             _inference_backend_blocks_delete(guard_id)
@@ -1236,7 +1239,7 @@ def _delete_cached_model_blocking(
                     if getattr(r, "repo_path", None) and Path(getattr(r, "repo_path")) == wanted
                 ]
                 if not copies:
-                    # Unscanned target root: refuse rather than fail open (lands as 503).
+                    # An empty match means the target root is not in this scan, and concluding "orphan" from copies we did not look at is the fail-open this precondition prevents; raising lands in the 503.
                     raise RuntimeError(f"cache root not present in the scan: {cache_path}")
             still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
         except Exception as e:
@@ -1254,11 +1257,10 @@ def _delete_cached_model_blocking(
                 ),
             )
 
-    # Whole-repo deletes of a companion base, or a GGUF variant that IS a required asset, are guarded.
-    # A flag, not a rewrite of `variant`: widening scope would delete things not asked for.
+    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its family, so removing it while one is installed leaves that quant unloadable with nothing on screen to say why. Derived from what is installed right now, never from a stored count, and only for a WHOLE-repo delete; deleting the dependants first makes the base an orphan, which Free up space then offers. Here rather than in the async caller so it shares this function's cache walk and stubs: the check IS part of the destructive stage. The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens exactly Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF repo, so removing that one quant strands the image checkpoint however many siblings remain, and none of them is a substitute for a fixed filename. A FLAG, never a rewrite of `variant`: that name is the destructive scope, and widening it here would delete every revision and manifest the user did not ask for, and purge a sibling quant out from under an in-flight download.
     guard_this_delete = variant is None or _variant_is_a_required_companion_asset(repo_id, variant)
     if guard_this_delete and _is_companion_base_repo(repo_id):
-        # Fails CLOSED: unreadable cache means dependants cannot be enumerated.
+        # Fails CLOSED, and only here: the lookup above already established this repo IS a companion base, so an unreadable cache means the dependants cannot be enumerated, not that there are none.
         try:
             shared_detail = _companion_share_blocks_delete(repo_id)
         except Exception as e:
@@ -1274,14 +1276,14 @@ def _delete_cached_model_blocking(
             raise HTTPException(status_code = 400, detail = shared_detail)
 
     try:
-        # Sibling downloading: leave the shared mmproj for it.
+        # If a sibling quant is downloading concurrently, restrict this delete to the variant's own files and leave the shared mmproj companion for it.
         sibling_active = bool(
             variant and downloads.registry.has_active_peer_variant(repo_id, variant)
         )
 
         cache_scans = cache_inventory.all_hf_cache_scans()
 
-        # A repo can live in several caches; target exactly one.
+        # A repo can live in several remembered caches, so target exactly one or a delete removes copies in other, previously selected caches.
         owners: dict = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:

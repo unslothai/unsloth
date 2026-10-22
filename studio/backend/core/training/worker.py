@@ -109,10 +109,12 @@ def _data_parallel_world_size() -> int:
             ):
                 sizes.append(int(distributed.get_world_size()))
         except Exception:
+            # A stubbed or half-initialised torch.distributed must not fail a run.
             pass
         try:
             sizes.append(int(torch_module.cuda.device_count()))
         except Exception:
+            # CPU-only builds answer 0 (dropped by the filter); a raising torch.cuda must not fail the run.
             pass
     return max([size for size in sizes if size > 0], default = 1)
 
@@ -893,13 +895,13 @@ def _requests_all_linear(config: dict) -> bool:
 def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
     """Needs detection to settle the branch, so it runs after pre_detect and before any weights load."""
     if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
-        return
+        return  # Full Finetuning / CPT build adapters from target_modules alone
     if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
-        return
+        return  # the text branch ignores these four
     if _requests_all_linear(config):
-        return
+        return  # get_peft_model turns all five selectors on for the keyword; see below
     vision, language, attention, mlp = _finetune_selectors(config)
-    # Mirror get_peft_regex's guards: one layer family AND one module type.
+    # Mirror get_peft_regex's two guards: one layer family AND one module type.
     if not (vision or language) or not (attention or mlp):
         raise ValueError(_NOTHING_TO_TRAIN)
 
@@ -914,7 +916,7 @@ def _names_a_cpt_target(target_modules) -> bool:
         return target_modules in _CPT_TARGET_NAMES
     try:
         return any(name in _CPT_TARGET_NAMES for name in target_modules)
-    except TypeError:
+    except TypeError:  # not iterable -> not a list of names, so nothing is guaranteed
         return False
 
 
@@ -1106,7 +1108,7 @@ _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
 _FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
 _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 
-# Module scope so the torch.library registration isn't GC'd.
+# Module scope so the torch.library.Library registration isn't GC'd mid-run.
 _WINDOWS_ROCM_GROUPED_MM_LIB = None
 
 
@@ -1126,7 +1128,7 @@ def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
         """Python mm/bmm fallback for _grouped_mm on gfx120X (null HIP kernel, ROCm <= 7.12)."""
         _t = torch_mod
         if offs is None:
-            # 3-D batched needs bmm (unconditional mm broke 3-D MoE).
+            # No offsets: 2-D -> mm, 3-D batched -> bmm (unconditional mm broke 3-D MoE).
             if self.dim() == 3 and mat2.dim() == 3:
                 result = _t.bmm(self.contiguous(), mat2.contiguous())
             elif self.dim() == 3 and mat2.dim() == 2:
@@ -1136,7 +1138,7 @@ def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
             else:
                 result = _t.mm(self.contiguous(), mat2.contiguous())
         else:
-            # offs[i] is the exclusive end-row of group i.
+            # Grouped: offs[i] is the exclusive end-row of group i.
             offs_list = offs.tolist()
             pieces = []
             prev = 0
@@ -1146,6 +1148,7 @@ def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
                 b_part = mat2[idx].contiguous() if mat2.dim() == 3 else mat2.contiguous()
                 pieces.append(_t.mm(a_part, b_part))
                 prev = end
+            # Include trailing rows not covered by offs.
             if prev < self.shape[0]:
                 a_tail = self[prev:].contiguous()
                 b_tail = mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
@@ -1189,7 +1192,7 @@ if sys.platform == "win32":
         )
 
         def _ver_key(name: str) -> tuple:
-            # Numeric tuple so "10.0" sorts after "7.0".
+            # Numeric tuple key so "10.0" sorts after "7.0".
             parts = []
             for chunk in name.split("."):
                 try:
@@ -1235,6 +1238,7 @@ _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
 def _is_importable(import_name: str) -> bool:
+    # Invalidate finder caches so a package installed earlier in this process is seen.
     importlib.invalidate_caches()
     try:
         __import__(import_name)
@@ -1245,7 +1249,7 @@ def _is_importable(import_name: str) -> bool:
         return False
 
 
-# Keep in step with install_python_stack._FLASH_ATTN_IMPORT_PROBE_TIMEOUT.
+# Kept in step with install_python_stack._FLASH_ATTN_IMPORT_PROBE_TIMEOUT.
 _IMPORT_PROBE_TIMEOUT = 300
 
 
@@ -1816,6 +1820,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         # gfx1152 (Krackan Point) shares system RAM like gfx1150/gfx1151.
         return gcn_arch, gcn_arch.lower() in {"gfx1150", "gfx1151", "gfx1152"}
 
+    # Without arch attrs, match device name, only under _hw.IS_ROCM so NVIDIA 840M cannot hit Krackan.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
         "890m" in dev_lower
@@ -1834,8 +1839,9 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
 _UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
 _UNIFIED_MAX_RESERVE_FRACTION = 0.20
 _DISCRETE_MEM_FRACTION = 0.90
-# Legacy name; still wins on ROCm since setups export it.
+# The name this guard shipped with; still wins on a ROCm host, since setups export it.
 _MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
+# Backend neutral, so NVIDIA has a cap too (unsloth#8178).
 _GPU_MEM_FRACTION_ENV = "UNSLOTH_GPU_MEM_FRACTION"
 
 
@@ -1844,7 +1850,7 @@ def _parse_mem_fraction_env(env_value: str | None) -> float | None:
     guard's log line so it can say whether the override was actually honoured, rather than just
     whether the variable was set."""
     try:
-        override = float(env_value)
+        override = float(env_value)  # None -> TypeError, "" / "  " -> ValueError
     except (TypeError, ValueError):
         return None
     # Two-sided so NaN is rejected.
@@ -1980,6 +1986,7 @@ def _rocm_memory_fraction(
     if platform == "win32":
         return 1.0
     if total_bytes <= 0:
+        # Missing or None total defaults to 0; with no pool size, keep the historical cap instead of solving.
         return 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
 
     # Fraction space, not bytes: avoids 0.7999... ULP rounding below the historical 0.80.
@@ -2084,13 +2091,14 @@ def _guard_fla_tilelang() -> None:
     except Exception as exc:
         logger.debug("FLA_TILELANG guard skipped: %s", exc)
 
-    # Leftover TileLang + broken tvm-ffi crashes the run; steer off it.
+    # A leftover TileLang plus a broken tvm-ffi crashes the run; steer off it instead of installing.
     try:
         if importlib.util.find_spec("tilelang") is not None:
             tvm_ffi_version = importlib.metadata.version("apache-tvm-ffi")
             if tvm_ffi_version in _TVM_FFI_BROKEN_VERSIONS:
                 before = os.environ.get("FLA_TILELANG")
                 os.environ.setdefault("FLA_TILELANG", "0")
+                # setdefault is a no-op under an override, so only claim what actually happened.
                 if before is None:
                     logger.info(
                         "Disabling TileLang: apache-tvm-ffi %s faults under it; FLA_TILELANG is now %s",
@@ -2138,7 +2146,7 @@ def _install_fast_path_hooks(
             if state["installed"]:
                 return original()
             try:
-                original.cache_clear()
+                original.cache_clear()  # defensive; worker subprocess is fresh
             except AttributeError:
                 pass
             ok = original()
@@ -2349,7 +2357,7 @@ def _probe_mlx_vlm_numpy_image_layout(image_processor) -> str | None:
         except Exception:
             return False
 
-    # Asymmetric so CHW-vs-HWC mistakes are visible.
+    # Asymmetric image so CHW-vs-HWC mistakes are visible to processors that skip 3D conversion.
     hwc = np.zeros((64, 96, 3), dtype = np.uint8)
     chw = np.ascontiguousarray(hwc.transpose(2, 0, 1))
     if _accepts(hwc):
@@ -2472,6 +2480,7 @@ def _normalize_mlx_studio_optimizer(value):
         from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
         return _normalize_mlx_optimizer_name(value or "adamw_8bit")
     except (ImportError, ValueError):
+        # Missing mlx, or an older zoo normalizer: map common adamw_* names locally.
         opt = str(getattr(value, "value", value) or "adamw_8bit").strip().lower()
         opt = opt.rsplit(".", 1)[-1].replace("-", "_")
         if opt in _MLX_STUDIO_ADAMW_ALIASES:
@@ -2744,6 +2753,7 @@ def _setup_mlx_tracking(trainer, config, output_dir, send):
                 wandb_token = config.get("wandb_token")
                 if wandb_token:
                     os.environ["WANDB_API_KEY"] = wandb_token
+                # Keep the authenticated subject out of W&B run config (mirrors _sanitize_db_config).
                 _wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}
                 return _wandb.init(
                     project = config.get("wandb_project") or "unsloth-mlx",
@@ -2887,7 +2897,7 @@ def _resolve_mlx_max_grad_norm(value):
         raise ValueError(
             f"Unsloth MLX: max_grad_norm={value!r} must be a non-negative float or None."
         )
-    # inf passes >= 0 but never clips.
+    # inf clears a >= 0 check but never binds, so the run would train unclipped.
     if value < 0 or not math.isfinite(value):
         raise ValueError(
             f"Unsloth MLX: max_grad_norm={value} must be a finite value >= 0 "
@@ -2966,6 +2976,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    # Decided before the model loads, so version skew does not cost a download.
     try:
         mlx_dora_kwargs = _mlx_dora_peft_kwargs(config, FastMLXModel.get_peft_model)
     except NotImplementedError as exc:
@@ -2975,16 +2986,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
     lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
 
-    # Force text-only for non-image datasets even on VLMs.
+    # Force text-only for non-image datasets even on vision-capable models (e.g. Qwen3.5-VL on alpaca).
     _send("status", status_message = f"Loading {model_name}...")
+    # Forward resume_from_checkpoint to MLXTrainer.train(); else Resume silently restarts from step 0.
     resume_from_checkpoint = config.get("resume_from_checkpoint") or None
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    # Before the download/load below: unlike the CUDA path, this needs none of the model.
     if use_lora:
         _check_mlx_finetune_targets(config)
+    # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
     random_seed = 3407 if _raw_seed is None else int(_raw_seed)
+    # `config.get(k, d)` only fills d when key is missing; handle explicit None too.
     _model_seed = config.get("model_random_state")
     model_random_state = random_seed if _model_seed is None else int(_model_seed)
     _lora_seed = config.get("lora_random_state")
@@ -3024,7 +3039,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ),
         )
         model_load_name = _drop_model_pin_for_fallback(config, hf_token)
-        # Scan the Hub fallback target, not the cached pin scanned above.
+        # Scan the Hub target we fall back to, not the cached pin already scanned above.
         security_error = _model_load_security_error(config, model_load_name, hf_token)
         if security_error:
             _send("error", **security_error)
@@ -3059,6 +3074,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
     vision_image_size = config.get("vision_image_size")
+    # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
     _is_deepseek_ocr = "deepseek" in _model_name_lower and "ocr" in _model_name_lower
     if is_vlm and vision_image_size is not None and _is_deepseek_ocr:
@@ -3075,6 +3091,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "status",
             status_message = f"MLX vision image resize: {vision_image_size} (max dimension)",
         )
+    # gradient_checkpointing stays a string; get_peft_model and MLXTrainer both accept strings.
     gc_setting = config.get("gradient_checkpointing", "mlx")
     if isinstance(gc_setting, str):
         use_grad_checkpoint = (
@@ -3113,6 +3130,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
 
+        # is_vlm and the back-fill's outcome are known now; the preflight could only guess.
         _check_mlx_effective_targets(
             config,
             finetune_language = finetune_language,
@@ -3136,6 +3154,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     mlx_raw_text_mode = (
         training_type == "Continued Pretraining" or config.get("format_type") == "raw"
     )
+    # mlx.launch shards the batch like DDP and advertises the process count in the env this reads.
     mlx_max_train_rows = max_train_rows_for_config(
         config,
         branch_never_packs = is_vlm and not mlx_raw_text_mode,
@@ -3146,7 +3165,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         resume_from_checkpoint, mlx_max_train_rows, random_seed
     )
 
+    # A bracketed split names rows the same way the numeric fields do.
     mlx_split_names_rows = "[" in (config.get("train_split") or "")
+    # The bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
     mlx_kept_row_fraction = [1.0]
 
     def _on_bound(kept, total):
@@ -3159,6 +3180,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             end = slice_end if slice_end is not None else len(ds) - 1
             if end < start:
                 return ds.select([])
+            # The user named these rows; the bound below defers to that.
             return ds.select(range(start, min(end + 1, len(ds))))
         if mlx_split_names_rows:
             return ds
@@ -3240,6 +3262,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
         eval_dataset = _load_local(config["local_eval_datasets"])
 
+    # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
@@ -3336,7 +3359,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                             message = "The eval dataset is empty after preprocessing, so this run has no evaluation.",
                         )
                         eval_dataset = None
-                        # A user split that filters to nothing must not carve one out of train.
+                        # A user-supplied split that filters to nothing must not carve one out of train.
                         eval_enabled = False
                 else:
                     eval_errors = ev.get("errors", [])
@@ -3384,14 +3407,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     lr_value = float(config.get("learning_rate", "2e-4"))
 
+    # Warmup: prefer warmup_steps; fall back to warmup_ratio
     warmup_steps = config.get("warmup_steps")
     warmup_ratio = config.get("warmup_ratio")
     warmup_uses_ratio = warmup_steps is None and warmup_ratio is not None
     if warmup_steps is None:
         warmup_steps = 0 if warmup_uses_ratio else 5
 
+    # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import ensure_dir
 
+    # Resume must land in the original run dir even when config lacks output_dir.
     resume_dir = config.get("output_dir", "") or _output_dir_from_resume_checkpoint(
         resume_from_checkpoint
     )
@@ -3406,6 +3432,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     eval_steps_ratio = eval_steps_value if 0 < eval_steps_value < 1 else None
     eval_steps_val = 0 if eval_steps_ratio is not None else int(eval_steps_value)
 
+    # Re-validate for direct worker callers; training.py normalizes the main path.
     max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:
@@ -3426,7 +3453,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
-    # `streaming` off: zoo needs a pass length to end epochs on an optimizer step.
+    # `streaming` stays off: without a pass length zoo cannot end an epoch on an optimizer step or report a real epoch.
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
@@ -3450,11 +3477,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps = eval_steps_val,
     )
 
+    # Also gates the masking skip below, so defined outside the feature-detect block.
     raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
 
-    # Feature-detect so this works without the paired zoo bump.
+    # Feature-detect optional fields so this PR works without the paired zoo bump.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
+        # Explicit None falls back to True (default).
         _raw_cast = config.get("cast_norm_output_to_input_dtype", True)
         mlx_config_kwargs["cast_norm_output_to_input_dtype"] = (
             True if _raw_cast is None else bool(_raw_cast)
@@ -3478,6 +3507,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             mlx_config_kwargs["early_stopping_patience"] = patience
             mlx_config_kwargs["load_best_model_at_end"] = True
     if "append_eos" in _supported_fields:
+        # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
     trainer = MLXTrainer(
@@ -3500,6 +3530,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)
 
     def _record_mlx_row_bound():
+        # Pin the subset before any checkpoint lands here; a resume reads it back.
         if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
             mlx_max_train_rows
         ):
@@ -3516,6 +3547,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if _is_stop_requested():
         trainer.stop_requested = True
 
+    # Tell the parent eval is configured so the frontend shows the eval chart
     if eval_dataset is not None and eval_steps_val > 0:
         _send("eval_configured")
 
@@ -3553,6 +3585,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
         if not masking_applied:
+            # Masking miss changes the run's objective, so warn in the sticky warning list, not a status line.
             _send(
                 "warning",
                 message = (
@@ -3671,6 +3704,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     def _finish_tracking() -> None:
+        # Runs on every save/finalize exit so TB/W&B never leak on early return.
         if tb_writer is not None:
             try:
                 tb_writer.close()
@@ -3724,7 +3758,7 @@ def run_mlx_training_process(
     model_load_target = _resolve_cached_model_load_name(config)
 
     if not transformers_activated:
-        # Must precede detect_hardware(): its MLX check imports transformers.
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
         _activate_transformers_version_or_warn(
             model_load_target,
             _worker_hf_token(config),
@@ -3800,6 +3834,7 @@ def _training_job_is_local(config) -> bool:
     try:
         if not (model and is_local_path(model)):
             return False
+        # A local checkpoint can name a remote base to fetch later, so decide from disk, not network.
         base, needs_hub = _recorded_local_base(model)
         if needs_hub:
             return False
@@ -3867,7 +3902,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     # Before imports.
-    os.environ["PYTHONWARNINGS"] = "ignore"
+    os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     from utils.security.hub_data_files import install as guard_hub_data_files
     from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
@@ -3884,7 +3919,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if is_anonymous(hf_token):
             os.environ["HF_TOKEN_PATH"] = os.devnull
 
-    # Disable Xet before any huggingface_hub import (read at import time).
+    # HTTP-fallback respawn: disable Xet before any huggingface_hub import (read at import time).
     from utils.hf_xet_fallback import child_should_disable_xet
 
     if child_should_disable_xet(config):
@@ -3905,8 +3940,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         try:
             from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
 
-            # Hub ignores TRANSFORMERS_OFFLINE, so translate it.
+            # Hub ignores TRANSFORMERS_OFFLINE, so translate it before probing.
             _offline = hf_env_offline()
+            # hf_dns_dead follows HF_ENDPOINT and stands down behind a proxy, so a mirror still counts.
             if not _offline:
                 _offline = _network_offline = hf_dns_dead()
             if not _offline and not hf_probe_disabled():
@@ -3924,6 +3960,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # TRANSFORMERS_OFFLINE alone must not force cache-only datasets.
             if _network_offline:
                 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+            # logger isn't configured yet; print to stderr instead.
             print(
                 "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 set for this worker.",
                 file = sys.stderr,
@@ -3943,6 +3980,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         service_name = "unsloth-studio-training-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    # As the inference worker: a recovered traceback reaching fd 2 must not read as the crash.
     from utils.worker_stderr import mark_log_record_continuations
 
     mark_log_record_continuations()
@@ -3981,7 +4019,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():
-        # Must precede detect_hardware(): its MLX check imports transformers.
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
         _activate_transformers_version_or_warn(
             model_load_target,
             _worker_hf_token(config),
@@ -4031,7 +4069,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if (
         any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
         and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
-        # Confirm a genuine first-party repo, not a spoofed "unsloth/" name.
+        # Confirm a genuine first-party Hub repo (not a spoofed "unsloth/" name); authenticated.
         and is_trusted_org_repo(model_name, hf_token = _worker_hf_token(config))
         and not config.get("trust_remote_code", False)
     ):
@@ -4146,12 +4184,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)
 
-    # Stub torchao on Windows ROCm (no RCCL); must run before transformers/unsloth_zoo.
+    # Stub torchao on Windows ROCm; see core/_torchao_stub.py (no RCCL there). Run before transformers/unsloth_zoo.
     from core._torchao_stub import install_torchao_windows_rocm_stub
 
     install_torchao_windows_rocm_stub()
 
-    # transformers/trl import these torch.distributed attrs even single-GPU.
+    # Single-GPU never inits the process group, but transformers/trl import these torch.distributed attrs anyway.
     _td_stubs = {
         "is_initialized": lambda: False,
         "is_available": lambda: False,
@@ -4196,6 +4234,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         )
         if _is_win_rocm_torch:
+            # Belt-and-suspenders; the JitDecomp patch is the real fix, but this covers other paths.
             if "TORCHDYNAMO_DISABLE" not in os.environ:
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
@@ -4207,7 +4246,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 if not _shutil.which("hipinfo.exe"):
                     os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
 
-            # AMD's Windows BNB DLL suffix may not match torch.version.hip; detect the real one.
+            # AMD's Windows BNB DLL suffix may not match torch.version.hip; detect the real one. Caller-set BNB_ROCM_VERSION stays authoritative.
             if (
                 "BNB_ROCM_VERSION" not in os.environ
                 or os.environ.get("UNSLOTH_BNB_ROCM_VERSION_SOURCE") == "sitecustomize"
@@ -4233,11 +4272,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                                 )
                                 if _m:
                                     _all_vers.append(_m.group(1))
-                        # glob order isn't sorted.
+                        # Highest numeric suffix wins (glob order isn't sorted).
                         if _all_vers:
                             _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
                 except Exception:
                     pass
+                # Set BNB_ROCM_VERSION only if a ROCm bnb DLL exists, so later fixes can still redetect or opt out.
                 if _found_rocm_bnb:
                     _bnb_rocm_ver = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
                     os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
@@ -4256,16 +4296,18 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     lambda _r: "environment variable detected" not in _r.getMessage()
                 )
 
+            # Kernel-fix gate reads HIP version, else torch.__version__ (AMD SDK wheels leave version.hip unset).
             def _hip_ver_at_least(major: int, minor: int) -> bool:
                 _hip_str = getattr(getattr(_torch_for_rocm, "version", None), "hip", None)
                 if not _hip_str:
+                    # Try the standard "+rocmX.Y.Z" embedded version first.
                     _ver_match = re.search(r"rocm(\d+)\.(\d+)", _build_version_for_rocm)
                     if _ver_match:
                         return (
                             int(_ver_match.group(1)),
                             int(_ver_match.group(2)),
                         ) >= (major, minor)
-                    # rocmsdk wheels postdate the 7.13 fix.
+                    # "+rocmsdk<date>" wheels postdate the gfx120X null-kernel fix (ROCm 7.13); treat as >= 7.13.
                     if "rocmsdk" in _build_version_for_rocm:
                         logger.debug(
                             "Windows ROCm: AMD SDK wheel detected (%r); "
@@ -4299,6 +4341,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
                     return False
 
+            # Only on affected versions (ROCm <= 7.12); 7.13+ uses the real GPU kernel.
             if not _hip_ver_at_least(7, 13):
                 try:
                     _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
@@ -4358,9 +4401,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         try:
             import torch as _torch_mem
             if _torch_mem.cuda.is_available():
-                # torch keeps the fraction per device.
+                # torch keeps the fraction PER DEVICE: a sharded run left the rest uncapped.
                 _unified_seen = False
                 for _mem_index in range(_torch_mem.cuda.device_count()):
+                    # Classify unified vs discrete (see _rocm_classify_unified_memory's docstring).
                     _props = _torch_mem.cuda.get_device_properties(_mem_index)
                     _dev_name = _props.name
                     _gcn_arch, _is_unified = _rocm_classify_unified_memory(_props)
@@ -4370,7 +4414,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             "unified memory from device name %r; applying unified cap",
                             _dev_name,
                         )
-                    # Windows mem_get_info total is the WDDM budget (OS share already excluded); Linux needs headroom.
+                    # Windows mem_get_info total is WDDM budget (OS share excluded); Linux needs headroom; torch 2.10+ scales props.total_memory, older hipMemGetInfo.
                     _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
                     _driver_total = 0
                     if not _allocator_divides_by_props_total(
@@ -4380,6 +4424,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                             _driver_total = int(_torch_mem.cuda.mem_get_info(_mem_index)[1])
                         except Exception:
                             _driver_total = 0
+                    # ROCm name first, so an existing export keeps the cap it had.
                     _env_raw, _env_name = _mem_fraction_env_value("rocm")
                     _env_fraction = _parse_mem_fraction_env(_env_raw)
                     if _env_raw and _env_fraction is None:
@@ -4417,6 +4462,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         if _env_fraction is not None
                         else f"computed; override with {_MEM_FRACTION_ENV} or {_GPU_MEM_FRACTION_ENV}",
                     )
+                    # Differing totals: the budget printed above is not the one enforced.
                     if (
                         _is_unified
                         and sys.platform != "win32"
@@ -4519,6 +4565,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         import transformers
 
         logger.info("Subprocess loaded transformers %s", transformers.__version__)
+        # unsloth_zoo injects its vendored fla when the trainer imports unsloth above.
         logger.info(
             "flash-linear-attention fast path importable: %s",
             _flash_linear_attention_importable(),
@@ -4633,7 +4680,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _start_worker_stop_poller(stop_queue, _apply_stop)
 
-    # Order: detect -> dataset -> model -> prepare -> train, so both never hold VRAM at once.
+    # Pipeline order: detect -> dataset -> model -> prepare -> train, so both never hold VRAM at once.
     try:
         hf_token = _worker_hf_token(config)
         model_load_name = _resolve_cached_model_load_name(config)
@@ -4646,6 +4693,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
 
+        # Filled in below, after the model probe; the closure runs after both.
         max_train_rows = None
         max_train_rows_seed = config.get("random_seed", 3407)
 
@@ -4712,7 +4760,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
             model_load_name = _drop_model_pin_for_fallback(config, hf_token)
-            # Scan the Hub fallback target, not the cached pin scanned above.
+            # Scan the Hub target we fall back to, not the cached pin already scanned above.
             security_error = _model_load_security_error(config, model_load_name, hf_token)
             if security_error:
                 event_queue.put({"type": "error", **security_error, "ts": time.time()})
@@ -4732,18 +4780,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
 
+        # Packing opt-out reads the probed branch, not client flags; streaming and explicit ranges opt out.
         raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"
         branch_never_packs = bool(getattr(trainer, "_audio_type", None)) or (
             bool(getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False))
             and not raw_text_mode
         )
-        # Every replica draws its own batch, so size the subset for this launch.
+        # Every replica draws its own batch, so size the subset for this launch, after model probing settles torch and the GPU mask.
         max_train_rows = max_train_rows_for_config(
             config,
             branch_never_packs = branch_never_packs,
             world_size = _data_parallel_world_size(),
         )
-        # Resume uses the recorded subset; no marker means it trained unbounded.
+        # Resume uses the recorded subset; with no marker it trained unbounded, so bounding now would continue on unrelated rows.
         resumed_rows, max_train_rows_seed = row_bound_for_resume(
             config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
         )
@@ -4753,6 +4802,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 f"({resumed_rows} rows) instead of {max_train_rows}\n"
             )
             if resumed_rows and max_train_rows and resumed_rows < max_train_rows:
+                # Fewer-replica subset kept (re-deriving gives unrelated rows); extra ranks may re-read rows.
                 logger.info(
                     "That subset was sized for a smaller data-parallel world than this "
                     "one, so the added replicas may re-read rows; start a new run "
@@ -4783,6 +4833,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
 
+        # Start the tqdm monitor early to capture download + tokenization bars.
         import threading as _th
 
         _tqdm_stop = _th.Event()
@@ -4809,6 +4860,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
         cpt_trains_embeddings = False
 
+        # Model load uses VRAM; watchdog lets the parent recover a stalled Xet download via respawn.
         _send_status(event_queue, "Loading model...")
         from utils.hf_xet_fallback import start_watchdog
 
@@ -4828,11 +4880,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
 
         def _report_model_repo(repo_id):
+            # Local cache loads have no active Hub download to track.
             if os.path.isdir(os.path.expanduser(repo_id)):
                 return
             event_queue.put({"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()})
 
-        # Latest-sidecar models load 16-bit: bnb 4-bit hits unvalidated expert paths.
+        # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         try:
             _train_load_in_4bit = _effective_training_load_in_4bit(
                 config,
@@ -4884,7 +4937,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
                 )
                 model_load_name = _drop_model_pin_for_fallback(config, hf_token)
-                # Scan the Hub fallback target, not the cached pin scanned above.
+                # Scan the Hub target we fall back to, not the cached pin already scanned above.
                 security_error = _model_load_security_error(config, model_load_name, hf_token)
                 if security_error:
                     event_queue.put({"type": "error", **security_error, "ts": time.time()})
@@ -4980,6 +5033,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             _user_modules = config.get("target_modules") or []
             _leaf = lambda m: str(m).rsplit(".", 1)[-1]  # noqa: E731
             _wants = [m for m in _user_modules if _leaf(m) in _embedding_modules]
+            # Either module in modules_to_save fills the embedding_learning_rate group.
             cpt_trains_embeddings = bool(_wants)
             cpt_target_modules = [m for m in _user_modules if _leaf(m) not in _embedding_modules]
             if not cpt_target_modules:
@@ -5064,11 +5118,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             return
 
+        # Pydantic already validated embedding_learning_rate (Optional[float], gt=0, lt=1.0).
         embedding_lr_value = config.get("embedding_learning_rate")
         if is_cpt:
             if cpt_trains_embeddings:
                 if embedding_lr_value is None:
-                    # Default embedding lr = lr/10 (Unsloth CPT notebook).
+                    # Default embedding_learning_rate = lr/10 (Unsloth CPT notebook).
                     embedding_lr_value = lr_value / 10.0
                     logger.info(
                         f"CPT: using default embedding_learning_rate={embedding_lr_value:.1e} "
@@ -5095,6 +5150,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _emit_output_dir(event_queue, output_dir)
         # Pin the subset before any checkpoint lands so resume reads it back.
         if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
+            # Not fatal, no fallback: the dataset is already bounded; a resume will read this run as unbounded.
             logger.warning(
                 f"Could not record the max_steps row bound in {output_dir}: "
                 "resuming this run later will read it as unbounded\n"
@@ -5105,6 +5161,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
             ensure_dir(Path(tensorboard_dir))
 
+        # Start training directly - no inner thread, we ARE the subprocess.
         dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,
@@ -5281,13 +5338,14 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     """Write a full resume checkpoint for a stopped MLX run. Returns True when a checkpoint for the
     current training step exists."""
     step = int(getattr(trainer, "_global_step", 0) or 0)
+    # A periodic save or a resumed run may already cover the current step.
     if _mlx_has_checkpoint_at_step(output_dir, step):
         return True
     if step <= 0 or optimizer is None:
         return False
     ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
     if ckpt_dir.is_symlink():
-        # A symlinked dir could redirect writes outside output_dir.
+        # Refuse a symlinked dir: it could redirect writes outside output_dir.
         logger.error("Refusing to write MLX stop checkpoint through symlink: %s", ckpt_dir)
         return False
     try:
@@ -5314,7 +5372,7 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
 
 
 def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingProgress], None]:
-    """Metrics go out only when changed, since the parent appends every progress event to its histories."""
+    """Metrics go out only when changed, since the parent appends every progress event to its histories; status only when non-empty."""
 
     sent_warnings: set[str] = set()
     last_metrics: list = [None]
@@ -5392,6 +5450,7 @@ def _create_embedding_progress_callback(
             self._start_step = state.global_step
             if state.global_step > 0:
                 self._training_start_time = time.time()
+            # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
             _send_status(event_queue, "Training in progress...")
@@ -5406,6 +5465,7 @@ def _create_embedding_progress_callback(
         ):
             if not logs:
                 return
+            # Trainer end-of-run summary (train_runtime, per-second rates, total_flos) is published nowhere else.
             from core.training.trainer import _RESERVED_LOG_KEYS, _TRAINER_SUMMARY_KEYS
 
             if any(k in logs for k in _TRAINER_SUMMARY_KEYS):
@@ -5417,7 +5477,7 @@ def _create_embedding_progress_callback(
                         if isinstance(k, str) and k not in _RESERVED_LOG_KEYS
                     },
                 )
-            # "train_loss" in HF's summary is the run mean, not a step loss.
+            # train_loss in HF's summary is the run mean, not a step loss, so it must never become the final step.
             loss_value = logs.get("loss")
             if loss_value is None and logs.get("train_loss") is not None:
                 print(
@@ -5479,6 +5539,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _send_status(event_queue, "Importing embedding libraries...")
     try:
+        # Recover from a namespace-package shadow (embedding imports unsloth directly).
         from core.import_guards import ensure_real_packages
 
         ensure_real_packages("unsloth_zoo", "unsloth")
@@ -5504,6 +5565,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    # datasets loads only here, so quiet its Generating/Map bars now or they land in the structured log.
     try:
         from loggers.config import quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
@@ -5544,7 +5606,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
-                # Not config["trust_remote_code"]: the consent scan only checks auto_map, not modules.json code.
+                # Not config[trust_remote_code]: consent scan checks only auto_map, so forwarding consent would run unscanned modules.json code.
                 trust_remote_code = False,
             )
         except Exception as error:
@@ -5560,7 +5622,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
             model_load_name = _drop_model_pin_for_fallback(config, hf_token)
-            # Scan the Hub fallback target, not the cached pin scanned above.
+            # Scan the Hub target we fall back to, not the cached pin already scanned above.
             security_error = _model_load_security_error(config, model_load_name, hf_token)
             if security_error:
                 event_queue.put({"type": "error", **security_error, "ts": time.time()})
@@ -5597,6 +5659,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         _send_status(event_queue, "Configuring LoRA adapters (FEATURE_EXTRACTION)...")
         try:
             gradient_checkpointing = config.get("gradient_checkpointing", False)
+            # Normalize "none"/empty to False.
             if gradient_checkpointing in ("none", "", None):
                 gradient_checkpointing = False
 
@@ -5855,6 +5918,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "optim": config.get("optim", "adamw_8bit"),
         "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
+        # No terminal (stdout goes to the server log); embedding progress callback already publishes the bar.
         "disable_tqdm": _hf_stdout_progress_disabled(),
     }
 
@@ -5863,6 +5927,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     else:
         training_args_kwargs["num_train_epochs"] = num_epochs if num_epochs > 0 else 2
 
+    # warmup: prefer warmup_ratio (standard for embedding scripts), else steps
     if warmup_ratio is not None and warmup_ratio > 0:
         training_args_kwargs["warmup_ratio"] = warmup_ratio
     elif warmup_steps_val is not None and warmup_steps_val > 0:

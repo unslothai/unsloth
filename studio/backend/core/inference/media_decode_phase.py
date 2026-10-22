@@ -17,7 +17,7 @@ def decode_phase(
     on_decode: Any,
     attrs: "tuple[str, ...]" = DECODE_ATTRS,
 ):
-    """Fires on_decode once at decoder entry, a host position that may trail queued denoise kernels."""
+    """Calls on_decode once at decoder entry; it must not raise; host position may trail queued kernels"""
     fired = {"done": False}
     restore: list = []
 

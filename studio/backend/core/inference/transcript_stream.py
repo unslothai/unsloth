@@ -44,6 +44,7 @@ async def stream_transcript(transcribe, title: str):
         if closed:
             return
         now = time.monotonic()
+        # A phase change ("loading", "downloading_aligner", "transcribing") is never throttled away.
         if update.get("phase") or now - last_update >= 0.25:
             last_update = now
             loop.call_soon_threadsafe(publish, update)

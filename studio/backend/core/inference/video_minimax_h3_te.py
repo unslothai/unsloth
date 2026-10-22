@@ -50,6 +50,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Optional
 
+# ConvRot primitives shared with the denoiser's hosted INT8 checkpoint; re-exported here.
 from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests name them here)
     build_convrot_hadamard,
     rotate_convrot_activation,
@@ -86,6 +87,7 @@ H3_TE_CONVROT_GROUP = 256
 # Any other comfy_quant format is unverified and refused.
 _H3_TE_EXPECTED_QUANT = {"format": "int8_tensorwise", "convrot": True}
 
+# Tensor-name suffixes that make up one quantized linear in the hosted layout.
 _SCALE_SUFFIX = ".weight_scale"
 _QUANT_SUFFIX = ".comfy_quant"
 
@@ -120,7 +122,7 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # H is a normalized regular Hadamard (H @ H == I); dequantizing without the rotation gives noise.
 @lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
-    """Built lazily and once: a fresh class on a second load would retrace every compiled block."""
+    """Built lazily so importing the module never imports torch, and once: a fresh class on a second load would retrace every compiled block."""
     import torch
     from torch import nn
 
@@ -204,6 +206,7 @@ def _terminator_layer_class() -> Any:
     return H3TextEncoderTerminatorLayer
 
 
+# Hosted keys use ComfyUI's flattened Qwen3-VL names; transformers nests them under ``model.``.
 def h3_te_remap_key(key: str) -> str:
     """A hosted checkpoint tensor name in transformers' ``Qwen3VLForConditionalGeneration`` naming."""
     if key.startswith("visual."):
@@ -242,7 +245,7 @@ def load_h3_quantized_text_encoder(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[Any]:
-    """Loads with local_files_only so a reload after eviction never re-downloads; None on any problem."""
+    """Loads with local_files_only so a reload after eviction never re-downloads; stays on CPU since enable_auto_cpu_offload owns placement; None on any problem."""
     try:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
@@ -484,6 +487,7 @@ def pin_module_in_place(
         if tensor.numel() == 0 or (_arena_factory is None and tensor.is_pinned()):
             continue
         todo.append((tensor, owners))
+    # Largest first, first fit.
     todo.sort(key = lambda item: item[0].numel() * item[0].element_size(), reverse = True)
     arenas: list[list] = []  # [arena tensor, used bytes]
     pinned = 0
@@ -527,7 +531,7 @@ def stream_h3_text_encoder(
     pin: Optional[bool] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Hooks go on text_encoder.model, which the H3 encode step calls directly, outside the rotation."""
+    """Hooks go on text_encoder.model, which encode calls directly outside the rotation; returns stream/stream_lazy or None with nothing changed."""
     import torch
 
     onload = torch.device(device)

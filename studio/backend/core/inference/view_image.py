@@ -30,6 +30,7 @@ VIEW_IMAGE_TOOL = {
 
 
 def _strip_habit_prefix(path: str, root: str) -> str:
+    # python's shim saves /mnt/data/x.png as ./x.png (edit_file resolves it the same way).
     from .tools import _MISSING_PATH_PREFIXES
 
     # Not gated on isabs: Windows treats drive-less /mnt/data as relative; commonpath can raise.

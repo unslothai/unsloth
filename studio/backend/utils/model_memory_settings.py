@@ -32,7 +32,7 @@ DEFAULT_NO_RAM_RESERVE = False
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, Any]] = {}
-# Bumped on every write so a read started earlier does not cache a stale value.
+# Bumped on every write so an earlier read cannot cache the old value; else a load could launch contradicting the new setting for the rest of the TTL.
 _generation: dict[tuple[str, str], int] = {}
 
 
@@ -64,13 +64,13 @@ def _cached_setting(key: str) -> Any:
             from storage.studio_db import get_app_setting
             stored = run_as(OWNER, get_app_setting, key, None)
         except Exception:
-            # An unreadable DB must not fail a load.
+            # An unreadable DB must not fail a load; fall back to the default.
             return None
         with _cache_lock:
             if _generation.get(cache_key, 0) == generation:
                 _cache[cache_key] = (time.monotonic(), stored)
                 return stored
-        # A write landed mid-read; read again against the new generation.
+        # A write landed mid-read, so stored predates it; returning it would let a load launch with flags contradicting the setting just saved. Read again.
     return stored
 
 
@@ -112,7 +112,7 @@ def _pair_generations() -> tuple[int, int]:
 
 
 def capture_model_memory_settings(publish) -> tuple[bool, bool]:
-    """Publishes the pair, rereading if a save bumped the generation mid-read; no lock across DB I/O."""
+    """Publishes the pair, rereading if a save bumped the generation mid-read; else reload_required=false for a child on pre-save flags. No lock across DB I/O."""
     for _attempt in range(_MAX_REREADS):
         before = _pair_generations()
         pair = get_model_memory_settings()
@@ -160,7 +160,7 @@ def set_model_memory_settings(
 
 
 def memlock_limit_bytes() -> Optional[int]:
-    """Soft RLIMIT_MEMLOCK; mlock cannot exceed it, and Linux's 8 MB default silently disables residency."""
+    """Soft RLIMIT_MEMLOCK in bytes, None when unlimited or unavailable; the Linux 8 MB default makes llama.cpp mlock fail silently, disabling residency."""
     try:
         import resource
     except ImportError:

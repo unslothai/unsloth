@@ -36,12 +36,13 @@ from core.inference.tool_loop_controller import (
 )
 from core.tool_healing import parse_tool_calls_from_text
 
-# Only formats this parser can promote, narrower than TOOL_XML_SIGNALS.
+# Only formats this parser can promote, narrower than TOOL_XML_SIGNALS: a loop-only marker would buffer a streamed call as prose unpromoted.
 _HEAL_SIGNALS = (
     "<tool_call>",
     "<|tool_call>",
     "<function=",
     "[TOOL_CALLS]",
+    # TML Inkling native call marker (leaks as text when the server-side parser misses a narration-then-call turn).
     "<|content_invoke_tool_json|>",
 )
 
@@ -50,7 +51,9 @@ def _has_heal_signal(text: str) -> bool:
     return any(s in text for s in _HEAL_SIGNALS)
 
 
+# Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
+# Nudging is opt-in: per-request nudge_tool_calls=true or UNSLOTH_TOOL_CALL_NUDGE=1 by default.
 _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
@@ -65,7 +68,7 @@ def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) 
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
-# Bounds memory when a model rambles XML-lookalike text.
+# Hold limit: a suspected tool block longer than this is declared a false alarm and flushed as text, bounding memory on a rambling model.
 _MAX_HOLD_CHARS = 64 * 1024
 
 
@@ -76,7 +79,7 @@ def heal_gate(
     *,
     response_format: Any = None,
 ) -> Optional[set]:
-    """Declared tool names, which double as the promotion allowlist so healing never invents a tool."""
+    """Declared tool names, the promotion allowlist so healing never invents a tool; none under tool_choice none or a constraining response_format."""
     if _HEALING_DISABLED or auto_heal is False:
         return None
     if tool_choice == "none":
@@ -309,6 +312,7 @@ class StreamToolCallHealer:
         self._id_offset = 0
         # Promotion is destructive; keep spans so a discarded call can return the model's words.
         self._promoted_spans: dict[str, str] = {}
+        # Structured delta.tool_calls upstream: grammar mode already works, so healing goes dormant.
         self.dormant = False
 
     @property
@@ -371,6 +375,7 @@ class StreamToolCallHealer:
             pos = 0
             run_end = spans[0][1]
             for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
+                # Stop at the first gap or incomplete trailing block, so it re-holds and does not flush text early.
                 if order and start != run_end:
                     break
                 promoted = _promote(
@@ -380,15 +385,18 @@ class StreamToolCallHealer:
                     tool_schemas = self._tool_schemas,
                 )
                 if promoted:
+                    # Flush any leading text, then drop the promoted markup span.
                     if self._buffer[pos:start]:
                         events.append(("text", self._buffer[pos:start]))
                     events.append(("tool_call", promoted[0]))
                     self._promoted_spans[promoted[0]["id"]] = self._buffer[start:end]
                     self._id_offset += 1
                 else:
+                    # Undeclared/unusable name: markup is DATA, flush it (and prior text) verbatim.
                     events.append(("text", self._buffer[pos:end]))
                 pos = end
                 run_end = end
+            # Everything past the drained run (later blocks) stays and is rescanned.
             self._buffer = self._buffer[run_end:]
             self._holding = False
 

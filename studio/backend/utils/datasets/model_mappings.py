@@ -434,6 +434,7 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value] = key
 
+    # Also map lowercased names.
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key
@@ -480,7 +481,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # No "<think>": Qwen3-Thinking-2507 and QwQ omit it on non-final turns.
+    # No <think> suffix: Qwen3-Thinking-2507 strips it from non-final turns and QwQ renders none, so a marker with it masks those responses.
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
@@ -521,7 +522,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user<|im_sep|>",
         "response": "<|im_start|>assistant<|im_sep|>",
     },
-    # No padding: [INST]/[/INST] are single special tokens, so padded markers never match.
+    # No padding: [INST] and [/INST] are single special tokens, so padded markers never match and everything masks.
     "mistral": {
         "instruction": "[INST]",
         "response": "[/INST]",

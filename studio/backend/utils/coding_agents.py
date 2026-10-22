@@ -93,6 +93,7 @@ def deepseek_harness_executables_on_path(path: Optional[str] = None) -> list[str
 
 
 def _is_on_path(agent: str) -> bool:
+    # PATH lookups can still raise; this is advisory, so a failure reads as not installed, not an error.
     try:
         executable = shutil.which(_EXECUTABLES.get(agent, agent))
         if executable is None:

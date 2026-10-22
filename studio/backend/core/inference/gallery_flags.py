@@ -60,7 +60,7 @@ class FlagsUnavailable(RuntimeError):
 
 
 def _valid_entry(entry: Any) -> bool:
-    """A dict is not enough: a non-bool archived or bad pinned_at means the file was damaged."""
+    """Non-bool archived or bad pinned_at means damage; null reads as active, which clear deletes."""
     if not isinstance(entry, dict):
         return False
     if "archived" in entry and not isinstance(entry["archived"], bool):
@@ -92,11 +92,13 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
     try:
         with open(_store_path(directory), encoding = "utf-8-sig") as f:
             data = json.load(f)
+        # Validate items shape, not just version: a hand-edited non-dict items would crash every lookup.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
             and isinstance(data.get("items"), dict)
         ):
+            # Written over an illegible store, so what it does NOT say is not evidence.
             if data.get(_TAINT_KEY):
                 return data, False
             # One bad entry costs the store its trust (clear() could delete an archived file), but
@@ -119,7 +121,7 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
 
 
 def _carry_taint(data: dict[str, Any], trusted: bool) -> dict[str, Any]:
-    """Marks a store whose container was unreadable, so destructive callers fail closed until reset."""
+    """Marks an unreadable store; destructive callers fail closed until clear(include_archived=True) runs."""
     if not trusted and not data.get("items"):
         data[_TAINT_KEY] = True
     return data
@@ -163,10 +165,10 @@ def _file_lock(directory: Path):
                 fcntl.flock(fd, fcntl.LOCK_EX)
             locked = True
         except Exception:
-            pass
+            pass  # locking unavailable; the thread lock still applies
         yield locked
     finally:
-        # Never fail the call on release: a filesystem that cannot lock usually cannot unlock.
+        # never let the release fail the call: a filesystem that cannot lock usually cannot unlock
         try:
             if locked:
                 with contextlib.suppress(Exception):
@@ -211,7 +213,7 @@ def is_trusted(directory: Path) -> bool:
 
 
 def reset_locked(directory: Path) -> None:
-    """Writes an empty, trusted store; safe only after every owned item is removed."""
+    """Writes an empty trusted store; call inside exclusive() only after every owned item is removed."""
     _save(directory, _empty())
 
 
@@ -246,6 +248,7 @@ def flags_for(items: dict[str, dict[str, Any]], item_id: str) -> dict[str, Any]:
     """The public record fields for one id, from an already-read ``items`` map."""
     entry = _entry(items, item_id)
     return {
+        # Use the sort's conversion for pinned, so a value the sort cannot use never shows as pinned.
         "pinned": _pinned_at(entry) is not None,
         "archived": bool(entry.get("archived")),
     }
@@ -371,6 +374,7 @@ def _between(high: Optional[float], low: Optional[float], *, top: float) -> Opti
     ``top`` is used at the head of the group, so new media created later still sorts first."""
     if high is not None and low is not None:
         mid = (high + low) / 2
+        # Out of float precision: tie with the upper neighbour.
         return mid if low < mid < high else high
     if high is not None:
         return high - 1.0
@@ -382,7 +386,7 @@ def _between(high: Optional[float], low: Optional[float], *, top: float) -> Opti
 def place_locked(
     directory: Path, item_id: str, ordered: list[tuple[str, float]], *, after_id: Optional[str]
 ) -> dict[str, Any]:
-    """Rewrites only the moved item, keyed between its neighbours; must be called inside exclusive()."""
+    """Rewrites only the moved item; call inside exclusive(); KeyError if after_id is not on the shelf."""
     import time
 
     data = _load_repaired(directory)

@@ -146,7 +146,7 @@ class ChatThreadSettings(BaseModel):
     deepResearchEnabled: Optional[bool] = None
     artifactsEnabled: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
-    # "full" is session-only and never persisted.
+    # "full" (Full access) is session-only and never persisted, per thread or globally.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
     ragEnabled: Optional[bool] = None
     ragSource: Optional[
@@ -160,6 +160,7 @@ class ChatThreadSettings(BaseModel):
     ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
     ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
     ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # The sampling params a chat runs with. Ranges match the sliders that set them.
     temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
     topP: Optional[float] = Field(default = None, ge = 0, le = 1)
     # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
@@ -191,6 +192,7 @@ class ChatThread(BaseModel):
     forkedFromMessageId: Optional[str] = None
     forkBoundaryMessageId: Optional[str] = None
     forkTitleBase: Optional[str] = None
+    # Server-set on rename, move or (un)archive.
     modifiedAt: Optional[int] = None
     settings: Optional[ChatThreadSettings] = None
 
@@ -208,7 +210,7 @@ class ChatThread(BaseModel):
 
 
 def thread_from_row(row: dict) -> ChatThread:
-    """Read a stored settings snapshot leniently: a newer build's fields must not 500 the chat on open."""
+    """Read a stored snapshot leniently so newer fields do not 500 the chat on open; the row stays untouched so an upgrade restores them."""
     settings = row.get("settings")
     if isinstance(settings, dict):
         row = {**row, "settings": readable_thread_settings(settings)}
@@ -249,10 +251,12 @@ def _settings_write_from_patch(patch: dict) -> Optional[dict]:
         return None
     incoming = patch.pop("settingsPatch", None)
     if merge:
+        # A merge is the more specific instruction; sending both is a client bug.
         patch.pop("settings", None)
     else:
         incoming = patch.pop("settings")
     if incoming is None:
+        # Only a clear wipes the whole column; a merge of nothing leaves the row alone.
         if replace and not merge:
             return {"clear": True, "seq": seq, "writer": writer}
         return None
@@ -267,6 +271,7 @@ def _settings_write_from_patch(patch: dict) -> Optional[dict]:
 
 class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
+    # Apply only while the row still holds this title, so a rename beats a background rewrite.
     expectedTitle: Optional[str] = None
     # Title regeneration must not move an old conversation up in Last modified.
     preserveTitleModifiedAt: bool = False
@@ -282,7 +287,9 @@ class ChatThreadPatch(BaseModel):
     updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
+    # Replaces the whole snapshot, except for anything the client could not read.
     settings: Optional[ChatThreadSettings] = None
+    # settingsPatch applies only the fields it names, for writers that have not read the row yet.
     settingsPatch: Optional[ChatThreadSettings] = None
     # Orders this writer's own snapshot writes; never compared across writers.
     settingsSeq: Optional[int] = None
@@ -402,6 +409,7 @@ class ChatMessageSyncRequest(BaseModel):
 
 class ChatDeleteRequest(BaseModel):
     ids: list[str]
+    # Tool-written files are kept by default since the user owns them; empty sandboxes always go.
     delete_files: bool = False
 
 
@@ -453,7 +461,7 @@ class ChatPresetLoadConfig(BaseModel):
     mlxKvQuant: Optional[
         Literal["auto", "8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"]
     ] = None
-    # Accepted only so extra="forbid" doesn't 400 older clients.
+    # Declared only because extra="forbid" would 400 the whole save for a client still sending it.
     mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
@@ -528,6 +536,7 @@ class ChatSettingsPayload(BaseModel):
     preserveThinking: Optional[bool] = None
     collapseHtmlArtifacts: Optional[bool] = None
     allowArtifactNetworkAccess: Optional[bool] = None
+    # Read by the web_search tool at call time, so it lives with the install, not one browser.
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
@@ -551,7 +560,7 @@ class ChatSettingsPayload(BaseModel):
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
     confirmToolCalls: Optional[bool] = None
-    # "full" is session-only and never persisted.
+    # "full" (Full access) is session-only by design and never persisted.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
     sandboxLevel: Optional[Literal["high", "low"]] = None
     ragSource: Optional[
@@ -567,12 +576,13 @@ class ChatSettingsPayload(BaseModel):
     ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
     ragOcrScanned: Optional[bool] = None
     ragCaptionFigures: Optional[bool] = None
+    # Standing load preferences the model-load path reads outside the store.
     speculativeType: Optional[Literal["auto", "ngram", "off"]] = None
     gpuMemoryMode: Optional[Literal["auto", "manual"]] = None
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
-    # Off omits context_overflow, so a full window errors instead of dropping history.
+    # Off omits context_overflow, so a full window errors. contextPolicy/headroom override UNSLOTH_CONTEXT_POLICY and ROLLING_COMPACTION_HEADROOM_RATIO.
     autoCompactEnabled: Optional[bool] = None
     # Off: a chat or Deep Research run stops once no tab follows it (state/unattended_runs.py).
     keepRunningWhenTabClosed: Optional[bool] = None
@@ -649,16 +659,17 @@ class ChatImportLedgerResponse(BaseModel):
 
 
 class ChatImportLedgerRecordRequest(BaseModel):
+    # 10k cap bounds the request body; real users have << 1k threads.
     threadIds: list[str] = Field(default_factory = list, max_length = 10_000)
 
 
 class ChatImportLedgerRecordResponse(BaseModel):
+    # accepted counts deduped non-empty ids; inserted counts rows new under ON CONFLICT DO NOTHING.
     accepted: int
     inserted: int
 
 
-# Both conflicts are 409 with opposite meanings, so a header tells them apart;
-# main.py must expose it for cross-origin reads.
+# Two 409s mean opposite things (protected: stop resending; thread collision: surface failure); tell them apart by header, not detail; main.py must expose it.
 CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
 
 
@@ -788,6 +799,7 @@ def patch_thread(
             settings_write = settings_write,
         )
     except sqlite3.IntegrityError as exc:
+        # Same race as save_thread: the project can go away before this write lands.
         if not patch.get("projectId"):
             raise
         raise _missing_project_error(patch["projectId"]) from exc
@@ -856,7 +868,7 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         return
     supervisor = getattr(request.app.state, "research_supervisor", None)
     for run_id in run_ids:
-        # The row is usually gone so request_cancel raises; tell the supervisor first.
+        # Row is usually gone, so request_cancel raises; the supervisor is what stops the worker, so tell it first; status update is best effort.
         if supervisor is not None or policy.installation_has_managed_accounts():
             try:
                 cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
@@ -869,7 +881,7 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
 
 
 def _cancel_active_generations(thread_ids: list[str]) -> None:
-    """Stop every running generation of these threads so a late tool call cannot recreate the sandbox."""
+    """Stop running generations of these threads so a late tool call cannot recreate the sandbox; best effort, since calls not yet in the executor escape."""
     if not thread_ids:
         return
     try:
@@ -911,8 +923,9 @@ async def delete_threads(
     _cancel_research_runs(request, deleted_research_run_ids)
     _cancel_chat_generation_runs(request, deleted_chat_run_ids)
     _cancel_active_generations(payload.ids)
-    # Off-loop: the legacy move can be a cross-filesystem copy.
+    # Off-loop: the legacy move can be a cross-filesystem copy; folder is keyed by thread id, so unreachable once the thread is gone.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
+    # Archives and uploads are keyed by thread id; drop them so each deleted chat does not leak a scope.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
@@ -931,7 +944,7 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
     except Exception:
         return
     for thread_id in thread_ids or []:
-        # Cut at delete time, not recreation: another tab may have recreated this id.
+        # Cut at delete time, not recreation: skipping the scope when the id was recreated left the deleted chat recallable.
         recreated = get_chat_thread(str(thread_id)) is not None
         if recreated and not cutoff:
             continue
@@ -1028,6 +1041,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
                 if session_sandbox_has_files(thread_id):
                     kept.append(thread_id)
+                    # Recorded as kept so the collection below takes it once the last fork goes; the chat is gone.
                     record_kept_sandbox(thread_id)
                 continue
             # Recheck: the reference scan is slow and the chat can be recreated meanwhile.
@@ -1045,6 +1059,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
     except Exception:
         logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
         return 0, []
+    # Only pending records are collected; the last chat on a doomed workspace takes the plain path.
     from core.inference.tools import collect_orphaned_project_workspaces
 
     await run_in_threadpool(collect_orphaned_project_workspaces)
@@ -1164,6 +1179,7 @@ def get_attachment_file(
                 header[5:].split(";", 1)[0] or "application/octet-stream"
             )
             if "base64" not in header.lower():
+                # RFC 2397 non-base64 form stores percent-encoded bytes.
                 data = urllib.parse.unquote_to_bytes(payload)
                 return Response(content = data, media_type = media_type)
             data = _decode_attachment_base64(payload)
@@ -1425,12 +1441,13 @@ def _delete_project_rag_sources(project_id: str) -> None:
         owned = folder_sync.linked_folder_ids(scope)
         if get_chat_project(project_id) is not None:
             return
-        # Tombstone first: it blocks new links and is the only half unretire_scope can undo.
+        # Tombstone first, rows after a recheck: tombstone blocks new links and only unretire_scope can undo it; retired rows block create_folder for good.
         folder_sync.retire_scope(scope, owned, rows = False)
         if get_chat_project(project_id) is not None:
             folder_sync.unretire_scope(scope)
             return
         folder_sync.retire_scope(scope, owned)
+        # The purge takes the whole scope, so retirement only helps if the purge is skipped too.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 
@@ -1444,7 +1461,7 @@ async def delete_project(
 ):
     from starlette.concurrency import run_in_threadpool
 
-    # Rows first, files last: a member chat's tool may still run in the workspace.
+    # Rows first, files last: a member chat tool may still run there, and a vanished cwd kills the call or strands what it writes.
     cutoff = _archive_cutoff()
     try:
         project = await run_in_threadpool(
@@ -1464,7 +1481,7 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    # Signal captured workers before any slow RAG or workspace cleanup.
+    # Transaction is authoritative on membership and captured worker ids before cascades; signal them before slow RAG or workspace cleanup.
     member_ids = list(project.get("memberIds") or [])
     _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
     _cancel_chat_generation_runs(
@@ -1472,10 +1489,12 @@ async def delete_project(
         list(project.get("activeChatGenerationRunIds") or []),
     )
     _cancel_active_generations(member_ids)
+    # before any workspace work: the row is already gone.
     try:
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
+    # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
     if project.get("sandboxPath"):
@@ -1500,10 +1519,12 @@ async def delete_project(
             if delete_files
             else True
         )
+        # A fork of the project still shows cards for the shared workspace and is not deleted here.
         referenced = await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None)
         # A project with this id may have been recreated and be writing there now.
         recreated = await run_in_threadpool(get_chat_project, project_id) is not None
         if not delete_files:
+            # Files stay; the custom-path row is gone and forks' cards still name the session, so record it.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,
@@ -1528,7 +1549,7 @@ async def delete_project(
                 project_id,
             )
         if delete_files and idle and not referenced and not recreated:
-            # Record first: the row that knew this workspace's location is already gone.
+            # Record first: the delete can decline a path or stop at a locked file, and the row that knew this workspace location is already gone.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,
@@ -1542,6 +1563,7 @@ async def delete_project(
                     "Kept project workspace %s: a project was created with that id",
                     project_id,
                 )
+                # Only if the new row covers these folders; a remade project may live elsewhere and strand the old.
                 if await run_in_threadpool(
                     live_project_owns,
                     project_id,
@@ -1558,6 +1580,7 @@ async def delete_project(
                     project.get("rootPath"),
                 )
         elif delete_files and not recreated:
+            # Recorded for later collection, root included, since its row is gone; never for a live id.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,
@@ -1566,8 +1589,11 @@ async def delete_project(
                 project.get("rootPath"),
             )
             if not idle:
+                # Nothing else returns to it; otherwise collection waits on a later delete that may never happen.
                 finish_workspace_delete_when_idle(project_id)
+    # Member chats keep pre-join sandboxes; deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
+    # Surviving folders are unreachable now, so the response lists them for a one-time delete offer.
     return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
 
 
@@ -1738,8 +1764,7 @@ async def clear_history(
     )
 
     def _clear_rows() -> tuple[list[str], list[str], list[str], bool, Optional[set]]:
-        """One threadpool call for clear and snapshot: an await between lets a new chat's images get
-        reaped."""
+        """One threadpool call for clear and snapshot, so no await lets new-chat images get reaped; narrows the race, does not close it."""
         if payload is None:
             cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
                 include_chat_generation_runs = True
@@ -1771,6 +1796,7 @@ async def clear_history(
         record_clear_operation_reap_scope(payload.operationId, snapshot)
         return cleared, cleared_runs, cleared_chat_runs, False, snapshot
 
+    # The clear reports what it deleted.
     (
         cleared,
         cleared_runs,
@@ -1784,8 +1810,10 @@ async def clear_history(
     _cancel_active_generations(thread_ids)
     if late:
         _cancel_active_generations(late)
+    # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
     _cancel_chat_generation_runs(request, cleared_chat_runs)
+    # Same cleanup as DELETE /threads, or cleared chats stay searchable in rag.db.
     await run_in_threadpool(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
@@ -1861,6 +1889,7 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
 
 
 class ChatForkRequest(BaseModel):
+    # an omitted message selects the tip within the fork transaction.
     messageId: Optional[str] = None
     newThreadId: str
     createdAt: int

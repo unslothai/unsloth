@@ -44,7 +44,7 @@ def other_owner(owner: str) -> str:
 
 
 def load_takes_the_gpu() -> bool:
-    """A CPU-only diffusion device releases ownership instead, so this switch interrupts nothing."""
+    """Whether this load takes the GPU; a CPU-only device releases ownership and must not wait on chat"""
     try:
         from core.inference.diffusion_device import resolve_diffusion_device_target
         return resolve_diffusion_device_target().device != "cpu"
@@ -53,12 +53,13 @@ def load_takes_the_gpu() -> bool:
 
 
 def chat_busy(count_pending: bool = True) -> bool:
-    """Requests queued behind the held gate are not counted, since they have not started inference."""
+    """With count_pending False, requests queued behind the held gate are not counted (not yet started)"""
     try:
         from core.inference.llama_keepwarm import other_inference_request_count
     except Exception:  # noqa: BLE001 -- no chat stack means no chat work
         return False
     try:
+        # chat's counter covers media requests too, and none of those is using chat
         parked = switcher_count()
         counted = other_inference_request_count(
             current_request_counted = True, include_pending = count_pending
@@ -116,6 +117,7 @@ async def drain(
                 raise_if_other_accounts_active()
             except GpuBusyForAnotherAccountError as exc:
                 raise busy(kind, openai_errors, retry_after = exc.retry_after) from exc
+        # this request is itself tracked and itself a waiter, so it counts as neither
         others = other_request_count(
             owner, current_request_counted = True, count_pending = count_pending
         )

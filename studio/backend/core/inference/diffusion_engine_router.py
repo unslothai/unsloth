@@ -149,6 +149,7 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
         return None
     inventory = _physical_inventory()
     unanswered = set(inventory.get("unanswered") or ())
+    # Per vendor: an unanswered AMD probe says nothing about NVIDIA. Unknown naming nobody = cold cache.
     if vendor not in unanswered and not (inventory.get("unknown") and not unanswered):
         present = any(
             isinstance(device, dict)
@@ -351,8 +352,9 @@ def image_install_accelerator(backend: str) -> str:
     return _install_accelerator_for(backend)
 
 
+# The engine the current load committed to, and why a non-native choice was made. Mutated only under _lock.
 _lock = threading.Lock()
-# Serializes a whole engine switch; _lock is released during the slow unload().
+# Serializes a whole engine switch (check -> unload -> publish); _lock alone is released during the slow unload().
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
@@ -539,6 +541,7 @@ def cancel_generation_for_account(account_id: str) -> bool:
         engine = getattr(module, attribute, None) if module is not None else None
         if engine is None or engine._active_generate_account != account_id:
             continue
+        # cancel_generate rechecks the owner under its lock.
         if engine.cancel_generate(expected_account = account_id):
             cancelled = True
     return cancelled
@@ -734,8 +737,10 @@ def select_and_activate_engine(
     backend = target.backend
     off_torch = off_torch_sd_cpp_device(backend)
     if off_torch is not None:
+        # A card torch cannot see is only reachable natively, and torch's ordinals name other cards.
         prefer_native = True
         gpu_ordinal = None
+    # CPU always native-eligible; MPS only when enabled; a GPU backend never, unless forced
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     fam_ok = family_sd_cpp_supported(fam)
 
@@ -743,6 +748,7 @@ def select_and_activate_engine(
     server_binary = None
     incapable_build = False
     if policy_eligible and fam_ok:
+        # Once, so server and CLI cannot disagree.
         selected_card = _selected_card(gpu_ordinal)
         install_accelerator = preferred_accelerator(
             image_install_accelerator(backend), selected_card
@@ -778,6 +784,7 @@ def select_and_activate_engine(
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
+            # Held for the single recorder below.
             unlaunchable_server = server_binary
             server_binary = None
         # Probe runnability first, else a non-runnable binary fails inside the background load.
@@ -821,6 +828,7 @@ def select_and_activate_engine(
     if choice == ENGINE_SD_CPP:
         return _activate(ENGINE_SD_CPP, None)
 
+    # Explain the diffusers choice for status/telemetry.
     if not policy_eligible:
         reason = f"GPU backend '{backend}' uses diffusers"
     elif not fam_ok:

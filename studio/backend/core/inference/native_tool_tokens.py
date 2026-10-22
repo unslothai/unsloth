@@ -22,11 +22,13 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<param=",
         '<param name="',
         "</param>",
+        # GLM argument markup.
         "<arg_key>",
         "</arg_key>",
         "<arg_value>",
         "</arg_value>",
         "<|python_tag|>",
+        # Gemma native wrapper and quoted-string delimiter.
         "<|tool_call>",
         "<tool_call|>",
         '<|"|>',
@@ -80,13 +82,14 @@ _NATIVE_CONTROL_OPENERS = {
     "<｜tool▁call▁end｜>": ("<｜tool▁call▁begin｜>",),
     "<|tool_calls_section_end|>": ("<|tool_calls_section_begin|>",),
     "<|tool_call_end|>": ("<|tool_call_begin|>", "<|tool_call_argument_begin|>"),
+    # Call marker only: _TC_JSON_START_RE matches <|content_invoke_tool_json|>{, not the role opener.
     "<|end_message|>": ("<|content_invoke_tool_json|>",),
     "</think>": ("<think>",),
     "[/THINK]": ("[THINK]",),
 }
 
 
-# Openers honored only with a body; not <tool_call>, which holds <function=..> markup
+# Openers honored only with a body; not <tool_call>, which holds function markup, so a brace check would drop its closer
 _OPENER_REQUIRES_BODY = {"<|content_invoke_tool_json|>": re.compile(r"\s*\{")}
 
 
@@ -144,6 +147,7 @@ def _token_is_preserved(token, preserved_tokens) -> bool:
         return False
     if token in NATIVE_TOOL_CONTROL_TOKENS or token in preserved_tokens:
         return True
+    # A marker may combine a special token with text (``<|channel>thought``): keep the token.
     return any(token in marker or marker in token for marker in preserved_tokens)
 
 
@@ -200,7 +204,7 @@ def decode_with_native_tool_tokens(
 
 
 def stop_token_text(tokenizer, token_id) -> "str | None":
-    """Falls back to decoding, since some adapters cannot name an id via convert_ids_to_tokens."""
+    """Falls back to decoding, since some adapters cannot name an id via convert_ids_to_tokens; else an EOS control stays in the reply as raw markup"""
     for lookup in (
         lambda: tokenizer.convert_ids_to_tokens(int(token_id)),
         lambda: _decode_without_special_spacing(
@@ -253,6 +257,7 @@ class NativeToolTokenDecoder:
         if not self._special_ids:
             return False
         for token_id in self._tool_ids:
+            # The two steps _special_token_sets retained the id by; some adapters answer only the second.
             for lookup in (
                 lambda: self._tokenizer.convert_ids_to_tokens(token_id),
                 lambda: _decode_without_special_spacing(

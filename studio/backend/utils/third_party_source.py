@@ -114,7 +114,7 @@ _DEEPSEEK_OCR_DIGESTS = {
     "modeling_deepseekocr.py": "31e3d52972534415cb6507a40ff7cd859a3ddd3419ace6900d659fba0e09321b",
     "modeling_deepseekv2.py": "bab8c5c67236453f3311ef2c6629a3606e608e6cc818c8a5923e7877ec65db7f",
 }
-# The complete package, so an added entry forces a rebuild.
+# The complete package, so an added entry is a rebuild rather than an import candidate.
 _DEEPSEEK_OCR_CONTENTS = frozenset({"__init__.py", *_DEEPSEEK_OCR_MODULES})
 
 _DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
@@ -137,7 +137,7 @@ _ARCHIVE_MAX_TAR_BYTES = 160 * 1024 * 1024
 _ARCHIVE_SOCKET_TIMEOUT_SECONDS = 15
 _ARCHIVE_DOWNLOAD_DEADLINE_SECONDS = 300
 
-# Git for Windows enforces MAX_PATH (260) unless told otherwise.
+# Git for Windows still enforces MAX_PATH (260) unless told otherwise.
 _GIT_LONG_PATHS = ["-c", "core.longpaths=true"]
 
 
@@ -480,7 +480,7 @@ def _remove_owned_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok = True)
     elif path.is_dir():
-        # onexc replaced onerror in 3.12; same handler signature.
+        # onexc replaced onerror in 3.12; the handler signature is the same either way.
         handler = (
             {"onexc": _clear_read_only}
             if sys.version_info >= (3, 12)
@@ -885,7 +885,7 @@ def _entry_names(directory: Path) -> set[str]:
 
 
 def _deepseek_ocr_installed(runtime: Path) -> bool:
-    """Compares exact bytes and rejects extra files, since an added __init__.py can win the import."""
+    """Compares exact bytes and rejects extra files (an added __init__.py can win the import) and symlinks; __pycache__ is ignored."""
     package = runtime / _DEEPSEEK_OCR_PACKAGE
     if package.is_symlink() or not package.is_dir():
         return False
@@ -1155,7 +1155,7 @@ def _module_is_inside(module: ModuleType, package_root: Path) -> bool:
 
 
 def _purge_package_bytecode(package_root: Path) -> None:
-    # Stops a stale or planted .pyc from shadowing a verified .py.
+    # This is the only thing stopping a stale or planted .pyc from shadowing a verified .py
     for directory, child_directories, files in os.walk(package_root, topdown = True):
         directory_path = Path(directory)
         for name in tuple(child_directories):

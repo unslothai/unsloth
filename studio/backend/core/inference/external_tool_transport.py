@@ -64,6 +64,7 @@ class OAICompatTransport:
         self._continue_final_message = continue_final_message
         self._message_fitter = message_fitter
         self._request_kwargs = request_kwargs
+        # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
         self._initial_message_count: int | None = None
         self._last_tools: list[dict[str, Any]] | None = None
@@ -147,7 +148,7 @@ class OAICompatTransport:
     async def _cancellable(
         upstream: AsyncIterator[str], cancel_event: threading.Event
     ) -> AsyncIterator[str]:
-        """Races each read against cancel_event, so Stop ends a read parked on a stalled provider."""
+        """Races each read against cancel_event; do not aclose() here, it raises generator already executing."""
         iterator = upstream.__aiter__()
         watcher = asyncio.ensure_future(_await_cancel(cancel_event))
         try:
@@ -170,6 +171,7 @@ class OAICompatTransport:
                 yield line
         finally:
             watcher.cancel()
+            # Teardown path: the route or loop closing this generator still reaches the provider stream here.
             aclose = getattr(upstream, "aclose", None)
             if aclose is not None:
                 with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):

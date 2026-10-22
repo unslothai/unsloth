@@ -38,6 +38,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
+# Stable API/UI id -> Hub repo; a request may instead pass a validated `owner/model` id.
 STT_MODELS: dict[str, str] = {
     "tiny": "unsloth/whisper-tiny",
     "base": "unsloth/whisper-base",
@@ -59,7 +60,7 @@ _STT_ENERGY_FRAME_SECONDS = 0.02
 _STT_MIN_SILENCE_SECONDS = 0.1
 _STT_SILENCE_ENERGY_RATIO = 0.01
 
-# Safetensors only: custom repo ids are untrusted and .bin weights are pickles that run code.
+# Safetensors only: custom repo ids are untrusted, .bin weights are pickles that run code, and this path skips the malware gate the normal loader applies.
 _STT_SNAPSHOT_SUPPORT_FILES = (
     "config.json",
     "generation_config.json",
@@ -246,6 +247,7 @@ def _close_connection_on_cancel(connection, cancel_event, done_event) -> None:
 
 
 _WHISPER_LANGUAGE_ALIASES = {
+    # Legacy/browser BCP-47 primaries whose Whisper code differs.
     "cmn": "zh",
     "fil": "tl",
     "in": "id",
@@ -423,6 +425,7 @@ def _active_hf_hub_cache() -> Path:
         from utils.hf_cache_settings import get_hf_cache_paths
 
         paths = get_hf_cache_paths()
+        # Unsloth's live cache setting takes precedence over environment defaults.
         if paths.source == "studio":
             return Path(paths.hub_cache)
         explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
@@ -683,7 +686,7 @@ def _is_missing_local_model_error(exc: BaseException) -> bool:
 
 
 def _snapshot_is_complete(snapshot: Path) -> bool:
-    """An aborted download leaves metadata only, so every file is checked; dangling links do not count."""
+    """An aborted download leaves metadata only, so every file is checked; a cached pytorch_model.bin is a pickle and never counts as a usable snapshot."""
     index = snapshot / _STT_SAFETENSORS_INDEX
     if index.is_file():
         # Every shard must be safetensors: an index naming .bin shards would still pickle-load them.
@@ -696,6 +699,7 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
         has_weights = all((snapshot / shard).is_file() for shard in shards)
     else:
         has_weights = (snapshot / _STT_SAFETENSORS_WEIGHTS).is_file()
+    # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or the slow vocab.json + merges.txt pair.
     has_tokenizer = (snapshot / "tokenizer.json").is_file() or (
         (snapshot / "vocab.json").is_file() and (snapshot / "merges.txt").is_file()
     )
@@ -770,6 +774,7 @@ class _SnapshotDownloadState:
                 self._selected_files,
                 self._total_bytes,
             )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if show_progress else None
         return snapshot
 
@@ -1016,7 +1021,7 @@ def _training_active() -> bool:
 
 
 def _clear_device_cache(device: Optional[str], collect: bool = True) -> None:
-    """collect=False skips a full gc pass, which costs about a second on a long-lived backend."""
+    """collect=False only for a caller that just collected and dropped nothing since; a full gc pass costs about a second on a long-lived backend."""
     if collect:
         gc.collect()
     try:
@@ -1044,13 +1049,14 @@ def _reported_device(device: Optional[str]) -> Optional[str]:
 
 
 def _pick_device(preference: Optional[str] = None):
-    """MPS and CPU use float32: Whisper's fp16 decoder degenerates into repeated tokens on MPS."""
+    """CUDA fp16; MPS and CPU fp32 (Whisper fp16 decoder degenerates on MPS). A cpu preference skips detection even on a machine with a working GPU."""
     from core.inference.audio_device import audio_device_forces_cpu
     try:
         import torch
 
         if audio_device_forces_cpu(preference):
             return "cpu", torch.float32
+        # New loads use CPU during training; a resident GPU model may stay if admission confirms headroom.
         training_active = _training_active()
         if not training_active and torch.cuda.is_available():
             return "cuda", torch.float16
@@ -1090,7 +1096,7 @@ def _engine_survived_kill(engine) -> bool:
 
 
 def _close_engine(engine) -> bool:
-    """False if the child survived, so its memory is not advertised as free; a dead child is released."""
+    """False if the child survived or close() raised with it alive, so its memory is not advertised as free; a child already gone counts as released."""
     close = getattr(engine, "close", None)
     if close is None:
         return True
@@ -1118,7 +1124,7 @@ def _av_open(av, source, **extra):
 
 
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
-    """Enforces the sample cap frame by frame, since a small compressed upload can expand far past it."""
+    """Enforces the sample cap frame by frame and polls cancel_event inside the loop, since a small compressed upload can expand far past the cap."""
     try:
         import av
         import numpy as np
@@ -1137,6 +1143,7 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         layout = "mono",
         rate = _TARGET_SAMPLE_RATE,
     )
+    # group frames before resampling so short clips need one resampler call rather than one per codec frame
     fifo = av.audio.fifo.AudioFifo()
 
     def write_frame(frame) -> None:
@@ -1415,7 +1422,7 @@ class WhisperSttSidecar:
         model_id: str,
         use_resident: bool = True,
     ) -> _CachedSttSnapshot:
-        """use_resident=False resolves the path on disk, since the resident shortcut returns no path."""
+        """use_resident=False resolves on disk (the shortcut returns no path); a survivor does not answer for the model, so its snapshot is read from disk."""
         model_id = resolve_model_id(model_id)
         with self._lock:
             reusable = use_resident and self._engine is not None and self._model_id == model_id
@@ -1495,6 +1502,7 @@ class WhisperSttSidecar:
             self._start_survivor = None
             try:
                 self._raise_if_load_cancelled(cancel_event)
+                # The resident shortcut returns no path, and this load replaces it.
                 cached = self._ensure_model_downloaded(model_id, use_resident = placement_matches)
                 snapshot_path = cached.path
                 if snapshot_path is None:
@@ -1504,6 +1512,7 @@ class WhisperSttSidecar:
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device(preference)
                 if not self._release_engine_locked():
+                    # Never start a second child over one that did not exit: it doubles the memory this release frees.
                     raise SttModelBusyError(
                         "The previous dictation worker did not exit and still holds its "
                         "memory. Try again shortly."
@@ -1572,7 +1581,7 @@ class WhisperSttSidecar:
                 logger.info("STT model %s ready on %s", model_id, device)
                 return self._engine
             except SttLoadCancelledError:
-                # The cancel can land after start() returned a live child; close it here.
+                # The cancel can land after start() returned a live child; dropping that handle would leave the process holding the context training waits for, so close it.
                 if self._start_survivor is not None:
                     # This child survived start()'s own kill; keep the handle so its memory stays accounted.
                     self._keep_survivor_locked(self._start_survivor, model_id, device)
@@ -1593,6 +1602,7 @@ class WhisperSttSidecar:
                     _clear_device_cache(device)
                 raise
             except BaseException:
+                # Keep the survivor on any failed load: it is the only handle on a child still holding its memory.
                 if self._start_survivor is not None and self._engine is None:
                     self._keep_survivor_locked(self._start_survivor, model_id, device)
                     _clear_device_cache(device)
@@ -1639,6 +1649,7 @@ class WhisperSttSidecar:
                 if quiet_end is not None:
                     end = quiet_end
                 elif supports_timestamps:
+                    # Whisper's long-form seek: keep only finished segments and resume where the last one ended.
                     window_generate_kwargs["return_timestamps"] = True
             segment = decoded_audio[start:end]
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
@@ -1671,6 +1682,7 @@ class WhisperSttSidecar:
         ensure_stt_available()
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
+        # A set language beats auto-detect. API takes BCP-47; Whisper wants short codes like en or fr.
         lang = normalize_whisper_language(language)
         # Pin the id: another request may switch the resident model mid-transcription.
         model_id = resolve_model_id(model)
@@ -1699,6 +1711,7 @@ class WhisperSttSidecar:
         if lang is not None:
             generate_kwargs["language"] = lang
         if fast:
+            # Short voiced clips: greedy decoding drops beam search for latency.
             generate_kwargs["num_beams"] = 1
         with self._lock:
             try:

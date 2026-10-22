@@ -58,7 +58,7 @@ def client_ip(request) -> str:
         return "_unknown"
     peer = request.client.host if request.client else None
     if _trust_forwarded_for():
-        # Rightmost hop is what the trusted proxy saw; the leftmost is spoofable.
+        # Rightmost hop = what the trusted proxy saw; the leftmost is spoofable.
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
             normalized = _normalize_addr(xff.rsplit(",", 1)[-1])
@@ -73,7 +73,7 @@ def client_ip(request) -> str:
 
 def _is_loopback_ip(host: str | None) -> bool:
     # A scope id (::1%eth0) is never a plain loopback.
-    if not host or "%" in host:
+    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
         return False
     try:
         ip = ipaddress.ip_address(host)
@@ -98,12 +98,12 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
     if not host_header:
         return False
     host = host_header.strip()
-    if host.startswith("["):
+    if host.startswith("["):  # [IPv6] or [IPv6]:port
         end = host.find("]")
         if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
-            return False
+            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
         host = host[1:end]
-    elif host.count(":") == 1:
+    elif host.count(":") == 1:  # host:port
         host = host.split(":", 1)[0]
     host = host.lower().rstrip(".")
     return host == "localhost" or _is_loopback_ip(host)

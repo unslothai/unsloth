@@ -53,7 +53,7 @@ def get_family_inference_params(model_id: str) -> Dict[str, Any]:
     if "/" in normalized:
         normalized = normalized.split("/", 1)[1]
 
-    # Patterns are ordered longest-match-first in the JSON.
+    # Match patterns, ordered longest-match-first in the JSON.
     for pattern in _FAMILY_PATTERNS:
         if pattern in normalized:
             params = _FAMILY_DEFAULTS.get(pattern, {})
@@ -102,7 +102,7 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
 
     model_inference = model_defaults.get("inference", {})
 
-    # Model's own YAML beats family defaults; default.yaml does not.
+    # Model's own YAML beats family defaults; if it only fell back to default.yaml, family defaults win.
     has_own_yaml = _has_specific_yaml(model_identifier)
 
     def _get_param(key, hardcoded_default):
@@ -143,9 +143,10 @@ _SAMPLING_FIELDS = {
     "presence_penalty": ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", 0.0, 0.0, 2.0, False),
 }
 
+# Public, ordered tuple of the sampling fields callers resolve.
 SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
 
-# Mirrors the Chat UI's mergeBackendRecommendedInference; repetition_penalty is manual-only.
+# The five fields the Chat UI's mergeBackendRecommendedInference (presets/preset-policy.ts) seeds, auto-recommended here for request parity. repetition_penalty stays manual-only (client-sent or the UNSLOTH_SAMPLING_REPETITION_PENALTY pin), matching the UI where it is never auto-filled per model.
 _UI_RECOMMENDED_FIELDS = ("temperature", "top_p", "top_k", "min_p", "presence_penalty")
 
 # Mirrors resolveQwenThinkingParams in the Chat UI (qwen-sampling-table.ts).
@@ -163,7 +164,9 @@ def _clean_sampling_value(field: str, val: Any):
     try:
         val = int(val) if is_int else float(val)
     except (ValueError, OverflowError):
+        # int(nan)/int(inf) and float(oversized_int) raise; treat them as unusable.
         return None
+    # After coercion an int is always finite; only a float can still be NaN/inf.
     if isinstance(val, float) and not math.isfinite(val):
         return None
     if val < lo or val > hi:

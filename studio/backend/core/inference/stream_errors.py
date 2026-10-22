@@ -33,6 +33,7 @@ _STARVATION_MARKERS = (
     "failed to find a memory slot",
 )
 
+# Oversize text is kept verbatim, with both token counts; only the remedy is added.
 _OVERSIZE_MARKERS = (
     "exceeds the available context size",
     "exceeds the context size",
@@ -131,7 +132,7 @@ def is_context_oversize(message: Optional[str]) -> bool:
 
 
 def describe_stream_error(message: Optional[str], *, prefix: str = "") -> str:
-    """Starvation gets its own text: the server's context-size wording blames the request's length."""
+    """Starvation gets its own text; oversize keeps server token counts; other errors pass through unchanged, since a fixed string made them undiagnosable."""
     if is_kv_starvation(message):
         body = KV_STARVATION_MESSAGE
     elif is_context_oversize(message):

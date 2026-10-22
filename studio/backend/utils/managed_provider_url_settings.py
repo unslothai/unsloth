@@ -13,14 +13,14 @@ from typing import Any
 MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY = "managed_private_provider_urls_allowed"
 DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED = False
 
-# Blocks private addresses for every account and outranks the stored preference.
+# Blocks private addresses for every account, owner included; outranks the stored preference, so an env setting is not undone from a settings page.
 BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
 # Cache briefly: each uncached read costs a SQLite connection on the shared loop.
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
 _cached: tuple[float, bool] | None = None
-# Bumped by every write so an older read cannot publish stale state.
+# Bumped by every write so an older read cannot publish stale state; otherwise a disable keeps allowing private egress for the rest of the TTL.
 _generation = 0
 
 
@@ -65,8 +65,7 @@ def private_urls_locked_by_environment() -> bool:
 
 
 def get_managed_private_provider_urls_allowed() -> bool:
-    """Installation-wide, so read from the owner's store; an unreadable store fails closed."""
-    # Before the cache: the strict answer is never the held one.
+    """Installation-wide, read from the owner store; a missing setting keeps the refusal, an unreadable one fails closed so managed accounts cannot widen reach."""
     if private_urls_locked_by_environment():
         return False
     held = _remembered()
@@ -95,8 +94,8 @@ def set_managed_private_provider_urls_allowed(value: Any) -> bool:
     from storage.studio_db import upsert_app_settings
     from utils.account_context import OWNER, run_as
 
-    # Owner-bound like the read: both halves must name one store.
+    # Owner-bound like the read: the two halves have to name one store.
     run_as(OWNER, upsert_app_settings, {MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY: parsed})
-    # Drop, do not cache `parsed`: the write may not have landed.
+    # Dropped, not replaced with `parsed`: a write that did not land must not be believed.
     forget_cached_setting()
     return parsed

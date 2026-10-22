@@ -52,7 +52,7 @@ def _retry_could_help(exc: BaseException) -> bool:
 
 
 def _helpers() -> Optional[dict]:
-    """Retries the unsloth import once, only with torch loaded and a supported accelerator present."""
+    """Retries the unsloth import once, only with torch loaded and a supported accelerator; needed since UNSLOTH_IS_PRESENT gates zoo; importing costs ~940 MB."""
     global _HELPERS
     if _HELPERS is not None:
         return _HELPERS or None

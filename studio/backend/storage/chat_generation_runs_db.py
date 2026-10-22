@@ -48,6 +48,7 @@ class _PoolEntry:
         self.busy = True
         self.schema_ready = schema_ready
         self.generation = generation
+        # Runs when the last reference goes; for short-lived threads, that is at thread-local teardown.
         self._closer = weakref.finalize(self, _close_quietly, conn, os.getpid())
 
     def release(self) -> None:
@@ -90,6 +91,7 @@ class _Borrowed:
                     entry.busy = False
                     park = True
                 else:
+                    # Invalidated during this borrow or unusable after a failed rollback: release the file either way.
                     _pool.entry = None
                     _unregister_locked(entry)
         if not park:
@@ -109,7 +111,7 @@ _pool_generation = 0
 _pool_lock = threading.Lock()
 
 
-# Closing a handle in a forked child can block on a lock held at fork time.
+# Closing or freeing a handle in a forked child can block on a lock held when it forked.
 _inherited_by_fork: list[sqlite3.Connection] = []
 
 
@@ -137,7 +139,7 @@ def _live_entries_locked() -> list[_PoolEntry]:
 
 
 def _unregister_locked(entry: _PoolEntry | None) -> None:
-    """Not a weakref callback: GC could fire it while this thread holds the non-reentrant _pool_lock."""
+    """Drops entry and dead refs; caller holds _pool_lock. Not a weakref callback: GC could fire it while the non-reentrant lock is held."""
     surviving: list[weakref.ref[_PoolEntry]] = []
     for ref in _pool_registry:
         alive = ref()
@@ -159,7 +161,7 @@ def _discard_pooled() -> None:
 
 
 def _discard_all_pooled() -> None:
-    """Idle ones close at once; a connection in use is closed by its borrower on return."""
+    """Closes every pooled connection, idle ones at once; one in use is closed by its borrower on return, since yanking it would fail that query."""
     global _pool_generation
     with _pool_lock:
         _pool_generation += 1
@@ -201,9 +203,7 @@ def _database_path(conn: sqlite3.Connection) -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    """Reuses the thread's connection only for the current account database; never changes results."""
-    # Not the resolved path: tests pin that a warm connect resolves the account root zero times.
-    # Paired with _schema_ready identity, which conftest rebinds per test.
+    """Not the resolved path (tests pin zero root resolutions on a warm connect). Paired with _schema_ready: an account id alone cannot see a moved home."""
     key = current_account_id() or ""
     reuse = None
     superseded = None
@@ -212,6 +212,7 @@ def _connect() -> sqlite3.Connection:
         generation_before = _pool_generation
         entry = getattr(_pool, "entry", None)
         if entry is not None and entry.generation != _pool_generation:
+            # Invalidated while this thread was elsewhere; _discard_all_pooled already closed it.
             _pool.entry = None
             entry = None
         if entry is not None and not entry.busy:
@@ -234,7 +235,7 @@ def _connect() -> sqlite3.Connection:
         entry = None
 
     conn, migrated = _prepare_connection()
-    # Unmigrated connections are never pooled so the migration retries; nested _connect gets its own.
+    # Unmigrated connections are never pooled so migration retries; nested _connect gets its own, since sharing would merge two callers into one transaction.
     if entry is None and migrated:
         with _pool_lock:
             # Fenced on the generation read BEFORE preparing, or an invalidation during open is missed.
@@ -271,6 +272,7 @@ def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
                     try:
                         conn.execute(f"ALTER TABLE chat_generation_runs ADD COLUMN {column} {spec}")
                     except sqlite3.OperationalError as exc:
+                        # Another process migrated the same database first.
                         if "duplicate column" not in str(exc).lower():
                             raise
                 conn.commit()
@@ -396,7 +398,7 @@ def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
 
 
 def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -> None:
-    """updated_at also moves, so a long model load or admission wait still looks alive to followers."""
+    """Stamps progress per flush, monotonic: progress_at is MAX(stored, now) so a clock step back cannot age a live run; updated_at also moves."""
     now = now_ms()
     try:
         conn.execute(
@@ -960,7 +962,7 @@ def wait_for_events(
 def reconcile_runs(
     *, error: str = "Unsloth restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
-    """Without stale_after_ms all active runs settle; with it, only runs whose lease went stale."""
+    """Without stale_after_ms all active runs settle, else only stale-lease runs; partial output survives since content and event log are never rewritten."""
     conn = _connect()
     settled: list[str] = []
     try:

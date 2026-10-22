@@ -91,6 +91,7 @@ def _merge(
         chunks.append((stripped, start, end))
 
     for piece, start in zip(pieces, starts):
+        # Reuse counts after the GGUF tokenizer's cache evicts earlier pieces.
         pt = piece.token_count
         if buf and buf_tok + pt > max_tokens:
             _flush()
@@ -119,6 +120,7 @@ def chunk_pages(
     out: list[Chunk] = []
     for page_index, page in enumerate(pages):
         pieces = _split(page.text, SEPARATORS, max_tokens, count)
+        # _split preserves offsets, so a running cursor gives exact ones.
         starts: list[int] = []
         cursor = 0
         for piece in pieces:

@@ -24,8 +24,10 @@ from typing import Any, Optional
 from utils.paths.storage_roots import account_path
 from utils.paths.path_utils import is_appledouble_metadata
 
+# Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
 
+# Curated, family-tagged catalog; union models (one model, many modes) are the default picks, and local dirs or a bare owner/name repo id also work
 _DIFFUSERS_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 
 
@@ -52,6 +54,7 @@ class ResolvedControlNet:
     is_local: bool
 
 
+# Key naming mirrors the adaLN curve contract (adaln_form, curve_dim, curve_grid): a form tag plus the parameters needed to reproduce the form
 _CURATED: tuple[ControlNetCatalogEntry, ...] = (
     ControlNetCatalogEntry(
         id = "flux-union-pro",
@@ -120,6 +123,7 @@ def _scan_local() -> list[ControlNetCatalogEntry]:
     for p in children:
         if not p.is_dir():
             continue
+        # Require BOTH config and a loadable weight/index (a config-only folder is incomplete).
         if not (p / "config.json").exists() or not _has_controlnet_weights(p):
             continue
         entries.append(
@@ -156,6 +160,7 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
     if entry is None:
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is not None:
+        # A direct API call could send an entry for another family; reject it before any download.
         fam = (family or "").strip().lower()
         if entry.families and fam and fam not in {f.lower() for f in entry.families}:
             raise ValueError(
@@ -171,7 +176,7 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
             raise ValueError(f"ControlNet '{spec_id}' has no repo")
         return ResolvedControlNet(spec_id, entry.repo_id, is_local = False)
 
-    # Strict shape so a filesystem-looking id never reaches from_pretrained.
+    # A bare HF repo id (owner/name). STRICT shape so a filesystem-looking id can never reach from_pretrained.
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", spec_id):
         return ResolvedControlNet(spec_id, spec_id, is_local = False)
 
@@ -180,6 +185,7 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
     )
 
 
+# Union ControlNet mode indices: a union model selects its head via an integer ``control_mode``.
 _UNION_CONTROL_MODES: dict[str, int] = {
     "canny": 0,
     "tile": 1,
@@ -195,7 +201,7 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     """A typo'd control type raises so the route returns 400, never running the wrong union head."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
-        # Catalog is keyed by short id; else the union runs the wrong head.
+        # match on repo_id too (the catalog is keyed by short id), else the union runs the wrong head
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is None or not entry.is_union:
         return None
@@ -203,7 +209,7 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     if ct in _UNION_CONTROL_MODES:
         return _UNION_CONTROL_MODES[ct]
     if ct in ("", "passthrough"):
-        return 0
+        return 0  # canny is the default head
     raise ValueError(
         f"Unknown control type {control_type!r} for a union ControlNet. Use one of: "
         f"{', '.join(sorted(_UNION_CONTROL_MODES))}, or passthrough."
@@ -226,7 +232,7 @@ def preprocess_control(image: Any, control_type: str) -> Any:
         # Returning the source would condition on raw luminance.
         return Image.new("RGB", image.size, (0, 0, 0))
     mag = mag / peak * 255.0
-    edges = (mag > 40.0).astype(np.uint8) * 255
+    edges = (mag > 40.0).astype(np.uint8) * 255  # white edges on black (ControlNet convention)
     return Image.fromarray(edges).convert("RGB")
 
 

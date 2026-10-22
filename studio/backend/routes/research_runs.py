@@ -284,6 +284,7 @@ def rearm_unattended_research_runs(app: Any) -> None:
 
 
 def _is_sensitive_key(key: object) -> bool:
+    # Match after stripping separators/case so openaiApiKey, access_token, clientSecret all hit.
     normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
     return normalized in _SENSITIVE_KEY_EXACT or normalized.endswith(_SENSITIVE_KEY_SUFFIXES)
 
@@ -471,9 +472,11 @@ def _sanitize_config(
             _MAX_FINITE_MODEL_TIMEOUT_SECONDS,
         ),
         "toolTimeoutSeconds": (5, 600),
+        # Same range as its parent: slow CPU and offloaded models need minutes to first token.
         "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
+        # The sentinel is not a short timeout, so it skips the floor rather than lowering it.
         if key == "modelTimeoutSeconds" and budgets[key] == 0:
             continue
         if not minimum <= budgets[key] <= maximum:
@@ -499,6 +502,7 @@ def _sanitize_config(
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),
+        # stamped once so a run spanning midnight or a settings change keeps its starting date.
         "currentDate": current_date_prompt_line(request = http_request),
         "question": (payload.question or "").strip(),
         **({"stopWhenUnattended": True} if payload.stopWhenUnattended else {}),
@@ -529,6 +533,7 @@ def create_research_run(
     config = _sanitize_config(payload, thread, request)
     try:
         if db.has_thread_claim(payload.threadId):
+            # A stopped run is re-pointed at this question instead of refusing every later message in the chat.
             run = db.rebind_cancelled(
                 thread_id = payload.threadId,
                 user_message_id = payload.userMessageId,
@@ -552,6 +557,7 @@ def create_research_run(
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except sqlite3.IntegrityError as exc:
+        # Thread may be deleted after the check, so the FK insert fails; report 404, not a server fault.
         raise HTTPException(status_code = 404, detail = "Thread not found") from exc
     if run is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -677,9 +683,9 @@ def retry_research_run(
     return run
 
 
-# POST too: proxies buffer a streamed GET until it closes.
+# POST too: proxies that stream /v1/chat/completions still buffer a streamed GET until it closes.
 @router.post("/{run_id}/events")
-# Separate registration: one api_route would give both verbs one operationId.
+# Separate registration, out of the schema: one api_route would give both verbs one operationId.
 @router.get("/{run_id}/events", include_in_schema = False)
 async def research_events(
     run_id: str,

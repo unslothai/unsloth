@@ -51,7 +51,7 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
 
     path_value = value.get("path")
     if isinstance(path_value, str) and path_value.strip():
-        # A managed account may only preview files it could read itself.
+        # Row cells are user data: a managed account may only preview files it could read itself.
         from fastapi import HTTPException
         from core.training.account_jobs import account_path
 
@@ -97,11 +97,11 @@ def to_jsonable(value: Any) -> Any:
     except ImportError:  # pragma: no cover
         np = None  # type: ignore
 
-    # First: NaT isoformat()s to "NaT" and NA hits the str() fallback.
+    # Ahead of everything below: NaT isoformat()s to "NaT" and NA hits the str() fallback.
     if _is_pandas_missing(value):
         return None
 
-    # DuckDB returns DECIMAL as float, pyarrow as Decimal.
+    # DuckDB hands a DECIMAL back as a float and pyarrow as a Decimal: 1.2 against "1.20".
     if isinstance(value, Decimal):
         return float(value)
 
@@ -113,7 +113,7 @@ def to_jsonable(value: Any) -> Any:
             if not isinstance(value, float):
                 return value
 
-    # Starlette refuses NaN/inf.
+    # pandas' missing number is NaN; Starlette refuses NaN/inf, so one blank cell 500'd the page.
     if isinstance(value, float):
         return value if math.isfinite(value) else None
 

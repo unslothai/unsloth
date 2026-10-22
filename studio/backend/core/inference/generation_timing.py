@@ -56,6 +56,7 @@ class GenerationTimer:
         if self.started_at is None or self.prefill_ended_at is not None:
             return
         _wait_for_device(device)
+        # latched for finish(), which has no tensor of its own to read a device off
         self._device = device
         self.prefill_ended_at = time.monotonic()
 
@@ -86,6 +87,7 @@ def with_prefill_boundary_processor(logits_processor, timer):
 
     class _PrefillBoundaryLogitsProcessor(LogitsProcessor):
         def __call__(self, input_ids, scores):
+            # scores is the prefill output, so its device is the one to wait on
             timer.mark_prefill_end(scores.device)
             return scores
 

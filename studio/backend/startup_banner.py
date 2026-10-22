@@ -81,7 +81,7 @@ def print_studio_access_banner(
     lan_addresses: "tuple[str, ...]" = (),
     scheme: str = "http",
 ) -> None:
-    """display_host may be a public WAN IP, which a LAN peer cannot open; pass network_host instead."""
+    """Prints server URLs once listening; display_host may be a public WAN IP, so pass network_host for LAN; include_stop_hint=False omits the stop block."""
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
@@ -106,6 +106,7 @@ def print_studio_access_banner(
     else:
         external_url = f"{scheme}://{display_host}:{port}"
 
+    # Falls back to display_host for a caller with only one address to give.
     resolved_network_host = network_host or display_host
     if ":" in resolved_network_host:
         network_url = f"{scheme}://[{resolved_network_host}]:{port}"
@@ -115,6 +116,7 @@ def print_studio_access_banner(
     # must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
+    # Use the loopback URL only when reachable on loopback; otherwise show the actual bound address.
     primary_url = loopback_url if listen_all or loopback_bind else external_url
     api_base = primary_url
 

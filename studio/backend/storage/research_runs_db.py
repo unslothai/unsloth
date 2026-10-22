@@ -181,7 +181,7 @@ def _bind_assistant_locked(
     )
     # Bind only to an empty placeholder or this run's message, or an existing answer is overwritten.
     parts = _loads(message["content_json"], [])
-    # A preamble beside the deep_research call is not a prior answer; source parts still refuse.
+    # A preamble beside the deep_research call is not a prior answer; only text without the handoff refuses the bind, but source parts still do.
     has_research_handoff = any(
         isinstance(part, dict)
         and part.get("type") == "tool-call"
@@ -344,7 +344,7 @@ def rebind_cancelled(
     assistant_message_id: str | None,
     config: dict[str, Any],
 ) -> dict | None:
-    """A thread keeps one Deep Research run, so a stopped run is reset and reused for the next message."""
+    """A thread keeps one Deep Research run; reset a stopped run for the next message, or every later question in the chat is refused."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -394,7 +394,7 @@ def rebind_cancelled(
         conn.execute("DELETE FROM research_plan_steps WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_document_sources WHERE run_id=?", (run_id,))
-        # Events replay into the activity panel; drop the stale approval.
+        # Events replay into the activity panel, so drop the stale approval or it shows Plan approved for a question this run no longer researches.
         conn.execute(
             "DELETE FROM research_events WHERE run_id=? AND event_type='run.approved'", (run_id,)
         )
@@ -654,6 +654,7 @@ def create_and_bind_terminal_fallback(
         return message_id, True
     except sqlite3.IntegrityError:
         conn.rollback()
+        # A concurrent terminal path may have inserted the deterministic fallback.
         message_id = discover_and_bind_assistant_message(run_id)
         if message_id is None:
             raise
@@ -821,7 +822,7 @@ def retry(
             raise KeyError(run_id)
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
-        # Counted per question, not per run row: one run is re-pointed at each new question.
+        # Counted per question, not per run row: a raw retry_count would give a fresh question leftover retries from the stopped one, or none once spent.
         spent = conn.execute(
             "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
             "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
@@ -902,7 +903,7 @@ _CLAIMABLE_SQL = """SELECT r.id FROM research_runs r
 
 
 def _has_claimable(now: int) -> bool:
-    """Read-only, so the twice-a-second idle poll never takes the writer lock."""
+    """Read-only so the twice-a-second idle poll never takes the writer lock; BEGIN IMMEDIATE here turned slow writers elsewhere into database is locked errors."""
     conn = get_connection()
     try:
         return conn.execute(_CLAIMABLE_SQL, (now,)).fetchone() is not None
@@ -1027,6 +1028,7 @@ def finish(
             else status
         )
         actual_error = None if actual_status == "cancelled" else error
+        # A cancelled run stores no report: a stop is the user asking for nothing back.
         report_text = None
         if actual_status in {"completed", "failed"} and event_payload:
             candidate = event_payload.get("report")

@@ -85,6 +85,7 @@ _BINARY_STEM = "sd-cli"
 _LEGACY_STEM = "sd"
 # Together these tell old stable-diffusion.cpp help text apart from unrelated tools named ``sd``.
 _LEGACY_HELP_MARKERS = ("--negative-prompt", "--cfg-scale", "--steps")
+# The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
 # Ownership marker; setup.sh / uninstall.sh / uninstall.ps1 require it before deleting a tree.
@@ -181,6 +182,7 @@ def _sd_cpp_command_summary(cmd: list[str], *, default_mode: str = "img_gen") ->
 _ANSI_ERASE = "\x1b[K"
 # Escapes mid-line corrupt on_log and the error tail.
 _ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# one read1() per redraw in practice; large enough that a burst of finished lines costs one read
 _READ_CHUNK = 4096
 
 
@@ -190,8 +192,7 @@ def strip_ansi(text: str) -> str:
 
 
 def split_progress_records(buf: str) -> tuple[list[str], str]:
-    """Also ends a record at erase-to-end-of-line, since sd-cli redraws progress in place with no
-    newline."""
+    """Splits raw sd-cli stdout on CR, LF or a trailing erase-to-EOL, since in-place redraws carry no newline; returns records plus the unterminated remainder."""
     records: list[str] = []
     start = 0
     i = 0
@@ -200,6 +201,7 @@ def split_progress_records(buf: str) -> tuple[list[str], str]:
         ch = buf[i]
         if ch == "\r" or ch == "\n":
             records.append(buf[start:i])
+            # CRLF is one terminator, not two (Windows sd-cli builds).
             if ch == "\r" and i + 1 < n and buf[i + 1] == "\n":
                 i += 1
             i += 1
@@ -236,6 +238,7 @@ def iter_sd_cpp_records(stream) -> Iterator[str]:
         records, pending = split_progress_records(pending)
         for rec in records:
             yield strip_ansi(rec)
+    # EOF: hand over any final line the child left unterminated.
     if pending:
         yield strip_ansi(pending)
 
@@ -260,6 +263,7 @@ def _terminate(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 -- best-effort teardown
             pass
+    # reap the killed child: callers raise right after _terminate
     try:
         proc.wait(timeout = 5)
     except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
@@ -294,7 +298,7 @@ def _lib_path_var() -> str:
 
 
 def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
-    """Every sd-cli launch passes here: it strips the native-path lease secret from the child env."""
+    """Child env with the binary dir on the library path for bundled libs; also strips the native-path lease secret so the child cannot mint grants."""
     env = child_env_without_native_path_secret(os.environ if base_env is None else base_env)
     var = _lib_path_var()
     bindir = str(Path(binary).resolve().parent)
@@ -408,7 +412,7 @@ _IDENTITY_MEMO_TTL_S = 60.0
 
 
 def _identity_key(binary: str) -> Optional[tuple[str, int, int, int]]:
-    """st_ctime is keyed too, since copies that restore st_mtime hide a same-size replacement on POSIX."""
+    """Keyed on st_mtime and st_ctime, since restored mtimes hide same-size replacements on POSIX; None when unreadable, so that candidate is never memoized."""
     try:
         st = os.stat(binary)
     except OSError:
@@ -477,7 +481,7 @@ def _is_legacy_sd_cpp_binary(binary: str) -> bool:
 
 
 def managed_install_root() -> Path:
-    """Installer-owned root: only copies here may be reinstalled over, and it follows the studio home."""
+    """Installer-owned root: only copies here may be reinstalled over; it follows the studio home, and legacy ~/.unsloth paths stay found for existing installs."""
     return _studio_component_root("stable-diffusion.cpp")
 
 
@@ -499,8 +503,7 @@ def _studio_component_root(name: str) -> Path:
 
 
 def legacy_sibling_install_root() -> Optional[Path]:
-    """Pre-fix tree next to the home; returned only with the ownership marker, lexical parent tried
-    first."""
+    """Pre-fix tree beside the home, only with the ownership marker; lexical parent tried first, since resolving symlinks first looks in the wrong place."""
     home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
     if not home:
         return None
@@ -542,7 +545,7 @@ def is_managed_binary(binary: Optional[str]) -> bool:
 
 
 def owning_managed_root(binary: Optional[str]) -> Optional[Path]:
-    """Checks both roots, current first; callers read per-install state from the binary's own root."""
+    """Checks both roots, current first; per-install state must be read from the root the binary is in, or an installed bundle gets re-downloaded."""
     if not binary:
         return None
     roots = [managed_install_root()]
@@ -589,7 +592,7 @@ def _find_binary(
         if hit:
             return hit
 
-    # 4. In-tree developer build.
+    # 4. In-tree developer build: <repo_root>/stable-diffusion.cpp.
     in_tree = in_tree_install_root()
     if in_tree is not None:
         hit = _first_file(_layout_candidates(in_tree, layout_stem))
@@ -788,7 +791,7 @@ class SdCppEngine:
     def _prepare_out(output_path: str) -> Path:
         out = Path(output_path)
         out.parent.mkdir(parents = True, exist_ok = True)
-        # Drop a stale file so the post-run is_file() check proves THIS run produced the image.
+        # drop a stale file so the post-run is_file() check proves THIS run produced the image
         out.unlink(missing_ok = True)
         return out
 
@@ -818,7 +821,7 @@ class SdCppEngine:
             logger.info("sd-cli run started: %s", summary)
 
         t0 = time.time()
-        # A generation admitted before quit can reach Popen after the shutdown sweep snapshot.
+        # A generation admitted before quit can reach Popen after the shutdown sweep snapshot; sd-cli would then run unreaped, holding VRAM past exit.
         if is_process_shutting_down():
             raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         proc = subprocess.Popen(
@@ -829,7 +832,9 @@ class SdCppEngine:
             encoding = "utf-8",
             errors = "replace",
             env = run_env,
+            # Own session/process group so cancellation/timeout kills the whole tree (POSIX).
             start_new_session = (os.name == "posix"),
+            # Bind sd-cli to the parent's lifetime (PR_SET_PDEATHSIG) so a crash cannot orphan it holding VRAM.
             **child_popen_kwargs(),
         )
         # child_popen_kwargs is empty on macOS, so record the pid for the shutdown sweep too.
@@ -858,6 +863,7 @@ class SdCppEngine:
         stdout_done = False
         try:
             while True:
+                # Cancellation: kill the process tree and signal cancelled, not failure.
                 if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
                     _terminate(proc)
                     raise SdCppCancelled("sd-cli generation was cancelled.")
@@ -905,6 +911,7 @@ ENGINE_SD_CPP = "sd_cpp"
 # Opt-in Apple Silicon MLX engine (core.inference.mlx_diffusion_backend), chosen only by the router, never here.
 ENGINE_MLX = "mlx"
 
+# Backends diffusers serves well with GPU acceleration; everything else is native-engine territory.
 _GPU_BACKENDS = frozenset({"cuda", "rocm", "xpu"})
 
 

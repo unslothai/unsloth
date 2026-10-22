@@ -59,6 +59,7 @@ def _json_safe(value: Any) -> bool:
     return False
 
 
+# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, with GGUF-via-diffusers
 _SLOT_NONE = -1
 _SLOT_TENSOR = -2
 
@@ -127,7 +128,7 @@ def install(
     if not callable(encode):
         return False
     try:
-        # Lazy: avoids a circular import with core.training.
+        # Lazy: core.training imports parts of core.inference, so a module-level import would be circular.
         from core.training.diffusion_train_extras import PersistentConditioningCache
         signature = inspect.signature(encode)
         cache = PersistentConditioningCache(root, family, 0)
@@ -151,6 +152,7 @@ def install(
 
     def cached_encode_prompt(*args: Any, **kwargs: Any) -> Any:
         try:
+            # LoRA may target the text encoders; adapters attached -> always encode.
             if getattr(pipe, "_unsloth_loras", ()):
                 return encode(*args, **kwargs)
             # Textual-inversion embeddings applied for this generation: the text alone does not key the result.

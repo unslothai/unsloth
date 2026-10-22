@@ -36,8 +36,9 @@ _RAW_URL = re.compile(r"https?://[^\s<>\x00]+", re.IGNORECASE)
 # report. [0-9] not \d, which also matches other scripts' digits.
 _PLACEHOLDER_KINDS = ("research-code", "research-citation")
 _PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-[0-9]+\x00")
+# For a pass that deletes prose but must carry the code through.
 _CODE_PLACEHOLDER = re.compile(r"\x00research-code-[0-9]+\x00")
-# remark-gfm renders indented footnote lines as prose (live links); CommonMark calls them code.
+# Footnote lines render as prose in remark-gfm but as code in CommonMark: validate them, do not mask.
 _FOOTNOTE_DEFINITION = re.compile(r" {0,3}\[\^[^\]\s]+\]:")
 # Mermaid fences execute (image URLs fetched by the browser), so their URLs stay validated.
 _MERMAID_FENCE = re.compile(r"mermaid\b", re.IGNORECASE)
@@ -110,7 +111,7 @@ def _footnote_content_lines(lines: list[str]) -> set[int]:
 
 
 def _mask_code(text: str, placeholders: dict[str, str]) -> str:
-    # CommonMark maps NUL to U+FFFD; one code point, so offsets are unaffected.
+    # Do this first: CommonMark maps NUL to U+FFFD, so a report cannot spell a token; offsets unchanged.
     text = text.replace("\x00", "\ufffd")
     offsets = [0, *(match.end() for match in re.finditer(r"\r\n?|\n", text))]
     if offsets[-1] != len(text):
@@ -147,12 +148,14 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
             in_table = False
         if token.map is None:
             continue
+        # Mask only real code: a footnote's indented block is prose; a mermaid fence is an executed diagram.
         if token.type == "code_block" and token.map[0] in footnote_content:
             continue
         if token.type == "fence" and _MERMAID_FENCE.match((token.info or "").strip()):
             continue
         start, end = (offsets[line] for line in token.map)
         if token.type in {"fence", "code_block"}:
+            # Keep the following heading on its own line while the block is masked.
             end = start + len(text[start:end].rstrip("\r\n"))
             spans.append((start, end))
         elif token.type == "tr_open":
@@ -181,6 +184,7 @@ def _restore_placeholders(text: str, placeholders: dict[str, str]) -> str:
         value = placeholders.get(token)
         if value is not None:
             return value
+        # Unreachable while _mask_code normalizes NULs; if skipped, drop delimiters rather than emit a NUL.
         return token.replace("\x00", "\ufffd")
 
     return _PLACEHOLDER.sub(restore, text)
@@ -285,10 +289,12 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
         return citation(match.group(1)) or match.group(1)
 
     def replace_raw_url(match: re.Match) -> str:
+        # Cite whole source URLs; drop other raw URLs. Whole-match avoids prefix collisions.
         raw = match.group(0)
         core = _trim_url_tail(raw)
         if catalog_url(core):
             return (citation(core) or core) + raw[len(core) :]
+        # Keep the trimmed tail so dropping the URL cannot unbalance the prose.
         return raw[len(core) :]
 
     validated = replace_markdown_links(report)
@@ -335,9 +341,11 @@ def _validate_masked_document_sources(
     allowed = _allowed_document_citations(sources)
 
     def keep_if_allowed(match: re.Match) -> str:
+        # Judge it as written: the pattern spans ']' in filenames, and backticks were already masked.
         citation = _restore_placeholders(match.group(0), placeholders)
         if citation in allowed:
             return match.group(0)
+        # An unsupported citation may span code; dropping it must keep the code it covers.
         return "".join(_CODE_PLACEHOLDER.findall(match.group(0)))
 
     return _DOCUMENT_CITATION.sub(keep_if_allowed, report)
@@ -352,6 +360,7 @@ def _validate_report_document_sources(report: str, sources: list[dict]) -> str:
 
 
 def _validate_report(report: str, sources: list[dict], document_sources: list[dict]) -> str:
+    # Mask once: removing a URL-only line may split a paragraph and turn an indented citation into code.
     placeholders: dict[str, str] = {}
     validated = _validate_masked_sources(_mask_code(report, placeholders), sources, placeholders)
     validated = _validate_masked_document_sources(validated, document_sources, placeholders)

@@ -29,7 +29,7 @@ _USER_AGENT = f"com.google.android.youtube/{_CLIENT_VERSION} (Linux; U; Android 
 _PLAYER_URL = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
 
 _VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
-# www. is stripped before the lookup, so only bare forms are listed.
+# www. is stripped before the lookup, so only the bare forms are listed.
 _WATCH_HOSTS = frozenset(
     {"youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com"}
 )
@@ -38,10 +38,12 @@ _ID_PATH_PREFIXES = ("/shorts/", "/embed/", "/live/", "/v/")
 _CAPTION_HOSTS = frozenset({"youtube.com", "www.youtube.com"})
 
 _TIMEOUT = httpx.Timeout(20.0)
+# Captions are text; a 4 MB track is already an outlier for a very long video.
 _MAX_CAPTION_BYTES = 4 * 1024 * 1024
 _MAX_PLAYER_BYTES = 4 * 1024 * 1024
-# ~25k tokens: long-video captions would fill the context window.
+# Roughly 25k tokens: a three hour video's captions would swallow the model's context window on their own.
 _MAX_TRANSCRIPT_CHARS = 100_000
+# Timedtext normally answers 200, but a hop is re-validated rather than refused.
 _MAX_CAPTION_REDIRECTS = 3
 
 
@@ -63,8 +65,7 @@ class Transcript:
 
 
 def extract_video_id(url: str) -> Optional[str]:
-    """Return the 11-character video id from a YouTube URL (watch, youtu.be, shorts, embed, live) or
-    None."""
+    """Return the 11-char video id from a youtube.com, youtu.be or youtube-nocookie.com URL (watch, shorts, embed, live, v), else None."""
     try:
         parsed = urlsplit(url.strip())
     except ValueError:
@@ -276,6 +277,7 @@ def _flatten_events(events: list[Any]) -> str:
     for event in events:
         if not isinstance(event, dict):
             continue
+        # aAppend cues carry only the rolling-window newline between ASR lines.
         if event.get("aAppend") == 1:
             continue
         segments = event.get("segs")

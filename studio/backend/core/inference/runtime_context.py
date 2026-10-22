@@ -12,6 +12,7 @@ from typing import Any, Optional
 # LoadRequest.max_seq_length is bounded by this; wider native windows are not served.
 MAX_REQUESTABLE_CONTEXT = 1048576
 
+#: Budget for an unset limit when there is no free context to size it from.
 UNSET_GENERATION_BUDGET = 2048
 
 
@@ -37,7 +38,7 @@ def _declared_context_lengths(model: Any) -> Iterator[Any]:
     """Declared windows, best first. Yields, so an outer 0 / "n/a" cannot shadow a real one."""
     holders = (
         model,
-        # Same spread _mlx_config_field walks in mlx_inference.py.
+        # config / _config: the spread _mlx_config_field walks in mlx_inference.py.
         _field(model, "config"),
         _field(model, "_config"),
         _field(model, "args"),

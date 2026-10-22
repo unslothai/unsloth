@@ -111,6 +111,7 @@ def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool
         return True
     if f"model.{variant}.safetensors" in names:
         return True
+    # _add_variant puts the variant second-to-last; accepting other index spellings would drop bins.
     if f"model.safetensors.index.{variant}.json" not in names:
         return False
     return any(_variant_shard_re(variant).fullmatch(name) for name in names)
@@ -157,6 +158,7 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
         ignore.append(CONSOLIDATED_PATTERN)
     if repo_ships_root_safetensors(names):
         ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
+        # Exact names, not globs: fnmatch treats "." literally, so each entry matches only itself.
         ignore.extend(redundant_torch_bin_files(names))
         # Only when the root is itself a checkpoint, or the folders are the only runnable copies.
         if "config.json" in names:
@@ -207,6 +209,7 @@ def snapshot_download_blob_hashes(siblings: Iterable) -> frozenset[str]:
     return blob_hashes_for_siblings(snapshot_download_siblings(siblings))
 
 
+# mlx-lm's download filter, plus the weights of an exported adapter.
 _MLX_LOAD_PATTERNS = (
     "*.json",
     "model*.safetensors",

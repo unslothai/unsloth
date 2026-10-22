@@ -46,7 +46,7 @@ def set_media_generation_preset_settings(
     settings: dict,
     preserve_recovered: Optional[Callable[[dict, dict], dict]] = None,
 ) -> None:
-    """Writes only recipe and selection; named presets, with their own endpoints, are never touched."""
+    """Writes only recipe and selection, never named presets: a debounced state write could race a save or delete and clobber the list."""
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
         stored = _stored_settings(kind)

@@ -43,6 +43,7 @@ _thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
 _worker_lock = threading.Lock()
 _worker_state = threading.local()
+# Scheduling cursor of the single worker; see _next_account_job.
 _last_job_account: str | None = None
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
@@ -60,6 +61,7 @@ _MAX_WITHHELD_PATHS = 500
 _FAILED_RETRY_S = 6 * 3600
 _JOB_EVENT_KEEPALIVE_S = 4.0
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
+# Dependency, VCS and cache trees would flood the index with third-party source.
 _IGNORE_SCAN_DIRS = frozenset(
     {
         ".git",
@@ -703,7 +705,7 @@ def _metadata_table_exists(conn, table: str) -> bool:
     )
 
 
-# SQLite's default host-parameter cap is 999.
+# SQLite's default host-parameter cap is 999, so a bound id list is applied in chunks.
 _ID_CHUNK = 500
 
 
@@ -920,6 +922,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
             else:
                 continue
             if owner_exists:
+                # retirement only ever meant "ownerless", so a returned id must not keep gating its owner
                 if unretire_scope(scope):
                     restored.append(scope)
             elif delete_retired_scope(scope):
@@ -982,6 +985,7 @@ def _fold_into_active_job(conn, active, kind: str) -> None:
                 (active["id"],),
             )
         return
+    # a queued rebuild outranks a queued sync; it covers everything a sync would
     conn.execute(
         "UPDATE linked_folder_sync_jobs SET successor_kind=? WHERE id=? "
         "AND (successor_kind IS NULL OR ?='rebuild')",
@@ -1147,6 +1151,7 @@ def _scan(
                 if rules and gitignore.is_ignored(rel, False, rules):
                     skipped["gitignored"] += 1
                     continue
+                # Compare only fstat-reproducible ids: scandir has none on Windows; lstat differs on unstable inodes.
                 if is_appledouble_metadata(Path(full)):
                     continue
                 st = entry.stat(follow_symlinks = False)
@@ -1198,7 +1203,7 @@ def _snapshot(root: str, metadata: dict) -> str:
     resolved = os.path.realpath(source)
     if not _is_within(root, resolved):
         raise RuntimeError("File escaped the linked folder")
-    # O_BINARY only matters for a raw os.read; os.fdopen already forces binary.
+    # os.fdopen already forces this descriptor binary on Windows; O_BINARY only guards a raw os.read.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(source, flags)
     target = None
@@ -1215,6 +1220,7 @@ def _snapshot(root: str, metadata: dict) -> str:
             metadata["inode"],
         )
         actual = (before.st_size, before.st_mtime_ns, before.st_dev, before.st_ino)
+        # Writer-lock contention must not retire the only worker; init and periodic paths retry instead.
         usable = metadata["inode"] not in (None, 0) and not metadata.get("identity_from_path")
         compared = 4 if usable else 2
         if actual[:compared] != expected[:compared]:
@@ -1224,6 +1230,7 @@ def _snapshot(root: str, metadata: dict) -> str:
         with os.fdopen(fd, "rb", closefd = False) as src, open(target, "xb") as dst:
             _copy_exact(src, dst, before.st_size)
         after = os.fstat(fd)
+        # Both sides are fstat here, so the identity is always comparable.
         if (after.st_size, after.st_mtime_ns, after.st_dev, after.st_ino) != actual:
             raise RuntimeError("Linked source changed while it was copied")
         return str(target)
@@ -1467,6 +1474,7 @@ def _load_withheld(folder: dict) -> set[str]:
 
 
 def _store_withheld(folder_id: str, withheld: set[str]) -> None:
+    # truncation only shortens a grace pass, so the cap can never block a removal
     capped = sorted(withheld)[:_MAX_WITHHELD_PATHS]
     with closing(rag_db.get_connection()) as conn:
         conn.execute(
@@ -1519,7 +1527,7 @@ def _ingest_folder_document(
     embedding_model: str,
     rebuild: bool,
 ) -> _IngestionResult:
-    """Ingest one file in a pool thread; the coordinator owns all folder state."""
+    """Thread-local, so the coordinator lease and stop state are copied in for _check_running."""
     _worker_state.job_id = job_id
     _worker_state.folder_id = folder["id"]
     _worker_state.stop_event = stop_event
@@ -1606,6 +1614,7 @@ def _reconcile_folder(job_id: str) -> None:
     except (_SyncStopped, _SyncCancelled, _LeaseLost):
         raise
     except Exception as exc:
+        # A partial/unavailable scan is never authoritative for deletion.
         error = _error_text(exc, folder["path"])
         _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
         with closing(rag_db.get_connection()) as conn:
@@ -1831,10 +1840,12 @@ def _reconcile_folder(job_id: str) -> None:
                             snapshot = None
                             renamed += 1
                     if snapshot is not None:
+                        # reuse_identical needs a finished donor, so a copy waits for its in-flight twin.
                         while not rebuild and any(
                             p.content_hash == content_hash for p in in_flight.values()
                         ):
                             drain_one()
+                        # Pool threads start as the owner account; rebind to this job's.
                         future = executor.submit(
                             run_as,
                             account,
@@ -2055,6 +2066,7 @@ def reconcile_folder(job_id: str) -> None:
         if not account_is_retired():
             _stop_job(job_id)
     except _SyncStopped:
+        # A retired account's database is closed; its rows moved with the roots.
         if not account_is_retired():
             _pause_job(job_id)
     except Exception as exc:
@@ -2163,6 +2175,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                         run_as(account, _initialize_account_sync, project_exists, recover = True)
                         initialized += 1
                     except Exception:
+                        # One bad account database must not keep the worker out of the loop.
                         logger.warning(
                             "linked-folder worker initialization failed for one account",
                             exc_info = True,
@@ -2174,6 +2187,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 try:
                     job = _next_account_job()
                 except Exception:
+                    # Worker retries init, so DB contention at startup must not become a process-lifetime outage.
                     logger.warning("linked-folder queue selection failed", exc_info = True)
                     stop_event.wait(1.0)
                     continue
@@ -2186,6 +2200,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                         try:
                             run_as(account, _fail_job, job_id, exc)
                         except Exception:
+                            # One account's bookkeeping must never stop the shared worker.
                             logger.warning(
                                 "could not record the failure of linked-folder job %s",
                                 job_id,
@@ -2274,6 +2289,7 @@ def start_auto_sync(
         if not rag_db.rag_available():
             return False
     except sqlite3.OperationalError:
+        # Tile figure pages and merge tile text into the page so small labels and every sub-figure are kept.
         pass
     with _thread_lock:
         retired = _thread if _thread is not None and _thread.is_alive() else None
@@ -2339,6 +2355,7 @@ def _next_account_job():
         try:
             job = run_as(account, _next_job)
         except Exception:
+            # The order is stable, so one corrupt database would shadow the accounts behind it.
             logger.warning("linked-folder queue selection failed for one account", exc_info = True)
             continue
         if job:

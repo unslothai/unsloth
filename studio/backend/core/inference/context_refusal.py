@@ -40,6 +40,7 @@ def open_slot() -> None:
 def _slot(*, create: bool = False) -> Optional[dict]:
     slot = _REFUSAL_SLOT.get()
     if slot is None and create:
+        # No one opened one, so this context is where the message is built too.
         slot = {"refusal": None}
         _REFUSAL_SLOT.set(slot)
     return slot
@@ -56,6 +57,7 @@ def record_fit(truncation) -> None:
 def clear() -> None:
     slot = _slot()
     if slot is not None:
+        # empty it as well as dropping it, so a worker mid-flight holding a reference cannot read a stale refusal back
         slot["refusal"] = None
     _REFUSAL_SLOT.set(None)
 
@@ -74,7 +76,7 @@ def _int(value) -> int:
 
 
 def _blame_latest_turn(context_tokens: int):
-    """(role, fits_alone) for the turn worth naming; None if history is to blame or no matching refusal"""
+    """Turn to name as (role, fits_alone); fits_alone is False only at or over the counted window."""
     refusal = latest_refusal()
     if not refusal:
         return None
@@ -96,14 +98,15 @@ def _blame_latest_turn(context_tokens: int):
     irreducible -= shared
     if latest_turn < _TURN_DOMINATES * irreducible:
         return None
-    # The WINDOW, not `prompt_target`: llama-server admits on "n_tokens() >= n_ctx" alone.
+    # Use the WINDOW (not prompt_target) and the turn without shared floor; llama-server admits on size.
     window = recorded_context or context_tokens
+    # Same shape, no file: an oversized program, command, query or MCP payload; "ask for a smaller file" names the wrong thing, so say what holds for every tool
     role = str(refusal.get("latest_turn_role") or "")
     return role, not (window and latest_turn >= window)
 
 
 def _history_cannot_help(context_tokens: int) -> bool:
-    """True when the prompt still exceeds the window after every evictable turn is dropped."""
+    """True when the unevictable floor alone still reaches the window, so shortening history cannot help."""
     refusal = latest_refusal()
     if not refusal:
         return False
@@ -133,16 +136,19 @@ _ROLE_ADVICE = {
         "The file the model passed to a tool does not fit on its own",
         "ask for a smaller file, or raise the Context Length before retrying",
     ),
+    # Per-tool levers the user can shorten; absent tools get the neutral line, since an MCP payload is neither a file nor a program
     "assistant_tool_payload": (
         "Most of this prompt is what the model passed to a tool",
         "What the model passed to a tool does not fit on its own",
         "ask for less in one call, or raise the Context Length before retrying",
     ),
+    # The reply resumed after it hit Max Tokens: the user cannot split or shorten it.
     "assistant": (
         "Most of this prompt is the reply being continued",
         "The reply being continued is already too long for this window",
         "start a new reply",
     ),
+    # These survive eviction, so splitting one preserves the total and changes nothing.
     "system": (
         "Most of this prompt is the system instructions",
         "The system instructions do not fit on their own",
@@ -185,6 +191,7 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     ) + oversize_advice(context_tokens)
 
 
+# A refused call skips the general floor, since its refusal enters a prompt that already does not fit; the final size check still bounds the receipt
 _TOOL_LEVERS = {
     "edit_file": "ask for a smaller file",
     "python": "run a shorter program",

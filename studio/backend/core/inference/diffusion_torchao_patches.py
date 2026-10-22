@@ -34,7 +34,7 @@ _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
 
-# The copy hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the source.
+# The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
     "input.__repr__()",
     "dynamo_is_compiling()",
@@ -70,6 +70,7 @@ def _make_safe_int_mm(mod, original):
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
         if dynamo_is_compiling() or _is_fake_tensor(input):
             if input.device.type == "cpu":
+                # Matmul in int32 is slow on CPU and not supported well by Inductor cpp backend
                 return out_dtype(
                     torch.ops.aten.mm.default, torch.int32, input.float(), mat2.float()
                 )
@@ -110,7 +111,7 @@ def _patch_torchao_intmm_module(mod):
         return False
     if getattr(original, "__unsloth_patched__", False):
         return False
-    # Never imported here, so this fails closed rather than borrowing our own operators.
+    # Off the module, never imported here, so this fails closed rather than borrowing our own operators.
     if not hasattr(mod, "out_dtype") or not hasattr(mod, "dynamo_is_compiling"):
         return False
     try:
@@ -132,7 +133,7 @@ def _patch_torchao_intmm_module(mod):
         mod.safe_int_mm = patched
     except Exception:
         return False
-    # `torchao.kernel` and `torchao.quantization` re-export the function OBJECT: sweep them.
+    # `torchao.kernel` and `torchao.quantization` re-export the function OBJECT, so they need a sweep.
     for name, other in tuple(sys.modules.items()):
         if other is None or not (name == "torchao" or name.startswith("torchao.")):
             continue
@@ -196,7 +197,7 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
         if spec is None or spec.loader is None:
             return None
         if not hasattr(spec.loader, "exec_module"):
-            return None  # a loader from before PEP 451; leave the import alone
+            return None  # a loader from before PEP 451; leave the import entirely alone
         try:
             spec.loader = _TorchaoIntmmLoader(spec.loader)
         except Exception:
@@ -205,10 +206,7 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def install_torchao_int_mm_patch():
-    """Install the capture-safe ``safe_int_mm`` if torchao is present; idempotent, so several modules may each
-    ask for it. ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
-    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
-    # Every diffusion entry point calls this, so it also carries the peft LoRA guard (independent of the switch).
+    """Every diffusion, video and diffusion-training entry point calls this, so it also carries the peft LoRA guard (independent of the switch)."""
     try:
         install_peft_torchao_dispatch_guard()
     except Exception:
@@ -230,7 +228,7 @@ def install_torchao_int_mm_patch():
         except Exception:
             pass
     if all(name in sys.modules for name in _TORCHAO_INTMM_MODULES):
-        return patched_now
+        return patched_now  # nothing left for a finder to catch
     for finder in sys.meta_path:
         if getattr(finder, _TORCHAO_INTMM_SENTINEL, False):
             return patched_now
@@ -247,6 +245,7 @@ _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
 )
 
 
+# The two imports `dispatch_torchao` performs, in upstream's order.
 _PEFT_TORCHAO_TENSOR_SUBCLASSES = (
     ("torchao.dtypes", "AffineQuantizedTensor"),
     ("torchao.quantization", "LinearActivationQuantizedTensor"),
@@ -324,7 +323,7 @@ def _guard_peft_torchao_dispatcher(original):
         if is_torchao_available is not None and not is_torchao_available():
             return None
         if not classes or not isinstance(target_base_layer.weight, classes):
-            return None
+            return None  # upstream's answer for an unrecognised weight: the loop moves on
         torchao_lora_linear = _upstream("TorchaoLoraLinear", "peft.tuners.lora.torchao")
         if torchao_lora_linear is None:
             return None

@@ -14,9 +14,11 @@ from typing import Any
 
 _ATTN_BLOCK = "HunyuanVideo15AttnBlock"
 _VAE_CLASS = "AutoencoderKLHunyuanVideo15"
+# The stock body this replaces; a diffusers release that rewrites it keeps its own version.
 _STOCK_NEEDLES = ("for i in range(seq_len)", "mask[i, : (i_frame + 1) * n_hw] = 0")
 
 
+# One implementation for both installers: the fused VAE path (CUDA + Triton) patches the same method with it.
 from .diffusion_vae_fused import _hv_causal_mask as causal_attention_mask  # noqa: E402
 
 

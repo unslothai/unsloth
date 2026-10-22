@@ -90,6 +90,8 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
             return stt_ggml_sidecar._cached_model_path(model) is not None
         if engine == "audiocpp":
             from core.inference import stt_audiocpp_sidecar
+
+            # A missing runtime refuses the load just as surely as missing weights.
             return stt_audiocpp_sidecar.is_available() and stt_audiocpp_sidecar.is_model_downloaded(
                 model
             )

@@ -141,6 +141,7 @@ async def cancel_oauth(
     _provider(provider_id)
     try:
         flow = codex_auth.get_flow(provider_id, flow_id)
+        # Closing a loopback server can wait for an in-flight callback.
         await codex_auth.cancel_flow(flow.id)
         async with codex_auth.provider_oauth_write_guard(provider_id):
             with current_credential_write(credential):
@@ -189,6 +190,7 @@ async def list_subscription_models(
             error_type = type(exc).__name__,
         )
         return {"models": curated, "source": "curated"}
+    # Only listed slugs are offered, but all plan slugs are reported so unreachable ones are told apart.
     offered = [model for model in models if model.get("listed")]
     if not offered:
         return {"models": curated, "source": "curated"}

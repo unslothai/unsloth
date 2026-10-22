@@ -111,6 +111,7 @@ _OPTIONAL_ROOT_PREFIXES = ("/usr/local", "/opt/homebrew")
 _OPTIONAL_READ_LITERALS = (
     "/etc/gitconfig",
     "/etc/gitattributes",
+    # A Homebrew git reads its own prefix, and the binary on PATH decides which.
     "/usr/local/etc/gitconfig",
     "/usr/local/etc/gitattributes",
     "/opt/homebrew/etc/gitconfig",
@@ -400,6 +401,7 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
         )
     except (KeyError, OSError):
         pass
+    # Editable source roots are outside site-packages; candidates inherit every guard below.
     candidates.extend(editable_source_roots())
     # Keep argv[0]'s spelling without granting its possibly private parent.
     candidates.append(sys.executable)
@@ -447,6 +449,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             roots.append(root)
     canonical_root = os.path.realpath(workdir)
     inside: list[str] = []
+    # Include standalone Python and the framework's top-level dyld image.
     candidates = [sys.executable, *editable_source_roots()]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
@@ -507,7 +510,7 @@ def _studio_state_rules(
     # file-read-data, NOT file-read*: denying stat on the workdir's ancestors breaks os.makedirs.
     rules = [_rule("deny file-read-data file-map-executable", _state_filters(state))]
     if needed:
-        # Name file-read-data: an exact-operation rule beats its wildcard regardless of order.
+        # file-read-data named, not only file-read*: a rule on the exact operation beats one on its wildcard, whatever the order.
         rules.append(
             _rule(
                 "allow file-read* file-read-data file-test-existence file-map-executable",
@@ -532,11 +535,13 @@ def build_profile(
         *developer_paths,
         *_DEVICES,
         *runtime_paths,
+        # Model folders the approval gate already reads silently.
         *model_library_roots(),
         workdir,
         private_tmp,
     )
     read_filters = ['(literal "/")', *_path_filters(readable_paths)]
+    # Optional literals and mDNSResponder's socket still need parent stat.
     metadata_filters = _ancestor_filters(
         tuple(
             spelling

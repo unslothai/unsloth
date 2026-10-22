@@ -24,6 +24,7 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
+# Fixed-schedule step skip (diffusion_step_skip.py); explicit, or auto for the measured families below.
 TC_STATIC = "static"
 TC_MODES = (TC_FBCACHE, TC_STATIC)
 
@@ -31,12 +32,13 @@ TC_MODES = (TC_FBCACHE, TC_STATIC)
 DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
+# diffusers cache hook names whose compute branch is re-pointed at a compiled inner forward (leader measures the first block); same fn_ref layout
 FBCACHE_MIN_STEPS = 20
 
 # == diffusion_speed.SPEED_MAX, spelled out to keep this module import-free.
 AUTO_STEP_CACHE_TIER = "max"
 
-# == diffusion_speed.REDUCTION_FILTER_OPTION, kept import-free.
+# == diffusion_speed.REDUCTION_FILTER_OPTION, spelled out to keep this module import-free.
 _REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 
 
@@ -64,6 +66,7 @@ AUTO_STATIC_SKIP_TIERS = (_TIER_MAX,)
 # Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
 AUTO_STATIC_MIN_STEPS = 20
 
+# Kill switch: auto never picks static (explicit requests still honoured).
 ENV_AUTO_STEP_SKIP = "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP"
 
 
@@ -169,7 +172,7 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-# Block classes diffusers ships without FBCache metadata: (hidden_states idx, encoder idx or None).
+# (hidden_states idx, encoder idx or None) per block class; missing entry silently disables caching.
 _UNREGISTERED_BLOCK_METADATA: dict = {
     (
         "diffusers.models.transformers.transformer_qwenimage21",
@@ -198,7 +201,7 @@ def register_unregistered_transformer_blocks(logger: Any = None) -> tuple:
             continue
         try:
             TransformerBlockRegistry.get(block_cls)
-            continue
+            continue  # already known, ours would be a downgrade
         except Exception:  # noqa: BLE001 - "not registered" is the case we are here for
             pass
         try:
@@ -226,6 +229,7 @@ def _invalidate_child_registry_cache(transformer: Any) -> None:
             pass
 
 
+# Same runtime fallback as the block's own compile: a lowering failure on the first computed step restores the eager inner, not a failed render
 _CACHE_HOOK_NAMES = (
     "mag_cache_leader_block_hook",
     "mag_cache_block_hook",
@@ -235,7 +239,7 @@ _CACHE_HOOK_NAMES = (
 
 
 def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
-    """Compiles computed steps of cache-hooked blocks; the data-dependent skip decision stays eager."""
+    """Compiles computed steps of cache-hooked blocks, skip stays eager; stacked hook chains left alone."""
     try:
         import torch
     except Exception:  # noqa: BLE001 -- no torch, nothing to arm
@@ -254,13 +258,15 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                 if orig is None or getattr(hook, "_unsloth_orig_inner", None) is not None:
                     continue
                 if getattr(orig, "__self__", None) is None:
-                    continue
-                # Dynamo caches per code object, so re-arming after a toggle is ~free.
+                    continue  # not a plain bound method; arming would miss the block
+                # fullgraph False, dynamic True: the cache decision graph-breaks; Dynamo caches per code object.
                 dynamic = None if getattr(transformer, "_unsloth_auto_dynamic", False) else True
+                # Same reduction-config filter as the blocks (diffusion_speed.pin_reduction_configs).
                 block_kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None) or {}
                 pinned = (block_kwargs.get("options") or {}).get(_REDUCTION_FILTER_OPTION)
                 extra = {"options": {_REDUCTION_FILTER_OPTION: True}} if pinned else {}
                 compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic, **extra)
+                # May not be a cache we installed, so post-enable integration is not assumed; both are idempotent, and skipping the first strands the child-registry list
                 guard = getattr(transformer, "_unsloth_compile_guard", None)
                 if guard is not None:
 
@@ -298,6 +304,7 @@ def _unhook_first_block_cache(transformer: Any) -> bool:
         registry = HookRegistry.check_if_exists_or_initialize(transformer)
         registry.remove_hook(_FBC_LEADER_BLOCK_HOOK, recurse = True)
         registry.remove_hook(_FBC_BLOCK_HOOK, recurse = True)
+        # Left dangling by a partial engage, and it is what diffusers keys every later call on.
         transformer._cache_config = None
     except Exception:  # noqa: BLE001
         return False
@@ -353,7 +360,7 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
         src = inspect.getsource(call)
     except (OSError, TypeError):
         return False
-    # The paren avoids a false positive on prose.
+    # Match the call `cache_context(` (the paren avoids a false positive on prose).
     return "cache_context(" in src
 
 
@@ -376,6 +383,7 @@ def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool
         if name in _ALL_TRANSFORMER_BLOCK_IDENTIFIERS and isinstance(child, torch.nn.ModuleList)
         for block in child
     ]
+    # FBCache needs a head and a tail block.
     if len(blocks) < 2:
         return False
     try:
@@ -636,7 +644,7 @@ def install_fbcache_mixed_stream_tail() -> bool:
 
 
 def _reuses_prefix_kv(pipe: Any, transformer: Any) -> bool:
-    """True for prefix-KV reuse (kv_cache_mode in forward): FBCache raises when sequence length changes."""
+    """True when forward takes kv_cache_mode (prefix-KV reuse); errs toward True, costing only speed."""
     import inspect
 
     forward = getattr(transformer, "forward", None)
@@ -645,7 +653,7 @@ def _reuses_prefix_kv(pipe: Any, transformer: Any) -> bool:
     try:
         if "kv_cache_mode" not in inspect.signature(forward).parameters:
             return False
-    except (TypeError, ValueError):
+    except (TypeError, ValueError):  # not introspectable: assume no prefix reuse
         return False
     call = getattr(pipe, "__call__", None)
     if call is None:
@@ -667,9 +675,10 @@ def apply_step_cache(
     length_changes_ok: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Engages step caching and returns the mode, or None when disabled or unsupported; best-effort."""
+    """Returns mode engaged or None; length_changes_ok only on explicit request (prefix-KV skips more)."""
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
+        # AUTO is resolved by the loader before this; treat a stray auto as off.
         return None
     if mode == TC_STATIC:
         _warn(logger, mode, RuntimeError("static step skip is not supported on this backend"))
@@ -705,7 +714,7 @@ def apply_step_cache(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
         )
         return None
-    # Prefix KV reuse shortens the sequence after step 1, breaking stored residuals.
+    # Prefix-KV shortens the sequence after step 1: refuse before enable_cache, or it fails at step 2.
     if _reuses_prefix_kv(pipe, transformer) and not (
         length_changes_ok and install_fbcache_length_guard()
     ):
@@ -718,7 +727,7 @@ def apply_step_cache(
             ),
         )
         return None
-    # enable_cache raises when already enabled.
+    # enable_cache raises when already enabled; a redundant call falls into recovery and loses the cache.
     if getattr(transformer, "is_cache_enabled", False):
         prior = getattr(transformer, "_unsloth_step_cache", None)
         live = getattr(transformer, "_cache_config", None)
@@ -727,6 +736,7 @@ def apply_step_cache(
             type(live).__name__ == "FirstBlockCacheConfig"
             and getattr(live, "threshold", None) == thr
         ):
+            # Toggle path with blocks already regionally compiled: re-point fresh hooks at compiled inners; the load path is armed by _compile_repeated_blocks
             _invalidate_child_registry_cache(transformer)
             _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)
@@ -742,8 +752,10 @@ def apply_step_cache(
             # disable_cache can raise between hook removals, leaving is_cache_enabled True.
             removed = _unhook_first_block_cache(transformer)
             if not removed:
+                # Cannot verify, so report what was last known engaged and leave the marker alone.
                 _warn(logger, mode, exc)
                 return prior.split("@")[0] if isinstance(prior, str) else None
+            # Fully unhooked, so drop the stale marker and engage at the new settings.
             try:
                 transformer._unsloth_step_cache = None
             except Exception:  # noqa: BLE001 - marker is best-effort
@@ -753,13 +765,14 @@ def apply_step_cache(
     try:
         try:
             from diffusers import FirstBlockCacheConfig
-        except ImportError:
+        except ImportError:  # older diffusers exports it only from diffusers.hooks
             from diffusers.hooks import FirstBlockCacheConfig
 
         config = FirstBlockCacheConfig(threshold = thr)
         enable_cache(config)
         # Stale child-registry list would hide the new hooks; must follow every enable_cache.
         _invalidate_child_registry_cache(transformer)
+        # The stock merge block, stripped line by line with blanks dropped; its four pieces must keep their order, so the match is exact, not a needle search
         _compile_hooked_block_inners(transformer, logger)
         try:
             transformer._unsloth_step_cache = f"{mode}@{thr}"
@@ -781,7 +794,7 @@ def apply_step_cache(
                 pass
             _warn(logger, mode, exc)
             return mode
-        # enable_cache can fail part-hooked; restore armed compiled inners first.
+        # enable_cache can fail part-hooked; restore armed compiled inners FIRST
         _restore_hooked_block_inners(transformer)
         disabled = True
         try:

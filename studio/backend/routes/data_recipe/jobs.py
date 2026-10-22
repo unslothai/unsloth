@@ -68,7 +68,7 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Fetched without auth, so the link carries an HMAC capability; TTL outlasts the save dialog.
+# Fetched without auth, so the link carries an HMAC capability, not the session token (download history keeps it); TTL outlasts save dialog.
 _DOWNLOAD_LINK_TTL = 30 * 60
 _DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
 
@@ -81,8 +81,7 @@ def _download_link_payload(
     filename: str | None,
     account_id: str,
 ) -> str:
-    # Sign every export parameter plus the account (it selects recipe roots).
-    # Length-prefixed: a separator join is not injective.
+    # Sign every export param so a holder cannot swap artifact_path, and the account (selects roots); length-prefix: a separator join is not injective.
     parts = [account_id, job_id, export_format, artifact_path or "", filename or ""]
     return "\x1f".join(f"{len(part)}:{part}" for part in parts)
 
@@ -167,7 +166,7 @@ download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)
 # Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
 _KEEPALIVE_EVERY_S = 15.0
 
-# Only UI sessions may supply stdio commands; Annotated so direct calls get False.
+# Only UI sessions may supply stdio commands, since this host would run them; Annotated so direct calls get False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
@@ -314,13 +313,13 @@ def _ensure_selected_local_model_loaded(
 def _inject_local_structured_response_format(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
-    """Give each structured column its own cloned model config so llama-server grammar-constrains
-    only it."""
+    """Clone each llm-structured column model config so llama-server grammar-constrains only it; prompt-only JSON breaks small GGUFs."""
     columns = recipe.get("columns")
     model_configs = recipe.get("model_configs")
     if not isinstance(columns, list) or not isinstance(model_configs, list):
         return
 
+    # alias -> model_config (only configs referencing a local provider qualify).
     alias_to_local_mc: dict[str, dict[str, Any]] = {}
     for mc in model_configs:
         if not isinstance(mc, dict):
@@ -363,7 +362,7 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
-        # BaseInferenceParams forbids extras, so response_format rides extra_body (llama-server reads it there).
+        # BaseInferenceParams forbids extras, so response_format rides extra_body; llama-server reads the schema directly under it, not in json_schema.
         extra_body = params.get("extra_body")
         if not isinstance(extra_body, dict):
             extra_body = {}
@@ -693,7 +692,7 @@ def _build_in_memory_job_dataset_download(
     jsonl_path = Path(tmp.name)
     offset = 0
     total: int | None = None
-    # Nothing has registered the temp file for cleanup yet, so an early return must unlink it.
+    # Nothing has registered the temp file for cleanup yet, so an early return has to unlink it.
     try:
         with jsonl_path.open("w", encoding = "utf-8") as handle:
             while True:
@@ -759,7 +758,7 @@ def create_job_dataset_download_url(
     all, and under what name, so a failure lands in the UI instead of after the save dialog has
     opened. The URL is relative, so it survives whatever proxy the page itself came through."""
     if no_credential:
-        # The capability would outlive the setting that admitted this caller.
+        # The capability outlives the setting that admitted this caller. As the video links do.
         raise HTTPException(
             status_code = 403,
             detail = "Dataset download links can only be created from the Unsloth UI or with an API key.",
@@ -801,6 +800,7 @@ def create_job_dataset_download_url(
         query["artifact_path"] = artifact_path
     if filename:
         query["filename"] = filename
+    # Relative to this router: the frontend's data-recipe base is configurable.
     return {"path": f"/jobs/{job_id}/download?{urlencode(query)}", "filename": name}
 
 
@@ -989,6 +989,7 @@ async def job_events(request: Request, job_id: str):
                     break
                 event = await sub.next_event(timeout_sec = 1.0)
                 if event is None:
+                    # A quiet job would otherwise go silent for minutes and take a tunnel 524.
                     if time.monotonic() - last_sent >= _KEEPALIVE_EVERY_S:
                         last_sent = time.monotonic()
                         yield ": keepalive\n\n"

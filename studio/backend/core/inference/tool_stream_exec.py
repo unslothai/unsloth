@@ -32,9 +32,11 @@ from typing import Any, Callable, Generator, Sequence
 
 from loggers import get_logger
 
-# A key split across chunks would otherwise evade the pattern and be painted whole.
+# Split across two chunks, neither half matches the key pattern and the credential is painted whole.
 _SECRET_PREFIXES = ("sk-unsloth-", "desktop-")
+# A prefix plus a generous token: bounds the reverse search on a multi-megabyte chunk.
 _SECRET_SCAN_TAIL = 128
+# What ends a credential token in tool output: whitespace, quoting and closing punctuation.
 _SECRET_TERMINATORS = frozenset(" \t\r\n\"'`,;)]}")
 
 
@@ -92,15 +94,16 @@ def search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, 
 # Under common proxy idle caps (Cloudflare ~100 s, nginx 60 s).
 TOOL_HEARTBEAT_INTERVAL_S = 10.0
 
-# Delay so the first approval keepalive cannot coalesce with the gated card.
+# delay before the first approval keepalive so it cannot coalesce with the gated card.
 TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
 
+# How often the wrapper wakes to poll for output / completion / cancellation.
 _POLL_INTERVAL_S = 0.25
 
 # A cancel-ignoring tool is left as a daemon rather than blocking teardown.
 _WORKER_JOIN_TIMEOUT_S = 5.0
 
-# Bounds the live UI stream; above the model result cap since the UI shows it on truncation.
+# Caps live output per tool call so a tight print loop cannot flood SSE; above the model result cap since the UI shows it on truncation.
 TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
@@ -180,8 +183,7 @@ def stream_tool_execution(
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
-    # Cap at the producer so a fast worker cannot enqueue unboundedly behind a slow client; keep one
-    # char past the cap so the consumer still emits the notice.
+    # Caps at the producer so a fast worker cannot queue unboundedly behind a slow client; one char past the cap keeps the notice; result stays byte-identical.
     accepted_output_chars = 0
     accepted_output_lock = threading.Lock()
 
@@ -207,10 +209,10 @@ def stream_tool_execution(
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller side
             outcome["error"] = exc
         finally:
-            # Wakes the consumer at once so fast tools pay no poll latency.
+            # Posted after the result or error is recorded; wakes the consumer at once so fast tools pay no poll latency.
             output_queue.put(done_sentinel)
 
-    # The worker runs in the caller's context so it resolves only that account's roots.
+    # The worker runs in the caller's context, so a tool started for one account cannot resolve another's roots.
     worker = threading.Thread(
         target = contextvars.copy_context().run,
         args = (_run,),
@@ -251,7 +253,7 @@ def stream_tool_execution(
             if isinstance(item, dict):
                 held.append(item)
 
-    # A key can straddle chunks; carry a still-open token into the next one.
+    # Chunks reach the frontend and storage before tool_end is masked, so a key straddling chunks is carried into the next one.
     carry = ""
 
     def _masked(text: str, *, final: bool) -> "tuple[str, str]":
@@ -309,7 +311,7 @@ def stream_tool_execution(
                     yield {"type": "heartbeat"}
                 continue
 
-            # Bound the join so the crossing batch cannot allocate far past the cap.
+            # Bound the join to the remaining budget so the crossing batch cannot overallocate; surplus is truncated anyway and output stays byte-identical.
             budget = TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars
             chunk = item + _drain_pending(max_chars = budget - len(item))
             idle_polls = 0
@@ -319,6 +321,7 @@ def stream_tool_execution(
                 stream_capped = True
             streamed_chars += len(chunk)
             if chunk:
+                # The capped chunk is the last one sent, so flush the carry with it.
                 emit, carry = _masked(chunk, final = stream_capped)
                 if emit:
                     yield {
@@ -327,7 +330,7 @@ def stream_tool_execution(
                         "tool_call_id": tool_call_id,
                         "text": emit,
                     }
-        # Deferred ordinary text must still be emitted.
+        # Deferred text that turns out to be ordinary: emit it, or the output is truncated.
         if carry:
             emit, carry = _masked("", final = True)
             if emit:

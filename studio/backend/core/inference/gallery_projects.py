@@ -52,6 +52,7 @@ def _sandbox_dir(project_id: str) -> str:
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
         raise ProjectNotFound(project_id)
+    # Same containment check as the chat tools.
     root_real = os.path.realpath(root_path)
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
@@ -100,10 +101,12 @@ def _copy_with_dir_fd(source: Union[Path, BinaryIO], sandbox: str, folder: str, 
             os.mkdir(folder, 0o755, dir_fd = sandbox_fd)
         except FileExistsError:
             pass
+        # O_NOFOLLOW makes a symlinked folder fail here (ELOOP) instead of writing through it.
         folder_fd = os.open(folder, _DIR_FLAGS, dir_fd = sandbox_fd)
     finally:
         os.close(sandbox_fd)
     try:
+        # Keyed by gallery id and written atomically, so a file here is this item, maybe since edited.
         try:
             st = os.stat(name, dir_fd = folder_fd, follow_symlinks = False)
             if stat.S_ISREG(st.st_mode):
@@ -167,7 +170,7 @@ def copy_into_project(
     folder: str,
     name: str | None = None,
 ) -> dict[str, object]:
-    """An open file is copied via its descriptor, not by name, which could be swapped after the check."""
+    """Copies an open file by descriptor; refuses a folder outside the sandbox so a symlink cannot escape."""
     if name is None:
         if not isinstance(source, Path):
             raise ValueError("An open file needs a name to be copied as.")

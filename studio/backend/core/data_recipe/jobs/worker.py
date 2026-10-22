@@ -27,7 +27,7 @@ from ..service import (
 from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
-# Spawned interpreter: re-apply main.py's process-wide network injections.
+# Fresh spawned interpreter: re-apply main.py's process-wide network injections.
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 from utils.paths.path_utils import drop_appledouble_metadata
@@ -298,7 +298,7 @@ def _unify_batch_schemas(base_dataset_path: Path) -> None:
 
 def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     parquet_dir = base_dataset_path / "parquet-files"
-    # AppleDouble companions would push a single-batch job onto the merge path.
+    # Counted, so a companion would make a single-batch job take the merge path and rewrite a dataset that needed none.
     parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if len(parquet_files) <= 1:
         return

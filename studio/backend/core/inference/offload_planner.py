@@ -55,7 +55,9 @@ class ContextPolicy(Enum):
     """
 
     NEVER_REDUCE = "never"
+    # Shrink if that avoids spilling entirely.
     PREFER_RESIDENT = "prefer_resident"
+    # Shrink only when no rung of the ladder fits.
     FIT_ONLY = "fit_only"
 
 
@@ -80,8 +82,9 @@ class PlanOptions:
     overhead_bytes_per_device: int = (3 * GIB) // 2
     # GPU-resident bytes outside the layout (mmproj, MTP draft), charged once to the pooled budget.
     extra_resident_bytes: int = 0
-    # Layer-split cost per device after the first; llama_cpp.py applies it as max(0, n_gpus - 1).
+    # Layer-split cost per device after the first, applied as max(0, n_gpus - 1); kept out of the per-device overhead, which would withhold a GiB on one card
     pipeline_overhead_bytes: int = 0
+    # Host RAM this planner refuses to spend, so a spill does not push the box into swap.
     host_ram_headroom_bytes: int = 2 * GIB
     context_policy: ContextPolicy = ContextPolicy.NEVER_REDUCE
     min_ctx: int = 4096
@@ -92,13 +95,13 @@ class PlanOptions:
     # q8_0 KV is ~35% slower; without GGML_CUDA_FA_ALL_QUANTS mismatched K/V pairs fall to CPU.
     allow_kv_quant: bool = False
     kv_quant_type: str = "q8_0"
-    # -nkvo puts the whole KV cache on host (llama-kv-cache.cpp), so it is not charged to VRAM.
+    # -nkvo (or LLAMA_ARG_KV_OFFLOAD false) puts the whole KV cache on host (llama-kv-cache.cpp), so it is not charged to VRAM
     kv_on_host: bool = False
 
 
 @dataclass(frozen = True)
 class Plan:
-    """What to launch with, and why."""
+    """False means emit nothing new: the planner abstained or the load needs no help; llama.cpp defaults then apply, always safe"""
 
     changed: bool = False
     n_ctx: int = 0
@@ -112,6 +115,7 @@ class Plan:
     insufficient: bool = False
     vram_bytes: int = 0
     host_bytes: int = 0
+    # Predicted extra ms per token versus fully resident on the planned host; 0.0 when nothing spills.
     predicted_gen_penalty_ms: float = 0.0
     reason: str = ""
 
@@ -146,7 +150,7 @@ def _select_blocks(
     while freed < deficit and remaining:
         if order is SpillOrder.LARGEST_FIRST:
             residual = deficit - freed
-            # Smallest covering block, so the last pick does not overshoot by a large block.
+            # Prefer the SMALLEST block that closes the gap: the last pick must not overshoot by a whole large block.
             covering = [b for b in remaining if b.spillable_bytes >= residual]
             pick = min(covering, key = lambda b: b.spillable_bytes) if covering else remaining[0]
         else:
@@ -207,6 +211,7 @@ def resident_floor_bytes(
 ) -> int:
     """Minimum VRAM with every spillable tensor on host; below it only a smaller quant or context helps."""
     if kv_on_host:
+        # Both caches follow the same scalar, so neither is VRAM here.
         return layout.block_resident_bytes + layout.lm_head_bytes + layout.other_resident_bytes
     return (
         layout.block_resident_bytes
@@ -282,7 +287,7 @@ def plan_placement(
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Plan:
-    """Rungs are ordered in ms per token, since percentage losses use different baselines."""
+    """Rungs ordered in ms per token, not percent (percent losses use different baselines); split_weights_per_device is raw free VRAM, not the budget"""
     opts = opts or PlanOptions()
 
     if not layout.complete or not vram_bytes_per_device:
@@ -300,6 +305,7 @@ def plan_placement(
     if n_ctx <= 0:
         return Plan(reason = "no usable context length")
 
+    # PREFER_RESIDENT runs before the ladder: a smaller resident context beats a larger spilled one.
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
         and all_resident_bytes(
@@ -338,6 +344,7 @@ def plan_placement(
         if plan is not None:
             return plan
 
+    # Nothing fit at the requested context. Only now may FIT_ONLY shrink it.
     if opts.context_policy in (ContextPolicy.FIT_ONLY, ContextPolicy.PREFER_RESIDENT):
         for quantised in _kv_modes(opts):
             shrunk = max_context_for(
@@ -427,6 +434,7 @@ def _per_device_usage(
 ) -> tuple[Optional[str], list[int], list[list[int]]]:
     if len(vram_bytes_per_device) <= 1:
         return None, [], []
+    # Recurrent, partial-attention or SWA layouts matter only for an even split; no vector means abstain.
     uneven_cache = (
         layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
     )
@@ -460,6 +468,7 @@ def _per_device_usage(
         if opts.kv_on_host
         else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     )
+    # Scaled without under-booking the caller's total. Uniform when unsupplied.
     total_weight = sum(weights)
     if weights and total_weight > 0:
         kv_by_layer = [(cache * w + total_weight - 1) // total_weight for w in weights]
@@ -505,7 +514,7 @@ def _per_device_shortfall(
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Optional[str]:
-    """A pooled budget is not a per-device fit: rows split by free VRAM, not by the budget's bytes."""
+    """A pooled budget is not a per-device fit: rows split by free VRAM, not budget bytes; a per-device shortfall is a hard throw, unguarded under --fit off"""
     error, usage, slots = _per_device_usage(
         layout,
         opts,
@@ -802,7 +811,7 @@ def _finish(
         - spilled_bytes
     )
 
-    # mmap costs 2-4.6x on host weight reads; disable only when host RAM fits the host side.
+    # mmap costs 2-4.6x on host weight reads; disable only when host RAM fits the host side, else mmap keeps an over-commit pageable
     if host_ram_bytes is None:
         load_mode_none = False
     else:
@@ -815,7 +824,7 @@ def _finish(
         n_ctx = n_ctx,
         ot_patterns = tuple(patterns),
         load_mode_none = load_mode_none,
-        # Matched K/V pairs only: unmatched ones are not compiled and fall back to CPU.
+        # Matched K/V pairs only: unmatched ones are not compiled without GGML_CUDA_FA_ALL_QUANTS and fall back to CPU
         cache_type_k = cache_type,
         cache_type_v = cache_type,
         spilled_blocks = tuple(indices),

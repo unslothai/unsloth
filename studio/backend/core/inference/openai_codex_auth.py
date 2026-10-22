@@ -238,17 +238,18 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
         json.dumps(bundle, separators = (",", ":")),
     )
     if previous and previous.get("account_id") != bundle.get("account_id"):
-        # Rebound to a different account (other plan slugs): no later request will notice, so forget them.
+        # Rebound to a different account: no later request is guaranteed to notice, so forget its plan slugs; imported here to avoid a circular import
         from core.inference.openai_codex_client import (
             forget_subscription_models,
             mark_subscription_catalog_stale,
         )
         forget_subscription_models(provider_id)
+        # Deliberate, not a cold start: saved models describe the prior account until its catalog is read.
         mark_subscription_catalog_stale(provider_id)
 
 
 async def remember_catalog_account(provider_id: str, account_id: str) -> None:
-    """Stored with the credentials, so the proof survives restarts; written under the refresh guard."""
+    """Stored with the credentials to survive restarts; written and re-read under the refresh guard, else stale tokens can cost the connection its credentials"""
     if load_oauth_bundle(provider_id) is None:
         return
     async with provider_oauth_write_guard(provider_id):
@@ -277,6 +278,7 @@ def auth_status(provider_id: str) -> str:
     bundle = load_oauth_bundle(provider_id)
     if not bundle:
         return "disconnected"
+    # An expired access token works after refresh; only a permanent refresh rejection asks to reconnect.
     return "reauthorization_required" if bundle.get("reauthorization_required") else "connected"
 
 
@@ -363,6 +365,7 @@ async def _loopback_handler(
         await _exchange_code(flow, code)
         message = "ChatGPT connected. You can close this window."
     except Exception as exc:
+        # Stray requests and state mismatches must not poison the active flow.
         if flow.consumed and flow.status == "pending":
             flow.status = "error"
             flow.message = str(exc) if isinstance(exc, CodexAuthError) else "Authorization failed."
@@ -411,8 +414,9 @@ async def _start_browser_flow(
             break
         except OSError:
             continue
+    # Callback URL must match the verifier exchange even if no port binds; manual completion stays valid.
     callback_port = bound_port or OPENAI_CODEX_LOOPBACK_PORTS[0]
-    # OpenAI registers localhost redirects; the listener stays bound to 127.0.0.1.
+    # OpenAI registers localhost redirects; the listener stays pinned to 127.0.0.1 so it never accepts non-loopback traffic
     flow.redirect_uri = f"http://localhost:{callback_port}{OPENAI_CODEX_CALLBACK_PATH}"
     flow.authorization_url = (
         OPENAI_CODEX_AUTHORIZE_URL
@@ -762,6 +766,7 @@ async def _persist_terminal_flow(flow: OAuthFlow) -> None:
         async with provider_oauth_write_guard(flow.provider_id):
             set_oauth_flow_marker_status(flow.provider_id, flow.marker, flow.status, flow.message)
     except CodexAuthError:
+        # Keep the originating worker's terminal state even if another write holds the cross-worker lock.
         return
 
 

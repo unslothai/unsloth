@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def is_dflash_architecture(path: str) -> bool:
-    """Decided by the header's general.architecture = dflash; a dflash- filename can name a real weight."""
+    """Decided by header general.architecture = dflash, which no real weight declares; a dflash- filename can name a real weight, so downloads trust only the header."""
     return (read_gguf_architecture(str(path)) or "").lower() == "dflash"
 
 
@@ -36,13 +36,11 @@ def detect_dflash_file(
     search_root: Optional[str] = None,
     accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
-    """Root level only; the header is checked, as the published dflash-kquant.gguf names no model family."""
-
-    # Imported per call: model_config imports this module.
+    """Root level only, not dflash/ (a family name for real weights); header checked, since dflash-kquant.gguf names no family; a family-named sidecar ranks first."""
     from utils.models.model_config import _local_gguf_load_path
 
     def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
-        # Rank: names this weight's family, then unpaired, then precision, then total size, then name.
+        # A sidecar naming THIS weight's family first, then any unpaired one, then precision, then total size so a split copy cannot outrank a smaller single file, then name for a stable order.
         paired = _drafter_matches_weight(candidate.name, weight_name, kind = "dflash")
         return (
             0 if paired else 1,
@@ -63,7 +61,7 @@ def detect_dflash_file(
     candidates: list[Path] = []
     other_weights: list[str] = []
     seen: set[Path] = set()
-    # dict.fromkeys: search_root may equal the weight's parent; avoid scanning it twice.
+    # dict.fromkeys: search_root is the weight's own parent for a flat layout, and scanning it twice doubles the directory reads for nothing.
     for root in dict.fromkeys(dirs):
         try:
             entries = list(root.iterdir())
@@ -73,14 +71,15 @@ def detect_dflash_file(
             lower = candidate.name.lower()
             if not lower.endswith(".gguf"):
                 continue
-            # Prefix form only: shared predicates know DFlash by dflash-, else a file is both drafter and model.
+            # Prefix form only: the shared predicates (_drafter_path_kind / is_mtp_drafter_path) know DFlash by the dflash- prefix, so accepting <model>-dflash.gguf would make one file both a drafter and a selectable Q8_0 main model (#7811). No published DFlash sidecar uses the suffix form; the shipped one is dflash-kquant.gguf.
             if not lower.startswith("dflash-"):
-                # Recorded so a sidecar naming a neighbour can be told apart from one naming no family.
+                # Every other GGUF in the folder is a weight some sidecar could be naming. Recorded so a sidecar belonging to a NEIGHBOUR can be told apart from one naming no family at all (below).
                 other_weights.append(candidate.name)
                 continue
             try:
+                # Collapse a split copy to shard 1 before ranking.
                 launch = _local_gguf_load_path(candidate)
-                # is_file() follows links: drops dangling symlinks and dirs that would fail --model-draft.
+                # is_file() follows the link, so this also drops a dangling snapshot symlink and a directory named like a sidecar, which --model-draft cannot open and which fails the whole load. detect_dspark_file guards the same way.
                 if not (launch.is_file() and _drafter_split_is_complete(launch)):
                     continue
                 resolved = launch.resolve()
@@ -91,7 +90,7 @@ def detect_dflash_file(
             seen.add(resolved)
             candidates.append(launch)
 
-    # A sidecar naming a neighbour weight's family is that neighbour's drafter; headers cannot tell.
+    # A sidecar naming a NEIGHBOUR weight's family is that neighbour's drafter: ranking alone floated the foreign one to the top, so loading model B beside dflash-model-A-Q8_0.gguf and dflash-kquant.gguf launched model A's drafter for model B, and both carry a real dflash header so the architecture check cannot catch it. _drafter_names_other_weight decides against the weights actually present and is shared with the remote paths through dflash_repo_preference_key.
     if weight_name is not None and other_weights:
         kept: list[Path] = []
         for candidate in candidates:
@@ -105,7 +104,7 @@ def detect_dflash_file(
         candidates = kept
 
     for candidate in sorted(candidates, key = _rank):
-        # Resolve and validate before opening: a granted path can symlink outside the lease.
+        # Resolve and validate before opening anything: a dflash-*.gguf reached through a native grant can be a symlink outside the lease, and reading the header first cannot be undone.
         try:
             launch = _drafter_launch_path(candidate)
         except OSError:
@@ -120,6 +119,7 @@ def detect_dflash_file(
             logger.info(
                 "detect_dflash_file: dropped %s (architecture %r is not dflash)",
                 candidate.name,
+                # Re-read only on the reject path, and header reads are cached by (path, mtime, size), so naming the offending architecture in the log costs nothing.
                 read_gguf_architecture(launch),
             )
             continue

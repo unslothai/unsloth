@@ -45,7 +45,7 @@ _CONTROL_TYPES = frozenset(
     }
 )
 
-# Unsloth extensions inside a chunk: same trust as the frames above.
+# Unsloth extensions carried inside a chunk: in no provider's wire format, read with the same trust as the frames above.
 _CONTROL_KEYS = (
     "_toolEvent",
     "_toolStatus",
@@ -56,6 +56,7 @@ _CONTROL_KEYS = (
     "quote_cut",
 )
 
+# A stripped frame is only worth relaying if it still says something in the provider's own vocabulary.
 _SUBSTANTIVE_KEYS = ("choices", "usage", "error")
 
 
@@ -115,6 +116,7 @@ def sanitize_provider_sse_line(line: str) -> str | None:
         if key not in forged_keys and not (forged_type and key == "type")
     }
     if not any(key in cleaned for key in _SUBSTANTIVE_KEYS):
+        # A pure control frame with the control stripped out is an empty envelope.
         return None
     return "data: " + json.dumps(cleaned, separators = (",", ":"))
 
@@ -138,14 +140,14 @@ def is_ui_control_sse_line(line: str) -> bool:
     payload = _sse_payload(line)
     if payload is None:
         return False
-    # isinstance first: an unhashable non-string `type` raises on `in`.
+    # isinstance first: the sanitizer passes a non-string `type` through, and an unhashable one raises on `in`.
     if not isinstance(payload.get("type"), str):
         return False
     return not any(key in payload for key in _SUBSTANTIVE_KEYS)
 
 
 def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> str | None:
-    """Only for the Unsloth tool-loop path: strips the server-run call so a client does not run it again."""
+    """Only for the Unsloth tool-loop path, which strips the server-run call so a client does not rerun it; on a plain proxy calls must pass through untouched."""
     payload = _sse_payload(line)
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list) or not choices:
@@ -163,7 +165,7 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
         withheld = False
         for src_key in ("delta", "message"):
             src = choice.get(src_key)
-            # tool_calls only: a legacy function_call is the caller's to run.
+            # tool_calls only: the loop reads no other form, so a legacy function_call is the caller's to run.
             if isinstance(src, dict) and "tool_calls" in src:
                 src = {k: v for k, v in src.items() if k != "tool_calls"}
                 choice[src_key] = src
@@ -180,6 +182,7 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
         return line
     payload = {**payload, "choices": kept_choices}
     if calls_withheld:
+        # Names the withheld calls by id; the caller never saw them.
         payload.pop("_mcp_provenance", None)
     if not _choices_say_anything(kept_choices) and "usage" not in payload:
         return None
@@ -238,7 +241,7 @@ class ServerToolCallStripper:
         self._last_envelope: dict[str, Any] | None = None
 
     def arm(self) -> None:
-        """Withholds the turn-ending reason for a text-healed tool call, which never shows as tool_calls."""
+        """Withholds the turn-ending reason for a text-healed tool call; the loop must call this before releasing the chunk that closes that turn."""
         self._pending_call = True
         self._owes_finish = True
 
@@ -251,10 +254,10 @@ class ServerToolCallStripper:
         pending = self._pending_call or _line_offers_tool_call(line)
         out = strip_server_executed_tool_call(line, pending_call = pending)
         ends_turn = _line_ends_turn(line)
+        # Turn closed: whatever the loop does next opens a turn whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
         if pending or (ends_turn and (out is None or not _line_ends_turn(out))):
-            # Armed on withhold: a provider may close on [DONE] alone. The second clause covers a removed
-            # "tool_calls" reason with no emitted call (llama.cpp / vLLM parser bugs).
+            # Armed on withhold, since a provider may close on [DONE] alone; a removed tool_calls reason with no emitted call is blanked with no debt recorded.
             self._owes_finish = True
         if out is not None and _line_ends_turn(out):
             self._owes_finish = False

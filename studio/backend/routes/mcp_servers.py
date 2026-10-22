@@ -69,7 +69,7 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
-# Only a UI session may define a local command; API keys keep http(s) MCP (Annotated, not a default).
+# Local commands need a UI session; API keys keep http(s). Not a default: tests call it directly
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 
@@ -86,7 +86,7 @@ def _normalize_stdio_command(url: str) -> str:
     trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "command must not be empty")
-    # On Windows only space/tab delimit arguments.
+    # Trailing whitespace is stripped only on Windows; POSIX quoting protects whitespace
     normalized = raw.lstrip().rstrip(" \t") if sys.platform == "win32" else trimmed
     try:
         parts = parse_stdio_command(normalized)
@@ -163,6 +163,7 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
 def _image_mappings_active(row: dict) -> bool:
     from core.inference.tools import _enabled_mcp_servers
 
+    # Same servers the model's MCP catalog keeps; a mapping elsewhere could never receive the image.
     if not image_input_mappings(row) or not _enabled_mcp_servers([row]):
         return False
     if is_stdio(row["url"]) and not stdio_mcp_enabled():
@@ -429,6 +430,7 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         changes["oauth_client_id"] = (payload.oauth_client_id or "").strip() or None
     if "oauth_client_secret" in sent:
         changes["oauth_client_secret"] = payload.oauth_client_secret or None
+    # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
         changes["use_oauth"] = False
     if changes.get("use_oauth") is False:
@@ -465,16 +467,17 @@ async def update_mcp_server(
     _oauth_client(client_id, changes.get("oauth_client_secret", old.get("oauth_client_secret")))
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
-    # Check both directions, before any side effect, so a refusal changes nothing.
+    # Check both directions before any side effect; API keys must not repoint http rows or edit stdio env
     if is_stdio(old["url"]) or is_stdio(changes.get("url", old["url"])):
         require_ui_session_for_local_commands(via_api_key)
-    # On a transport switch drop old headers so env secrets aren't sent as HTTP headers.
+    # On transport switch with no new headers, drop old ones so env secrets are not sent as HTTP headers
     if (
         "url" in changes
         and is_stdio(changes["url"]) != is_stdio(old["url"])
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
+    # Clear persisted OAuth tokens when the URL, the OAuth flag or the client changes
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"])
         or changes.get("use_oauth") is False
@@ -490,6 +493,7 @@ async def update_mcp_server(
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
             require_ui_session_for_local_commands(via_api_key)
+    # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable.
     invalidates_tools = any(
         changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
     )
@@ -541,6 +545,7 @@ def list_mcp_server_tools(
     tools = get_cached_tools(server_id)
     if tools is None:
         raise HTTPException(status_code = 409, detail = "Refresh this server's tools first")
+    # App-only tools never reach the model, so a mapping on one could never be used.
     return [
         {"name": tool["name"], "inputSchema": tool.get("inputSchema") or tool.get("input_schema")}
         for tool in tools
@@ -564,6 +569,7 @@ async def refresh_mcp_server_tools(
             status_code = 400,
             detail = "Use the managed integration Test action to check Blender readiness.",
         )
+    # Refresh uses the stored address.
     if is_stdio(server["url"]):
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
@@ -589,7 +595,7 @@ async def refresh_mcp_server_tools(
         if current is not None and not any(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
-            # If the row changed mid-probe, the failure belongs to the old config.
+            # Start the cool-off so the next send does not re-hang; a row changed mid-probe must not be parked
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
@@ -621,6 +627,7 @@ async def import_mcp_servers(
     for entry in entries:
         try:
             url = _validate_url(entry.url)
+            # Checked per entry: an API-key import of a mixed config still creates http entries, reports stdio.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
             headers = _normalize_headers(entry.headers)
@@ -651,7 +658,7 @@ async def test_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    # Validation errors must surface as 400 like create/update.
+    # Validation must surface as 400, like save; only transport and timeout errors are caught below
     url = _validate_url(payload.url)
     # Gate before list_tools_async: after it the process has already started.
     if is_stdio(url):
@@ -767,7 +774,7 @@ async def read_mcp_ui_resource(
 ):
     server = _ui_server_or_404(server_id, via_api_key)
     uri = (uri or "").strip()
-    # Only ui:// resources: a filesystem server maps file:// onto the host.
+    # Any ui:// resource (widgets read their own assets), no other scheme: a filesystem server maps file:// onto the host.
     if not uri.startswith(UI_RESOURCE_SCHEME):
         raise HTTPException(status_code = 400, detail = "uri must be a ui:// resource")
     from core.inference.tools import (
@@ -816,6 +823,7 @@ async def call_mcp_ui_tool(
     tool_name = (payload.tool_name or "").strip()
     if not tool_name:
         raise HTTPException(status_code = 400, detail = "tool_name must not be empty")
+    # A mounted widget outlives the cache: an edit or off/on toggle of the server empties it.
     await _warm_tool_cache(server)
     tool = mcp_tool_definition(server_id, tool_name)
     if tool is None:
@@ -830,7 +838,7 @@ async def call_mcp_ui_tool(
     if _mcp_arguments_reference_studio_credential(arguments):
         raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
     mode = payload.permission_mode
-    # Unknown modes ask; "auto" asks only for what the model's call would be asked for.
+    # An unstated or unknown mode asks; "auto" asks only for what the model's call would be asked for.
     needs_approval = mode not in ("off", "full") and (
         mode != "auto"
         or is_potentially_unsafe_tool_call(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}", arguments)

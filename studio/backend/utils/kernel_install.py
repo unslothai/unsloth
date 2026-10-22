@@ -542,7 +542,7 @@ def _installed_version(distribution: str) -> str | None:
 
 
 def _outside_venv() -> bool:
-    # System interpreters (Colab): uv refuses them without --system.
+    # Colab and other system interpreters: uv refuses them without --system.
     return sys.prefix == sys.base_prefix
 
 
@@ -600,7 +600,7 @@ def install_kernel(
                     f"(the best GPU is sm{capability[0]}{capability[1]})."
                 )
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
-    # Only a 404 proves nothing is published; an unreachable check falls through.
+    # Only a 404 proves nothing is published; an unreachable check falls through to the install.
     if url is None or exists(url) is False:
         return skip(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
     # mamba_ssm imports triton at load; on Windows that is triton-windows, which its metadata cannot name.

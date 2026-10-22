@@ -191,7 +191,7 @@ def requires_os_isolation(
     is_high_risk = None,
     sandbox_level: Optional[str] = None,
 ) -> bool:
-    """Whether this call must run with OS isolation required, no software fallback; prompted is passed in"""
+    """Whether the call must launch with tool_execution_mode required (no software fallback); prompted is passed in to avoid a cache race."""
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
         return False
     if name not in OS_SANDBOXED_TOOLS or runs_without_os_sandbox(name, sandbox_level):

@@ -35,11 +35,12 @@ import sys
 
 # Remap only while the prefix is ABSENT so a real host mount is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
+# /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
 # Invented path -> healed target, so rewrites re-serve it instead of tripping anti-clobber.
 _remapped_writes: dict = {}
-# Each tool call is a fresh process; this sidecar carries healed mappings across runs.
+# Each tool call is a fresh process, so this sidecar carries healed mappings across runs; only fallback-healed sources, never unrelated same-basename files.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
 
 
@@ -75,7 +76,7 @@ def _map_onto_cwd(
     text,
     notify = True,
 ):
-    """Maps prefix/rest onto ./rest under the CWD, contained so .. segments cannot escape it."""
+    """Maps prefix/rest onto ./rest under the CWD, contained against .. escapes; notify False for reads so the notice is not spent on a remap that never happens."""
     rel = text[len(prefix) :].lstrip("/")
     mapped = _contained_join(os.getcwd(), rel)
     if notify:
@@ -121,10 +122,12 @@ def _is_creating_mode(mode):
 def _remap_open(file, mode):
     """A read heals only if the target exists, so a missing input fails instead of reading a stray file."""
     creating = _is_creating_mode(mode)
+    # notify=False: emit the notice only once we commit to the mapping below.
     mapped = _remap(file, notify = False)
     if mapped is not file:
         # Reads heal only when the target exists, so a missing input stays truthful.
         if creating or os.path.exists(mapped):
+            # Commit: emit the notice now (the notify=False peek above deferred it).
             _remap(file, notify = True)
             return mapped
         return file
@@ -134,9 +137,11 @@ def _remap_open(file, mode):
         text = os.fspath(file)
     except TypeError:
         return file
+    # bytes paths left untouched (str-only, matching the prefix remaps).
     if not isinstance(text, str) or not os.path.isabs(text):
         return file
     cwd = os.getcwd()
+    # Already inside the CWD: a real target the model meant; leave it alone.
     if text == cwd or text.startswith(cwd + os.sep):
         return file
     parent = os.path.dirname(text)
@@ -148,7 +153,7 @@ def _remap_open(file, mode):
     if base in ("", ".", ".."):
         return file
     remapped = os.path.join(cwd, base)
-    # Never clobber an unrelated same-basename file, but re-serve one this fallback healed.
+    # Never clobber an unrelated same-basename file (lexists also catches dangling symlinks), but re-serve one this fallback healed.
     if os.path.lexists(remapped) and remapped not in (
         _remapped_writes.get(text),
         _load_sidecar(cwd).get(text),
@@ -169,6 +174,7 @@ def _remap(path, notify = True):
     if not isinstance(text, str):
         return path
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
+        # Heal only while the prefix directory is absent, so a real host mount is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
             return _map_onto_cwd(prefix, text, notify = notify)
     return path

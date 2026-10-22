@@ -48,6 +48,7 @@ HOST_PATH_HANDLE_FIELDS = frozenset(
     }
 )
 
+# Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset(
     {
         "error_message",
@@ -59,8 +60,10 @@ HOST_PATH_TEXT_FIELDS = frozenset(
     }
 )
 
+# Same text per entry: run warnings quote file paths, which the singular fields above never reach.
 HOST_PATH_TEXT_LIST_FIELDS = frozenset({"warnings", "errors", "details_lines"})
 
+# Emptied, not referenced: scan ROOTS carry layout and nothing actionable.
 HOST_PATH_LIST_FIELDS = frozenset(
     {
         "exact_paths",
@@ -73,10 +76,13 @@ HOST_PATH_LIST_FIELDS = frozenset(
     }
 )
 
+# Referenced entry by entry: emptying leaves a resumable checkpoint with no dataset to resume on.
 HOST_PATH_HANDLE_LIST_FIELDS = frozenset({"local_datasets", "local_eval_datasets"})
 
+# A path on the inventory objects and a repo id elsewhere, so never redacted by field name alone.
 HOST_PATH_AMBIGUOUS_FIELD = "path"
 
+# Decided by a SIBLING: a repo id for most adapters, a path for a locally trained one.
 HOST_PATH_CONDITIONAL_FIELD = "base_model"
 HOST_PATH_CONDITIONAL_SOURCE_FIELD = "base_model_source"
 HOST_PATH_CONDITIONAL_SOURCE_LOCAL = "local"
@@ -86,6 +92,7 @@ def _conditional_path_is_local(payload: Mapping) -> bool:
     return payload.get(HOST_PATH_CONDITIONAL_SOURCE_FIELD) == HOST_PATH_CONDITIONAL_SOURCE_LOCAL
 
 
+# id, load_id and inventory_id hold paths, so blanking path alone hides nothing; others go by VALUE.
 HOST_PATH_IDENTITY_FIELDS = (
     "id",
     "load_id",
@@ -97,6 +104,7 @@ HOST_PATH_IDENTITY_FIELDS = (
     "base_repo",
 )
 HOST_PATH_IDENTITY_LIST_FIELDS = ("loaded", "loading", "serving", "serving_checkpoints")
+# The subset a LOCAL row is named by, referenced on source alone; the others only on value.
 HOST_PATH_ROW_IDENTITY_FIELDS = ("id", "load_id")
 HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
 HOST_PATH_ROW_SOURCE_FIELD = "source"
@@ -132,6 +140,7 @@ def _referenced_inventory_id(value: Any) -> Any:
     return ":".join(parts)
 
 
+# Sibling written beside a redacted scalar, so a client keeps the identity the path gave it.
 CACHE_REFERENCE_FIELD = "cache_ref"
 
 _REFERENCE_PREFIX = "ref:"
@@ -176,7 +185,7 @@ def cache_reference(value: Any) -> Optional[str]:
     return reference
 
 
-# Per request, so one caller's substitutions cannot reach another's response.
+# Per REQUEST, so one caller's substitutions cannot reach another's response.
 _request_handles: "ContextVar[Optional[dict[str, str]]]" = ContextVar(
     "unsloth_request_inventory_handles", default = None
 )
@@ -317,7 +326,7 @@ def _redact(
     if isinstance(payload, Mapping):
         out: dict[Any, Any] = {}
         reference: Optional[str] = None
-        # Read before the walk: the deciding sibling may come later in the dump.
+        # Read before the walk: the sibling that decides it may come after it in the dump.
         base_model_is_local = _conditional_path_is_local(payload)
         identity_is_a_path = redact_ambiguous_path and _row_identity_is_a_path(payload)
         for key, value in payload.items():
@@ -346,6 +355,7 @@ def _redact(
                 out[key] = value if _echoed(value, echo) else _referenced_identity(value)
                 continue
             if key in HOST_PATH_HANDLE_FIELDS:
+                # Only where the value really is a path: a relative output dir names no layout.
                 out[key] = (
                     _referenced_identity(value)
                     if _identity_value_is_a_path(value) and not _echoed(value, echo)
@@ -357,6 +367,7 @@ def _redact(
                 or (redact_ambiguous_path and key == HOST_PATH_AMBIGUOUS_FIELD)
                 or (base_model_is_local and key == HOST_PATH_CONDITIONAL_FIELD)
             ):
+                # Only the row-level cache dir: one per scan root is layout again.
                 if (
                     key in {"cache_path", "repo_path"}
                     and reference is None
@@ -388,7 +399,7 @@ def _redact(
                 ]
                 continue
             out[key] = _redact(value, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
-        # After the walk, or the dump's declared None would win.
+        # After the walk: the field is declared on the models, so the dump's None would win.
         if reference is not None and not out.get(CACHE_REFERENCE_FIELD):
             out[CACHE_REFERENCE_FIELD] = reference
         return out
@@ -399,6 +410,7 @@ def _redact(
         ]
         if not isinstance(payload, tuple):
             return redacted
+        # A NamedTuple's constructor takes the fields one by one, so a list rebuild raises.
         if hasattr(payload, "_fields"):
             try:
                 return type(payload)(*redacted)
@@ -463,10 +475,12 @@ def short_path_for_log(value: Any) -> str:
     text = _as_text(value)
     if not text:
         return ""
+    # A RELATIVE path is returned as written: `.../models/repo` invents a parent it lacks.
     if not _is_absolute_for_log(text):
         return text
     parts = [part for part in text.replace("\\", "/").split("/") if part]
     if len(parts) <= 2:
+        # Rebuilding turned `/srv/cache` into `srv/cache`.
         return text
     return ".../" + "/".join(parts[-2:])
 
@@ -476,6 +490,7 @@ def _is_absolute_for_log(text: str) -> bool:
     return bool(text.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", text))
 
 
+# Quotes, whitespace, punctuation and = end a path, so two paths on one line stay separate.
 _PATH_COMPONENT = r"[^\s\\/\n\":;,=](?:[^\\/\n\":;,=]*[^\s\\/\n\":;,=])?"
 
 _ABSOLUTE_PATH_RE = re.compile(
@@ -492,6 +507,7 @@ _FILE_URI_RE = re.compile(
 )
 
 
+# Strip only scheme and authority: a lost leading slash makes short_path_for_log return it whole.
 _FILE_URI_PREFIX_RE = re.compile(r"^(?:file|filesystem)://(?:localhost)?")
 
 

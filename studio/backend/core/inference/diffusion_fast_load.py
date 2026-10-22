@@ -33,6 +33,7 @@ _UPLOAD_BUFFERS = 16
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
+# variant=None: from_pretrained never opens *.fp16.safetensors-style twins.
 _DEFAULT_WEIGHT_RE = re.compile(
     r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
 )
@@ -114,7 +115,7 @@ def start_prefetch(
     threads: int = _PREFETCH_THREADS,
     min_bytes: int = _PREFETCH_MIN_BYTES,
 ) -> Optional[LoadPrefetch]:
-    """Skips when uncached bytes exceed half of host RAM, as the reads would evict the load's pages."""
+    """Prefetches uncached paths in order, skipping when uncached bytes exceed half of host RAM; never raises."""
     if not prefetch_enabled():
         return None
     try:
@@ -151,6 +152,7 @@ def start_prefetch(
                 )
             return None
         threads = max(1, int(threads))
+        # Thread i reads slice i of every file, files in load order, so the first file is warm first.
         plan: list[list[tuple[str, int, int]]] = [[] for _ in range(threads)]
         for path in pending:
             for index, (start, end) in enumerate(_slices(os.path.getsize(path), threads)):
@@ -357,7 +359,7 @@ def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:
                 continue
             seen.add(id(tensor))
             if type(tensor) not in (torch.Tensor, torch.nn.Parameter):
-                continue
+                continue  # subclasses (torchao) keep their own .to
             if tensor.device.type != "cpu" or tensor.is_sparse or tensor.is_quantized:
                 continue
             if not tensor.is_contiguous() or tensor.storage_offset() < 0:

@@ -73,10 +73,11 @@ def inductor_addcmul_is_fma() -> bool:
     return _addcmul_lowering()[0]
 
 
-# Set by ``install``: the lru_cache above would break the traced graph.
+# Set by ``install``: read inside the traced wrapper, where the lru_cache above would break the graph.
 _NEEDS_EMULATE = [True]
 
 
+# device index -> (even lanes, odd lanes), each "x" (fma on x * cos) or "s" (fma on swapped * sin).
 _FUSION: dict = {}
 
 
@@ -140,7 +141,7 @@ def _real_rope(x: Any, freqs_cis: Any, fusion: tuple) -> Any:
 
 
 def _inductor_emulates() -> bool:
-    # Read at trace time: without the flag torch 2.11 splits ``addcmul``.
+    # Read at trace time (dynamo guards on it): without the flag torch 2.11 splits ``addcmul``.
     from torch._inductor import config
     return bool(getattr(config, "emulate_precision_casts", False))
 

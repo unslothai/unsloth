@@ -67,6 +67,7 @@ _EXTERNAL_ROUTING_FIELDS = {
     "encrypted_api_key",
     "provider_base_url",
 }
+# Attachments the composer sends inline. Durable replay has no representation for them.
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
@@ -162,6 +163,7 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 422,
             detail = safe_validation_errors(exc.errors()),
         ) from exc
+    # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
     from routes.inference import (
         _admit_tool_access,
         _messages_have_embedded_image,
@@ -207,11 +209,12 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
+    # UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 hands the legacy stream the tool policy and checkpoint recall.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    # Default ON; UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores the legacy refusal.
+    # Default ON (env scoping proved unreliable across launchers); UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores the legacy refusal.
     _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
         "1",
         "true",

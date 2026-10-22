@@ -26,7 +26,7 @@ from utils.utils import safe_error_detail
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Only UI sessions may supply stdio commands; Annotated so direct calls get False.
+# Only UI sessions may supply stdio commands, since this host would run them; Annotated so direct calls get False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
@@ -34,6 +34,7 @@ ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 def list_mcp_tools(
     payload: McpToolsListRequest, via_api_key: ViaApiKey = False
 ) -> McpToolsListResponse:
+    # Caller-supplied and probed immediately, so gate before any is built.
     if recipe_has_stdio_mcp({"mcp_providers": payload.mcp_providers}):
         require_ui_session_for_local_commands(via_api_key)
     try:

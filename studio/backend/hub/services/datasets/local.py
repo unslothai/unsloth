@@ -236,7 +236,7 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
 
 
 def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
-    # Non-streaming loads take the builder lock; EACCES-safe wrapper.
+    # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
     from utils.datasets.cells import csv_as_text_kwargs
 
@@ -268,6 +268,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         dataset_path = candidate_files[0]
 
     suffix = dataset_path.suffix.lower()
+    # Parquet/Arrow give a cheap exact total_rows; JSON/CSV carry none, so stream and report None.
     if suffix == ".parquet":
         dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
         total_rows = len(dataset)

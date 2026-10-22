@@ -26,7 +26,7 @@ from utils.log_redaction import redact_log_text
 BLOCK_BYTES = 65_536
 DEFAULT_TAIL_LINES = 1_000
 # == MAX_LINES_PER_RESPONSE: a larger ?lines= would be silently capped.
-MAX_TAIL_LINES = 2_000
+MAX_TAIL_LINES = 2_000  # == MAX_LINES_PER_RESPONSE: a larger ?lines= was silently capped
 # /api is not gzipped, so this is what goes on the wire on first paint.
 MAX_TAIL_BYTES = 1_048_576
 MAX_APPEND_BYTES = 524_288
@@ -94,6 +94,7 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
     lines: list[str] = []
     for line in raw:
         line = line.rstrip("\r")
+        # An enormous line is split rather than dropped, so nothing is lost.
         while len(line) > MAX_LINE_BYTES:
             lines.append(line[:MAX_LINE_BYTES])
             line = line[MAX_LINE_BYTES:]
@@ -163,6 +164,7 @@ def read_since(
         result.reset_reason = "rotated"
         return result
     if offset > size:
+        # Reopened in "w" mode, or truncated underneath us.
         result = read_tail(path, max_lines)
         result.reset_reason = "truncated"
         return result
@@ -181,6 +183,7 @@ def read_since(
         handle.seek(start)
         data = handle.read(size - start)
 
+    # Stop at the last newline and leave the cursor before the partial line
     last_newline = data.rfind(b"\n")
     if last_newline == -1:
         if len(data) < MAX_LINE_BYTES:

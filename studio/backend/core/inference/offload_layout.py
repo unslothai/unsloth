@@ -24,6 +24,7 @@ _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 # Sparse experts incl. fused/chunked forms; NOT ffn_routed_*: kimi-k3 reads it every token
 _MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down|gate_up)_(exps|chexps)\.weight$")
+# Dense FFN. Fully activated: every byte crosses the bus every token.
 _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
 
 
@@ -32,7 +33,9 @@ class BlockLayout:
     """One transformer block, split into what may and may not be spilled."""
 
     index: int
+    # ffn_*_exps (MoE) or plain ffn_* (dense). Safe to push to host RAM.
     spillable_bytes: int
+    # attention, norms, routers, shared experts, ssm: on the critical path every token, or the KV cache hangs off them.
     resident_bytes: int
 
 
@@ -49,13 +52,17 @@ class ModelLayout:
     lm_head_bytes: int = 0
     # llama.cpp pins dev_input to CPU: never VRAM, but charged to host RAM
     token_embd_bytes: int = 0
+    # Every tensor's bytes, excluded blocks included; the file size less its metadata.
     tensor_bytes: int = 0
+    # output_norm and friends: GPU-resident, too small to be worth spilling.
     other_resident_bytes: int = 0
+    # Attention cache for ONE token at f16, across the attention layers only.
     kv_bytes_per_token_f16: int = 0
     # Mamba conv/SSM state; context independent, and follows the layer, which -ot never moves
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
+    # Offloaded MoE experts move only expert_used/expert_count per token; a dense FFN moves all of it.
     n_expert: int = 0
     n_expert_used: int = 0
     # Trailing nextn/MTP blocks dropped; an unbounded ^blk\.\d+\. pattern would match them
@@ -118,7 +125,7 @@ def split_shard_paths(path: str) -> Optional[list[str]]:
 
 
 def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
-    """Returns an incomplete layout rather than raising, so the planner abstains on a surprising GGUF."""
+    """Returns an incomplete layout rather than raising, so the planner abstains; all_shards reads every sibling shard, and all must be present"""
     try:
         import struct
 
@@ -171,7 +178,7 @@ def _layout_from_reader(reader) -> ModelLayout:
 def _layout_from_readers(readers) -> ModelLayout:
     """One reader per shard, the first carrying the metadata."""
     reader = readers[0]
-    # Split GGUF: GGUFReader maps one shard only; abstain unless every shard was given
+    # Split GGUF: GGUFReader maps one shard, so a partial read undercounts and can OOM under --fit off; abstain unless every shard is given
     if (int(_field(reader, "split.count") or 0) or 1) != len(readers):
         return ModelLayout()
 
@@ -224,6 +231,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     else:
         kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
 
+    # Full context on every layer is safe for TOTAL but cannot show which layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
 
     # Mamba conv + SSM state, one f32 copy per sequence. Mirrors llama.cpp's own sizing; zero when the model has no
@@ -279,7 +287,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not spill and not resident:
         return ModelLayout()
 
-    # Tied embeddings: llama.cpp allocates a second full matrix on the output device, so resident
+    # Tied embeddings: llama.cpp allocates a second full matrix on the output device; count it resident, else the lm_head rung credits a spill that moves nothing
     if not lm_head and token_embd:
         other_resident += token_embd
 

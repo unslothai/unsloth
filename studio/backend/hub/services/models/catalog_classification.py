@@ -50,6 +50,7 @@ _VIDEO_GEN_TASK = "text-to-video"
 # Shared definition: chat gate, this classifier and media preflight must agree.
 _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
+# An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
 _AUDIO_CPP_UNSUPPORTED_TASK = "audio-to-audio"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
@@ -57,7 +58,7 @@ _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
 _MAX_TASK_CLASSIFY_GGUFS = 64
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 _TASK_CLASSIFY_READ_SECONDS = 1.5
-# ":" separates an Ollama size tag ("qwen3-asr:0.6b").
+# ":" separates an Ollama size tag ("qwen3-asr:0.6b"), where a filename would use "-".
 _QWEN3_ASR_HINT = re.compile(
     r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. :]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
@@ -150,7 +151,7 @@ def _hint_leaf(hint: str) -> str:
 def _name_hint_media_task(
     name_hints: tuple[Optional[str], ...], unmatched: Optional[str]
 ) -> Optional[str]:
-    """For a GGUF whose header settles nothing; callers differ only in what an unrecognised name means."""
+    """Last, so a real asset wins: unserved engine endpoints must 404, not render the app shell, which a status-first client reads as supported."""
     from core.inference.video_families import detect_video_family
     from core.inference.video_moe_pair import moe_pick_pairs
 
@@ -177,6 +178,7 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
 
     # Leaves only: family keywords in parent segments misclassified chat GGUFs.
     leaves = tuple(_hint_leaf(hint) for hint in name_hints if hint)
+    # H3 denoisers matched by prefix above; any other H3 name (qwen3vl_32b_minimax_h3-*) is the conditioner.
     if any(getattr(detect_video_family(leaf), "name", None) == "minimax-h3" for leaf in leaves):
         return None
     return _name_hint_media_task(leaves, None)
@@ -399,6 +401,7 @@ def _gguf_folder_task(
                 overflowed = True
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
+        # The walk gives up at its own deadline and the cap drops the tail, so either can leave a sibling unseen.
         complete = (
             not overflowed
             and len(scored) <= _MAX_TASK_CLASSIFY_GGUFS
@@ -418,11 +421,14 @@ def _gguf_folder_task(
             if file_contents_available_locally(path):
                 task = _gguf_file_task(path, hints)
             else:
+                # Unread header: a name that says nothing stays unclassified instead of voting text-generation.
                 task = _unhydrated_gguf_task(hints)
         except Exception:
+            # Unread, so unranked: this file might have been the runnable sibling.
             complete = False
             continue
         if task is None:
+            # No architecture and a name that says nothing: unclassified.
             complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
@@ -435,7 +441,7 @@ def _gguf_folder_task(
             unsupported = unsupported or task
         elif task is not None and fallback is None:
             fallback = task
-    # Speech only on a whole folder: it hides a row.
+    # Speech only on a whole folder: it is the one answer that HIDES a row rather than filing it.
     return unsupported or fallback or (speech if complete else None)
 
 
@@ -452,7 +458,7 @@ def _gguf_path_audio_type(
 ) -> Optional[str]:
     model_path = Path(path)
     try:
-        # No extension check: Ollama blobs are named by digest.
+        # No extension check: an Ollama model is a blob named by its digest.
         paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
         for gguf_path in paths:
             hints = id_hints + (gguf_path.name,)
@@ -604,6 +610,7 @@ def _local_model_classification_for_task(
     """Add decoder provenance to an already classified local-row task."""
     probe = task is None or task in (_SPEECH_TASK, "audio-to-audio")
     audio_type = _local_model_audio_type(model) if probe else None
+    # As for cached rows: only a separation GGUF is an audio-to-audio row Studio has a page for.
     if task == "audio-to-audio" and audio_type != "audiocpp_sep":
         audio_type = None
     if task is None and audio_type is not None:

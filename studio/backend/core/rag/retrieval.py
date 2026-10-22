@@ -58,6 +58,7 @@ def retrieve_dense(
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
     effective = model_name or config.effective_embedding_model()
+    # Take identity from the encode, not the process: a concurrent ST failure may have swapped it.
     vectors, identity = embeddings.encode_with_identity(
         [query], model_name = effective, normalize = True
     )
@@ -128,7 +129,7 @@ def retrieve_hybrid(
 ) -> list[Hit]:
     """lexical_query changes only the FTS5 leg; the dense leg always encodes the natural-language query."""
     k = k if k is not None else config.TOP_K_HYBRID
-    k = int(k)  # top_k may arrive as a float
+    k = int(k)  # tool-call / scope top_k may arrive as a float; LIMIT + slice need int
     if mode == "lexical":
         return retrieve_lexical(conn, scope, query, k, match_query = lexical_query)
     if mode == "dense":

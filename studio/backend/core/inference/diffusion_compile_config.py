@@ -76,7 +76,7 @@ def _module(name: str) -> Any:
 
 
 def _write(cfg: Any, attr: str, value: Any) -> None:
-    # Every write dirties the config and forces a rehash.
+    # Write only on change: every write dirties the config and forces a rehash.
     try:
         if getattr(cfg, attr) != value:
             setattr(cfg, attr, value)

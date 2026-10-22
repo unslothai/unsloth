@@ -34,7 +34,7 @@ MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
 
-# No arch gate on purpose: it goes stale as upstream ships wheels; the import check catches bad ones.
+# No arch gate, deliberately: has_blackwell_gpu() skipped flash-attn before sm_100+ wheels existed (#5420) and became the bug once they did (#6961), denying B200 hosts a working wheel. An arch gate encodes a snapshot of what upstream ships and goes stale silently both ways; the post-install import check catches a wheel that will not load whatever the cause.
 def wheel_platform_tag() -> str | None:
     """pip platform tag for this host, or None where nothing we resolve is published. Windows is included because download.pytorch.org publishes CUDA-matched ``win_amd64`` xFormers wheels (see ``xformers_wheel_url``), and flash-attn / causal-conv1d / mamba-ssm resolve only to the Windows wheels listed in this module; ``probe_torch_wheel_env`` keeps the per-caller opt-in, not this function."""
     machine = platform.machine().lower()
@@ -77,7 +77,7 @@ def probe_torch_wheel_env(
                     # Differs from python_tag only on a free-threaded build (cp314t).
                     "'abi_tag': f'cp{sys.version_info.major}{sys.version_info.minor}' + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''), "
                     "'torch_mm': torch_mm, "
-                    # xFormers ships one wheel per exact torch patch and CUDA minor, so record the full versions.
+                    # xFormers publishes one wheel per exact torch PATCH and per CUDA MINOR, so 'torch_mm' / 'cuda_major' cannot pick between them. Full release + full CUDA version: cu126 and cu128 are different builds of the same version string.
                     "'torch_version': str(torch.__version__), "
                     "'cuda_version': str(torch.version.cuda) if torch.version.cuda else '', "
                     "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
@@ -109,8 +109,7 @@ def probe_torch_wheel_env(
     return env
 
 
-# torch 2.11/2.12 have no native wheels but the torch2.10 ones load and pass upstream suites.
-# Add a key only after measuring real wheels: torch broke extension ABI between 2.9 and 2.10.
+# torch 2.11/2.12 ship no native prebuilt flash-attn / causal-conv1d / mamba-ssm wheels, but the torch2.10 CUDA wheels load and pass each project's own suite on both, so they are reused. The window is bounded, not open ended: torch broke extension ABI between 2.9 and 2.10, so every new key here must be measured against the real wheels before it is added. Measured on B200, py3.12, torch 2.12.1+cu130: causal-conv1d 9412 passed / 3888 skipped / 0 failed, mamba tests/ops 20 passed, flash-attn splitkv+qkvpacked 848 passed, identical to a torch 2.10 control; the torch2.9 flash-attn .so raises "undefined symbol" on torch 2.10 and 2.12 alike.
 _PREBUILT_WHEEL_TORCH_MM = {"2.11": "2.10", "2.12": "2.10"}
 
 
@@ -143,7 +142,7 @@ def mamba_ssm_pure_wheel_url(env: dict[str, str] | None = None) -> str:
 # Keyed on the torch minor, and exact rather than a floor: a wheel is built against one minor and there is no evidence any future one will load it, which is exactly the assumption that made the upstream wheels stop working here. A new torch minor adds a row only after the workflow has built and smoke-tested it.
 _UNSLOTH_PREBUILT_TORCH_MM = frozenset({"2.13", "2.14"})
 
-# Newer than upstream versions: cut from revisions that compile against torch 2.13.
+# The package version published on that tag, which is not the version the upstream branches resolve: the builds are newer because they had to be cut from a source revision that compiles against torch 2.13 at all. flash-attn 2.8.4 in particular exists only as a commit upstream, carrying the c++20 switch from Dao-AILab/flash-attention#2899.
 _UNSLOTH_PREBUILT_VERSIONS = {
     "flash_attn": "2.8.4",
     "causal_conv1d": "1.7.0",
@@ -244,6 +243,7 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     extra_pythons = _UNSLOTH_PREBUILT_EXTRA_CELLS.get((platform_tag, str(env.get("torch_mm"))))
     if env.get("torch_mm") not in _UNSLOTH_PREBUILT_TORCH_MM and extra_pythons is None:
         return None
+    # cu13 only. The workflow builds against the CUDA 13 toolkit and nothing else.
     if env.get("cuda_major") != "13":
         return None
     platform_spec = _UNSLOTH_PREBUILT_PLATFORMS.get(platform_tag)
@@ -346,7 +346,7 @@ def direct_wheel_url(
     if env is None or not env.get("cuda_major"):
         return None
 
-    # Checked before the upstream filename: for torch 2.13+ that asset never existed.
+    # Checked before the upstream filename is built, not after: for torch 2.13+ the upstream URL this would otherwise return names an asset that has never existed, so there is nothing to fall back to and no reason to prefer it. Every caller -- causal-conv1d and mamba-ssm on both the training and the inference path -- picks this up without changing its own arguments, which is why the override lives here rather than at each call site.
     ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
     if ours is not None:
         return ours
@@ -365,8 +365,7 @@ def direct_wheel_url(
     return f"{release_base_url}/{release_tag}/{filename}"
 
 
-# xformers/_C links one exact (torch, CUDA) pair and a mismatch silently drops attention kernels.
-# Keyed on cpp_lib.json `torch`; keep in step with install.ps1 and test_windows_xformers_wheel_match.py.
+# xformers/_C links one exact (torch, CUDA) pair; a mismatch silently drops attention. Key on cpp_lib.json torch, not cuda; rows never interpolated.
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
 
@@ -376,28 +375,29 @@ def pytorch_wheel_index_base_url() -> str:
 
 
 _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
-    # torch 2.7.0 omitted: pre-stable-ABI wheels stop at cp312, below the default Python 3.13.
+    # torch 2.7.0 is deliberately absent: it predates the stable-ABI switch, so it ships one wheel per interpreter and stops at cp312, while Unsloth's default interpreter is 3.13. Supporting it would mean a per-interpreter gate here and a second one in install.ps1, for a torch that resolves to nothing on the default install anyway (xFormers 0.0.30).
     "2.7.1": {"cu126": "0.0.31.post1", "cu128": "0.0.31.post1"},
     "2.8.0": {"cu126": "0.0.32.post2", "cu128": "0.0.32.post2", "cu129": "0.0.32.post2"},
     "2.9.0": {"cu126": "0.0.33.post1", "cu128": "0.0.33.post1", "cu130": "0.0.33.post1"},
     "2.9.1": {"cu126": "0.0.33.post2", "cu128": "0.0.33.post2", "cu130": "0.0.33.post2"},
     "2.10.0": {"cu126": "0.0.34", "cu128": "0.0.34", "cu130": "0.0.34"},
+    # Stable-ABI era: one wheel serves every torch from 2.11 on. The rows stay listed so a future exact-pinned release can displace a single one of them, but they are no longer the only way in: _XFORMERS_STABLE_ABI below covers the patch releases between them.
     "2.11.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
     "2.12.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
     "2.13.0": {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"},
 }
 
-# Every torch strictly above this floor maps to the stable-ABI release; exact rows still win.
+# The stable-ABI floor and what serves it: every torch STRICTLY ABOVE this maps to this release, per CUDA family, with exact rows above still winning. An exact-key table alone refused the patch releases (2.10.1, 2.11.1, 2.12.1), which cannot be enumerated because they ship after this code; 0.0.35 targets 2.10.0 and upstream states later versions stay compatible. Below the floor there is no stable ABI, so an unlisted pair must keep resolving to nothing.
 _XFORMERS_STABLE_ABI_FLOOR: tuple[int, ...] = (2, 10, 0)
 _XFORMERS_STABLE_ABI_VERSIONS = {"cu126": "0.0.35", "cu128": "0.0.35", "cu130": "0.0.35"}
 
-# Wheel filename interpreter tag changed per release range; unknown releases resolve to nothing.
+# The interpreter tag in the wheel FILENAME, which xFormers has changed twice: 0.0.30 and earlier ship one wheel per cpXY (and stop at cp312), 0.0.31..0.0.34 ship a single cp39-abi3 wheel, and 0.0.35 switched to py39-none. That last switch is a PACKAGING change, not an architectural one: 0.0.35's setup.py drops py_limited_api=True and force-tags the wheel through a custom bdist_wheel, since the extension is loaded by torch.ops.load_library and its _C.so defines no PyInit. The wheel still carries a per-CUDA _C.pyd; it just dropped the bundled flash_attn_3 kernels, the whole 103 MB -> 2.6 MB difference. Ranges, not an open-ended floor: an unknown release resolves to nothing until somebody checks the real filename.
 _XFORMERS_FILENAME_PYTHON_TAGS: tuple[tuple[tuple[int, ...], tuple[int, ...], str], ...] = (
     ((0, 0, 31), (0, 0, 34), "cp39-abi3"),
     ((0, 0, 35), (0, 0, 35), "py39-none"),
 )
 
-# No xFormers wheels for aarch64 or macOS on download.pytorch.org.
+# platform_tag from wheel_platform_tag() -> the leaf in the wheel filename. aarch64 and macOS are absent because download.pytorch.org publishes no xFormers wheel for them.
 _XFORMERS_PLATFORM_LEAVES = {
     "linux_x86_64": "manylinux_2_28_x86_64",
     "win_amd64": "win_amd64",
@@ -443,11 +443,12 @@ def xformers_wheel_version(torch_version: str | None, cuda_family: str | None) -
     """The xFormers release for this (torch, CUDA family), else None. An exact row wins; failing that, any release above the stable-ABI floor resolves to the wheel that serves that whole era, since the exact table cannot list patch releases published after this code ships and refusing them left supported builds (2.11.1, 2.12.1) with no xFormers at all."""
     if not torch_version or not cuda_family:
         return None
+    # '2.10.0+cu130' -> '2.10.0'. A dev/rc torch has no wheel and must miss the table.
     release = str(torch_version).split("+", 1)[0].strip()
     exact = _XFORMERS_WHEEL_VERSIONS.get(release, {}).get(cuda_family)
     if exact is not None:
         return exact
-    # dev/rc torch is not a release and must miss the table.
+    # A dev/nightly/rc suffix ('2.11.0.dev20260101') is not a released torch, so it stays out: _xformers_version_tuple stops at the first non-numeric chunk, which would read it as the release itself.
     if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", release):
         return None
     if _xformers_version_tuple(release) > _XFORMERS_STABLE_ABI_FLOOR:
@@ -498,7 +499,7 @@ def xformers_torch_requirement_unmet() -> tuple[str, str, str] | None:
                 continue
         except Exception:  # noqa: BLE001 -- a line packaging cannot parse is not a verdict
             continue
-        # Local tags ignored as pip does: "torch==2.6.0" accepts 2.6.0+cu124.
+        # Local tags are ignored as pip ignores them, so "torch==2.6.0" accepts 2.6.0+cu124.
         if not requirement.specifier.contains(installed, prereleases = True):
             return xformers_version, str(requirement.specifier), torch_version
     return None
@@ -531,7 +532,7 @@ def redact_url_credentials(url: str) -> str:
 
 def flash_attn_package_version(torch_mm: str) -> str | None:
     if torch_mm == "2.10":
-        # Newest release with the full torch2.10 asset matrix; v2.8.3+ dropped most of it. Do not bump.
+        # Newest flash-attn release still carrying the full torch2.10 asset matrix. Do not bump to "the latest release": v2.8.3 publishes only cu13/cp312 for torch2.10 and v2.8.3.post1 dropped every torch2.10 asset, 404ing most users into a source build. The full matrix is cu12 + cu13, cp312 + cp313, x86_64 + aarch64, and post1's newest tag is torch2.9, which will not load here at all.
         return "2.8.1"
     try:
         major, minor = (int(part) for part in torch_mm.split(".", 1))
@@ -545,7 +546,7 @@ def flash_attn_package_version(torch_mm: str) -> str | None:
 def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if env is None:
         return None
-    # flash-attn never reaches direct_wheel_url on torch 2.13+, so the override is asked here too.
+    # flash-attn does not reach direct_wheel_url on torch 2.13+: flash_attn_package_version returns None there and this function bails before the URL is ever built, so the override has to be asked here too. It is the same predicate and the same table; only the entry point differs.
     ours = unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = env)
     if ours is not None:
         return ours
@@ -684,7 +685,7 @@ def install_wheel(
         if uv_needs_system:
             uv_cmd.append("--system")
         uv_cmd.extend(["--python", python_executable, "--no-deps"])
-        # Without it a same-version build (other CUDA, or broken) is kept.
+        # Without it an installed same-version build (another CUDA, or a broken copy) is kept.
         if reinstall:
             uv_cmd.append("--reinstall")
         uv_cmd.append(wheel_url)
@@ -727,6 +728,7 @@ def install_wheel(
         text = True,
         encoding = "utf-8",
         errors = "replace",
+        # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(child_env_without_native_path_secret()),
     )
     attempts.append(("pip", result))
@@ -747,7 +749,7 @@ def url_exists(url: str) -> bool | None:
         reason = str(exc)
     shown = redact_url_credentials(url)
     if shown != url:
-        # The error text can echo userinfo (urllib reads `user:token@host` as a port).
+        # The error text can echo the userinfo (urllib reads `user:token@host` as a port).
         reason = reason if reason.startswith("HTTP ") else "unreachable"
     _logger.warning(
         "url_exists(%s): %s; could not check prebuilt wheel availability", shown, reason

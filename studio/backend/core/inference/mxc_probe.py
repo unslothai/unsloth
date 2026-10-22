@@ -252,6 +252,7 @@ def _probe(
                 lease = None
         grant_lease = None
         try:
+            # The probe reads Python through the same grants, so a revocation waits for it too.
             grant_lease = mxc_read_grants.hold_if_needed()
             request = (
                 mxc_policy.build_launch_request(probe_plan, cwd_alias = lease.root)
@@ -286,7 +287,7 @@ def _probe(
                     continue
             proc._unsloth_completion_reason = "finished"
             result = mxc_adapter.completion_result(proc)
-        except Exception as exc:
+        except Exception as exc:  # capability result, never a workload fallback decision
             return False, f"the live MXC probe failed: {type(exc).__name__}: {exc}"
         finally:
             if "proc" in locals():

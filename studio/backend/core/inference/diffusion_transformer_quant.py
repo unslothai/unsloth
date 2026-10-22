@@ -28,6 +28,7 @@ import sys as _sys
 import threading as _threading
 from typing import Any, Callable, Optional
 
+# stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from .diffusion_native_quant import int8_act_disabled, int8_act_requested, is_native_linear
 from .diffusion_nvfp4_flag import (
@@ -40,7 +41,7 @@ from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .family_profile import AutoPrefer as _AutoPrefer
 from .family_profile import profile_table as _profile_table
 
-# Also runs in the spawned smoke-probe child, which imports only this module.
+# Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
 install_torchao_int_mm_patch()
 
 TQ_INT8 = "int8"
@@ -57,20 +58,22 @@ _REQUIRE_BF16_SCHEMES = (TQ_FP8, TQ_MXFP8)
 # Per-ROW fp8 is REQUIRED on outlier-heavy DiTs; stamped into prequant metadata.
 FP8_GRANULARITY = "per_row"
 
-# torchao ``activation_value_lb``: keeps an all-zero row off scale 0 (NaN, black frames).
+# torchao ``activation_value_lb``: keeps an all-zero activation row off scale 0 (NaN, black frames); not calibrated.
 FP8_ACTIVATION_VALUE_LB = 1e-12
 
+# Skip linears below this feature size: a small FLOP share, so leaving them bf16 costs ~nothing.
 DEFAULT_MIN_LINEAR_FEATURES = 512
 
 # int8-only exclusions: _int_mm needs M > 16; AdaLN/timestep/pooled embedders run at M = 1.
 _INT8_EXCLUDE_NAME_TOKENS = (
-    "norm",
-    "_mod",
-    "modulation",
+    "norm",  # AdaLN modulation .linear
+    "_mod",  # Qwen img_mod / txt_mod
+    "modulation",  # Flux.2 double/single_stream_modulation
     "timestep_embed",
     "guidance_embed",
     "time_text_embed",  # pooled-text + timestep; NOT context_embedder
     "pooled",
+    # Krea 2 time_embed.linear_2 (M = batch); time_mod_proj is caught by "_mod", and the rest fall under min_features.
     "time_embed",
 )
 
@@ -145,7 +148,7 @@ _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
 _INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
     name: spec.filename for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.filename
 }
-# Only this repo gets the rotated name prepended.
+# Only this repo gets the rotated name prepended: a same-named file elsewhere is not this build.
 _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
     name: spec.repo for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.repo
 }
@@ -379,9 +382,9 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     (
         (10, 0),
         (TQ_INT8, TQ_FP8, TQ_MXFP8),
-    ),
-    ((8, 9), (TQ_INT8, TQ_FP8)),
-    ((8, 0), (TQ_INT8,)),
+    ),  # Blackwell sm_100+
+    ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
+    ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
 
 # Families whose activation ranges break specific schemes at the MODEL level (``FamilyProfile.scheme_deny``; the smoke
@@ -550,6 +553,7 @@ def explain_unusable_scheme(
     return f"'{scheme}' is not usable for family '{family}' on this GPU"
 
 
+# The reason torchao cannot be used AT ALL, resolved once. None means it imports.
 _TORCHAO_UNAVAILABLE: Optional[tuple[Optional[str]]] = None
 
 
@@ -561,7 +565,7 @@ def torchao_unavailable_reason() -> Optional[str]:
         return _TORCHAO_UNAVAILABLE[0]
     reason: Optional[str] = None
     if is_stubbed("torchao"):
-        # the Windows-ROCm stub imports fine and quantises nothing
+        # the Windows-ROCm stub imports fine and quantises nothing, so the import test below passes
         reason = "this platform ships a torchao stub whose quantize_ is a no-op"
     else:
         try:
@@ -589,6 +593,7 @@ def _strip_paths(text: str) -> str:
     return _ABS_PATH_RE.sub("<path>", text)
 
 
+# Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
 
@@ -618,7 +623,7 @@ _DATACENTER_GPU_TOKENS = frozenset(
         "H100",
         "H800",
         "H20",
-        "GH200",
+        "GH200",  # Grace-Hopper superchip
         "A100",
         "A800",
         "A30",
@@ -634,12 +639,12 @@ _DATACENTER_GPU_TOKENS = frozenset(
         "V100",
         "P100",
         "P40",
-        "T4",
+        "T4",  # legacy data center
     }
 )
 
 
-# professional parts treated as datacenter-class, matched as phrases
+# professional parts the backend treats as datacenter-class, matched as phrases since the marker spans tokens
 _PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
 
 
@@ -696,6 +701,7 @@ def dense_quant_unsupported_kind_reason(model_kind: Optional[str]) -> str:
 # Both Ideogram branches must use the same precision.
 DENOISER_ATTRS: tuple[str, ...] = ("transformer", "unconditional_transformer")
 
+# Some dense DiTs retain norms or embedders in fp32. Other parameter dtypes are not dense sources.
 _DENSE_PARAM_DTYPE_NAMES = ("bfloat16", "float32")
 
 
@@ -726,6 +732,7 @@ def denoiser_modules(pipe: Any) -> tuple[tuple[str, Any], ...]:
     return tuple(found)
 
 
+# Records a quantised source that a loader widened to a dense dtype.
 SOURCE_PRECISION_ATTR = "_unsloth_source_precision"
 
 
@@ -895,7 +902,7 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
     return "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
 
 
-# ``auto`` never lands here: weight-only measured no speed win on gfx1151.
+# ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
 NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
 
 
@@ -1103,7 +1110,7 @@ def _auto_scheme_order(
         return ()
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
     if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
-        # Switch off: drop gated and backend rows before their gate record or backend probe (flashinfer).
+        # Switch off: drop gated/backend rows before their gate record or backend probe (imports flashinfer).
         prefer = None
     head: tuple[str, ...] = ()
     if prefer is not None and cap >= prefer.floor:
@@ -1184,11 +1191,12 @@ def _scheme_supported(
                     if scheme in table:
                         if table[scheme] is None:
                             return unproven_ok
+                        # The child ran the same probe. Missing entries still fall through below.
                         return table[scheme]
     return _smoke_probe(scheme, device, unproven_ok = unproven_ok)
 
 
-# Generous for a cold torch import; bounded so a driver-wedged child cannot hang the route.
+# Bounded so a wedged child cannot hang the route; a timeout is no verdict (fall back in-process).
 _CHILD_PROBE_TIMEOUT = 180.0
 
 # Latched once spawn is shown not to work here, so the fallback is paid once.
@@ -1336,7 +1344,7 @@ def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
         return None
 
 
-# SIGKILL may be OOM and SIGTERM is timeout cleanup: neither is a scheme verdict.
+# SIGKILL may be OOM and SIGTERM is timeout cleanup, so neither is a scheme verdict.
 _PROBE_CRASH_SIGNALS = frozenset({4, 6, 7, 8, 11})  # ILL, ABRT, BUS, FPE, SEGV
 
 # Windows returns the raw NTSTATUS, not -SIGSEGV; only TERMINATE is negative.
@@ -1492,7 +1500,7 @@ def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
-        # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it.
+        # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
         x[16:] = 0
         with torch.no_grad():
@@ -1793,7 +1801,7 @@ def _quantize_native(
     try:
         from .diffusion_native_quant import apply_native_weight_quant
 
-        # require_bf16 keeps deliberate fp32 linears (Wan, Hunyuan) at full precision.
+        # require_bf16 keeps the fp32 linears some DiTs deliberately hold (Wan, Hunyuan) at full precision.
         filter_fn = make_filter_fn(
             min_features,
             exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),

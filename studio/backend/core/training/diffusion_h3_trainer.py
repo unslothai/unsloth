@@ -112,13 +112,14 @@ _H3_TARGETS = (
 # Params4bit reports uint8 and the model casts activations to weight.dtype, breaking rms_norm.
 _H3_NF4_SKIP_MODULES = ("context_embedder", "adaln_proj", "norm_out")
 
+# The exponential sigma shifts of the two schedules, from the released scheduler configs.
 _H3_VIDEO_SHIFT = 12.0
 _H3_AUDIO_SHIFT = 3.0
 
-# The last Qwen3-VL layer is post-norm and is not what the weights were trained against.
+# The last Qwen3-VL layer is post-norm and is not what the released weights were trained against.
 _H3_TEXT_ENCODER_LAYER = 50
 
-# Naming components keeps the 66 GB transformer off the device during conditioning.
+# Naming the components is what keeps the 66 GB transformer off the device while the 63 GiB conditioner is on it.
 _H3_TEXT_COMPONENTS = ("text_encoder", "tokenizer", "processor")
 # fp32: both carry modules diffusers refuses to cast, so a later .to(float32) is partial.
 _H3_VAE_COMPONENTS = ("vae", "audio_vae")
@@ -155,13 +156,13 @@ def _assert_component_grid(pipe: Any) -> None:
 
 
 def _load_conditioners(cfg, device):
-    """Loads only the named conditioning components; the transformer is never downloaded in this phase."""
+    """Loads only the named conditioning components, not the transformer; omit workflow=, which prunes the block graph statically and cannot be undone."""
     import torch
     from diffusers import ModularPipeline
 
     from core.inference.diffusion import hub_cache_dir
 
-    # Pin the cache dir: this subprocess lacks the cache-environment wrapper.
+    # Pin the cache dir: diffusers falls back to an import-time hub default, and this subprocess lacks the cache wrapper, so components get re-downloaded.
     cache_dir = hub_cache_dir()
     pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir)
     # load_components swallows per-component failures, so a missing token surfaces as None.
@@ -179,6 +180,7 @@ def _load_conditioners(cfg, device):
         **auth,
     )
     _assert_component_grid(pipe)
+    # ``load_components`` builds every component on the CPU, so place them explicitly.
     pipe.text_encoder.to(device)
     pipe.vae.to(device)
     pipe.audio_vae.to(device)
@@ -218,10 +220,11 @@ def _encode_prompt(pipe, caption: str, device) -> Any:
 
 
 def _encode_video_stats(vae, frames, device) -> tuple[Any, Any]:
-    """Caches the affine (A, B) pair, not a sample; no float16 rounding, which would only drop signal."""
+    """Caches the affine (A, B) pair, not a sample, so each step draws fresh noise; no float16 rounding, which would only drop signal."""
     import torch
 
     pixels = torch.from_numpy(frames).to(device)
+    # (F, H, W, 3) uint8 -> (1, 3, F, H, W) float32
     pixels = pixels.permute(3, 0, 1, 2).unsqueeze(0).to(torch.float32).div_(255.0)
     pixel_mean = torch.tensor(H3_PIXEL_MEAN, device = device).view(1, -1, 1, 1, 1)
     pixel_std = torch.tensor(H3_PIXEL_STD, device = device).view(1, -1, 1, 1, 1)
@@ -237,7 +240,7 @@ def _encode_video_stats(vae, frames, device) -> tuple[Any, Any]:
 
 
 def _encode_audio_latents(audio_vae, waveform, device) -> Any:
-    """The audio VAE is mono, so the two stereo channels are encoded as two batch items."""
+    """Audio VAE is mono, so stereo channels go as two batch items; H3 uses the posterior mean, so the target is deterministic and no affine pair is cached."""
     import torch
 
     samples = torch.from_numpy(waveform).to(device).unsqueeze(1)
@@ -256,6 +259,7 @@ def _load_transformer(cfg, device, base_precision):
 
     from core.inference.diffusion import hub_cache_dir
 
+    # Pin like the conditioners: the 145 GB denoiser is the costly half to load unpinned.
     cache_dir = hub_cache_dir()
     if base_precision == "nf4":
         from diffusers import BitsAndBytesConfig as DiffusersBnb
@@ -322,7 +326,7 @@ def _build_layout(
         H3_AUDIO_CHANNELS,
         H3_AUDIO_TAG,
         H3_VIDEO_TAG,
-        (),
+        (),  # the trainer trains the t2va layout: no keyframe conditioning rows
     )
     return {
         "position_ids": position_ids.to(device),
@@ -386,7 +390,7 @@ def run_h3_lora_training(
     cfg = config.normalized()
     if cfg.resolved_family != "minimax-h3":
         raise ValueError(f"This trainer is for minimax-h3, not {cfg.resolved_family!r}.")
-    # Also checked in the start route's preflight; repeated so a direct call is refused too.
+    # Also checked in the preflight of the start route, which runs before GPU models are evicted; repeated so a direct call is refused too.
     reason = h3_train_unsupported_reason(cfg)
     if reason:
         raise ValueError(reason)
@@ -475,6 +479,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     to_encode = sorted(set(captions))
 
+    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident here and nowhere else.
     pipe = _load_conditioners(cfg, device)
     caption_embeds = {cap: _encode_prompt(pipe, cap, device) for cap in to_encode}
     _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
@@ -497,6 +502,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             num_frames = num_frames,
             width = width,
             height = height,
+            # Latents are cached from the opening window, so longer sources train only their first seconds.
             on_note = lambda message: _emit(on_event, "warning", message = message),
         )
         video_a, video_b = _encode_video_stats(pipe.vae, frames, device)
@@ -539,6 +545,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     elif device == "xpu":
         torch.xpu.empty_cache()
 
+    # Phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
     if base_precision in ("fp8", "mxfp8"):
         raise ValueError(
@@ -627,6 +634,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             video_a, video_b, audio_latents = cache[index]
             video_a = video_a.to(device)
             video_b = video_b.to(device)
+            # A fresh posterior draw per step, exactly like encoding in the loop would give.
             clean_video = video_a + video_b * torch.randn_like(video_a)
             clean_audio = audio_latents.to(device)
 
@@ -726,6 +734,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     ema_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
         layers = get_peft_model_state_dict(transformer)
+        # Save the trained config so alpha survives the round trip; 'default' is the add_adapter name.
         adapter_config = dict(transformer.peft_config["default"].to_dict())
         _save_lora(str(out_dir), layers, adapter_config)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)

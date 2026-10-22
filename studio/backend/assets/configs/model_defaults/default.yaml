@@ -1,3 +1,4 @@
+# Default model training parameters, used for models without specific configurations
 training:
   max_seq_length: 2048
   num_epochs: 0

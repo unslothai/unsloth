@@ -42,9 +42,10 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
 
-# Spawn, not fork: parent CUDA state must not leak into the trainer.
+# Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
 
+# Terminal event types after which the pump stops.
 _TERMINAL = ("complete", "error")
 
 
@@ -60,7 +61,7 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # Fresh interpreter: re-apply network injections before the trainer imports diffusers.
+    # Fresh spawned interpreter: re-apply network injections inside the secret scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
     from utils.happy_eyeballs import activate_happy_eyeballs
 
@@ -70,6 +71,7 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
 
+    # Skips LogConfig.setup_logging, so this installs the Hub default; diffusers setup is in the trainer.
     try:
         from loggers.config import quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
@@ -86,9 +88,9 @@ def _default_target(
     config: dict,
     unsloth_stderr_mirror_path: Optional[str] = None,
 ) -> None:
-    # First in the child (before torch); token policy precedes the returning account branch.
+    # First in the child, before torch: bind to parent death and scrub the native path secret; token policy precedes the returning account branch.
     if unsloth_stderr_mirror_path:
-        # Before the token setup, so its failure is captured too.
+        # Before the token setup below, so its failure is captured too.
         try:
             from utils.worker_stderr import install_worker_stderr_mirror
             install_worker_stderr_mirror(unsloth_stderr_mirror_path)
@@ -173,7 +175,7 @@ def _resume_fields(
     source_checkpoint: Optional[str] = None,
     source_created_at: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Derived from disk, since the user can delete the output folder; a write_error blocks resume."""
+    """Derived from disk; write_error is sticky and blocks resume; started_at and ended_at fence off bundles from other runs. Never raises."""
     try:
         from core.training.diffusion_checkpoint import describe_resume_state
         state = describe_resume_state(
@@ -222,9 +224,11 @@ def _refresh_resume_state(rec: dict) -> dict:
             # Without total_steps, the manifest's older target would block Resume.
             total_steps = _resolved_total_steps(rec, config if isinstance(config, dict) else {}),
             write_error = rec.get("checkpoint_write_error"),
+            # Source bundle this run resumed from, so a run that died before its first save can still offer it.
             source_checkpoint = (
                 config.get("resume_from_checkpoint") if isinstance(config, dict) else None
             ),
+            # Identity of that source bundle; a slot another run has rewritten is not offered as lineage.
             source_created_at = rec.get("resumed_source_created_at"),
         )
     )
@@ -247,10 +251,12 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             rec = json.loads(p.read_text(encoding = "utf-8"))
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
+        # Skip wrong-shape records: one bad file must not break DiffusionTrainingRunSummary(**r) or panel.
         if not isinstance(rec, dict):
             continue
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
             continue
+        # Resume state read from disk first; per record, since one nonnumeric total_steps broke the endpoint.
         try:
             _refresh_resume_state(rec)
             _restate_live_job(rec)
@@ -317,25 +323,30 @@ def _idle_state() -> dict[str, Any]:
         "avg_loss": None,
         "learning_rate": None,
         "grad_norm": None,
+        # The last per-modality losses of a joint run; None on families that train one modality.
         "video_loss": None,
         "audio_loss": None,
         "num_images": None,
         "in_model_load": False,
         "output_dir": None,
         "lora_path": None,
+        # The optional second (EMA-averaged) adapter, when ema_decay was enabled.
         "ema_path": None,
         "catalog_path": None,
         "family": None,
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
         "checkpoint_path": None,
         "checkpoint_step": None,
         "resume_blocked_reason": None,
         "resumed_from_step": None,
+        # A path is not identity: another run can overwrite checkpoint-<N>, so the fallback lineage is wrong.
         "resumed_source_created_at": None,
         "started_at": None,
         "updated_at": None,
+        # Bounded, paired history arrays for the live loss chart (see _append_metric).
         "metric_steps": [],
         "metric_loss": [],
         "metric_lr": [],
@@ -413,8 +424,9 @@ def _append_metric(
     if istep <= 0 or loss is None:
         return
     floss = _finite_or_none(loss)
-    if floss is None:
+    if floss is None:  # non-numeric or non-finite: skip, keep the curve JSON-safe
         return
+    # Non-finite is nulled rather than dropped, to stay index-aligned.
     values = {
         "metric_loss": floss,
         "metric_lr": _finite_or_none(lr),
@@ -470,11 +482,13 @@ class DiffusionTrainingService:
         self._dataset_mutations = 0
         # A child killed after a no-save stop never reports it; remember it here.
         self._discard_requested = False
+        # Bundle paths this job wrote; a discard the child cannot finish removes only those, not older ones.
         self._own_checkpoints: list[str] = []
         # The child already cleaned up; a parent pathname cleanup could delete another run's bundle.
         self._child_cleared_own = False
+        # Set by a checkpoint_saved event, cleared once the pump has written the record.
         self._persist_interim = False
-        # Only the first stop reaches the child, so only it sets the disposition.
+        # Only the first stop reaches the child, so only the first may set the parent's disposition.
         self._stop_signalled = False
         # GPU load admissions in flight; same two-sided rule as dataset mutations.
         self._gpu_admissions = 0
@@ -482,8 +496,10 @@ class DiffusionTrainingService:
         self._stop_queue: Any = None
         self._pump: Optional[threading.Thread] = None
         self._state: dict[str, Any] = _idle_state()
+        # The active job's start config, scrubbed of secrets, kept for the run record.
         self._config: dict[str, Any] = {}
 
+    # ── lifecycle ────────────────────────────────────────────────────────────
     def _clear_account_result(self):
         self._state = _idle_state()
         self._config = {}
@@ -576,6 +592,7 @@ class DiffusionTrainingService:
         Raises ValueError for an unusable config (before any spawn) and RuntimeError if a
         job is already running. Returns the new job id."""
         validate_job_paths(config)
+        # Validate before spawning; keep the normalised config, whose resolved family keys recipe overrides.
         from .diffusion_lora_trainer import _config_from_dict
         from .diffusion_train_common import train_recipe_overrides
 
@@ -619,6 +636,7 @@ class DiffusionTrainingService:
                 kwargs = child_kwargs,
                 daemon = True,
             )
+            # Keep the lease secret out of the child's env, as other orchestrators do.
             from utils.native_path_leases import native_path_secret_removed_for_child_start
 
             with native_path_secret_removed_for_child_start():
@@ -667,7 +685,7 @@ class DiffusionTrainingService:
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
             if self._stop_signalled:
-                # The child consumes only the FIRST signal; later ones must not set a parent discard.
+                # Child consumes only the FIRST signal; a later stop-without-saving must not set a parent discard, which would delete checkpoints the child kept.
                 return True
             try:
                 # Bare True = older wire format; the dict form carries the no-save cancel flag.
@@ -721,6 +739,7 @@ class DiffusionTrainingService:
     def status(self) -> dict[str, Any]:
         with self._lock:
             snap = dict(self._state)
+            # Keep ``active`` honest even if the process died between events.
             snap["active"] = self._proc is not None and self._proc.is_alive()
             return snap
 
@@ -767,6 +786,7 @@ class DiffusionTrainingService:
             text,
         )
 
+    # ── event pump ───────────────────────────────────────────────────────────
     @job_pump
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
         while True:
@@ -857,7 +877,7 @@ class DiffusionTrainingService:
             pass
 
     def _persist_run_record(self, *, interim: bool = False) -> None:
-        """Interim mode records the run as interrupted, so a checkpoint survives if Unsloth itself dies."""
+        """Best-effort and never fatal. Interim mode records the run as interrupted so a checkpoint survives if Unsloth itself dies."""
         if account_is_retired():
             return
         try:
@@ -897,6 +917,7 @@ class DiffusionTrainingService:
                 "ema_path": s.get("ema_path"),
                 "catalog_path": s.get("catalog_path"),
                 "saved": bool(s.get("lora_path")),
+                # output_dir is recorded for Resume; can_resume and checkpoint_step re-derive from disk each time.
                 "output_dir": str(adapter) if adapter else None,
                 "resumed_from_job_id": cfg.get("resumed_from_job_id") or None,
                 "resumed_from_step": s.get("resumed_from_step"),
@@ -948,6 +969,7 @@ class DiffusionTrainingService:
             elif etype == "model_load_completed":
                 s.update(in_model_load = False, message = "Training...")
             elif etype == "preparing":
+                # Long precompute such as the VAE latent cache, surfaced so the UI does not look stalled.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
                 s.update(
@@ -960,13 +982,16 @@ class DiffusionTrainingService:
                     ),
                 )
             elif etype == "warning":
+                # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
             elif etype == "resumed":
+                # This is the step resumed FROM, not a checkpoint this run wrote, so it does not touch checkpoint_step.
                 s.update(
                     resumed_from_step = ev.get("step"),
                     resumed_source_created_at = ev.get("source_created_at"),
                     message = f"Resuming from step {ev.get('step')}...",
                 )
+                # Seed live counters from the resume event, else they read 0/0 until the first post-resume progress.
                 if ev.get("step") is not None:
                     s["step"] = int(ev["step"])
                 if ev.get("total_steps") is not None:
@@ -987,6 +1012,7 @@ class DiffusionTrainingService:
             elif etype == "checkpoint_failed":
                 # Sticky: resuming from an older bundle would silently lose steps.
                 s["resume_blocked_reason"] = str(ev.get("message", "checkpoint write failed"))
+                # Persisted: in memory only, an exit left the record advertising an older checkpoint as resumable.
                 self._persist_interim = True
             elif etype == "progress":
                 # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last value.
@@ -1019,10 +1045,12 @@ class DiffusionTrainingService:
                     audio_loss = audio_loss,
                     message = "Training...",
                 )
+                # Fold optional perf fields so the UI shows throughput + peak VRAM.
                 if ev.get("samples_per_second") is not None:
                     s["samples_per_second"] = ev.get("samples_per_second")
                 if ev.get("peak_memory_gb") is not None:
                     s["peak_memory_gb"] = ev.get("peak_memory_gb")
+                # Retain a bounded per-step history for the live charts.
                 _append_metric(
                     s,
                     ev.get("step"),
@@ -1040,6 +1068,7 @@ class DiffusionTrainingService:
                     s.get("output_dir") or self._config.get("output_dir"),
                 )
             elif etype == "complete":
+                # Reset in_model_load: a stop during load skips model_load_completed and would leave it stale.
                 s.update(
                     active = False,
                     in_model_load = False,
@@ -1061,16 +1090,18 @@ class DiffusionTrainingService:
                     s["family"] = ev.get("family")
                 if ev.get("base_model") is not None:
                     s["base_model"] = ev.get("base_model")
+                # Only the lineage is re-confirmed here, for a pump that missed the earlier "resumed" event.
                 if ev.get("resumed_from_step") is not None:
                     s["resumed_from_step"] = ev.get("resumed_from_step")
                 if ev.get("discarded"):
-                    # The child already cleaned up its checkpoints; do not repeat by pathname.
+                    # The child already cleaned up; never repeat by pathname, since a slot this run overwrote now holds a bundle from another run.
                     self._child_cleared_own = True
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."
                     )
                     s["samples"] = []
             elif etype == "error":
+                # Reset in_model_load too: an error during model loading has no model_load_completed.
                 s.update(
                     active = False,
                     in_model_load = False,

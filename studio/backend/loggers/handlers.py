@@ -32,28 +32,37 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# Dedupe GET/2xx within the window (SPA fan-out); mutations and errors always log.
 _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
+# Polls meaning only 'still polling' get a longer heartbeat; first hit and errors log; 0 disables.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
 # Watchdog probes are ~19s apart, so they need a window wider than the 10s quiet one.
 _WATCHDOG_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
+# --verbose sets both windows to off; the drop-the-2xx suppressor reads the same signal.
 _VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
+    # Loaded-models indicator polls four runtimes every 5s; desktop mirrors each line into tauri.log.
     "/api/inference/images/status",
     "/api/inference/video/status",
     "/api/inference/audio/stt/status",
+    # Re-read while settings or remote-access is open; a plain toggle read, safe to suppress.
     "/api/settings/remote-access",
+    # List polls the tabs refetch on a timer and on every tab switch.
     "/api/train/runs",
     "/api/models/checkpoints",
     "/api/models/local",
     "/api/rag/knowledge-bases",
+    # Legacy download polls emit no progress events (unlike /api/hub/*), so heartbeat them.
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
+    # Polled every 1.5s while the train UI is open.
     "/api/train/diffusion/status",
+    # Templated; matched through normalize_poll_path. See _TEMPLATED_POLL_PATHS.
     "/api/chat/threads/{id}",
     "/api/chat/threads/{id}/forks",
 }
@@ -67,7 +76,9 @@ _LIVENESS_POLL_PATHS = frozenset(
         "/api/inference/audio/stt/status",
     }
 )
+# Watchdog probe is out of _QUIET_POLL_PATHS: that window is narrower than the poll interval.
 _WATCHDOG_POLL_PATHS = {"/api/liveness"}
+# Bucket key for the group above; not a real (method, path, query, status), so it can never collide with one.
 _LIVENESS_DEDUP_KEY = ("GET", "\x00liveness", b"", 200)
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -91,8 +102,10 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
+# 2xx GET polls carry no signal and are dropped; media and /api/hub progress log structured events.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
+    # Their route handlers publish structured phase and 10 percent milestones.
     "/api/inference/images/load-progress",
     "/api/inference/video/load-progress",
     "/api/inference/images/generate-progress",
@@ -105,6 +118,7 @@ _QUIET_SUCCESS_PATHS = {
     "/api/engines",
     "/api/export/logs",
     "/api/export/status",
+    # The Settings > Logs viewer polls are suppressed in _SELF_READ_PATHS below.
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",
@@ -114,17 +128,22 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/download-progress",
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
+    # Catalog reads refetched on auth change and dialog open; the UI already shows each outcome.
     "/api/providers/registry",
     "/api/providers/",
+    # Same Promise.all as two routes that keep their access line, so the resync stays traceable.
     "/api/models/loras",
+    # Suppression is GET-only, so the PUT that actually writes a profile change still logs.
     "/api/settings/personalization",
 }
 # After its first 2xx, chat list 401s are real failures, not the bootstrap race.
 _AUTH_REFRESH_PATH = "/api/auth/refresh"
+# Exact paths only, so detail and message reads keep their logs; the pre-auth 401 race also fires on these polls.
 _CHAT_LIST_PATHS = {
     "/api/chat/threads",
     "/api/chat/projects",
 }
+# Streaming loops _TEMPLATED_POLL_PATHS, so they get a heartbeat; exact detail reads stay logged.
 _CHAT_THREAD_DETAIL = "/api/chat/threads/{id}"
 _CHAT_THREAD_FORKS = "/api/chat/threads/{id}/forks"
 _TEMPLATED_POLL_PATHS = frozenset({_CHAT_THREAD_DETAIL, _CHAT_THREAD_FORKS})
@@ -216,7 +235,9 @@ class LoggingMiddleware:
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
+        # (method, path, query, status_code) -> monotonic ts of the last EMITTED log.
         self._last_log: dict[tuple[str, str, bytes, int], float] = {}
+        # Before the first /api/auth/refresh succeeds, chat list-poll 401s are a bootstrap race to suppress.
         self._auth_refreshed = False
 
     def _is_redundant_repeat(
@@ -226,10 +247,12 @@ class LoggingMiddleware:
         never dedup; quiet-poll paths use the longer heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
+        # A query makes the request more than the background poll, so it keeps its own bucket key.
         is_liveness = path in _LIVENESS_POLL_PATHS and not query
+        # Bucketed by template, so four tabs polling four threads share one heartbeat.
         norm = normalize_poll_path(path) if not query else path
         if path in _WATCHDOG_POLL_PATHS:
-            # Zeroed with the quiet window, so --verbose still logs every probe.
+            # Zeroed along with the quiet window, so --verbose still logs every probe.
             window_ms = _WATCHDOG_POLL_DEDUP_MS if _QUIET_POLL_DEDUP_MS > 0 else 0
         elif is_liveness or norm in _QUIET_POLL_PATHS:
             window_ms = _QUIET_POLL_DEDUP_MS
@@ -237,6 +260,7 @@ class LoggingMiddleware:
             window_ms = _ACCESS_LOG_DEDUP_MS
         if window_ms <= 0:
             return False
+        # Liveness paths share one bucket; only query-less calls join, so parameterized calls keep a line.
         key = _LIVENESS_DEDUP_KEY if is_liveness else (method, norm, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:

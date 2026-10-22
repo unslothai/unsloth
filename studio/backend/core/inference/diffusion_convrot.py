@@ -57,6 +57,7 @@ from typing import Any, Iterable, Optional
 
 # Unknown rotation kinds are refused so a future scheme is never misread as this one.
 CONVROT_KIND = "convrot_hadamard_v1"
+# Marker set on a transformer whose rotation is installed, so callers can tell rotated from unrotated modules without re-deriving; diagnostic only
 ROTATION_KEY = "activation_rotation"
 ROTATION_GROUP_KEY = "activation_rotation_group"
 ROTATION_FQNS_KEY = "activation_rotation_fqns"
@@ -64,6 +65,7 @@ ROTATION_FQNS_KEY = "activation_rotation_fqns"
 # 256: lower quant error than 64 on H3, largest power of 4 dividing every quantized H3 axis.
 DEFAULT_CONVROT_GROUPSIZE = 256
 
+# Torch enumerates the parent-visible list in order, so an id's ordinal is its position in the mask; unmasked, this is the identity mapping
 CONVROT_ATTR = "_unsloth_activation_rotation"
 
 
@@ -74,6 +76,7 @@ def is_power_of_four(size: Any) -> bool:
     n = size
     if n < 4 or n & (n - 1):
         return False
+    # a power of two is a power of four exactly when its single set bit sits at an even index
     return (n.bit_length() - 1) % 2 == 0
 
 
@@ -89,7 +92,7 @@ def _convrot_sign_bits(size: int) -> Any:
     both = idx[:, None] ^ idx[None, :]
     threes = both & (both >> 1) & 0x5555555555555555
     parity = torch.zeros_like(threes)
-    # fixed loop count keeps this traceable under fullgraph
+    # fixed Python loop count keeps this traceable under fullgraph
     for _ in range((size.bit_length() - 1) // 2):
         parity ^= threes & 1
         threes = threes >> 2
@@ -177,7 +180,7 @@ def convrot_linear_class() -> Any:
     from torch import nn
 
     class ConvRotLinear(nn.Linear):
-        """``nn.Linear`` whose input is block-Hadamard rotated before the matmul."""
+        """Set per instance by _install_rotation; the class default stops a half-built one rotating silently"""
 
         convrot_groupsize: int = DEFAULT_CONVROT_GROUPSIZE
 
@@ -331,7 +334,7 @@ def apply_activation_rotation(
                 f"activation rotation target {fqn!r} has in_features {module.in_features}, "
                 f"which the recorded group {group_size} does not divide"
             )
-    # validate every target before swapping any: a partial install renders wrongly
+    # validate every target before swapping ANY: a partial install still renders, just wrongly
     for fqn in fqns:
         _install_rotation(modules[fqn], group_size)
     try:

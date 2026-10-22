@@ -108,7 +108,7 @@ def effective_training_load_in_4bit(
 
 
 def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
-    """Installing the latest-transformers sidecar is persistent; it strands 4-bit exact-resource runs."""
+    """Would activating the latest-transformers sidecar strand this stored run? Never raises; a provenance already refusing resume returns False."""
     if not bool(config.get("load_in_4bit")):
         return False
     try:
@@ -405,6 +405,7 @@ def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
 
     try:
         parsed = urlsplit(path_value)
+        # Use the shared helper, not a third parse: a blank or scheme-less value gave an empty netloc.
         from utils.hf_endpoint import get_hf_endpoint
         endpoint = urlsplit(get_hf_endpoint())
     except ValueError:

@@ -43,7 +43,7 @@ PROFILES = {
         "driver": 580,
         # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
-        # Newest first; each release pins one torch build.
+        # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
             {"version": "0.26.0", "torch": "2.11.0", "lock": "vllm-linux-cu130"},
@@ -345,6 +345,7 @@ def download_bytes(engine: str) -> int | None:
     if not sizes:
         return None
     wsl = wsl_host.active()
+    # A WSL engine is always a complete environment, plus the distro and uv on first setup.
     provided = {} if wsl else install_plan(engine)["provided"]
     omit = set(profile(engine).get("omit", ()))
     total = sum(
@@ -665,6 +666,7 @@ def support_reason(
     from . import wsl_host
 
     if wsl_host.active():
+        # WSL itself is not a prerequisite: installing the engine sets it up.
         reason = wsl_host.support_reason()
         if reason:
             return reason
@@ -1147,6 +1149,7 @@ def install_environment() -> dict[str, str]:
     env["UV_CACHE_DIR"] = (
         os.environ.get("UV_CACHE_DIR") or recorded_cache or str(cache_root() / "uv")
     )
+    # The install checks import the engine, whose device detection needs the driver.
     if driver := driver_library_path(dict(os.environ)):
         env["LD_LIBRARY_PATH"] = driver
     env["PYTHONNOUSERSITE"] = "1"
@@ -1210,6 +1213,7 @@ def _run(
             encoding = "utf-8",
             errors = "replace",
             start_new_session = True,
+            # A windowed Studio has no console; wsl.exe would otherwise open one.
             creationflags = 0x08000000 if sys.platform == "win32" else 0,
             **child_popen_kwargs(),
         )
@@ -1438,6 +1442,7 @@ def _install(
                     else None,
                 },
             )
+            # Keep the active env and one previous version; every runtime lease (any Studio) is excluded.
             keep = {destination.name, prior["directory"] if prior else None}
             for old in root.glob("env-*"):
                 if old.name not in keep and old.is_dir() and not old.is_symlink():
@@ -1520,6 +1525,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         "UV_NO_CONFIG": "1",
         "UV_CONCURRENT_DOWNLOADS": "4",
         "UV_HTTP_RETRIES": "5",
+        # Cache and environments share the distro's ext4 disk.
         "UV_LINK_MODE": "hardlink",
         "DEBIAN_FRONTEND": "noninteractive",
         **(wsl_host.rocm_environment() if rocm else {}),
@@ -1719,8 +1725,10 @@ def remove(engine: str) -> dict:
             and wsl_host.wsl_exe() is not None
             and wsl_host.distro_name() in wsl_host.registered_distros()
         ):
+            # Forgetting the engine now would strand its files inside the distro.
             raise RuntimeError("WSL is not responding, so the engine cannot be removed. Try again.")
         if wsl_host.active() and wsl_host.distro_ready():
+            # The compile caches live beside the environments, not under them.
             wsl_host.guest(
                 [
                     "rm",

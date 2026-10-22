@@ -25,6 +25,7 @@ from typing import IO, Iterator
 from utils import debug_log_sources
 from utils.log_redaction import redact_log_text
 
+# Beyond this the ZIP rolls from memory onto disk.
 SPOOL_MAX_BYTES = 8 * 1024 * 1024
 
 STREAM_CHUNK_BYTES = 64 * 1024
@@ -39,6 +40,7 @@ TRUNCATED_MARKER = "[export time budget reached, rest of this log omitted]"
 CUT_MARKER = "[export size budget reached, end of this record omitted]"
 UNREADABLE_MARKER = "[log record omitted: not UTF-8 text the redactor can mask]"
 
+# The tail kept from any one log; a session log runs to gigabytes.
 MAX_SOURCE_TAIL_BYTES = 8 * 1024 * 1024
 
 # Sized to ~12s of redactor time in the 30s header timeout; raise it only with a faster redactor.
@@ -53,7 +55,7 @@ WARNINGS_MEMBER = "EXPORT_WARNINGS.txt"
 def _safe_basename(label: str) -> str:
     """Strips both separators, since on POSIX Path(label).name keeps Windows backslashes in the name."""
     name = label.replace("\\", "/").rsplit("/", 1)[-1].strip()
-    # A newline would forge an entry in EXPORT_WARNINGS.txt.
+    # A newline would forge an entry in EXPORT_WARNINGS.txt, one line per source.
     name = "".join(
         "_" if character < " " or character == "\x7f" else character for character in name
     )
@@ -77,6 +79,7 @@ def _member_name(family: str, label: str, used: set[str]) -> str:
     else:
         extension = dot + extension
     index = 2
+    # Loops because the first suffix (-2) can itself be taken by a real file or an earlier collision.
     while f"{family}/{stem}-{index}{extension}".lower() in used:
         index += 1
     candidate = f"{family}/{stem}-{index}{extension}"
@@ -128,6 +131,7 @@ def _seek_to_tail(handle: IO[bytes], fd: int, allowance: int) -> tuple[int, int]
     if size <= allowance:
         return 0, size
     start = size - allowance
+    # Already just after a newline: a boundary, so do not discard a whole record.
     handle.seek(start - 1)
     if handle.read(1) == b"\n":
         return start, size
@@ -153,6 +157,7 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
     buffer = b""
     start = handle.tell()
     consumed = start
+    # The current record exceeded the budget, so everything up to the next newline is dropped with it.
     dropping = False
     # At EOF trailing bytes are a whole record; at the allowance they are a cut one.
     at_eof = False
@@ -175,15 +180,19 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
                 break
             record, buffer = buffer[:newline], buffer[newline + 1 :]
             if dropping:
+                # The rest of a record already given up on.
                 dropping = False
                 yield OVERSIZED_MARKER
             elif len(record) > MAX_RECORD_BYTES:
+                # Terminated inside one chunk, so the buffer guard never saw it.
                 yield OVERSIZED_MARKER
             else:
                 yield _redact_record(record)
         if len(buffer) > MAX_RECORD_BYTES:
+            # A log with no newline at all must not be held in memory whole.
             dropping = True
             buffer = b""
+    # No size guard here: the in-loop one clears the buffer after every chunk.
     if dropping:
         yield OVERSIZED_MARKER
     elif buffer:
@@ -195,7 +204,7 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
             try:
                 cut = os.fstat(fd).st_size > consumed
             except OSError:
-                cut = True
+                cut = True  # cannot tell; take the side that cannot mislead
         yield CUT_MARKER if cut else _redact_record(buffer)
 
 
@@ -235,6 +244,7 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
             for source in _newest_first_across_families(debug_log_sources.list_sources()):
                 member = _member_name(source.family, source.label, used)
                 if remaining <= 0:
+                    # Named so the bundle shows what is missing instead of looking complete.
                     warnings.append(f"{member}: omitted, export size budget reached")
                     continue
                 if time.monotonic() > deadline:
@@ -243,13 +253,14 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                 try:
                     handle, fd = _open_verified(source.realpath)
                 except OSError as exc:
+                    # One unreadable log does not cost the user the other nine.
                     warnings.append(_warning_line(member, exc))
                     continue
                 allowance = min(MAX_SOURCE_TAIL_BYTES, remaining)
                 try:
                     with handle:
                         skipped, size = _seek_to_tail(handle, fd, allowance)
-                        # An empty log returns (0, 0), so it must not count as having no complete record.
+                        # Check gid 0 before requiring a name: if lookup fails, unnamed gid 0 would let repair run groupadd -g 0 and usermod into root, the grant to refuse.
                         if size > 0 and skipped >= size:
                             # remaining is not spent: this is one file's property and the
                             # next source may still fit.
@@ -279,6 +290,7 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                                 # tell() needs an open handle.
                                 remaining -= max(0, handle.tell() - before)
                 except OSError as exc:
+                    # Keeps what was copied first; a partial log is worth reading, and the warning says why it stops.
                     warnings.append(_warning_line(member, exc))
             if warnings:
                 # A bare ZipInfo: the str overload stamps localtime, leaking the host clock.

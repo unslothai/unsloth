@@ -33,6 +33,7 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
+# Max log lines kept per orchestrator (live log panel scrollback); ~1 MB worst-case.
 _LOG_BUFFER_MAXLEN = 4000
 
 # Inactivity budget (no log/status line), not a total runtime cap.
@@ -65,6 +66,7 @@ class ExportOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
+        # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
         self.current_checkpoint: Optional[str] = None
@@ -72,15 +74,19 @@ class ExportOrchestrator:
         self.is_peft: bool = False
         self.decision: Optional[Dict[str, Any]] = None
 
+        # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
         self._log_lock = threading.Lock()
-        # Never reset, so SSE clients keep a stable cursor across clear_logs().
+        # Monotonic seq, never reset, so SSE clients have a stable cursor across clear_logs().
         self._log_seq: int = 0
+        # SSE defaults its cursor here so a late-connecting client still sees the full run.
         self._run_start_seq: int = 0
+        # True while an export op runs; SSE ends the stream 1s after this flips False.
         self._export_active: bool = False
+        # Set by cancel_export(), reset per run; tells a user cancel apart from a genuine subprocess crash
         self._cancel_requested: bool = False
 
-        # Lets a client whose POST was cut by a tunnel 524 poll /api/export/status.
+        # Lets a client whose POST was cut by a tunnel 524 poll /api/export/status; _op_seq is the monotonic baseline for that
         self._op_lock = threading.Lock()
         self._op_seq: int = 0
         self._active_op_kind: Optional[str] = None
@@ -93,6 +99,7 @@ class ExportOrchestrator:
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
 
+    # ------------------------------------------------------------------
     def _clear_account_result(self):
         # Under _account_job_lock: the worker holds the previous account's model; one that will not stop reports busy.
         if not self._shutdown_subprocess():
@@ -243,6 +250,7 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
+        # Export does not evict loaded models; at least free an idle resident H3 sd-server.
         try:
             from core.inference.video_minimax_h3 import release_h3_native_servers
             release_h3_native_servers("export subprocess starting")
@@ -254,7 +262,7 @@ class ExportOrchestrator:
         from utils.transformers_version import sidecar_swap_kind
 
         _swap_kind = sidecar_swap_kind()
-        # A lazy REPAIR has no is_export_active check and may be rebuilding the sidecar now.
+        # A lazy REPAIR has no is_export_active check and may be rebuilding the sidecar now, so always refuse the spawn
         if _swap_kind == "repair" or (_swap_kind is not None and not self._export_active):
             from utils.transformers_version import SidecarSwapInProgress
             raise SidecarSwapInProgress(
@@ -270,7 +278,7 @@ class ExportOrchestrator:
 
         cache_env = get_hf_cache_paths().child_env({})
 
-        # An export admitted before quit can reach here after the shutdown sweep snapshot.
+        # An export admitted before quit can reach here after the shutdown sweep snapshot; the worker would outlive Studio holding the model
         if is_process_shutting_down():
             raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
 
@@ -303,7 +311,7 @@ class ExportOrchestrator:
         from utils.process_lifetime import adopt_pid, forget_pid
 
         adopt_pid(_spawned_proc.pid)
-        # Recheck after recording the pid; reap the worker if a teardown already replaced self._proc.
+        # Recheck after recording the pid; reap the worker if a teardown replaced self._proc, since it would then have no owner
         if is_process_shutting_down() or self._proc is not _spawned_proc:
             logger.info("shutdown began during the spawn; stopping the new export subprocess")
             if self._proc is _spawned_proc:
@@ -330,7 +338,7 @@ class ExportOrchestrator:
         logger.info("Export subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
-        """Keeps the handle if the worker survives kill, so the pre-swap guard still sees the survivor."""
+        """Returns True only once the worker is confirmed dead; if it survives kill the handle is kept, so the pre-swap guard still sees it"""
         if self._proc is None or not self._proc.is_alive():
             if self._proc is not None:
                 _sweep_reap_staging_of(self._proc.pid)
@@ -365,6 +373,7 @@ class ExportOrchestrator:
                     pass
 
         if self._proc is not None and self._proc.is_alive():
+            # Survived SIGKILL: keep the handle so callers and the pre-swap guard see a live worker.
             logger.error(
                 "Export subprocess still alive after terminate/kill; "
                 "preserving its handle for the pre-swap liveness check"
@@ -408,7 +417,7 @@ class ExportOrchestrator:
         timeout: float = _EXPORT_INACTIVITY_TIMEOUT,
         max_wait: Optional[float] = None,
     ) -> dict:
-        """*timeout* is inactivity, renewed by each log or status line; *max_wait* caps total wait."""
+        """timeout is inactivity, renewed by each log or status line; max_wait caps total wait for fail-fast ops, since any line renews timeout"""
         started = time.monotonic()
         hard_deadline = None if max_wait is None else started + max_wait
 
@@ -443,6 +452,7 @@ class ExportOrchestrator:
 
             if rtype == "status":
                 message = resp.get("message", "")
+                # One export_progress log line per phase, as with training/download progress; also shown live
                 if message:
                     logger.info("export_progress", phase = message)
                     self._append_log(
@@ -481,6 +491,7 @@ class ExportOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
+    # ------------------------------------------------------------------
     @owned_job()
     def load_checkpoint(
         self,
@@ -527,6 +538,7 @@ class ExportOrchestrator:
         }
         from utils.hardware import get_device, gpu_ids_with_torch_kernels
 
+        # Prevent export from sharding onto GPUs with missing kernels (#11870).
         sub_config["resolved_gpu_ids"] = gpu_ids_with_torch_kernels()
         sub_config["device_backend"] = get_device().value
 
@@ -564,6 +576,7 @@ class ExportOrchestrator:
                 try:
                     self._spawn_subprocess(sub_config)
                 except Exception:
+                    # Clear current_checkpoint once the worker is gone, else Export claims a checkpoint that ops reject
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
@@ -764,7 +777,7 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message, op_output_path = False, "", None
             try:
-                # Recheck before sending, else an install blocks in cleanup_memory behind a long export.
+                # Recheck before sending, else an install blocks in cleanup_memory behind a long export op.
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
@@ -777,7 +790,7 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
-                    # Scaled by quant count: the budget is silence and each quant pass emits nothing.
+                    # Scaled by quant count: budget is silence and each quant pass emits nothing, since UNSLOTH_ENABLE_LOGGING stays unset; one hour per pass
                     _qm = params.get("quantization_method")
                     _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(

@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+# Keep (position, text) so render can sort by position: with a reserved item, reversed(chosen) would put the oldest turn last and invert supersession
 _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets" / "chat_templates"
 
 # unsloth/gemma-4-<variant>-GGUF (case-insensitive). The "-GGUF" suffix is retained on ModelConfig.identifier for HF
@@ -80,7 +81,7 @@ def resolve_effective_chat_template_override(
     model_identifier: Optional[str],
     user_override: Optional[str]
 ) -> Optional[str]:
-    """A user override wins; gemma-4 GGUFs get a bundled template, and None uses the embedded one."""
+    """User override first, then bundled gemma-4 GGUF template, else None; must run before reload dedup."""
     if user_override and user_override.strip():
         return user_override
     template_file = _gemma4_template_file(model_identifier)

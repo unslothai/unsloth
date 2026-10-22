@@ -64,6 +64,7 @@ def llama_server_candidates(
     binary_name = llama_server_binary_name(platform)
     windows = (platform or sys.platform) == "win32"
     candidates = [root / binary_name]
+    # build/ first, then the per-backend build dirs a source checkout keeps side by side (#5941).
     for build in ("build", "build-cuda", "build-hip", "build-rocm", "build-vulkan"):
         candidates.append(root / build / "bin" / binary_name)
         if windows:
@@ -85,7 +86,7 @@ _GPU_BACKEND_LIB_RE = re.compile(
     r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
 )
 _CPU_BACKEND_LIB_RE = re.compile(r"^(?:lib)?ggml-(?:cpu|base)(?:[-.]|$)")
-# Vendor-bound backends; vulkan, opencl and virtgpu run on any GPU.
+# Backends bound to one vendor; vulkan, opencl and virtgpu run on any GPU.
 _BACKEND_VENDOR = {
     "cuda": "nvidia",
     "hip": "amd",
@@ -104,7 +105,7 @@ _DRM_ROOT = "/sys/class/drm"
 # WSL2 uses /dev/dxg; the vendor is the runtime: librocdxg (AMD) or WSL libcuda (NVIDIA).
 _WSL_ROCM_LIB_DIRS = ("/opt/rocm/lib", "/opt/rocm/lib64")
 _WSL_CUDA_LIB_DIR = "/usr/lib/wsl/lib"
-_HOST: Any = object()
+_HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from this host
 
 
 def binary_gpu_backends(binary: Path | str) -> Optional[set[str]]:
@@ -195,7 +196,7 @@ def prefer_gpu_capable(
     usable: Callable[[Path], bool],
     vendors: Any = _HOST,
 ) -> list[Path]:
-    """A first build proven CPU-only, or for an absent GPU vendor, yields to a later GPU-capable build."""
+    """A first hit proven CPU-only or for an absent vendor yields to a later GPU build (stale build-cuda must not shadow build-hip); unknown layouts stay put."""
     ordered = list(candidates)
     first = next((c for c in ordered if usable(c)), None)
     if first is None:
@@ -232,7 +233,7 @@ def get_stored_custom_llama_cpp_path() -> Optional[Path]:
         from utils.account_context import OWNER, run_as
         value = run_as(OWNER, get_app_setting, CUSTOM_LLAMA_CPP_PATH_SETTING_KEY, None)
     except Exception:
-        # A settings DB problem must not take the bundled runtime down.
+        # A settings DB problem must not take the bundled runtime down with it.
         return None
     if not isinstance(value, str):
         return None

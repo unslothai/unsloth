@@ -49,10 +49,12 @@ CONTEXT_POLICY = os.environ.get("UNSLOTH_CONTEXT_POLICY", "checkpoint").strip().
 # Oversized instructions are excluded whole: half an instruction reads as complete.
 MAX_TOKENS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_TOKENS", "1024"))
 MAX_FRACTION = float(os.environ.get("UNSLOTH_CHECKPOINT_MAX_FRACTION", "0.10"))
+# bounded so an epoch that dropped 200 turns cannot yield 40 long-superseded instructions
 MAX_ITEMS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_ITEMS", "8"))
 
 _OPEN = "<carried_forward>"
 _CLOSE = "</carried_forward>"
+# indent for a wrapped instruction's later lines, so it stays one bullet when read back
 _CONTINUATION = "  "
 # States that newest messages win and quoted lines are a record, not commands.
 _HEADER = (
@@ -73,7 +75,9 @@ _NOT_SEARCHABLE = (
     "Everything else that was dropped is still stored, but you cannot retrieve it on this "
     "turn, so answer from what you have rather than saying you will look it up."
 )
+# only the delimiters themselves, so a user who writes about the feature is not mangled
 _DELIMITERS = re.compile(r"</?carried_forward>", re.IGNORECASE)
+# How the composer starts each attachment it appends after the typed words.
 _ATTACHMENT = re.compile(
     r"^(?:\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n"
     r"|<(attachment|pasted_text) name=[^\n]*>\n(?s:.*?)\n</\1>"
@@ -118,7 +122,7 @@ def _pick(
     reserve_oldest: bool = False,
     reserve_leading: int = 0,
 ) -> list[str]:
-    """Reserves the opening turn with its successor, both or neither, since the successor may correct it."""
+    """Shared by both paths: opening reserved with its successor, both or neither; a leading block whole."""
 
     def _item(index: int) -> Optional[tuple[str, int]]:
         return entries[index]
@@ -131,6 +135,7 @@ def _pick(
             newest_position[found[0]] = index
 
     def _walk(order: list[int]) -> list[str]:
+        # Dedupe before charging the cost, so a repeated rule cannot exhaust the budget; every copy renders at newest_position anyway
         picked: list[tuple[int, str]] = []
         seen: set[str] = set()
         spent = 0
@@ -139,6 +144,7 @@ def _pick(
                 break
             found = _item(index)
             if found is None:
+                # `unit` is oldest-first (an abandoned opening is its first entry); `spend` is newest-first, so a shrunk budget keeps the newest bullets
                 continue
             item, cost = found
             if item in seen:
@@ -156,11 +162,14 @@ def _pick(
         found = _item(index)
         return found is not None and found[1] <= max_tokens
 
+    # Missing units cost more than the budget; dropping the opening buys nothing when it is the only turn that fits, leaving the block empty
     if reserve_leading > 0:
+        # The already-rendered block in full, not just its first two entries.
         unit = [index for index in range(reserve_leading) if _item(index) is not None]
         spend = list(reversed(unit))
     elif reserve_oldest:
         oldest = next((i for i in range(len(entries)) if _item(i)), None)
+        # The turn the user sent RIGHT AFTER the opening one, reserved with it.
         successor = (
             None
             if oldest is None
@@ -175,7 +184,7 @@ def _pick(
         return _walk(plain)
 
     def _reserved_order() -> list[int]:
-        """Places the opening pair behind the newest turn that can be taken; oversize turns are skipped."""
+        """Pair goes behind the newest takeable turn; behind an oversize turn it would jump usable turns."""
         held = set(unit)
         rest = [index for index in plain if index not in held]
         newest = next((index for index in rest if _takeable(index)), None)
@@ -194,6 +203,7 @@ def _pick(
     if not missing:
         return chosen
     if not any(_takeable(index) for index in missing):
+        # Pairs cannot be recovered from rendered text, so the block goes in as one unit; a newest-first re-cap could keep an opening and drop its correction
         return chosen
     # Whole or nothing: half a unit carries the abandoned request without its correction.
     return _walk([index for index in plain if index != unit[0]]) or chosen
@@ -241,7 +251,7 @@ def carried_forward_items(
     max_items: int = MAX_ITEMS,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
 ) -> list[str]:
-    """One newest-first walk with no length floor: a floor left real chats with empty carried blocks."""
+    """Newest-first walk, no length floor (a floor left chats with empty blocks); returns oldest first."""
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
     return _select_items(
@@ -304,7 +314,7 @@ def _recap(
     carried: int = 0,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
 ) -> list[str]:
-    """The leading carried entries form one block, held whole or dropped from its first bullet."""
+    """Re-caps a merged list; the leading carried block is held whole or loses its first bullet."""
     return _pick(
         [(item, estimate_message({"role": "user", "content": item})) for item in items],
         max_tokens = max_tokens,
@@ -335,6 +345,7 @@ def _append_to_system(messages: list[dict], block: str) -> list[dict]:
             joined = f"{text}\n\n{block}" if text else block
             out[index] = {**message, "content": joined}
             return out
+    # No system message: prepend one rather than dropping X on the floor.
     return [{"role": "system", "content": block}, *out]
 
 
@@ -360,7 +371,7 @@ def fit_checkpoint_context(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
-    # Deliberately unused; kept for signature compatibility with `fit_rolling_context`.
+    # Unused: after a reset nothing is left to trim but X, and trading instructions for recall loses.
     reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
@@ -389,7 +400,7 @@ def fit_checkpoint_context(
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
         items = carried_forward_items(evicted, max_tokens = budget, estimate_message = estimate_message)
-        # Merge into ONE block so the cap bounds the system turn, not each block.
+        # Merge into ONE block so the cap bounds the system turn; keep merged, not dropped: the only copy.
         prior = _block_items(
             "".join(
                 _text_of(message)
@@ -398,6 +409,7 @@ def fit_checkpoint_context(
             )
         )
         if prior:
+            # Tracked apart from projected, which is rebound below on a path that does not re-count; the refusal reports the pair together
             items = _recap(
                 prior + items,
                 max_tokens = budget,
@@ -411,7 +423,7 @@ def fit_checkpoint_context(
         text = render_checkpoint(items, searchable = _resolved(searchable))
         return _append_to_system(kept, text), text
 
-    # Replay the epoch in force, else every resent transcript triggers a fresh reset.
+    # Replay the epoch in force, only when the prompt does not already fit; else each resend resets.
     fitted = list(messages)
     dropped = 0
     is_new_epoch = False
@@ -443,6 +455,7 @@ def fit_checkpoint_context(
 
     projected, block = _project(fitted)
     current_tokens = count_tokens(projected)
+    # If one turn plus X still does not fit, drop X and re-measure before giving up: X is a convenience, the user's message is not
     measured = projected
 
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
@@ -480,12 +493,14 @@ def fit_checkpoint_context(
         projected = list(messages)
 
     if current_tokens > prompt_target:
+        # Lets the UI say "reset" rather than "trimmed" and lets the recall gate spot the first turn of an epoch, where forced retrieval fires
         if block:
             projected = _without_block(fitted)
             block = ""
             current_tokens = count_tokens(projected)
             measured = projected
     if current_tokens > prompt_target:
+        # let the rolling fit retry from the originals; any projection made here would be discarded by `_fit_context`
         from core.inference.context_window import turn_diagnosis  # noqa: PLC0415
         return messages, {
             "fits": False,
@@ -506,6 +521,7 @@ def fit_checkpoint_context(
         "prompt_tokens_after": current_tokens,
         "context_length": context_length,
         "fits": True,
+        # Measured turns only, so not hedged (Gemma tool results count by difference); no default role, since an unnameable one gets generic advice
         "checkpoint": True,
         "checkpoint_started": is_new_epoch,
         "carried_forward_chars": len(block),

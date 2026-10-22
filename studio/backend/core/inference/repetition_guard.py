@@ -23,10 +23,13 @@ import math
 # Shorter fragments are too short to judge; a cut sentence can trivially repeat tokens.
 MIN_FRAGMENT_LENGTH = 400
 
+# Exact-repeat window: a verbatim repeat this long exceeds normal phrasing and boilerplate.
 _REPEAT_WINDOW = 60
 
+# A window repeating at least this many times is a signal even in a short fragment.
 _MIN_REPEAT_COUNT = 5
 
+# The share of the fragment repeated windows must cover before it counts as dominated.
 _DOMINANCE_RATIO = 0.5
 
 # Memory bound only; real fragments stay far below it.
@@ -42,6 +45,7 @@ def is_repetition_dominated(text: str) -> bool:
         return False
     if _line_repetition_dominated(text, length):
         return True
+    # Sliding exact-repeat windows, for echoes that do not align to line boundaries.
     needed = max(_MIN_REPEAT_COUNT, math.ceil(length * _DOMINANCE_RATIO / _REPEAT_WINDOW))
     # Keyed by hash: storing slices held ~180 MB for an 800K-char fragment.
     counts: dict[int, int] = {}

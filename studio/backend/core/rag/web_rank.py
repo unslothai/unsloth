@@ -88,6 +88,7 @@ def retrieve_web_chunks(
             )
             if not chunks:
                 continue
+            # Take identity from the encode that made these vectors; reading it later can label the wrong space.
             vectors, identity = embeddings.encode_with_identity(
                 [chunk.text for chunk in chunks], model_name = model, normalize = True
             )

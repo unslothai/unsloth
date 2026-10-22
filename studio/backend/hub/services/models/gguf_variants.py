@@ -58,7 +58,7 @@ from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
 )
 
-# Loader's normalizer, not the hub's: they disagree on WSL.
+# Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
 from hub.services.models.common import (
     _is_imatrix_filename,
@@ -86,8 +86,11 @@ _VARIANT_REQUIREMENT_NEG_CACHE: "OrderedDict[tuple[str, str], float]" = OrderedD
 _VARIANT_HASH_MAX = 512
 # Hashes derive from mutable remote revision metadata; same TTL as requirements.
 _VARIANT_HASH_POS_TTL = 60.0
+# Requirements expire on a TTL so a moved repo revision is picked up, not pinned for the process.
 _VARIANT_REQUIREMENT_POS_TTL = 60.0
+# Suppress retries on a metadata-fetch failure so a slow/flaky link doesn't re-hammer the API on every page refresh.
 _VARIANT_REQUIREMENT_NEG_TTL = 60.0
+# Fail fast on a slow link so the variant render isn't blocked for seconds.
 _GGUF_METADATA_TIMEOUT_SECONDS = 5.0
 _VARIANT_HASH_LOCK = threading.Lock()
 
@@ -125,6 +128,7 @@ def _variant_requirement_neg_cache_active(key: tuple[str, str]) -> bool:
             return False
         if (time.monotonic() - cached_at) < _VARIANT_REQUIREMENT_NEG_TTL:
             _VARIANT_REQUIREMENT_NEG_CACHE.move_to_end(key)
+            # Split-named link on an ordinary target: loads as-is, nothing missing.
             return True
         _VARIANT_REQUIREMENT_NEG_CACHE.pop(key, None)
         return False
@@ -197,10 +201,11 @@ def _variant_requirement_cache_set_many(
             _VARIANT_REQUIREMENT_FORGOTTEN = True
 
 
-# Kept past TTL so an expired entry never reads as 'nothing required'.
+# Kept past TTL so expired entries never read as nothing required; not keyed by credential.
 _VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str], _GgufVariantRequirement]" = (
     OrderedDict()
 )
+# After any eviction an absent entry may be a forgotten companion.
 _VARIANT_REQUIREMENT_LAST_KNOWN_MAX = 65536
 _VARIANT_REQUIREMENT_FORGOTTEN = False
 
@@ -527,6 +532,7 @@ def _local_main_gguf_blobs_by_quant(
                 if not hashes:
                     continue
                 if _is_imatrix_filename(normalized):
+                    # Nothing fetches an imatrix, so a stale copy on disk must not vouch for a variant's blobs.
                     continue
                 if _is_mmproj_filename(normalized) or _is_mtp_drafter_path(normalized):
                     companion_blobs.setdefault(normalized, set()).update(
@@ -772,12 +778,14 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
             return _target_set_is_whole(path.resolve())
     except OSError:
         return True
-    # Declared indexes, not a count: an over-indexed stray must not cover a missing shard.
+    # Declared indexes, not a count: a stray must not cover a missing shard; zero-byte siblings are torn.
     return found >= set(range(1, total + 1))
 
 
+# Cache scan's looser grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE), not the five digits above.
 _CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 
+# Only enumerates candidates for the resolver to adjudicate; drift costs a candidate, not a verdict.
 _KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
     r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
@@ -953,7 +961,7 @@ async def _shared_variants_scan(
 
         inflight[key] = task
         task.add_done_callback(_release)
-    # Shielded so one caller giving up does not cancel the shared scan.
+    # Shielded: one caller giving up must not cancel the scan the others are waiting on.
     return await asyncio.shield(task)
 
 
@@ -963,6 +971,7 @@ class VariantsAnswer(NamedTuple):
 
     response: GgufVariantsResponse
     context_source: Optional[str]
+    # False if the caller may not read the repo's caches; readers then use repo id, not context_source.
     cache_authorized: bool = True
     # per-quant source for resolving row metadata when one shared directory cannot answer
     variant_context_sources: Optional[dict[str, str]] = None
@@ -1111,6 +1120,7 @@ async def _audio_cpp_variants_answer(
             loadable = bool(loadable),
         ),
         None,
+        # No llama.cpp context window to read off these files.
         cache_authorized = False,
     )
 
@@ -1259,7 +1269,7 @@ async def get_gguf_variants_answer(
                 offline, account_access.require_model_access, repo_id, **access_options
             )
         except HTTPException:
-            # No grant before first download: a private repo needs the caller's own token.
+            # No grant before first download: a private repo needs own token; offline needs grant or public proof.
             if offline or not isinstance(hf_token, str) or not hf_token.strip():
                 raise
             if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
@@ -1270,11 +1280,13 @@ async def get_gguf_variants_answer(
     # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
     # the copy from the request alone.
     answered_from: list[Optional[str]] = [None]
-    # A repo-shaped id resolving to a directory is answered by that directory only.
+    # A repo id naming a directory is answered by that directory alone, or a GGUF-less dir evicts it.
     answered_locally = [False]
+    # Read by the route before its own cache walk, which this listing does not cover.
     cache_authorized = [True]
     variant_context_sources: dict[str, str] = {}
     hub_listing = None
+    # The downloaded rows a Hub-less answer proved complete from disk, see _locally_resolved.
     locally_proven: list[Optional[frozenset]] = [None]
 
     def _compute(local_path: Optional[str] = local_path) -> GgufVariantsResponse:
@@ -1476,6 +1488,7 @@ async def get_gguf_variants_answer(
                         detail.quant,
                         snapshot_dir,
                         repo_cache_dir = repo_cache_dir,
+                        # a ready row absent here comes from a complete sibling snapshot.
                         repo_signal_applies = (
                             repo_signal_applies if key in complete_here else not detail.downloaded
                         ),
@@ -1633,6 +1646,7 @@ async def get_gguf_variants_answer(
                 }
             )
 
+        # Reject malformed repo_ids with 400 up front, like download/delete, not a 500 from the HF client.
         if not _is_valid_repo_id(repo_id):
             raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
@@ -1721,6 +1735,7 @@ async def get_gguf_variants_answer(
                 )
                 # Name the answering snapshot so context length reads from the same revision.
                 answered_from[0] = str(snapshot)
+                # The lister leaves torn quants in: they stay listed for management, but not ready.
                 response = _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete),
                     snapshot,
@@ -1768,6 +1783,7 @@ async def get_gguf_variants_answer(
             """Scopes the cached answer to the cache this request names, so the listing matches that
             copy."""
             if not cache_reads_authorized:
+                # An unauthorized caller whose hub call failed gets that failure, not the cache's answer to it.
                 return None
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
@@ -1778,6 +1794,7 @@ async def get_gguf_variants_answer(
                     repo_id, cached, hub_cache
                 )
                 answered_from[0] = str(snapshot)
+                # As in local_only: an unreachable Hub leaves resumes nowhere to surface, so keep state partials.
                 return _locally_resolved(
                     _with_state_partials(
                         _local_response(repo_id, variants, has_vision, complete),
@@ -1796,6 +1813,7 @@ async def get_gguf_variants_answer(
                 hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
             variants, has_vision, siblings = hub_listing
         except Exception:
+            # Ungated: _cache_fallback_response already refuses an unauthorized caller.
             fallback = _cache_fallback_response()
             if fallback is not None:
                 return fallback
@@ -1886,6 +1904,7 @@ async def get_gguf_variants_answer(
             return expected_size <= 0 or cached >= expected_size * 0.99
 
         def _filenames_cached(filenames: frozenset[str], expected_size: int) -> bool:
+            # All files must live in a single snapshot, not spread across several.
             return any(
                 _filenames_cached_in_snapshot(by_filename, filenames, expected_size)
                 for by_filename, _by_quant in cached_snapshots
@@ -1970,6 +1989,7 @@ async def get_gguf_variants_answer(
                         by_filename, frozenset({expected.path}), expected.size
                     ):
                         break
+                    # Only subtract files the worker can reuse at the planned revision.
                     identities = local_blobs.get(expected.path.replace("\\", "/"), set())
                     if (
                         expected.sha256
@@ -1987,6 +2007,7 @@ async def get_gguf_variants_answer(
             # Non-mmproj companions (MTP, DSpark, DFlash) must be present: else the loader fetches
             # gigabytes inline with no Downloads row. Any mmproj precision still suffices.
             companions = _non_mmproj_companions(requirement)
+            # Vision repos ship an mmproj adapter; any precision on disk suffices.
             if (
                 requirement is not None
                 and _main_and_companions_ready(requirement)
@@ -1996,6 +2017,7 @@ async def get_gguf_variants_answer(
                 )
             ):
                 return True
+            # Byte fallback stops a filename mismatch demoting a present quant; vision still needs an mmproj.
             if not _quant_and_companions_ready(quant, variant.size_bytes, companions):
                 return False
             if (
@@ -2027,6 +2049,7 @@ async def get_gguf_variants_answer(
             repo_id,
             repo_cache_dir,
         )
+        # A marker or manifest carries no revision, so attribute it like the inventory row.
         repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
             repo_cache_dir, scan_snapshot_dir
         )
@@ -2042,6 +2065,7 @@ async def get_gguf_variants_answer(
         def _repo_signals_apply_to(quant: str) -> bool:
             return repo_signal_applies or quant.lower() not in excused_quants
 
+        # Manifest, marker and blob checks catch cancelled downloads and missing or undersized shards.
         for variant in partial_scan_variants:
             try:
                 requirement = requirements_by_quant.get(variant.quant.lower())
@@ -2073,11 +2097,13 @@ async def get_gguf_variants_answer(
                 logger.warning(
                     f"Manifest-based partial check failed for " f"{repo_id}/{variant.quant}: {e}"
                 )
+        # Same attribution as above: a pinned snapshot is not judged by a newer attempt's blobs.
         if incomplete_hashes:
             for variant in partial_scan_variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None or not _repo_signals_apply_to(variant.quant):
                     continue
+                # companion_hashes adds the MTP drafter; mmproj_hashes covers all mmproj precisions in the repo.
                 if (
                     (requirement.mmproj_hashes | requirement.companion_hashes) & incomplete_hashes
                 ) and _filenames_cached(
@@ -2094,6 +2120,7 @@ async def get_gguf_variants_answer(
                         ),
                     )
 
+        # Complete main, unstarted companion: no partial signal; stay visible unless readiness says loadable.
         for variant in partial_scan_variants:
             if variant.quant in partial_quants:
                 continue
@@ -2140,6 +2167,7 @@ async def get_gguf_variants_answer(
                 pending_drafter_size_bytes = (
                     max(0, int(pending_drafter.size or 0)) if pending_drafter is not None else 0
                 ),
+                # Scanned per partial variant only: repos carry one, and the scan walks blobs/.
                 download_remaining_bytes = (
                     variant_remaining_bytes(repo_id, requirement, repo_cache_dir)
                     if is_partial
@@ -2177,11 +2205,12 @@ async def get_gguf_variants_answer(
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
-        # Enrichment reads the cache dir, so it needs the same authorization.
+        # Same authorization as the listing, or a 200 with an empty folder reveals a cached private repo.
         if not skip and hub_cached_read_refused(
             hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
         ):
             skip = True
+            # Carried out: the route's context-length fallback walks these same caches.
             cache_authorized[0] = False
         # Scoped online verdicts: only the Hub answer for a copy's snapshot says if it is complete.
         scoped_responses = {}
@@ -2257,6 +2286,7 @@ async def get_gguf_variants_answer(
                     display_label = v.display_label,
                     size_bytes = v.size_bytes,
                     download_size_bytes = v.size_bytes,
+                    # A source its snapshot lists as incomplete is a resumable row, not a copy to load.
                     downloaded = not source.incomplete,
                     partial = source.incomplete,
                     cache_path = source.cache_path,
@@ -2265,6 +2295,7 @@ async def get_gguf_variants_answer(
                 if source.incomplete:
                     variant_context_sources.pop(key, None)
                 if online_answer:
+                    # Apply the same readiness and update checks as a request for this snapshot.
                     checked = _scoped_variant_row(source.snapshot, key)
                     if checked is not None:
                         detail = checked.model_copy(update = {"cache_path": source.cache_path})
@@ -2274,11 +2305,12 @@ async def get_gguf_variants_answer(
                         else:
                             variant_context_sources.pop(key, None)
                     elif cached_gguf_source_partial(repo_id, v.quant, source.snapshot):
+                        # The current revision no longer covers this quant; only the copy's manifest and marker can judge it.
                         variant_context_sources.pop(key, None)
                         detail.downloaded = False
                         detail.partial = True
                 elif cached_gguf_source_partial(repo_id, v.quant, source.snapshot):
-                    # Local twin of the Hub readiness check for local-only/offline answers.
+                    # Local twin of the Hub check: an incomplete remembered copy must not be offered to load.
                     variant_context_sources.pop(key, None)
                     detail.downloaded = False
                     detail.partial = True
@@ -2334,7 +2366,7 @@ async def get_gguf_variants_answer(
         bool(include_cache_locations),
         local_path or "",
         hf_cache_scan.token_fingerprint(hf_token),
-        # Switching cache storage must not join a scan stuck on the old volume.
+        # Switching cache storage must start a fresh scan rather than join one that is stuck on the old volume.
         configured_cache_key(),
     )
     try:
@@ -2367,6 +2399,7 @@ async def get_gguf_variants_answer(
         scrubbed = modelscope_missing(e) or download_registry.scrub_secrets(
             str(e), hf_token = hf_token
         )
+        # Client-side HF error (missing repo, gated, bad token): pass the status through.
         status = hf_error_status(e)
         if status is not None:
             raise HTTPException(status_code = status, detail = scrubbed)

@@ -44,6 +44,7 @@ from typing import Any, Optional
 ATTN_AUTO = "auto"
 ATTN_NATIVE = "native"
 
+# User-facing alias -> the diffusers dispatcher backend name.
 _ALIASES: dict[str, str] = {
     "native": "native",
     "sdpa": "native",
@@ -76,11 +77,11 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
 
 # Kernels that need a specific CUDA arch at run time: (min, max-exclusive) capability.
 _ARCH_CAPABILITY: dict[str, tuple[tuple[int, int], Optional[tuple[int, int]]]] = {
-    "_flash_3_hub": ((9, 0), (10, 0)),
+    "_flash_3_hub": ((9, 0), (10, 0)),  # Hopper (SM90) only
     "flash_4_hub": (
         (10, 0),
         None,
-    ),  # sm110 / sm120 unverified, so _fa4_kernel_runs also checks each card
+    ),  # SM100+; sm110 / sm120 unverified, so _fa4_kernel_runs also checks each card
 }
 
 
@@ -115,7 +116,7 @@ def _is_cuda_nvidia(target: Any) -> bool:
     try:
         import torch
 
-        # torch.version.hip alone misreads AMD wheels that only tag __version__.
+        # Shared with stub installer; torch.version.hip alone misreads AMD wheels that tag only __version__.
         from core._torchao_stub import _module_is_rocm
         return not _module_is_rocm(torch)
     except Exception:  # noqa: BLE001
@@ -128,6 +129,7 @@ SDPA_MEM_EFFICIENT = "mem_efficient"
 SDPA_CUDNN = "cudnn"
 SDPA_MATH = "math"
 
+# Backends whose working set is O(N): they never materialise the score matrix.
 _SDPA_SUBQUADRATIC = (SDPA_FLASH, SDPA_MEM_EFFICIENT, SDPA_CUDNN)
 
 _SDPA_PROBE_LOCK = threading.Lock()
@@ -472,12 +474,15 @@ def select_attention_backend(
             if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
                 return backend
             return None
+        # cuDNN / flash* / sage are CUDA+NVIDIA-only (elsewhere the first generation crashes), except verified ROCm FA2.
         if not _is_cuda_nvidia(target):
             if backend == "flash" and _is_cuda_rocm(target) and _rocm_flash_attn_runs(target):
                 return backend
             return None
+        # An arch-gated kernel (flash3/flash4) on a card that can't run it sets fine then crashes.
         if not _backend_arch_supported(backend):
             return None
+        # cuDNN fused SDPA needs Ampere+ (SM80); gate an explicit request like the auto path.
         if backend == "_native_cudnn" and not _cudnn_attention_supported():
             return None
         return backend
@@ -1478,6 +1483,7 @@ def _save_rocm_flash_verdict(
 
 # Max abs error of the probe's flash_attn output against an fp32 reference (bf16 eps is ~4e-3).
 _ROCM_FLASH_PROBE_TOL = 2e-2
+# (device, dtype) -> whether flash_attn ran and matched. Only answers are cached; an unaskable probe is retried.
 _ROCM_FLASH_PROBE_CACHE: dict[tuple[str, str], bool] = {}
 _ROCM_FLASH_MISSING_LOGGED: list[bool] = []
 
@@ -1503,6 +1509,7 @@ def _run_rocm_flash_probe(device: str, dtype: Any) -> bool:
     from flash_attn import flash_attn_func
 
     if dtype not in (torch.float16, torch.bfloat16):
+        # diffusers' flash backend is half precision only, and the CK build raises on fp32 at the first call
         if dtype is not None:
             return False
         dtype = torch.bfloat16
@@ -1563,11 +1570,12 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
+# Arch support varies by sageattn build, so a run per card is the gate. (device, dtype, head_dim) -> "" or why not.
 _SAGE_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 
-_SAGE_MAX_HEAD_DIM = 128
+_SAGE_MAX_HEAD_DIM = 128  # sageattn raises above 128
 _SAGE_DTYPE_NAMES = ("float16", "bfloat16", "fp16", "bf16", "half")
-# SageAttention 2 lands near cos 0.9999 / rel-L1 0.01-0.03; a broken build is far outside.
+# SageAttention 2 lands near cos 0.9999 / rel-L1 0.01-0.03 vs fp32 here; a wrong-arch or broken build is far outside.
 _SAGE_MIN_COSINE = 0.99
 _SAGE_MAX_REL_L1 = 0.08
 
@@ -1578,8 +1586,7 @@ def _run_sage_probe(
     head_dim: int = 128,
     sageattn: Any = None,
 ) -> str:
-    """Probes with per-channel K offset inputs, since a zero tensor proves the launch but not the
-    numbers."""
+    """Empty when sageattn matches fp32 SDPA at head_dim, else the reason; raises if unaskable."""
     import torch
 
     if sageattn is None:
@@ -1744,6 +1751,7 @@ def _note_sage_reroute(reason: str) -> None:
 
 # sageattn reads arch via untraceable torch.cuda calls: opaque op keeps the block compiled.
 _SAGE_OP_NAME = "unsloth_studio::sage_attention_nhd"
+# Own op for the hub build, so a pip SageAttention 2 installed later never runs through it.
 _SAGE_HUB_OP_NAME = "unsloth_studio::sage_hub_attention_nhd"
 _SAGE_OPS: dict[str, dict[str, Any]] = {}
 _SAGE_OP_LOCK = threading.Lock()
@@ -1818,7 +1826,7 @@ def _install_dispatch_guard(
     if not callable(kernel_fn) or not callable(native_fn):
         return False
 
-    # Eagerly: a registration lock cannot trace in compiled graphs.
+    # Eagerly: the guard runs inside compiled graphs, where a registration lock cannot trace.
     op = make_op(kernel_fn) if make_op is not None else None
     names = ("query", "key", "value", "attn_mask")
 
@@ -1866,6 +1874,7 @@ def _install_sage_dispatch_guard() -> bool:
     )
 
 
+# diffusers' flash_4_hub raises on any attn_mask too; head dims are checked at load (_fa4_kernel_runs).
 _FA4_ROUTED: dict[str, int] = {}
 _FA4_ROUTED_LOGGED: set[str] = set()
 
@@ -1892,7 +1901,7 @@ def _note_fa4_reroute(reason: str) -> None:
     _note_reroute("FlashAttention 4", reason, _FA4_ROUTED, _FA4_ROUTED_LOGGED)
 
 
-# Hub FA4 launch breaks fullgraph compile: keep it opaque, like Sage.
+# The hub FA4 launch (CuTe DSL, tvm-ffi) breaks a fullgraph compile 5 times per Flux block: keep it opaque, like Sage.
 _FA4_OP_NAME = "unsloth_studio::flash_4_hub_attention_nhd"
 
 
@@ -2131,6 +2140,7 @@ def _install_fa4_dispatch_guard() -> bool:
     )
 
 
+# On-demand install gate like UNSLOTH_DIFFUSION_SD_CPP_INSTALL: auto (default) or 1 installs a missing package on request; 0 never installs, falls back to native
 _FA4_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _FA4_MIN_COSINE = 0.999
 _FA4_MAX_REL_L1 = 0.02
@@ -2289,6 +2299,7 @@ _SAGE_HUB_REPO = "kernels-community/sage-attention"
 _SAGE_HUB_VERSIONS = (2, 1)
 _SAGE_HUB_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _SAGE_HUB_LOCK = threading.Lock()
+# A failed fetch, remembered so the in-lock apply does not repeat it. Cleared by a restart, like _INSTALL_ATTEMPTED.
 _SAGE_HUB_FAILED: list[str] = []
 SAGE_SOURCE_HINT = (
     "SageAttention 2 is not published on PyPI (pip only has SageAttention 1.0.6), so on this platform it needs a "
@@ -2492,6 +2503,7 @@ def _fa4_python_deps_plan() -> tuple[list[str], Optional[str]]:
         and _version_tuple(kernels)
         and _version_tuple(kernels) < FA4_KERNELS_MIN
     ):
+        # Same dependencies as 0.12.1, so --no-deps is safe.
         reqs.append(FA4_KERNELS_SPEC)
     cutlass = _dist_version("nvidia-cutlass-dsl")
     if cutlass is None:
@@ -2539,6 +2551,7 @@ def _refresh_diffusers_kernels_version(logger: Any = None) -> None:
         if installed and getattr(import_utils, "_kernels_version", None) not in (None, installed):
             import_utils._kernels_version = installed
             import_utils._kernels_available = True
+            # diffusers memoizes is_kernels_version, so a check made before the upgrade would still answer False.
             cache_clear = getattr(
                 getattr(import_utils, "is_kernels_version", None), "cache_clear", None
             )
@@ -2548,6 +2561,7 @@ def _refresh_diffusers_kernels_version(logger: Any = None) -> None:
         pass
 
 
+# cutlass-dsl reaches sys.path through a .pth file (libs-base in 4.4 / 4.5, the main dist in 4.6+).
 _PTH_DISTRIBUTIONS = ("nvidia-cutlass-dsl-libs-base", "nvidia-cutlass-dsl")
 
 
@@ -2588,7 +2602,7 @@ def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
             logger.warning("diffusion.attention: %s; using the default backend", refusal)
         return refusal
     if not reqs:
-        # An earlier NVFP4 FlashInfer install may have added cutlass-dsl without running its .pth.
+        # An NVFP4 FlashInfer install earlier in this process may have added cutlass-dsl without running its .pth.
         _activate_installed_pth_files()
         return None
     key = "fa4-deps:" + ",".join(reqs)
@@ -2619,6 +2633,7 @@ def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
             )
             _refresh_diffusers_kernels_version(logger)
         if deps:
+            # Resolved (cutlass-dsl needs its libs and cuda-python); the constraints add only new packages.
             cmd = base + (["-c", constraints] if constraints else []) + deps
             subprocess.run(cmd, capture_output = True, timeout = 600, check = True)
         importlib.invalidate_caches()
@@ -2642,16 +2657,18 @@ def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
     return None
 
 
-# Wheels only: a source build needs a CUDA toolchain.
+# Wheels only (--only-binary=:all:): source builds need a CUDA toolchain the host may lack.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
+    # Never ``sageattention`` from PyPI (only SageAttention 1 there): the hub build is the installable one.
     "sage": ("kernels", "kernels"),
     "flash": ("flash_attn", "flash-attn"),
-    "_flash_3_hub": ("kernels", "kernels"),
+    "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 from the HF kernels hub
     "flash_4_hub": ("kernels", "kernels"),
     # Never passed to pip by name; see _MATCHED_WHEEL_BACKENDS.
     "xformers": ("xformers", "xformers"),
 }
 
+# include_windows: this is the one resolver with win_amd64 wheels upstream; timeout matches the other probe_torch_wheel_env callers
 _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 
 # A recorded attempt stops the in-lock apply re-running the 600s install under _generate_lock.
@@ -2668,7 +2685,7 @@ _URL_IN_TEXT = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'\"<>]+")
 
 
 def _redacted_for_log(text: str) -> str:
-    """Takes free text, as pip echoes the URL in stderr; redacting just the name leaks the secret."""
+    """Redacts every URL in free text, stripping userinfo, query and fragment; pip echoes URLs in stderr."""
     try:
         from utils.wheel_utils import redact_url_credentials
     except Exception:  # noqa: BLE001 -- redaction must never be the thing that breaks a log
@@ -2677,17 +2694,20 @@ def _redacted_for_log(text: str) -> str:
 
 
 def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
-    """Exact xFormers wheel for this torch+CUDA pair from download.pytorch.org, or a refusal reason."""
+    """Exact xFormers wheel for this torch+CUDA pair, or a refusal: a mismatch loads silently broken."""
     global _XFORMERS_WHEEL_TARGET
     with _XFORMERS_WHEEL_LOCK:
         if _XFORMERS_WHEEL_TARGET is not None:
             return _XFORMERS_WHEEL_TARGET
         try:
             from utils.wheel_utils import probe_torch_wheel_env, xformers_wheel_url
+
+            # Not cached, since the next request may settle it: an unnamed platform (macOS, Windows on ARM) or a timed-out probe; aarch64 Linux is not here
             env = probe_torch_wheel_env(timeout = 30, include_windows = True)
         except Exception as exc:  # noqa: BLE001 -- must never break a model load
             return (None, f"the xFormers wheel could not be resolved ({exc})")
         if env is None:
+            # Name the platform: Linux aarch64 reaches here with ordinary torch, and naming only torch and CUDA would read as an unbuilt pair, not an unbuilt arch
             return (
                 None,
                 "torch could not be probed, or this platform has no xFormers wheel "
@@ -2695,6 +2715,7 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
             )
         url = xformers_wheel_url(env)
         if url is None:
+            # importlib.invalidate_caches() after install: the import system caches directory listings, so find_spec can miss the new wheel
             target = (
                 None,
                 f"no xFormers wheel is published for torch "
@@ -2713,8 +2734,7 @@ _KERNELS_HUB_FLOOR = (1, 10)
 
 
 def _kernels_hub_compatible() -> bool:
-    """False for hub under 1.10, below the kernels floor; hub 1.0-1.2.4 break every later pipeline
-    import."""
+    """False for hub under 1.10; unknown hub allows install; --no-deps leaves this the only floor check."""
     try:
         import re
         from importlib.metadata import version
@@ -2749,6 +2769,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     except Exception:  # noqa: BLE001
         return None
     if backend == "sage":
+        # Fetched here, outside the loader's locks; apply finds it in diffusers' registry.
         _load_sage_hub_kernel()
         return None
     return _ensure_fa4_python_deps(logger)
@@ -2767,6 +2788,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
         return None
+    # A hidden package stays unusable until restart; skip without recording an attempt.
     if module in sys.modules and sys.modules[module] is None:
         reason = f"{module} is disabled in this process because it requires a different torch"
         if logger is not None:
@@ -2795,7 +2817,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
             return None
     except Exception:  # noqa: BLE001 - a broken install probes as missing; try the install
         pass
-    # PyPI flash-attn is the CUDA build: never install it onto ROCm torch.
+    # PyPI flash-attn is the CUDA build: never pip it onto a ROCm torch. Policy, so no _INSTALL_ATTEMPTED record.
     if backend == "flash" and _torch_is_rocm():
         reason = "flash-attn on PyPI is the NVIDIA CUDA build"
         if logger is not None:
@@ -2823,7 +2845,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                 )
             return refusal
         package = wheel_url
-    # The URL may carry a private-index token from UNSLOTH_PYTORCH_MIRROR.
+    # Pip gets the real URL; the log gets a redacted one, since the mirror URL may carry a token.
     display = _redacted_for_log(package)
     # Once per process, else the in-lock apply re-runs it under _generate_lock.
     if package in _INSTALL_ATTEMPTED:
@@ -2837,7 +2859,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
         )
     try:
         subprocess.run(
-            # --no-deps: these wheels pin an exact torch that would replace the running one.
+            # --no-deps: wheels pin an exact torch that would replace the running one; no ABI check here.
             [
                 sys.executable,
                 "-m",
@@ -2852,11 +2874,13 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
             timeout = 600,
             check = True,
         )
+        # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in; one reset covers every fresh DiT
         importlib.invalidate_caches()
         if package == "kernels":
             _refresh_diffusers_kernels_version(logger)
     except Exception as exc:  # noqa: BLE001 - no wheel / no network -> native fallback
         if logger is not None:
+            # CalledProcessError.str() shows only the exit code; surface stderr so the fallback is diagnosable.
             stderr = getattr(exc, "stderr", None)
             if stderr:
                 if isinstance(stderr, bytes):
@@ -2864,7 +2888,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                 logger.warning(
                     "diffusion.attention: could not install %s; pip failed with: %s",
                     display,
-                    # pip echoes the URL, so redact the body too.
+                    # pip echoes the URL it was given, so redact the body too rather than only the name in front of it.
                     _redacted_for_log(stderr.strip()) or str(exc),
                 )
             else:
@@ -2894,7 +2918,7 @@ def _attention_dits(pipe: Any) -> list:
     return denoiser_dits(pipe)
 
 
-# head_dim 256 has no cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19/9.20).
+# head_dim 256 (Ideogram 4) has no cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19/9.20); a pinned cuDNN then has no fallback.
 _CUDNN_HEAD_DIM_CACHE: dict[tuple[str, str, int], bool] = {}
 
 
@@ -3084,7 +3108,7 @@ def apply_attention_backend(
     logger: Any = None,
     target: Any = None,
 ) -> Optional[str]:
-    """Sets native explicitly, as diffusers keeps a process-wide backend an earlier load may have pinned."""
+    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak)."""
     if target is not None:
         try:
             guard_rocm_fused_sdpa(target, logger)
@@ -3118,7 +3142,7 @@ def apply_attention_backend(
                 if too_old and logger is not None:
                     logger.info("diffusion.attention: ignoring %s", too_old)
                 backend = _sage_hub_backend(pipe, target, logger)
-        # Selection may have seen the pre-promotion (fp16) dtype.
+        # Re-verify at the dtype the pipeline runs in: selection may have seen the pre-promotion (fp16) dtype.
         if (
             backend == "flash"
             and target is not None
@@ -3200,9 +3224,11 @@ def apply_attention_backend(
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
+    # Native means torch SDPA picks per call, which is MATH on a device with no fused kernel; say so now, as the flags read off it would lie
     _tag_dits(pipe, None)
     _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)
+    # All remaining slots valid for every element: vacuously True for a 0-length stream, and fine for an unused secondary stream like byt5 in t2v
     if target is not None:
         _configure_native_attention(pipe, target, logger)
     return None
@@ -3225,6 +3251,7 @@ def _active_attention_backend() -> Optional[str]:
     try:
         from diffusers.models.attention_dispatch import _AttentionBackendRegistry
 
+        # get_active_backend() returns (AttentionBackendName, fn) or None; read element 0's .value
         active = _AttentionBackendRegistry.get_active_backend()
         if active is None:
             return None
@@ -3253,7 +3280,7 @@ def _reset_global_backend_to_native(logger: Any) -> None:
 def _restore_native_backend(set_backend_fn: Any, logger: Any) -> None:
     """Force the native default when the global active backend isn't already native."""
     if _active_attention_backend() == ATTN_NATIVE:
-        return
+        return  # already native -> avoid redundant work and an extra dispatcher warning
     try:
         set_backend_fn(ATTN_NATIVE)
     except Exception as exc:  # noqa: BLE001 - best-effort restore
@@ -3315,7 +3342,7 @@ def _null_mask_processor_cls():
             attention_mask = None,
             image_rotary_emb = None,
         ):
-            # Constant python bool, so torch.compile const-folds the branch.
+            # Fast path only if the pre-hook removed all padding; a constant bool so torch.compile folds it.
             if not getattr(attn, _NULL_ATTN_FLAG, False):
                 return super().__call__(
                     attn,
@@ -3398,13 +3425,14 @@ def _trim_stream(states, mask):
     batch element (globally invalid). Returns (states, mask, all_valid): all_valid is True when
     the trimmed stream has NO partially-padded column left (so it needs no attention mask)."""
     if states is None or mask is None or mask.dim() != 2:
-        return states, mask, True
+        return states, mask, True  # nothing to mask -> treat as no-padding
     mb = mask.bool()
-    keep = mb.any(dim = 0)
+    keep = mb.any(dim = 0)  # column valid for at least one batch element
     if not bool(keep.all()):
         states = states[:, keep]
         mask = mask[:, keep]
         mb = mb[:, keep]
+    # Kwargs may be trimmed before a failure; restore the caller's untrimmed inputs so the stock dense-mask path (flag False) gets what it expects
     all_valid = bool(mb.all().item())
     return states, mask, all_valid
 
@@ -3413,7 +3441,7 @@ _TRIM_MEMO_ATTR = "_unsloth_trim_memo"
 
 
 def _trim_plan(module: Any, kwargs: dict) -> dict:
-    """Trim plan made once per input set, reused across steps so CUDA-graph replays make no host wait."""
+    """Trim plan per input set, reused across steps; keyed on tensors and versions, so edits replan."""
     import torch
 
     names = ("image_embeds", "encoder_attention_mask", "encoder_attention_mask_2")
@@ -3436,11 +3464,12 @@ def _trim_plan(module: Any, kwargs: dict) -> dict:
             plan[name] = (None, True)
             continue
         mb = mask.bool()
-        keep = mb.any(dim = 0)
+        keep = mb.any(dim = 0)  # column valid for at least one batch element
         index = None
         if not bool(keep.all()):
             index = keep.nonzero().squeeze(1)
             mb = mb.index_select(1, index)
+        # vacuously True for a 0-length stream, fine for an unused secondary stream (byt5 in t2v)
         plan[name] = (index, bool(mb.all().item()))
     memo.insert(0, (srcs, versions, plan))
     del memo[4:]  # the CFG branches of one render
@@ -3495,6 +3524,7 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
         _set_hunyuan_null_mask(module, null_ok)
         return args, kwargs
     except Exception:  # noqa: BLE001 - optimisation only; never break the forward
+        # Different arch, not a refreshed Qwen-Image: 14.2 GB DiT, a larger Qwen3-VL 8B encoder; bf16, so resident equals on-disk; sizes from Hub metadata
         kwargs.clear()
         kwargs.update(original)
         _set_hunyuan_null_mask(module, False)
@@ -3528,6 +3558,7 @@ def _install_null_processors(dit: Any, logger: Any) -> bool:
         if type(proc).__name__ != _HUNYUAN15_PROCESSOR_CLS:
             continue
         new = cls()
+        # carry over any backend/parallel config the stock processor already held
         new._attention_backend = getattr(proc, "_attention_backend", None)
         new._parallel_config = getattr(proc, "_parallel_config", None)
         try:
@@ -3553,8 +3584,9 @@ def install_hunyuan_attention_trim(
             continue
         if not _install_null_processors(dit, logger):
             continue
+        # installation and every idle period start in the conservative state
         _set_hunyuan_null_mask(dit, False)
-        # The flag picks the attention branch, so a CUDA graph keys on it.
+        # The flag picks the attention branch inside the forward, so a CUDA graph keys on it (diffusion_cuda_graph).
         dit._unsloth_graph_key_extra = functools.partial(_hunyuan_null_mask_state, dit)
         if getattr(dit, "_unsloth_trim_hook", None) is None:
             pre_handle = None

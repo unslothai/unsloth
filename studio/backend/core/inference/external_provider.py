@@ -240,6 +240,7 @@ def _openai_fixed_sampling_model(model: str) -> bool:
     )
 
 
+# Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
 _GEMINI3_FAMILY = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-pro")
 
@@ -379,6 +380,7 @@ def _replace_openai_citation_markers(text: str, url_citations: list[dict[str, An
     by_source = _build_citation_lookup(url_citations)
 
     def _sub(match: re.Match[str]) -> str:
+        # Each delim-split token resolves or drops; source+locator resolves by id only; empty strips marker.
         rendered: list[str] = []
         for tok in match.group(1).split(_OPENAI_CITE_DELIM):
             if not tok:
@@ -431,6 +433,7 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     last_open = text.rfind("")
     if last_open == -1:
         return text, ""
+    # A stop byte after the last open byte means the marker closed here.
     if _OPENAI_CITE_STOP in text[last_open:]:
         return text, ""
     return text[:last_open], text[last_open:]
@@ -478,6 +481,7 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
         return {}
     action = item.get("action") if isinstance(item.get("action"), dict) else {}
     action_type = action.get("type") if isinstance(action.get("type"), str) else ""
+    # `queries` lists every query run; deprecated `query` is only a fallback, and neither is required.
     query = ""
     for source in (action.get("queries"), item.get("queries")):
         if isinstance(source, list):
@@ -586,6 +590,7 @@ def _anthropic_spec_prefix_matches(model_lc: str, prefix: str) -> bool:
 
 
 def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
+    # Normalized like version helpers, else capitalized ids fall through to no thinking field.
     model_lc = model.strip().lower()
     for spec in _ANTHROPIC_THINKING_SPECS:
         if any(_anthropic_spec_prefix_matches(model_lc, p) for p in spec.prefixes):
@@ -593,6 +598,7 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
     return None
 
 
+# A Claude id the spec table does not list yet takes adaptive thinking only when it is numbered after 4.6.
 def _anthropic_model_newer_than_specs(model: str) -> bool:
     match = _ANTHROPIC_MODEL_VERSION.match(model.strip().lower())
     if match is None:
@@ -644,6 +650,7 @@ def _anthropic_code_execution_version(model: str) -> str:
     )
 
 
+# Beta flag `code-execution-2025-08-25` does not change with tool version (`_20250825`, `_20260120`).
 _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
@@ -746,6 +753,7 @@ _MISTRAL_THINKING_SPECS = (
         style = "prompt_mode",
     ),
     _MistralThinkingSpec(
+        # Must mirror catalog reasoning ids or the Thinking control renders dead; zai-glm-5-2 is a partner.
         models = (
             "mistral-small-latest",
             "mistral-small-2603",
@@ -791,11 +799,13 @@ def _apply_mistral_reasoning_controls(
     body.pop("reasoning_effort", None)
 
     if spec.style == "prompt_mode":
+        # Magistral is reasoning-capable already; explicit prompt_mode is only for the "high" UI selection.
         if enable_thinking is True or reasoning_effort == "high":
             body["prompt_mode"] = "reasoning"
         return
 
     if spec.style == "reasoning_effort":
+        # Two documented values: intermediate UI levels collapse to "high"; only opt-out sends "none".
         if reasoning_effort in spec.efforts:
             body["reasoning_effort"] = reasoning_effort
         elif reasoning_effort in _REASONING_EFFORT_LEVELS or enable_thinking is True:
@@ -939,6 +949,7 @@ def _apply_ollama_reasoning_controls(
         body["reasoning_effort"] = "medium"
 
 
+# One shared client pools connections; auth and timeouts go per request, so no credentials are stored.
 def _create_shared_http_client() -> httpx.AsyncClient:
     # Unsupported env proxy schemes (socks:// etc) raise at construction and would crash Unsloth startup (#6090);
     # retry ignoring env proxies instead.
@@ -955,7 +966,7 @@ def _create_shared_http_client() -> httpx.AsyncClient:
 
 
 _http_client = _create_shared_http_client()
-# Studio's own loopback runtime: an env proxy would receive its key and prompts.
+# Studio's own loopback runtime: an env proxy would receive its key and prompts, or fail to reach it.
 _loopback_http_client = httpx.AsyncClient(trust_env = False)
 
 
@@ -963,6 +974,7 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
     """Managed-account egress: re-resolve per connection, dial one validated public address."""
 
     def __init__(self):
+        # Separate pools retain TLS identity when two names resolve to one IP.
         self._transports: dict[tuple, httpx.AsyncHTTPTransport] = {}
 
     def _pool(self, origin: tuple) -> httpx.AsyncHTTPTransport:
@@ -1030,8 +1042,10 @@ class _PinnedNonMetadataTransport(_PinnedPublicTransport):
 # Keyed by account: AsyncClient persists cookies, so sharing would cross gateway sessions.
 _managed_clients: dict[tuple[str, bool], httpx.AsyncClient] = {}
 _managed_clients_lock = threading.Lock()
+# Retired accounts. Bounded: it only outlives requests in flight when the account went away.
 _retired_accounts: set[str] = set()
 _RETIRED_ACCOUNTS_MAX = 1024
+# client -> the loop it was created on. Weak, so it never keeps a client alive by itself.
 _client_loops: "weakref.WeakKeyDictionary[httpx.AsyncClient, asyncio.AbstractEventLoop]" = (
     weakref.WeakKeyDictionary()
 )
@@ -1056,6 +1070,7 @@ def retire_account_clients(account_id: str) -> int:
         if running is not None and (loop is None or loop is running):
             running.create_task(client.aclose())
         elif loop is not None and not loop.is_closed():
+            # Deletion runs in a sync route with no loop; dropping the reference does not close the pool.
             asyncio.run_coroutine_threadsafe(client.aclose(), loop)
     return len(retired)
 
@@ -1118,6 +1133,7 @@ def _client() -> httpx.AsyncClient:
 
     if is_owner_context():
         return _http_client
+    # Read per call, so a flip takes effect without a restart.
     allowed = get_managed_private_provider_urls_allowed()
     account_id = current_account_id()
     key = (account_id, allowed)
@@ -1127,10 +1143,12 @@ def _client() -> httpx.AsyncClient:
             return client
         transport = _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
         client = httpx.AsyncClient(transport = transport, trust_env = False)
+        # Its pool holds streams bound to this loop, so closing it from another loop is not equivalent.
         try:
             _client_loops[client] = asyncio.get_running_loop()
         except RuntimeError:
             pass
+        # Served but not cached for a retired account: nothing sweeps an entry made after the sweep.
         if account_id not in _retired_accounts:
             _managed_clients[key] = client
         return client
@@ -1139,6 +1157,7 @@ def _client() -> httpx.AsyncClient:
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.
 _GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
+# The socket timeout bounds one operation; a server dripping bytes needs a whole-fetch bound.
 _REMOTE_IMAGE_FETCH_DEADLINE_S = 30.0
 
 
@@ -1150,7 +1169,7 @@ def safe_fetch_remote_image_sync(
     deadline: Optional[float] = None,
     require_image_content_type: bool = True,
 ) -> Optional[tuple[str, str]]:
-    """Redirects are revalidated and every failure returns None, so host network details never leak."""
+    """HTTPS fetch via a validated, pinned public IP; redirects revalidated; failures return None."""
     import http.client
     import urllib.error
     import urllib.request
@@ -1160,6 +1179,7 @@ def safe_fetch_remote_image_sync(
     if _byte_limit <= 0:
         return None
 
+    # Reuse tools.py's pinned-IP hardening: validate-once-then-pin.
     from .tools import (
         _IRI_PATH_SAFE,
         _IRI_QUERY_SAFE,
@@ -1174,6 +1194,7 @@ def safe_fetch_remote_image_sync(
         _USER_AGENTS,
     )
 
+    # Image hosts refuse requests without a User-Agent (Wikimedia 403s); pick once, as _fetch_url_raw.
     user_agent = random.choice(_USER_AGENTS)
     if deadline is None:
         deadline = time.monotonic() + _REMOTE_IMAGE_FETCH_DEADLINE_S
@@ -1201,6 +1222,7 @@ def safe_fetch_remote_image_sync(
             logger.info(f"{label}: refusing url with no hostname")
             return None
         if not host_value.isascii():
+            # http.client writes Host as ASCII, so an internationalized name travels as its A-label.
             try:
                 host_value = host_value.encode("idna").decode("ascii")
             except UnicodeError:
@@ -1232,6 +1254,7 @@ def safe_fetch_remote_image_sync(
         if cp_info is None:
             return None
         cp, _cp_host, _cp_port = cp_info
+        # http.client refuses a non-ASCII or spaced selector; encode it as _fetch_url_raw does.
         try:
             cp = cp._replace(
                 path = quote(cp.path, safe = _IRI_PATH_SAFE),
@@ -1308,6 +1331,7 @@ def safe_fetch_remote_image_sync(
                 logger.info(f"{label}: status=%s host=%s", status, current_host)
                 return None
             _hdr_mime = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+            # A declared non-image MIME is refused unless the caller decodes the bytes itself.
             if _hdr_mime and not _hdr_mime.startswith("image/") and not require_image_content_type:
                 _hdr_mime = ""
             if _hdr_mime and not _hdr_mime.startswith("image/"):
@@ -1333,6 +1357,7 @@ def safe_fetch_remote_image_sync(
                     current_host,
                 )
                 return None
+            # Read cap+1 to detect oversize without buffering unbounded data.
             try:
                 body_error, raw = _read_capped_body(
                     resp, _byte_limit + 1, _GEMINI_REMOTE_IMAGE_TIMEOUT_S, deadline, None
@@ -1383,6 +1408,7 @@ async def _safe_fetch_image_for_gemini(
     return await asyncio.to_thread(_safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes)
 
 
+# Tool names stamped on _toolEvent.arguments tell provider cards from user tools; mirrored in TS.
 _SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
     {"web_search", "web_fetch", "code_execution", "image_generation"}
 )
@@ -1407,7 +1433,7 @@ def _stamp_server_tool_marker(payload: dict[str, Any]) -> None:
 def _build_kimi_tool_end(
     synthetic_chunk_fn: Any, tool_call_id: str, citations: list[dict[str, str]]
 ) -> str:
-    """Formats citations as parseSourcesFromResult expects; no citations gives a placeholder string."""
+    """Citations for parseSourcesFromResult; none gives (search complete) so the tool card completes."""
     blocks: list[str] = []
     for cit in citations:
         line = f"Title: {cit['title']}\nURL: {cit['url']}"
@@ -1480,6 +1506,7 @@ class ExternalProviderClient:
             base_url.rstrip("/") if managed_loopback else validate_provider_base_url(base_url)
         )
         self._managed_loopback = managed_loopback
+        # Strip legacy `/openai` suffix from Google bases so pre-switch configs route; custom proxies keep it.
         if self.provider_type == "gemini":
             _parsed_base = urlparse(self.base_url)
             if (
@@ -1490,7 +1517,7 @@ class ExternalProviderClient:
                 self.base_url = self.base_url[: -len("/openai")]
         self.api_key = api_key
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
-        # Generous read timeout: reasoning models pause tens of seconds between bytes.
+        # Generous read timeout for reasoning pauses, but a dead upstream must error, not hang forever.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
         # Some OpenAI/Azure deployments expose /responses but reject its optional context_management field. The
         # client lives for the whole Studio tool loop, so remember that capability result instead of paying for the
@@ -1505,6 +1532,7 @@ class ExternalProviderClient:
         auth_header = provider_info.get("auth_header", "Authorization")
         auth_prefix = provider_info.get("auth_prefix", "Bearer ")
 
+        # Non-Google Gemini bases (LiteLLM, custom gateways) use OAI-compat Bearer auth, not x-goog-api-key.
         if self.provider_type == "gemini":
             _host = (urlparse(self.base_url).hostname or "").lower()
             if _host != "generativelanguage.googleapis.com":
@@ -1512,8 +1540,7 @@ class ExternalProviderClient:
                 auth_prefix = "Bearer "
 
         headers = {"Content-Type": "application/json"}
-        # Azure: `api-key` or Entra Bearer token; raw JWTs and `Bearer <token>` select bearer.
-        # Never send both credentials.
+        # Raw JWTs pick bearer, since a saved custom provider has one credential field. Never send both.
         azure_custom_responses = (
             self.provider_type == "custom"
             and self.api_type == "responses"
@@ -1530,8 +1557,10 @@ class ExternalProviderClient:
                 headers["Authorization"] = f"Bearer {bearer_token}"
             elif bearer_token is None:
                 headers["api-key"] = self.api_key
+        # Skip auth when the key is empty (optional for local providers); httpx rejects an empty `Bearer `.
         elif self.api_key:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
+        # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
         return headers
 
@@ -1540,6 +1569,7 @@ class ExternalProviderClient:
         from core.inference.providers import get_provider_info
 
         info = get_provider_info(self.provider_type) or {}
+        # Google-hosted Gemini uses native translator; non-Google bases stay OAI-compat for LiteLLM/proxies.
         if self.provider_type == "gemini":
             _host = (urlparse(self.base_url).hostname or "").lower()
             if _host != "generativelanguage.googleapis.com":
@@ -1575,11 +1605,12 @@ class ExternalProviderClient:
         thread_id: Optional[str] = None,
         compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
-        """fast_mode applies only to Anthropic Opus 5 and 4.8: adds the beta header and speed fast."""
+        """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
 
+        # Managed OpenAI Responses hosts keep literal delimiters; custom and local endpoints need protection.
         managed_custom_responses = (
             self.provider_type == "custom"
             and self.api_type == "responses"
@@ -1594,12 +1625,14 @@ class ExternalProviderClient:
             messages = neutralize_control_markup_in_messages(messages)
             if tools:
                 safe_tools = neutralize_tool_descriptions(tools)
+                # reconcile a forced tool choice when sanitization removes its function from a mixed catalog.
                 tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
                 if not safe_tools:
                     tool_choice = None
                 tools = safe_tools
 
         if not self._is_openai_compatible():
+            # Gemini uses native REST contents/parts; `_stream_gemini` translates it to OpenAI chunk format.
             if self.provider_type == "gemini":
                 async for line in self._stream_gemini(
                     messages,
@@ -1664,6 +1697,7 @@ class ExternalProviderClient:
                 yield line
             return
 
+        # Kimi $web_search: 2-call round-trip with thinking off; forced-function tool_choice suppresses it.
         _kimi_tool_choice_forced_function = (
             isinstance(tool_choice, dict)
             and tool_choice.get("type") == "function"
@@ -1706,9 +1740,11 @@ class ExternalProviderClient:
         }
         if top_p is not None:
             body["top_p"] = top_p
+        # Only alongside stream=True: the field is rejected on a non-streaming request.
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
+            # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
             if self.provider_type == "openai":
                 body["max_completion_tokens"] = max_tokens
             else:
@@ -1722,6 +1758,7 @@ class ExternalProviderClient:
                 repetition_penalty
             )
 
+        # Drop registry-unusable fields so fixed-default models (Kimi k2.6) don't 400 on pydantic defaults.
         from core.inference.providers import get_provider_info
 
         provider_info = get_provider_info(self.provider_type) or {}
@@ -1737,6 +1774,7 @@ class ExternalProviderClient:
             _apply_kimi_k3_controls(body, reasoning_effort)
         elif self.provider_type == "kimi" and enable_thinking is not None:
             if model == "kimi-k2-thinking":
+                # Always on; ignore client toggle to avoid an API-level reject.
                 pass
             elif enable_thinking:
                 body["thinking"] = {"type": "enabled", "keep": "all"}
@@ -1779,6 +1817,7 @@ class ExternalProviderClient:
                 body, self.reasoning_config, enable_thinking, reasoning_effort
             )
 
+        # OpenRouter's `reasoning` gates thinking; `*_MANDATORY_REASONING_MODELS` routes 400 on explicit off.
         if self.provider_type == "openrouter":
             normalized_or_model = model.strip().lower()
             if reasoning_effort in _OPENROUTER_REASONING_EFFORTS:
@@ -1797,9 +1836,11 @@ class ExternalProviderClient:
                 if prompt_cache_ttl == "1h":
                     cache_control["ttl"] = "1h"
                 body["cache_control"] = cache_control
+            # Sticky routing keeps a conversation on the provider that holds its cache.
             if thread_id:
                 body["session_id"] = str(thread_id)[:256]
 
+            # Web plugin works on every model id (unlike `:online`); forced-function tool_choice suppresses it.
             _or_tool_choice_forced_function = (
                 isinstance(tool_choice, dict)
                 and tool_choice.get("type") == "function"
@@ -1821,10 +1862,12 @@ class ExternalProviderClient:
                     body.get("model"),
                 )
 
+        # Forward tools/tool_choice on every OAI-compat route; dropping them silently loses function calling.
         if tools:
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        # JSON mode / guided decoding; dropping `response_format` silently turns output into free prose.
         if response_format is not None:
             body["response_format"] = response_format
 
@@ -1871,8 +1914,10 @@ class ExternalProviderClient:
                 from .http_stream import closing_response_lines
 
                 lines_gen = closing_response_lines(response)
+                # Counters for OAI-compat streams: OpenRouter mid-stream errors are otherwise invisible server-side.
                 event_counts: dict[str, int] = {}
                 chosen_model: Optional[str] = None
+                # OpenRouter sends no web_search_call events; synthesise tool_start/tool_end from url_citation.
                 web_search_active = (
                     self.provider_type == "openrouter"
                     and not tool_choice_disabled
@@ -1906,6 +1951,7 @@ class ExternalProviderClient:
                         return
                     if payload.get("type") != "url_citation":
                         return
+                    # Accept citation fields nested under url_citation (OpenRouter/OpenAI) or flat on the annotation.
                     cit = payload.get("url_citation")
                     if not isinstance(cit, dict):
                         cit = payload
@@ -1962,6 +2008,7 @@ class ExternalProviderClient:
                             data_str = line[len("data:") :].strip()
                             if data_str == "[DONE]":
                                 event_counts["done"] = event_counts.get("done", 0) + 1
+                                # Emit synthetic tool_end with citations before [DONE] so the tool card completes before stream close.
                                 if (
                                     web_search_active
                                     and web_search_tool_started
@@ -1975,6 +2022,7 @@ class ExternalProviderClient:
                                 except Exception:
                                     parsed = None
                                 if isinstance(parsed, dict):
+                                    # Mid-stream error event: OpenRouter returns 200 then surfaces the failure as an SSE error event.
                                     if "error" in parsed:
                                         event_counts["error"] = event_counts.get("error", 0) + 1
                                         logger.warning(
@@ -1984,10 +2032,12 @@ class ExternalProviderClient:
                                         )
                                     else:
                                         event_counts["delta"] = event_counts.get("delta", 0) + 1
+                                    # Latch the first non-empty chunk `model` (the router-picked model) so logs and proxy callers see it.
                                     if chosen_model is None and isinstance(
                                         parsed.get("model"), str
                                     ):
                                         chosen_model = parsed["model"]
+                                    # With web_search on, scan chunk delta and message for url_citation; upstreams place them differently.
                                     if web_search_active:
                                         choices = parsed.get("choices") or []
                                         if isinstance(choices, list):
@@ -2012,12 +2062,13 @@ class ExternalProviderClient:
                         if relayed is None:
                             continue
                         yield relayed
+                    # Stream ended without [DONE] (some upstreams just close): emit tool_end so the card leaves running.
                     if web_search_active and web_search_tool_started and not web_search_tool_ended:
                         yield _build_web_search_tool_end()
                         web_search_tool_ended = True
                 except GeneratorExit:
-                    await response.aclose()
-                    await lines_gen.aclose()
+                    await response.aclose()  # set PoolByteStream._closed=True FIRST
+                    await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
                     logger.info(
@@ -2062,19 +2113,20 @@ class ExternalProviderClient:
         max_tokens: Optional[int],
         reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        """Kimi $web_search runs as two requests; the first is internal and never forwarded to the
-        client."""
+        """Two requests: first is internal; second echoes tool args verbatim as the server runs the search."""
         url = f"{self.base_url}/chat/completions"
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": True,
+            # $web_search forbids thinking; sending the toggle would make the server reject the request with 400.
             "thinking": {"type": "disabled"},
             "tools": [{"type": "builtin_function", "function": {"name": "$web_search"}}],
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
 
+        # Strip body fields the Kimi registry declares unusable (temperature/top_p -- see body_omit in providers.py).
         from core.inference.providers import get_provider_info
 
         provider_info = get_provider_info(self.provider_type) or {}
@@ -2188,6 +2240,7 @@ class ExternalProviderClient:
             )
             return
 
+        # If no search is called, fall back to a plain stream without the builtin tool, as other providers do.
         search_calls = [
             tc for tc in tool_calls_acc.values() if tc["function"]["name"] == "$web_search"
         ]
@@ -2197,6 +2250,7 @@ class ExternalProviderClient:
             )
             fallback_body = dict(body)
             fallback_body.pop("tools", None)
+            # Skips the common body injection, and Kimi sends no timings; include_usage supplies tokens and speed.
             fallback_body["stream_options"] = {"include_usage": True}
             try:
                 async with _client().stream(
@@ -2221,6 +2275,7 @@ class ExternalProviderClient:
                             response.headers.get("Retry-After"),
                         )
                         return
+                    # Manual __anext__ loop, not async for, avoids Python 3.13 + httpcore 1.0.x GeneratorExit interaction.
                     lines_gen = response.aiter_lines().__aiter__()
                     try:
                         while True:
@@ -2229,6 +2284,7 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if line.strip():
+                                # Same rule as the main relay: never let the endpoint emit Unsloth's control vocabulary.
                                 relayed = sanitize_provider_sse_line(line)
                                 if relayed is not None:
                                     yield relayed
@@ -2248,11 +2304,13 @@ class ExternalProviderClient:
                 )
             return
 
+        # Synthesize tool_start with the parsed search query so the web-search card shows "Searching for:".
         first_args_raw = search_calls[0]["function"]["arguments"] or "{}"
         try:
             first_args = _json.loads(first_args_raw)
         except Exception:
             first_args = {}
+        # Kimi $web_search args are an opaque usage receipt, not a query; the search runs server-side.
         logger.info(
             "Kimi $web_search: %d tool_call(s), args[0]=%s",
             len(search_calls),
@@ -2273,6 +2331,7 @@ class ExternalProviderClient:
                 "arguments": first_args if isinstance(first_args, dict) else {},
             }
         )
+        # Search ran server-side, so emit tool_end now or the UI card stays running through the second call.
         yield _build_kimi_tool_end(_synthetic_chunk, tool_call_id, [])
 
         assistant_msg = {
@@ -2293,8 +2352,10 @@ class ExternalProviderClient:
         ]
         followup_body = dict(body)
         followup_body["messages"] = list(messages) + [assistant_msg] + tool_msgs
+        # Request final `usage` (OAI-compat streams omit it) so prompt_tokens reveal injected search context.
         followup_body["stream_options"] = {"include_usage": True}
 
+        # Keep the tool on the second call so the model can search again mid-turn.
         try:
             async with _client().stream(
                 "POST",
@@ -2320,6 +2381,7 @@ class ExternalProviderClient:
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
+                # Latch final usage; a big prompt_tokens is evidence the server injected search results into context.
                 last_usage: Optional[dict[str, Any]] = None
                 annotation_shapes: set[str] = set()
                 try:
@@ -2341,6 +2403,7 @@ class ExternalProviderClient:
                                     usage = parsed.get("usage")
                                     if isinstance(usage, dict):
                                         last_usage = usage
+                                    # Diagnostics only: Kimi sends no url_citation yet, but a future type name would show in the log.
                                     for choice in parsed.get("choices") or []:
                                         if not isinstance(choice, dict):
                                             continue
@@ -2355,6 +2418,7 @@ class ExternalProviderClient:
                                                     annotation_shapes.add(
                                                         str(ann.get("type") or "?")
                                                     )
+                        # Same rule as the main relay: never let the endpoint speak Unsloth's control vocabulary.
                         relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
@@ -2531,6 +2595,7 @@ class ExternalProviderClient:
                                 }
                             )
                         else:
+                            # Remote URL -- Anthropic supports the url source type natively.
                             anthropic_parts.append(
                                 {
                                     "type": "image",
@@ -2541,9 +2606,11 @@ class ExternalProviderClient:
                                 }
                             )
                     elif part.get("type") == "input_document":
+                        # Map Unsloth's input_document (file_data data-URI or file_url) to Anthropic's native `document` block.
                         url = part.get("file_url") or ""
                         data_uri = part.get("file_data") or ""
                         title = part.get("filename")
+                        # Treat a "data:" URI with no base64 payload as missing so the file_url branch takes over.
                         data_uri_valid = False
                         b64data = ""
                         header = ""
@@ -2563,6 +2630,7 @@ class ExternalProviderClient:
                                     "media_type": media_type,
                                     "data": b64data,
                                 },
+                                # Opt into Anthropic's natural-citation pipeline; without it no citations_delta events fire.
                                 "citations": {"enabled": True},
                             }
                             if title:
@@ -2580,6 +2648,7 @@ class ExternalProviderClient:
                             if title:
                                 doc_block["title"] = title
                             anthropic_parts.append(doc_block)
+                # Native API rejects top-level tool_calls: they become tool_use blocks in place, matched by id.
                 native_calls = {
                     block.get("id"): i
                     for i, block in enumerate(anthropic_parts)
@@ -2615,9 +2684,11 @@ class ExternalProviderClient:
                     anthropic_parts = [
                         part for i, part in enumerate(anthropic_parts) if i not in _withheld
                     ]
+                # Skip the message if no usable block survives (e.g. unparseable input_document); empty content 400s.
                 if anthropic_parts:
                     filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
+                # role="tool" follow-ups become tool_result blocks on user messages; OpenAI role=tool is invalid.
                 if msg.get("role") == "tool":
                     _tr_id = msg.get("tool_call_id") or ""
                     _tr_content = msg.get("content")
@@ -2640,6 +2711,7 @@ class ExternalProviderClient:
                         }
                     )
                     continue
+                # Assistant string with OpenAI `tool_calls`: convert to text + tool_use blocks, else tool_calls leaks.
                 if (
                     msg.get("role") == "assistant"
                     and isinstance(msg.get("tool_calls"), list)
@@ -2699,13 +2771,14 @@ class ExternalProviderClient:
         body: dict[str, Any] = {
             "model": model,
             "messages": filtered,
-            "max_tokens": max_tokens or 1024,
+            "max_tokens": max_tokens or 1024,  # required by Anthropic
             "stream": True,
         }
         if not sampling_removed:
             body["temperature"] = temperature
         if top_k is not None and top_k > 0 and not sampling_removed:
             body["top_k"] = top_k
+        # Anthropic caches a prefix only with cache_control; None means on (frontend default), False opts out.
         prompt_caching_enabled = enable_prompt_caching is not False
         # 1h TTL: 2x write vs 1.25x, reads 0.1x for both, so 1h wins after one extra hit.
         cache_marker: dict[str, Any] = {"type": "ephemeral"}
@@ -2714,6 +2787,7 @@ class ExternalProviderClient:
 
         if system:
             if prompt_caching_enabled:
+                # System is the most stable cross-turn prefix; own breakpoint.
                 body["system"] = [
                     {
                         "type": "text",
@@ -2737,6 +2811,7 @@ class ExternalProviderClient:
                     }
                 ]
             elif isinstance(content, list) and content:
+                # Rebuild the tail (do not mutate the caller's list) with cache_control on the final block.
                 head = list(content[:-1])
                 tail = content[-1]
                 if isinstance(tail, dict):
@@ -2751,6 +2826,7 @@ class ExternalProviderClient:
             else ("none", "low", "medium", "high", "xhigh", "max")
         )
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
+        # Claude 4.6 accepts only "max" as top adaptive effort ("xhigh" is 4.7-only), so map xhigh to max.
         if effort == "xhigh" and model.strip().lower().startswith(
             ("claude-opus-4-6", "claude-sonnet-4-6")
         ):
@@ -2782,7 +2858,7 @@ class ExternalProviderClient:
             if adaptive:
                 # summarized display prevents blank Opus 4.7 panels; unlisted older models reject adaptive thinking.
                 body["thinking"] = {"type": "adaptive", "display": "summarized"}
-                # Effort goes under output_config.effort; top-level 400s.
+                # Effort goes under output_config.effort, not top-level (400s). Allowed: low|medium|high|xhigh|max.
                 body["output_config"] = {"effort": effort}
             elif thinking_spec and thinking_spec.kind == "manual":
                 budget_tokens = {"low": 1024, "medium": 2048, "high": 4096}[effort]
@@ -2790,6 +2866,7 @@ class ExternalProviderClient:
                     "type": "enabled",
                     "budget_tokens": budget_tokens,
                 }
+                # Manual thinking needs max_tokens > thinking.budget_tokens; Anthropic rejects otherwise.
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
 
@@ -2821,6 +2898,7 @@ class ExternalProviderClient:
             not _anthropic_tool_choice_disabled and not _anthropic_tool_choice_forced_function
         )
         if _anthropic_tool_choice_disabled and pending_hosted_tools:
+            # A pending server call still needs its declaration on the result-only continuation. Disallow new calls.
             body["tool_choice"] = {"type": "none"}
 
         # Anthropic 400s a history holding tool blocks without `tools`, so a withdrawn catalog stays declared.
@@ -2858,6 +2936,7 @@ class ExternalProviderClient:
                     body["tool_choice"] = {"type": "any"}
                 else:
                     body["tool_choice"] = {"type": "auto"}
+                # Manual thinking rejects forced tool use. Honor the explicit selection on that request.
                 if (
                     body["tool_choice"]["type"] in ("any", "tool")
                     and (body.get("thinking") or {}).get("type") == "enabled"
@@ -2866,6 +2945,7 @@ class ExternalProviderClient:
 
         client_tool_names = {tool["name"] for tool in body.get("tools", [])}
 
+        # Anthropic web_search (date-pinned per model family).
         if "web_search" in pending_hosted_tools or (
             _anthropic_hosted_builtins_allowed
             and enabled_tools
@@ -2882,6 +2962,7 @@ class ExternalProviderClient:
             )
             body["tools"] = anthropic_tools
 
+        # Anthropic web_fetch: only URLs already in conversation. Date-pinned.
         web_fetch_enabled = bool(
             "web_fetch" in pending_hosted_tools
             or (
@@ -2902,6 +2983,7 @@ class ExternalProviderClient:
             )
             body["tools"] = anthropic_tools
 
+        # Server-side code execution; date-pinned tool type per model, all unlocked by the beta header below.
         code_execution_enabled = bool(
             "code_execution" in pending_hosted_tools
             or (
@@ -2955,6 +3037,7 @@ class ExternalProviderClient:
         url = f"{self.base_url}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
+        # Log outgoing config keys (not messages) to prove which thinking / effort fields reached the wire.
         logger.info(
             "Anthropic request shape (model=%s, has_thinking=%s, thinking=%s, "
             "output_config=%s, temperature=%s, has_top_p=%s, has_top_k=%s, "
@@ -2969,6 +3052,7 @@ class ExternalProviderClient:
             body.get("max_tokens"),
         )
 
+        # `pause_turn` maps to None so the UI does not treat it as final; `refusal` maps to content_filter.
         _finish_reason_map: dict[str, Optional[str]] = {
             "end_turn": "stop",
             "max_tokens": "length",
@@ -3014,6 +3098,7 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
+                    # After a 4xx on a sent `container`, emit container_invalidated so the next turn auto-creates.
                     if anthropic_code_exec_container_id and 400 <= response.status_code < 500:
                         lowered = error_text.lower()
                         if "container" in lowered and (
@@ -3035,28 +3120,39 @@ class ExternalProviderClient:
                     )
                     return
 
+                # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
                 lines_gen = response.aiter_lines().__aiter__()
                 thinking_open = False
                 client_tool_indices: dict[int, int] = {}
+                # Held until message_stop so an errored or cut-off stream never executes a partial call.
                 client_tool_chunks: list[str] = []
                 replay_blocks: dict[int, dict[str, Any]] = {}
                 replay_inputs: dict[int, str] = {}
+                # Counters tell "Anthropic never sent thinking_delta" apart from "frontend did not render the chunks".
                 event_counts: dict[str, int] = {}
+                # Query streams as input_json_delta on server_tool_use; results land in web_search_tool_result.
                 current_server_tool_use: Optional[dict[str, Any]] = None
                 current_result_block: Optional[dict[str, Any]] = None
                 web_search_calls: dict[str, dict[str, Any]] = {}
+                # code_execution state for bash/text_editor; parallel to web_search so pills don't collide.
                 current_code_exec_use: Optional[dict[str, Any]] = None
                 current_code_exec_result: Optional[dict[str, Any]] = None
                 code_execution_calls: dict[str, dict[str, Any]] = {}
+                # web_fetch state, kept apart from web_search so a turn using both does not collide.
                 current_web_fetch_use: Optional[dict[str, Any]] = None
                 current_web_fetch_result: Optional[dict[str, Any]] = None
                 web_fetch_calls: dict[str, dict[str, Any]] = {}
+                # Compaction summary arrives on start and/or text_delta; emit on content_block_stop for persistence.
                 current_compaction: Optional[dict[str, Any]] = None
                 compaction_blocks_seen = 0
+                # Deduped citations_delta entries; inline [N] after each cited run, sources sent on message_stop.
                 document_citations: list[dict[str, Any]] = []
+                # Logs generated_files_count (file_id entries v1 drops in bash results) to gauge Files API need.
                 code_execution_generated_files = 0
+                # Emit container_ready _toolEvent only if message_start.message.container.id differs from inbound id.
                 latched_container_id: Optional[str] = None
                 container_id_emitted = False
+                # Log cache usage from message_start and message_delta at stream end; verifiable without dashboard.
                 last_usage: dict[str, Any] = {}
 
                 def _content_chunk(text: str) -> str:
@@ -3117,8 +3213,7 @@ class ExternalProviderClient:
                     return "\n---\n".join(blocks)
 
                 def _format_web_fetch_result(inner: dict[str, Any]) -> str:
-                    """Renders a fetched page as the Title / URL block parseSourcesFromResult
-                    expects; PDF bytes omitted."""
+                    """Title / URL block for parseSourcesFromResult; PDF bytes omitted since title and URL are enough."""
                     inner_type = inner.get("type") or ""
                     if inner_type == "web_fetch_tool_error":
                         return f"Error: {inner.get('error_code', 'unknown')}"
@@ -3132,8 +3227,10 @@ class ExternalProviderClient:
                         if isinstance(source, dict):
                             media_type = source.get("media_type") or ""
                             data = source.get("data") or ""
+                            # Inline a short text preview so the source pill has context; skip PDFs since their body is base64.
                             if media_type.startswith("text/") and isinstance(data, str) and data:
                                 snippet = data[:240].strip()
+                    # Frontend parseSourcesFromResult needs both `Title:` and `URL:`, so fall back to the URL as title.
                     if not title and url:
                         title = url
                     parts: list[str] = []
@@ -3165,6 +3262,7 @@ class ExternalProviderClient:
                             parts.append(f"return_code: {return_code}")
                         return "\n".join(parts) if parts else "(no output)"
                     if inner_type == "text_editor_code_execution_result":
+                        # Result per text_editor command: view=file content, create=is_file_update, str_replace=diff lines.
                         if "lines" in inner and isinstance(inner.get("lines"), list):
                             return "\n".join(str(line) for line in inner["lines"])
                         if "is_file_update" in inner:
@@ -3248,6 +3346,7 @@ class ExternalProviderClient:
                                 }
                             elif block_type == "web_search_tool_result":
                                 tool_use_id = content_block.get("tool_use_id", "")
+                                # Results may arrive whole on the start event or as deltas; finalize on content_block_stop.
                                 content = content_block.get("content") or []
                                 current_result_block = {
                                     "tool_use_id": tool_use_id,
@@ -3296,6 +3395,7 @@ class ExternalProviderClient:
                                 "bash_code_execution_tool_result",
                                 "text_editor_code_execution_tool_result",
                             ):
+                                # Code-exec result arrives whole on the start event; finalize on content_block_stop like web_search.
                                 tool_use_id = content_block.get("tool_use_id", "")
                                 inner = content_block.get("content") or {}
                                 current_code_exec_result = {
@@ -3303,6 +3403,7 @@ class ExternalProviderClient:
                                     "inner": inner if isinstance(inner, dict) else {},
                                 }
                             elif block_type == "compaction":
+                                # Summary may arrive on start AND/OR via text_delta. Capture both; emit on stop.
                                 seed = content_block.get("content") or ""
                                 current_compaction = {
                                     "content": seed if isinstance(seed, str) else "",
@@ -3349,6 +3450,7 @@ class ExternalProviderClient:
                                         }
                                     )
                             if delta_type == "thinking_delta":
+                                # Wrap as <think>...</think> for parseAssistantContent.
                                 thinking_text = delta.get("thinking", "")
                                 if thinking_text:
                                     if not thinking_open:
@@ -3357,6 +3459,7 @@ class ExternalProviderClient:
                                     yield _content_chunk(thinking_text)
                             elif delta_type == "text_delta":
                                 text = delta.get("text", "")
+                                # Compaction text_deltas go to the buffer, never to the user; the summary is opaque internal state.
                                 if current_compaction is not None:
                                     if text:
                                         current_compaction["content"] += text
@@ -3390,6 +3493,7 @@ class ExternalProviderClient:
                                         idx_for_marker = len(document_citations)
                                     yield _content_chunk(f"[{idx_for_marker}]")
                             elif delta_type == "input_json_delta":
+                                # partial_json carries tool inputs (web_search query, code-exec command); goes to the open buffer
                                 partial = delta.get("partial_json", "")
                                 if block_index in client_tool_indices:
                                     client_tool_chunks.append(
@@ -3419,8 +3523,10 @@ class ExternalProviderClient:
                                         replay_inputs.pop(block_index)
                                     )
                                 except _json.JSONDecodeError:
+                                    # max_tokens can leave a partial tool block. Still process its terminal reason.
                                     replay_blocks.pop(block_index)
                             if current_server_tool_use is not None:
+                                # tool_start at server_tool_use block end; tool_end waits for the web_search_tool_result to close.
                                 buffer = current_server_tool_use["buffer"]
                                 query = ""
                                 if buffer:
@@ -3445,6 +3551,7 @@ class ExternalProviderClient:
                                 )
                                 current_server_tool_use = None
                             elif current_result_block is not None:
+                                # tool_end emits results as Title:/URL: blocks; parseSourcesFromResult in the frontend needs that.
                                 tool_use_id = current_result_block["tool_use_id"]
                                 results = current_result_block["results"]
                                 if tool_use_id in web_search_calls:
@@ -3459,6 +3566,7 @@ class ExternalProviderClient:
                                 )
                                 current_result_block = None
                             elif current_code_exec_use is not None:
+                                # tool_start fires at code-exec server_tool_use end; tool_end on the result's content_block_stop.
                                 buffer = current_code_exec_use["buffer"]
                                 parsed_args: dict[str, Any] = {}
                                 if buffer:
@@ -3501,8 +3609,10 @@ class ExternalProviderClient:
                                     replay_blocks.pop(block_index, None)
                                 current_compaction = None
                             elif current_code_exec_result is not None:
+                                # Inner code-execution result is formatted as the text payload that CodeExecutionToolUI renders.
                                 tool_use_id = current_code_exec_result["tool_use_id"]
                                 inner = current_code_exec_result["inner"]
+                                # Track generated-file count for the follow-up Files API PR. v1 drops them.
                                 if isinstance(inner, dict):
                                     file_blocks = inner.get("content")
                                     if isinstance(file_blocks, list):
@@ -3523,6 +3633,7 @@ class ExternalProviderClient:
                                 )
                                 current_code_exec_result = None
                             elif current_web_fetch_use is not None:
+                                # tool_start fires at web_fetch server_tool_use end; tool_end on result content_block_stop.
                                 buffer = current_web_fetch_use["buffer"]
                                 url = ""
                                 if buffer:
@@ -3551,6 +3662,7 @@ class ExternalProviderClient:
                                 )
                                 current_web_fetch_use = None
                             elif current_web_fetch_result is not None:
+                                # End of the web_fetch_tool_result -- format the source pill and emit tool_end.
                                 tool_use_id = current_web_fetch_result["tool_use_id"]
                                 result_text = _format_web_fetch_result(
                                     current_web_fetch_result["inner"]
@@ -3566,6 +3678,7 @@ class ExternalProviderClient:
                                 )
                                 current_web_fetch_result = None
                             elif thinking_open:
+                                # Close <think> at thinking block end; no text_delta may follow (display=omitted, thinking-only).
                                 yield _content_chunk("</think>")
                                 thinking_open = False
 
@@ -3596,6 +3709,7 @@ class ExternalProviderClient:
                                     if c_in or c_out:
                                         last_usage["compaction_input_tokens"] = c_in
                                         last_usage["compaction_output_tokens"] = c_out
+                            # Id comes from message_delta.delta.container, not message_start; container_ready only if changed.
                             delta_obj = event.get("delta") or {}
                             container_obj = delta_obj.get("container")
                             if isinstance(container_obj, dict) and latched_container_id is None:
@@ -3619,7 +3733,7 @@ class ExternalProviderClient:
                                 if thinking_open:
                                     yield _content_chunk("</think>")
                                     thinking_open = False
-                                # pause_turn is not terminal: no finish_reason=stop chunk, which would truncate the UI.
+                                # pause_turn is not terminal: no stop chunk. Unmapped stop_reason is warned, not defaulted to stop.
                                 if stop_reason not in _finish_reason_map:
                                     logger.warning(
                                         "Unmapped Anthropic stop_reason %r (model=%s); "
@@ -3628,6 +3742,7 @@ class ExternalProviderClient:
                                         model,
                                     )
                                 mapped = _finish_reason_map.get(stop_reason, "stop")
+                                # Refusal shows a notice and a _toolEvent so the frontend prunes the turn; finish is content_filter.
                                 if stop_reason == "refusal":
                                     logger.warning(
                                         "Anthropic refusal stop_reason (model=%s)",
@@ -3670,6 +3785,7 @@ class ExternalProviderClient:
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False
+                            # cited_text is truncated server-side to bound SSE bytes; document_citations drive the [N] footnotes.
                             if document_citations:
                                 clean_cits = []
                                 for c in document_citations:
@@ -3684,6 +3800,7 @@ class ExternalProviderClient:
                                         "citations": clean_cits,
                                     }
                                 )
+                            # Final include_usage-style chunk so callers get cache_creation and cache_read without scraping logs.
                             usage_line = _build_usage_chunk(
                                 completion_id,
                                 "anthropic",
@@ -3692,7 +3809,7 @@ class ExternalProviderClient:
                             if usage_line:
                                 yield usage_line
                             yield "data: [DONE]"
-                            await response.aclose()
+                            await response.aclose()  # set PoolByteStream._closed=True FIRST
                             break
 
                         elif event_type == "error":
@@ -3700,6 +3817,7 @@ class ExternalProviderClient:
                                 yield _content_chunk("</think>")
                             error = event.get("error")
                             error_type = error.get("type") if isinstance(error, dict) else None
+                            # An unhashable `type` from a stand-in gateway raised out of here.
                             if not isinstance(error_type, str):
                                 error_type = None
                             yield _error_sse_line(
@@ -3709,10 +3827,11 @@ class ExternalProviderClient:
                             )
                             break
                 except GeneratorExit:
-                    await response.aclose()
-                    await lines_gen.aclose()
+                    await response.aclose()  # set PoolByteStream._closed=True FIRST
+                    await lines_gen.aclose()  # now safe — aclose() is a no-op
                     raise
                 finally:
+                    # Per-event-type counts + web_search summary for triage.
                     web_search_requested = bool(enabled_tools and "web_search" in enabled_tools)
                     web_search_invocations = len(web_search_calls)
                     total_results = sum(
@@ -3727,6 +3846,7 @@ class ExternalProviderClient:
                         and sc["results"].get("type") == "web_search_tool_result_error"
                     ]
                     queries = [sc["query"] for sc in web_search_calls.values() if sc.get("query")]
+                    # cache_read_input_tokens > 0 proves cache_control works; turn 1 shows cache_creation instead.
                     code_execution_invocations = len(code_execution_calls)
                     code_execution_results = sum(
                         1 for c in code_execution_calls.values() if c.get("result") is not None
@@ -3820,7 +3940,7 @@ class ExternalProviderClient:
         """Translates Gemini's native streamGenerateContent SSE into OpenAI chunks; images ride tool_end."""
         import json as _json
 
-        # Validate the model id first: `../cachedContents/x` is path traversal.
+        # Validate model id first: ../ is path traversal; early reject blocks attacker-triggered fetches.
         if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
             yield _error_sse_line(
                 400,
@@ -3829,9 +3949,12 @@ class ExternalProviderClient:
             )
             return
 
+        # Translate OpenAI messages -> Gemini contents. system role promotes to top-level systemInstruction.
         system_text_parts: list[str] = []
         contents: list[dict[str, Any]] = []
+        # OpenAI may drop name on role=tool; recover it from the tool_call since Gemini 400s on empty names.
         tool_call_names: dict[str, str] = {}
+        # Skip role=tool follow-ups for tool_call_ids dropped or natively replayed; else orphan responses.
         _gemini_skip_tool_result_ids: set[str] = set()
         # Decoded-byte cap ~14 MB: base64 expansion + prompt must fit Gemini's ~20 MB limit.
         _GEMINI_REMOTE_IMAGE_MAX_COUNT = 8
@@ -3990,6 +4113,7 @@ class ExternalProviderClient:
                         ):
                             system_text_parts.append(part["text"])
                 continue
+            # Map OpenAI roles to Gemini's two-role contract.
             gemini_role = "model" if role == "assistant" else "user"
             parts: list[dict[str, Any]] = []
             if isinstance(content, str):
@@ -4078,6 +4202,7 @@ class ExternalProviderClient:
                                         "thoughtSignature": _msg_sig,
                                     }
                                     break
+            # Native code_execution/image_generation parts replay from extra_content.google.native_part.
             tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -4101,6 +4226,7 @@ class ExternalProviderClient:
                     if fn_name and isinstance(tc_id, str) and tc_id:
                         tool_call_names[tc_id] = fn_name
 
+                    # Native parts come from extra_content.google.native_part, or args.google.native_part for OAI-compat.
                     _extra = tc.get("extra_content")
                     _native_part = None
                     _google_extra: dict[str, Any] = {}
@@ -4118,6 +4244,7 @@ class ExternalProviderClient:
                                 if not _google_extra:
                                     _google_extra = _args_google
 
+                    # web_search/web_fetch builtin cards are dropped; they must never become fake functionCalls.
                     _name_lc = fn_name.lower() if isinstance(fn_name, str) else ""
                     _is_synthetic_server_builtin = (
                         _name_lc
@@ -4137,6 +4264,7 @@ class ExternalProviderClient:
                         _name_lc in ("code_execution", "image_generation")
                         and isinstance(_native_part, dict)
                     ):
+                        # No replayable native part: skip the call and its role=tool follow-up to avoid orphan responses.
                         if isinstance(tc_id, str) and tc_id:
                             _gemini_skip_tool_result_ids.add(tc_id)
                             tool_call_names.pop(tc_id, None)
@@ -4147,12 +4275,14 @@ class ExternalProviderClient:
                         # Skip the matching role=tool, else Gemini sees an undeclared functionResponse and 400s.
                         if isinstance(tc_id, str) and tc_id:
                             _gemini_skip_tool_result_ids.add(tc_id)
+                        # Gemini 3 needs per-part thoughtSignature replay: native_part.parts holds ordered part wrappers.
                         _native_parts_list = _native_part.get("parts")
                         if isinstance(_native_parts_list, list):
                             for _entry in _native_parts_list:
                                 if isinstance(_entry, dict):
                                     parts.append(_entry)
                             continue
+                        # Legacy native_part: signature applies to a single subpart; for code+result, executableCode gets it.
                         _legacy_sig = _native_part.get("thoughtSignature") or _native_part.get(
                             "thought_signature"
                         )
@@ -4182,12 +4312,14 @@ class ExternalProviderClient:
                             parts.append(_replay_part)
                         continue
 
+                    # Forward tool_call id as functionCall.id so same-name calls with different args can be told apart.
                     function_call_part: dict[str, Any] = {
                         "name": fn_name,
                         "args": args,
                     }
                     if isinstance(tc_id, str) and tc_id:
                         function_call_part["id"] = tc_id
+                    # Gemini 3: thoughtSignature echoed beside functionCall, from extra_content.google.thought_signature.
                     fc_part: dict[str, Any] = {"functionCall": function_call_part}
                     sig = _google_extra.get("thought_signature") or _google_extra.get(
                         "thoughtSignature"
@@ -4196,12 +4328,14 @@ class ExternalProviderClient:
                         fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
             if role == "tool":
+                # Drop follow-up when its tool_call was dropped or replayed natively; else orphan functionResponse.
                 _tc_id_for_skip = msg.get("tool_call_id")
                 if (
                     isinstance(_tc_id_for_skip, str)
                     and _tc_id_for_skip in _gemini_skip_tool_result_ids
                 ):
                     continue
+                # Recover a dropped name from the matching tool_call, since Gemini 400s on an empty name.
                 tool_name = msg.get("name") or msg.get("tool_name") or ""
                 if not tool_name:
                     tc_id = msg.get("tool_call_id")
@@ -4209,6 +4343,7 @@ class ExternalProviderClient:
                         tool_name = tool_call_names[tc_id]
                 response_payload: Any
                 if isinstance(content, list):
+                    # Flatten list-form tool content to text so functionResponse matches the string-content path.
                     _flat_parts: list[str] = []
                     for _cpart in content:
                         if (
@@ -4237,6 +4372,7 @@ class ExternalProviderClient:
                         else {"result": response_payload}
                     ),
                 }
+                # Mirror tool_call_id onto functionResponse.id so Gemini can match results to parallel functionCalls.
                 tc_id = msg.get("tool_call_id")
                 if isinstance(tc_id, str) and tc_id:
                     function_response_part["id"] = tc_id
@@ -4262,6 +4398,7 @@ class ExternalProviderClient:
         if system_text_parts:
             body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_text_parts)}]}
 
+        # Frontend capability matrix limits Gemini sliders to temperature, topP, topK and maxOutputTokens.
         gen_config: dict[str, Any] = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
@@ -4269,6 +4406,7 @@ class ExternalProviderClient:
             gen_config["topP"] = top_p
         if top_k is not None and top_k > 0:
             gen_config["topK"] = top_k
+        # presencePenalty shares the OpenAI sign convention: positive values discourage repetition.
         if presence_penalty:
             gen_config["presencePenalty"] = presence_penalty
         if max_tokens is not None:
@@ -4277,6 +4415,7 @@ class ExternalProviderClient:
         # Only image-capable models accept TEXT+IMAGE modalities; text models 400.
         model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
+        # tool_choice none or forced-function also suppresses implicit image generation, which still bills.
         _tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
@@ -4287,15 +4426,18 @@ class ExternalProviderClient:
             and bool(tool_choice["function"].get("name"))
         )
         _hosted_builtins_allowed = not _tool_choice_disabled and not _tool_choice_forced_function
-        # Image-tier models reject text-only tools and thinkingConfig regardless of the pill.
+        # Image-tier models reject text tools whatever the pill; decouple so Images-off plus Code avoids 400.
         image_tool_requested = bool(
             _hosted_builtins_allowed and enabled_tools and "image_generation" in enabled_tools
         )
+        # Strict tool / thinking strip uses the model-id check.
         is_image_model_strict = is_image_picker_model
+        # The actual modality flip only happens when the user opted in.
         is_image_model = is_image_picker_model and image_tool_requested
         if is_image_model:
             gen_config["responseModalities"] = ["TEXT", "IMAGE"]
         elif is_image_picker_model:
+            # Force TEXT-only so an image-capable model with Images OFF does not still bill for image output.
             gen_config["responseModalities"] = ["TEXT"]
 
         # Gemini 3 uses thinkingLevel (no full off), 2.5 uses thinkingBudget; match 3.x by pattern
@@ -4318,12 +4460,13 @@ class ExternalProviderClient:
         effort_lc = (reasoning_effort or "").strip().lower()
         is_gemma_thinking = bool(re.match(r"^gemma-(?:[4-9]|\d{2,})(?:\.\d+)?-", model_lc))
         if not is_image_model_strict and is_gemma_thinking:
+            # Gemma 4 on the Gemini API is on/off only (thinkingLevel high or minimal) and takes no budget.
             if effort_lc in ("none", "off") or enable_thinking is False:
                 gen_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
             elif effort_lc or enable_thinking is True:
                 gen_config["thinkingConfig"] = {"thinkingLevel": "high"}
         elif not is_image_model_strict and is_gemini3_thinking:
-            # 3.1+ Pro low/medium/high; 3 Pro low/high; Flash minimal..high. Coerce to the allowed set.
+            # Coerce minimal->low on Pro, medium->high on legacy 3 Pro; Flash keeps minimal..high.
             _G3_LEVELS = {"minimal", "low", "medium", "high"}
             level: Optional[str] = None
             if effort_lc in ("none", "off"):
@@ -4331,6 +4474,7 @@ class ExternalProviderClient:
             elif effort_lc == "max":
                 level = "high"
             elif effort_lc in _G3_LEVELS:
+                # Coerce legacy 3-Pro (low/high only) inputs. Undotted `gemini-3-pro` only; any dotted minor is 3.1+.
                 _is_legacy_gemini3_pro = model_lc.startswith("gemini-3-pro")
                 if is_gemini3_pro and effort_lc == "minimal":
                     level = "low"
@@ -4390,6 +4534,7 @@ class ExternalProviderClient:
         )
         code_execution_allowed = not is_image_model_strict
         text_tools_allowed = not is_image_model_strict
+        # tool_choice none or forced-function suppresses hosted builtins, like Anthropic/OpenRouter gates.
         tools_array: list[dict[str, Any]] = []
         if (
             _hosted_builtins_allowed
@@ -4433,6 +4578,7 @@ class ExternalProviderClient:
         )
 
         def _resolve_local_schema_ref(root: Optional[dict[str, Any]], ref: str) -> Optional[Any]:
+            # Resolve a local JSON pointer against the schema root; returns None unless it lands on a dict.
             if not isinstance(root, dict) or not isinstance(ref, str):
                 return None
             if not ref.startswith("#/"):
@@ -4452,11 +4598,13 @@ class ExternalProviderClient:
             root: Optional[dict[str, Any]] = None,
             _seen_refs: Optional[frozenset[str]] = None,
         ) -> Any:
+            # Recursively keep only Gemini OpenAPI 3.0 keys; type [X, null] becomes type X plus nullable true.
             if root is None and isinstance(node, dict):
                 root = node
             if _seen_refs is None:
                 _seen_refs = frozenset()
             if isinstance(node, dict):
+                # Inline $ref targets (Gemini has no $ref); local siblings override, with a cycle guard.
                 _ref = node.get("$ref")
                 if isinstance(_ref, str):
                     if _ref in _seen_refs:
@@ -4480,9 +4628,11 @@ class ExternalProviderClient:
                     if len(_non_null) == 1:
                         _flattened_type = _non_null[0]
                     elif len(_non_null) > 1:
+                        # Keep multi-type unions as anyOf; flattening to the first non-null type silently drops branches.
                         _union_any_of = [{"type": _t} for _t in _non_null if isinstance(_t, str)]
                 for _k, _v in node.items():
                     if _k == "type" and isinstance(_v, list):
+                        # Handled below via _flattened_type.
                         continue
                     if _k not in _GEMINI_ALLOWED_SCHEMA_KEYS:
                         continue
@@ -4518,6 +4668,7 @@ class ExternalProviderClient:
                             if _saw_null:
                                 cleaned.setdefault("nullable", True)
                     elif _k in ("required", "enum", "propertyOrdering"):
+                        # Lists of plain strings; copy verbatim.
                         cleaned[_k] = _v
                     else:
                         cleaned[_k] = _v
@@ -4552,6 +4703,7 @@ class ExternalProviderClient:
             tools_array.append({"functionDeclarations": function_declarations})
         if tools_array:
             body["tools"] = tools_array
+        # OpenAI tool_choice maps to Gemini toolConfig.functionCallingConfig.mode plus allowedFunctionNames.
         if tool_choice is not None and function_declarations and text_tools_allowed:
             _mode: Optional[str] = None
             _allowed: Optional[list[str]] = None
@@ -4583,11 +4735,14 @@ class ExternalProviderClient:
             if _rf_type == "json_schema":
                 _rf_schema = response_format.get("json_schema")
                 if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                    # responseSchema uses the function-declaration OpenAPI subset, so it needs the same scrubbing.
                     _gen_cfg["responseSchema"] = _sanitize_gemini_schema(_rf_schema["schema"])
 
+        # String enable_prompt_caching names a CachedContent made out of band; sent as cachedContent.
         if isinstance(enable_prompt_caching, str) and enable_prompt_caching:
             body["cachedContent"] = enable_prompt_caching
 
+        # Model id is validated at the top of _stream_gemini, so the URL path cannot be traversed.
         url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
@@ -4669,6 +4824,7 @@ class ExternalProviderClient:
                 google["answer_part"] = answer_part
             return {"google": google} if google else None
 
+        # Gemini finish reasons -> OpenAI vocabulary.
         _finish_reason_map: dict[str, Optional[str]] = {
             "STOP": "stop",
             "MAX_TOKENS": "length",
@@ -4685,12 +4841,15 @@ class ExternalProviderClient:
         emitted_function_call_ids: set[str] = set()
         # Swap STOP -> tool_calls once a functionCall is emitted, or OAI clients never run the tool.
         emitted_any_function_call = False
+        # Key on googleSearch actually forwarded, not caller intent, so image turns show no phantom search.
         web_search_active = any("googleSearch" in t for t in tools_array)
         web_search_tool_id = "gemini_web_search"
         web_search_tool_started = False
         web_search_tool_ended = False
         web_search_citations: list[dict[str, str]] = []
+        # tool_call_id minted on the latest executableCode part; codeExecutionResult closes that envelope.
         gemini_code_exec_pending_id: Optional[str] = None
+        # Kept after tool_end so a later inline image joins this card via __IMAGES__:, not a new event.
         last_code_exec_tool_id: Optional[str] = None
         last_code_exec_result_text: str = ""
 
@@ -4729,6 +4888,7 @@ class ExternalProviderClient:
                     )
                     web_search_tool_started = True
 
+                # __anext__ loop as in stream_chat_completion (Python 3.13 + httpcore 1.0.x GeneratorExit ordering).
                 lines_gen = response.aiter_lines().__aiter__()
                 final_finish_reason: Optional[str] = None
                 bare_json = ""
@@ -4780,13 +4940,16 @@ class ExternalProviderClient:
                             )
                             break
 
+                        # Latch usageMetadata across deltas -- the final fragment carries the complete totals.
                         usage_meta = event.get("usageMetadata")
                         if isinstance(usage_meta, dict):
                             last_usage = usage_meta
 
+                        # Blocked prompt (promptFeedback.blockReason, no candidates) must error, not look like empty success.
                         prompt_feedback = event.get("promptFeedback")
                         if isinstance(prompt_feedback, dict) and prompt_feedback.get("blockReason"):
                             block_reason = str(prompt_feedback.get("blockReason"))
+                            # Close the synthetic web_search start so no spinner stays stuck on searching after an error toast.
                             if (
                                 web_search_active
                                 and web_search_tool_started
@@ -4816,6 +4979,7 @@ class ExternalProviderClient:
                         for cand in candidates:
                             if not isinstance(cand, dict):
                                 continue
+                            # Collect groundingMetadata.groundingChunks[].web citations for the tool_end sent at stream close.
                             gm = cand.get("groundingMetadata")
                             if isinstance(gm, dict) and web_search_active:
                                 chunks_list = gm.get("groundingChunks") or []
@@ -4874,6 +5038,7 @@ class ExternalProviderClient:
                                             "",
                                             extra_content = _part_extra,
                                         )
+                                    # functionCall -> OpenAI tool_calls delta envelope.
                                     fc = part.get("functionCall")
                                     if isinstance(fc, dict):
                                         fc_name = fc.get("name") or ""
@@ -4893,6 +5058,7 @@ class ExternalProviderClient:
                                                 "arguments": _json.dumps(fc_args),
                                             },
                                         }
+                                        # Gemini 3 needs the part thoughtSignature echoed next turn; stow it on extra_content.google.
                                         thought_sig = part.get("thoughtSignature") or part.get(
                                             "thought_signature"
                                         )
@@ -4915,6 +5081,7 @@ class ExternalProviderClient:
                                             ],
                                         }
                                         yield f"data: {_json.dumps(tool_chunk)}"
+                                    # Gemini code execution parts become code_execution tool events so CodeExecutionToolUI renders them.
                                     exec_code = part.get("executableCode")
                                     if isinstance(exec_code, dict):
                                         code_str = exec_code.get("code") or ""
@@ -4924,6 +5091,7 @@ class ExternalProviderClient:
                                                 or f"gemini_code_exec_{time.time_ns()}"
                                             )
                                             gemini_code_exec_pending_id = code_tool_id
+                                            # Keep the raw part; Gemini rejects a generic functionCall echo of executableCode in history.
                                             _exec_thought_sig = part.get(
                                                 "thoughtSignature"
                                             ) or part.get("thought_signature")
@@ -4965,10 +5133,12 @@ class ExternalProviderClient:
                                     if isinstance(exec_result, dict):
                                         outcome = exec_result.get("outcome") or ""
                                         output = exec_result.get("output") or ""
+                                        # Non-OK Gemini outcomes (OUTCOME_FAILED, OUTCOME_DEADLINE_EXCEEDED) are surfaced as stderr.
                                         if outcome and outcome != "OUTCOME_OK":
                                             result_text = f"[{outcome}]\n{output}".rstrip()
                                         else:
                                             result_text = output
+                                        # Pair tool_end with the latest executableCode tool_start, else exec_result.id, else a fresh id.
                                         pair_id = (
                                             gemini_code_exec_pending_id
                                             or exec_result.get("id")
@@ -5015,6 +5185,7 @@ class ExternalProviderClient:
                                         last_code_exec_tool_id = pair_id
                                         last_code_exec_result_text = result_text
                                         gemini_code_exec_pending_id = None
+                                    # inlineData: a Nano Banana image (own card), or a sandbox plot passed via the __IMAGES__: marker.
                                     inline = part.get("inlineData")
                                     if isinstance(inline, dict):
                                         b64 = inline.get("data") or ""
@@ -5033,6 +5204,7 @@ class ExternalProviderClient:
                                                     + "\n__IMAGES__:"
                                                     + _json.dumps([image_uri])
                                                 )
+                                                # Keep inlineData so follow-up turns replay the plot with its per-part thoughtSignature.
                                                 _plot_thought_sig = part.get(
                                                     "thoughtSignature"
                                                 ) or part.get("thought_signature")
@@ -5075,6 +5247,7 @@ class ExternalProviderClient:
                                                         },
                                                     }
                                                 )
+                                                # Gemini 3 image edits need the prior thoughtSignature echoed on the inline image part.
                                                 _img_thought_sig = part.get(
                                                     "thoughtSignature"
                                                 ) or part.get("thought_signature")
@@ -5085,6 +5258,7 @@ class ExternalProviderClient:
                                                     "image_b64": b64,
                                                     "image_mime": mime,
                                                 }
+                                                # Keep inlineData so multi-turn edits replay the original image as native Gemini history.
                                                 _img_part_entry: dict[str, Any] = {
                                                     "inlineData": {
                                                         "mimeType": mime,
@@ -5119,6 +5293,7 @@ class ExternalProviderClient:
                                 if mapped is not None:
                                     final_finish_reason = mapped
 
+                    # End-of-stream order: web_search tool_end, finish_reason, usage, then [DONE]; match other helpers.
                     if web_search_active and web_search_tool_started and not web_search_tool_ended:
                         blocks: list[str] = []
                         for cit in web_search_citations:
@@ -5162,10 +5337,12 @@ class ExternalProviderClient:
                         }
                         yield f"data: {_json.dumps(finish_chunk)}"
 
+                    # Fold thoughtsTokenCount into output usage; it is billed output, else cost calculators undercount.
                     if isinstance(last_usage, dict):
                         thought_tokens = last_usage.get("thoughtsTokenCount") or 0
                         candidate_tokens = last_usage.get("candidatesTokenCount") or 0
                         prompt_tokens = last_usage.get("promptTokenCount") or 0
+                        # Fold toolUsePromptTokenCount into input: Gemini bills it apart, so total_tokens would undercount.
                         tool_use_prompt_tokens = last_usage.get("toolUsePromptTokenCount") or 0
                         translated_usage = {
                             "input_tokens": prompt_tokens + tool_use_prompt_tokens,
@@ -5184,6 +5361,7 @@ class ExternalProviderClient:
 
                     yield "data: [DONE]"
                 finally:
+                    # Close response first so lines_gen.aclose() is a no-op.
                     await response.aclose()
                     await lines_gen.aclose()
 
@@ -5295,6 +5473,7 @@ class ExternalProviderClient:
 
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
+        # Also drop the role=tool follow-up, else an orphan function_call_output breaks Responses requests.
         skipped_server_builtin_call_ids: set[str] = set()
         openai_replay_items: list[dict[str, Any]] = []
         previous_response_id: Optional[str] = None
@@ -5351,10 +5530,12 @@ class ExternalProviderClient:
                     input_items.append(responses_function_output(_call_id, _output_text))
                 continue
 
+            # Skip server-side builtin cards (builtin name plus _server_tool marker) when translating tool_calls.
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
                 # Collected: reasoning items lead the turn, known only after the builtin filter below.
                 _turn_items: list[dict[str, Any]] = []
+                # Emit assistant text before its function_call items to match the original response.output order.
                 if isinstance(content, str) and content:
                     _turn_items.append({"role": "assistant", "content": content})
                 elif isinstance(content, list):
@@ -5425,6 +5606,7 @@ class ExternalProviderClient:
                             if _replay:
                                 input_items.append(_replay)
                 input_items.extend(_turn_items)
+                # Assistant text was already emitted above in order, so skip the generic content branches.
                 continue
 
             if isinstance(content, str):
@@ -5443,6 +5625,7 @@ class ExternalProviderClient:
                     elif part_type == "image_url":
                         url = part.get("image_url", {}).get("url", "")
                         if url:
+                            # Responses takes image_url as a flat string (https:// and data: URLs both accepted).
                             translated_parts.append({"type": "input_image", "image_url": url})
                     elif (
                         part_type == "reasoning"
@@ -5475,6 +5658,7 @@ class ExternalProviderClient:
                                 {"type": "image_generation_call", "id": call_id}
                             )
                     elif part_type == "input_document":
+                        # Map Unsloth's `input_document` onto Responses' `input_file`.
                         file_url = part.get("file_url")
                         file_data = part.get("file_data")
                         filename = part.get("filename")
@@ -5501,6 +5685,7 @@ class ExternalProviderClient:
                     input_items.append({"role": role, "content": translated_parts})
 
         if previous_response_id:
+            # Prefer previous_response_id over item replay; replay is only for old image_generation_call ids.
             openai_replay_items = []
         elif (
             _openai_image_replay_requires_reasoning(model)
@@ -5563,6 +5748,7 @@ class ExternalProviderClient:
                 body["top_p"] = top_p
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
+        # summary: auto emits reasoning summaries (else the panel stays blank); skip when effort is none.
         summary_unsupported = bool(
             _OPENAI_REASONING_SUMMARY_UNSUPPORTED.match(model.strip().lower())
         )
@@ -5588,7 +5774,7 @@ class ExternalProviderClient:
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
 
-        # Responses uses text.format with name/schema/strict flattened beside `type`.
+        # Responses uses text.format, not response_format, or JSON mode degrades to free prose.
         _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
         if _rf_type == "json_object":
             body["text"] = {"format": {"type": "json_object"}}
@@ -5656,6 +5842,7 @@ class ExternalProviderClient:
                     _entry["strict"] = bool(_fn["strict"])
                 responses_user_function_tools.append(_entry)
 
+        # Translate tool_choice into the Responses shape.
         _responses_tc_string: Optional[str] = None
         if isinstance(tool_choice, str):
             _tc_lc = tool_choice.strip().lower()
@@ -5676,6 +5863,7 @@ class ExternalProviderClient:
             if isinstance(_name, str) and _name:
                 responses_tool_choice = {"type": "function", "name": _name}
 
+        # A pinned user function suppresses hosted builtins (privacy, billing), like Gemini and Anthropic.
         _responses_image_generation_enabled = (
             _responses_hosted_builtins_allowed and image_generation_enabled_openai
         )
@@ -5704,6 +5892,7 @@ class ExternalProviderClient:
             ):
                 tools_array.append({"type": "web_search"})
             if _responses_hosted_builtins_allowed and code_execution_enabled_openai:
+                # Reuse the thread's container; stale ids return 400 and are cleared via container_invalidated.
                 shell_env: dict[str, Any]
                 if openai_code_exec_container_id:
                     shell_env = {
@@ -5985,23 +6174,31 @@ class ExternalProviderClient:
                         yield _json.dumps(completion)
                         return
 
+                    # Same manual __anext__ loop as stream_chat_completion; see it for GeneratorExit/aclose ordering.
                     lines_gen = response.aiter_lines().__aiter__()
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
+                    # Give each function call its own delta.tool_calls[].index so parallel calls do not collide.
                     saw_function_call = False
                     function_call_index = 0
+                    # Latched from response.completed/incomplete; input_tokens_details.cached_tokens shows cache hits.
                     last_usage: Optional[dict[str, Any]] = None
+                    # Citations arrive on text deltas, not per call, so they go on the LAST web_search tool_end only.
                     web_search_calls: dict[str, dict[str, Any]] = {}
                     all_url_citations: list[dict[str, Any]] = []
+                    # shell_call and shell_call_output pair by call_id; emit tool_start/tool_end like the Anthropic UX.
                     shell_calls: dict[str, dict[str, Any]] = {}
+                    # Latch container_id from the response or item.environment; emit container_ready when it changes.
                     latched_container_id: Optional[str] = None
                     container_id_emitted = False
                     current_openai_response_id: Optional[str] = None
                     last_openai_reasoning_replay_item: Optional[dict[str, Any]] = None
                     openai_reasoning_replay_items: dict[str, dict[str, Any]] = {}
                     image_generation_calls_started: set[str] = set()
+                    # Partial citation marker held across deltas; see _split_pending_citation_tail.
                     pending_marker_tail: str = ""
+                    # Deferred segments wait on unseen source_ids, kept in arrival order so output never leapfrogs.
                     pending_citation_segments: list[str] = []
 
                     def _record_openai_response_id(payload: dict[str, Any]) -> None:
@@ -6046,10 +6243,13 @@ class ExternalProviderClient:
                         if not tail:
                             return ""
                         if _OPENAI_CITE_STOP not in tail:
+                            # Unterminated marker tail is dropped whole, else a residual cite<sid> would leak as plain text.
                             return ""
                         rendered = _replace_openai_citation_markers(tail, all_url_citations)
+                        # Scrub residual private-use bytes (e.g. a partial opener).
                         for ch in ("", "", ""):
                             rendered = rendered.replace(ch, "")
+                        # Drop orphan cite<sid> literals: meaningless without the closing byte and a matching url_citation.
                         rendered = re.sub(r"^cite\S*", "", rendered)
                         return rendered
 
@@ -6175,6 +6375,7 @@ class ExternalProviderClient:
                                     out.append(text)
                             return "".join(out)
                         if isinstance(payload, dict):
+                            # OpenAI reasoning summary text sits in different envelope fields per event variant; try each key.
                             for key in ("text", "delta", "content", "summary"):
                                 if key in payload:
                                     text = _extract_reasoning_text(payload.get(key))
@@ -6198,6 +6399,7 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
+                    # The type may live only in the SSE `event:` field, not in the data object.
                     sse_event_name = ""
                     try:
                         while True:
@@ -6219,6 +6421,7 @@ class ExternalProviderClient:
                             if not data_str:
                                 continue
                             if data_str == "[DONE]":
+                                # Flush any held-over partial marker and strip private-use bytes so garbled glyphs do not leak.
                                 if pending_marker_tail:
                                     flushed = _flush_pending_marker_tail(pending_marker_tail)
                                     pending_marker_tail = ""
@@ -6227,6 +6430,7 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
+                                # Force-drain any segment still awaiting an annotation; lingering codepoints drop.
                                 tail_flushed = _drain_pending_segments(
                                     force = True,
                                 )
@@ -6264,10 +6468,12 @@ class ExternalProviderClient:
 
                             if event_type == "response.output_text.delta":
                                 delta_text = event.get("delta", "")
+                                # Record inline annotations before the rewriter so same-delta source_ids resolve in the lookup.
                                 for ann in event.get("annotations") or []:
                                     if isinstance(ann, dict):
                                         _record_url_citation(ann)
                                 if delta_text or pending_marker_tail:
+                                    # Prepend the held-over tail so a marker straddling two SSE events resolves cleanly.
                                     combined = pending_marker_tail + delta_text
                                     head, pending_marker_tail = _split_pending_citation_tail(
                                         combined
@@ -6276,6 +6482,7 @@ class ExternalProviderClient:
                                         if reasoning_open:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
+                                        # Retry deferred segments first to keep order; the needed annotation may have arrived inline above.
                                         flushed = _drain_pending_segments(
                                             force = False,
                                         )
@@ -6321,6 +6528,7 @@ class ExternalProviderClient:
                                         item_id,
                                         _extract_web_search_action(item),
                                     )
+                                # Register shell_call eagerly so out-of-order output still links back; probe env.container_id early.
                                 if isinstance(item, dict) and item.get("type") == "shell_call":
                                     item_id = item.get("id", "") or (f"sc_{len(shell_calls)}")
                                     shell_calls.setdefault(
@@ -6397,6 +6605,7 @@ class ExternalProviderClient:
                                             "arguments": arguments,
                                         }
                                     )
+                                    # Url-variant cards have no query, so they name the page from url.
                                     query = arguments.get("query") or ""
                                     per_call_result = f"Searching: {query}" if query else ""
                                     yield _emit_tool_event(
@@ -6407,6 +6616,7 @@ class ExternalProviderClient:
                                         }
                                     )
                                 elif item.get("type") == "shell_call":
+                                    # Join action.commands with newlines; the shared card renderer expects a single command string.
                                     item_id = item.get("id", "") or (f"sc_{len(shell_calls)}")
                                     action = item.get("action") or {}
                                     commands = (
@@ -6439,6 +6649,7 @@ class ExternalProviderClient:
                                             },
                                         }
                                     )
+                                    # Fallback: output may be bundled on the shell_call done event itself.
                                     embedded_output = item.get("output")
                                     if isinstance(embedded_output, list) and embedded_output:
                                         shell_calls[item_id]["output"] = embedded_output
@@ -6451,8 +6662,10 @@ class ExternalProviderClient:
                                             }
                                         )
                                 elif item.get("type") == "shell_call_output":
+                                    # Match shell_call_output on call_id, which is the shell_call id, so its card completes.
                                     call_id = item.get("call_id") or item.get("id") or ""
                                     output = item.get("output") or []
+                                    # Skip if the bundled-output path already finalised this card.
                                     if shell_calls.get(call_id, {}).get("tool_end_emitted"):
                                         continue
                                     if call_id in shell_calls:
@@ -6467,6 +6680,7 @@ class ExternalProviderClient:
                                         }
                                     )
                                 elif item.get("type") == "image_generation_call":
+                                    # Base64 image comes from result or b64_json; a ns-resolution id keeps concurrent gens unique.
                                     raw_item_id = item.get("id")
                                     item_id = raw_item_id or f"img_{time.time_ns()}"
                                     prompt_in = (
@@ -6502,6 +6716,7 @@ class ExternalProviderClient:
                                         }
                                     )
                                 elif item.get("type") == "function_call":
+                                    # Translate to Chat-Completions delta.tool_calls.
                                     fn_call_id = (
                                         item.get("call_id")
                                         or item.get("id")
@@ -6562,6 +6777,7 @@ class ExternalProviderClient:
                                 completed_usage = (event.get("response") or {}).get("usage")
                                 if isinstance(completed_usage, dict):
                                     last_usage = completed_usage
+                                # Flush unterminated citation tail once all annotations are recorded; strips private-use bytes.
                                 if pending_marker_tail:
                                     flushed = _flush_pending_marker_tail(pending_marker_tail)
                                     pending_marker_tail = ""
@@ -6570,6 +6786,7 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
+                                # Force-drain segments still awaiting an annotation.
                                 tail_flushed = _drain_pending_segments(
                                     force = True,
                                 )
@@ -6581,6 +6798,7 @@ class ExternalProviderClient:
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
+                                # Probe response.container_id and response.container.id, since the docs do not pin the field.
                                 response_obj = event.get("response") or {}
                                 if isinstance(response_obj, dict):
                                     probe_id = response_obj.get("container_id")
@@ -6606,6 +6824,7 @@ class ExternalProviderClient:
                                         }
                                     )
                                     container_id_emitted = True
+                                # Overwrite the last web_search card with citations; the extractor flatMaps all cards.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
                                     blocks: list[str] = []
@@ -6621,6 +6840,7 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Final flush: finalise any orphan shell_call so the card stops spinning.
                                 for sc_id, sc_state in shell_calls.items():
                                     if sc_state.get("tool_end_emitted"):
                                         continue
@@ -6656,6 +6876,7 @@ class ExternalProviderClient:
                                     ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
+                                # Emit the include_usage chunk after finish_reason so callers can surface cached_tokens.
                                 usage_line = _build_usage_chunk(
                                     completion_id,
                                     "openai",
@@ -6670,6 +6891,7 @@ class ExternalProviderClient:
                                 incomplete_usage = incomplete_response.get("usage")
                                 if isinstance(incomplete_usage, dict):
                                     last_usage = incomplete_usage
+                                # Truncated streams can leave a half-marker in the buffer, so flush it as response.completed does.
                                 if pending_marker_tail:
                                     flushed = _flush_pending_marker_tail(pending_marker_tail)
                                     pending_marker_tail = ""
@@ -6678,6 +6900,7 @@ class ExternalProviderClient:
                                             yield _chunk_with_text("</think>")
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
+                                # Force-drain any segment still awaiting an annotation; lingering codepoints drop.
                                 tail_flushed = _drain_pending_segments(
                                     force = True,
                                 )
@@ -6689,6 +6912,7 @@ class ExternalProviderClient:
                                 if reasoning_open:
                                     yield _chunk_with_text("</think>")
                                     reasoning_open = False
+                                # Same citation backfill as response.completed.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
                                     blocks = []
@@ -6704,6 +6928,7 @@ class ExternalProviderClient:
                                             "result": "\n---\n".join(blocks),
                                         }
                                     )
+                                # Truncated streams also finalise orphan shell_calls, mirroring the response.completed flush.
                                 for sc_id, sc_state in shell_calls.items():
                                     if sc_state.get("tool_end_emitted"):
                                         continue
@@ -6731,6 +6956,7 @@ class ExternalProviderClient:
                                     ],
                                 }
                                 yield f"data: {_json.dumps(chunk)}"
+                                # Also emit the usage chunk for length-truncated responses so cached_tokens is still reported.
                                 usage_line = _build_usage_chunk(
                                     completion_id,
                                     "openai",
@@ -6740,6 +6966,7 @@ class ExternalProviderClient:
                                     yield usage_line
 
                             elif event_type in ("response.failed", "error"):
+                                # Surface the failure to the client; the outer route emits [DONE] during its cleanup.
                                 yield _error_sse_line(
                                     502,
                                     _openai_response_error_message(event),
@@ -6751,12 +6978,14 @@ class ExternalProviderClient:
                         await lines_gen.aclose()
                         raise
                     finally:
+                        # Per-turn tool summary for triage.
                         web_search_requested = bool(enabled_tools and "web_search" in enabled_tools)
                         web_search_invocations = len(web_search_calls)
                         total_citations = len(all_url_citations)
                         queries = [
                             sc["query"] for sc in web_search_calls.values() if sc.get("query")
                         ]
+                        # On /v1/responses cached tokens sit at usage.input_tokens_details, not prompt_tokens_details.
                         cached_input_tokens = None
                         if isinstance(last_usage, dict):
                             details = last_usage.get("input_tokens_details")
@@ -6950,6 +7179,7 @@ class ExternalProviderClient:
         if language:
             data["language"] = language
         if timestamp_granularities:
+            # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
             data["timestamp_granularities[]"] = list(timestamp_granularities)
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
@@ -7194,6 +7424,7 @@ class ExternalProviderClient:
                 continue
             base_id = entry.get("baseModelId")
             name = entry.get("name") or ""
+            # ``name`` arrives as ``"models/gemini-2.5-flash"``; the chat path uses the bare id.
             short_id = (
                 base_id
                 if isinstance(base_id, str) and base_id
@@ -7248,6 +7479,7 @@ class ExternalProviderClient:
         return models
 
     async def _with_ollama_capabilities(self, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # A working /v1/models must still list when /api/tags fails.
         try:
             native = await self._list_ollama_native_models()
         except (httpx.HTTPError, ValueError) as exc:
@@ -7444,6 +7676,7 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
         error = payload.get("error")
         source = error if isinstance(error, dict) else payload
         text = error if isinstance(error, str) else source.get("message")
+        # Gemini sends an int `code`; prefer whichever label is a string.
         code = next(
             (
                 c
@@ -7453,6 +7686,7 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
             None,
         )
         if not isinstance(text, str) or not text.strip():
+            # FastAPI-style error bodies put detail as a string or a list of {msg, loc} validation entries.
             detail = payload.get("detail")
             if isinstance(detail, str):
                 text = detail
@@ -7465,6 +7699,7 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
                 text = "; ".join(msgs) or None
 
     if not isinstance(text, str) or not text.strip():
+        # Non-JSON bodies are used as text, collapsed and capped so a stray HTML page cannot flood chat.
         raw = " ".join(message.split())[:500] if isinstance(message, str) else ""
         if isinstance(payload, dict) or not raw:
             return f"{provider_type} returned HTTP {status_code} with no error details."
@@ -7474,6 +7709,7 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
     return f"{text} ({code})" if code and code not in text else text
 
 
+# A mid-stream error keeps the status its type maps to, so a rate limit still reads as 429.
 _ANTHROPIC_ERROR_STATUS = {
     "invalid_request_error": 400,
     "authentication_error": 401,
@@ -7664,6 +7900,7 @@ def _build_usage_chunk(
         cc_breakdown = last_usage.get("cache_creation")
         if isinstance(cc_breakdown, dict) and cc_breakdown:
             usage_block["cache_creation"] = cc_breakdown
+        # Pass usage.speed through so the cost ledger applies the 6x multiplier, no re-derivation.
         speed = last_usage.get("speed")
         if speed in ("fast", "standard"):
             usage_block["speed"] = speed
@@ -7681,6 +7918,7 @@ def _build_usage_chunk(
             "total_tokens": prompt_tokens + completion_tokens,
             "prompt_tokens_details": prompt_details,
         }
+        # Mirror output_tokens_details (reasoning_tokens) into completion_tokens_details for SDKs.
         out_details = last_usage.get("output_tokens_details")
         if isinstance(out_details, dict) and out_details:
             usage_block["completion_tokens_details"] = dict(out_details)

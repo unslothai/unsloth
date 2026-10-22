@@ -25,10 +25,10 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
-# amd-smi on Windows initialises ROCm on first call, which can take 15-25 s.
+# amd-smi on Windows initialises the full ROCm runtime on first call, which can take 15-25 s on cold hardware. Linux is consistently < 2 s.
 _AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
-# Stop polling amd-smi after this many consecutive failures; each Windows failure may pop UAC.
+# Circuit breaker: stop polling amd-smi after this many consecutive failures (each Windows failure may pop a UAC/DiskPart elevation prompt).
 _AMD_SMI_FAILURE_LIMIT = 3
 _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
@@ -61,7 +61,7 @@ def _run_amd_smi(
             _amd_smi_disabled = True
         return None
     if shutil.which("amd-smi") is None:
-        # Missing amd-smi: disable at once instead of spending the 3-strike breaker.
+        # amd-smi does not exist on Windows and can be absent on minimal Linux, so disable the poller in one step instead of burning the 3-strike breaker on guaranteed FileNotFoundError spawns; Unsloth's VRAM display falls back to torch mem_get_info.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi not found on PATH; GPU utilization polling via "
@@ -71,7 +71,7 @@ def _run_amd_smi(
         return None
     _amd_env = child_env_without_native_path_secret()
     if platform.system() == "Windows":
-        # Belt-and-suspenders against elevation; the real guard is _amd_smi_allowed().
+        # RunAsInvoker belt-and-suspenders for any manifest-elevating helper; the real guard is _amd_smi_allowed() above. Mirrors install scripts.
         _amd_env = {**_amd_env, "__COMPAT_LAYER": "RunAsInvoker"}
     try:
         result = subprocess.run(
@@ -86,6 +86,7 @@ def _run_amd_smi(
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         if isinstance(e, FileNotFoundError):
+            # Raced a PATH change after the which() check above; absence is expected on Windows (no AMD product ships an amd-smi CLI there).
             logger.debug("amd-smi not found (not in PATH): %s", e)
         else:
             logger.warning("amd-smi query failed: %s", e)
@@ -175,6 +176,7 @@ def _parse_numeric(value: Any) -> Optional[float]:
         f = float(value)
         return f if math.isfinite(f) else None
     if isinstance(value, str):
+        # Strip units like "W", "C", "%", "MB", "MiB", "GB", "GiB" etc.
         cleaned = re.sub(r"\s*[A-Za-z/%]+$", "", value.strip())
         if not cleaned or cleaned.lower() in ("n/a", "none", "unknown"):
             return None
@@ -194,6 +196,7 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         unit = str(value.get("unit", "")).strip().lower()
         raw_value = value.get("value")
     elif isinstance(value, str):
+        # Extract unit suffix from strings like "192 GiB" or "8192 MB"
         m = re.match(r"^\s*([\d.]+)\s*([A-Za-z]+)\s*$", value.strip())
         if m:
             unit = m.group(2).lower()
@@ -202,7 +205,7 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     if num is None:
         return None
 
-    # GPU tools use binary units even when labeled GB/MB.
+    # GPU tools use binary units even when labeled "GB"/"MB", so treat GB/GiB and MB/MiB the same.
     if "gib" in unit or "gb" in unit:
         return num * 1024
     if "mib" in unit or "mb" in unit:
@@ -212,7 +215,7 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
     if unit in ("b", "byte", "bytes"):
         return num / (1024 * 1024)
 
-    # No unit: default to MB, the amd-smi convention for bare numbers.
+    # No explicit unit: default to MB (the amd-smi convention for bare numbers). A bytes-above-~10M heuristic was dropped because it misclassified small VRAM allocations; modern amd-smi always ships explicit units.
     return num
 
 
@@ -241,7 +244,7 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     else:
         gpu_util = _parse_numeric(usage)
 
-    # Check each key parses: dict.get() can return "N/A" instead of falling through.
+    # Temperature: try keys in priority order, checking each parses to a real number (dict.get() can return "N/A" strings rather than falling through).
     temp_data = gpu_data.get("temperature", {})
     temp = None
     if isinstance(temp_data, dict):
@@ -304,6 +307,7 @@ def get_physical_gpu_count() -> Optional[int]:
         return None
     if isinstance(data, list):
         return len(data)
+    # Some versions return a dict with a "gpu"/"gpus" key; guard with isinstance so a malformed scalar/string response can't raise AttributeError.
     if not isinstance(data, dict):
         return None
     gpus = data.get("gpu", data.get("gpus", []))
@@ -330,6 +334,7 @@ def _gpu_entries(data: Any) -> list[tuple[int, dict]]:
     for fallback_idx, gpu_data in enumerate(gpu_list):
         if not isinstance(gpu_data, dict):
             continue
+        # Use the AMD-reported GPU ID, else the enumeration index. _parse_numeric handles bare ints/floats/strings and the {"value", "unit"} dict shape.
         raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:
@@ -419,6 +424,7 @@ def _first_visible_amd_gpu_id() -> Optional[str]:
         raw = raw.strip()
         if raw == "" or raw == "-1":
             return None
+        # Drop empty tokens, tolerating typos like ``",1"`` while still falling through to the next env var when every token is empty (``,,,``).
         tokens = [t.strip() for t in raw.split(",") if t.strip()]
         if tokens:
             return tokens[0]
@@ -445,7 +451,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
     metrics = _extract_gpu_metrics(gpu_data)
     if not _has_real_metrics(metrics):
-        # No usable fields: report unavailable so the UI shows no ghost device.
+        # Envelope with no usable fields: surface as unavailable so the UI doesn't render a ghost device.
         return {"available": False}
     metrics["available"] = True
     return metrics
@@ -483,6 +489,7 @@ def get_visible_gpu_utilization(
             continue
         metrics = _extract_gpu_metrics(gpu_data)
         if not _has_real_metrics(metrics):
+            # Skip ghost entries (no usable fields) so the UI doesn't show an all-None device row.
             continue
         metrics["index"] = idx
         metrics["index_kind"] = "physical"
@@ -674,6 +681,7 @@ def _vulkan_loader_allows(path: str) -> bool:
     return any(_vulkan_glob_matches(pattern, name) for pattern in select) if select else True
 
 
+# ld.so's own defaults, plus the multiarch directories Debian and Ubuntu install into.
 _DEFAULT_LIBRARY_DIRS = (
     "/lib",
     "/lib64",
@@ -759,6 +767,7 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
             continue
         if _out.returncode != 0:
             continue
+        # "\tlibfoo.so.1 (libc6,x86-64) => /usr/lib/libfoo.so.1"
         _names = {
             line.strip().split(" ", 1)[0]
             for line in (_out.stdout or "").splitlines()
@@ -827,6 +836,7 @@ def _icd_manifest_is_usable(path: str) -> bool:
     if not (os.path.isabs(library) or "/" in library or "\\" in library):
         return _a_bare_soname_resolves(library)
     if not os.path.isabs(library):
+        # Relative to the manifest's directory, per the loader's interface document.
         library = os.path.join(os.path.dirname(path), library)
     try:
         return os.path.isfile(library)
@@ -876,6 +886,7 @@ def _icd_library_path(path: str) -> "str | None":
             return _candidate
         if _first is None:
             _first = _candidate
+    # No 64-bit copy: return whatever exists, so a 32-bit-only registration is read from the object.
     return _first
 
 
@@ -1196,6 +1207,7 @@ def _groups_that_own(paths: list) -> tuple:
             continue
         # POSIX uses only the owner class once the uid matches, so joining the group cannot help.
         if _st.st_uid == os.getuid():
+            # Owner bits without rw mean the node is shut, not the mode; counted external like `already`.
             if _st.st_mode & stat.S_IRUSR and _st.st_mode & stat.S_IWUSR:
                 external.append(path)
             else:
@@ -1322,6 +1334,7 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
         if not _selector_exposes_every_gpu(
             _value,
             count,
+            # ROCr terminates its list on a repeat; clr does not.
             repeat_ends_the_list = _name == "ROCR_VISIBLE_DEVICES",
         ):
             return True
@@ -1352,6 +1365,7 @@ def _repair_account() -> Optional[str]:
     except (KeyError, OSError):
         return None
     except (ImportError, AttributeError):
+        # No pwd module at all, which is Windows, where none of these nodes exist.
         return os.environ.get("USER") or os.environ.get("LOGNAME") or "$USER"
 
 
@@ -1406,6 +1420,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             _adds = " ".join(f"--group-add {_g}" for _g in unnamed)
             _noun = "GID" if len(unnamed) == 1 else "GIDs"
             _verb = "which has" if len(unnamed) == 1 else "which have"
+            # Creating the group names only the GID; the account and node still need fixing, one per GID.
             _each = "it" if len(unnamed) == 1 else "each of them"
             _pairs = "; ".join(
                 f"sudo groupadd -g {_g} amdgpu{_g} && "
@@ -1414,6 +1429,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             )
             # One groupadd/usermod pair per GID; && stops usermod hitting a same-named wrong group.
             if user is None:
+                # No passwd account to add, so the bare-host half cannot run and the container half is the repair.
                 parts.append(
                     f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry "
                     f"on this system, and this uid has no passwd entry either, so neither "

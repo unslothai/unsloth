@@ -35,7 +35,7 @@ def _workdir_alias(plan):
     try:
         workdir = mxc_policy._safe_canonical_path(plan.workdir, directory = True)
     except Exception:
-        return None, ()
+        return None, ()  # build_launch_request refuses the same workdir with the real reason
     lease = mxc_drive_alias.acquire(workdir)
     if lease is None:
         return None, (mxc_drive_alias.LIMITATION_UNAVAILABLE,)
@@ -126,6 +126,7 @@ def capability_snapshot(
             "launches stay fast; turn that off in the same place (or set "
             f"{mxc_read_grants.PERSISTENT_GRANTS_ENV}=0) to keep every entry temporary."
         )
+    # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
     host_prep = (
         mxc_probe.host_prep_remediation()
         if dacl and not available and not shell_incompatible
@@ -221,6 +222,7 @@ def prepare(plan, capability):
             cancelled = isinstance(exc, mxc_adapter.MxcLaunchCancelled)
             refused = getattr(exc, "stage", None) == "policy"
             if plan.requested_mode == "auto" and not (may_have_started or cancelled or refused):
+                # The same environment as any other unisolated launch, session packages included.
                 kwargs = {
                     **kwargs,
                     "env": with_session_packages(kwargs.get("env") or plan.env, plan.workdir),

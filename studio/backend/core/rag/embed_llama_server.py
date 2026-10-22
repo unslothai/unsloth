@@ -47,6 +47,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
+# httpx transport errors meaning "the server is gone" -> trigger a respawn.
 _TRANSPORT_ERRORS = (
     httpx.ConnectError,
     httpx.ReadError,
@@ -114,6 +115,7 @@ def _gguf_pooling_at(path: str, mtime_ns: int, size: int) -> str:
     if value in _GGUF_POOLING:
         return _GGUF_POOLING[value]
     if value is None:
+        # Older Nomic embedders omit pooling metadata: mean-pool that family; unknown archs keep legacy CLS.
         return _GGUF_POOLING_DEFAULT.get((arch or "").lower(), "cls")
     return "cls"
 
@@ -160,22 +162,28 @@ class LlamaServerBackend:
     """Manages a llama.cpp embedding subprocess and talks to it over HTTP."""
 
     def __init__(self) -> None:
+        # Lifecycle (spawn/restart/kill) is serialized; HTTP requests are not.
         self._lifecycle_lock = threading.Lock()
+        # Unload waits for in-flight encode/tokenize/probe calls and bars restarts after unpublish.
         self._operation_condition = threading.Condition()
         self._active_operations = 0
         self._operation_local = threading.local()
+        # Repo/pooling from this thread's last encode, since the shared backend may switch models meanwhile.
         self._served_identity_local = threading.local()
         self._closed = False
         self._process: subprocess.Popen | None = None
         self._port: int | None = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: threading.Thread | None = None
+        # dim() takes _serve_lock like requests; reentrant because dim() calls encode() on the same thread.
         self._dim: int | None = None
         self._max_tokens: int | None = None
         # Readiness and request must be atomic: a model swap between them misroutes the POST.
         self._serve_lock = threading.RLock()
         self._model_path: str | None = None
+        # Read when the path is adopted: the running server keeps this pooling even if the file later vanishes.
         self._model_pooling: str | None = None
+        # A Settings change makes the cached path/dim stale, forcing a re-resolve and respawn (see _ensure_ready).
         self._model_repo: str | None = None
         self._binary: str | None = None
         self._binary_path_revision: int | None = None
@@ -230,7 +238,7 @@ class LlamaServerBackend:
                 "llama-server. Install llama.cpp or set LLAMA_SERVER_PATH / "
                 "UNSLOTH_LLAMA_CPP_PATH."
             )
-        # Resolve the real executable first: an entrypoint wrapper loses DYLD_* to SIP.
+        # Resolve the real executable before the probe: an entrypoint loses DYLD_* to SIP.
         binary = _resolve_entrypoint(binary)
         self._assert_embedding_support(binary)
         self._binary = binary
@@ -266,6 +274,7 @@ class LlamaServerBackend:
 
     def _assert_embedding_support(self, binary: str) -> None:
         help_text = self._help_text(binary)
+        # Empty help -> assume capable (a missing flag still fails at spawn).
         if help_text and "--embedding" not in help_text:
             raise RuntimeError(
                 "the bundled llama-server build lacks --embedding support; "
@@ -279,12 +288,14 @@ class LlamaServerBackend:
         from utils.models.model_config import _local_gguf_load_path, colocated_split_shards
         from utils.paths import normalize_path
 
+        # Normalize like the other probes, else a WSL user's C: path GGUF goes to the Hub as a bad filename.
         p = Path(normalize_path(model)).expanduser()
 
         if p.is_file() and p.suffix.lower() == ".gguf":
             return None if is_appledouble_metadata(p) else str(p)
         if p.is_dir():
             files = [f for f in p.iterdir() if not is_appledouble_metadata(f)]
+            # Same pick as a hub listing gets, and its name tiebreak resolves a directory of split shards to shard 1.
             remaining = list(files)
             while remaining:
                 picked = LlamaServerBackend._pick_gguf(remaining, key = lambda f: f.name)
@@ -292,6 +303,7 @@ class LlamaServerBackend:
                     break
                 # llama-server opens split siblings implicitly, so an incomplete family is unusable.
                 if colocated_split_shards(picked)[1]:
+                    # Enter a split family at shard 1 with its full symlink set, as the chat loader does for local GGUF.
                     return str(_local_gguf_load_path(picked))
                 remaining = [f for f in remaining if f != picked]
             raise RuntimeError(f"no .gguf file found in local model dir {model!r}")
@@ -359,6 +371,7 @@ class LlamaServerBackend:
             for n in names
             if name_of(n).lower().endswith(".gguf")
             and "mmproj" not in name_of(n).lower()
+            # Drafters are companions like mmproj: a cache holding only one would read as holding the embedder.
             and not _is_mtp_drafter(name_of(n))
         ]
         if not usable:
@@ -369,6 +382,7 @@ class LlamaServerBackend:
             if require_variant:
                 return None
             match = usable
+        # Name breaks a length tie: a directory scan yields no guaranteed order.
         return sorted(match, key = lambda n: (len(name_of(n)), name_of(n)))[0]
 
     @staticmethod
@@ -378,13 +392,14 @@ class LlamaServerBackend:
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.paths import resolve_cached_repo_id_case
 
+        # Casing-differing repo ids still match the cache folder; a miss re-downloads or fails offline.
         cased = resolve_cached_repo_id_case(repo_id)
         repo_dir = Path(active_hf_hub_cache()) / f"models--{cased.replace('/', '--')}"
         try:
             rev = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
         except (OSError, ValueError):
             return None
-        # A ref must be a bare commit hash; a separator would join out of the cache.
+        # A ref file holds a bare commit hash; a separator would join out of the cache.
         if not rev or rev in (".", "..") or "/" in rev or "\\" in rev:
             return None
         snapshot = repo_dir / "snapshots" / rev
@@ -407,12 +422,14 @@ class LlamaServerBackend:
             ]
         except OSError:
             return None
+        # Split sets serve only when whole; drop an unservable pick and retry, or it shadows a complete one.
         while files:
             pick = LlamaServerBackend._pick_gguf(
                 files,
                 key = lambda p: p.relative_to(snapshot).as_posix(),
                 require_variant = require_variant,
             )
+            # exists() guards only the window since the scan; is_file() dropped evicted blobs.
             if pick is None or not pick.exists():
                 return None
             if colocated_split_shards(pick)[1]:
@@ -446,10 +463,12 @@ class LlamaServerBackend:
         """Uses the caller's pinned model, not the live setting, which would resolve other weights."""
         account_path(model_name, reference = True)
         model = model_name or config.effective_embedding_model()
+        # Captured once; tagged with its repo, so a mid-download setting change reads as stale, respawning.
         desired = config.effective_gguf_repo_for_embedding_model(model)
         if self._model_path is not None and self._model_repo == desired:
             if Path(self._model_path).is_file():
                 return self._model_path
+            # Process stopped here; a remembered cache path may be evicted, so re-resolve via cache/Hub.
             self._model_path = None
             self._model_pooling = None
             self._dim = None
@@ -457,6 +476,7 @@ class LlamaServerBackend:
         local = self._resolve_local_gguf(model)
         if local is not None:
             return self._adopt_model_path(local, desired)
+        # Only the preferred repo; a fallback-cached file must not pre-empt a companion the hub can resolve.
         planned = self._planned_family_path(model, desired)
         if planned is not None:
             try:
@@ -465,10 +485,13 @@ class LlamaServerBackend:
             except Exception:  # noqa: BLE001 - a settings write must not fail a load
                 pass
             return self._adopt_model_path(planned, desired)
+        # Companion repo, then the naming variants, then the model repo itself.
         repo = desired
         candidates = list(dict.fromkeys([repo, *config.gguf_repo_candidates(model)]))
+        # Retire the marker here, or the model stays cache-only and later eviction reads as never downloaded.
         cached = self._resolve_cached_gguf(desired)
         if cached is not None:
+            # Repo may lack the configured quant: take any complete cached quant; never go online while pending.
             try:
                 from utils.embedding_model_settings import clear_stored_download_pending
                 clear_stored_download_pending(model)
@@ -481,15 +504,20 @@ class LlamaServerBackend:
         except Exception:  # noqa: BLE001 - old/unavailable settings store
             download_pending = False
         if download_pending:
+            # Variant is not cached here, which happens two ways that need opposite answers.
             cached = self._resolve_cached_gguf(desired, require_variant = False)
             if cached is not None:
+                # Repo publishes no such variant, so this quant is what the picker fetched: retire the marker.
                 if self._is_planned_family(model, desired, cached):
+                    # Serve a stand-in instead of failing the index; keep the marker or it pins the wrong quant.
                     try:
                         from utils.embedding_model_settings import clear_stored_download_pending
                         clear_stored_download_pending(model)
                     except Exception:  # noqa: BLE001 - a settings write must not fail a load
                         pass
+                # Typed so /v1/embeddings maps it to 409 as the ST path does; a bare error hit the 502 catch-all.
                 return self._adopt_model_path(cached, desired)
+            # Only when the hub named no file; a transfer failing on its own (disk, checksum) must still surface.
             from .embeddings import EmbeddingModelDownloadRequiredError
 
             raise EmbeddingModelDownloadRequiredError(
@@ -520,6 +548,7 @@ class LlamaServerBackend:
                 if not path.is_file():
                     return None
                 paths.append(path)
+            # Ordered shard 1..N by the planner, so the first is where llama-server enters the family.
             return str(paths[0]) if paths else None
         except Exception:  # noqa: BLE001 - an unreadable record answers nothing
             return None
@@ -553,6 +582,7 @@ class LlamaServerBackend:
         self._max_tokens = None
         return self._model_path
 
+    # A listing, not a transfer: a working hub answers well inside a second.
     _LIST_DEADLINE_S = 20.0
 
     def _resolve_uncached_model_path(self, desired: str, candidates: list[str]) -> str:
@@ -584,6 +614,7 @@ class LlamaServerBackend:
                     break
                 errors.append(f"{candidate!r}: no .gguf files")
             if filename is None:
+                # Fetch the whole split family: llama-server given -m shard1 opens the sibling shards itself.
                 for candidate in candidates:
                     cached = self._resolve_cached_gguf(candidate, require_variant = False)
                     if cached is not None:
@@ -600,6 +631,7 @@ class LlamaServerBackend:
             from utils.hf_cache_settings import active_hf_hub_cache
 
             cache_dir = active_hf_hub_cache()
+            # A shutdown refusal is terminal: the CPU fallback would hit the same latch and be refused again.
             downloaded = None
             for name in family:
                 fetched = hf_hub_download(
@@ -612,6 +644,7 @@ class LlamaServerBackend:
                     downloaded = fetched
         return self._adopt_model_path(downloaded, desired)
 
+    # Min free VRAM (MiB) for the embedder; below this, auto stays on CPU.
     _MIN_GPU_FREE_MIB = 1024
 
     def _use_gpu(self) -> bool:
@@ -633,6 +666,7 @@ class LlamaServerBackend:
             return True
         from core.inference.llama_cpp import LlamaCppBackend
 
+        # [(idx, free_mib)], honors CVD
         gpus = LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
@@ -668,6 +702,7 @@ class LlamaServerBackend:
         ]
         # Raising -ub preallocates n_vocab * n_ubatch * 4 bytes; /props does not report the batch.
         cmd += ["-ub", str(_UBATCH_SIZE)]
+        # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
 
@@ -683,24 +718,27 @@ class LlamaServerBackend:
             env = _with_dyld_path(env, _binary_lib_dir(binary))
         elif use_gpu:
             if sys.platform == "win32":
+                # Chat's DLL search path: without it a venv-hosted cudart is never found and the CUDA build runs on the CPU.
                 from core.inference.llama_cpp import _llama_lib_dir
                 path_dirs = LlamaCppBackend._build_windows_path_dirs(
                     str(_llama_lib_dir(binary)), sys.prefix, os.environ.get("CUDA_PATH", "")
                 )
                 env["PATH"] = ";".join(path_dirs) + ";" + env.get("PATH", "")
             else:
-                # Unresolved on purpose: resolving moves the first LD_LIBRARY_PATH entry of symlinked installs.
+                # Path(binary).parent, unresolved: resolving would move the first LD_LIBRARY_PATH entry of every symlinked install.
                 self._add_linux_cuda_libs(env, str(Path(binary).parent))
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
                 from core.inference.llama_cpp import LlamaCppBackend
 
-                # prefer_rocr: a HIP-only mask still lets HSA enumerate and crash on unsupported agents.
+                # prefer_rocr: a HIP-only mask still lets HSA enumerate, and die on, the unsupported agent.
                 LlamaCppBackend._emit_child_gpu_visibility(
                     env, ",".join(str(i) for i in _pinned), prefer_rocr = True
                 )
                 logger.info("pinning the embed server to arch-supported GPU(s) %s", _pinned)
+        # Not else: a macOS CPU start still has to blank the devices.
         if not use_gpu:
+            # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
             # HIP ignores CUDA_VISIBLE_DEVICES when HIP_VISIBLE_DEVICES is set; leave ROCR mask alone (#7624).
             env["HIP_VISIBLE_DEVICES"] = "-1"
@@ -720,7 +758,7 @@ class LlamaServerBackend:
             return
         arch = platform.machine()
         lib_dirs = [binary_dir]
-        # glob.escape: a prefix with [brackets] would be read as a pattern.
+        # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
         site = os.path.join(glob.escape(sys.prefix), "lib", "python*", "site-packages")
         pip_dirs = []
         for pattern in (
@@ -771,6 +809,7 @@ class LlamaServerBackend:
         try:
             self._spawn_once(use_gpu, model_name)
         except RuntimeError:
+            # A cached GGUF can change in place; capture pooling per spawn so the flag matches stored identity.
             if is_process_shutting_down():
                 raise
             if use_gpu and not config.embed_device_requires_gpu():
@@ -787,6 +826,7 @@ class LlamaServerBackend:
     ) -> None:
         binary = self._resolve_binary()
         model_path = self._resolve_model_path(model_name)
+        # Unload/rebuild is routine; a grow-only registry pins every retired backend and its stdout tail.
         pooling = _gguf_pooling(model_path)
         self._model_pooling = pooling
         port = config.EMBED_PORT or self._find_free_port()
@@ -881,6 +921,7 @@ class LlamaServerBackend:
                 logger.error("llama-server embedder exited early (code %s)", code)
                 return False
             try:
+                # trust_env=False: a proxy that 503s 127.0.0.1 must not block this probe.
                 if httpx.get(url, timeout = 2.0, trust_env = False).status_code == 200:
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
@@ -951,6 +992,7 @@ class LlamaServerBackend:
         except Exception as e:  # noqa: BLE001
             logger.warning("error killing llama-server embedder: %s", e)
         finally:
+            # A survivor must stay recorded so the next startup sweep can reap it.
             if proc.poll() is not None:
                 forget_pid(proc.pid)
             self._process = None
@@ -971,6 +1013,7 @@ class LlamaServerBackend:
                 self._client.close()
             except Exception:  # noqa: BLE001
                 pass
+            # Embedder may swap mid-call, so report the backend actually used (see encode_with_identity).
             try:
                 atexit.unregister(self._shutdown)
             except Exception:  # noqa: BLE001 - teardown must not raise
@@ -997,6 +1040,7 @@ class LlamaServerBackend:
         last_exc: Exception | None = None
         for attempt in range(2):
             with self._serve_lock:
+                # Held across readiness AND the request, so a swap can only land between whole requests.
                 self._ensure_ready(model_name)
                 try:
                     resp = self._client.post(
@@ -1161,6 +1205,7 @@ class LlamaServerBackend:
                     limit = min(limit, running)
                 elif running:
                     limit = running
+                # Past one batch llama.cpp returns a 500, not the 400 this limit exists to give.
                 batch = self._server_batch()
                 if batch:
                     limit = min(limit, batch) if limit else batch

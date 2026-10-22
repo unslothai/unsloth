@@ -31,6 +31,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _LINK_FARM_DIRNAME = "unsloth-audiocpp-links"
+# Records which repo files a farm entry mirrors, so pruning needs no catalog.
 _SOURCE_MARKER = ".unsloth-source.json"
 # The Windows audiocpp_server cannot open longer model paths, even with the long-path prefix.
 _WINDOWS_MAX_MODEL_PATH = 259
@@ -104,6 +105,7 @@ def missing_files(
             return []
         if first is None:
             first = missing
+    # Measured on refs/main (unpinned downloads land there), not the older snapshot with fewest misses.
     return first if first is not None else [(f.path, f.size) for f in model.variant.files]
 
 
@@ -114,7 +116,7 @@ def _relative(model: AudioCppModel, repo_path: str) -> Path:
     if prefix and path.startswith(prefix):
         path = path[len(prefix) :]
     parts = path.split("/")
-    # Repo file names are untrusted: "..\\x" would land outside the farm.
+    # Repo file names are untrusted: "embeddings/..\\..\\x" would land outside the farm.
     if any(p in ("", ".", "..") or ":" in p for p in parts):
         from core.inference.audio_cpp_server import AudioCppUnavailableError
         raise AudioCppUnavailableError(f"Refusing the model file path {repo_path!r}.")
@@ -126,7 +128,7 @@ def _served_path(model: AudioCppModel, farm: Path) -> Path:
 
 
 def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> str:
-    """Server-config path: the GGUF, or a package directory. Raises FileNotFoundError if not downloaded."""
+    """Server-config path: the GGUF under its real name, or a package directory. Raises FileNotFoundError if not downloaded."""
     root = hub_cache if hub_cache is not None else _hub_cache()
     found = _find(model, root)
     if found is None:
@@ -143,6 +145,7 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
         base = snapshot / model.folder if model.folder else snapshot
         return str(base if model.is_package else snapshot / model.variant.primary)
     prune_link_farm(root)
+    # One short dir per model/variant; files keep their layout (PocketTTS reads embeddings/ beside GGUF).
     farm_root = _link_farm_root(root)
     if _is_link(farm_root):
         _unlink_link(farm_root)
@@ -155,7 +158,7 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
         rel = _relative(model, entry.path)
         dst = farm / rel
         blob = Path(os.path.realpath(src))
-        # A link planted anywhere between the farm and the file would redirect the write.
+        # A link planted anywhere between the farm and the file would take the write elsewhere.
         for parent in [dst.parent, *dst.parent.parents]:
             if parent == farm_root.parent:
                 break
@@ -171,11 +174,13 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
                 f"The audio runtime needs a writable folder beside the Hugging Face cache ({farm_root}): "
                 f"{exc}. Move the Hugging Face cache in Settings."
             ) from exc
+        # Unique per call: concurrent first loads (dictation skips the load lock) must not unlink each other.
         tmp = dst.with_name(f"{dst.name}.unsloth-tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
         try:
             try:
                 os.link(blob, tmp)
             except OSError as exc:
+                # Another volume or a filesystem without hardlinks: a copy is the only way to give the file its name.
                 logger.info("audio.cpp: hardlink failed for %s (%s); copying", rel, exc)
                 shutil.copyfile(blob, tmp)
                 shutil.copystat(blob, tmp)
@@ -255,7 +260,7 @@ def _source_still_cached(model_dir: Path, hub_cache: Path) -> bool:
 
 
 def prune_link_farm(hub_cache: Optional[Path] = None) -> int:
-    """Drops farm entries whose model left the cache: a hardlink would keep the blob's disk alive."""
+    """Drops farm entries whose model left the cache (a hardlink would keep its disk alive); entries with no source record too. Never raises."""
     removed = 0
     try:
         root = hub_cache if hub_cache is not None else _hub_cache()
@@ -264,12 +269,14 @@ def prune_link_farm(hub_cache: Optional[Path] = None) -> int:
             return 0
         for model_dir in list(farm.iterdir()):
             if _is_link(model_dir):
+                # Never materialize's work: drop the link itself, never what it points at.
                 _unlink_link(model_dir)
                 continue
             if not model_dir.is_dir():
                 continue
             keep = _source_still_cached(model_dir, root)
             if not keep and not (model_dir / _SOURCE_MARKER).exists():
+                # A materialize in flight writes its marker last; only an old entry lacks one for long.
                 try:
                     if time.time() - model_dir.stat().st_mtime < 3600:
                         keep = True
@@ -278,6 +285,7 @@ def prune_link_farm(hub_cache: Optional[Path] = None) -> int:
             files, dirs = _walk_no_links(model_dir)
             for path in files:
                 try:
+                    # Staging files of a live materialize are young; only a crashed one is old.
                     stale_tmp = (
                         ".unsloth-tmp" in path.name and time.time() - path.stat().st_mtime > 3600
                     )
@@ -287,6 +295,7 @@ def prune_link_farm(hub_cache: Optional[Path] = None) -> int:
                 except OSError:
                     continue
             if keep:
+                # A kept model's empty folders may be ones a concurrent materialize has just made.
                 continue
             for directory in sorted([*dirs, model_dir], key = lambda p: -len(p.parts)):
                 try:

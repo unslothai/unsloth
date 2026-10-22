@@ -106,6 +106,7 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     lay.rotary_emb = model.pos_embed(shapes, lay.image_pad_mask, device = device)
     lay.image_ids, lay.target_token_mask = model.build_token_metadata(lay.image_pad_mask, shapes)
     lay.prefix_len = int((~lay.target_token_mask).sum())
+    # Decode steps read rows [prefix_len:] only; all-image tails never need the text projection.
     lay.tail_is_image = bool(lay.image_pad_mask[lay.prefix_len :].all())
     lay.vlm_row = img_mask[0].clone()  # the caller may reuse and rewrite its mask
     lay._segments = None
@@ -150,7 +151,7 @@ def _layout_for(
     if state is None:
         state = {"recent": [], "by_content": {}}
         model.__dict__["_unsloth_q21_layouts"] = state
-    # Only a cached step may trust img_mask identity (its KV cache fixes the prefix).
+    # Only a cached step may trust img_mask identity (its KV cache fixes the prefix); others check content.
     version = _mask_version(img_mask)
     if reuse_identity:
         for ref, key, lay in state["recent"]:
@@ -203,6 +204,7 @@ def _cached_core(
     batch_size = hidden_states.shape[0]
     device = hidden_states.device
     hidden_states = model.img_in(hidden_states)
+    # Keep the stock (batch, total, dim) layout so the blocks see the same strides.
     full = torch.empty((batch_size, total, hidden_states.shape[2]), dtype = text_dtype, device = device)
     full[:, prefix_len:] = hidden_states[:, hidden_states.shape[1] - (total - prefix_len) :]
 
@@ -372,7 +374,7 @@ def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
         "kv_cache_mode",
         "return_dict",
     }
-    # LoRA scale rides attention_kwargs via the forward's decorator, which graph steps bypass.
+    # LoRA scale rides in attention_kwargs through the forward's decorator, which the graph step bypasses.
     if set(kwargs) - known or kwargs.get("attention_kwargs"):
         return None
     if kv_cache is None or not torch.is_tensor(hidden_states) or not torch.is_tensor(timestep):
@@ -599,7 +601,7 @@ def _make_forward(mod: Any, stock: Any) -> Any:
     wrapped = lora_scale("attention_kwargs")(forward) if callable(lora_scale) else forward
     wrapped.__unsloth_q21_fast_step__ = True
     wrapped.__unsloth_stock_forward__ = stock
-    # Read by diffusion_capture_safe.
+    # Read by diffusion_capture_safe: decode steps record as CUDA graphs through graph_plan.
     wrapped.__unsloth_graph_plan__ = graph_plan
     wrapped.__unsloth_graph_sticky__ = GRAPH_STICKY
     wrapped.__unsloth_graph_placed__ = placed_step

@@ -62,6 +62,7 @@ CAPTURE_SAFE_ENV = "UNSLOTH_DIFFUSION_CAPTURE_SAFE"
 
 _HUNYUANIMAGE_CLS = "HunyuanImageTransformer2DModel"
 
+# HunyuanVideo-1.5 (diffusers 0.36.0-0.40.0): is_t2v is a device bool that a host if reads; the merge uses mask indexing, with padded byt5/mllm rows zeroed
 _HUNYUANIMAGE_MERGE_BLOCK: tuple[str, ...] = (
     "# reorder and combine text tokens: combine valid tokens first, then padding",
     "new_encoder_hidden_states = []",
@@ -128,6 +129,7 @@ def merge_text_streams(
 
 _HUNYUANVIDEO15_CLS = "HunyuanVideo15Transformer3DModel"
 
+# The source-level decorator (@apply_lora_scale, from 0.37) re-applies when the def executes, so the rebuilt function keeps the installed LoRA handling
 _HV15_T2V_BLOCK: tuple[str, ...] = (
     "is_t2v = torch.all(image_embeds == 0)",
     "if is_t2v:",
@@ -307,9 +309,11 @@ def _rebuild_forward(
     for (prev, _), (nxt, _) in zip(spans, spans[1:]):
         if nxt[0] < prev[1]:
             raise RuntimeError("the rewritten blocks overlap")
+    # Splice from the bottom so earlier spans keep their line indices.
     for (start, end), replacement in reversed(spans):
         indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
         lines = lines[:start] + [indent + replacement] + lines[end:]
+    # Declined at load so status reads "off" instead of arming a refusing wrapper; Qwen-Image-2.1 lands here unless diffusion_qwenimage21's fast step is installed
     new_source = "\n".join(lines) + "\n"
     filename = f"<unsloth capture-safe {getattr(target, '__qualname__', 'forward')}>"
     namespace = dict(vars(module))
@@ -320,6 +324,7 @@ def _rebuild_forward(
     rebuilt = namespace.get(target.__name__)
     if not callable(rebuilt):
         raise RuntimeError("the rebuilt source did not define the forward")
+    # Tracebacks and inspect.getsource resolve through linecache.
     linecache.cache[filename] = (len(new_source), None, new_source.splitlines(True), filename)
     if _signature_key(rebuilt) != _signature_key(forward):
         raise RuntimeError("the rebuilt forward's signature differs from the stock one")
@@ -351,6 +356,7 @@ def _rewrite_hunyuanvideo15(forward: Callable) -> Callable:
     )
 
 
+# class name -> (why the stock forward cannot be captured, rewriter)
 _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     _HUNYUANIMAGE_CLS: (
         "boolean-mask indexing in its text-stream merge syncs the host",
@@ -363,6 +369,7 @@ _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     ),
 }
 
+# One short read: a pick is blocked on this in the UI, so a slow Hub must not stall the picker, and a timeout is just another fail-open
 _UNCAPTURABLE: dict[str, str] = {
     "QwenImage21Transformer2DModel": "its pipeline passes the prefix KV cache as a Python object "
     "on every step; the Unsloth fast step that replays decode steps from tensors is not installed",
@@ -385,6 +392,7 @@ def resolve(cls: type) -> tuple[Optional[Callable], Optional[str]]:
     owner = _defining_class(cls)
     planned = vars(owner).get("forward") if owner is not None else None
     if getattr(planned, "__unsloth_graph_plan__", None) is not None:
+        # A Studio forward that plans its own capture-safe calls (Qwen-Image-2.1's fast step).
         if capture_safe_disabled():
             return (
                 None,

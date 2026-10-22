@@ -232,6 +232,7 @@ _MODELS_CACHE_MAX_ENTRIES = 32
 _models_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Outlives the cache TTL: a slug listed for this plan stays saveable afterwards.
 _offered_models: dict[str, dict[str, dict[str, Any]]] = {}
+# Which ChatGPT account each catalog belongs to; a rebind can change the plan's slugs.
 _catalog_accounts: dict[str, str] = {}
 
 
@@ -244,7 +245,7 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
     display_name = item.get("display_name")
     context_window = item.get("context_window")
     modalities = item.get("input_modalities")
-    # Tolerate scalars: `or []` only covers falsy values.
+    # Tolerate scalars: or [] only covers falsy values, and a scalar raised TypeError that dropped the whole catalog
     levels = item.get("supported_reasoning_levels")
     efforts = [
         level["effort"]
@@ -287,6 +288,7 @@ def offered_subscription_model_ids(provider_id: str) -> set[str]:
 _stale_catalogs: set[str] = set()
 
 
+# Per-connection ticket of the newest catalog read; an overtaken read cannot commit over it.
 _catalog_requests: dict[str, int] = {}
 # Global counter, never reissued, so popping a ticket safely retires in-flight reads.
 _catalog_request_serial = 0
@@ -332,6 +334,7 @@ def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any
 
 
 def forget_subscription_models(provider_id: str) -> None:
+    # Dropping the ticket retires in-flight reads; the never-reissued serial stops a late one matching.
     _catalog_requests.pop(provider_id, None)
     _models_cache.pop(provider_id, None)
     _offered_models.pop(provider_id, None)
@@ -347,6 +350,7 @@ async def list_subscription_models(
 ) -> list[dict[str, Any]]:
     """Slugs the ChatGPT plan can reach (others 400 upstream); ``force`` bypasses the cache on reload."""
     if _catalog_accounts.get(provider_id) not in (None, account_id):
+        # Reauthorizing as another account drops the old catalog; nothing else clears it on reconnect.
         forget_subscription_models(provider_id)
     if not force:
         cached = cached_subscription_models(provider_id)
@@ -373,7 +377,7 @@ async def list_subscription_models(
             params = {"client_version": OPENAI_CODEX_CLIENT_VERSION},
         )
         if response.status_code == 401:
-            # Upstream may reject a token before expiry; spend one forced refresh like the responses transport.
+            # Upstream may reject a token before expiry; one forced refresh like the responses transport, else the editor cannot load a catalog.
             try:
                 access_token, account_id = await codex_auth.resolve_access(
                     provider_id,
@@ -386,7 +390,7 @@ async def list_subscription_models(
                     status = 401,
                 ) from exc
             except Exception as exc:
-                # Refresh failure is transient, not a reauthorization.
+                # Refresh failure is transient, not reauthorization: treating it as one sends the user to reconnect a connection whose credentials are probably fine.
                 raise CodexTransportError("Could not refresh ChatGPT authorization.") from exc
             response = await client.get(
                 url,
@@ -394,7 +398,7 @@ async def list_subscription_models(
                 params = {"client_version": OPENAI_CODEX_CLIENT_VERSION},
             )
         if response.status_code == 401:
-            # Record rejection under the write guard so a concurrent rotation is not overwritten.
+            # Record rejection against that token under the write guard, or a concurrent rotation is overwritten and auth_status keeps reporting connected.
             async with codex_auth.provider_oauth_write_guard(provider_id):
                 codex_auth.mark_reauthorization_required(
                     provider_id, expected_access_token = access_token
@@ -427,7 +431,7 @@ async def list_subscription_models(
         if model is None:
             continue
         if model["id"] in seen_slugs:
-            # Duplicate slug: first wins so the list and by-id map agree.
+            # Duplicate slug: first wins so the list and by-id map agree, else the picker offers a model that every send refuses.
             continue
         seen_slugs.add(model["id"])
         models.append(model)
@@ -436,11 +440,12 @@ async def list_subscription_models(
     if _catalog_requests.get(provider_id) != ticket:
         # Overtaken: do not commit a catalog for a possibly rebound account.
         return models
+    # that counter only sees this process, and rebinding travels through the installation DB
     current_bundle = codex_auth.load_oauth_bundle(provider_id)
     if current_bundle and current_bundle.get("account_id") != account_id:
         return models
     if len(_models_cache) >= _MODELS_CACHE_MAX_ENTRIES:
-        # Only the TTL cache is cleared; per-account evidence is bounded by connections.
+        # Only the TTL cache is cleared: dropping per-account evidence would license stale saved slugs; forget_subscription_models releases it.
         _models_cache.clear()
     _models_cache[provider_id] = (time.time() + _MODELS_CACHE_TTL_SECONDS, models)
     _offered_models[provider_id] = {model["id"]: model for model in models}
@@ -450,7 +455,7 @@ async def list_subscription_models(
 
 
 async def ensure_subscription_models(provider_id: str) -> set[str]:
-    """Fetches slugs when this process holds none; an unreachable upstream returns empty, not an error."""
+    """Fetches slugs when this process holds none; unreachable upstream returns empty so callers fall back to the seed, not lock the account out."""
     listed = offered_subscription_model_ids(provider_id)
     if listed:
         return listed
@@ -458,12 +463,14 @@ async def ensure_subscription_models(provider_id: str) -> set[str]:
         access_token, account_id = await codex_auth.resolve_access(provider_id)
         models = await list_subscription_models(provider_id, access_token, account_id)
     except (codex_auth.CodexAuthError, CodexReauthorizationError):
+        # the connection needs reconnecting, a different answer from "this plan does not list that model"
         raise
     except Exception:
         return set()
     listed = offered_subscription_model_ids(provider_id)
     if listed:
         return listed
+    # a read overtaken by a newer one still came from upstream for the account resolved above
     current_bundle = codex_auth.load_oauth_bundle(provider_id)
     if current_bundle and current_bundle.get("account_id") == account_id:
         return {model["id"] for model in models if model.get("listed")}
@@ -510,6 +517,7 @@ async def _upstream_error_detail(response: httpx.Response) -> str | None:
     elif isinstance(error, str):
         detail = error
     else:
+        # The subscription endpoint reports rejected models as a bare "detail".
         detail = payload.get("detail") if isinstance(payload, dict) else None
     if not isinstance(detail, str):
         return None
@@ -520,6 +528,7 @@ async def _upstream_error_code(response: httpx.Response) -> str | None:
     """The structured error's code or type. _upstream_error_detail prefers the display message
     and drops these, which hides a terminal code behind a generic "slow down" sentence."""
     try:
+        # Reads the body before parsing; a failed read raises StreamError, not HTTPError.
         await response.aread()
         payload = response.json()
     except (ValueError, json.JSONDecodeError, httpx.HTTPError, httpx.StreamError, AttributeError):

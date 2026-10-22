@@ -144,18 +144,22 @@ _TOOL_SKIPPED = {
     "render_html_repeat": "Unsloth did not run this call because render_html already ran.",
 }
 
+# Verbatim from the local loops: the last pass answers instead of asking for more.
 _BUDGET_EXHAUSTED_NUDGE = (
     "You have used all available tool calls. Based on everything you have found "
     "so far, provide your final answer now. Do not call any more tools."
 )
 
+# SSE comment written while a tool blocks, so a proxy cannot idle the stream out.
 _SSE_KEEPALIVE = ": keep-alive"
 
 # Separate write so a desktop webview paints Allow / Deny before the tool blocks.
 _TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
 
+# A stall after a tool ran costs a re-run on retry, so allow one, as locally.
 _MAX_POST_TOOL_REPROMPTS = 1
 
+# Sum usage sub-objects, not overwrite: frontend reads cache slice, pricing reads reasoning slice.
 _USAGE_DETAIL_FIELDS = (
     "prompt_tokens_details",
     "completion_tokens_details",
@@ -182,6 +186,7 @@ def _truncate_for_model(
     return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"
 
 
+# Cap on a call's label. Small next to the result cap: this is the query or the code, not the output.
 _HOSTED_ARGUMENT_MAX_CHARS = 2000
 
 
@@ -215,6 +220,7 @@ def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
     }
 
 
+# Consecutive turns that asked for a tool but ran none before the loop gives up.
 _MAX_FRUITLESS_TURNS = 2
 
 
@@ -311,7 +317,7 @@ def _signed_provider_call_for_replay(call: dict[str, Any]) -> dict[str, Any] | N
 
 
 def _argument_fragment(value: Any) -> Any:
-    """llama-server sends a decoded object for arguments; re-encode as the JSON text it would stream."""
+    """llama-server sends a decoded object for arguments; re-encode as JSON text. Other values pass through untouched, so None still means announced, no arguments."""
     if isinstance(value, (dict, list)):
         try:
             return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
@@ -347,7 +353,7 @@ def _tool_names(tools: list[dict[str, Any]] | None) -> set[str]:
 
 
 class ToolLoopTransport(Protocol):
-    """One turn of provider inference, as OpenAI-shaped SSE lines."""
+    """Whether the provider may write tool calls as text instead of delta.tool_calls; Codex never does, a self-hosted GGUF often does."""
 
     heals_text_tool_calls: bool
 
@@ -388,10 +394,13 @@ class ToolLoopPolicy:
     confirm_calls: bool
     bypass_permissions: bool
     rag_scope: dict[str, Any] | None
+    # None means "follow the process default"; False disables text-form healing.
     auto_heal: bool | None = None
+    # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
+    # Headerless only; arms ServerToolCallStripper before relaying the chunk that ends a healed turn.
     on_withheld_tool_call: Callable[[], None] | None = None
-    # Headerless only: a turn may end on [DONE] alone, so the wire cannot always clear the flag.
+    # Called when a provider turn ends; headerless only, it clears the stripper withheld-call flag, which the wire may not close if a turn ends on DONE alone.
     on_provider_turn_end: Callable[[], None] | None = None
     # None keeps the request default (on); explicit booleans win.
     deduplicate_tool_calls: bool | None = None
@@ -400,7 +409,7 @@ class ToolLoopPolicy:
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
-    """Must agree with splitTopLevelJsonObjects in chat/tool-call-arguments.ts, or the split diverges."""
+    """Top-level JSON objects plus any unfinished one; non-object text comes back whole. Must agree with splitTopLevelJsonObjects in chat/tool-call-arguments.ts."""
     unsplit: tuple[list[str], str] = ([], text)
     complete: list[str] = []
     depth = 0
@@ -410,6 +419,7 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
 
     for i, ch in enumerate(text):
         if in_string:
+            # A backslash escapes one character, so a run of them toggles.
             if escaped:
                 escaped = False
             elif ch == "\\":
@@ -463,6 +473,7 @@ class _BoundaryScan:
     escaped: bool = False
     scanned: int = 0
     complete: list[str] = field(default_factory = list)
+    # Once unsplittable, appending can never make it splittable again.
     unsplittable: bool = False
 
     def feed(self, text: str) -> tuple[list[str], str]:
@@ -527,7 +538,9 @@ class _Turn:
     split_seq: int = 0
     seq_by_key: dict[Any, int] = field(default_factory = dict)
     seq_counter: int = 0
+    # Which call each id names: a fragment repeating one returns to its call.
     key_by_call_id: dict[str, Any] = field(default_factory = dict)
+    # Resumable boundary scan per call, keyed the same as ``by_index``.
     scan_by_key: dict[Any, _BoundaryScan] = field(default_factory = dict)
     # Reported only once closed, so a stream cut after '{"a":1}{' cannot run half an argument.
     open_tail_keys: set[Any] = field(default_factory = set)
@@ -539,6 +552,7 @@ class _Turn:
     reasoning: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
+    # Provider-run tool results keyed by call id, so a repeated end event cannot record one twice.
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
     provider_compaction: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
@@ -682,12 +696,14 @@ class _Turn:
             entry["ended"] = True
         if isinstance(result, str) and result.strip():
             if _carries_image_sentinel(result):
+                # A Gemini plot with no stdout is only the sentinel, so stripping leaves an empty-looking result.
                 entry["produced_image"] = True
             # Strip data URIs as for local results; only sandbox tools emit __FILES__.
             stripped = strip_result_for_model(result, entry.get("name"))
             if stripped.strip():
                 entry["result"] = _truncate_for_model(stripped)
         if event.get("image_b64"):
+            # image_generation sends an empty result and the picture separately; record that, not the bytes.
             entry["produced_image"] = True
 
     def hosted_replay_text(self) -> str:
@@ -703,6 +719,7 @@ class _Turn:
             arguments = entry.get("arguments")
             if arguments:
                 header = f"[{name} {arguments}]"
+            # Empty calls still appear as "(no output)", so the model can tell a run from one never run.
             body = result or ("(produced an image)" if produced_image else "(no output)")
             if result and produced_image:
                 body = f"{result}\n(produced an image)"
@@ -721,6 +738,7 @@ class _Turn:
             # index restarts at 0 every tool round, so bare fragments belong to the newest call.
             key: Any = self.open_key_by_index.get(index, index)
             if isinstance(call_id, str) and call_id:
+                # A known call id beats the latest-index mapping, so a repeated-id fragment returns to its own call.
                 owner = self.key_by_call_id.get(call_id)
                 if owner is not None:
                     key = owner
@@ -745,6 +763,7 @@ class _Turn:
                 # Not a prefix test: "web" and "web_search" can both exist.
                 and new_name != held_name_now
             )
+            # Snapshot providers repeat finished calls verbatim: skip exact repeats only, so a second call opens.
             resends_this_call = bool(
                 held is not None
                 and isinstance(call_id, str)
@@ -755,6 +774,7 @@ class _Turn:
                 and isinstance(new_arguments, str)
                 and new_arguments == held["function"]["arguments"]
             )
+            # A name at a closed slot starts a call; a shared prefix proves nothing ("web" vs "web_search").
             names_next_call = bool(
                 isinstance(new_name, str)
                 and new_name
@@ -767,6 +787,8 @@ class _Turn:
                 or id_names_another_call
                 or names_next_call
             ) and not resends_this_call
+            # An announcement has no object to close, so the rule above cannot reach it. A different name bringing an
+            # object is the next call; gluing gave "A_longB", which matches no tool.
             announces_over_announcement = (
                 held is not None
                 and (held.get("announced_only") is True or held.get("resend_suspect") is True)
@@ -777,6 +799,7 @@ class _Turn:
                 and isinstance(new_arguments, str)
                 and new_arguments.strip().startswith("{")
             )
+            # Repeated id continues the slot even when arguments look complete, or two calls share one id.
             names_this_call = (
                 held is not None
                 and isinstance(call_id, str)
@@ -799,23 +822,28 @@ class _Turn:
             )
             if (slot_is_closed and opens_next_call) or announces_over_announcement:
                 if announces_over_announcement and held is not None:
+                    # Taken over while it held only its name.
                     held["superseded"] = True
                 self.split_seq += 1
                 waiting = self.pending_extra.pop(key, None)
                 key = (index, "_split", self.split_seq)
                 if waiting:
+                    # The object proved the repeated name announced this call.
                     extra = {**waiting, **extra} if isinstance(extra, dict) else waiting
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
+                # Nameless second calls inherit the held name, since nameless deltas are otherwise dropped.
                 opening_name = new_name if isinstance(new_name, str) and new_name else held_name_now
                 self.by_index[key] = {
                     "id": "",
                     "type": "function",
                     "function": {"name": opening_name, "arguments": ""},
-                    # A zero-parameter tool sends "" rather than omitting arguments.
+                    # A name with no arguments field is an announcement; a zero-parameter tool sends empty string arguments instead.
                     "announced_only": new_arguments is None and bool(opening_name),
+                    # Only the provider's own announcement runs unfilled, not a fork's guess or a slot it opened itself.
                     "from_fork": held is not None,
+                    # A name extending the fork's leftover name is likely a resend: it opens a slot rather than gluing.
                     "resend_suspect": bool(
                         opening_name
                         and held_name_now
@@ -832,6 +860,7 @@ class _Turn:
             if isinstance(call_id, str) and call_id:
                 current["id"] = call_id
                 self.key_by_call_id.setdefault(call_id, key)
+            # So a fork below can hand this delta's metadata to its own call.
             extra_before = current.get("extra_content")
             if extra_is_ambiguous:
                 self.pending_extra[key] = {
@@ -847,6 +876,7 @@ class _Turn:
                 # with the current name replaces it, anything else appends.
                 fragment = function.get("name")
                 name_before = current["function"]["name"]
+                # Never rename a closed object that has a name: one tool's arguments would land under another's name.
                 if isinstance(fragment, str) and fragment and not (slot_is_closed and name_before):
                     if fragment.startswith(name_before):
                         current["function"]["name"] = fragment
@@ -891,9 +921,11 @@ class _Turn:
         segments = complete + ([tail] if tail else [])
         if len(segments) < 2:
             return
+        # Rewriting this slot's arguments (not extending them) invalidates the resumable scan, so drop it.
         self.scan_by_key.pop(key, None)
         # Per-call metadata stays with one call: two calls sharing a thoughtSignature is rejected.
         current["function"]["arguments"] = segments[0]
+        # The slot keeps its own name: merging a delta's name gave "alphagamma", matching no tool.
         born_name = incoming_name or name_before
         current["function"]["name"] = name_before or born_name
         # Metadata belongs to the last call: Gemini checks the signature against the call it rides.
@@ -918,6 +950,7 @@ class _Turn:
             open_key = born_key
         if incoming_extra is not None:
             self.by_index[open_key]["extra_content"] = dict(incoming_extra)
+        # Later id-less fragments continue the last call.
         self.open_key_by_index[index] = open_key
 
     def _call_is_finished(self, key: Any) -> bool:
@@ -939,12 +972,11 @@ class _Turn:
         taken: set[str] | None = None,
         cards: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Ids stay unique across turns: taken and cards carry earlier ids, or restarted numbering
-        collides."""
+        """Ids stay unique across turns: taken holds earlier ids so restarts cannot collide; cards holds the card ids the client keeps for the whole response"""
         seen: set[str] = taken if taken is not None else set()
         painted: set[str] = cards if cards is not None else set()
         out: list[dict[str, Any]] = []
-        # Sort on the sequence number alone: comparing calls raises.
+        # Sort on the sequence number alone so announcement order holds, since an index opening in between cannot reorder calls; comparing calls raises.
         numbered = [
             (
                 self.seq_by_key.get(key, position),
@@ -957,9 +989,9 @@ class _Turn:
         ordered = [
             (index, call) for _, index, call in sorted(numbered, key = lambda triple: triple[0])
         ]
-        # Superseded announcements and false resends were never calls; their metadata (Gemini
-        # signatures) goes to the call they were mistaken for.
+        # Superseded announcements and false resends are not calls; their Gemini signature goes to the call they were taken for. A lone announcement is kept.
         for key, waiting in self.pending_extra.items():
+            # No object ever came, so the repeated name was that call's after all and so is the metadata that rode it.
             held = self.by_index.get(key)
             if held is not None and waiting:
                 held["extra_content"] = {**held.get("extra_content", {}), **waiting}
@@ -979,7 +1011,7 @@ class _Turn:
                 continue
             kept.append((index, call))
         ordered = kept
-        # Reserve provider ids first so minted card ids never collide; only calls _normalized_call keeps.
+        # Reserve provider ids first so minted card ids never collide; reserve only calls _normalized_call keeps, or released ids put the client out of step.
         painted.update(
             call["id"]
             for _, call in ordered
@@ -991,6 +1023,7 @@ class _Turn:
             if normalized is None:
                 continue
             if not (isinstance(streamed_id, str) and streamed_id):
+                # No id on the wire: mint the client's card id for card events; the conversation id stays untouched.
                 card_id = _mint_streamed_card_id(painted, index)
                 painted.add(card_id)
                 normalized["card_id"] = card_id
@@ -1100,6 +1133,7 @@ def _mcp_provenance_by_id(
             continue
         if _is_strict_prefix_of_declared(name, declared_names):
             continue
+        # Mark before the lookup: mcp_display_parts hits SQLite and is falsy without a display_name.
         stamped.add(call_id)
         if not mcp_display_parts(name):
             continue
@@ -1173,6 +1207,7 @@ def _usage_chunk_line(
         "usage": totals,
     }
     if timings is not None:
+        # Report the last turn's timings; speeds cannot be summed.
         chunk["timings"] = timings
     return _sse(chunk)
 
@@ -1226,7 +1261,7 @@ def _with_openai_compaction(
 
 
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
-    """Merges into a trailing user turn; a strict server rejects two user turns in a row."""
+    """Merges into a trailing user turn: a turn whose calls were all no-ops adds no assistant message, and a strict server rejects two user turns in a row."""
     if not content:
         return
     last = conversation[-1] if conversation else None
@@ -1322,6 +1357,7 @@ async def stream_with_studio_tools(
 
     skill_loads = load_mentioned_skills(
         conversation,
+        # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
         tools if tool_choice != "none" and (unlimited or remaining > 0) else [],
         permission_mode = permission_mode,
         bypass_permissions = bypass_permissions,
@@ -1335,6 +1371,7 @@ async def stream_with_studio_tools(
     try:
         while True:
             load_task = asyncio.ensure_future(asyncio.to_thread(next, skill_loads, _STEP_DONE))
+            # Same handshake as a gated tool card: early separate keepalive, then heartbeats while Ask waits.
             timeout = _TOOL_APPROVAL_FLUSH_DELAY_S if flush_approval else TOOL_HEARTBEAT_INTERVAL_S
             done, _pending = await asyncio.wait({load_task}, timeout = timeout)
             while not done:
@@ -1373,6 +1410,7 @@ async def stream_with_studio_tools(
     model_name = run.model or "external"
     usage_totals: dict[str, Any] = {}
     last_timings: dict[str, Any] | None = None
+    # Same ledger as the local loops: repeated calls cannot spend budget; a terminal no-op still ends.
     controller = ToolLoopController(
         tools = tools,
         auto_heal_tool_calls = policy.auto_heal is not False,
@@ -1390,19 +1428,21 @@ async def stream_with_studio_tools(
     painted_card_ids: set[str] = set()
     spent_budget_passes = 0
     fruitless_turns = 0
-    # Headroom for no-op, nudge and final-answer passes; fruitless_turns ends idle runs.
+    # Headroom for no-op, nudge and final-answer passes; unlimited keeps its own budget, not a smaller cap, or productive runs get cut short.
     max_provider_turns = max(1, remaining) + 2 * MAX_ACT_REPROMPTS + 4
 
     while not cancel_event.is_set():
         if provider_turns >= max_provider_turns:
+            # Caps requests for unrunnable tools (disabled or budget gone) so the conversation stays bounded.
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Clear stale timings even if this turn sends no usage chunk.
         last_timings = None
+        # Per turn: ids restart each turn, so a later call_0 is a new card.
         mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
-        # Hold the turn-ending chunk until finalize() says whether a healed call was promoted, then
-        # arm the headerless stripper before releasing it.
+        # Hold the turn-ending chunk until finalize() says whether a call was promoted, then arm the headerless stripper; arming at promotion is too late.
         held_final: str | None = None
 
         active_tools = controller.active_tools()
@@ -1411,6 +1451,7 @@ async def stream_with_studio_tools(
         )
         # Withdraw the catalog and pin "none" so the model cannot call a tool it was just denied.
         turn_tool_choice = tool_choice if tools_available else "none"
+        # A forced tool_choice lasts until a call happens; the result follow-up must stay free for prose.
         if executed_any and turn_tool_choice not in ("auto", "none"):
             turn_tool_choice = "auto"
 
@@ -1425,8 +1466,7 @@ async def stream_with_studio_tools(
             async for line in generator:
                 if _is_done_sentinel(line):
                     continue
-                # Strip provider copies of our card vocabulary, or they paint cards for tools that never ran.
-                # Skipped when the transport already did it: its own frames would be dropped.
+                # Strip provider copies of our card vocabulary, or they paint cards for tools that never ran; skip if the transport did it, else billed hosted results drop.
                 if not transport_sanitizes:
                     sanitized = sanitize_provider_sse_line(line)
                     if sanitized is None:
@@ -1448,7 +1488,9 @@ async def stream_with_studio_tools(
                     if isinstance(payload.get("timings"), dict):
                         last_timings = payload["timings"]
                     if _is_usage_only(payload):
+                        # Usage is withheld and sent as one sum at loop end, so multi-turn answers avoid partial counts.
                         continue
+                    # Preserve content, but emit usage and timings only in the final summary chunk.
                     payload.pop("usage", None)
                     payload.pop("timings", None)
                     line = "data: " + json.dumps(payload, separators = (",", ":"))
@@ -1476,6 +1518,7 @@ async def stream_with_studio_tools(
                     openai_compaction = (sent_messages, compaction)
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
+                # Only a live healer can promote a call this turn; once dormant, the wire carries tool_calls.
                 hold_final = (
                     isinstance(choice.get("finish_reason"), str)
                     and healer is not None
@@ -1518,6 +1561,7 @@ async def stream_with_studio_tools(
                 if visible:
                     turn.text.append(visible)
                 if visible == content:
+                    # Nothing was held back, the case for almost every chunk of ordinary prose
                     if hold_final:
                         now, held_final = _split_turn_end(payload, choice, delta)
                         if now is not None:
@@ -1525,6 +1569,7 @@ async def stream_with_studio_tools(
                     else:
                         yield line
                     continue
+                # Withholding is normal mid-block; drop the chunk only when it carries nothing else worth relaying.
                 if visible or turn.finish_reason is not None or len(delta) > 1:
                     if hold_final:
                         healed_delta = {
@@ -1603,7 +1648,7 @@ async def stream_with_studio_tools(
         # disables them.
         truncated = turn.finish_reason in ("length", "content_filter")
         if truncated and healer is not None and turn.healed:
-            # Truncated calls must not run; give back the exact span the healer removed so the text survives.
+            # Truncated calls must not run; give back the exact healed span so the text survives, released at turn end since length is only known then.
             for healed_call in turn.healed:
                 span = healer.promoted_source(healed_call.get("id", ""))
                 if not span:
@@ -1633,8 +1678,7 @@ async def stream_with_studio_tools(
         # tool_choice none forbids calls, so a call echoed back anyway by the provider must not run.
         calls = [] if unrun_reason is not None else turn.calls(used_call_ids, painted_card_ids)
         if not calls:
-            # Clear the badge so the client closes a refused call's card; [DONE]-only streams have no other
-            # boundary.
+            # Clear the badge only when a call was streamed, so the client closes the card of a refused call; [DONE]-only streams have no other boundary.
             if turn.by_index:
                 yield _status_sse("")
             # A model that only announced a tool gets one nudge, as in the local loops.
@@ -1651,6 +1695,7 @@ async def stream_with_studio_tools(
                 last_reprompt_text = visible_answer
                 stalled_hosted = turn.hosted_replay_text()
                 if stalled_hosted:
+                    # A hosted tool ran with no local call after it; this path skips the replay the reprompt relies on.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
                         "content": (
@@ -1684,10 +1729,11 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
-            # Before the gate: exhausted calls are replayed too, and only the decision's replay parses.
+            # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
             decision = controller.prepare_call(call)
             signed_provider_call = _signed_provider_call_for_replay(call)
             if not unlimited and remaining <= 0:
+                # Budget spent.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
                     tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
@@ -1717,7 +1763,7 @@ async def stream_with_studio_tools(
                     }
                 )
                 continue
-            # Every tool card must carry this round id, including the budget-exhausted card.
+            # Every tool card must carry this round id, including the budget-exhausted card; the frontend groups reasoning by codexLocalToolRoundId.
             decision.provenance["round_id"] = round_id
             image_share = None
             if decision.should_execute and mcp_image is not None:
@@ -1741,7 +1787,7 @@ async def stream_with_studio_tools(
                     )
                 else:
                     noop_messages.append(completion.model_message())
-                # Close the provider-streamed card for enabled tools; an unknown tool gets no card.
+                # Close the provider-streamed card for enabled tools or it spins; an unknown tool gets no card, since that would advertise a tool the user switched off.
                 if decision.action == "disabled":
                     continue
                 for card_line in _unrun_call_card(
@@ -1764,6 +1810,7 @@ async def stream_with_studio_tools(
             name = decision.tool_name
             arguments = decision.arguments
             call_id = decision.tool_call_id
+            # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
             needs_confirmation = needs_tool_confirmation(
                 confirm_tool_calls = confirm_tool_calls,
@@ -1800,6 +1847,7 @@ async def stream_with_studio_tools(
                 start_event["image_disclosure"] = image_share["disclosure"]
             denied = False
             try:
+                # A gated call has not started, so it must not read as running.
                 yield _status_sse(
                     awaiting_approval_status(name) if needs_confirmation else decision.status_text
                 )
@@ -1813,6 +1861,7 @@ async def stream_with_studio_tools(
                         )
                     )
                     try:
+                        # Delay the first keepalive so the gated Allow/Deny card flushes on its own write before blocking.
                         done, _pending = await asyncio.wait(
                             {waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S
                         )
@@ -1826,6 +1875,7 @@ async def stream_with_studio_tools(
                             waiter.cancel()
                     verdict = waiter.result() if waiter.done() else None
                 if verdict == "deny":
+                    # Read decision_slot before it is dropped: it tells a user's refusal from an unanswered approval.
                     denied_reason = decision_reason(decision_slot)
                     decision_slot = None
                     denied = True
@@ -1861,6 +1911,7 @@ async def stream_with_studio_tools(
                 if call_id:
                     denied_message["tool_call_id"] = call_id
                 tool_messages.append(denied_message)
+                # A denial is an answer, not a stall: never nudge after one.
                 reprompts = max_reprompts
                 continue
 
@@ -1897,7 +1948,7 @@ async def stream_with_studio_tools(
                     kwargs["conversation_branch"] = request_branch
                 if approved and accepts_kwarg(execute_tool, "host_access_approved"):
                     kwargs["host_access_approved"] = True
-                # External window is unknowable; 0 keeps the default page cap.
+                # External window is unknowable: 0 keeps the default page cap; unmeasurable budget means one recall, since 8 chunks is ~4K tokens replayed each later call.
                 if accepts_kwarg(execute_tool, "context_tokens"):
                     kwargs["context_tokens"] = 0
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
@@ -1915,6 +1966,7 @@ async def stream_with_studio_tools(
                     kwargs["mcp_image"] = image_share["image"]
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
+            # Same wrapper as local loops: live stdout for the card and a heartbeat keeping long calls alive.
             tool_stream = scoped_tool_stream(
                 _invoke,
                 tool_name = name,
@@ -1944,7 +1996,7 @@ async def stream_with_studio_tools(
                 if "result" in outcome:
                     result = outcome["result"]
                 elif cancel_event.is_set():
-                    # Not "": that would record a successful empty result for an abandoned tool.
+                    # Not an empty string: that records a successful empty result for an abandoned tool whose side effects may already have run.
                     result = _TOOL_CANCELLED
                 else:
                     result = ""
@@ -1965,7 +2017,7 @@ async def stream_with_studio_tools(
             last_reprompt_text = ""
             yield _sse(completion.tool_end_event())
             tool_messages.append(completion.tool_message())
-            # Off the loop: the envelope is a 12 MB json-load.
+            # Only for a vision target, and off the loop: the envelope is a 12 MB json-load that a text-only run would discard anyway.
             _completion_images = (
                 await asyncio.to_thread(completion.mcp_images) if run.supports_vision else []
             )
@@ -1976,13 +2028,14 @@ async def stream_with_studio_tools(
 
         assistant_message: dict[str, Any] = {
             "role": "assistant",
+            # Markup never replays: the call is carried structurally below.
             "content": strip_tool_markup(
                 "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
         hosted_text = turn.hosted_replay_text()
         if hosted_text:
-            # Replay provider-hosted tool output as text: native shapes differ per provider.
+            # Replay provider-hosted tool output as text, or the follow-up answers from local results alone; native shapes differ per provider.
             assistant_message["content"] = (
                 f"{assistant_message['content']}\n\n{hosted_text}"
                 if assistant_message["content"]
@@ -2010,6 +2063,7 @@ async def stream_with_studio_tools(
             # With several results "the tool call above" is ambiguous, so the block says so.
             from core.inference.mcp_images import DETACHED_IMAGE_TURN_TEXT
             _lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None
+            # Off the event loop: each image is decoded and re-encoded.
             await asyncio.to_thread(
                 _append_mcp_images_owned,
                 conversation,
@@ -2025,11 +2079,14 @@ async def stream_with_studio_tools(
         else:
             fruitless_turns += 1
             if fruitless_turns >= _MAX_FRUITLESS_TURNS:
+                # Stop once tools were requested twice with none runnable; another pass would only repeat it.
                 break
         if remaining <= 0 and not unlimited and not controller.force_final_answer:
             if spent_budget_passes:
+                # After the budget-gone nudge it asked for a tool anyway: allow one answer pass, then stop.
                 break
             spent_budget_passes += 1
+            # The tool catalog is gone from here on, so say why rather than let the next pass ask for a tool.
             if not getattr(transport, "tool_result_only_continuation", False):
                 _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 

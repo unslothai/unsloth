@@ -51,6 +51,7 @@ class LlamaServerStatsLogger:
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
         self._thread = None
+        # Stall reporting: a held slot that is not calling llama_decode() at all.
         self._stall_timeout = max(0.0, float(stall_timeout_s))
         self._last_decode = None
         self._stall_since = None
@@ -89,18 +90,16 @@ class LlamaServerStatsLogger:
 
     @staticmethod
     def _prompt_rate(base, tokens, seconds):
-        """Baseline held until both move: /metrics rounds to six digits, so one can cross a boundary
-        first."""
+        """Prompt tokens/s over the prompt time the engine measures; baseline held until both totals move, as /metrics rounds to six digits."""
         if base is None or tokens < base[0] or seconds < base[1]:
-            return 0.0, (tokens, seconds)
+            return 0.0, (tokens, seconds)  # first reading, or counters that went backwards
         d_tokens, d_seconds = tokens - base[0], seconds - base[1]
         if d_tokens <= 0.0 or d_seconds <= 0.0:
             return 0.0, base
         return d_tokens / d_seconds, (tokens, seconds)
 
     def _stalled_for(self, now, running, decode_calls):
-        """Progress is n_decode_total, not token counters, which stall during healthy prefill and
-        decode too."""
+        """Progress is n_decode_total, not token counters, which stall in healthy prefill and decode; spec/multimodal decode can look static."""
         if not running or decode_calls != self._last_decode:
             self._last_decode = decode_calls
             self._stall_since = now if running else None
@@ -126,15 +125,15 @@ class LlamaServerStatsLogger:
 
     def _run(self):
         misses = 0
-        prev = None
-        gen_base = prompt_base = None
+        prev = None  # (monotonic_t, n_decode_total)
+        gen_base = prompt_base = None  # (tokens, seconds) at the last tick that carried both
         while not self._stop.wait(self._interval):
             m = self._scrape()
             if not m:
                 misses += 1
-                if misses == 3:
+                if misses == 3:  # transient stall (load/GC); keep polling
                     self._log.debug("engine_stats: /metrics scrape failing, still retrying")
-                continue
+                continue  # real shutdown is driven by stop() from _kill_process
             misses = 0
             now = time.monotonic()
             predicted = m.get("tokens_predicted_total", 0.0)
@@ -150,12 +149,14 @@ class LlamaServerStatsLogger:
             prompt_delta, prompt_base = self._prompt_rate(prompt_base, prompt, prompt_s)
             gen_moved = gen_base is not None and (predicted, predicted_s) != gen_base
             gen_base = (predicted, predicted_s)
+            # Calls, not tokens, never feed tok/s; they are the only counter that moves within a tick.
             decode_rate = None
             if prev is not None and now > prev[0] and None not in (decode_calls, prev[1]):
                 decode_rate = max(0.0, (decode_calls - prev[1]) / (now - prev[0]))
             prev = (now, decode_calls)
-            # The gauge resets on every /metrics read, so a zero is a real reading.
+            # The bucket empties on every /metrics read, from any client, so a zero gauge is a reading; counters read a free first token against a millisecond.
             gen_tps = m.get("predicted_tokens_seconds")
+            # /metrics renders one table, so a scrape with no prompt metric measured none.
             prompt_measured = "prompt_tokens_seconds" in m or (
                 "prompt_tokens_total" in m and "prompt_seconds_total" in m
             )
@@ -174,6 +175,7 @@ class LlamaServerStatsLogger:
                         )
                 elif not self._stall_reported:
                     self._report_stall(running, waiting, stalled_for, decode_calls)
+            # Gate on real activity this tick, so an idle engine stays quiet.
             if running or waiting or gen_tps or gen_moved or prompt_tps:
                 # Absent, not 0.0: an unmeasured metric must not read as zero.
                 fields = {}
@@ -230,7 +232,7 @@ def maybe_start_stats_logger(
     if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
         return None
     interval = _env_float("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", 10.0, logger)
-    # 0 disables the stall line.
+    # Default 600s is generously above any legitimate pause between decode calls; 0 disables the stall line and keeps the poller stats-only.
     stall_timeout = _env_float("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", 600.0, logger)
     sl = LlamaServerStatsLogger(
         base_url,

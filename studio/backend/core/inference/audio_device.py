@@ -32,6 +32,7 @@ __all__ = [
 
 AUDIO_DEVICE_CHOICES = ("auto", "cpu", "gpu")
 
+# Spellings other Studio surfaces already use; names arrive from a status echo.
 _CPU_ALIASES = frozenset({"cpu", "ram", "cpu_ram", "system", "system_ram"})
 _GPU_ALIASES = frozenset(
     {"gpu", "cuda", "rocm", "hip", "xpu", "mps", "metal", "accelerator", "accel"}
@@ -39,7 +40,7 @@ _GPU_ALIASES = frozenset(
 
 
 def normalize_audio_device(value: Optional[str]) -> str:
-    """Unknown values become auto, but HTTP models pin the canonical values so a typo is a 422."""
+    """Unknown values become auto so an env or status value never fails a load; HTTP models pin canonical values, so a typo is a 422"""
     text = str(value or "").strip().lower()
     if not text:
         return "auto"
@@ -53,7 +54,7 @@ def normalize_audio_device(value: Optional[str]) -> str:
 
 
 def audio_device_default() -> str:
-    """Does not apply to GGUF TTS models, which take placement from gpu_memory_mode and gpu_layers."""
+    """Reads UNSLOTH_AUDIO_DEVICE; does not reach GGUF TTS models, so a headless caller must send gpu_memory_mode and gpu_layers itself"""
     return normalize_audio_device(os.environ.get("UNSLOTH_AUDIO_DEVICE"))
 
 
@@ -79,6 +80,6 @@ def audio_load_runs_on_cpu(audio_type: Optional[str], value: Optional[str]) -> b
 
 
 def mask_accelerators_for_cpu_audio(env: dict) -> None:
-    """Call before importing torch: masking first stops detect_hardware() creating a CUDA context."""
+    """Call before torch import: blank CUDA and -1 HIP visibility; an inherited ROCR mask stays, since clearing it exposes more agents; mutates env"""
     env["CUDA_VISIBLE_DEVICES"] = ""
     env["HIP_VISIBLE_DEVICES"] = "-1"

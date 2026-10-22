@@ -57,7 +57,7 @@ def notice_already_dismissed(current_gb: Optional[float]) -> bool:
         return False
     if current_gb is None:
         return True
-    # Tenth-of-GB slack for driver jitter; compare in integer tenths to avoid float error.
+    # Keyed by owner database so another root or relaunch never reads a stale map; bare = saved before mounts were recorded; moving_from = folder files are leaving.
     return round(float(current_gb) * 10) <= round(dismissed_at * 10) + 1
 
 

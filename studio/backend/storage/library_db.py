@@ -47,6 +47,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Added after first release, in place; an older studio.db keeps rows, fingerprinted on first sight.
     entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(library_entries)")}
     for column, kind in (("opened_at", "INTEGER"), ("fingerprint", "TEXT")):
         if column in entry_columns:

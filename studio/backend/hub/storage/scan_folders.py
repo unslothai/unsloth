@@ -50,7 +50,7 @@ def _denied_path_prefixes() -> list[str]:
 
 
 def is_denied_system_path(path: str) -> bool:
-    """Mirrors add_scan_folder's denylist; the /run carve-out keeps removable-media mounts browsable."""
+    """Expects a realpath-resolved path, so symlinks cannot escape into a denied subtree."""
     return _denied_prefix(path) is not None
 
 
@@ -64,7 +64,7 @@ def _denied_prefix(path: str) -> str | None:
     return None
 
 
-# Longest first. After normcase, so lower case.
+# Longest first: \\?\UNC\server\share is the share \\server\share. After normcase, so lower case.
 _EXTENDED_PREFIXES = (
     ("\\\\?\\unc\\", "\\\\"),
     ("\\\\.\\unc\\", "\\\\"),
@@ -185,7 +185,7 @@ def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tup
                     None,
                 )
         if existing is not None:
-            # None keeps the stored flag so export registration never resets it.
+            # None keeps the stored flag, so a re-add from export registration never resets it.
             if recursive is None or bool(existing["recursive"]) == recursive:
                 return dict(existing), False
             conn.execute(
@@ -224,7 +224,7 @@ def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
 
 
 def remove_scan_folder(id: int) -> bool:
-    # sqlite INTEGER is signed 64-bit.
+    # sqlite INTEGER is signed 64-bit; ids outside that range cannot exist.
     if not -(2**63) <= id < 2**63:
         return False
     conn = get_connection()

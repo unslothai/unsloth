@@ -28,6 +28,7 @@ from typing import Any
 
 logger = get_logger(__name__)
 
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 
@@ -42,12 +43,13 @@ _log_forward_gate = threading.Event()
 
 
 def _setup_log_capture(resp_queue: Any) -> None:
-    """Must run before LogConfig.setup_logging and ML imports, or handlers may bypass the pipe."""
+    """Redirects fds 1 and 2 into resp_queue pipes; must run before setup_logging and ML imports or handlers bypass it; lines still echo"""
 
     try:
         saved_out_fd = os.dup(1)
         saved_err_fd = os.dup(2)
     except OSError:
+        # dup failed; give up quietly (export still works, no live streaming).
         return
 
     try:
@@ -69,6 +71,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 pass
         return
 
+    # Close the write ends we just dup2'd (fds 1 and 2 are the real write ends).
     os.close(w_out)
     os.close(w_err)
 
@@ -89,6 +92,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 continue
             if not chunk:
                 break
+            # Echo to the original fd so the server console keeps the full output.
             try:
                 os.write(echo_fd, chunk)
             except OSError:
@@ -108,6 +112,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 if not line:
                     continue
                 if not _log_forward_gate.is_set():
+                    # Gate closed at bootstrap: already echoed above, so drop it to keep import noise out of the dialog
                     continue
                 try:
                     resp_queue.put_nowait(
@@ -119,6 +124,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                         }
                     )
                 except Exception:
+                    # Queue put failed; drop the line rather than crash the thread.
                     pass
         if buf and _log_forward_gate.is_set():
             try:
@@ -194,7 +200,7 @@ def _offline_window_if_unreachable(step = "loading"):
                 try:
                     from unsloth.models.loader_utils import _force_hf_offline
                     force_ctx = _force_hf_offline()
-                    force_ctx.__enter__()
+                    force_ctx.__enter__()  # sets env + in-process flags + resets sessions
                 except Exception:
                     force_ctx = None
             if force_ctx is None:
@@ -447,6 +453,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     from hub.utils.hf_tokens import hf_token_arg
 
     checkpoint_path = cmd["checkpoint_path"]
+    # The preflight helpers read the policy off the token, so rebuild it once here.
     hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
@@ -480,6 +487,8 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     requested_security_targets = [checkpoint_path]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
+
+        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
         _base = base_model or get_base_model_from_lora_identifier(checkpoint_path, hf_token)
         if _base:
             requested_security_targets.append(_base)
@@ -543,11 +552,13 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
 
 
 def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
-    export_type = cmd["export_type"]
+    export_type = cmd["export_type"]  # "merged", "base", "gguf", "lora"
     response_type = f"export_{export_type}_done"
 
+    # Opens the log gate for export progress; it stays open until the subprocess is respawned per load
     _log_forward_gate.set()
 
+    # Phase milestone for the server log; merge/save/convert itself only streams stdout to the live panel
     _phase = {
         "merged": f"Exporting merged model ({cmd.get('format_type', '16-bit (FP16)')})...",
         "gguf": f"Exporting GGUF ({cmd.get('quantization_method', 'Q4_K_M')})...",
@@ -726,9 +737,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     _setup_log_capture(resp_queue)
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = "ignore"
+    os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
+    # Unbuffered output from child Python (e.g. GGUF converter) so prints surface live.
     os.environ["PYTHONUNBUFFERED"] = "1"
-    # tqdm uses a 10s mininterval when stdout is not a tty.
+    # tqdm uses a 10s mininterval on a non-tty stdout, so bars look frozen behind the pipe; force frequent flushes
     os.environ.setdefault("TQDM_MININTERVAL", "0.5")
 
     import warnings
@@ -737,6 +749,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
 
+    # Keep progress bars on: the Hub upload bar is the only live progress for a long push_to_hub
     from loggers.config import allow_progress_bars
 
     allow_progress_bars()
@@ -750,7 +763,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     checkpoint_path = config["checkpoint_path"]
 
-    # Before the huggingface_hub import: it latches HF_HUB_DISABLE_IMPLICIT_TOKEN at import.
+    # Before the huggingface_hub import, which latches HF_HUB_DISABLE_IMPLICIT_TOKEN, so exports run as the identity that loaded the checkpoint
     from hub.utils.hf_tokens import apply_token_to_child_env
 
     if not config.get("allow_ambient", True):
@@ -759,7 +772,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            # Plain token: _load_config_json refuses the hub cache for the sentinel.
+            # Plain token: _load_config_json refuses the hub cache for the sentinel, so offline a cached model falls to the default sidecar
             _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
         except Exception as exc:
             _send_response(
@@ -795,7 +808,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)
 
-    # Must run before transformers / unsloth_zoo import.
+    # Before transformers / unsloth_zoo: real torchao via unsloth's shim on Windows ROCm, else the stub.
     from core._torchao_stub import install_torchao_windows_rocm_real_or_stub
 
     install_torchao_windows_rocm_real_or_stub()
@@ -814,6 +827,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
+        # Recover from any namespace-package shadow before importing Unsloth.
         from core.import_guards import ensure_real_packages
 
         ensure_real_packages("unsloth_zoo", "unsloth")
@@ -839,6 +853,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     try:
         backend = ExportBackend()
 
+        # Offline window for load preflights that hit the Hub; restored after so later loads re-probe
         with _offline_window_if_unreachable():
             _handle_load(backend, config, resp_queue)
 
@@ -873,6 +888,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
         try:
             if cmd_type == "load":
+                # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
                 # Offline window covers this load's Hub preflights (re-probed per load). The
                 # security gates run before any SSM kernel is provisioned for the checkpoint.
@@ -891,6 +907,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
+                # Probed per export since connectivity may change after load; pinning offline would make a push fail
                 export_window = (
                     contextlib.nullcontext()
                     if cmd.get("push_to_hub")

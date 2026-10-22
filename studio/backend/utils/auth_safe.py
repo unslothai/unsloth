@@ -18,7 +18,7 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         try:
             port = parts.port
         except ValueError:
-            # A fresh object(): an unreadable port must compare unequal to every origin.
+            # A fresh object(), never a constant: an unreadable port must compare unequal to every origin, including itself.
             return scheme, (parts.hostname or "").lower(), object()
         if port is None:
             port = 443 if scheme == "https" else 80

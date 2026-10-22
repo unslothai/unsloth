@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 def _build_browse_allowlist(
     media_roots: Optional[list[Path]] = None, drive_roots: Optional[list[Path]] = None
 ) -> list[Path]:
-    """media_roots and drive_roots may be pre-probed; a disconnected mapped drive makes probing slow."""
+    """Walkable roots: HOME, HF caches, outputs, scan folders; each only if a real directory."""
     if account_access.managed_account():
         return [workspace_root().resolve()]
     from hub.storage.scan_folders import list_scan_folders

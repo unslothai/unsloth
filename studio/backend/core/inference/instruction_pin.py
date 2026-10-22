@@ -42,9 +42,10 @@ from utils.current_date_prompt_settings import strip_current_date_update_note
 INSTRUCTION_MIN_CHARS = int(os.environ.get("ROLLING_INSTRUCTION_MIN_CHARS", "80"))
 PIN_GROUPS = int(os.environ.get("ROLLING_INSTRUCTION_PIN_GROUPS", "0"))
 PIN_MAX_TOKENS = int(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_TOKENS", "1024"))
+# Cap the pin at this share of the prompt budget, so it stays a minority on small models too.
 PIN_MAX_FRACTION = float(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_FRACTION", "0.10"))
 
-# A pure REJECT list: it can only stop something being an instruction, never promote one.
+# A pure REJECT list: it can only stop something being treated as an instruction, never promote one.
 _CONTINUATIONS = frozenset(
     {
         "continue",
@@ -98,6 +99,7 @@ what when where which while who whom whose why will with would you your yours
 
 
 def _text_of(message: dict) -> str:
+    # without Studio's date note: it pads a short first turn past the bar and is no instruction.
     content = message.get("content")
     if isinstance(content, str):
         return strip_current_date_update_note(content)
@@ -153,7 +155,7 @@ def last_substantive_instruction(
 
 
 def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
-    """Thin means naming nothing searchable, not short: review billing is short but a real query."""
+    """Thin = names nothing searchable, not short; word count spends the lone top_k 1 slot on an anchor."""
     stripped = (text or "").strip()
     if not stripped:
         return True
@@ -162,6 +164,7 @@ def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
     normalised = _PUNCTUATION.sub(" ", stripped.lower()).strip()
     if normalised in _CONTINUATIONS:
         return True
+    # Short AND anaphoric: "what is ZQXVARA123?" names something and stays the query.
     words = normalised.split()
     if not words:
         return True
@@ -169,8 +172,7 @@ def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
 
 
 def _protected_cost(turns: list[list[dict]], index: int) -> int:
-    """Charges the group the pin really holds, reply included, but not a trailing tool exchange."""
-    # Dense estimate: 4 chars/token undercharges CJK and emoji ~2x; over-charging only refuses the pin.
+    """Charges the pinned group and its reply, since that is what is kept; not a trailing tool exchange."""
     return estimate_messages_tokens_dense(turns[index])
 
 

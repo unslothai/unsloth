@@ -82,7 +82,7 @@ def _studio_root_without_master() -> Path:
 
 
 def _is_legacy_studio_tree(studio: Path) -> bool:
-    """Keyed on the tree, not the recorded value, so a legacy ~/.unsloth/studio note is never used."""
+    """Keyed on the tree, not the value: a note naming ~/.unsloth/studio or any ancestor such as $HOME must never be used, since process.rs scrubs those."""
     try:
         return studio.resolve() == (Path.home() / ".unsloth" / "studio").resolve()
     except (OSError, RuntimeError, ValueError):
@@ -90,7 +90,7 @@ def _is_legacy_studio_tree(studio: Path) -> bool:
 
 
 def _recorded_master_root() -> Path | None:
-    """Reads the master root setup recorded, so a one-off UNSLOTH_HOME does not move later launches."""
+    """Master root setup recorded, so a one-off UNSLOTH_HOME does not move later launches; honoured only while it exists and contains studio."""
     studio = _studio_root_without_master()
     key = str(studio)
     with _recorded_master_lock:
@@ -143,7 +143,7 @@ def unsloth_home() -> Path | None:
 _PORTABLE_ON_VALUES = ("1", "true", "yes", "on")
 _PORTABLE_OFF_VALUES = ("0", "false", "off", "no")
 
-# portable_mode() runs on every cache-var lookup, so warn once per process.
+# portable_mode() runs on every cache-var lookup, so warn once per process, not once per call.
 _warned_unrecognized_portable = False
 
 
@@ -152,6 +152,7 @@ def _warn_unrecognized_portable(raw: str) -> None:
     if _warned_unrecognized_portable:
         return
     _warned_unrecognized_portable = True
+    # An off value only declines to turn portable mode on; it does not veto the master root.
     logger.warning(
         "Ignoring UNSLOTH_PORTABLE=%r: expected one of %s to turn portable mode on, or one of "
         "%s to leave that choice to UNSLOTH_HOME, which turns it on when it names a master root.",
@@ -171,6 +172,7 @@ def portable_mode() -> bool:
         return True
     if value and value not in _PORTABLE_OFF_VALUES:
         _warn_unrecognized_portable(raw)
+    # Unrecognized means no opinion, as an off value does: neither vetoes a real master root.
     return unsloth_home() is not None
 
 
@@ -183,7 +185,7 @@ def _warn_root_conflict(resolved: Path, master: Path) -> None:
     if key in _warned_root_conflicts:
         return
     _warned_root_conflicts.add(key)
-    # Not fatal: this resolver runs at import time.
+    # Not fatal: failing here would break a resolver called at import time.
     logger.warning(
         "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
         "install is not self-contained.",
@@ -336,7 +338,7 @@ def _windows_documents_dir() -> Path | None:
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
         ) as key:
-            # Personal is the registry's name for Documents.
+            # "Personal" is the registry's name for Documents.
             value, kind = winreg.QueryValueEx(key, "Personal")
     except OSError:
         return None
@@ -406,7 +408,7 @@ def _mkdir(path: Path) -> Path:
 
 
 class RetiredAccountError(RuntimeError):
-    """A write arrived for an account whose private roots have already been retired."""
+    """Held across the rename-aside and every guarded directory creation; raised for a write to an account whose private roots are retired."""
 
 
 root_retirement_lock = threading.RLock()
@@ -515,7 +517,7 @@ def _lmstudio_downloads_folder() -> str:
     try:
         settings = json.loads(settings_path.read_text(encoding = "utf-8-sig"))
         downloads = settings.get("downloadsFolder", "")
-        # A number or list is a corrupt file; str() would stat "123".
+        # A number or list here is a corrupt file, not a path; str() would stat "123".
         return downloads if isinstance(downloads, str) else ""
     except Exception as exc:
         logger.debug("Ignoring unreadable LM Studio settings at %s: %s", settings_path, exc)
@@ -531,6 +533,7 @@ def lmstudio_model_dirs() -> list[Path]:
         candidates.append(downloads)
 
     candidates.append(Path.home() / ".lmstudio" / "models")
+    # Legacy cache location.
     candidates.append(Path.home() / ".cache" / "lm-studio" / "models")
 
     return _existing_dirs(candidates, resolve = False)
@@ -558,7 +561,7 @@ def _hermes_native_home() -> Path:
 
 
 def _hermes_root() -> Path:
-    """Under the native home HERMES_HOME means that home; a profiles/<name> elsewhere means its root."""
+    """HERMES_HOME under the native home means that home; profiles/<name> elsewhere means its root; anything else is the root (Docker, custom)."""
     env_home = os.environ.get("HERMES_HOME", "").strip()
     native = _hermes_native_home()
     if not env_home:
@@ -575,7 +578,7 @@ def _hermes_root() -> Path:
 
 
 def hermes_model_dirs() -> list[Path]:
-    """Scans <root>/models and the native home's models: downloads are machine-scoped, not per profile."""
+    """Scans the root models dir and the native home models dir: downloads are machine-scoped, and unsloth start hermes points HERMES_HOME at a throwaway dir."""
     return _existing_dirs(
         [_hermes_root() / "models", _hermes_native_home() / "models"],
         resolve = False,
@@ -616,7 +619,7 @@ def _omlx_configured_dirs(base: Path) -> list[str]:
 
 
 def omlx_model_dirs() -> list[Path]:
-    """Drops LM Studio's folder from the oMLX roots to avoid a double scan; keeps HF cache roots."""
+    """Drops the LM Studio folder from the oMLX roots to avoid a double scan; keeps HF cache roots, whose models-- walk cannot see oMLX flat folders."""
     base = _omlx_base_path()
     # oMLX applies OMLX_MODEL_DIR (comma-separated) over settings.json.
     env_dirs = [d.strip() for d in os.environ.get("OMLX_MODEL_DIR", "").split(",") if d.strip()]
@@ -645,8 +648,10 @@ def well_known_model_dirs() -> list[Path]:
     candidates.extend(ollama_model_dirs())
     candidates.extend(hermes_model_dirs())
 
+    # HF hub cache root, separate from the explicit HF cache chip.
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
 
+    # Generic "my models" spots users drop things into.
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
@@ -663,7 +668,7 @@ def _user_set_hf_home() -> bool:
 
 
 def _portable_cache_defaults(root: Path) -> dict[str, str]:
-    """HF_HOME never moves, since credentials should not follow the cache onto a removable volume."""
+    """Cache vars move under the root only in portable mode; HF_HOME never moves, since credentials should not follow the cache onto a removable volume."""
     if not portable_mode():
         return {}
     if _user_set_hf_home():
@@ -681,17 +686,17 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
 def _triton_cache_defaults(root: Path) -> dict[str, str]:
     """Not TRITON_HOME, which would also move ~/.triton/override and silently drop kernel overrides."""
     if (os.environ.get("TRITON_HOME") or "").strip():
-        # Moving the whole tree means the cache too; TRITON_CACHE_DIR would outrank it.
+        # Whoever moved the whole tree meant the cache with it; TRITON_CACHE_DIR would outrank it.
         return {}
     return {
         "TRITON_CACHE_DIR": str(root / "triton"),
-        # A sibling, not a child, so dumps outlive a cache wipe.
+        # A sibling, not a child: dumps are asked for by hand and should outlive a cache wipe.
         "TRITON_DUMP_DIR": str(root / "triton-dump"),
     }
 
 
 def _nothing_at(path: Path, *, ending: str = "") -> bool:
-    """Only a positive absence proof: Path.exists reads unreadable paths as missing, hiding user files."""
+    """Positive absence proof only: Path.exists reads unreadable paths as missing; pass ending lowercase, since Windows glob matches case-insensitively."""
     try:
         if not ending:
             os.lstat(path)
@@ -728,8 +733,7 @@ def _nothing_above(path: Path) -> bool:
 
 
 def _matplotlib_config_dir() -> Path | None:
-    """Mirrors matplotlib's config dir; None where it falls back to a temp dir, so a pin strands nothing."""
-    # XDG_CONFIG_HOME before Path.home(), as _get_xdg_config_dir does.
+    """Mirrors the matplotlib config dir (None if it falls back to temp); XDG_CONFIG_HOME goes before Path.home() since it works with no home."""
     if sys.platform.startswith(("linux", "freebsd")):
         base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
         if base:
@@ -807,7 +811,7 @@ def _data_designer_in_use(home: Path) -> bool:
 
 
 def _data_designer_defaults(root: Path) -> dict[str, str]:
-    """Not a cache: an existing ~/.data-designer is left alone, since repointing hides its configs."""
+    """Not a cache: leave an existing ~/.data-designer alone; MANAGED_ASSETS_PATH follows the home and both are read at import time."""
     if (os.environ.get("DATA_DESIGNER_HOME") or "").strip():
         return {}
     home = root.parent / "data-designer"
@@ -821,6 +825,7 @@ def _data_designer_defaults(root: Path) -> dict[str, str]:
     try:
         legacy = Path.home() / ".data-designer"
     except (OSError, RuntimeError):
+        # No home, so the pin can hide nothing: data_designer's default is off the same call.
         return pinned
     return pinned if _nothing_at(legacy) else {}
 
@@ -858,13 +863,14 @@ def _torch_accelerator_tag(fields: dict[str, str]) -> str:
 
 
 def _torch_runtime_tag() -> str:
-    """Tags builds by Python, platform and accelerator, so a flat TORCH_EXTENSIONS_DIR would mix them."""
+    """Tags builds by Python, platform and accelerator: torch tags only its default root, so a flat TORCH_EXTENSIONS_DIR would mix runtimes."""
     tag = f"py{sys.version_info.major}{sys.version_info.minor}{getattr(sys, 'abiflags', '')}"
     # Include arch: arm64 and Rosetta x86_64 pythons otherwise share ninja builds.
     tag += "_" + _path_safe(f"{sys.platform}-{platform.machine() or 'unknown'}")
     try:
         fields = _torch_version_fields()
     except (ImportError, OSError, ValueError, AttributeError):
+        # No torch yet, or a half-built tree; the interpreter tag alone still isolates.
         return tag
     if not fields:
         return tag
@@ -873,7 +879,7 @@ def _torch_runtime_tag() -> str:
     if version:
         tag += "_" + _path_safe(version)
     if fields.get("debug") == "True":
-        # A debug build keeps the release soname but not its ABI.
+        # A debug build keeps the soname of a release one but not its ABI.
         tag += "_debug"
     return tag
 
@@ -930,7 +936,7 @@ def _toolchain_unsafe(key: str, value: str) -> bool:
 
 
 def _private_dir(path: str) -> bool:
-    """Rejects a dir another local user could pre-create or rename; torch loads compiled .so from it."""
+    """Rejects a dir another local user could pre-create or rename (torch loads .so from it); parent checked first, via lstat, POSIX ownership only."""
     parent = Path(path).parent
     try:
         parent.mkdir(parents = True, exist_ok = True)
@@ -977,9 +983,10 @@ def _dir_is_not_swappable(directory: Path) -> bool:
         info = os.stat(directory)
     except (OSError, ValueError):
         return False
-    # Owner check: another account can chmod its dir writable. Root is trusted anyway.
+    # Owner and mode checks are both required, neither substitutes: another account can chmod its own dir writable; root is trusted.
     if info.st_uid not in (0, os.geteuid()):
         return False
+    # And the write bits, because owning a directory does not stop anyone else writing in it.
     if not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH):
         return True
     # Sticky limits renames to owners, so a shared dir held by us or root is fine (/tmp).
@@ -987,7 +994,7 @@ def _dir_is_not_swappable(directory: Path) -> bool:
 
 
 def _holding_dir_is_safe(parent: Path) -> bool:
-    """Checks every ancestor by both lexical and resolved path, since any writable one enables a swap."""
+    """Checks every ancestor, both lexical and resolved, since any writable one enables a swap; symlinked roots are not refused (macOS /tmp)."""
     if os.name == "nt":
         return _windows_temp_root_is_private(parent)
     try:
@@ -1006,7 +1013,7 @@ def _holding_dir_is_safe(parent: Path) -> bool:
 
 
 def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
-    """Keyed on the intended path and the OS account, hex-hashed so the name stays parseable."""
+    """Keyed on the intended path and OS account so two accounts sharing an install get separate dirs; hex digest keeps the name parseable."""
     try:
         base = tempfile.gettempdir()
     except (OSError, ValueError):
@@ -1016,7 +1023,7 @@ def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
     account = str(os.geteuid()) if hasattr(os, "geteuid") else (os.environ.get("USERNAME") or "")
     digest = hashlib.sha256(f"{account}\0{intended}".encode("utf-8", "replace")).hexdigest()[:12]
     candidate = str(Path(base) / f"unsloth-{key.lower().replace('_', '-')}-{digest}")
-    # The join can still reintroduce one: Path may normalise.
+    # The join can still reintroduce one: gettempdir() is parseable but Path may normalise.
     return None if toolchain_path_unparseable(candidate) else candidate
 
 
@@ -1075,6 +1082,7 @@ def _setup_cache_env() -> None:
         "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
         # Tagged: torch adds its ABI folder only when unset, so runtimes would share .so files.
         "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions" / _torch_runtime_tag()),
+        # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
         "CUDA_CACHE_PATH": str(root / "cuda"),
         "NUMBA_CACHE_DIR": str(root / "numba"),
     }
@@ -1085,8 +1093,7 @@ def _setup_cache_env() -> None:
     for key, value in defaults.items():
         # Blank counts as unset: KEY= would put an empty entry on sys.path.
         inherited = (os.environ.get(key) or "").strip()
-        # An explicit value wins unless builders cannot parse it; Windows persists stale values
-        # to the account, so refuse at use time (process-local, destroys nothing).
+        # Explicit value wins unless builders cannot parse it; Windows persists stale values, so refuse at use time (setup.ps1 checks provenance before deleting).
         if inherited and _toolchain_unsafe(key, inherited):
             # Seeded from the default so healed and clean installs share one directory.
             fallback = parseable_cache_fallback(key, value)
@@ -1139,14 +1146,14 @@ def _setup_cache_env() -> None:
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):
                 pass
-            # A toolchain path we could not create is worse than none: torch would fail every compile.
+            # A toolchain path we could not create is worse than none, since torch would fail every compile; applies only to toolchain keys, not data roots.
             if key in _TOOLCHAIN_PATH_KEYS and not _usable_dir(value):
                 logger.debug("leaving %s unset: %s is not a usable directory", key, value)
                 os.environ.pop(key, None)
 
 
 def setup_cache_env() -> None:
-    """Seeds the cache env before unsloth_zoo.compiler is imported, without creating studio dirs."""
+    """Seeds cache env without creating studio dirs, for uvicorn main:app (skips run.py); must run before unsloth_zoo.compiler is imported."""
     _setup_cache_env()
 
 

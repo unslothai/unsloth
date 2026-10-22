@@ -517,6 +517,7 @@ async def update_provider_config(
                 else None
             )
 
+    # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
         display_name = existing["display_name"],
         base_url = existing["base_url"],
@@ -1195,6 +1196,7 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
 
 
 def _model_capability_names(model: dict) -> Optional[list[str]]:
+    # Another server's shape under this key must not fail the listing's validation.
     values = model.get("capabilities")
     if not isinstance(values, list):
         return None
