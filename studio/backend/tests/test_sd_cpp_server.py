@@ -569,3 +569,16 @@ def test_readiness_refuses_a_hidden_owner_when_our_child_is_not_listening():
         child.wait()
         squatter.shutdown()
         squatter.server_close()
+
+
+def test_readiness_refuses_a_child_that_already_exited():
+    # The child died (e.g. it could not bind) while a squatter answered the probe.
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    s = srv.SdCppServer.__new__(srv.SdCppServer)
+    s._process = child
+    s.port = 1234
+    assert s._port_is_ours() is False

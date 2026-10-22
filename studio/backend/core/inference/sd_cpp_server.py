@@ -375,6 +375,10 @@ class SdCppServer:
         proc = self._process
         if proc is None or proc.pid is None:
             return True
+        # A child that already exited cannot be the server that answered.
+        poll = getattr(proc, "poll", None)
+        if callable(poll) and poll() is not None:
+            return False
         try:
             import psutil
         except Exception:  # noqa: BLE001 -- optional dependency
@@ -403,8 +407,9 @@ class SdCppServer:
                 except Exception:  # noqa: BLE001 -- access denied / platform quirk
                     readable = False
             tree_says_foreign = readable
-        except Exception:  # noqa: BLE001 -- child gone / platform quirk: fall back below
-            pass
+        except Exception as exc:  # noqa: BLE001 -- platform quirk: fall back below
+            if isinstance(exc, getattr(psutil, "NoSuchProcess", ())):
+                return False
         try:
             for conn in psutil.net_connections(kind = "inet"):
                 laddr = getattr(conn, "laddr", None)
