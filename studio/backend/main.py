@@ -356,6 +356,7 @@ from routes import (
     inference_router,
     inference_studio_router,
     mcp_servers_router,
+    openai_fine_tuning_router,
     skills_router,
     models_router,
     providers_router,
@@ -809,6 +810,18 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+
+    def _prune_open_staging_in_background() -> None:
+        try:
+            from utils.paths.path_utils import prune_open_staging
+            prune_open_staging()
+        except Exception:  # noqa: BLE001
+            _lifespan_log.warning("could not prune open-staging", exc_info = True)
+
+    # Off the startup path: the cache can sit on a slow mount, and a tool launched first runs the same cleanup.
+    threading.Thread(
+        target = _prune_open_staging_in_background, name = "open-staging-prune", daemon = True
+    ).start()
 
     # Warm the OS sandbox probe so the "off" gate has an answer.
     try:
@@ -1490,6 +1503,8 @@ _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
     "/api/hub/datasets/upload",
 )
+# OpenAI-compatible fine-tuning upload: the same dataset upload and cap, matched by EXACT path.
+_OPENAI_FILES_UPLOAD_PATH = "/v1/files"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
     "/api/data-recipe/seed/upload-unstructured-file"
 )
@@ -1530,6 +1545,7 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
+    _OPENAI_FILES_UPLOAD_PATH,
 )
 # Which of those may arrive with no Content-Length and be counted instead of refused. Deliberately NOT the
 # whole set above: this middleware runs before authentication, and a counted body is a held body, so the dataset
@@ -1563,9 +1579,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
-    if (
-        path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES)
-        or path.rstrip("/") == _DIFFUSION_DATASET_UPLOAD_PATH
+    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES) or path.rstrip("/") in (
+        _DIFFUSION_DATASET_UPLOAD_PATH,
+        _OPENAI_FILES_UPLOAD_PATH,
     ):
         return upload_request_limit_bytes()
     return default_request_body_limit_bytes()
@@ -1892,6 +1908,7 @@ app.include_router(video_openai_router, prefix = "/api/inference", tags = ["infe
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(openai_fine_tuning_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 # llama-server / Ollama discovery probes. Declares its own full paths (/props, /version, /api/tags, ...) so it
 # needs no prefix, and must be registered ahead of the SPA catch-all in serve_frontend() or /props and /version
@@ -2913,12 +2930,12 @@ def get_disk_space(
     is about to start.
 
     shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
-    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    is microseconds on every platform Unsloth runs on and needs no directory walk. Note that on
     Windows it reports the quota available to the CALLING user, which is the number that decides
     whether the download fits, so that difference is the correct one.
 
     Measured at the models root rather than the filesystem root: those are different volumes
-    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    whenever HF_HUB_CACHE, or the Unsloth root, sits on another disk, and the free space that
     matters is the one the bytes are going to.
 
     Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved

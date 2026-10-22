@@ -1417,7 +1417,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except PermissionError as exc:
         # Windows: a running audiocpp_server holds the tree open.
         print(
-            f"error: the audio.cpp runtime is in use ({exc}); stop Studio and retry",
+            f"error: the audio.cpp runtime is in use ({exc}); stop Unsloth Studio and retry",
             file = sys.stderr,
         )
         return EXIT_BUSY

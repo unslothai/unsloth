@@ -157,7 +157,7 @@ def test_an_npu_left_off_is_refused_with_the_flag_named(tmp_path, monkeypatch, c
         lambda: {"present": True, "enabled": False, "supported": False, "family": "XDNA2"},
     )
     backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
-    with pytest.raises(nb.NpuError, match = "UNSLOTH_STUDIO_ENABLE_NPU=1"):
+    with pytest.raises(nb.NpuError, match = "UNSLOTH_STUDIO_ENABLE_NPU. Unset it"):
         getattr(backend, call)()
     assert installer.installs == 0
     assert backend.status()["supported"] is False

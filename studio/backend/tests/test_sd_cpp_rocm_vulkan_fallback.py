@@ -3106,3 +3106,36 @@ def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, mo
     chosen = router.select_and_activate_engine(_detect_load_family(H3_REPO, None, "minimax-h3"))
     assert chosen == "sd_cpp", chosen  # the healthy server carries the load
     assert _recorded_strikes(fake_settings) == 0  # and nothing was held against ROCm
+
+
+def test_one_mask_string_for_rocr_and_hip_keeps_rocrs_repeat_rule(monkeypatch):
+    # The same str object in both variables: ROCr still stops at the repeat, HIP still dedupes.
+    from core.inference import sd_cpp_backend
+
+    # ROCr is a Linux layer: Windows HIP ignores ROCR_VISIBLE_DEVICES.
+    monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+
+    mask = "0,0,1"
+    env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": mask}
+    assert env["ROCR_VISIBLE_DEVICES"] is env["HIP_VISIBLE_DEVICES"]
+    assert sd_cpp_backend._physical_index_of(1, env = env) == (None, True)
+    assert sd_cpp_backend._physical_index_of(
+        1, env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": "0,0,1 "}
+    ) == (None, True)
+
+
+def test_trademark_marks_do_not_split_a_card_name():
+    from core.inference import sd_cpp_backend
+
+    listing = "Vulkan0\tAMD Radeon Graphics (RADV RAPHAEL)\n"
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "b", "AMD Radeon(TM) Graphics", position = 0, listing = listing
+        )
+        == "Vulkan0"
+    )
+    assert sd_cpp_backend._normalized_card_name(
+        "Intel(R) Arc(TM) B580"
+    ) == sd_cpp_backend._normalized_card_name("Intel Arc B580")
+    # Only the marks go: a model letter R or TM inside a word stays.
+    assert sd_cpp_backend._normalized_card_name("Radeon R9") == "radeonr9"
