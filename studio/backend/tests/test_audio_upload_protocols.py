@@ -36,7 +36,6 @@ def test_chat_audio_attachment_playlist_does_not_read_a_host_file(host_wav):
 
 
 def test_chat_audio_fallback_never_follows_a_playlist(tmp_path, monkeypatch):
-    # Soundfile and PyAV refuse these; the librosa fallback must not hand them to FFmpeg.
     pytest.importorskip("librosa")
     from utils.paths import ensure_dir, tmp_root
 
