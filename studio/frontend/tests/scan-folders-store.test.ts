@@ -17,6 +17,7 @@ after(() => {
 const server = [{ id: 1, path: "/models/a", created_at: "", recursive: false }];
 let listGate: Promise<void> | null = null;
 let lists = 0;
+let bareBody = false;
 globalThis.fetch = (async (_input: string, init?: RequestInit) => {
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -29,6 +30,7 @@ globalThis.fetch = (async (_input: string, init?: RequestInit) => {
     return json(row, 201);
   }
   lists += 1;
+  if (bareBody) return json({});
   const snapshot = server.map((row) => ({ ...row }));
   if (listGate) await listGate;
   return json({ folders: snapshot });
@@ -60,4 +62,14 @@ test("an add during the first load keeps the folders the load was fetching", asy
     ["/models/a", "/models/b"],
   );
   assert.equal(lists, 2);
+});
+
+test("a list body without folders reads as none instead of crashing the page", async () => {
+  store.resetScanFoldersStoreForTests();
+  bareBody = true;
+  try {
+    assert.deepEqual(await store.refreshScanFolders(), []);
+  } finally {
+    bareBody = false;
+  }
 });
