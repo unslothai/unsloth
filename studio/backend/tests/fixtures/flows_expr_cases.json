@@ -1,0 +1,1856 @@
+{
+ "cases": [
+  {
+   "name": "literal num",
+   "expr": 3,
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 3
+  },
+  {
+   "name": "literal str",
+   "expr": "hi",
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": "hi"
+  },
+  {
+   "name": "null",
+   "expr": null,
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": null
+  },
+  {
+   "name": "var",
+   "expr": {
+    "var": "hp"
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 7
+  },
+  {
+   "name": "var path",
+   "expr": {
+    "var": "stats.courage"
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 2
+  },
+  {
+   "name": "var index",
+   "expr": {
+    "var": "stats.list.1"
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 2
+  },
+  {
+   "name": "var neg index",
+   "expr": {
+    "var": "inv.-1"
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": "lamp"
+  },
+  {
+   "name": "missing var",
+   "expr": {
+    "var": "nope.x"
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": null
+  },
+  {
+   "name": "eq int float",
+   "expr": {
+    "op": "==",
+    "args": [
+     2,
+     2.0
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "eq bool num",
+   "expr": {
+    "op": "==",
+    "args": [
+     true,
+     1
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": false
+  },
+  {
+   "name": "neq",
+   "expr": {
+    "op": "!=",
+    "args": [
+     {
+      "var": "name"
+     },
+     "Mo"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": false
+  },
+  {
+   "name": "eq lists",
+   "expr": {
+    "op": "==",
+    "args": [
+     {
+      "list": [
+       1,
+       2
+      ]
+     },
+     {
+      "list": [
+       1,
+       2
+      ]
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "eq null",
+   "expr": {
+    "op": "==",
+    "args": [
+     {
+      "var": "nope"
+     },
+     null
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "eq obj",
+   "expr": {
+    "op": "==",
+    "args": [
+     {
+      "var": "stats"
+     },
+     {
+      "var": "stats"
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "lt",
+   "expr": {
+    "op": "<",
+    "args": [
+     {
+      "var": "hp"
+     },
+     10
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "ge str",
+   "expr": {
+    "op": ">=",
+    "args": [
+     "b",
+     "a"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "lt mixed err",
+   "expr": {
+    "op": "<",
+    "args": [
+     1,
+     "a"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "error": true
+  },
+  {
+   "name": "and",
+   "expr": {
+    "op": "and",
+    "args": [
+     {
+      "var": "flag"
+     },
+     {
+      "op": ">",
+      "args": [
+       {
+        "var": "hp"
+       },
+       5
+      ]
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "and shortcircuit",
+   "expr": {
+    "op": "and",
+    "args": [
+     false,
+     {
+      "op": "/",
+      "args": [
+       1,
+       0
+      ]
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": false
+  },
+  {
+   "name": "or",
+   "expr": {
+    "op": "or",
+    "args": [
+     {
+      "var": "zero"
+     },
+     {
+      "var": "empty"
+     },
+     "x"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "not empty list",
+   "expr": {
+    "op": "not",
+    "args": [
+     {
+      "list": []
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "add",
+   "expr": {
+    "op": "+",
+    "args": [
+     1,
+     2,
+     3.5
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 6.5
+  },
+  {
+   "name": "add str",
+   "expr": {
+    "op": "+",
+    "args": [
+     "a",
+     "b"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": "ab"
+  },
+  {
+   "name": "add lists",
+   "expr": {
+    "op": "+",
+    "args": [
+     {
+      "var": "inv"
+     },
+     {
+      "list": [
+       "rope"
+      ]
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": [
+    "key",
+    "lamp",
+    "rope"
+   ]
+  },
+  {
+   "name": "add bool err",
+   "expr": {
+    "op": "+",
+    "args": [
+     1,
+     true
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "error": true
+  },
+  {
+   "name": "sub",
+   "expr": {
+    "op": "-",
+    "args": [
+     10,
+     4
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 6
+  },
+  {
+   "name": "neg",
+   "expr": {
+    "op": "-",
+    "args": [
+     5
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": -5
+  },
+  {
+   "name": "mul",
+   "expr": {
+    "op": "*",
+    "args": [
+     3,
+     2.5
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 7.5
+  },
+  {
+   "name": "div",
+   "expr": {
+    "op": "/",
+    "args": [
+     7,
+     2
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 3.5
+  },
+  {
+   "name": "div int",
+   "expr": {
+    "op": "/",
+    "args": [
+     6,
+     2
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 3
+  },
+  {
+   "name": "div zero",
+   "expr": {
+    "op": "/",
+    "args": [
+     1,
+     0
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "error": true
+  },
+  {
+   "name": "mod neg",
+   "expr": {
+    "op": "%",
+    "args": [
+     -7,
+     3
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 2
+  },
+  {
+   "name": "mod",
+   "expr": {
+    "op": "%",
+    "args": [
+     7,
+     3
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 1
+  },
+  {
+   "name": "min",
+   "expr": {
+    "op": "min",
+    "args": [
+     3,
+     1,
+     2
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 1
+  },
+  {
+   "name": "max list",
+   "expr": {
+    "op": "max",
+    "args": [
+     {
+      "var": "stats.list"
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 3
+  },
+  {
+   "name": "abs",
+   "expr": {
+    "op": "abs",
+    "args": [
+     -4.5
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 4.5
+  },
+  {
+   "name": "round half",
+   "expr": {
+    "op": "round",
+    "args": [
+     2.5
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 3
+  },
+  {
+   "name": "round neg half",
+   "expr": {
+    "op": "round",
+    "args": [
+     -2.5
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": -2
+  },
+  {
+   "name": "round digits",
+   "expr": {
+    "op": "round",
+    "args": [
+     3.14159,
+     2
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 3.14
+  },
+  {
+   "name": "len str",
+   "expr": {
+    "op": "len",
+    "args": [
+     "héllo"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 5
+  },
+  {
+   "name": "len list",
+   "expr": {
+    "op": "len",
+    "args": [
+     {
+      "var": "inv"
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 2
+  },
+  {
+   "name": "len null",
+   "expr": {
+    "op": "len",
+    "args": [
+     null
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": 0
+  },
+  {
+   "name": "contains list",
+   "expr": {
+    "op": "contains",
+    "args": [
+     {
+      "var": "inv"
+     },
+     "lamp"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "contains str",
+   "expr": {
+    "op": "contains",
+    "args": [
+     "dragon",
+     "rag"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "contains obj",
+   "expr": {
+    "op": "contains",
+    "args": [
+     {
+      "var": "stats"
+     },
+     "courage"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": true
+  },
+  {
+   "name": "concat",
+   "expr": {
+    "op": "concat",
+    "args": [
+     "HP: ",
+     {
+      "var": "hp"
+     },
+     " ",
+     2.0,
+     " ",
+     true,
+     " ",
+     null,
+     {
+      "list": [
+       1,
+       "a"
+      ]
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": "HP: 7 2 true [1,\"a\"]"
+  },
+  {
+   "name": "if",
+   "expr": {
+    "op": "if",
+    "args": [
+     {
+      "op": ">",
+      "args": [
+       {
+        "var": "hp"
+       },
+       5
+      ]
+     },
+     "strong",
+     "weak"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": "strong"
+  },
+  {
+   "name": "lower",
+   "expr": {
+    "op": "lower",
+    "args": [
+     "MiXeD"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": "mixed"
+  },
+  {
+   "name": "upper",
+   "expr": {
+    "op": "upper",
+    "args": [
+     {
+      "var": "name"
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "expected": "MO"
+  },
+  {
+   "name": "unknown op",
+   "expr": {
+    "op": "eval",
+    "args": [
+     "1"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "error": true
+  },
+  {
+   "name": "bare list err",
+   "expr": [
+    1,
+    2
+   ],
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "error": true
+  },
+  {
+   "name": "arity err",
+   "expr": {
+    "op": "not",
+    "args": [
+     1,
+     2
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "error": true
+  },
+  {
+   "name": "rand",
+   "expr": {
+    "op": "rand",
+    "args": []
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "seed": 42,
+   "expected": 0.6011037519201636
+  },
+  {
+   "name": "randint",
+   "expr": {
+    "op": "randint",
+    "args": [
+     1,
+     6
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "seed": 42,
+   "expected": 4
+  },
+  {
+   "name": "dice",
+   "expr": {
+    "op": "dice",
+    "args": [
+     "3d6+2"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "seed": 7,
+   "expected": 10
+  },
+  {
+   "name": "dice bad",
+   "expr": {
+    "op": "dice",
+    "args": [
+     "d"
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "seed": 7,
+   "error": true
+  },
+  {
+   "name": "randint seq",
+   "expr": {
+    "list": [
+     {
+      "op": "randint",
+      "args": [
+       1,
+       100
+      ]
+     },
+     {
+      "op": "randint",
+      "args": [
+       1,
+       100
+      ]
+     },
+     {
+      "op": "rand",
+      "args": []
+     }
+    ]
+   },
+   "vars": {
+    "hp": 7,
+    "name": "Mo",
+    "inv": [
+     "key",
+     "lamp"
+    ],
+    "stats": {
+     "courage": 2,
+     "list": [
+      1,
+      2,
+      3
+     ]
+    },
+    "flag": true,
+    "zero": 0,
+    "empty": ""
+   },
+   "seed": 123456789,
+   "expected": [
+    26,
+    98,
+    0.7853280142880976
+   ]
+  }
+ ],
+ "prng": [
+  {
+   "seed": 0,
+   "values": [
+    0.26642920868471265,
+    0.0003297457005828619,
+    0.2232720274478197,
+    0.1462021479383111,
+    0.46732782293111086
+   ],
+   "state_after": 567894473
+  },
+  {
+   "seed": 1,
+   "values": [
+    0.6270739405881613,
+    0.002735721180215478,
+    0.5274470399599522,
+    0.9810509674716741,
+    0.9683778982143849
+   ],
+   "state_after": 567894474
+  },
+  {
+   "seed": 42,
+   "values": [
+    0.6011037519201636,
+    0.44829055899754167,
+    0.8524657934904099,
+    0.6697340414393693,
+    0.17481389874592423
+   ],
+   "state_after": 567894515
+  },
+  {
+   "seed": 4294967295,
+   "values": [
+    0.8964226141106337,
+    0.189478256739676,
+    0.7156526781618595,
+    0.9440599093213677,
+    0.8452364315744489
+   ],
+   "state_after": 567894472
+  },
+  {
+   "seed": 123456789,
+   "values": [
+    0.2577907438389957,
+    0.9707721115555614,
+    0.7853280142880976,
+    0.20616457983851433,
+    0.30307188746519387
+   ],
+   "state_after": 691351262
+  }
+ ],
+ "seed_from": [
+  {
+   "parts": [
+    "scene",
+    "a"
+   ],
+   "expected": 129992532
+  },
+  {
+   "parts": [
+    "story",
+    12,
+    "ü"
+   ],
+   "expected": 1353961800
+  },
+  {
+   "parts": [
+    ""
+   ],
+   "expected": 2166136261
+  },
+  {
+   "parts": [
+    1.0,
+    true,
+    null
+   ],
+   "expected": 1856044
+  }
+ ]
+}

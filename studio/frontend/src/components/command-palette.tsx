@@ -32,6 +32,7 @@ import { useCommandPaletteStore } from "@/stores/command-palette";
 import {
   Cancel01Icon,
   ChefHatIcon,
+  FlowConnectionIcon,
   DashboardCircleIcon,
   DownloadSquare01Icon,
   FlimSlateIcon,
@@ -301,6 +302,13 @@ function PaletteContent() {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.library")}</span>
+          </PaletteItem>
+          <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/flows" }))}
+            keywords={["workflow", "nodes", "graph", "game", "story"]}
+          >
+            <HugeiconsIcon icon={FlowConnectionIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.flows")}</span>
           </PaletteItem>
           <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}

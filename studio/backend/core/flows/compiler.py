@@ -1,0 +1,467 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Validate a Flow document and compile it into an execution plan.
+
+Checks: schema and limits, known node types, ports and port types, one edge per non-multi input, flow edges only
+between story control handles, acyclic data edges, For Each bodies, required inputs. A For Each node's body is the
+nodes whose ``group`` is the For Each node's id, plus the other nodes of the For Each node's own group. Edges into a
+For Each node's ``collect`` port come from inside its body and are not dependencies."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Optional
+
+from pydantic import ValidationError
+
+from core.flows import schema
+from core.flows.specs import SPECS_BY_TYPE
+
+FOR_EACH = "logic.for_each"
+COLLECT_PORT = "collect"
+FOR_EACH_INNER_PORTS = ("item", "index")
+FLOW_TARGET_PORT = "in"
+JSON_LIKE = ("text", "number", "bool", "json", "list", "story", "world")
+
+
+class CompileError(Exception):
+    def __init__(self, issues: list[dict]):
+        super().__init__("; ".join(i["message"] for i in issues[:5]))
+        self.issues = issues
+
+
+def issue(
+    message: str,
+    *,
+    node_id: Optional[str] = None,
+    edge_id: Optional[str] = None,
+) -> dict:
+    found: dict[str, Any] = {"message": message}
+    if node_id:
+        found["node_id"] = node_id
+    if edge_id:
+        found["edge_id"] = edge_id
+    return found
+
+
+def json_depth(value: Any, limit: int = schema.MAX_JSON_DEPTH) -> int:
+    """Iterative depth, so a hostile document cannot blow the stack; stops counting past ``limit``."""
+    deepest = 0
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > deepest:
+            deepest = depth
+            if deepest > limit:
+                return deepest
+        if isinstance(item, dict):
+            stack.extend((v, depth + 1) for v in item.values())
+        elif isinstance(item, list):
+            stack.extend((v, depth + 1) for v in item)
+    return deepest
+
+
+def parse_document(raw: Any) -> tuple[Optional[dict], list[dict]]:
+    """Schema-validate ``raw`` (dict or JSON text). Returns (normalized doc dict, errors)."""
+    if isinstance(raw, (bytes, str)):
+        if len(raw) > schema.MAX_DOC_BYTES:
+            return None, [issue("The flow is larger than 8 MB")]
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            return None, [issue(f"Not valid JSON: {exc}")]
+    if not isinstance(raw, dict):
+        return None, [issue("A flow is a JSON object")]
+    if json_depth(raw) > schema.MAX_JSON_DEPTH:
+        return None, [issue("The flow is nested too deeply")]
+    if len(json.dumps(raw)) > schema.MAX_DOC_BYTES:
+        return None, [issue("The flow is larger than 8 MB")]
+    if raw.get("format", schema.FORMAT) != schema.FORMAT:
+        return None, [issue("Not an Unsloth flow (format must be 'unsloth-flow')")]
+    if isinstance(raw.get("version"), int) and raw["version"] > schema.FORMAT_VERSION:
+        return None, [
+            issue(f"This flow needs a newer Unsloth Studio (format version {raw['version']})")
+        ]
+    try:
+        doc = schema.FlowDocument.model_validate(raw)
+    except ValidationError as exc:
+        errors = []
+        for err in exc.errors()[:20]:
+            loc = ".".join(str(p) for p in err.get("loc", ()))
+            errors.append(issue(f"{loc}: {err.get('msg')}"))
+        return None, errors
+    if len(doc.nodes) > schema.MAX_NODES:
+        return None, [issue(f"Too many nodes (at most {schema.MAX_NODES})")]
+    if len(doc.edges) > schema.MAX_EDGES:
+        return None, [issue(f"Too many edges (at most {schema.MAX_EDGES})")]
+    if len(doc.assets) > schema.MAX_ASSETS:
+        return None, [issue(f"Too many assets (at most {schema.MAX_ASSETS})")]
+    return doc.model_dump(mode = "json", by_alias = True), []
+
+
+def port_compatible(src: dict, dst: dict) -> bool:
+    s, d = src["type"], dst["type"]
+    if "any" in (s, d):
+        return True
+    if s == d:
+        if s == "list":
+            si, di = src.get("item"), dst.get("item")
+            return si in (None, "any") or di in (None, "any") or si == di
+        return True
+    if d == "json" and s in JSON_LIKE:
+        return True
+    # One value into a list port arrives as a one-item list.
+    if d == "list" and dst.get("item") in (None, "any", s):
+        return True
+    return False
+
+
+@dataclass
+class Plan:
+    doc: dict
+    nodes: dict[str, dict]
+    specs: dict[str, dict]
+    # Nodes the engine may execute (known, not player-only, not disabled).
+    executable: set[str]
+    # Data inputs: node -> port -> [(source node, source port)], in edge order. Collect edges excluded.
+    inputs: dict[str, dict[str, list[tuple[str, str]]]]
+    # For Each collect edges: for_each node -> (source node, source port).
+    collect: dict[str, tuple[str, str]]
+    # Direct downstream data consumers, collect edges excluded.
+    consumers: dict[str, set[str]]
+    # For Each node -> its direct body members (nested bodies excluded); member -> owning For Each.
+    bodies: dict[str, list[str]]
+    owner: dict[str, Optional[str]]
+    # Topological order of every executable node.
+    order: list[str]
+    flow_edges: list[dict] = field(default_factory = list)
+    warnings: list[dict] = field(default_factory = list)
+
+    def top_level(self) -> list[str]:
+        return [n for n in self.order if self.owner.get(n) is None]
+
+    def body_order(self, for_each_id: str) -> list[str]:
+        members = set(self.bodies.get(for_each_id, ()))
+        return [n for n in self.order if n in members]
+
+    def ancestors(self, targets: Iterable[str]) -> set[str]:
+        """Every node ``targets`` need, including whole For Each bodies (and their owners) they touch."""
+        need: set[str] = set()
+        stack = list(targets)
+        while stack:
+            node = stack.pop()
+            if node in need or node not in self.nodes:
+                continue
+            need.add(node)
+            for sources in self.inputs.get(node, {}).values():
+                stack.extend(src for src, _ in sources)
+            owner = self.owner.get(node)
+            if owner:
+                stack.append(owner)
+            if node in self.bodies:
+                stack.extend(self.bodies[node])
+                if node in self.collect:
+                    stack.append(self.collect[node][0])
+        return need
+
+    def gpu_nodes(self, among: Optional[Iterable[str]] = None) -> list[str]:
+        pool = self.order if among is None else [n for n in self.order if n in set(among)]
+        return [n for n in pool if self.specs[n]["lane"] == "gpu"]
+
+
+def _members(doc_nodes: dict[str, dict]) -> dict[str, set[str]]:
+    members: dict[str, set[str]] = {}
+    for fid, node in doc_nodes.items():
+        if node["type"] != FOR_EACH:
+            continue
+        found = {nid for nid, n in doc_nodes.items() if n.get("group") == fid}
+        if node.get("group"):
+            found |= {
+                nid
+                for nid, n in doc_nodes.items()
+                if nid != fid and n.get("group") == node["group"]
+            }
+        members[fid] = found
+    return members
+
+
+def compile_flow(doc: dict) -> Plan:
+    """Compile a schema-valid document; raises CompileError listing every problem found."""
+    errors: list[dict] = []
+    warnings: list[dict] = []
+    nodes: dict[str, dict] = {}
+    for node in doc.get("nodes", []):
+        if node["id"] in nodes:
+            errors.append(issue(f"Duplicate node id {node['id']}", node_id = node["id"]))
+        nodes[node["id"]] = node
+    specs: dict[str, dict] = {}
+    for nid, node in nodes.items():
+        spec = SPECS_BY_TYPE.get(node["type"])
+        if spec is None:
+            errors.append(issue(f"Unknown node type {node['type']}", node_id = nid))
+            continue
+        if node.get("v", 1) > spec["v"]:
+            errors.append(
+                issue(f"{spec['title']} v{node['v']} needs a newer Unsloth Studio", node_id = nid)
+            )
+        specs[nid] = spec
+        for key, value in (node.get("params") or {}).items():
+            if isinstance(value, str) and len(value) > schema.MAX_STRING_PARAM:
+                errors.append(issue(f"Parameter {key} is too long", node_id = nid))
+
+    members = _members(nodes)
+    # Innermost owner: a member of F whose own For Each is also a member of F belongs to that inner one.
+    owner: dict[str, Optional[str]] = {nid: None for nid in nodes}
+    for fid, found in members.items():
+        for nid in found:
+            current = owner.get(nid)
+            if current is None or fid in members.get(current, set()):
+                owner[nid] = fid
+    for fid in members:
+        cursor, seen = owner.get(fid), {fid}
+        while cursor is not None:
+            if cursor in seen:
+                errors.append(issue("For Each groups are nested in a loop", node_id = fid))
+                break
+            seen.add(cursor)
+            cursor = owner.get(cursor)
+    bodies = {fid: [n for n in nodes if owner.get(n) == fid] for fid in members}
+
+    def inside(nid: str, fid: str) -> bool:
+        cursor = owner.get(nid)
+        while cursor is not None:
+            if cursor == fid:
+                return True
+            cursor = owner.get(cursor)
+        return False
+
+    inputs: dict[str, dict[str, list[tuple[str, str]]]] = {nid: {} for nid in nodes}
+    collect: dict[str, tuple[str, str]] = {}
+    consumers: dict[str, set[str]] = {nid: set() for nid in nodes}
+    flow_edges: list[dict] = []
+    edge_ids: set[str] = set()
+    for edge in doc.get("edges", []):
+        eid = edge["id"]
+        if eid in edge_ids:
+            errors.append(issue(f"Duplicate edge id {eid}", edge_id = eid))
+            continue
+        edge_ids.add(eid)
+        src, dst = edge["source"], edge["target"]
+        if src not in nodes or dst not in nodes:
+            errors.append(issue("Edge connects a missing node", edge_id = eid))
+            continue
+        if src == dst:
+            errors.append(issue("A node cannot connect to itself", edge_id = eid, node_id = src))
+            continue
+        sspec, dspec = specs.get(src), specs.get(dst)
+        if sspec is None or dspec is None:
+            continue
+        if edge.get("kind", "data") == "flow":
+            if edge["source_port"] not in sspec["flow_out"]:
+                errors.append(
+                    issue(f"{sspec['title']} has no story exit {edge['source_port']}", edge_id = eid)
+                )
+            elif not dspec["flow_in"]:
+                errors.append(issue(f"{dspec['title']} cannot be a story step", edge_id = eid))
+            else:
+                flow_edges.append(edge)
+            continue
+        sport = next((p for p in sspec["outputs"] if p["id"] == edge["source_port"]), None)
+        dport = next((p for p in dspec["inputs"] if p["id"] == edge["target_port"]), None)
+        if sport is None:
+            errors.append(
+                issue(f"{sspec['title']} has no output {edge['source_port']}", edge_id = eid)
+            )
+            continue
+        if dport is None:
+            errors.append(
+                issue(f"{dspec['title']} has no input {edge['target_port']}", edge_id = eid)
+            )
+            continue
+        if not port_compatible(sport, dport):
+            errors.append(
+                issue(
+                    f"{sspec['title']}.{sport['label']} ({sport['type']}) cannot connect to "
+                    f"{dspec['title']}.{dport['label']} ({dport['type']})",
+                    edge_id = eid,
+                )
+            )
+            continue
+        if dspec["type"] == FOR_EACH and dport["id"] == COLLECT_PORT:
+            if not inside(src, dst):
+                errors.append(
+                    issue("For Each collects only from a node inside its group", edge_id = eid)
+                )
+            elif dst in collect:
+                errors.append(issue("For Each collects from one node", edge_id = eid))
+            else:
+                collect[dst] = (src, sport["id"])
+            continue
+        # Values made inside a body stay inside it; results leave through `results`.
+        src_owner = owner.get(src)
+        if src_owner is not None and not inside(dst, src_owner):
+            errors.append(
+                issue(
+                    "A node inside a For Each group can only feed its group; connect it to collect",
+                    edge_id = eid,
+                )
+            )
+            continue
+        if (
+            sspec["type"] == FOR_EACH
+            and sport["id"] in FOR_EACH_INNER_PORTS
+            and not inside(dst, src)
+        ):
+            errors.append(
+                issue("For Each item and index are only for nodes inside its group", edge_id = eid)
+            )
+            continue
+        existing = inputs[dst].setdefault(dport["id"], [])
+        if existing and not dport.get("multi"):
+            errors.append(
+                issue(
+                    f"{dspec['title']}.{dport['label']} takes one connection",
+                    edge_id = eid,
+                    node_id = dst,
+                )
+            )
+            continue
+        existing.append((src, sport["id"]))
+        consumers[src].add(dst)
+
+    executable = {
+        nid
+        for nid, node in nodes.items()
+        if nid in specs and not specs[nid]["player"] and not node.get("disabled")
+    }
+    for nid in executable:
+        spec = specs[nid]
+        params = nodes[nid].get("params") or {}
+        param_ids = {p["id"] for p in spec["params"]}
+        for port in spec["inputs"]:
+            if port.get("optional") or port["id"] == COLLECT_PORT or port["id"] in inputs[nid]:
+                continue
+            if port["id"] in param_ids and params.get(port["id"]) not in (None, ""):
+                continue
+            errors.append(
+                issue(f"{spec['title']} needs its {port['label']} input connected", node_id = nid)
+            )
+
+    order = _topo(nodes, inputs, owner, collect)
+    if order is None:
+        errors.append(
+            issue("The data connections form a loop; use a For Each group to repeat steps")
+        )
+        order = []
+    if errors:
+        raise CompileError(errors)
+    order = [n for n in order if n in executable]
+    for nid in nodes:
+        if nid not in specs:
+            continue
+        if nid not in executable and not specs[nid]["player"] and nodes[nid].get("disabled"):
+            warnings.append(issue("Disabled: skipped", node_id = nid))
+    return Plan(
+        doc = doc,
+        nodes = nodes,
+        specs = specs,
+        executable = executable,
+        inputs = inputs,
+        collect = collect,
+        consumers = consumers,
+        bodies = bodies,
+        owner = owner,
+        order = order,
+        flow_edges = flow_edges,
+        warnings = warnings,
+    )
+
+
+def _topo(
+    nodes: dict[str, dict],
+    inputs: dict[str, dict[str, list[tuple[str, str]]]],
+    owner: dict[str, Optional[str]],
+    collect: dict[str, tuple[str, str]],
+) -> Optional[list[str]]:
+    """Kahn's order over data edges, plus: a For Each comes after everything its body needs from outside, and every
+    body member comes after its For Each. Stable by document order. None on a cycle."""
+    deps: dict[str, set[str]] = {nid: set() for nid in nodes}
+    for nid, ports in inputs.items():
+        for sources in ports.values():
+            for src, _ in sources:
+                deps[nid].add(src)
+    for nid, fid in owner.items():
+        if fid is not None:
+            deps[nid].add(fid)
+    # The For Each runs its body itself, so it also waits for the outside inputs of its body.
+    for nid, fid in owner.items():
+        cursor = fid
+        while cursor is not None:
+            for src in deps[nid]:
+                if src != cursor and not _within(src, cursor, owner) and src != nid:
+                    deps[cursor].add(src)
+            cursor = owner.get(cursor)
+    position = {nid: i for i, nid in enumerate(nodes)}
+    remaining = {nid: set(d) for nid, d in deps.items()}
+    ready = sorted((n for n, d in remaining.items() if not d), key = position.__getitem__)
+    order: list[str] = []
+    dependents: dict[str, set[str]] = {nid: set() for nid in nodes}
+    for nid, d in deps.items():
+        for src in d:
+            dependents.setdefault(src, set()).add(nid)
+    while ready:
+        nid = ready.pop(0)
+        order.append(nid)
+        for nxt in sorted(dependents.get(nid, ()), key = position.__getitem__):
+            remaining[nxt].discard(nid)
+            if not remaining[nxt] and nxt not in order and nxt not in ready:
+                ready.append(nxt)
+        ready.sort(key = position.__getitem__)
+    if len(order) != len(nodes):
+        return None
+    return order
+
+
+def _within(nid: str, fid: str, owner: dict[str, Optional[str]]) -> bool:
+    cursor = owner.get(nid)
+    while cursor is not None:
+        if cursor == fid:
+            return True
+        cursor = owner.get(cursor)
+    return False
+
+
+def validate(raw: Any) -> dict:
+    """The /validate answer: {ok, errors, warnings}."""
+    doc, errors = parse_document(raw)
+    if doc is None:
+        return {"ok": False, "errors": errors, "warnings": []}
+    try:
+        plan = compile_flow(doc)
+    except CompileError as exc:
+        return {"ok": False, "errors": exc.issues, "warnings": []}
+    return {"ok": True, "errors": [], "warnings": plan.warnings}
+
+
+def model_needs(plan: Plan, among: Optional[Iterable[str]] = None) -> list[dict]:
+    """The models GPU nodes name, deduplicated, plus the document's declared requirements."""
+    seen: dict[tuple, dict] = {}
+    for req in (plan.doc.get("requirements") or {}).get("models") or []:
+        key = (req["kind"], req["repo"].lower(), (req.get("variant") or "").lower())
+        seen[key] = {**req}
+    pool = plan.order if among is None else [n for n in plan.order if n in set(among)]
+    for nid in pool:
+        spec = plan.specs[nid]
+        if not spec.get("model_kind"):
+            continue
+        choice = (plan.nodes[nid].get("params") or {}).get("model")
+        if not isinstance(choice, dict) or not choice.get("repo"):
+            continue
+        key = (spec["model_kind"], choice["repo"].lower(), (choice.get("variant") or "").lower())
+        seen.setdefault(
+            key,
+            {"kind": spec["model_kind"], "repo": choice["repo"], "variant": choice.get("variant")},
+        )
+    return list(seen.values())

@@ -1,0 +1,554 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { create } from "zustand";
+import {
+  FLOW_FORMAT,
+  FLOW_FORMAT_VERSION,
+  type FlowDocument,
+  type FlowEdge,
+  type FlowGroup,
+  type FlowNode,
+  type FlowNote,
+} from "../types";
+
+/** Graph state normalized by id. Every record is immutable: an edit replaces only what it touches,
+ *  so a node component selecting `nodes[id]` re-renders only when that node changed. */
+export interface DocGraph {
+  nodes: Record<string, FlowNode>;
+  nodeOrder: string[];
+  edges: Record<string, FlowEdge>;
+  edgeOrder: string[];
+  groups: Record<string, FlowGroup>;
+  groupOrder: string[];
+  notes: Record<string, FlowNote>;
+  noteOrder: string[];
+}
+
+export type DocMeta = Omit<
+  FlowDocument,
+  "nodes" | "edges" | "groups" | "notes"
+>;
+
+interface Snapshot {
+  graph: DocGraph;
+  meta: DocMeta;
+}
+
+export interface GraphFragment {
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+}
+
+export interface DocState {
+  flowId: string | null;
+  meta: DocMeta;
+  graph: DocGraph;
+  /** Bumps on every semantic change; autosave and dirty tracking key off it. */
+  version: number;
+  past: Snapshot[];
+  future: Snapshot[];
+  lastCoalesceKey: string | null;
+  lastCommitAt: number;
+
+  load: (doc: FlowDocument) => void;
+  reset: () => void;
+  setMeta: (patch: Partial<DocMeta>, coalesceKey?: string) => void;
+  addNode: (node: FlowNode) => void;
+  updateParams: (
+    id: string,
+    patch: Record<string, unknown>,
+    coalesceKey?: string,
+  ) => void;
+  updateNode: (
+    id: string,
+    patch: Partial<Omit<FlowNode, "id" | "params">>,
+  ) => void;
+  /** Move nodes and frames (frame keys use GROUP_KEY / NOTE_KEY); `membership` re-parents nodes into groups. */
+  moveNodes: (
+    positions: Record<string, [number, number]>,
+    membership?: Record<string, string | null>,
+  ) => void;
+  removeElements: (ids: {
+    nodes?: string[];
+    edges?: string[];
+    groups?: string[];
+    notes?: string[];
+  }) => void;
+  connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
+  insertFragment: (fragment: GraphFragment) => void;
+  upsertGroup: (group: FlowGroup) => void;
+  groupNodes: (group: FlowGroup, nodeIds: string[]) => void;
+  upsertNote: (note: FlowNote, coalesceKey?: string) => void;
+  undo: () => void;
+  redo: () => void;
+}
+
+const HISTORY_LIMIT = 100;
+/** Keys `moveNodes` accepts for frames, matching the React Flow ids in editor/derive-rf.ts. */
+export const GROUP_KEY = "group:";
+export const NOTE_KEY = "note:";
+const COALESCE_MS = 900;
+
+export function emptyGraph(): DocGraph {
+  return {
+    nodes: {},
+    nodeOrder: [],
+    edges: {},
+    edgeOrder: [],
+    groups: {},
+    groupOrder: [],
+    notes: {},
+    noteOrder: [],
+  };
+}
+
+export function emptyMeta(id = "untitled"): DocMeta {
+  return {
+    format: FLOW_FORMAT,
+    version: FLOW_FORMAT_VERSION,
+    id,
+    name: "Untitled flow",
+    description: "",
+    kind: "pipeline",
+    seed: 0,
+    params: [],
+    requirements: { models: [] },
+    assets: [],
+    baked: {},
+    editor: {},
+    meta: {},
+  };
+}
+
+function byId<T extends { id: string }>(
+  items: T[],
+): [Record<string, T>, string[]] {
+  const record: Record<string, T> = {};
+  const order: string[] = [];
+  for (const item of items) {
+    if (record[item.id]) continue;
+    record[item.id] = item;
+    order.push(item.id);
+  }
+  return [record, order];
+}
+
+export function graphFromDocument(doc: FlowDocument): DocGraph {
+  const [nodes, nodeOrder] = byId(doc.nodes ?? []);
+  const [edges, edgeOrder] = byId(
+    (doc.edges ?? []).filter((e) => nodes[e.source] && nodes[e.target]),
+  );
+  const [groups, groupOrder] = byId(doc.groups ?? []);
+  const [notes, noteOrder] = byId(doc.notes ?? []);
+  return {
+    nodes,
+    nodeOrder,
+    edges,
+    edgeOrder,
+    groups,
+    groupOrder,
+    notes,
+    noteOrder,
+  };
+}
+
+export function metaFromDocument(doc: FlowDocument): DocMeta {
+  const { nodes: _n, edges: _e, groups: _g, notes: _no, ...meta } = doc;
+  return {
+    ...emptyMeta(doc.id),
+    ...meta,
+    format: FLOW_FORMAT,
+    requirements: meta.requirements ?? { models: [] },
+  };
+}
+
+export function documentFromState(
+  state: Pick<DocState, "meta" | "graph">,
+): FlowDocument {
+  const { meta, graph } = state;
+  return {
+    ...meta,
+    nodes: graph.nodeOrder.map((id) => graph.nodes[id]),
+    edges: graph.edgeOrder.map((id) => graph.edges[id]),
+    groups: graph.groupOrder.map((id) => graph.groups[id]),
+    notes: graph.noteOrder.map((id) => graph.notes[id]),
+  };
+}
+
+/** Autosave signature: the document minus editor-only viewport state, in canonical key order so a
+ *  document from the server and the same document rebuilt from the store compare equal. */
+export function documentSignature(doc: FlowDocument): string {
+  const canonical = documentFromState({
+    meta: metaFromDocument(doc),
+    graph: graphFromDocument(doc),
+  });
+  const { editor: _editor, ...rest } = canonical;
+  return JSON.stringify(rest);
+}
+
+let idCounter = 0;
+export function newId(prefix: string): string {
+  idCounter = (idCounter + 1) % 1_000_000;
+  const random = Math.random().toString(36).slice(2, 8);
+  return `${prefix}_${Date.now().toString(36).slice(-4)}${random}${idCounter.toString(36)}`;
+}
+
+export const useDocStore = create<DocState>((set, get) => {
+  /** Apply a change with one undo step; edits sharing `coalesceKey` within COALESCE_MS fold into one. */
+  function commit(
+    updater: (
+      state: DocState,
+    ) => Partial<Pick<DocState, "graph" | "meta">> | null,
+    coalesceKey?: string,
+  ): void {
+    const state = get();
+    const next = updater(state);
+    if (!next) return;
+    const now = Date.now();
+    const coalesce =
+      coalesceKey !== undefined &&
+      coalesceKey === state.lastCoalesceKey &&
+      now - state.lastCommitAt < COALESCE_MS;
+    const past = coalesce
+      ? state.past
+      : [...state.past, { graph: state.graph, meta: state.meta }].slice(
+          -HISTORY_LIMIT,
+        );
+    set({
+      ...next,
+      past,
+      future: [],
+      version: state.version + 1,
+      lastCoalesceKey: coalesceKey ?? null,
+      lastCommitAt: now,
+    });
+  }
+
+  function withGraph(
+    state: DocState,
+    patch: Partial<DocGraph>,
+  ): { graph: DocGraph } {
+    return { graph: { ...state.graph, ...patch } };
+  }
+
+  return {
+    flowId: null,
+    meta: emptyMeta(),
+    graph: emptyGraph(),
+    version: 0,
+    past: [],
+    future: [],
+    lastCoalesceKey: null,
+    lastCommitAt: 0,
+
+    load: (doc) =>
+      set({
+        flowId: doc.id,
+        meta: metaFromDocument(doc),
+        graph: graphFromDocument(doc),
+        version: 0,
+        past: [],
+        future: [],
+        lastCoalesceKey: null,
+        lastCommitAt: 0,
+      }),
+
+    reset: () =>
+      set({
+        flowId: null,
+        meta: emptyMeta(),
+        graph: emptyGraph(),
+        version: 0,
+        past: [],
+        future: [],
+        lastCoalesceKey: null,
+      }),
+
+    setMeta: (patch, coalesceKey) =>
+      commit((s) => ({ meta: { ...s.meta, ...patch } }), coalesceKey),
+
+    addNode: (node) =>
+      commit((s) =>
+        withGraph(s, {
+          nodes: { ...s.graph.nodes, [node.id]: node },
+          nodeOrder: [...s.graph.nodeOrder, node.id],
+        }),
+      ),
+
+    updateParams: (id, patch, coalesceKey) =>
+      commit((s) => {
+        const node = s.graph.nodes[id];
+        if (!node) return null;
+        return withGraph(s, {
+          nodes: {
+            ...s.graph.nodes,
+            [id]: { ...node, params: { ...node.params, ...patch } },
+          },
+        });
+      }, coalesceKey),
+
+    updateNode: (id, patch) =>
+      commit(
+        (s) => {
+          const node = s.graph.nodes[id];
+          if (!node) return null;
+          return withGraph(s, {
+            nodes: { ...s.graph.nodes, [id]: { ...node, ...patch } },
+          });
+        },
+        patch.label !== undefined ? `label:${id}` : undefined,
+      ),
+
+    moveNodes: (positions, membership) =>
+      commit((s) => {
+        let nodes: Record<string, FlowNode> | null = null;
+        let groups: Record<string, FlowGroup> | null = null;
+        let notes: Record<string, FlowNote> | null = null;
+        for (const [key, pos] of Object.entries(positions)) {
+          if (key.startsWith(GROUP_KEY)) {
+            const group = s.graph.groups[key.slice(GROUP_KEY.length)];
+            if (
+              !group ||
+              (group.rect[0] === pos[0] && group.rect[1] === pos[1])
+            )
+              continue;
+            groups ??= { ...s.graph.groups };
+            groups[group.id] = {
+              ...group,
+              rect: [pos[0], pos[1], group.rect[2], group.rect[3]],
+            };
+            continue;
+          }
+          if (key.startsWith(NOTE_KEY)) {
+            const note = s.graph.notes[key.slice(NOTE_KEY.length)];
+            if (!note || (note.rect[0] === pos[0] && note.rect[1] === pos[1]))
+              continue;
+            notes ??= { ...s.graph.notes };
+            notes[note.id] = {
+              ...note,
+              rect: [pos[0], pos[1], note.rect[2], note.rect[3]],
+            };
+            continue;
+          }
+          const node = s.graph.nodes[key];
+          if (!node || (node.pos[0] === pos[0] && node.pos[1] === pos[1]))
+            continue;
+          nodes ??= { ...s.graph.nodes };
+          nodes[key] = { ...node, pos };
+        }
+        for (const [id, group] of Object.entries(membership ?? {})) {
+          const node = (nodes ?? s.graph.nodes)[id];
+          if (!node || (node.group ?? null) === group) continue;
+          nodes ??= { ...s.graph.nodes };
+          nodes[id] = { ...node, group };
+        }
+        if (!nodes && !groups && !notes) return null;
+        return withGraph(s, {
+          ...(nodes ? { nodes } : {}),
+          ...(groups ? { groups } : {}),
+          ...(notes ? { notes } : {}),
+        });
+      }),
+
+    removeElements: (ids) =>
+      commit((s) => {
+        const dropNodes = new Set(ids.nodes ?? []);
+        const dropEdges = new Set(ids.edges ?? []);
+        const dropGroups = new Set(ids.groups ?? []);
+        const dropNotes = new Set(ids.notes ?? []);
+        for (const edgeId of s.graph.edgeOrder) {
+          const edge = s.graph.edges[edgeId];
+          if (dropNodes.has(edge.source) || dropNodes.has(edge.target))
+            dropEdges.add(edgeId);
+        }
+        if (
+          !dropNodes.size &&
+          !dropEdges.size &&
+          !dropGroups.size &&
+          !dropNotes.size
+        )
+          return null;
+        const omit = <T>(record: Record<string, T>, drop: Set<string>) => {
+          if (!drop.size) return record;
+          const next = { ...record };
+          for (const id of drop) delete next[id];
+          return next;
+        };
+        return withGraph(s, {
+          nodes: omit(s.graph.nodes, dropNodes),
+          nodeOrder: dropNodes.size
+            ? s.graph.nodeOrder.filter((id) => !dropNodes.has(id))
+            : s.graph.nodeOrder,
+          edges: omit(s.graph.edges, dropEdges),
+          edgeOrder: dropEdges.size
+            ? s.graph.edgeOrder.filter((id) => !dropEdges.has(id))
+            : s.graph.edgeOrder,
+          groups: omit(s.graph.groups, dropGroups),
+          groupOrder: dropGroups.size
+            ? s.graph.groupOrder.filter((id) => !dropGroups.has(id))
+            : s.graph.groupOrder,
+          notes: omit(s.graph.notes, dropNotes),
+          noteOrder: dropNotes.size
+            ? s.graph.noteOrder.filter((id) => !dropNotes.has(id))
+            : s.graph.noteOrder,
+        });
+      }),
+
+    connect: (edge, replaceSingleInput) =>
+      commit((s) => {
+        const edges = { ...s.graph.edges };
+        let order = s.graph.edgeOrder;
+        for (const id of s.graph.edgeOrder) {
+          const existing = s.graph.edges[id];
+          const duplicate =
+            existing.source === edge.source &&
+            existing.source_port === edge.source_port &&
+            existing.target === edge.target &&
+            existing.target_port === edge.target_port;
+          if (duplicate) return null;
+          const occupiesInput =
+            replaceSingleInput &&
+            edge.kind === "data" &&
+            existing.kind === "data" &&
+            existing.target === edge.target &&
+            existing.target_port === edge.target_port;
+          // A story path leaves each flow handle once.
+          const occupiesFlowOut =
+            edge.kind === "flow" &&
+            existing.kind === "flow" &&
+            existing.source === edge.source &&
+            existing.source_port === edge.source_port;
+          if (occupiesInput || occupiesFlowOut) {
+            delete edges[id];
+            order = order.filter((other) => other !== id);
+          }
+        }
+        edges[edge.id] = edge;
+        return withGraph(s, { edges, edgeOrder: [...order, edge.id] });
+      }),
+
+    insertFragment: (fragment) =>
+      commit((s) => {
+        const nodes = { ...s.graph.nodes };
+        const nodeOrder = [...s.graph.nodeOrder];
+        for (const node of fragment.nodes) {
+          if (nodes[node.id]) continue;
+          nodes[node.id] = node;
+          nodeOrder.push(node.id);
+        }
+        const edges = { ...s.graph.edges };
+        const edgeOrder = [...s.graph.edgeOrder];
+        for (const edge of fragment.edges) {
+          if (edges[edge.id] || !nodes[edge.source] || !nodes[edge.target])
+            continue;
+          edges[edge.id] = edge;
+          edgeOrder.push(edge.id);
+        }
+        return withGraph(s, { nodes, nodeOrder, edges, edgeOrder });
+      }),
+
+    upsertGroup: (group) =>
+      commit((s) =>
+        withGraph(s, {
+          groups: { ...s.graph.groups, [group.id]: group },
+          groupOrder: s.graph.groups[group.id]
+            ? s.graph.groupOrder
+            : [...s.graph.groupOrder, group.id],
+        }),
+      ),
+
+    groupNodes: (group, nodeIds) =>
+      commit((s) => {
+        const nodes = { ...s.graph.nodes };
+        for (const id of nodeIds)
+          if (nodes[id]) nodes[id] = { ...nodes[id], group: group.id };
+        return withGraph(s, {
+          nodes,
+          groups: { ...s.graph.groups, [group.id]: group },
+          groupOrder: s.graph.groups[group.id]
+            ? s.graph.groupOrder
+            : [...s.graph.groupOrder, group.id],
+        });
+      }),
+
+    upsertNote: (note, coalesceKey) =>
+      commit(
+        (s) =>
+          withGraph(s, {
+            notes: { ...s.graph.notes, [note.id]: note },
+            noteOrder: s.graph.notes[note.id]
+              ? s.graph.noteOrder
+              : [...s.graph.noteOrder, note.id],
+          }),
+        coalesceKey,
+      ),
+
+    undo: () => {
+      const s = get();
+      const previous = s.past.at(-1);
+      if (!previous) return;
+      set({
+        graph: previous.graph,
+        meta: previous.meta,
+        past: s.past.slice(0, -1),
+        future: [{ graph: s.graph, meta: s.meta }, ...s.future].slice(
+          0,
+          HISTORY_LIMIT,
+        ),
+        version: s.version + 1,
+        lastCoalesceKey: null,
+      });
+    },
+
+    redo: () => {
+      const s = get();
+      const next = s.future[0];
+      if (!next) return;
+      set({
+        graph: next.graph,
+        meta: next.meta,
+        past: [...s.past, { graph: s.graph, meta: s.meta }].slice(
+          -HISTORY_LIMIT,
+        ),
+        future: s.future.slice(1),
+        version: s.version + 1,
+        lastCoalesceKey: null,
+      });
+    },
+  };
+});
+
+/** Copy nodes (and the edges between them) with fresh ids, offset by `delta`. */
+export function cloneFragment(
+  graph: DocGraph,
+  nodeIds: string[],
+  delta: [number, number],
+): GraphFragment {
+  const idMap = new Map<string, string>();
+  const nodes: FlowNode[] = [];
+  for (const id of nodeIds) {
+    const node = graph.nodes[id];
+    if (!node) continue;
+    const nextId = newId("n");
+    idMap.set(id, nextId);
+    nodes.push({
+      ...node,
+      id: nextId,
+      params: JSON.parse(JSON.stringify(node.params)) as Record<
+        string,
+        unknown
+      >,
+      pos: [node.pos[0] + delta[0], node.pos[1] + delta[1]],
+    });
+  }
+  const edges: FlowEdge[] = [];
+  for (const edgeId of graph.edgeOrder) {
+    const edge = graph.edges[edgeId];
+    const source = idMap.get(edge.source);
+    const target = idMap.get(edge.target);
+    if (source && target)
+      edges.push({ ...edge, id: newId("e"), source, target });
+  }
+  return { nodes, edges };
+}

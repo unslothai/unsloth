@@ -1,0 +1,447 @@
+{
+ "title": "The Sloth Who Lost the Moon",
+ "start": "porch",
+ "vars": {
+  "kindness": 0,
+  "courage": 0
+ },
+ "characters": [
+  {
+   "id": "mo",
+   "name": "Mo",
+   "color": "#7dd3fc",
+   "look": "a small sleepy three-toed sloth in a knitted blue scarf, big kind eyes",
+   "expressions": {},
+   "side": "left"
+  },
+  {
+   "id": "pip",
+   "name": "Pip",
+   "color": "#fde047",
+   "look": "a tiny glowing firefly with round spectacles and a lantern-shaped tail",
+   "expressions": {},
+   "side": "right"
+  },
+  {
+   "id": "ottoline",
+   "name": "Ottoline",
+   "color": "#c4b5fd",
+   "look": "a wise old barn owl wearing a patchwork shawl and a pocket watch",
+   "expressions": {},
+   "side": "right"
+  }
+ ],
+ "scenes": [
+  {
+   "id": "porch",
+   "title": "The Porch",
+   "background_prompt": "a wooden treehouse porch high in a jungle tree at night, empty dark sky, hanging lanterns",
+   "on_stage": [
+    "mo",
+    "pip"
+   ],
+   "lines": [
+    {
+     "text": "Every night, Mo the sloth fell asleep watching the moon."
+    },
+    {
+     "text": "But tonight, the sky was empty."
+    },
+    {
+     "speaker": "mo",
+     "text": "The moon... it's gone!",
+     "expression": "worried"
+    },
+    {
+     "speaker": "pip",
+     "text": "Psst! Down here! I saw something shiny roll into the Whispering Woods."
+    },
+    {
+     "speaker": "mo",
+     "text": "Rolled? The moon doesn't roll. ...Does it?"
+    },
+    {
+     "text": "Where should Mo look first?"
+    }
+   ],
+   "choices": [
+    {
+     "id": "c_porch_1",
+     "text": "Follow Pip into the Whispering Woods",
+     "goto": "woods",
+     "set": {
+      "courage": {
+       "op": "+",
+       "args": [
+        {
+         "var": "courage"
+        },
+        1
+       ]
+      }
+     }
+    },
+    {
+     "id": "c_porch_2",
+     "text": "Climb down to ask Ottoline at the Old Oak",
+     "goto": "oak",
+     "set": {}
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "woods",
+   "title": "The Whispering Woods",
+   "background_prompt": "a misty glowing forest path with giant ferns and blue mushrooms at night",
+   "on_stage": [
+    "pip"
+   ],
+   "lines": [
+    {
+     "text": "The woods hummed with tiny voices."
+    },
+    {
+     "speaker": "pip",
+     "text": "Stay close. The trees here gossip."
+    },
+    {
+     "text": "Something silver glinted under a pile of leaves."
+    }
+   ],
+   "choices": [],
+   "next": "rnd_woods",
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "oak",
+   "title": "The Old Oak",
+   "background_prompt": "a huge ancient oak tree with a round door and a lit window, starry clearing",
+   "on_stage": [
+    "ottoline",
+    "mo"
+   ],
+   "lines": [
+    {
+     "speaker": "ottoline",
+     "text": "Hoo. A sloth awake at night? This must be serious."
+    },
+    {
+     "speaker": "mo",
+     "text": "The moon is missing. Have you seen it?"
+    },
+    {
+     "speaker": "ottoline",
+     "text": "The moon never goes missing, little one. It only hides when it's sad."
+    },
+    {
+     "text": "Ottoline offers you tea."
+    }
+   ],
+   "choices": [
+    {
+     "id": "c_oak_1",
+     "text": "Drink the tea and listen",
+     "goto": "lake",
+     "set": {
+      "kindness": {
+       "op": "+",
+       "args": [
+        {
+         "var": "kindness"
+        },
+        1
+       ]
+      }
+     }
+    },
+    {
+     "id": "c_oak_2",
+     "text": "Hurry to the lake",
+     "goto": "end_nap",
+     "set": {}
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "fog",
+   "title": "Fog Hollow",
+   "background_prompt": "a hollow filled with thick silver fog, faint shapes of trees, mysterious",
+   "on_stage": [
+    "pip",
+    "mo"
+   ],
+   "lines": [
+    {
+     "text": "Fog swallowed the path."
+    },
+    {
+     "speaker": "pip",
+     "text": "I... can't see my own glow."
+    },
+    {
+     "speaker": "mo",
+     "text": "Then I'll carry you. Slowly. Very slowly."
+    },
+    {
+     "text": "Mo hears a soft sob in the fog."
+    }
+   ],
+   "choices": [
+    {
+     "id": "c_fog_1",
+     "text": "Follow the sound",
+     "goto": "lake",
+     "set": {}
+    },
+    {
+     "id": "c_fog_2",
+     "text": "Hum a lullaby to calm everyone",
+     "goto": "lake",
+     "set": {
+      "kindness": {
+       "op": "+",
+       "args": [
+        {
+         "var": "kindness"
+        },
+        2
+       ]
+      }
+     }
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "dance",
+   "title": "Firefly Glade",
+   "background_prompt": "a glade full of hundreds of dancing fireflies, magical golden light",
+   "on_stage": [
+    "pip"
+   ],
+   "lines": [
+    {
+     "text": "A thousand fireflies rose like sparks."
+    },
+    {
+     "speaker": "pip",
+     "text": "My cousins! They're throwing a party!"
+    },
+    {
+     "speaker": "pip",
+     "text": "They say the moon came by earlier... looking lonely."
+    },
+    {
+     "text": "Pip's cousins look so happy."
+    }
+   ],
+   "choices": [
+    {
+     "id": "c_dance_1",
+     "text": "Dance with the fireflies",
+     "goto": "lake",
+     "set": {
+      "kindness": {
+       "op": "+",
+       "args": [
+        {
+         "var": "kindness"
+        },
+        1
+       ]
+      }
+     }
+    },
+    {
+     "id": "c_dance_2",
+     "text": "Ask them to help find the moon",
+     "goto": "end_good",
+     "set": {
+      "courage": {
+       "op": "+",
+       "args": [
+        {
+         "var": "courage"
+        },
+        1
+       ]
+      }
+     }
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "lake",
+   "title": "Mirror Lake",
+   "background_prompt": "a perfectly still lake reflecting the stars, reeds, a small wooden dock",
+   "on_stage": [
+    "mo",
+    "ottoline"
+   ],
+   "lines": [
+    {
+     "text": "At the lake, the water was so still it looked like a second sky."
+    },
+    {
+     "speaker": "mo",
+     "text": "Look! The moon is in the water!"
+    },
+    {
+     "speaker": "ottoline",
+     "text": "Or is it?"
+    }
+   ],
+   "choices": [],
+   "next": "br_lake",
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "rnd_woods",
+   "on_stage": [],
+   "lines": [],
+   "choices": [],
+   "random": [
+    {
+     "weight": 1.0,
+     "goto": "fog"
+    },
+    {
+     "weight": 2.0,
+     "goto": "dance"
+    }
+   ],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "br_lake",
+   "on_stage": [],
+   "lines": [],
+   "choices": [
+    {
+     "id": "br_lake_then",
+     "text": "",
+     "goto": "end_secret",
+     "if": {
+      "op": ">=",
+      "args": [
+       {
+        "var": "kindness"
+       },
+       2
+      ]
+     },
+     "set": {}
+    },
+    {
+     "id": "br_lake_else",
+     "text": "",
+     "goto": "end_good",
+     "set": {}
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "end_good",
+   "title": "The Moon Comes Home",
+   "on_stage": [],
+   "lines": [
+    {
+     "text": "The moon, who had only felt forgotten, rose back into the sky."
+    },
+    {
+     "speaker": "mo",
+     "text": "Goodnight, moon. We'll watch you every night."
+    }
+   ],
+   "choices": [],
+   "random": [],
+   "on_enter": {},
+   "ending": {
+    "title": "The Moon Comes Home",
+    "kind": "good"
+   },
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "end_secret",
+   "title": "Starlit Friends",
+   "on_stage": [],
+   "lines": [
+    {
+     "text": "The moon floated down from its hiding place in the lake and hugged everyone, very carefully."
+    },
+    {
+     "speaker": "ottoline",
+     "text": "Hoo. Kindness, it seems, is brighter than any lantern."
+    },
+    {
+     "text": "From that night on, the moon visited the porch every Sunday for tea."
+    }
+   ],
+   "choices": [],
+   "random": [],
+   "on_enter": {},
+   "ending": {
+    "title": "Starlit Friends",
+    "kind": "secret"
+   },
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "end_nap",
+   "title": "A Very Long Nap",
+   "on_stage": [],
+   "lines": [
+    {
+     "text": "Mo sat on the dock to think... and fell asleep for three days."
+    },
+    {
+     "text": "When Mo woke up, the moon was back. Nobody ever found out where it went."
+    }
+   ],
+   "choices": [],
+   "random": [],
+   "on_enter": {},
+   "ending": {
+    "title": "A Very Long Nap",
+    "kind": "neutral"
+   },
+   "generate_background": false,
+   "generate_lines": false
+  }
+ ],
+ "mode": "fixed",
+ "style": "soft storybook watercolor, warm lantern light, gentle pastel night palette",
+ "entry_points": {
+  "scene_art": "art"
+ }
+}

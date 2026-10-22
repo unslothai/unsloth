@@ -1,0 +1,219 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Text nodes: LLM generation (streamed, or structured with a JSON schema), vision, templates, JSON and lists."""
+
+from __future__ import annotations
+
+import json
+import math
+from typing import Any
+
+from core.flows.nodes._common import as_text, first_json, lookup, render, template_vars
+from core.flows.registry import FlowNodeError, NodeContext, handler
+
+
+def _schema(value: Any) -> dict | None:
+    if isinstance(value, str) and value.strip():
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise FlowNodeError("The JSON schema is not valid JSON") from None
+    if isinstance(value, dict) and value:
+        return value
+    return None
+
+
+def _prompt(ctx: NodeContext, param: str, port: str) -> str:
+    """The node's prompt: its template filled from the inputs, else the connected text, plus any context."""
+    variables = template_vars(ctx)
+    template = str(ctx.params.get(param) or "")
+    incoming = as_text(ctx.inputs.get(port)) if port in ctx.inputs else ""
+    if template.strip():
+        prompt = render(template, variables)
+        if incoming and "{{" + port not in template.replace(" ", ""):
+            prompt = f"{incoming}\n\n{prompt}"
+    else:
+        prompt = incoming
+    context = ctx.inputs.get("context")
+    if context and "{{context" not in template.replace(" ", ""):
+        joined = "\n\n".join(as_text(c) for c in context)
+        prompt = f"{prompt}\n\nContext:\n{joined}" if prompt else joined
+    return prompt.strip()
+
+
+@handler("llm.generate")
+async def generate(ctx: NodeContext) -> dict:
+    prompt = _prompt(ctx, "prompt", "prompt")
+    if not prompt:
+        raise FlowNodeError("The prompt is empty: type one or connect text to Prompt")
+    system = render(str(ctx.params.get("system") or ""), template_vars(ctx))
+    images = [ctx.inputs["image"]] if ctx.inputs.get("image") else None
+    schema = _schema(ctx.params.get("json_schema"))
+    if schema is not None:
+        value = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = system,
+            prompt = prompt,
+            schema = schema,
+            temperature = float(ctx.params.get("temperature") or 0.8),
+            max_tokens = int(ctx.params.get("max_tokens") or 1024),
+            seed = ctx.seed,
+            images = images,
+        )
+        return {"text": json.dumps(value, ensure_ascii = False, indent = 1), "json": value}
+    text = await ctx.llm_text(
+        model = ctx.params.get("model"),
+        system = system,
+        prompt = prompt,
+        temperature = float(ctx.params.get("temperature") or 0.8),
+        max_tokens = int(ctx.params.get("max_tokens") or 1024),
+        images = images,
+        thinking = bool(ctx.params.get("thinking")),
+        seed = ctx.seed,
+        stream_port = "text",
+    )
+    outputs: dict[str, Any] = {"text": text}
+    try:
+        outputs["json"] = first_json(text)
+    except FlowNodeError:
+        pass
+    return outputs
+
+
+@handler("llm.vision")
+async def vision(ctx: NodeContext) -> dict:
+    question = _prompt(ctx, "question", "question") or "Describe this image."
+    schema = _schema(ctx.params.get("json_schema"))
+    images = [ctx.inputs["image"]]
+    if schema is not None:
+        value = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = "",
+            prompt = question,
+            schema = schema,
+            max_tokens = int(ctx.params.get("max_tokens") or 512),
+            seed = ctx.seed,
+            images = images,
+        )
+        return {"text": json.dumps(value, ensure_ascii = False), "json": value}
+    text = await ctx.llm_text(
+        model = ctx.params.get("model"),
+        system = "",
+        prompt = question,
+        max_tokens = int(ctx.params.get("max_tokens") or 512),
+        images = images,
+        seed = ctx.seed,
+    )
+    outputs: dict[str, Any] = {"text": text}
+    try:
+        outputs["json"] = first_json(text)
+    except FlowNodeError:
+        pass
+    return outputs
+
+
+def _values_vars(ctx: NodeContext) -> dict[str, Any]:
+    variables = dict(ctx.flow_params or {})
+    values = ctx.inputs.get("values") or []
+    for value in values:
+        if isinstance(value, dict) and value.get("kind") not in ("image", "audio", "video"):
+            variables.update({k: v for k, v in value.items() if isinstance(k, str)})
+    variables["values"] = values[0] if len(values) == 1 else values
+    for i, value in enumerate(values, 1):
+        variables[f"v{i}"] = value
+    return variables
+
+
+@handler("text.template")
+async def template(ctx: NodeContext) -> dict:
+    return {"text": render(str(ctx.params.get("template") or ""), _values_vars(ctx))}
+
+
+@handler("json.get")
+async def json_get(ctx: NodeContext) -> dict:
+    value = ctx.inputs.get("json")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            value = first_json(value)
+    found = lookup(value, str(ctx.params.get("path") or ""))
+    if found is None:
+        raise FlowNodeError(f"Nothing at {ctx.params.get('path')!r}")
+    return {"value": found}
+
+
+def _fill(template: Any, variables: dict[str, Any]) -> Any:
+    if isinstance(template, str):
+        stripped = template.strip()
+        if stripped.startswith("{{") and stripped.endswith("}}") and stripped.count("{{") == 1:
+            name = stripped[2:-2].strip()
+            head, _, rest = name.partition(".")
+            if head in variables:
+                return lookup(variables[head], rest) if rest else variables[head]
+        return render(template, variables)
+    if isinstance(template, list):
+        return [_fill(v, variables) for v in template]
+    if isinstance(template, dict):
+        return {k: _fill(v, variables) for k, v in template.items()}
+    return template
+
+
+@handler("json.build")
+async def json_build(ctx: NodeContext) -> dict:
+    template = ctx.params.get("template")
+    if isinstance(template, str):
+        try:
+            template = json.loads(template)
+        except ValueError:
+            raise FlowNodeError("The object is not valid JSON") from None
+    return {"json": _fill(template if template is not None else {}, _values_vars(ctx))}
+
+
+def _separator(value: Any) -> str:
+    text = "\n" if value is None else str(value)
+    return text.replace("\\n", "\n").replace("\\t", "\t")
+
+
+@handler("text.split")
+async def split(ctx: NodeContext) -> dict:
+    text = as_text(ctx.inputs.get("text"))
+    sep = _separator(ctx.params.get("separator"))
+    parts = text.split(sep) if sep else list(text)
+    if ctx.params.get("trim", True):
+        parts = [p.strip() for p in parts if p.strip()]
+    return {"items": parts}
+
+
+@handler("list.join")
+async def join(ctx: NodeContext) -> dict:
+    items = ctx.inputs.get("items") or []
+    return {"text": _separator(ctx.params.get("separator")).join(as_text(i) for i in items)}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a)) or 1.0
+    nb = math.sqrt(sum(y * y for y in b)) or 1.0
+    return dot / (na * nb)
+
+
+@handler("text.embed_rank")
+async def embed_rank(ctx: NodeContext) -> dict:
+    query = as_text(ctx.inputs.get("query"))
+    items = [as_text(i) for i in ctx.inputs.get("items") or []]
+    if not items:
+        return {"ranked": [], "best": ""}
+    answer = await ctx.call(
+        "POST", "/v1/embeddings", json = {"model": "default", "input": [query, *items]}
+    )
+    rows = answer.get("data") if isinstance(answer, dict) else None
+    if not isinstance(rows, list) or len(rows) != len(items) + 1:
+        raise FlowNodeError("The embedding model returned no vectors")
+    vectors = [r.get("embedding") for r in sorted(rows, key = lambda r: r.get("index", 0))]
+    scored = sorted(
+        zip(items, (_cosine(vectors[0], v) for v in vectors[1:])), key = lambda p: p[1], reverse = True
+    )
+    top = [text for text, _ in scored[: int(ctx.params.get("top_k") or 5)]]
+    return {"ranked": top, "best": top[0]}

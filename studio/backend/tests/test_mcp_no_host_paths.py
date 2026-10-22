@@ -38,6 +38,7 @@ from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
 from .test_mcp_tools_datasets_images import PAYLOADS as IMAGE_DATASET_PAYLOADS
 from .test_mcp_tools_download import TOOL_PAYLOADS as DOWNLOAD_PAYLOADS
+from .test_mcp_tools_flows import PAYLOADS as FLOW_PAYLOADS
 from .test_mcp_train_to_use import _routes as TRAIN_TO_USE_ROUTES
 from .test_mcp_tools_datasets_upload import PAYLOADS as UPLOAD_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
@@ -118,6 +119,8 @@ CASES: dict[str, Any] = {
         (DOWNLOAD_PAYLOADS, {"kind": "model_download", "id": "a/b::Q4_K_M"}),
     ],
     "run_recipe": (RECIPE_PAYLOADS, {"recipe": {"columns": [{"name": "q"}]}}),
+    "list_flows": (FLOW_PAYLOADS, {}),
+    "run_flow": (FLOW_PAYLOADS, {"flow_id": "f1"}),
     "datasets": [
         (DATASETS_PAYLOADS, {"action": "list"}),
         (DATASETS_PAYLOADS, {"action": "check_format", "name": "a/b"}),

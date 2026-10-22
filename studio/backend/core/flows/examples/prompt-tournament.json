@@ -1,0 +1,458 @@
+{
+ "format": "unsloth-flow",
+ "version": 1,
+ "id": "prompt-tournament",
+ "name": "Prompt Tournament",
+ "description": "Six prompt variants fight for the crown. Each one is painted, a vision model critiques every image, a judge LLM picks the winner, and the winning prompt gets a final high-quality render.",
+ "kind": "pipeline",
+ "seed": 6,
+ "params": [],
+ "requirements": {
+  "models": [
+   {
+    "ref": "writer",
+    "kind": "chat",
+    "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+    "variant": "Q4_K_M",
+    "optional": false,
+    "note": "Any instruct chat model works; 4B is fast and follows JSON schemas well."
+   },
+   {
+    "ref": "judge",
+    "kind": "vision",
+    "repo": "unsloth/Qwen3.5-4B-GGUF",
+    "variant": "Q4_K_M",
+    "optional": false,
+    "note": "Any vision chat model."
+   },
+   {
+    "ref": "painter",
+    "kind": "image",
+    "repo": "black-forest-labs/FLUX.2-klein-4B",
+    "variant": null,
+    "optional": false,
+    "note": "Fast 4B image model with reference/edit support; any image model works."
+   }
+  ]
+ },
+ "nodes": [
+  {
+   "id": "idea",
+   "type": "input.text",
+   "v": 1,
+   "params": {
+    "value": "a lighthouse made of candy on a stormy sea"
+   },
+   "pos": [
+    0.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "variants",
+   "type": "llm.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+     "variant": "Q4_K_M"
+    },
+    "temperature": 1.0,
+    "max_tokens": 1200,
+    "system": "You write rich, specific text-to-image prompts in very different styles.",
+    "prompt": "Write 6 different image prompts for: {{prompt}}",
+    "json_schema": {
+     "type": "object",
+     "properties": {
+      "prompts": {
+       "type": "array",
+       "minItems": 6,
+       "maxItems": 6,
+       "items": {
+        "type": "string"
+       }
+      }
+     },
+     "required": [
+      "prompts"
+     ]
+    }
+   },
+   "pos": [
+    320.0,
+    190.0
+   ],
+   "label": "Prompt writer",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "list",
+   "type": "json.get",
+   "v": 1,
+   "params": {
+    "path": "prompts"
+   },
+   "pos": [
+    640.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "each",
+   "type": "logic.for_each",
+   "v": 1,
+   "params": {
+    "max_items": 6
+   },
+   "pos": [
+    960.0,
+    190.0
+   ],
+   "label": null,
+   "group": "t_loop",
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "paint",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "size": "768x768",
+    "steps": 4
+   },
+   "pos": [
+    1280.0,
+    114.0
+   ],
+   "label": null,
+   "group": "t_loop",
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "ask",
+   "type": "text.template",
+   "v": 1,
+   "params": {
+    "template": "Score 1-10 how beautiful this image is and how well it matches: \"{{values}}\". Reply with the score first, then one sentence."
+   },
+   "pos": [
+    1280.0,
+    304.0
+   ],
+   "label": null,
+   "group": "t_loop",
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "critic",
+   "type": "llm.vision",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "unsloth/Qwen3.5-4B-GGUF",
+     "variant": "Q4_K_M"
+    },
+    "max_tokens": 120
+   },
+   "pos": [
+    1600.0,
+    190.0
+   ],
+   "label": null,
+   "group": "t_loop",
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "pair",
+   "type": "text.template",
+   "v": 1,
+   "params": {
+    "template": "PROMPT: {{values.0}}\nCRITIQUE: {{values.1}}"
+   },
+   "pos": [
+    1920.0,
+    190.0
+   ],
+   "label": null,
+   "group": "t_loop",
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "judge",
+   "type": "llm.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+     "variant": "Q4_K_M"
+    },
+    "temperature": 0.2,
+    "max_tokens": 600,
+    "prompt": "Here are prompts with critiques of their images:\n{{context}}\nPick the single best prompt.",
+    "json_schema": {
+     "type": "object",
+     "properties": {
+      "winner": {
+       "type": "string"
+      },
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "winner",
+      "why"
+     ]
+    }
+   },
+   "pos": [
+    2368.0,
+    190.0
+   ],
+   "label": "Judge",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "winner",
+   "type": "json.get",
+   "v": 1,
+   "params": {
+    "path": "winner"
+   },
+   "pos": [
+    2688.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "final",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "size": "1344x768",
+    "steps": 8
+   },
+   "pos": [
+    3008.0,
+    190.0
+   ],
+   "label": "Champion render",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "show",
+   "type": "output.preview",
+   "v": 1,
+   "params": {},
+   "pos": [
+    3328.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "all",
+   "type": "output.preview",
+   "v": 1,
+   "params": {},
+   "pos": [
+    2688.0,
+    418.0
+   ],
+   "label": "Contestants",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  }
+ ],
+ "edges": [
+  {
+   "id": "e1",
+   "source": "idea",
+   "source_port": "text",
+   "target": "variants",
+   "target_port": "prompt",
+   "kind": "data"
+  },
+  {
+   "id": "e2",
+   "source": "variants",
+   "source_port": "json",
+   "target": "list",
+   "target_port": "json",
+   "kind": "data"
+  },
+  {
+   "id": "e3",
+   "source": "list",
+   "source_port": "value",
+   "target": "each",
+   "target_port": "items",
+   "kind": "data"
+  },
+  {
+   "id": "e4",
+   "source": "each",
+   "source_port": "item",
+   "target": "paint",
+   "target_port": "prompt",
+   "kind": "data"
+  },
+  {
+   "id": "e5",
+   "source": "each",
+   "source_port": "item",
+   "target": "ask",
+   "target_port": "values",
+   "kind": "data"
+  },
+  {
+   "id": "e6",
+   "source": "paint",
+   "source_port": "image",
+   "target": "critic",
+   "target_port": "image",
+   "kind": "data"
+  },
+  {
+   "id": "e7",
+   "source": "ask",
+   "source_port": "text",
+   "target": "critic",
+   "target_port": "question",
+   "kind": "data"
+  },
+  {
+   "id": "e8",
+   "source": "each",
+   "source_port": "item",
+   "target": "pair",
+   "target_port": "values",
+   "kind": "data"
+  },
+  {
+   "id": "e9",
+   "source": "critic",
+   "source_port": "text",
+   "target": "pair",
+   "target_port": "values",
+   "kind": "data"
+  },
+  {
+   "id": "e10",
+   "source": "pair",
+   "source_port": "text",
+   "target": "each",
+   "target_port": "collect",
+   "kind": "data"
+  },
+  {
+   "id": "e11",
+   "source": "each",
+   "source_port": "results",
+   "target": "judge",
+   "target_port": "context",
+   "kind": "data"
+  },
+  {
+   "id": "e12",
+   "source": "judge",
+   "source_port": "json",
+   "target": "winner",
+   "target_port": "json",
+   "kind": "data"
+  },
+  {
+   "id": "e13",
+   "source": "winner",
+   "source_port": "value",
+   "target": "final",
+   "target_port": "prompt",
+   "kind": "data"
+  },
+  {
+   "id": "e14",
+   "source": "final",
+   "source_port": "image",
+   "target": "show",
+   "target_port": "value",
+   "kind": "data"
+  },
+  {
+   "id": "e15",
+   "source": "each",
+   "source_port": "results",
+   "target": "all",
+   "target_port": "value",
+   "kind": "data"
+  }
+ ],
+ "groups": [
+  {
+   "id": "t_loop",
+   "label": "For each variant",
+   "color": "#ec4899",
+   "rect": [
+    930.0,
+    -12.0,
+    1280.0,
+    418.0
+   ]
+  }
+ ],
+ "notes": [],
+ "assets": [],
+ "baked": {},
+ "editor": {
+  "viewport": {
+   "x": 40,
+   "y": 40,
+   "zoom": 0.8
+  }
+ },
+ "meta": {
+  "tags": [
+   "image",
+   "vision",
+   "for each",
+   "evaluation"
+  ],
+  "example": true,
+  "author": "Unsloth",
+  "order": 8
+ }
+}

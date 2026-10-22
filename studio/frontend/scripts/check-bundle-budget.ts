@@ -374,8 +374,16 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
-  transferBytes: 2_076_895,
-  rawBytes: 6_893_216,
+  // Flows (node editor, story and world players): +10,578 B raw / +5,429 B transfer (6,892,462 -> 6,903,040 B
+  // raw, 2,076,639 -> 2,082,068 B transfer against 588e1c4ffe, one machine and build, Node 24, 98 -> 110
+  // chunks). Measured in steps: the sidebar row, routes, root keep-alive and nav strings alone are +3.5 KB
+  // raw / +0.8 KB transfer; the rest is the bundler splitting modules the eager set already carries (dialog,
+  // toast, router hooks, SSE helpers, the native file drop the import dialog needs on desktop, a few lucide
+  // glyphs) into their own startup chunks so the lazy Flows chunks can share them. The Flows code itself
+  // stays lazy; its Hugeicons glyphs are local copies so they are not hoisted into the startup
+  // HugeiconsIcon chunk (+26 KB raw otherwise). Raised by that growth.
+  transferBytes: 2_082_324,
+  rawBytes: 6_903_794,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

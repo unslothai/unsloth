@@ -10,6 +10,7 @@ from mcp_server import INSTRUCTIONS, create_studio_mcp
 READ_ONLY = {
     "embed",
     "get_job",
+    "list_flows",
     "list_models",
     "list_media",
     "list_training_runs",
@@ -32,6 +33,7 @@ OTHERS = {
     "generate_image",
     "generate_video",
     "load_model",
+    "run_flow",
     "run_recipe",
     "start_training",
     "transcribe",

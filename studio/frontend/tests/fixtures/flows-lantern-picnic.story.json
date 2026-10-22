@@ -1,0 +1,395 @@
+{
+ "title": "Lantern Picnic",
+ "start": "s_start",
+ "vars": {
+  "snacks": 0,
+  "friends": 0
+ },
+ "characters": [
+  {
+   "id": "hana",
+   "name": "Hana",
+   "color": "#fb923c",
+   "look": "a cheerful red panda with a picnic basket",
+   "expressions": {},
+   "side": "left"
+  },
+  {
+   "id": "bun",
+   "name": "Bun",
+   "color": "#a5b4fc",
+   "look": "a shy grey bunny with a paper lantern",
+   "expressions": {},
+   "side": "right"
+  }
+ ],
+ "scenes": [
+  {
+   "id": "s_start",
+   "title": "Golden Hour",
+   "on_stage": [
+    "hana",
+    "bun"
+   ],
+   "lines": [
+    {
+     "text": "The sun is melting into the hills. Perfect picnic weather."
+    },
+    {
+     "speaker": "hana",
+     "text": "I packed rice balls, peaches and exactly one enormous cake."
+    },
+    {
+     "speaker": "bun",
+     "text": "Where should we go?"
+    },
+    {
+     "text": "Pick a picnic spot."
+    }
+   ],
+   "choices": [
+    {
+     "id": "c1_1",
+     "text": "The hill with the old windmill",
+     "goto": "s_hill",
+     "set": {
+      "snacks": 1
+     }
+    },
+    {
+     "id": "c1_2",
+     "text": "The creek with the stepping stones",
+     "goto": "s_creek",
+     "set": {
+      "snacks": 2
+     }
+    },
+    {
+     "id": "c1_3",
+     "text": "The lantern market in town",
+     "goto": "s_market",
+     "set": {
+      "friends": {
+       "op": "+",
+       "args": [
+        {
+         "var": "friends"
+        },
+        2
+       ]
+      }
+     }
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "s_hill",
+   "title": "Windmill Hill",
+   "on_stage": [
+    "bun",
+    "hana"
+   ],
+   "lines": [
+    {
+     "text": "The windmill creaks a slow lullaby."
+    },
+    {
+     "speaker": "bun",
+     "text": "The wind keeps stealing my napkin!"
+    },
+    {
+     "speaker": "hana",
+     "text": "That's not the wind. That's a goat."
+    }
+   ],
+   "choices": [],
+   "next": "rnd",
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "s_creek",
+   "title": "Stepping Stones",
+   "on_stage": [
+    "hana"
+   ],
+   "lines": [
+    {
+     "text": "Water chatters over smooth stones."
+    },
+    {
+     "speaker": "hana",
+     "text": "One... two... whoa--"
+    },
+    {
+     "text": "Splash. The cake survives. Hana's dignity does not."
+    }
+   ],
+   "choices": [],
+   "next": "br_cake",
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "s_market",
+   "title": "Lantern Market",
+   "on_stage": [
+    "bun",
+    "hana"
+   ],
+   "lines": [
+    {
+     "text": "A hundred paper lanterns sway over the market."
+    },
+    {
+     "speaker": "bun",
+     "text": "Everyone is sharing food here!"
+    },
+    {
+     "speaker": "hana",
+     "text": "Then we share the cake. Obviously."
+    }
+   ],
+   "choices": [],
+   "next": "br",
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "rnd",
+   "on_stage": [],
+   "lines": [],
+   "choices": [],
+   "random": [
+    {
+     "weight": 1.0,
+     "goto": "s_goat"
+    },
+    {
+     "weight": 1.0,
+     "goto": "s_stars"
+    }
+   ],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "s_goat",
+   "title": "An Uninvited Goat",
+   "on_stage": [
+    "bun",
+    "hana"
+   ],
+   "lines": [
+    {
+     "text": "The goat sits down on your blanket like it was invited."
+    },
+    {
+     "speaker": "bun",
+     "text": "...Should we name it?"
+    },
+    {
+     "speaker": "hana",
+     "text": "Clementine."
+    }
+   ],
+   "choices": [],
+   "next": "set_goat",
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "set_goat",
+   "on_stage": [],
+   "lines": [],
+   "choices": [],
+   "next": "s_stars",
+   "random": [],
+   "on_enter": {
+    "friends": {
+     "op": "+",
+     "args": [
+      {
+       "var": "friends"
+      },
+      2
+     ]
+    }
+   },
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "s_stars",
+   "title": "First Stars",
+   "on_stage": [
+    "bun",
+    "hana"
+   ],
+   "lines": [
+    {
+     "text": "The first stars blink awake."
+    },
+    {
+     "speaker": "bun",
+     "text": "Make a wish!"
+    },
+    {
+     "speaker": "hana",
+     "text": "I wish for more cake."
+    }
+   ],
+   "choices": [],
+   "next": "br",
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "br",
+   "on_stage": [],
+   "lines": [],
+   "choices": [
+    {
+     "id": "br_then",
+     "text": "",
+     "goto": "end_party",
+     "if": {
+      "op": ">=",
+      "args": [
+       {
+        "var": "friends"
+       },
+       2
+      ]
+     },
+     "set": {}
+    },
+    {
+     "id": "br_else",
+     "text": "",
+     "goto": "end_quiet",
+     "set": {}
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "end_party",
+   "title": "The Biggest Picnic",
+   "on_stage": [],
+   "lines": [
+    {
+     "text": "By midnight, half the town has joined your picnic. Nobody remembers who brought the goat."
+    }
+   ],
+   "choices": [],
+   "random": [],
+   "on_enter": {},
+   "ending": {
+    "title": "The Biggest Picnic",
+    "kind": "good"
+   },
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "end_quiet",
+   "title": "Just the Two of Us",
+   "on_stage": [],
+   "lines": [
+    {
+     "text": "Two friends, one blanket, a sky full of stars. Some picnics are perfect exactly as they are."
+    }
+   ],
+   "choices": [],
+   "random": [],
+   "on_enter": {},
+   "ending": {
+    "title": "Just the Two of Us",
+    "kind": "neutral"
+   },
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "end_cake",
+   "title": "The Cake Incident",
+   "on_stage": [],
+   "lines": [
+    {
+     "speaker": "hana",
+     "text": "Wait. Where is the cake?"
+    },
+    {
+     "speaker": "bun",
+     "text": "..."
+    },
+    {
+     "text": "Bun has frosting on its nose. The case is closed."
+    }
+   ],
+   "choices": [],
+   "random": [],
+   "on_enter": {},
+   "ending": {
+    "title": "The Cake Incident",
+    "kind": "secret"
+   },
+   "generate_background": false,
+   "generate_lines": false
+  },
+  {
+   "id": "br_cake",
+   "on_stage": [],
+   "lines": [],
+   "choices": [
+    {
+     "id": "br_cake_then",
+     "text": "",
+     "goto": "end_cake",
+     "if": {
+      "op": ">=",
+      "args": [
+       {
+        "var": "snacks"
+       },
+       2
+      ]
+     },
+     "set": {}
+    },
+    {
+     "id": "br_cake_else",
+     "text": "",
+     "goto": "s_stars",
+     "set": {}
+    }
+   ],
+   "random": [],
+   "on_enter": {},
+   "generate_background": false,
+   "generate_lines": false
+  }
+ ],
+ "mode": "fixed",
+ "style": "cozy paper-lantern evening",
+ "entry_points": {}
+}

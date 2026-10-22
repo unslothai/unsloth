@@ -9,6 +9,9 @@ import { Route as rootRoute } from "./routes/__root";
 import { Route as apiMonitorRoute } from "./routes/api";
 import { Route as dataRecipesRoute } from "./routes/data-recipes";
 import { Route as dataRecipeRoute } from "./routes/data-recipes.$recipeId";
+import { Route as flowsRoute } from "./routes/flows";
+import { Route as flowEditorRoute } from "./routes/flows.$flowId";
+import { Route as flowPlayRoute } from "./routes/flows.$flowId.play";
 import { Route as chatRoute } from "./routes/chat";
 import { Route as exportRoute } from "./routes/export";
 import { Route as imagesRoute } from "./routes/images";
@@ -39,6 +42,9 @@ const routeTree = rootRoute.addChildren([
   audioRoute,
   dataRecipesRoute,
   dataRecipeRoute,
+  flowsRoute,
+  flowEditorRoute,
+  flowPlayRoute,
   apiMonitorRoute,
 ]);
 

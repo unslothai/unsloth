@@ -1,0 +1,1024 @@
+{
+ "format": "unsloth-flow",
+ "version": 1,
+ "id": "sloth-moon",
+ "name": "The Sloth Who Lost the Moon",
+ "description": "A cozy branching visual novel. Mo the sloth wakes up and the moon is gone. Three endings, a secret one if you are kind. Press Play to read it right away (painted-on-the-fly backgrounds), or Run first to paint every background and portrait with your image model.",
+ "kind": "story",
+ "seed": 1111,
+ "params": [],
+ "requirements": {
+  "models": [
+   {
+    "ref": "painter",
+    "kind": "image",
+    "repo": "black-forest-labs/FLUX.2-klein-4B",
+    "variant": null,
+    "optional": false,
+    "note": "Fast 4B image model with reference/edit support; any image model works."
+   }
+  ]
+ },
+ "nodes": [
+  {
+   "id": "start",
+   "type": "story.start",
+   "v": 1,
+   "params": {
+    "title": "The Sloth Who Lost the Moon",
+    "vars": {
+     "kindness": 0,
+     "courage": 0
+    },
+    "style": "soft storybook watercolor, warm lantern light, gentle pastel night palette",
+    "mode": "fixed"
+   },
+   "pos": [
+    0.0,
+    380.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "art_mo",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "character portrait of Mo, a small sleepy three-toed sloth in a knitted blue scarf, big kind eyes, upper body, plain pale background, soft storybook watercolor, warm lantern light, gentle pastel night palette",
+    "size": "768x1024",
+    "seed": 200
+   },
+   "pos": [
+    0.0,
+    760.0
+   ],
+   "label": "Mo portrait",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "cut_mo",
+   "type": "image.remove_bg",
+   "v": 1,
+   "params": {
+    "subject": "the character Mo"
+   },
+   "pos": [
+    320.0,
+    760.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "mo",
+   "type": "story.character",
+   "v": 1,
+   "params": {
+    "name": "Mo",
+    "look": "a small sleepy three-toed sloth in a knitted blue scarf, big kind eyes",
+    "color": "#7dd3fc",
+    "side": "left"
+   },
+   "pos": [
+    640.0,
+    760.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "art_pip",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "character portrait of Pip, a tiny glowing firefly with round spectacles and a lantern-shaped tail, upper body, plain pale background, soft storybook watercolor, warm lantern light, gentle pastel night palette",
+    "size": "768x1024",
+    "seed": 201
+   },
+   "pos": [
+    0.0,
+    950.0
+   ],
+   "label": "Pip portrait",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "cut_pip",
+   "type": "image.remove_bg",
+   "v": 1,
+   "params": {
+    "subject": "the character Pip"
+   },
+   "pos": [
+    320.0,
+    950.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "pip",
+   "type": "story.character",
+   "v": 1,
+   "params": {
+    "name": "Pip",
+    "look": "a tiny glowing firefly with round spectacles and a lantern-shaped tail",
+    "color": "#fde047",
+    "side": "right"
+   },
+   "pos": [
+    640.0,
+    950.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "art_otto",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "character portrait of Ottoline, a wise old barn owl wearing a patchwork shawl and a pocket watch, upper body, plain pale background, soft storybook watercolor, warm lantern light, gentle pastel night palette",
+    "size": "768x1024",
+    "seed": 202
+   },
+   "pos": [
+    0.0,
+    1140.0
+   ],
+   "label": "Ottoline portrait",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "cut_otto",
+   "type": "image.remove_bg",
+   "v": 1,
+   "params": {
+    "subject": "the character Ottoline"
+   },
+   "pos": [
+    320.0,
+    1140.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "otto",
+   "type": "story.character",
+   "v": 1,
+   "params": {
+    "name": "Ottoline",
+    "look": "a wise old barn owl wearing a patchwork shawl and a pocket watch",
+    "color": "#c4b5fd",
+    "side": "right"
+   },
+   "pos": [
+    640.0,
+    1140.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "bg_porch",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "a wooden treehouse porch high in a jungle tree at night, empty dark sky, hanging lanterns, soft storybook watercolor, warm lantern light, gentle pastel night palette, wide establishing shot, no people, no text",
+    "size": "1344x768",
+    "seed": 110
+   },
+   "pos": [
+    320.0,
+    285.0
+   ],
+   "label": "The Porch background",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "porch",
+   "type": "story.scene",
+   "v": 1,
+   "params": {
+    "title": "The Porch",
+    "background_prompt": "a wooden treehouse porch high in a jungle tree at night, empty dark sky, hanging lanterns",
+    "lines": "Narrator: Every night, Mo the sloth fell asleep watching the moon.\nNarrator: But tonight, the sky was empty.\nMo (worried): The moon... it's gone!\nPip: Psst! Down here! I saw something shiny roll into the Whispering Woods.\nMo: Rolled? The moon doesn't roll. ...Does it?"
+   },
+   "pos": [
+    640.0,
+    380.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "bg_woods",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "a misty glowing forest path with giant ferns and blue mushrooms at night, soft storybook watercolor, warm lantern light, gentle pastel night palette, wide establishing shot, no people, no text",
+    "size": "1344x768",
+    "seed": 129
+   },
+   "pos": [
+    960.0,
+    95.0
+   ],
+   "label": "The Whispering Woods background",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "woods",
+   "type": "story.scene",
+   "v": 1,
+   "params": {
+    "title": "The Whispering Woods",
+    "background_prompt": "a misty glowing forest path with giant ferns and blue mushrooms at night",
+    "lines": "Narrator: The woods hummed with tiny voices.\nPip: Stay close. The trees here gossip.\nNarrator: Something silver glinted under a pile of leaves."
+   },
+   "pos": [
+    1280.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "bg_oak",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "a huge ancient oak tree with a round door and a lit window, starry clearing, soft storybook watercolor, warm lantern light, gentle pastel night palette, wide establishing shot, no people, no text",
+    "size": "1344x768",
+    "seed": 131
+   },
+   "pos": [
+    960.0,
+    475.0
+   ],
+   "label": "The Old Oak background",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "oak",
+   "type": "story.scene",
+   "v": 1,
+   "params": {
+    "title": "The Old Oak",
+    "background_prompt": "a huge ancient oak tree with a round door and a lit window, starry clearing",
+    "lines": "Ottoline: Hoo. A sloth awake at night? This must be serious.\nMo: The moon is missing. Have you seen it?\nOttoline: The moon never goes missing, little one. It only hides when it's sad."
+   },
+   "pos": [
+    1280.0,
+    570.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "bg_fog",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "a hollow filled with thick silver fog, faint shapes of trees, mysterious, soft storybook watercolor, warm lantern light, gentle pastel night palette, wide establishing shot, no people, no text",
+    "size": "1344x768",
+    "seed": 148
+   },
+   "pos": [
+    1600.0,
+    -95.0
+   ],
+   "label": "Fog Hollow background",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "fog",
+   "type": "story.scene",
+   "v": 1,
+   "params": {
+    "title": "Fog Hollow",
+    "background_prompt": "a hollow filled with thick silver fog, faint shapes of trees, mysterious",
+    "lines": "Narrator: Fog swallowed the path.\nPip: I... can't see my own glow.\nMo: Then I'll carry you. Slowly. Very slowly."
+   },
+   "pos": [
+    1920.0,
+    0.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "bg_dance",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "a glade full of hundreds of dancing fireflies, magical golden light, soft storybook watercolor, warm lantern light, gentle pastel night palette, wide establishing shot, no people, no text",
+    "size": "1344x768",
+    "seed": 149
+   },
+   "pos": [
+    1600.0,
+    95.0
+   ],
+   "label": "Firefly Glade background",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "dance",
+   "type": "story.scene",
+   "v": 1,
+   "params": {
+    "title": "Firefly Glade",
+    "background_prompt": "a glade full of hundreds of dancing fireflies, magical golden light",
+    "lines": "Narrator: A thousand fireflies rose like sparks.\nPip: My cousins! They're throwing a party!\nPip: They say the moon came by earlier... looking lonely."
+   },
+   "pos": [
+    1920.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "bg_lake",
+   "type": "image.generate",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "prompt": "a perfectly still lake reflecting the stars, reeds, a small wooden dock, soft storybook watercolor, warm lantern light, gentle pastel night palette, wide establishing shot, no people, no text",
+    "size": "1344x768",
+    "seed": 151
+   },
+   "pos": [
+    1600.0,
+    475.0
+   ],
+   "label": "Mirror Lake background",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "lake",
+   "type": "story.scene",
+   "v": 1,
+   "params": {
+    "title": "Mirror Lake",
+    "background_prompt": "a perfectly still lake reflecting the stars, reeds, a small wooden dock",
+    "lines": "Narrator: At the lake, the water was so still it looked like a second sky.\nMo: Look! The moon is in the water!\nOttoline: Or is it?"
+   },
+   "pos": [
+    1920.0,
+    570.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "c_porch",
+   "type": "story.choice",
+   "v": 1,
+   "params": {
+    "prompt": "Where should Mo look first?",
+    "choices": [
+     "Follow Pip into the Whispering Woods",
+     "Climb down to ask Ottoline at the Old Oak"
+    ],
+    "effects": {
+     "0": {
+      "courage": {
+       "op": "+",
+       "args": [
+        {
+         "var": "courage"
+        },
+        1
+       ]
+      }
+     }
+    }
+   },
+   "pos": [
+    800.0,
+    494.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "rnd_woods",
+   "type": "story.random",
+   "v": 1,
+   "params": {
+    "weights": [
+     1,
+     2
+    ]
+   },
+   "pos": [
+    1440.0,
+    114.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "c_dance",
+   "type": "story.choice",
+   "v": 1,
+   "params": {
+    "prompt": "Pip's cousins look so happy.",
+    "choices": [
+     "Dance with the fireflies",
+     "Ask them to help find the moon"
+    ],
+    "effects": {
+     "0": {
+      "kindness": {
+       "op": "+",
+       "args": [
+        {
+         "var": "kindness"
+        },
+        1
+       ]
+      }
+     },
+     "1": {
+      "courage": {
+       "op": "+",
+       "args": [
+        {
+         "var": "courage"
+        },
+        1
+       ]
+      }
+     }
+    }
+   },
+   "pos": [
+    2080.0,
+    114.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "c_fog",
+   "type": "story.choice",
+   "v": 1,
+   "params": {
+    "prompt": "Mo hears a soft sob in the fog.",
+    "choices": [
+     "Follow the sound",
+     "Hum a lullaby to calm everyone"
+    ],
+    "effects": {
+     "1": {
+      "kindness": {
+       "op": "+",
+       "args": [
+        {
+         "var": "kindness"
+        },
+        2
+       ]
+      }
+     }
+    }
+   },
+   "pos": [
+    2080.0,
+    -76.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "c_oak",
+   "type": "story.choice",
+   "v": 1,
+   "params": {
+    "prompt": "Ottoline offers you tea.",
+    "choices": [
+     "Drink the tea and listen",
+     "Hurry to the lake"
+    ],
+    "effects": {
+     "0": {
+      "kindness": {
+       "op": "+",
+       "args": [
+        {
+         "var": "kindness"
+        },
+        1
+       ]
+      }
+     }
+    }
+   },
+   "pos": [
+    1440.0,
+    684.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "br_lake",
+   "type": "story.branch",
+   "v": 1,
+   "params": {
+    "condition": {
+     "op": ">=",
+     "args": [
+      {
+       "var": "kindness"
+      },
+      2
+     ]
+    }
+   },
+   "pos": [
+    2240.0,
+    570.0
+   ],
+   "label": "Kind enough?",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "end_good",
+   "type": "story.ending",
+   "v": 1,
+   "params": {
+    "title": "The Moon Comes Home",
+    "kind": "good",
+    "text": "Narrator: The moon, who had only felt forgotten, rose back into the sky.\nMo: Goodnight, moon. We'll watch you every night."
+   },
+   "pos": [
+    2560.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "end_secret",
+   "type": "story.ending",
+   "v": 1,
+   "params": {
+    "title": "Starlit Friends",
+    "kind": "secret",
+    "text": "Narrator: The moon floated down from its hiding place in the lake and hugged everyone, very carefully.\nOttoline: Hoo. Kindness, it seems, is brighter than any lantern.\nNarrator: From that night on, the moon visited the porch every Sunday for tea."
+   },
+   "pos": [
+    2560.0,
+    418.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "end_nap",
+   "type": "story.ending",
+   "v": 1,
+   "params": {
+    "title": "A Very Long Nap",
+    "kind": "neutral",
+    "text": "Narrator: Mo sat on the dock to think... and fell asleep for three days.\nNarrator: When Mo woke up, the moon was back. Nobody ever found out where it went."
+   },
+   "pos": [
+    2560.0,
+    684.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "art",
+   "type": "story.scene_art",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "style": "soft storybook watercolor, warm lantern light, gentle pastel night palette"
+   },
+   "pos": [
+    0.0,
+    0.0
+   ],
+   "label": "Paint missing backgrounds (live)",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  }
+ ],
+ "edges": [
+  {
+   "id": "e1",
+   "source": "art_mo",
+   "source_port": "image",
+   "target": "cut_mo",
+   "target_port": "image",
+   "kind": "data"
+  },
+  {
+   "id": "e2",
+   "source": "cut_mo",
+   "source_port": "image",
+   "target": "mo",
+   "target_port": "portrait",
+   "kind": "data"
+  },
+  {
+   "id": "e3",
+   "source": "art_pip",
+   "source_port": "image",
+   "target": "cut_pip",
+   "target_port": "image",
+   "kind": "data"
+  },
+  {
+   "id": "e4",
+   "source": "cut_pip",
+   "source_port": "image",
+   "target": "pip",
+   "target_port": "portrait",
+   "kind": "data"
+  },
+  {
+   "id": "e5",
+   "source": "art_otto",
+   "source_port": "image",
+   "target": "cut_otto",
+   "target_port": "image",
+   "kind": "data"
+  },
+  {
+   "id": "e6",
+   "source": "cut_otto",
+   "source_port": "image",
+   "target": "otto",
+   "target_port": "portrait",
+   "kind": "data"
+  },
+  {
+   "id": "e7",
+   "source": "bg_porch",
+   "source_port": "image",
+   "target": "porch",
+   "target_port": "background",
+   "kind": "data"
+  },
+  {
+   "id": "e8",
+   "source": "bg_woods",
+   "source_port": "image",
+   "target": "woods",
+   "target_port": "background",
+   "kind": "data"
+  },
+  {
+   "id": "e9",
+   "source": "bg_oak",
+   "source_port": "image",
+   "target": "oak",
+   "target_port": "background",
+   "kind": "data"
+  },
+  {
+   "id": "e10",
+   "source": "bg_fog",
+   "source_port": "image",
+   "target": "fog",
+   "target_port": "background",
+   "kind": "data"
+  },
+  {
+   "id": "e11",
+   "source": "bg_dance",
+   "source_port": "image",
+   "target": "dance",
+   "target_port": "background",
+   "kind": "data"
+  },
+  {
+   "id": "e12",
+   "source": "bg_lake",
+   "source_port": "image",
+   "target": "lake",
+   "target_port": "background",
+   "kind": "data"
+  },
+  {
+   "id": "e13",
+   "source": "mo",
+   "source_port": "character",
+   "target": "porch",
+   "target_port": "characters",
+   "kind": "data"
+  },
+  {
+   "id": "e14",
+   "source": "pip",
+   "source_port": "character",
+   "target": "porch",
+   "target_port": "characters",
+   "kind": "data"
+  },
+  {
+   "id": "e15",
+   "source": "otto",
+   "source_port": "character",
+   "target": "oak",
+   "target_port": "characters",
+   "kind": "data"
+  },
+  {
+   "id": "e16",
+   "source": "start",
+   "source_port": "next",
+   "target": "porch",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e17",
+   "source": "porch",
+   "source_port": "next",
+   "target": "c_porch",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e18",
+   "source": "c_porch",
+   "source_port": "choice_1",
+   "target": "woods",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e19",
+   "source": "c_porch",
+   "source_port": "choice_2",
+   "target": "oak",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e20",
+   "source": "woods",
+   "source_port": "next",
+   "target": "rnd_woods",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e21",
+   "source": "rnd_woods",
+   "source_port": "path_1",
+   "target": "fog",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e22",
+   "source": "rnd_woods",
+   "source_port": "path_2",
+   "target": "dance",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e23",
+   "source": "fog",
+   "source_port": "next",
+   "target": "c_fog",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e24",
+   "source": "c_fog",
+   "source_port": "choice_1",
+   "target": "lake",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e25",
+   "source": "c_fog",
+   "source_port": "choice_2",
+   "target": "lake",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e26",
+   "source": "dance",
+   "source_port": "next",
+   "target": "c_dance",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e27",
+   "source": "c_dance",
+   "source_port": "choice_1",
+   "target": "lake",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e28",
+   "source": "c_dance",
+   "source_port": "choice_2",
+   "target": "end_good",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e29",
+   "source": "oak",
+   "source_port": "next",
+   "target": "c_oak",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e30",
+   "source": "c_oak",
+   "source_port": "choice_1",
+   "target": "lake",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e31",
+   "source": "c_oak",
+   "source_port": "choice_2",
+   "target": "end_nap",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e32",
+   "source": "lake",
+   "source_port": "next",
+   "target": "br_lake",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e33",
+   "source": "br_lake",
+   "source_port": "then",
+   "target": "end_secret",
+   "target_port": "in",
+   "kind": "flow"
+  },
+  {
+   "id": "e34",
+   "source": "br_lake",
+   "source_port": "else",
+   "target": "end_good",
+   "target_port": "in",
+   "kind": "flow"
+  }
+ ],
+ "groups": [],
+ "notes": [
+  {
+   "id": "n1",
+   "text": "How it works\n\nStory -> Scene -> Choice nodes are the script (white story edges). Image nodes feed each Scene's background and each Character's portrait.\n\nPlay right away: scenes without a painting are painted live by the Scene Art node (or drawn as soft gradients with no model).\nRun first to paint everything ahead of time, then Share as a baked .unslothflow so friends can play with no models.",
+   "rect": [
+    -576.0,
+    0.0,
+    512.0,
+    304.0
+   ],
+   "color": "#fde68a"
+  }
+ ],
+ "assets": [],
+ "baked": {},
+ "editor": {
+  "viewport": {
+   "x": 40,
+   "y": 40,
+   "zoom": 0.8
+  }
+ },
+ "meta": {
+  "tags": [
+   "story",
+   "visual novel",
+   "beginner"
+  ],
+  "example": true,
+  "author": "Unsloth",
+  "order": 1
+ }
+}

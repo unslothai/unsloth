@@ -1,0 +1,215 @@
+{
+ "format": "unsloth-flow",
+ "version": 1,
+ "id": "pocket-village",
+ "name": "Pocket Village",
+ "description": "Walk around a tiny generated village. The LLM invents the villagers, their quests and items; the image model draws every sprite and tile; villagers talk back in character when you chat with them.",
+ "kind": "world",
+ "seed": 2024,
+ "params": [
+  {
+   "id": "premise",
+   "type": "text",
+   "label": "Premise",
+   "default": "A cozy mushroom village where the annual Lantern Festival starts tonight, but the festival's golden bell has gone missing.",
+   "description": null
+  }
+ ],
+ "requirements": {
+  "models": [
+   {
+    "ref": "writer",
+    "kind": "chat",
+    "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+    "variant": "Q4_K_M",
+    "optional": false,
+    "note": "Any instruct chat model works; 4B is fast and follows JSON schemas well."
+   },
+   {
+    "ref": "painter",
+    "kind": "image",
+    "repo": "black-forest-labs/FLUX.2-klein-4B",
+    "variant": null,
+    "optional": false,
+    "note": "Fast 4B image model with reference/edit support; any image model works."
+   }
+  ]
+ },
+ "nodes": [
+  {
+   "id": "premise",
+   "type": "input.param",
+   "v": 1,
+   "params": {
+    "name": "premise",
+    "type": "text",
+    "default": "A cozy mushroom village where the annual Lantern Festival starts tonight, but the festival's golden bell has gone missing."
+   },
+   "pos": [
+    0.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "gen",
+   "type": "world.generator",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+     "variant": "Q4_K_M"
+    },
+    "npcs": 4,
+    "items": 4,
+    "biome": "meadow",
+    "style": "cute 16-bit pixel art, top-down RPG, soft colours"
+   },
+   "pos": [
+    320.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "fern",
+   "type": "world.npc",
+   "v": 1,
+   "params": {
+    "name": "Grandma Fern",
+    "persona": "The village elder, a tiny old mushroom lady who knits scarves for everyone and knows every secret. Speaks in warm proverbs. Secretly hid the bell to test the young ones.",
+    "greeting": "Ah, a new face! Sit, sit. Have you eaten?"
+   },
+   "pos": [
+    320.0,
+    456.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "art",
+   "type": "world.art",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "black-forest-labs/FLUX.2-klein-4B",
+     "variant": null
+    },
+    "tiles": true,
+    "sprites": true
+   },
+   "pos": [
+    640.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "play",
+   "type": "world.play",
+   "v": 1,
+   "params": {},
+   "pos": [
+    960.0,
+    190.0
+   ],
+   "label": null,
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  },
+  {
+   "id": "reply",
+   "type": "world.npc_reply",
+   "v": 1,
+   "params": {
+    "model": {
+     "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+     "variant": "Q4_K_M"
+    },
+    "max_tokens": 160,
+    "rules": "Stay in character. Keep replies under 50 words. Drop gentle hints about quests."
+   },
+   "pos": [
+    960.0,
+    456.0
+   ],
+   "label": "Villager voices (live)",
+   "group": null,
+   "collapsed": false,
+   "disabled": false
+  }
+ ],
+ "edges": [
+  {
+   "id": "e1",
+   "source": "premise",
+   "source_port": "value",
+   "target": "gen",
+   "target_port": "premise",
+   "kind": "data"
+  },
+  {
+   "id": "e2",
+   "source": "gen",
+   "source_port": "world",
+   "target": "art",
+   "target_port": "world",
+   "kind": "data"
+  },
+  {
+   "id": "e3",
+   "source": "art",
+   "source_port": "world",
+   "target": "play",
+   "target_port": "world",
+   "kind": "data"
+  }
+ ],
+ "groups": [],
+ "notes": [
+  {
+   "id": "n1",
+   "text": "Run, then Play\n\nRun paints the sprites and tiles (about one image per villager, item and tile). Play: WASD or arrows (or click) to walk, E or Space to talk and pick things up, I for inventory. Grandma Fern is hand-written: edit her persona, or add more NPC nodes.",
+   "rect": [
+    0.0,
+    646.0,
+    576.0,
+    228.0
+   ],
+   "color": "#fde68a"
+  }
+ ],
+ "assets": [],
+ "baked": {},
+ "editor": {
+  "viewport": {
+   "x": 40,
+   "y": 40,
+   "zoom": 0.8
+  }
+ },
+ "meta": {
+  "tags": [
+   "world",
+   "game",
+   "rpg",
+   "npc"
+  ],
+  "example": true,
+  "author": "Unsloth",
+  "order": 3
+ }
+}

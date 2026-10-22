@@ -302,6 +302,11 @@ async def _read_once(
         return await _load_job(caller, job_id)
     if kind in ("training", "diffusion_training"):
         return await _training_job(caller, kind, job_id)
+    if kind == "flow":
+        if not job_id:
+            raise ToolError('get_job(kind="flow") needs id: the run id run_flow returned.')
+        from studio_mcp.tools.flows import read_run
+        return media_result([], await read_run(caller, job_id))
     if kind == "download":
         if not job_id:
             raise ToolError('get_job(kind="download") needs id: the id download_model returned.')
@@ -335,7 +340,7 @@ def _moment(structured: Any) -> tuple[Any, Any, Any]:
 
 async def get_job(
     kind: Literal[
-        "video", "recipe", "export", "training", "diffusion_training", "load", "download"
+        "video", "recipe", "export", "training", "diffusion_training", "load", "download", "flow"
     ],
     id: Optional[str] = None,
     wait_s: Annotated[
@@ -372,7 +377,8 @@ async def get_job(
     kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Unsloth Studio's exports folder.
     kind "training" or "diffusion_training": the current run started by start_training (``id`` is its job id), and once completed its run folder and checkpoint names; ``loss_history`` names the list_training_runs call with the full loss curve.
     kind "load": a load_model call that returned ``status`` "loading", by its ``job_id``; once completed, ``load`` is the load's result with what it unloaded.
-    kind "download": a download_model download by the id it returned."""
+    kind "download": a download_model download by the id it returned.
+    kind "flow": a run_flow run by its id: its status, how many steps finished, and once completed ``flow.outputs``."""
     caller = current_caller()
     deadline = time.monotonic() + min(wait_s, loading.MAX_WAIT_S)
     # Forwarded reads have no HTTP timeout, so each one here is bounded: the first by the wait (at
@@ -435,6 +441,7 @@ POLL_AFTER_S = {
     "diffusion_training": 30,
     "load": 10,
     "download": 15,
+    "flow": 10,
 }
 
 

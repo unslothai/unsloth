@@ -740,6 +740,7 @@ export const ptBR = {
       library: "Biblioteca",
       train: "Treinar",
       recipes: "Receitas",
+      flows: "Fluxos",
       images: "Imagens",
       video: "Vídeo",
       audio: "Áudio",

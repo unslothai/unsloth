@@ -56,6 +56,7 @@ const GO_ROWS: &[Row] = &[
     Row::Action("go-hub", "Model Hub", "Ctrl+3"),
     Row::Action("go-train", "Train", "Ctrl+4"),
     Row::Action("go-recipes", "Recipes", "Ctrl+5"),
+    Row::Action("go-flows", "Flows", ""),
     Row::Action("go-images", "Images", "Ctrl+6"),
     Row::Action("go-video", "Video", "Ctrl+7"),
     Row::Action("go-audio", "Audio", "Ctrl+8"),

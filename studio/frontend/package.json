@@ -80,6 +80,7 @@
     "micromark-util-types": "2.0.2",
     "motion": "^12.34.0",
     "node-forge": "^1.4.0",
+    "phaser": "3.90.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.4",
     "react-day-picker": "^9.13.2",

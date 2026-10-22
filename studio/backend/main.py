@@ -394,6 +394,7 @@ from routes.sandbox_capability import router as sandbox_capability_router
 from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
+from routes.flows import router as flows_router
 from routes.library import router as library_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
@@ -890,6 +891,16 @@ async def lifespan(app: FastAPI):
                 )
         except Exception as exc:
             _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+        try:
+            from storage.flows_db import reconcile_orphaned_runs as reconcile_flow_runs
+            interrupted_flows = _run_as(_account, reconcile_flow_runs)
+            if interrupted_flows:
+                _lifespan_log.warning(
+                    "Marked %s flow run(s) interrupted after restart.", interrupted_flows
+                )
+        except Exception as exc:
+            _lifespan_log.warning("flow run reconciliation failed: %s", exc)
 
         # Each account has its own rag.db, so its stuck ingestion jobs are only visible from inside it.
         try:
@@ -1928,6 +1939,7 @@ app.include_router(library_router, prefix = "/api/library", tags = ["library"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
+app.include_router(flows_router, prefix = "/api/flows", tags = ["flows"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])

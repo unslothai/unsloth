@@ -388,9 +388,12 @@ test("a light wash follows the slider as its dark twin does", () => {
     "features/images/images-page.tsx",
     "features/video/video-page.tsx",
   ]);
+  // The Flows canvas and its game players draw a fixed dark stage in every theme, so their washes
+  // sit over that stage, not over the themed chrome the slider tunes.
+  const FIXED_DARK_STAGE = "features/flows/";
   const SCRIM = /(overlayClassName|bg-(black|white)\/(\[0?\.[3-9]\d*\]|[3-9]\d|100))/;
   const hits = SOURCES.filter((file) => {
-    if (NOT_CHROME.has(file) || OVER_CONTENT.has(file)) return false;
+    if (NOT_CHROME.has(file) || OVER_CONTENT.has(file) || file.startsWith(FIXED_DARK_STAGE)) return false;
     const source = readSrc(file);
     return source
       .split("\n")

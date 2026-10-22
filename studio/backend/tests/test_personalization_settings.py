@@ -191,6 +191,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("audio", False),
     ("train", True),
     ("recipes", False),
+    ("flows", True),
     ("export", False),
     ("api", False),
 ]
@@ -229,6 +230,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("audio", False),
         ("train", True),
         ("recipes", False),
+        ("flows", True),
         ("export", False),
         ("api", False),
     ]
@@ -512,6 +514,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "projects", "pinned": False},
                     {"id": "library", "pinned": True},
                     {"id": "recipes", "pinned": False},
+                    {"id": "flows", "pinned": True},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
                 ],
