@@ -1132,14 +1132,9 @@ def _flushes_local_pair(part: dict) -> bool:
 
 
 def _with_attachments(message: dict):
-    """A stored row's content with its attached files folded in, as `toOpenAIMessages` sends it.
-
-    The store keeps attachments apart from the typed words, but `collectTextParts` (chat-adapter.ts)
-    sends a user turn as its own text followed by every attachment's text, after
-    `modelVisibleMessage` drops the tool-only images. Without them a turn sent with a document never equalled what was archived from
-    the request, so it found no seat and `_fallback_ordinal` numbered it after every later turn. An
-    assistant row's attachments add no text on the wire, so it is left as stored.
-    """
+    """A stored row's content with its attachments appended, as `collectTextParts` (chat-adapter.ts) sends it
+    after `modelVisibleMessage` drops tool-only images. Without them a turn sent with a document matched no seat
+    and `_fallback_ordinal` numbered it after every later turn. Assistant attachments add no text on the wire."""
     content = message.get("content")
     attachments = message.get("attachments")
     if not isinstance(attachments, list) or str(message.get("role") or "") == "assistant":
@@ -1186,8 +1181,6 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     own messages against something written WITHOUT this projection must pass False:
     `_branch_boundary_anchor` records an anchor straight off the request, so `_archive_as_wire` has
     to hand the same bytes back or the rebase stops matching.
-
-    A user row's attached files go into its content (`_with_attachments`), as the client sends them.
     """
     wire: list[dict] = []
     for message in messages:
@@ -1311,11 +1304,8 @@ _SANDBOX_NOTE = re.compile(
 
 
 def _seat_text(message: dict) -> str:
-    """One message as seat matching compares it: its probe, without the python tool's path notes.
-
-    The client adds those notes to the request only, so the stored row never has them, and with the
-    python tool on a turn sent with a document matched no seat even with its attachments folded in.
-    """
+    """The probe seat matching compares, minus the python tool's path notes: the client adds them to the
+    request only, so a stored row never has them."""
     text = _probe_text(message)
     if str(message.get("role") or "") == "user":
         text = _SANDBOX_NOTE.sub("", text)
