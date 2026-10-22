@@ -108,7 +108,6 @@ function finitePositive(value: number | null | undefined): number | null {
     : null;
 }
 
-/** The loader's budget on an Apple host pool, or null where it does not apply or is unknown. */
 function appleUnifiedLoadBudgetGb(
   data: SystemInfoResponse | null,
   devices: readonly GpuDevice[],

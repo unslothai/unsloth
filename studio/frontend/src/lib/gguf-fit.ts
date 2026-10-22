@@ -29,9 +29,7 @@ export interface GgufFitInput {
    *  above the default budget; absent means one card, which is what every verdict
    *  scored against before it existed. */
   gpuCount?: number;
-  /** Apple MLX only (`GpuInfo.unifiedLoadBudgetGb`): the loader admits `min(working set, free) *
-   *  0.85`, well under total RAM. A quant past it but inside the total-RAM budget reads `marginal`
-   *  rather than `fits`; nothing past the total-RAM budget changes. */
+  /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`): past it, `fits` becomes `marginal`. */
   unifiedLoadBudgetGb?: number | null;
 }
 
